@@ -216,8 +216,11 @@ async fn scratch_workspace_with_default_login_shell() {
     let server_pid = String::from_utf8_lossy(&server_pid.stdout)
         .trim()
         .to_owned();
-    let cmdline = std::fs::read(format!("/proc/{server_pid}/cmdline")).unwrap();
-    let cmdline = String::from_utf8_lossy(&cmdline);
+    let cmdline = Command::new("ps")
+        .args(["-ww", "-o", "command=", "-p", &server_pid])
+        .output()
+        .unwrap();
+    let cmdline = String::from_utf8_lossy(&cmdline.stdout);
     assert!(
         !cmdline.contains("PATH="),
         "env leaked into tmux argv: {cmdline}"
@@ -241,7 +244,9 @@ async fn scratch_workspace_with_default_login_shell() {
     .await
     .unwrap();
     let text = wait_output(&host, "scratch", "shell", &format!("id={}", shell.id)).await;
-    assert!(text.contains(&format!("pwd={}", ws.root)), "{text}");
+    // `pwd` reports the resolved path (on macOS the temp dir is under a symlink).
+    let root = std::fs::canonicalize(&ws.root).unwrap();
+    assert!(text.contains(&format!("pwd={}", root.display())), "{text}");
 
     // Names are unique per host.
     let err = host
@@ -913,7 +918,7 @@ if [ "$2" = resume ]; then
   id="$3"
   f=$(ls "$CODEX_HOME"/sessions/*/*/*/rollout-*-"$id".jsonl | head -n 1)
 else
-  id=$(cat /proc/sys/kernel/random/uuid)
+  id=$(cat /proc/sys/kernel/random/uuid 2>/dev/null || uuidgen | tr A-Z a-z)
   d="$CODEX_HOME/sessions/$(date +%Y/%m/%d)"
   mkdir -p "$d"
   f="$d/rollout-$(date +%Y-%m-%dT%H-%M-%S)-$id.jsonl"
@@ -943,6 +948,32 @@ struct FakeCodex {
     _scratch: tempfile::TempDir,
 }
 
+/// A login shell for an isolated test user that skips the system profile: on
+/// macOS `/etc/profile` runs `path_helper`, which moves system directories
+/// (e.g. `/opt/homebrew/bin`, where a real `codex` may live) ahead of `PATH`.
+fn isolated_shell(dir: &Path) -> String {
+    use std::os::unix::fs::PermissionsExt;
+    let shell = dir.join("login-sh");
+    std::fs::write(
+        &shell,
+        "#!/bin/sh\n[ \"$1\" = -l ] && shift\nexec /bin/sh \"$@\"\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&shell, std::fs::Permissions::from_mode(0o755)).unwrap();
+    shell.to_string_lossy().into_owned()
+}
+
+/// The directory holding the `tmux` the tests use, for isolated `PATH`s (it is
+/// not in a system directory on macOS).
+fn tmux_dir() -> String {
+    let path = std::env::var_os("PATH").unwrap_or_default();
+    std::env::split_paths(&path)
+        .find(|d| d.join("tmux").is_file())
+        .expect("tmux on PATH")
+        .to_string_lossy()
+        .into_owned()
+}
+
 async fn fake_codex_host(mode: &str) -> FakeCodex {
     let scratch = tempfile::Builder::new().prefix("wdc").tempdir().unwrap();
     let bin = scratch.path().join("bin");
@@ -958,8 +989,11 @@ async fn fake_codex_host(mode: &str) -> FakeCodex {
     let host = TestHost::with_env(&[
         // An isolated user: no dotfiles that could put the real codex first.
         ("HOME", p(&home)),
-        ("SHELL", "/bin/sh".into()),
-        ("PATH", format!("{}:/usr/local/bin:/usr/bin:/bin", p(&bin))),
+        ("SHELL", isolated_shell(scratch.path())),
+        (
+            "PATH",
+            format!("{}:{}:/usr/local/bin:/usr/bin:/bin", p(&bin), tmux_dir()),
+        ),
         ("CODEX_HOME", p(&scratch.path().join("codex-home"))),
         ("FAKE_CODEX_LOG", p(&log)),
         ("FAKE_CODEX_MODE", mode.into()),
@@ -1163,7 +1197,7 @@ async fn missing_agent_binary_is_a_visible_failure() {
     std::fs::create_dir_all(&home).unwrap();
     let host = TestHost::with_env(&[
         ("HOME", home.to_string_lossy().into_owned()),
-        ("SHELL", "/bin/sh".into()),
+        ("SHELL", isolated_shell(scratch.path())),
         ("PATH", "/usr/bin:/bin".into()),
     ])
     .await;
