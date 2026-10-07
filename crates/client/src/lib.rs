@@ -16,9 +16,10 @@ use workd_core::{HostStatus, Session, Workspace};
 use workd_protocol::frame::{Frame, read_frame, write_frame};
 use workd_protocol::wire::{read_json, write_json};
 use workd_protocol::{
-    AttachReady, AttentionResolve, ClientMessage, EventRecord, EventsList, PROTOCOL_VERSION,
-    Request, RpcError, ServerMessage, SessionAttach, SessionCreate, SessionOutput, SessionRead,
-    SessionRef, SessionWrite, WorkspaceCreate, WorkspaceDelete, WorkspaceRef,
+    AttachReady, AttentionResolve, ClientMessage, EventRecord, EventsList, EventsSubscribe,
+    PROTOCOL_VERSION, Request, RpcError, ServerMessage, SessionAttach, SessionCreate,
+    SessionOutput, SessionRead, SessionRef, SessionWrite, StateSnapshot, Subscribed,
+    WorkspaceCreate, WorkspaceDelete, WorkspaceRef,
 };
 
 /// How to reach a host's daemon.
@@ -394,10 +395,24 @@ impl Connection {
         ))
     }
 
-    /// Turn this connection into a stream of events.
-    pub async fn subscribe(mut self) -> Result<EventStream> {
-        let () = self.call(Request::EventsSubscribe).await?;
-        Ok(EventStream { conn: self })
+    /// Current state and the event cursor it corresponds to; follow on with
+    /// `subscribe(Some(snapshot.seq))`.
+    pub async fn snapshot(&mut self) -> Result<StateSnapshot> {
+        self.call(Request::StateSnapshot).await
+    }
+
+    /// Turn this connection into a stream of events: those after `after` (if
+    /// given), then live ones. A cursor the host can no longer serve fails with
+    /// [`ErrorCode::CursorExpired`](workd_protocol::ErrorCode::CursorExpired);
+    /// reload a snapshot then.
+    pub async fn subscribe(mut self, after: Option<u64>) -> Result<EventStream> {
+        let ready: Subscribed = self
+            .call(Request::EventsSubscribe(EventsSubscribe { after }))
+            .await?;
+        Ok(EventStream {
+            seq: ready.seq,
+            conn: self,
+        })
     }
 }
 
@@ -425,6 +440,8 @@ impl AttachWriter {
 }
 
 pub struct EventStream {
+    /// The latest event when the subscription started.
+    pub seq: u64,
     conn: Connection,
 }
 

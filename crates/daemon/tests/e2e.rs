@@ -602,7 +602,7 @@ async fn daemon_restart_adopts_running_sessions_and_records_changes() {
 async fn event_stream_reports_lifecycle() {
     let host = TestHost::new();
     create(&host, "ev", Some(vec![])).await;
-    let mut stream = host.conn().await.subscribe().await.unwrap();
+    let mut stream = host.conn().await.subscribe(None).await.unwrap();
     host.conn()
         .await
         .session_create(SessionCreate {
@@ -626,6 +626,110 @@ async fn event_stream_reports_lifecycle() {
         kinds,
         ["SessionCreated", "ExecutionStarted", "ExecutionExited"]
     );
+}
+
+/// Events from `stream` up to and including `seq`.
+async fn events_through(
+    stream: &mut workd_client::EventStream,
+    seq: u64,
+) -> Vec<workd_protocol::EventRecord> {
+    let mut out: Vec<workd_protocol::EventRecord> = Vec::new();
+    tokio::time::timeout(Duration::from_secs(15), async {
+        while out.last().is_none_or(|r| r.seq < seq) {
+            out.push(stream.next().await.unwrap().expect("stream open"));
+        }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("waiting for event {seq}; got {out:?}"));
+    out
+}
+
+async fn task(host: &TestHost, ws: &str, name: &str) {
+    host.conn()
+        .await
+        .session_create(SessionCreate {
+            workspace: ws.into(),
+            spec: spec(SessionKind::Task, name, "exit 0"),
+        })
+        .await
+        .unwrap();
+    wait_status(host, ws, name, SessionStatus::Completed).await;
+}
+
+#[tokio::test]
+async fn event_replay_resumes_after_disconnect_and_daemon_restart() {
+    let host = TestHost::new();
+    create(&host, "ev", Some(vec![])).await;
+    let snapshot = host.conn().await.snapshot().await.unwrap();
+    assert!(snapshot.workspaces.iter().any(|w| w.name == "ev"));
+    // A subscriber that goes away (laptop sleeps).
+    let stream = host
+        .conn()
+        .await
+        .subscribe(Some(snapshot.seq))
+        .await
+        .unwrap();
+    assert!(stream.seq >= snapshot.seq);
+    drop(stream);
+
+    // Meanwhile: a task runs, and the daemon restarts.
+    task(&host, "ev", "t").await;
+    host.stop_daemon().await;
+
+    // Reconnecting with the cursor replays exactly what was missed, in order.
+    let mut stream = host
+        .conn()
+        .await
+        .subscribe(Some(snapshot.seq))
+        .await
+        .unwrap();
+    let head = stream.seq;
+    let missed = events_through(&mut stream, head).await;
+    let seqs: Vec<u64> = missed.iter().map(|r| r.seq).collect();
+    assert_eq!(seqs, (snapshot.seq + 1..=head).collect::<Vec<_>>());
+    let kinds: Vec<&str> = missed.iter().map(|r| r.event.kind()).collect();
+    for want in [
+        "SessionCreated",
+        "ExecutionStarted",
+        "ExecutionExited",
+        "DaemonStarted",
+    ] {
+        assert!(kinds.contains(&want), "{want} missing from {kinds:?}");
+    }
+
+    // Then it continues live, without a gap.
+    task(&host, "ev", "u").await;
+    let next = events_through(&mut stream, head + 1).await;
+    assert_eq!(next[0].seq, head + 1);
+    assert_eq!(next[0].event.kind(), "SessionCreated");
+}
+
+#[tokio::test]
+async fn snapshot_then_subscribe_has_no_gap_and_stale_cursors_are_rejected() {
+    let host = TestHost::new();
+    create(&host, "snap", Some(vec![])).await;
+    let snapshot = host.conn().await.snapshot().await.unwrap();
+
+    // Following on from a snapshot: the next event is the next seq.
+    let mut stream = host
+        .conn()
+        .await
+        .subscribe(Some(snapshot.seq))
+        .await
+        .unwrap();
+    task(&host, "snap", "t").await;
+    let first = events_through(&mut stream, snapshot.seq + 1).await;
+    assert_eq!(first[0].seq, snapshot.seq + 1);
+
+    // A cursor this host never issued (e.g. its log was reset) is refused,
+    // not silently treated as "from now".
+    match host.conn().await.subscribe(Some(snapshot.seq + 1000)).await {
+        Err(workd_client::ClientError::Rpc(e)) => {
+            assert_eq!(e.code, workd_protocol::ErrorCode::CursorExpired, "{e}")
+        }
+        Err(e) => panic!("unexpected error: {e}"),
+        Ok(_) => panic!("stale cursor accepted"),
+    }
 }
 
 // ---------------------------------------------------------------------------

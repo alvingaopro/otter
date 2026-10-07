@@ -42,7 +42,7 @@ pub async fn run(
 ) -> Result<()> {
     // Subscribe before resolving the target so an exit between the two can't
     // be missed.
-    let mut events = daemon.events.subscribe();
+    let (_, mut events) = daemon.events.subscribe();
     let target = match daemon.attach_target(&params.session).await {
         Ok(t) => t,
         Err(e) => {

@@ -303,3 +303,33 @@ control plane). Changed only what leaked:
 
 Deliberately not done (architecture-lessons §24): other providers, plugin
 mechanisms, orchestration. Next: dogfooding.
+
+## D-016 — Event cursors, snapshots and protocol v2 (2026-10-07)
+
+Prerequisite for a desktop client that reconnects after sleep or network loss.
+Details: [`protocol.md`](protocol.md).
+
+- **Snapshot + events, not event sourcing.** `state.snapshot` returns the
+  workspaces and the event `seq` they correspond to, read under the store lock.
+  Every store change happens under that lock and its event is emitted after
+  the change, so a snapshot reflects every event up to `seq` (maybe more);
+  clients apply events idempotently. Emitting an event *before* the change it
+  describes would break this.
+- **Replay cursors.** `events.subscribe {after}` replays `seq > after` from
+  `events.jsonl`, then streams live events, each once and in order. The
+  broadcast receiver is taken atomically with the head `seq`, and a lagging
+  subscriber catches up from the log instead of dropping events. A cursor the
+  log can't serve (older than the oldest retained event, or newer than the
+  latest one) fails with `cursor_expired`; the client reloads a snapshot.
+- **Storage unchanged** (D-005): replay reads the whole log, which is fine at
+  current sizes and happens only on reconnect or lag. Rotation, an index or
+  SQLite wait until the log is actually a problem.
+- **Known gap:** a reset log that has since grown past a client's cursor is
+  not detected. Fix if it bites: a log id generated with the file, returned by
+  `state.snapshot` / `events.subscribe` and echoed by clients.
+- **Protocol v2.** `events.subscribe` gained params and a `{seq}` result, plus
+  the `cursor_expired` code; v1 clients couldn't parse those, so the version
+  was bumped. v1 was pre-stabilization. From v2 the compatibility rules in
+  `protocol.md` apply: optional fields, new methods, new event kinds and new
+  error codes are compatible (`Event::Unknown`, `ErrorCode::Unknown` make old
+  clients tolerate them); frame changes and semantic changes bump.

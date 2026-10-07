@@ -102,5 +102,9 @@ record it in [`decisions.md`](decisions.md) first.
 ### 12. The UI is disposable and reconnectable.
 
 - Any client can disconnect at any time; everything it shows comes from
-  `workspace.list` / `events.subscribe`. `workctl ls --watch` reconnects to
-  hosts that drop.
+  `state.snapshot` / `workspace.list` plus `events.subscribe`. A reconnecting
+  client resumes from its last event `seq` and never silently misses events
+  (`cursor_expired` → reload a snapshot). `workctl ls --watch` and
+  `workctl events --follow` reconnect to hosts that drop.
+- Tests: `event_replay_resumes_after_disconnect_and_daemon_restart`,
+  `snapshot_then_subscribe_has_no_gap_and_stale_cursors_are_rejected`.

@@ -794,6 +794,44 @@ fn join_command(argv: &[String]) -> String {
 // Events
 // ---------------------------------------------------------------------------
 
+/// Stream a host's events after `cursor` into `tx`, reconnecting (and resuming
+/// from the last event seen) whenever the connection drops.
+async fn follow_events(
+    transport: workd_client::Transport,
+    host: String,
+    mut cursor: u64,
+    tx: tokio::sync::mpsc::Sender<(String, workd_protocol::EventRecord)>,
+) {
+    loop {
+        let stream = match Connection::connect(&transport).await {
+            Ok(conn) => conn.subscribe(Some(cursor)).await,
+            Err(e) => Err(e),
+        };
+        match stream {
+            Ok(mut stream) => {
+                while let Ok(Some(rec)) = stream.next().await {
+                    cursor = rec.seq;
+                    if tx.send((host.clone(), rec)).await.is_err() {
+                        return;
+                    }
+                }
+            }
+            Err(workd_client::ClientError::Rpc(e))
+                if e.code == workd_protocol::ErrorCode::CursorExpired =>
+            {
+                eprintln!("workctl: {host}: {e}; some events were missed, following from now");
+                if let Ok(mut conn) = Connection::connect(&transport).await
+                    && let Ok(snapshot) = conn.snapshot().await
+                {
+                    cursor = snapshot.seq;
+                }
+            }
+            Err(_) => {}
+        }
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+    }
+}
+
 async fn events(
     config: &Config,
     host: Option<String>,
@@ -814,32 +852,25 @@ async fn events(
     let mut backlog = Vec::new();
     for host in &hosts {
         let mut conn = connect(config, host).await?;
-        for ws in conn.workspace_list().await? {
+        let snapshot = conn.snapshot().await?;
+        for ws in snapshot.workspaces {
             for s in &ws.sessions {
                 names.insert(s.id.to_string(), s.name.clone());
             }
             names.insert(ws.id.to_string(), ws.name);
         }
+        let mut cursor = snapshot.seq;
         for rec in conn.events_list(Some(limit)).await? {
+            cursor = cursor.max(rec.seq);
             backlog.push((host.name.clone(), rec));
         }
         if follow {
-            let transport = config.transport(host);
-            let tx = tx.clone();
-            let host_name = host.name.clone();
-            tokio::spawn(async move {
-                let Ok(conn) = Connection::connect(&transport).await else {
-                    return;
-                };
-                let Ok(mut stream) = conn.subscribe().await else {
-                    return;
-                };
-                while let Ok(Some(rec)) = stream.next().await {
-                    if tx.send((host_name.clone(), rec)).await.is_err() {
-                        break;
-                    }
-                }
-            });
+            tokio::spawn(follow_events(
+                config.transport(host),
+                host.name.clone(),
+                cursor,
+                tx.clone(),
+            ));
         }
     }
     drop(tx);

@@ -55,8 +55,37 @@ impl EventLog {
         record
     }
 
-    pub fn subscribe(&self) -> broadcast::Receiver<EventRecord> {
-        self.tx.subscribe()
+    /// The latest event's `seq`, and a receiver for exactly the events after it.
+    pub fn subscribe(&self) -> (u64, broadcast::Receiver<EventRecord>) {
+        // Under the lock, so no event falls between the two.
+        let inner = self.inner.lock().unwrap();
+        (inner.seq, self.tx.subscribe())
+    }
+
+    /// The latest event's `seq`.
+    pub fn head(&self) -> u64 {
+        self.inner.lock().unwrap().seq
+    }
+
+    /// Logged events with `seq > after`, oldest first; `None` if the log can't
+    /// serve that cursor (it predates the oldest retained event, or is ahead of
+    /// the latest one because the log was reset). Reads the whole log, so it is
+    /// for reconnects and catching up, not per event.
+    pub fn since(&self, after: u64) -> Result<Option<Vec<EventRecord>>> {
+        let head = self.head();
+        if after > head {
+            return Ok(None);
+        }
+        if after == head {
+            return Ok(Some(Vec::new()));
+        }
+        let records = read_records(&self.path)?;
+        if records.first().is_none_or(|r| r.seq > after + 1) {
+            return Ok(None);
+        }
+        Ok(Some(
+            records.into_iter().filter(|r| r.seq > after).collect(),
+        ))
     }
 
     /// The most recent `limit` events, oldest first.
@@ -106,4 +135,67 @@ fn read_records(path: &Path) -> Result<Vec<EventRecord>> {
         }
     }
     Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn started(log: &EventLog) -> EventRecord {
+        log.emit(Event::DaemonStarted {
+            version: "test".into(),
+        })
+    }
+
+    #[test]
+    fn since_replays_after_the_cursor_and_rejects_unknown_ones() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("events.jsonl");
+        let log = EventLog::open(&path).unwrap();
+        assert_eq!(log.since(0).unwrap(), Some(vec![]));
+        for _ in 0..3 {
+            started(&log);
+        }
+        let seqs = |after| {
+            log.since(after)
+                .unwrap()
+                .map(|v| v.iter().map(|r| r.seq).collect::<Vec<_>>())
+        };
+        assert_eq!(seqs(0), Some(vec![1, 2, 3]));
+        assert_eq!(seqs(2), Some(vec![3]));
+        assert_eq!(seqs(3), Some(vec![]));
+        assert_eq!(seqs(4), None, "cursor ahead of the log");
+
+        // Sequence numbers continue across reopening.
+        drop(log);
+        let log = EventLog::open(&path).unwrap();
+        assert_eq!(started(&log).seq, 4);
+    }
+
+    #[test]
+    fn since_rejects_cursors_older_than_the_log() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("events.jsonl");
+        // As if events 1..=9 had been rotated away.
+        std::fs::write(
+            &path,
+            "{\"seq\":10,\"ts\":\"2026-10-07T00:00:00Z\",\"type\":\"DaemonStarted\",\"version\":\"x\"}\n",
+        )
+        .unwrap();
+        let log = EventLog::open(&path).unwrap();
+        started(&log);
+        assert_eq!(log.since(5).unwrap(), None);
+        assert_eq!(log.since(9).unwrap().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn subscribe_hands_over_exactly_after_head() {
+        let dir = tempfile::tempdir().unwrap();
+        let log = EventLog::open(&dir.path().join("events.jsonl")).unwrap();
+        started(&log);
+        let (head, mut rx) = log.subscribe();
+        assert_eq!(head, 1);
+        started(&log);
+        assert_eq!(rx.try_recv().unwrap().seq, 2);
+    }
 }

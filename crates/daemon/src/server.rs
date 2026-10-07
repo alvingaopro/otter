@@ -10,7 +10,8 @@ use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::broadcast::error::RecvError;
 use workd_protocol::wire::{read_json, write_json};
 use workd_protocol::{
-    ClientMessage, ErrorCode, PROTOCOL_VERSION, Request, RpcError, ServerMessage,
+    ClientMessage, ErrorCode, EventRecord, EventsSubscribe, PROTOCOL_VERSION, Request, RpcError,
+    ServerMessage, Subscribed,
 };
 
 use crate::attach;
@@ -68,7 +69,9 @@ async fn handle_connection(daemon: Arc<Daemon>, stream: UnixStream) -> Result<()
             Request::SessionAttach(params) => {
                 return attach::run(daemon, msg.id, params, r, w).await;
             }
-            Request::EventsSubscribe => return subscribe(daemon, msg.id, r, w).await,
+            Request::EventsSubscribe(params) => {
+                return subscribe(daemon, msg.id, params, r, w).await;
+            }
             Request::Shutdown => {
                 respond(&mut w, msg.id, Ok(serde_json::Value::Null)).await?;
                 tracing::info!("shutdown requested");
@@ -103,24 +106,68 @@ pub async fn respond(
     write_json(w, &msg).await
 }
 
+/// Stream events after `params.after` (replayed from the log), then live ones,
+/// each exactly once and in `seq` order (`docs/protocol.md`).
 async fn subscribe(
     daemon: Arc<Daemon>,
     id: u64,
+    params: EventsSubscribe,
     mut r: BufReader<OwnedReadHalf>,
     mut w: OwnedWriteHalf,
 ) -> Result<()> {
-    let mut events = daemon.events.subscribe();
-    respond(&mut w, id, Ok(serde_json::Value::Null)).await?;
+    let (head, mut live) = daemon.events.subscribe();
+    let backlog = match params.after {
+        None => Vec::new(),
+        Some(after) => match daemon.events.since(after) {
+            Ok(Some(records)) => records,
+            Ok(None) => {
+                let message = format!("event cursor {after} is not available (latest is {head})");
+                let err = RpcError::new(ErrorCode::CursorExpired, message);
+                return Ok(respond(&mut w, id, Err(err)).await?);
+            }
+            Err(e) => {
+                let err = RpcError::internal(format!("{e:#}"));
+                return Ok(respond(&mut w, id, Err(err)).await?);
+            }
+        },
+    };
+    let ready = serde_json::to_value(Subscribed { seq: head })?;
+    respond(&mut w, id, Ok(ready)).await?;
+
+    let mut sent = params.after.unwrap_or(head);
+    send_after(&mut w, &mut sent, backlog).await?;
     let mut buf = [0u8; 256];
     loop {
         tokio::select! {
-            ev = events.recv() => match ev {
-                Ok(event) => write_json(&mut w, &ServerMessage::Event { event }).await?,
-                Err(RecvError::Lagged(n)) => tracing::warn!("event subscriber lagged by {n}"),
+            ev = live.recv() => match ev {
+                Ok(event) => send_after(&mut w, &mut sent, [event]).await?,
+                // Fell behind the broadcast buffer: catch up from the log
+                // rather than skip events. Overlap with what is still
+                // buffered is filtered by `seq`.
+                Err(RecvError::Lagged(n)) => {
+                    tracing::warn!("event subscriber lagged by {n}; replaying from the log");
+                    let missed = daemon.events.since(sent)?.unwrap_or_default();
+                    send_after(&mut w, &mut sent, missed).await?;
+                }
                 Err(RecvError::Closed) => return Ok(()),
             },
             // Anything the client sends is ignored; EOF means it went away.
             n = r.read(&mut buf) => if n? == 0 { return Ok(()) },
         }
     }
+}
+
+/// Send the records newer than `sent`, advancing it.
+async fn send_after(
+    w: &mut OwnedWriteHalf,
+    sent: &mut u64,
+    records: impl IntoIterator<Item = EventRecord>,
+) -> Result<()> {
+    for event in records {
+        if event.seq > *sent {
+            *sent = event.seq;
+            write_json(w, &ServerMessage::Event { event }).await?;
+        }
+    }
+    Ok(())
 }
