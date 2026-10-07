@@ -1,0 +1,203 @@
+//! Structured events (design §20).
+//!
+//! Events carry identifiers, names, kinds and exit codes only — never commands,
+//! environment variables or other potentially secret data (design §19).
+
+use serde::{Deserialize, Serialize};
+use workd_core::{
+    AgentState, AttentionId, AttentionKind, ExecutionId, SessionId, SessionKind, Timestamp,
+    WorkspaceId,
+};
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct EventRecord {
+    /// Monotonic per-host sequence number.
+    pub seq: u64,
+    pub ts: Timestamp,
+    #[serde(flatten)]
+    pub event: Event,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(tag = "type")]
+pub enum Event {
+    DaemonStarted {
+        version: String,
+    },
+    WorkspaceCreated {
+        workspace_id: WorkspaceId,
+        name: String,
+    },
+    WorkspaceDeleted {
+        workspace_id: WorkspaceId,
+        name: String,
+    },
+    /// Files and environment are in place; sessions are starting.
+    WorkspaceReady {
+        workspace_id: WorkspaceId,
+    },
+    WorkspaceFailed {
+        workspace_id: WorkspaceId,
+        message: String,
+    },
+    EnvironmentPreparing {
+        workspace_id: WorkspaceId,
+    },
+    EnvironmentReady {
+        workspace_id: WorkspaceId,
+    },
+    EnvironmentFailed {
+        workspace_id: WorkspaceId,
+        message: String,
+    },
+    SessionCreated {
+        workspace_id: WorkspaceId,
+        session_id: SessionId,
+        name: String,
+        kind: SessionKind,
+    },
+    SessionStopped {
+        workspace_id: WorkspaceId,
+        session_id: SessionId,
+    },
+    SessionDeleted {
+        workspace_id: WorkspaceId,
+        session_id: SessionId,
+    },
+    ExecutionStarted {
+        workspace_id: WorkspaceId,
+        session_id: SessionId,
+        execution_id: ExecutionId,
+    },
+    ExecutionExited {
+        workspace_id: WorkspaceId,
+        session_id: SessionId,
+        execution_id: ExecutionId,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        exit_code: Option<i32>,
+    },
+    /// The backend lost track of the process (e.g. its tmux session vanished).
+    ExecutionLost {
+        workspace_id: WorkspaceId,
+        session_id: SessionId,
+        execution_id: ExecutionId,
+    },
+    /// A session could not be launched.
+    ExecutionFailed {
+        workspace_id: WorkspaceId,
+        session_id: SessionId,
+        message: String,
+    },
+    AgentStateChanged {
+        workspace_id: WorkspaceId,
+        session_id: SessionId,
+        state: AgentState,
+    },
+    AttentionCreated {
+        workspace_id: WorkspaceId,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        session_id: Option<SessionId>,
+        attention_id: AttentionId,
+        kind: AttentionKind,
+    },
+    AttentionResolved {
+        workspace_id: WorkspaceId,
+        attention_id: AttentionId,
+    },
+}
+
+impl Event {
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Event::DaemonStarted { .. } => "DaemonStarted",
+            Event::WorkspaceCreated { .. } => "WorkspaceCreated",
+            Event::WorkspaceDeleted { .. } => "WorkspaceDeleted",
+            Event::WorkspaceReady { .. } => "WorkspaceReady",
+            Event::WorkspaceFailed { .. } => "WorkspaceFailed",
+            Event::EnvironmentPreparing { .. } => "EnvironmentPreparing",
+            Event::EnvironmentReady { .. } => "EnvironmentReady",
+            Event::EnvironmentFailed { .. } => "EnvironmentFailed",
+            Event::SessionCreated { .. } => "SessionCreated",
+            Event::SessionStopped { .. } => "SessionStopped",
+            Event::SessionDeleted { .. } => "SessionDeleted",
+            Event::ExecutionStarted { .. } => "ExecutionStarted",
+            Event::ExecutionExited { .. } => "ExecutionExited",
+            Event::ExecutionLost { .. } => "ExecutionLost",
+            Event::ExecutionFailed { .. } => "ExecutionFailed",
+            Event::AgentStateChanged { .. } => "AgentStateChanged",
+            Event::AttentionCreated { .. } => "AttentionCreated",
+            Event::AttentionResolved { .. } => "AttentionResolved",
+        }
+    }
+
+    pub fn workspace_id(&self) -> Option<&WorkspaceId> {
+        match self {
+            Event::DaemonStarted { .. } => None,
+            Event::WorkspaceCreated { workspace_id, .. }
+            | Event::WorkspaceDeleted { workspace_id, .. }
+            | Event::WorkspaceReady { workspace_id }
+            | Event::WorkspaceFailed { workspace_id, .. }
+            | Event::EnvironmentPreparing { workspace_id }
+            | Event::EnvironmentReady { workspace_id }
+            | Event::EnvironmentFailed { workspace_id, .. }
+            | Event::SessionCreated { workspace_id, .. }
+            | Event::SessionStopped { workspace_id, .. }
+            | Event::SessionDeleted { workspace_id, .. }
+            | Event::ExecutionStarted { workspace_id, .. }
+            | Event::ExecutionExited { workspace_id, .. }
+            | Event::ExecutionLost { workspace_id, .. }
+            | Event::ExecutionFailed { workspace_id, .. }
+            | Event::AgentStateChanged { workspace_id, .. }
+            | Event::AttentionCreated { workspace_id, .. }
+            | Event::AttentionResolved { workspace_id, .. } => Some(workspace_id),
+        }
+    }
+
+    pub fn session_id(&self) -> Option<&SessionId> {
+        match self {
+            Event::SessionCreated { session_id, .. }
+            | Event::SessionStopped { session_id, .. }
+            | Event::SessionDeleted { session_id, .. }
+            | Event::ExecutionStarted { session_id, .. }
+            | Event::ExecutionExited { session_id, .. }
+            | Event::ExecutionLost { session_id, .. }
+            | Event::ExecutionFailed { session_id, .. }
+            | Event::AgentStateChanged { session_id, .. } => Some(session_id),
+            Event::AttentionCreated { session_id, .. } => session_id.as_ref(),
+            _ => None,
+        }
+    }
+
+    pub fn execution_id(&self) -> Option<&ExecutionId> {
+        match self {
+            Event::ExecutionStarted { execution_id, .. }
+            | Event::ExecutionExited { execution_id, .. }
+            | Event::ExecutionLost { execution_id, .. } => Some(execution_id),
+            _ => None,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn record_is_flat_json() {
+        let rec = EventRecord {
+            seq: 3,
+            ts: chrono::Utc::now(),
+            event: Event::ExecutionExited {
+                workspace_id: "ws_a".into(),
+                session_id: "ses_b".into(),
+                execution_id: "exec_c".into(),
+                exit_code: Some(1),
+            },
+        };
+        let json = serde_json::to_string(&rec).unwrap();
+        assert!(json.contains(r#""type":"ExecutionExited""#), "{json}");
+        assert!(json.contains(r#""seq":3"#), "{json}");
+        let back: EventRecord = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, rec);
+    }
+}
