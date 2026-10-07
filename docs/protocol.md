@@ -74,7 +74,8 @@ rather than dropping events. Anything the client sends after subscribing is
 ignored; closing the connection ends the subscription.
 
 **Cursor errors.** If `after` cannot be served, the request fails with
-`cursor_expired` and the connection stays in RPC mode:
+`cursor_expired`, after which the server closes the connection (open a new
+one for the snapshot):
 
 - it is older than the oldest retained event (the log was rotated — not done
   yet, but clients must handle it), or
