@@ -14,6 +14,10 @@ use workd_protocol::{SessionAttach, SessionRef};
 /// Ctrl-]
 pub const DETACH_KEY: u8 = 0x1d;
 
+/// How long to wait for the daemon to confirm a detach before giving up on the
+/// connection (e.g. the network is gone and nothing will ever answer).
+const DETACH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
 /// Escape sequences that undo common terminal modes, used if the connection
 /// drops before the remote side could restore the terminal itself.
 const RESET_TERMINAL: &str =
@@ -94,14 +98,20 @@ pub async fn run(conn: Connection, workspace_id: &str, session: &str, label: &st
 
     let mut winch = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::window_change())?;
     let mut stdout = std::io::stdout();
-    let mut detach_sent = false;
+    let mut detach_sent: Option<tokio::time::Instant> = None;
 
     let outcome: Option<AttachExit> = loop {
+        let give_up = async {
+            match detach_sent {
+                Some(at) => tokio::time::sleep_until(at + DETACH_TIMEOUT).await,
+                None => std::future::pending().await,
+            }
+        };
         tokio::select! {
-            keys = key_rx.recv(), if !detach_sent => {
+            keys = key_rx.recv(), if detach_sent.is_none() => {
                 let Some(keys) = keys else {
                     let _ = writer.send(&Frame::Detach).await;
-                    detach_sent = true;
+                    detach_sent = Some(tokio::time::Instant::now());
                     continue;
                 };
                 match keys.iter().position(|&b| b == DETACH_KEY) {
@@ -110,7 +120,7 @@ pub async fn run(conn: Connection, workspace_id: &str, session: &str, label: &st
                             let _ = writer.send(&Frame::Data(keys[..pos].to_vec())).await;
                         }
                         let _ = writer.send(&Frame::Detach).await;
-                        detach_sent = true;
+                        detach_sent = Some(tokio::time::Instant::now());
                     }
                     None => {
                         let _ = writer.send(&Frame::Data(keys)).await;
@@ -129,7 +139,8 @@ pub async fn run(conn: Connection, workspace_id: &str, session: &str, label: &st
                 Some(Frame::Exit(exit)) => break Some(exit),
                 Some(_) => {}
                 None => break None,
-            }
+            },
+            _ = give_up => break None,
         }
     };
 

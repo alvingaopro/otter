@@ -42,7 +42,7 @@ pub async fn run(
 ) -> Result<()> {
     // Subscribe before resolving the target so an exit between the two can't
     // be missed.
-    let (_, mut events) = daemon.events.subscribe();
+    let (mut seen, mut events) = daemon.events.subscribe();
     let target = match daemon.attach_target(&params.session).await {
         Ok(t) => t,
         Err(e) => {
@@ -170,8 +170,19 @@ pub async fn run(
             },
             ev = events.recv() => {
                 let ended = match ev {
-                    Ok(rec) => ends_attach(&rec.event, &target.workspace_id, &target.ready),
-                    Err(RecvError::Lagged(_)) => None,
+                    Ok(rec) => {
+                        seen = rec.seq;
+                        ends_attach(&rec.event, &target.workspace_id, &target.ready)
+                    }
+                    // Fell behind: check what was missed in the log, so an
+                    // exit can't slip by and leave the attach hanging.
+                    Err(RecvError::Lagged(_)) => {
+                        let missed = daemon.events.since(seen).ok().flatten().unwrap_or_default();
+                        seen = missed.last().map_or(seen, |r| r.seq);
+                        missed.iter().find_map(|r| {
+                            ends_attach(&r.event, &target.workspace_id, &target.ready)
+                        })
+                    }
                     Err(RecvError::Closed) => Some(exit(AttachExitReason::Ended, None)),
                 };
                 if let Some(reason) = ended {
@@ -289,7 +300,15 @@ fn open_pty(cmd: &crate::backend::AttachCommand, cols: u16, rows: u16) -> Result
         .tty_name()
         .map(|p| p.to_string_lossy().into_owned());
     let reader = pair.master.try_clone_reader().context("pty reader")?;
-    let writer = pair.master.take_writer().context("pty writer")?;
+    // Not `take_writer()`: that writer sends "\n" + EOF into the PTY when
+    // dropped, which the attach client forwards to the session — a shell would
+    // exit if the daemon stopped mid-attach. A plain dup of the fd just closes.
+    let fd = pair.master.as_raw_fd().context("pty has no fd")?;
+    // SAFETY: `fd` belongs to `pair.master`, which is alive here.
+    let writer = unsafe { std::os::fd::BorrowedFd::borrow_raw(fd) }
+        .try_clone_to_owned()
+        .context("pty writer")?;
+    let writer: Box<dyn Write + Send> = Box::new(std::fs::File::from(writer));
     Ok(Pty {
         master: pair.master,
         reader,

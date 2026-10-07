@@ -73,7 +73,17 @@ impl Transport {
                         .arg("-o")
                         .arg("ControlPersist=600");
                 }
-                cmd.args(ssh_args).arg(destination);
+                cmd.args(ssh_args);
+                // Notice a dead network (laptop asleep, Wi-Fi gone) within
+                // ~45s instead of hanging until TCP gives up. After
+                // `ssh_args`, so explicit options there take precedence.
+                cmd.args([
+                    "-o",
+                    "ServerAliveInterval=15",
+                    "-o",
+                    "ServerAliveCountMax=3",
+                ]);
+                cmd.arg(destination);
                 let mut remote = workd_path.clone();
                 if let Some(home) = home {
                     remote.push_str(" --home ");
@@ -523,6 +533,10 @@ mod tests {
                 "ControlPersist=600",
                 "-p",
                 "2222",
+                "-o",
+                "ServerAliveInterval=15",
+                "-o",
+                "ServerAliveCountMax=3",
                 "dev-01",
                 "~/.local/bin/workd --home '/tmp/x y' dial"
             ]

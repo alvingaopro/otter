@@ -549,6 +549,170 @@ async fn client_disconnect_does_not_affect_session() {
     assert_eq!(ws.sessions[0].status(), SessionStatus::Running);
 }
 
+async fn sh_session(host: &TestHost, ws: &str) {
+    create(
+        host,
+        ws,
+        Some(vec![spec(SessionKind::Terminal, "sh", "sh")]),
+    )
+    .await;
+}
+
+async fn send(writer: &mut workd_client::AttachWriter, text: &str) {
+    writer
+        .send(&Frame::Data(text.as_bytes().to_vec()))
+        .await
+        .unwrap();
+}
+
+/// tmux clients attached to the host's server (one per live attach).
+fn attach_clients(host: &TestHost) -> usize {
+    let out = host.tmux(&["list-clients", "-F", "#{client_tty}"]);
+    String::from_utf8_lossy(&out.stdout).lines().count()
+}
+
+#[tokio::test]
+async fn attach_shows_existing_screen_and_survives_repeated_cycles() {
+    let host = TestHost::new();
+    sh_session(&host, "cyc").await;
+    let mut conn = host.conn().await;
+    conn.session_write("cyc", "sh", "echo before-$((2*3))-attach", true)
+        .await
+        .unwrap();
+    wait_output(&host, "cyc", "sh", "before-6-attach").await;
+
+    for i in 0..5 {
+        let (mut reader, mut writer) = attach(&host, "cyc", "sh").await;
+        if i == 0 {
+            // Attaching shows what is already on the screen, unprompted.
+            read_until(&mut reader, "before-6-attach").await;
+        }
+        send(&mut writer, &format!("echo cycle-$((100+{i}))\r")).await;
+        read_until(&mut reader, &format!("cycle-{}", 100 + i)).await;
+        writer.send(&Frame::Detach).await.unwrap();
+        assert_eq!(
+            read_exit(&mut reader).await.reason,
+            AttachExitReason::Detached
+        );
+    }
+    eventually("no attach clients left", || async {
+        (attach_clients(&host) == 0).then_some(())
+    })
+    .await;
+    let ws = host.conn().await.workspace_get("cyc").await.unwrap();
+    assert_eq!(ws.sessions[0].status(), SessionStatus::Running);
+}
+
+#[tokio::test]
+async fn attach_carries_utf8_and_ctrl_c() {
+    let host = TestHost::new();
+    sh_session(&host, "keys").await;
+    let (mut reader, mut writer) = attach(&host, "keys", "sh").await;
+
+    // Output: bytes the typed command doesn't contain literally (é ✓).
+    send(&mut writer, "printf 'out-\\303\\251\\342\\234\\223\\n'\r").await;
+    read_until(&mut reader, "out-é✓").await;
+    // Input: multi-byte characters typed into the session.
+    send(&mut writer, "echo 日本-$((1+1))\r").await;
+    read_until(&mut reader, "日本-2").await;
+
+    // Ctrl-C interrupts the foreground process, not the session.
+    send(&mut writer, "sleep 600\r").await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    send(&mut writer, "\x03").await;
+    send(&mut writer, "echo after-$((3*3))\r").await;
+    read_until(&mut reader, "after-9").await;
+    writer.send(&Frame::Detach).await.unwrap();
+    assert_eq!(
+        read_exit(&mut reader).await.reason,
+        AttachExitReason::Detached
+    );
+}
+
+#[tokio::test]
+async fn attach_ends_cleanly_when_the_session_restarts_or_is_deleted() {
+    let host = TestHost::new();
+    sh_session(&host, "end").await;
+
+    let (mut reader, _writer) = attach(&host, "end", "sh").await;
+    host.conn()
+        .await
+        .session_restart("end", "sh")
+        .await
+        .unwrap();
+    assert_eq!(read_exit(&mut reader).await.reason, AttachExitReason::Ended);
+
+    // The restarted session (a new execution) can be attached again.
+    let (mut reader, mut writer) = attach(&host, "end", "sh").await;
+    send(&mut writer, "echo again-$((5+5))\r").await;
+    read_until(&mut reader, "again-10").await;
+
+    host.conn()
+        .await
+        .workspace_delete("end", true)
+        .await
+        .unwrap();
+    assert_eq!(read_exit(&mut reader).await.reason, AttachExitReason::Ended);
+    eventually("no attach clients left", || async {
+        (attach_clients(&host) == 0).then_some(())
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn attach_is_disposable_across_daemon_restart() {
+    let host = TestHost::new();
+    sh_session(&host, "dr").await;
+    let exec = host
+        .conn()
+        .await
+        .workspace_get("dr")
+        .await
+        .unwrap()
+        .sessions[0]
+        .current_execution()
+        .unwrap()
+        .id
+        .clone();
+    let (mut reader, mut writer) = attach(&host, "dr", "sh").await;
+    send(&mut writer, "echo first-$((4*4))\r").await;
+    read_until(&mut reader, "first-16").await;
+
+    // The daemon goes away mid-attach: the attach ends, the session doesn't.
+    host.stop_daemon().await;
+    let end = tokio::time::timeout(Duration::from_secs(15), async {
+        loop {
+            match reader.next().await {
+                Ok(Some(Frame::Data(_))) => continue,
+                other => return other.map(|f| f.is_none()).unwrap_or(true),
+            }
+        }
+    })
+    .await
+    .expect("attach noticed the daemon going away");
+    assert!(end, "connection should close");
+
+    // A new daemon adopts the same, still running, execution (nothing was
+    // typed into it on the way out) and it can be attached again with the
+    // earlier output still on screen.
+    let ws = host.conn().await.workspace_get("dr").await.unwrap();
+    let now = ws.sessions[0].current_execution().unwrap();
+    assert_eq!((&now.id, now.state), (&exec, ExecutionState::Running));
+    let (mut reader, mut writer) = attach(&host, "dr", "sh").await;
+    read_until(&mut reader, "first-16").await;
+    send(&mut writer, "echo second-$((5*5))\r").await;
+    read_until(&mut reader, "second-25").await;
+    writer.send(&Frame::Detach).await.unwrap();
+    assert_eq!(
+        read_exit(&mut reader).await.reason,
+        AttachExitReason::Detached
+    );
+    eventually("no attach clients left", || async {
+        (attach_clients(&host) == 0).then_some(())
+    })
+    .await;
+}
+
 #[tokio::test]
 async fn daemon_restart_adopts_running_sessions_and_records_changes() {
     let host = TestHost::new();

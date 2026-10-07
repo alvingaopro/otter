@@ -29,10 +29,15 @@ record it in [`decisions.md`](decisions.md) first.
 ### 3. A Session survives control-plane disconnection.
 
 - Processes belong to the execution backend under the daemon, never to a
-  client connection; an attach is only a viewer (`attach.rs`).
+  client connection; an attach is only a viewer (`attach.rs`). Tearing an
+  attach down must not type anything into the session (D-017: no
+  `portable_pty` writer, whose drop sends EOF).
 - Tests: `client_disconnect_does_not_affect_session`,
-  `attach_round_trip_resize_and_detach`; manually verified by killing SSH
-  mid-attach.
+  `attach_round_trip_resize_and_detach`,
+  `attach_is_disposable_across_daemon_restart`,
+  `attach_ends_cleanly_when_the_session_restarts_or_is_deleted`,
+  `attach_shows_existing_screen_and_survives_repeated_cycles`; manually
+  verified by freezing the remote sshd mid-attach (D-017).
 
 ### 4. The control plane does not own agent process lifetime.
 

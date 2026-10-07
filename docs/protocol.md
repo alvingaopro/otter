@@ -130,7 +130,15 @@ After a successful `session.attach` response
   connection.
 - **Connection close**: if the client disappears without detaching (crash,
   network loss), the daemon tears down its side of the attach; the session is
-  unaffected. An attach is disposable; the execution is durable.
+  unaffected. If the daemon goes away, the client sees the connection close
+  without an `exit` frame; the session is unaffected and can be attached again
+  once a daemon is back. An attach is disposable; the execution is durable.
+- **Dead connections**: a client must not wait forever. `workctl attach` gives
+  up 5 s after sending `detach` without an `exit`, and SSH transports use
+  keepalives (`ServerAliveInterval=15`, `ServerAliveCountMax=3`) so a dead
+  network is noticed within about a minute even when idle.
+- **Initial screen**: attaching redraws the session's current screen (tmux
+  attach semantics); scrollback stays in the session (`session.read`).
 - **Malformed frames** (unknown kind, bad resize length, oversize) end the
   attach as if the client had disconnected.
 
