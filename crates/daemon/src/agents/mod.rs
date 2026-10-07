@@ -1,64 +1,98 @@
-//! Agent integrations (design §9, §22, §23).
+//! Agent integrations (design §9, §22, §23; docs/architecture-lessons.md §7–§11).
 //!
-//! An agent is a session whose process is a coding agent. Workd launches and
-//! resumes it, and observes it through *structured* output the agent writes
-//! anyway (for Codex: its rollout transcript) — never by editing the agent's
-//! configuration. Codex is the only provider in V1; the trait keeps it an
-//! integration rather than a core concept.
+//! An agent is one kind of session: its process is a coding agent. Generic
+//! code (sessions, reconciliation, attention) only ever asks a provider three
+//! things — how to start the agent, what state it is in, and whether the host
+//! can run it — and stores what the provider returns without interpreting it
+//! (`AgentInfo::provider_session_id`, `AgentInfo::provider_state`).
+//!
+//! Everything about *how* a particular agent is launched, resumed and observed
+//! (for Codex: CLI flags, rollout files, transcript parsing, the quiet-turn
+//! heuristic) lives in that provider's module. Codex is the only provider in
+//! V1; adding another means adding a module here, not changing Workspace or
+//! Session.
 
 pub mod codex;
 
 use std::collections::HashSet;
-use std::path::{Path, PathBuf};
 
 use anyhow::Result;
-use workd_core::{AgentInfo, AgentState, Timestamp};
+use async_trait::async_trait;
+use workd_core::{AgentCapability, AgentInfo, AgentState, Timestamp};
 
 use crate::env::EnvMap;
 
-/// What a provider needs to find the transcript of an agent it launched.
-pub struct DiscoverContext<'a> {
-    /// The agent's working directory.
+/// Provider used when a session doesn't name one.
+pub const DEFAULT_PROVIDER: &str = "codex";
+
+static PROVIDERS: [&dyn AgentProvider; 1] = [&codex::Codex];
+
+/// Every provider this build supports.
+pub fn all() -> &'static [&'static dyn AgentProvider] {
+    &PROVIDERS
+}
+
+pub fn provider(id: &str) -> Option<&'static dyn AgentProvider> {
+    all().iter().copied().find(|p| p.id() == id)
+}
+
+pub fn ids() -> Vec<&'static str> {
+    all().iter().map(|p| p.id()).collect()
+}
+
+/// What each provider can do on this host.
+pub async fn detect_all(env: &EnvMap) -> Vec<AgentCapability> {
+    let mut out = Vec::new();
+    for p in all() {
+        out.push(p.detect(env).await);
+    }
+    out
+}
+
+/// What a provider can see when observing one agent session.
+pub struct ObserveContext<'a> {
+    /// The session's working directory (on this host).
     pub cwd: &'a str,
     /// When the current execution started.
     pub started_at: Timestamp,
     /// The agent's process, if known.
     pub pid: Option<u32>,
+    /// When the session last produced terminal output, if known.
+    pub last_output: Option<Timestamp>,
+    pub now: Timestamp,
+    /// The environment the agent was launched with (login + workspace env).
     pub env: &'a EnvMap,
-    /// Transcripts already bound to other sessions.
+    /// `provider_session_id`s already bound to other sessions.
     pub claimed: &'a HashSet<String>,
 }
 
-/// New information from a transcript.
+/// What changed since the last observation. `None` fields are unchanged.
 #[derive(Debug, Default)]
-pub struct TranscriptUpdate {
-    /// Offset to continue reading from.
-    pub offset: u64,
-    /// Latest state implied by the new records, if any.
+pub struct Observation {
     pub state: Option<AgentState>,
-    /// Latest agent message, if any.
+    pub provider_session_id: Option<String>,
+    pub provider_state: Option<serde_json::Value>,
+    /// Excerpt of the agent's latest message.
     pub last_message: Option<String>,
 }
 
+#[async_trait]
 pub trait AgentProvider: Send + Sync {
-    /// Command line that starts the agent, resuming `info.resume_id` if set.
-    fn argv(&self, info: &AgentInfo, env: &EnvMap) -> Result<Vec<String>>;
+    /// Stable id, as used in `SessionSpec::provider` (e.g. `codex`).
+    fn id(&self) -> &'static str;
 
-    /// Find the conversation id and transcript of a running agent.
-    fn discover(&self, ctx: &DiscoverContext<'_>) -> Option<(String, PathBuf)>;
+    /// Whether (and which version of) the agent is runnable on this host.
+    async fn detect(&self, env: &EnvMap) -> AgentCapability;
 
-    /// Read transcript records written since `offset`.
-    fn read_transcript(&self, path: &Path, offset: u64) -> Result<TranscriptUpdate>;
+    /// Command line that starts the agent — resuming
+    /// `info.provider_session_id` if set, else starting fresh (with
+    /// `info.prompt`, if any).
+    fn launch_argv(&self, info: &AgentInfo, env: &EnvMap) -> Result<Vec<String>>;
+
+    /// Observe a running agent. Called periodically; must be cheap and must
+    /// not block on the agent.
+    fn observe(&self, ctx: &ObserveContext<'_>, info: &AgentInfo) -> Observation;
 }
-
-pub fn provider(name: &str) -> Option<&'static dyn AgentProvider> {
-    match name {
-        "codex" => Some(&codex::Codex),
-        _ => None,
-    }
-}
-
-pub const PROVIDERS: &[&str] = &["codex"];
 
 /// A single-line excerpt suitable for a status line.
 pub fn excerpt(text: &str, max: usize) -> String {

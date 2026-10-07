@@ -232,8 +232,8 @@ and the rollout transcript.
   don't appear in `codex agents` / remote control.
 - The agent binary is the session's process (no shell in between).
 - **Identity:** the rollout file `$CODEX_HOME/sessions/YYYY/MM/DD/rollout-*.jsonl`;
-  its first record (`session_meta`) has the conversation id (= resume id) and
-  cwd. Codex creates it lazily (after the first interaction), so it's
+  its first record (`session_meta`) has the conversation id (stored as the
+  session's opaque `provider_session_id`, used to resume) and cwd. Codex creates it lazily (after the first interaction), so it's
   discovered after launch: from the process's open files (Linux `/proc`), else
   by cwd + start time, skipping conversations bound to other sessions.
 - **State** from transcript records: `task_started` → working;
@@ -278,3 +278,28 @@ binary. The message excerpt is stored in `state.json` only, never in
   `workctl ls` groups by it; `workctl ls --watch` redraws on every event.
 - `workctl new` starts Codex + a shell by default (design §27); `--no-agent`,
   `--no-shell` opt out.
+
+## D-015 — Hardening pass: agent provider boundary (2026-10-07)
+
+Audit of the code against [`architecture-lessons.md`](architecture-lessons.md).
+Most of it already held (Git optional, sessions ≠ processes, tmux behind the
+backend, one daemon, SSH as transport, no local-filesystem assumptions in the
+control plane). Changed only what leaked:
+
+- **Observation moved behind the provider.** `AgentProvider` is now `id`,
+  `detect`, `launch_argv`, `observe`. Generic reconciliation passes an
+  `ObserveContext` (cwd, start time, pid, last terminal output, env) and applies
+  the returned generic `Observation`; transcript discovery, reading and the
+  quiet-turn heuristic (`WORKD_AGENT_QUIET_SECS`) now live in `agents/codex.rs`.
+- **Provider data is opaque.** `AgentInfo.transcript` / `transcript_offset`
+  became `provider_state` (JSON only the provider reads); `resume_id` became
+  `provider_session_id` (older `state.json` still loads via an alias).
+- **Hosts advertise agent providers.** `HostStatus.agents` lists each
+  supported provider with availability, version and `can_resume`, from the
+  provider registry, instead of `codex` sitting in the tool list.
+- The default provider is one constant (`agents::DEFAULT_PROVIDER`).
+- Docs: [`invariants.md`](invariants.md) (each invariant → where enforced and
+  tested) and `AGENTS.md` as a router.
+
+Deliberately not done (architecture-lessons §24): other providers, plugin
+mechanisms, orchestration. Next: dogfooding.

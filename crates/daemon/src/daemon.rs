@@ -115,12 +115,12 @@ impl Daemon {
 
     pub async fn host_status(&self) -> HostStatus {
         let env = self.environments.base();
-        let (git, tmux, nix, direnv, codex) = tokio::join!(
+        let (git, tmux, nix, direnv, agents) = tokio::join!(
             detect("git", &["--version"], env),
             detect("tmux", &["-V"], env),
             detect("nix", &["--version"], env),
             detect("direnv", &["version"], env),
-            detect("codex", &["--version"], env),
+            crate::agents::detect_all(env),
         );
         HostStatus {
             hostname: hostname(),
@@ -133,7 +133,8 @@ impl Daemon {
             workd_home: self.paths.home.to_string_lossy().into_owned(),
             shell: self.shell.clone(),
             environment_source: self.env_source.clone(),
-            capabilities: vec![git, tmux, nix, direnv, codex],
+            capabilities: vec![git, tmux, nix, direnv],
+            agents,
         }
     }
 }

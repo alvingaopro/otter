@@ -147,8 +147,8 @@ pub fn workspace_details(host: &str, ws: &Workspace) {
             println!("{}: {e}", s.name);
         }
         if let Some(agent) = &s.agent {
-            if let Some(id) = &agent.resume_id {
-                println!("{}: {} conversation {id}", s.name, agent.provider);
+            if let Some(id) = &agent.provider_session_id {
+                println!("{}: {} session {id}", s.name, agent.provider);
             }
             if let Some(m) = &agent.last_message {
                 println!("{}: “{m}”", s.name);
@@ -199,6 +199,18 @@ pub fn host_status(host: &HostEntry, result: Result<HostStatus>) {
                     println!("    {:<7} {v}", c.name);
                 }
             }
+            let agents: Vec<String> = s
+                .agents
+                .iter()
+                .map(|a| {
+                    let mark = if a.available { "✓" } else { "✗" };
+                    match &a.version {
+                        Some(v) if a.available => format!("{} {mark} ({v})", a.provider),
+                        _ => format!("{} {mark}", a.provider),
+                    }
+                })
+                .collect();
+            println!("  agents:      {}", agents.join("  "));
         }
     }
 }

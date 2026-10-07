@@ -906,6 +906,7 @@ async fn direnv_environment_is_resolved_and_inherited() {
 /// A stand-in for the Codex TUI: records its arguments, writes a rollout
 /// transcript like Codex does (holding it open), and plays a scripted turn.
 const FAKE_CODEX: &str = r#"#!/bin/sh
+if [ "$1" = --version ]; then echo "codex-cli 0.0.0-fake"; exit 0; fi
 echo "$*" >> "$FAKE_CODEX_LOG"
 now() { date -u +%Y-%m-%dT%H:%M:%S.000Z; }
 if [ "$2" = resume ]; then
@@ -994,6 +995,15 @@ async fn codex_session_is_observed_resumed_and_needs_you_when_done() {
     use workd_core::{Activity, AgentState, AttentionKind};
     let fake = fake_codex_host("normal").await;
     let host = &fake.host;
+    // The host advertises which agent providers it can run.
+    let status = host.conn().await.host_status().await.unwrap();
+    let codex = status
+        .agents
+        .iter()
+        .find(|a| a.provider == "codex")
+        .unwrap();
+    assert!(codex.available && codex.can_resume, "{:?}", status.agents);
+    assert_eq!(codex.version.as_deref(), Some("codex-cli 0.0.0-fake"));
     let ws = create(
         host,
         "agent",
@@ -1005,7 +1015,10 @@ async fn codex_session_is_observed_resumed_and_needs_you_when_done() {
     let ws = wait_agent(host, "agent", "codex", AgentState::WaitingForInput).await;
     let codex = ws.session("codex").unwrap();
     let info = codex.agent.as_ref().unwrap();
-    let conversation = info.resume_id.clone().expect("conversation discovered");
+    let conversation = info
+        .provider_session_id
+        .clone()
+        .expect("conversation discovered");
     assert_eq!(info.last_message.as_deref(), Some("All tests pass."));
     assert_eq!(ws.activity(), Activity::NeedsYou);
     assert_eq!(ws.attention.len(), 1);
@@ -1040,10 +1053,20 @@ async fn codex_session_is_observed_resumed_and_needs_you_when_done() {
         .await
         .unwrap();
     assert_eq!(
-        restarted.agent.as_ref().unwrap().resume_id.as_deref(),
+        restarted
+            .agent
+            .as_ref()
+            .unwrap()
+            .provider_session_id
+            .as_deref(),
         Some(conversation.as_str())
     );
-    wait_agent(host, "agent", "codex", AgentState::Working).await;
+    // Restart resets the agent to `starting`, so this is the resumed turn
+    // finishing. (The brief `working` in between can fall between two polls.)
+    assert_eq!(
+        restarted.agent.as_ref().unwrap().state,
+        AgentState::Starting
+    );
     let ws = wait_agent(host, "agent", "codex", AgentState::WaitingForInput).await;
     assert_eq!(ws.attention.len(), 1);
     let args = std::fs::read_to_string(&fake.log).unwrap();
@@ -1144,6 +1167,12 @@ async fn missing_agent_binary_is_a_visible_failure() {
         ("PATH", "/usr/bin:/bin".into()),
     ])
     .await;
+    let status = host.conn().await.host_status().await.unwrap();
+    assert!(
+        status.agents.iter().all(|a| !a.available),
+        "{:?}",
+        status.agents
+    );
     let ws = create(&host, "no-codex", Some(vec![SessionSpec::agent("codex")])).await;
     let s = &ws.sessions[0];
     assert_eq!(s.status(), SessionStatus::Failed);

@@ -419,17 +419,16 @@ pub enum ExecutionState {
 /// resume and observe it.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct AgentInfo {
-    /// e.g. `codex`.
+    /// Agent provider id, e.g. `codex`.
     pub provider: String,
-    /// Provider's id for resuming the conversation (Codex: session UUID).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub resume_id: Option<String>,
-    /// Provider-owned transcript Workd observes (Codex: rollout file).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub transcript: Option<String>,
-    /// How far the transcript has been read.
-    #[serde(default)]
-    pub transcript_offset: u64,
+    /// The provider's identifier for the agent's own session/conversation,
+    /// used to resume it. Opaque outside the provider.
+    #[serde(default, alias = "resume_id", skip_serializing_if = "Option::is_none")]
+    pub provider_session_id: Option<String>,
+    /// Whatever the provider needs to keep observing the agent (e.g. where it
+    /// has read up to). Opaque outside the provider.
+    #[serde(default, skip_serializing_if = "serde_json::Value::is_null")]
+    pub provider_state: serde_json::Value,
     pub state: AgentState,
     pub state_since: Timestamp,
     /// Excerpt of the agent's latest message.
@@ -606,7 +605,23 @@ pub struct HostStatus {
     pub shell: String,
     /// How the environment for launched processes was obtained.
     pub environment_source: String,
+    /// Tools the host has (git, tmux, nix, direnv, …).
     pub capabilities: Vec<Capability>,
+    /// Agent providers this workd supports, and whether the host can run them.
+    #[serde(default)]
+    pub agents: Vec<AgentCapability>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AgentCapability {
+    /// Provider id, as used in [`SessionSpec::provider`].
+    pub provider: String,
+    /// Installed and runnable on this host.
+    pub available: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
+    /// Whether sessions can resume the agent's previous conversation.
+    pub can_resume: bool,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -658,6 +673,17 @@ mod tests {
         assert_eq!(s.status(), SessionStatus::Completed);
         s.launch_error = Some("tmux missing".into());
         assert_eq!(s.status(), SessionStatus::Failed);
+    }
+
+    #[test]
+    fn agent_info_from_older_state_still_loads() {
+        let json = r#"{"provider":"codex","resume_id":"abc","transcript":"/x",
+            "transcript_offset":12,"state":"waiting_for_input",
+            "state_since":"2026-10-07T00:00:00Z"}"#;
+        let info: AgentInfo = serde_json::from_str(json).unwrap();
+        assert_eq!(info.provider_session_id.as_deref(), Some("abc"));
+        assert!(info.provider_state.is_null());
+        assert_eq!(info.state, AgentState::WaitingForInput);
     }
 
     #[test]

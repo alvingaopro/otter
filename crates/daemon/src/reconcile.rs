@@ -1,6 +1,6 @@
 //! Reconciliation: bring recorded state in line with what is actually
 //! happening — process exits (from the execution backend) and agent progress
-//! (from agent transcripts) — and raise attention for what changed.
+//! (from agent providers) — and raise attention for what changed.
 
 use std::collections::{HashMap, HashSet};
 
@@ -8,16 +8,11 @@ use chrono::{DateTime, Utc};
 use workd_core::{AgentState, ExecutionState, Workspace};
 use workd_protocol::Event;
 
-use crate::agents::{self, DiscoverContext};
+use crate::agents::{self, ObserveContext};
 use crate::attention;
 use crate::backend::ProcessState;
 use crate::daemon::Daemon;
 use crate::env::EnvMap;
-
-/// An agent mid-turn whose terminal and transcript have both been quiet this
-/// long is considered blocked on the developer (approval or question). A
-/// heuristic: Codex doesn't record approval requests in its transcript.
-const DEFAULT_QUIET_SECS: i64 = 8;
 
 impl Daemon {
     /// Runs at startup (recovering from a daemon restart) and then
@@ -31,23 +26,26 @@ impl Daemon {
             .workspaces
             .iter()
             .flat_map(|w| &w.sessions)
-            .filter_map(|s| s.agent.as_ref()?.resume_id.clone())
+            .filter_map(|s| s.agent.as_ref()?.provider_session_id.clone())
             .collect();
 
         let mut events = Vec::new();
         let mut changed = false;
         for ws in &mut store.state.workspaces {
             changed |= reconcile_executions(ws, &observed, now, &mut events);
+            if ws.sessions.iter().all(|s| s.agent.is_none()) {
+                continue;
+            }
+            // Providers see the environment their agents run in.
+            let env = self
+                .workspace_env
+                .lock()
+                .unwrap()
+                .get(&ws.id)
+                .cloned()
+                .unwrap_or_else(|| self.environments.base().clone());
             for i in 0..ws.sessions.len() {
-                changed |= observe_agent(
-                    ws,
-                    i,
-                    &observed,
-                    now,
-                    &claimed,
-                    self.environments.base(),
-                    &mut events,
-                );
+                changed |= observe_agent(ws, i, &observed, now, &claimed, &env, &mut events);
             }
         }
         if changed || !events.is_empty() {
@@ -117,7 +115,8 @@ fn reconcile_executions(
     changed
 }
 
-/// Advance one agent session's state from its process and transcript.
+/// Advance one agent session's state. How the agent is observed is entirely
+/// up to its provider; this only applies the result and raises attention.
 fn observe_agent(
     ws: &mut Workspace,
     i: usize,
@@ -128,87 +127,51 @@ fn observe_agent(
     events: &mut Vec<Event>,
 ) -> bool {
     let session = &ws.sessions[i];
-    let (Some(info), Some(exec)) = (session.agent.clone(), session.current_execution()) else {
+    let (Some(mut info), Some(exec)) = (session.agent.clone(), session.current_execution()) else {
         return false;
     };
-    let mut info = info;
     let mut changed = false;
-    let mut next = info.state;
-    let mut quiet_secs = None;
-
-    if !exec.is_running() {
-        next = AgentState::Exited;
+    let next = if !exec.is_running() {
+        AgentState::Exited
     } else if let Some(provider) = agents::provider(&info.provider) {
-        // Bind the conversation once Codex has created it.
-        if info.transcript.is_none() {
-            let ctx = DiscoverContext {
-                cwd: &ws.root,
-                started_at: exec.started_at,
-                pid: exec.pid,
-                env,
-                claimed,
-            };
-            if let Some((id, path)) = provider.discover(&ctx) {
-                tracing::info!(session = %session.name, conversation = %id, "agent conversation found");
-                info.resume_id = Some(id);
-                info.transcript = Some(path.to_string_lossy().into_owned());
-                info.transcript_offset = 0;
-                info.prompt = None;
-                changed = true;
-            }
-        }
-
-        let mut grew = false;
-        let mut transcript_mtime = None;
-        if let Some(path) = &info.transcript {
-            match provider.read_transcript(path.as_ref(), info.transcript_offset) {
-                Ok(update) => {
-                    if update.offset != info.transcript_offset {
-                        info.transcript_offset = update.offset;
-                        grew = true;
-                        changed = true;
-                    }
-                    if let Some(m) = update.last_message {
-                        info.last_message = Some(m);
-                    }
-                    if let Some(state) = update.state {
-                        next = state;
-                    }
-                }
-                Err(e) => tracing::debug!("reading agent transcript: {e:#}"),
-            }
-            transcript_mtime = std::fs::metadata(path)
-                .and_then(|m| m.modified())
-                .ok()
-                .map(|t| DateTime::<Utc>::from(t).timestamp());
-        }
-
-        // Approval prompts and questions aren't in the transcript: infer them
-        // from a turn that has gone completely quiet.
         let last_output = match observed.get(&exec.backend_ref) {
-            Some(ProcessState::Alive { last_output, .. }) => *last_output,
+            Some(ProcessState::Alive { last_output, .. }) => {
+                last_output.and_then(|t| DateTime::from_timestamp(t, 0))
+            }
             _ => None,
         };
-        let last_activity = last_output.max(transcript_mtime);
-        quiet_secs = last_activity.map(|t| now.timestamp() - t);
-        if !grew {
-            match (next, quiet_secs) {
-                (AgentState::Working, Some(q)) if q >= quiet_threshold() => {
-                    next = AgentState::Blocked;
-                }
-                (AgentState::Blocked, Some(q)) if q < 2 => next = AgentState::Working,
-                // Launched and settled without starting a conversation: it's
-                // waiting for its first prompt (or a startup dialog).
-                (AgentState::Starting, Some(q)) if q >= quiet_threshold() => {
-                    next = AgentState::Idle;
-                }
-                _ => {}
-            }
+        let ctx = ObserveContext {
+            cwd: &ws.root,
+            started_at: exec.started_at,
+            pid: exec.pid,
+            last_output,
+            now,
+            env,
+            claimed,
+        };
+        let obs = provider.observe(&ctx, &info);
+        if let Some(id) = obs.provider_session_id {
+            tracing::info!(session = %session.name, "agent session identified");
+            info.provider_session_id = Some(id);
+            // The conversation exists now; restarts resume it instead.
+            info.prompt = None;
+            changed = true;
         }
-    }
+        if let Some(state) = obs.provider_state {
+            info.provider_state = state;
+            changed = true;
+        }
+        if let Some(message) = obs.last_message {
+            changed |= info.last_message.as_ref() != Some(&message);
+            info.last_message = Some(message);
+        }
+        obs.state.unwrap_or(info.state)
+    } else {
+        info.state
+    };
 
     if next != info.state {
-        tracing::info!(session = %session.name, from = info.state.as_str(), to = next.as_str(), quiet = ?quiet_secs, "agent state");
+        tracing::info!(session = %session.name, from = info.state.as_str(), to = next.as_str(), "agent state");
         info.state = next;
         info.state_since = now;
         changed = true;
@@ -231,11 +194,4 @@ fn observe_agent(
         ws.sessions[i].agent = Some(info);
     }
     changed
-}
-
-fn quiet_threshold() -> i64 {
-    std::env::var("WORKD_AGENT_QUIET_SECS")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(DEFAULT_QUIET_SECS)
 }

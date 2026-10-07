@@ -308,7 +308,7 @@ impl Daemon {
                 .ok_or_else(|| anyhow::anyhow!("unknown agent provider `{}`", info.provider))?;
             // Run the agent binary directly so the session's process *is* the
             // agent (its open files and exit status are the agent's).
-            return provider.argv(info, env);
+            return provider.launch_argv(info, env);
         }
         Ok(match &session.command {
             // An interactive login shell, like `ssh host`.
@@ -359,17 +359,22 @@ impl Daemon {
             }
             None => {
                 let base = match spec.kind {
-                    SessionKind::Agent => spec.provider.clone().unwrap_or_else(|| "codex".into()),
+                    SessionKind::Agent => spec
+                        .provider
+                        .clone()
+                        .unwrap_or_else(|| agents::DEFAULT_PROVIDER.into()),
                     _ => default_session_name(spec.command.as_deref()),
                 };
                 unique_session_name(ws, &base)
             }
         };
         let agent = (spec.kind == SessionKind::Agent).then(|| AgentInfo {
-            provider: spec.provider.clone().unwrap_or_else(|| "codex".into()),
-            resume_id: None,
-            transcript: None,
-            transcript_offset: 0,
+            provider: spec
+                .provider
+                .clone()
+                .unwrap_or_else(|| agents::DEFAULT_PROVIDER.into()),
+            provider_session_id: None,
+            provider_state: serde_json::Value::Null,
             state: AgentState::Starting,
             state_since: Utc::now(),
             last_message: None,
@@ -404,11 +409,11 @@ impl Daemon {
 pub(crate) fn validate_spec(spec: &SessionSpec) -> RpcResult<()> {
     match spec.kind {
         SessionKind::Agent => {
-            let provider = spec.provider.as_deref().unwrap_or("codex");
+            let provider = spec.provider.as_deref().unwrap_or(agents::DEFAULT_PROVIDER);
             if agents::provider(provider).is_none() {
                 return Err(RpcError::unsupported(format!(
                     "unknown agent `{provider}` (supported: {})",
-                    agents::PROVIDERS.join(", ")
+                    agents::ids().join(", ")
                 )));
             }
             if spec.command.is_some() {
