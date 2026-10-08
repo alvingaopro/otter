@@ -52,3 +52,42 @@ export function Menu({ label, items }: { label: string; items: MenuItem[] }) {
     </div>
   );
 }
+
+/** The same list as a right-click menu at the pointer. */
+export function ContextMenu({ x, y, items, onClose }: { x: number; y: number; items: MenuItem[]; onClose: () => void }) {
+  const box = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const close = (e: MouseEvent) => !box.current?.contains(e.target as Node) && onClose();
+    const key = (e: KeyboardEvent) => e.key === "Escape" && onClose();
+    window.addEventListener("mousedown", close);
+    window.addEventListener("keydown", key);
+    window.addEventListener("blur", onClose);
+    return () => {
+      window.removeEventListener("mousedown", close);
+      window.removeEventListener("keydown", key);
+      window.removeEventListener("blur", onClose);
+    };
+  }, [onClose]);
+  // Keep it on screen near the window's right and bottom edges.
+  const left = Math.min(x, window.innerWidth - 200);
+  const top = Math.min(y, window.innerHeight - 40 * items.length - 16);
+  return (
+    <div className="menu-list context-menu" role="menu" ref={box} style={{ left, top }}>
+      {items
+        .filter((i) => !i.hidden)
+        .map((item) => (
+          <button
+            key={item.label}
+            role="menuitem"
+            className={item.danger ? "menu-item danger" : "menu-item"}
+            onClick={() => {
+              onClose();
+              item.onSelect();
+            }}
+          >
+            {item.label}
+          </button>
+        ))}
+    </div>
+  );
+}

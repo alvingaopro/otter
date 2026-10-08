@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { Glyph } from "./Glyph";
 import { Dialog } from "./Dialog";
-import { Menu } from "./Menu";
+import { Menu, type MenuItem } from "./Menu";
 import { NewSessionDialog } from "./NewSessionDialog";
 import { FilesPanel } from "./FilesPanel";
 import { TimelinePanel } from "./TimelinePanel";
@@ -19,11 +19,13 @@ interface Props {
   theme: "light" | "dark";
   /** This app's version: a host on another otterd version is offered an update. */
   appVersion?: string;
+  /** Pin, unpin and move items for the workspace menu. */
+  pinItems: MenuItem[];
 }
 
 type Open = "brief" | "new-session" | "archive-workspace" | "delete-workspace" | "delete-session" | null;
 
-export function WorkspacePane({ placed, session, onSession, now, theme, appVersion }: Props) {
+export function WorkspacePane({ placed, session, onSession, now, theme, appVersion, pinItems }: Props) {
   const { host, ws } = placed;
   const current = ws.sessions.find((s) => s.id === session) ?? ws.sessions[0];
   const [ending, setEnding] = useState<Ending | null>(null);
@@ -102,8 +104,47 @@ export function WorkspacePane({ placed, session, onSession, now, theme, appVersi
   const restart = () => current && act("session_restart", { host: host.name, workspace: ws.id, session: current.id });
 
   return (
-    <main className="pane">
-      <div className="pane-head">
+    <main className="pane ws-pane">
+      <div className="pane-head" data-tauri-drag-region>
+        <h1 data-tauri-drag-region>{ws.name}</h1>
+        <span className="head-sep" aria-hidden="true" />
+        <div className="chips" data-tauri-drag-region>
+          <span className="chip mono">
+            <span className={`host-dot ${host.status}`} />
+            {host.name}
+          </span>
+          {ws.sourceKind === "git" && <span className="chip mono">{ws.source}</span>}
+          {ws.sourceKind === "directory" && <span className="chip">directory</span>}
+          {ws.sourceKind === "empty" && <span className="chip">scratch</span>}
+          <span className="root mono">{ws.root}</span>
+        </div>
+        {brief.text ? (
+          <button className="brief-line" onClick={() => setOpen("brief")} title={`${brief.text}\n\nEdit the brief`}>
+            <span className="brief-text">{brief.text}</span>
+            {brief.more > 0 && <span className="brief-more">+{brief.more} more</span>}
+          </button>
+        ) : (
+          <button className="link-btn brief-add" onClick={() => setOpen("brief")}>
+            Add a goal
+          </button>
+        )}
+        <span className="spacer" data-tauri-drag-region />
+        <button
+          className={side === "timeline" ? "btn outline small-btn files-toggle on" : "btn outline small-btn files-toggle"}
+          aria-pressed={side === "timeline"}
+          onClick={() => toggle("timeline")}
+          title="What happened in this workspace"
+        >
+          Timeline
+        </button>
+        <button
+          className={side === "files" ? "btn outline small-btn files-toggle on" : "btn outline small-btn files-toggle"}
+          aria-pressed={side === "files"}
+          onClick={() => toggle("files")}
+          title="Browse, download and upload files"
+        >
+          Files
+        </button>
         <Menu
           label="Workspace actions"
           items={[
@@ -118,30 +159,11 @@ export function WorkspacePane({ placed, session, onSession, now, theme, appVersi
               onSelect: () => setOpen("archive-workspace"),
             },
             { label: "Unarchive workspace", hidden: !archived, onSelect: () => void unarchive() },
+            ...pinItems,
             { label: brief.text ? "Edit brief…" : "Add a goal…", onSelect: () => setOpen("brief") },
             { label: "Delete workspace…", danger: true, onSelect: () => setOpen("delete-workspace") },
           ]}
         />
-        <div className="pane-title">
-          <h1>{ws.name}</h1>
-          <div className="chips">
-            <span className="chip mono">{host.name}</span>
-            {ws.sourceKind === "git" && <span className="chip mono">{ws.source}</span>}
-            {ws.sourceKind === "directory" && <span className="chip">directory</span>}
-            {ws.sourceKind === "empty" && <span className="chip">scratch</span>}
-            <span className="root mono">{ws.root}</span>
-          </div>
-          {brief.text ? (
-            <button className="brief-line" onClick={() => setOpen("brief")} title={`${brief.text}\n\nEdit the brief`}>
-              <span className="brief-text">{brief.text}</span>
-              {brief.more > 0 && <span className="brief-more">+{brief.more} more</span>}
-            </button>
-          ) : (
-            <button className="link-btn brief-add" onClick={() => setOpen("brief")}>
-              Add a goal
-            </button>
-          )}
-        </div>
       </div>
 
       {host.status === "connected" && host.version && appVersion && host.version !== appVersion && (
@@ -173,7 +195,7 @@ export function WorkspacePane({ placed, session, onSession, now, theme, appVersi
             <button role="tab" aria-selected={s.id === current?.id} className="tab-main" onClick={() => onSession(s.id)}>
               <Glyph kind={sessionGlyph(s)} size={10} />
               <span className="tab-name">{s.name}</span>
-              <span className="tab-kind">{kindLabel(s)}</span>
+              {s.agent && <span className="tab-kind">{kindLabel(s)}</span>}
             </button>
             <button
               className="tab-close"
@@ -198,22 +220,7 @@ export function WorkspacePane({ placed, session, onSession, now, theme, appVersi
           </button>
         )}
         <span className="spacer" />
-        <button
-          className={side === "timeline" ? "btn outline small-btn files-toggle on" : "btn outline small-btn files-toggle"}
-          aria-pressed={side === "timeline"}
-          onClick={() => toggle("timeline")}
-          title="What happened in this workspace"
-        >
-          Timeline
-        </button>
-        <button
-          className={side === "files" ? "btn outline small-btn files-toggle on" : "btn outline small-btn files-toggle"}
-          aria-pressed={side === "files"}
-          onClick={() => toggle("files")}
-          title="Browse, download and upload files"
-        >
-          Files
-        </button>
+        {current && !current.agent && <span className="tabs-kind">{current.kind}</span>}
         {current && !archived && (
           <Menu
             label={`${current.name} actions`}
