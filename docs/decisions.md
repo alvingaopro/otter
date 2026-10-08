@@ -338,7 +338,9 @@ Details: [`protocol.md`](protocol.md).
 
 Audit of `session.attach` against repeated cycles and failure modes (dogfood
 plan §6–§8), with tests for each that can run locally and a manual network
-test against a real SSH host.
+test against a real SSH host. (The SSH transport itself is now covered
+automatically over `ssh localhost`, D-034; the network-failure checks below
+remain manual.)
 
 - **Teardown typed EOF into the session (fixed).** `portable_pty`'s writer
   sends `"\n"` + `VEOF` into the PTY when dropped. If the daemon stopped
@@ -704,3 +706,29 @@ page in the Mac's browser and finish on the host.
   "Sign-in" among the host's mappings.
 - Not built: asking before opening an untrusted provider, an editable list,
   a per-host off switch.
+
+## D-034 — End-to-end tests for the CLI and the SSH transport (2026-10-08)
+
+Two gaps: the daemon's e2e tests used the client library directly, so the
+`otter` binary (argument parsing, `[host:]workspace[/session]` addressing,
+messages, exit codes) was never run end to end; and nothing went through
+`ssh <host> otterd dial`.
+
+- **`crates/cli/tests/e2e.rs`** runs the real `otter` with its own
+  `OTTER_CONFIG_DIR` against real daemons with their own homes: host add →
+  new → start → `otter ls` → stop → delete, the same workspace name on two
+  hosts (ambiguity error, then `host:` qualification), and failure paths
+  (unknown session/host, no hosts, unreachable otterd, delete without
+  `--yes`). Output is asserted by substring; stdout is a pipe, so `otter ls`
+  is uncolored.
+- **Finding `otterd`:** Cargo only exposes a package's own binaries to its
+  tests, so the test uses the `otterd` next to `otter` in the target
+  directory (built by any workspace-root `cargo test`, since the daemon's
+  tests need it) and builds it with `cargo build -p otterd` if missing. Not
+  cross-package `bindeps` (unstable). Caveat: `cargo test -p otter` alone
+  uses whatever `otterd` is already there.
+- **SSH:** the same flow with the host added as `--ssh localhost` and an
+  absolute `--otterd-path` (a non-interactive ssh's PATH has no freshly
+  built binary). Skips when `ssh -o BatchMode=yes localhost true` fails,
+  like the direnv test; CI sets up a passwordless key for `ssh localhost`
+  and sets `OTTER_E2E_REQUIRE_SSH=1`, which turns a skip into a failure.

@@ -65,6 +65,12 @@ its own tmux server. Requires `tmux` ≥ 3.2 and `git`; the direnv test skips if
 direnv is missing. Agent tests use a fake `codex` script that writes a rollout
 transcript — they never run the real Codex.
 
+`crates/cli/tests/e2e.rs` drives the real `otter` binary (its own
+`OTTER_CONFIG_DIR`) against such daemons, using the `otterd` built next to it.
+Its SSH test runs over `ssh localhost` and skips when
+`ssh -o BatchMode=yes localhost true` fails; `OTTER_E2E_REQUIRE_SSH=1` (set in
+CI) turns that skip into a failure.
+
 Manual dogfooding without touching `~/.otter` / `~/.config/otter`:
 
 ```sh
