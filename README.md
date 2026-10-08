@@ -104,9 +104,10 @@ otter ack billing                                     # mark what it asked for a
 otter host add|list|rm|default|status|install|shutdown
 otter new <name> [--host H] [--agent codex|claude] [--prompt P] [--no-agent] [--no-shell]
                  [--repo URL [--branch B] [--base REV] | --dir PATH] [--no-wait]
-otter ls [--watch]
+otter ls [--watch] [--archived]
 otter ack <ws[/session]>
 otter workspace show|prepare <ws>
+otter workspace archive|unarchive <ws>              # stop and put away, files kept
 otter workspace delete <ws> [--yes] [--force]       # --force: discard uncommitted work
 otter start <ws> [--name N] [--kind terminal|service|task] [-- command]
 otter start <ws> --agent [codex|claude] [--prompt P]

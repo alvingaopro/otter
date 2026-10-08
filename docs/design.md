@@ -728,6 +728,15 @@ CLEANED
 
 Archiving and deleting should be distinct operations.
 
+Archiving (`workspace.archive`, D-036) puts a ready or failed workspace away:
+its running sessions are stopped (kept, not deleted), its attention is
+resolved, and its files, Git worktree, branch and uncommitted changes stay on
+the host. An archived workspace runs nothing, raises no attention and is
+hidden from default views (`otter ls`, the app's main groups). Unarchiving
+prepares it again (files checked, environment re-resolved) back to READY;
+its sessions stay stopped until restarted, which creates new executions.
+COMPLETED and CLEANED are not separate states (yet).
+
 Deletion may destroy: tmux sessions, processes, the workspace directory, the Git
 worktree. It should **not** automatically destroy the shared backing
 repository.

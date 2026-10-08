@@ -732,3 +732,47 @@ messages, exit codes) was never run end to end; and nothing went through
   built binary). Skips when `ssh -o BatchMode=yes localhost true` fails,
   like the direnv test; CI sets up a passwordless key for `ssh localhost`
   and sets `OTTER_E2E_REQUIRE_SSH=1`, which turns a skip into a failure.
+
+## D-036 — Archive is not delete (2026-10-08)
+
+Design §28 asks for archiving and deleting to be distinct; `Archived` existed
+as a state but nothing set it. Now `workspace.archive` / `workspace.unarchive`
+(`otter ws archive|unarchive`, Archive / Unarchive in the app's workspace
+menu). Conservative choices, since §28 only names the state:
+
+- **What archiving does:** stops running executions (marked `stopped`, like
+  `session.stop`) and releases every backend resource the workspace's
+  sessions hold; resolves all its attention; keeps everything else — the
+  sessions themselves (identity, agent conversation ids), the files, the Git
+  worktree, the branch and uncommitted changes. Nothing on disk changes, so
+  the managed-resources-only rule is trivially kept.
+- **Only from `ready` or `failed`.** Archiving a `preparing` workspace is
+  refused: preparation ends by marking it ready and starting its sessions.
+  (`prepare` now also drops its result if the workspace is no longer
+  preparing, as a backstop.) Archiving twice is a conflict.
+- **Archived is quiet:** `attention::raise` does nothing for an archived
+  workspace, `session.create` / `session.restart` / `workspace.prepare` are
+  refused ("unarchive it first"). Reconciliation still runs over it (nothing
+  is running, so it only settles stale agent states). The state is in
+  `state.json`, so it survives daemon restarts; startup neither prepares nor
+  starts anything for it.
+- **Unarchive = prepare again:** `preparing` → `ready` (files checked,
+  environment re-resolved, which a removed `.envrc` or folder can fail like
+  any preparation). Sessions that were stopped **stay stopped** until the
+  developer restarts them (a new execution; agents resume their
+  conversation) — waking every agent at once is not what "bring this back"
+  should mean. Sessions that had never started do start, as on any ready.
+- **Delete still works on an archived workspace**, with the same rules
+  (uncommitted changes protected unless forced, branch kept).
+- **The name stays taken** while archived; names are how workspaces are
+  addressed.
+- **Hidden in clients, not in the daemon.** `workspace.list` and
+  `state.snapshot` keep returning archived workspaces (changing what they
+  return would be incompatible, D-016); `otter ls` / `otter ws ls` hide them
+  unless `--archived` and mention how many are hidden; the app shows them in
+  a collapsed ARCHIVED group at the bottom of the sidebar. `Activity` gained
+  `archived` (computed by clients, not on the wire).
+- **Protocol:** two methods and two events (`WorkspaceArchived`,
+  `WorkspaceUnarchived`) — compatible additions, no version bump.
+- Not done: COMPLETED and CLEANED from §28's diagram, auto-archiving, and
+  freeing disk for archived workspaces.

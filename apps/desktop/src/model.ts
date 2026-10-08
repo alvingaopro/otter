@@ -4,7 +4,7 @@
 import type { Activity, Glyph, HostsPayload, Placed, SessionView, WorkspaceView } from "./types";
 
 export interface Group {
-  id: "needs" | "working" | "done" | "idle";
+  id: "needs" | "working" | "done" | "idle" | "archived";
   label: string;
   items: Placed[];
 }
@@ -16,9 +16,10 @@ const GROUP_OF: Record<Activity, Group["id"]> = {
   preparing: "working",
   completed: "done",
   idle: "idle",
+  archived: "archived",
 };
 
-const ORDER: Activity[] = ["needs_you", "failed", "working", "preparing", "completed", "idle"];
+const ORDER: Activity[] = ["needs_you", "failed", "working", "preparing", "completed", "idle", "archived"];
 
 export function placeAll(payload: HostsPayload): Placed[] {
   return payload.hosts.flatMap((host) =>
@@ -32,6 +33,7 @@ export function groups(placed: Placed[]): Group[] {
     { id: "working", label: "WORKING", items: [] },
     { id: "done", label: "COMPLETED", items: [] },
     { id: "idle", label: "IDLE", items: [] },
+    { id: "archived", label: "ARCHIVED", items: [] },
   ];
   const sorted = [...placed].sort((a, b) => {
     const d = ORDER.indexOf(a.ws.activity) - ORDER.indexOf(b.ws.activity);
@@ -90,6 +92,8 @@ export function headline(ws: WorkspaceView): { text: string; since?: string } {
     }
     case "preparing":
       return { text: ws.stateMessage ?? "preparing" };
+    case "archived":
+      return { text: ws.sourceKind === "git" ? ws.source : ws.root, since: ws.updatedAt };
     case "working": {
       const busy = ws.sessions.filter((s) => s.status === "running" && sessionGlyph(s) === "working");
       const first = busy.find((s) => s.agent);

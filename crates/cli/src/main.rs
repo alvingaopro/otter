@@ -546,7 +546,18 @@ async fn workspace_command(config: &Config, cmd: WorkspaceCommand, json: bool) -
             if json {
                 return output::print_json(&ws);
             }
-            report_prepared(&found.host.name, &ws)
+            report_prepared(&found.host.name, &ws)?;
+            if let Some(s) = ws
+                .sessions
+                .iter()
+                .find(|s| s.status() == otter_core::SessionStatus::Stopped)
+            {
+                println!(
+                    "(sessions stay stopped: `otter session restart {}/{}` to continue)",
+                    ws.name, s.name
+                );
+            }
+            Ok(())
         }
         WorkspaceCommand::Delete { target, yes, force } => {
             let mut found = find(config, &Target::parse(&target)?).await?;
