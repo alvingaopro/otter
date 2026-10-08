@@ -12,7 +12,7 @@ use std::sync::Arc;
 use chrono::Utc;
 use otter_core::{
     AgentState, Attention, AttentionId, AttentionKind, ExecutionState, Session, SessionId,
-    SessionKind, Workspace,
+    SessionKind, Workspace, WorkspaceState,
 };
 use otter_protocol::{AttentionResolve, Event, RpcError};
 
@@ -26,6 +26,10 @@ pub fn raise(
     kind: AttentionKind,
     summary: String,
 ) -> Vec<Event> {
+    // An archived workspace asks for nothing (D-036).
+    if ws.state == WorkspaceState::Archived {
+        return Vec::new();
+    }
     let mut events = resolve(ws, |a| a.session_id.as_ref() == session_id);
     let item = Attention {
         id: AttentionId::generate(),

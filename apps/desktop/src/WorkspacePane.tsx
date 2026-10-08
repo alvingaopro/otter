@@ -19,7 +19,7 @@ interface Props {
   appVersion?: string;
 }
 
-type Open = "new-session" | "delete-workspace" | "delete-session" | null;
+type Open = "new-session" | "archive-workspace" | "delete-workspace" | "delete-session" | null;
 
 export function WorkspacePane({ placed, session, onSession, now, theme, appVersion }: Props) {
   const { host, ws } = placed;
@@ -73,6 +73,9 @@ export function WorkspacePane({ placed, session, onSession, now, theme, appVersi
   const attention: AttentionView | undefined =
     current?.attention ?? ws.attention.find((a) => !a.sessionId);
   const failed = current && (current.status === "failed" || attention?.kind === "failure");
+  // Archived (D-036): sessions are stopped, files kept, until unarchived.
+  const archived = ws.state === "archived";
+  const unarchive = () => act("workspace_unarchive", { host: host.name, workspace: ws.id });
 
   async function act(command: string, args: Record<string, unknown>): Promise<boolean> {
     setBusy(true);
@@ -104,6 +107,12 @@ export function WorkspacePane({ placed, session, onSession, now, theme, appVersi
               hidden: ws.state !== "failed",
               onSelect: () => void act("workspace_prepare", { host: host.name, workspace: ws.id }),
             },
+            {
+              label: "Archive workspace…",
+              hidden: archived || ws.state === "preparing",
+              onSelect: () => setOpen("archive-workspace"),
+            },
+            { label: "Unarchive workspace", hidden: !archived, onSelect: () => void unarchive() },
             { label: "Delete workspace…", danger: true, onSelect: () => setOpen("delete-workspace") },
           ]}
         />
@@ -165,11 +174,13 @@ export function WorkspacePane({ placed, session, onSession, now, theme, appVersi
             </button>
           </div>
         ))}
-        <button className="icon-btn new-tab" aria-label="New session" title="New session" onClick={() => setOpen("new-session")}>
-          <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true">
-            <path d="M6 1.5v9M1.5 6h9" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-          </svg>
-        </button>
+        {!archived && (
+          <button className="icon-btn new-tab" aria-label="New session" title="New session" onClick={() => setOpen("new-session")}>
+            <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true">
+              <path d="M6 1.5v9M1.5 6h9" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+            </svg>
+          </button>
+        )}
         <span className="spacer" />
         <button
           className={files ? "btn outline small-btn files-toggle on" : "btn outline small-btn files-toggle"}
@@ -179,7 +190,7 @@ export function WorkspacePane({ placed, session, onSession, now, theme, appVersi
         >
           Files
         </button>
-        {current && (
+        {current && !archived && (
           <Menu
             label={`${current.name} actions`}
             items={[
@@ -221,7 +232,17 @@ export function WorkspacePane({ placed, session, onSession, now, theme, appVersi
 
       <div className="work-row">
         <div className="work">
-      {current ? (
+      {archived ? (
+        <div className="empty">
+          <p>
+            {ws.name} is archived: its sessions are stopped and its files are kept on {host.name}. Unarchive it to
+            pick up where you left off.
+          </p>
+          <button className="btn primary" disabled={busy} onClick={() => void unarchive()}>
+            Unarchive
+          </button>
+        </div>
+      ) : current ? (
         <>
           <Terminal
             key={`${placed.key}/${current.id}`}
@@ -298,6 +319,36 @@ export function WorkspacePane({ placed, session, onSession, now, theme, appVersi
           }}
         />
       )}
+      {open === "archive-workspace" &&
+        (() => {
+          const running = ws.sessions.filter((s) => s.status === "running").length;
+          return (
+            <Dialog title={`Archive ${ws.name}?`} onClose={() => setOpen(null)}>
+              <p className="muted">
+                {running > 0 ? `Stops its ${running} running session${running === 1 ? "" : "s"} and moves` : "Moves"} it to
+                Archived. Nothing is deleted:{" "}
+                {ws.sourceKind === "git" ? "the worktree, its branch and uncommitted changes" : "its files"} stay on{" "}
+                {host.name}. Unarchive it to continue; restarted agents resume their conversations.
+              </p>
+              {error && <div className="notice error">{error}</div>}
+              <div className="form-actions">
+                <span className="spacer" />
+                <button className="btn outline" onClick={() => setOpen(null)}>
+                  Cancel
+                </button>
+                <button
+                  className="btn primary"
+                  disabled={busy}
+                  onClick={() =>
+                    void act("workspace_archive", { host: host.name, workspace: ws.id }).then((ok) => ok && setOpen(null))
+                  }
+                >
+                  Archive workspace
+                </button>
+              </div>
+            </Dialog>
+          );
+        })()}
       {open === "delete-workspace" && (
         <Dialog title={`Delete ${ws.name}?`} onClose={() => setOpen(null)}>
           <p className="muted">

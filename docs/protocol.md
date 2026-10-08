@@ -118,6 +118,26 @@ display; it is not a sync mechanism.
 Both are additions (no protocol bump); daemons before them answer
 `invalid_request`.
 
+## Archiving workspaces
+
+- `workspace.archive {workspace}` → the workspace, now `state: "archived"`.
+  Running sessions are stopped (`SessionStopped`; exited ones keep their
+  output for `session.read`), open attention is resolved
+  (`AttentionResolved`), then `WorkspaceArchived {workspace_id, name}`. Files,
+  Git worktree and branch are kept. Only `ready` or `failed` workspaces can be
+  archived (`conflict` otherwise, also while `preparing`).
+- `workspace.unarchive {workspace}` → the workspace, `preparing` (or already
+  `ready`/`failed`): emits `WorkspaceUnarchived {workspace_id}`, then the usual
+  `WorkspaceReady` / `WorkspaceFailed`. Stopped sessions stay stopped until
+  `session.restart`. `conflict` unless archived.
+- While archived, `session.create`, `session.restart` and `workspace.prepare`
+  fail with `conflict`; `workspace.delete` works as usual.
+- `workspace.list` and `state.snapshot` still return archived workspaces;
+  clients hide them (by `state`) unless asked to show them.
+
+All additions (no protocol bump): daemons before them answer
+`invalid_request`, and `archived` was already a `WorkspaceState` value.
+
 ## Files and image paste
 
 - `fs.list {workspace, path}` → a directory (`path` relative to the

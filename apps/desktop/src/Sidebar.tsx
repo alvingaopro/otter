@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { Glyph } from "./Glyph";
 import { ago, groups, headline, workspaceGlyph } from "./model";
 import type { HostView, Placed } from "./types";
@@ -25,43 +26,62 @@ const HOST_STATE: Record<HostView["status"], string> = {
 };
 
 export function Sidebar({ placed, hosts, selected, onSelect, now, appVersion, onAddHost, onHost, hostPage }: Props) {
+  // Archived workspaces are out of the way until asked for (D-036).
+  const [showArchived, setShowArchived] = useState(false);
   return (
     <nav className="sidebar" aria-label="Workspaces">
       <div className="sidebar-groups">
-        {groups(placed).map((g) => (
-          <section key={g.id} className="group">
-            <h2 className={`group-label ${g.id}`}>
-              <span>{g.label}</span>
-              <span className="count">{g.items.length}</span>
-            </h2>
-            {g.items.map((p) => {
-              const line = headline(p.ws);
-              const stale = p.host.status !== "connected";
-              return (
-                <button
-                  key={p.key}
-                  className={`ws-row${p.key === selected && !hostPage ? " selected" : ""}${stale ? " stale" : ""}`}
-                  aria-current={p.key === selected ? "page" : undefined}
-                  onClick={() => onSelect(p.key)}
-                >
-                  <span className="ws-glyph">
-                    <Glyph kind={workspaceGlyph(p.ws)} />
-                  </span>
-                  <span className="ws-text">
-                    <span className="ws-line">
-                      <span className="ws-name">{p.ws.name}</span>
-                      <span className="ws-host">{p.host.name}</span>
+        {groups(placed).map((g) => {
+          const collapsed = g.id === "archived" && !showArchived;
+          return (
+            <section key={g.id} className="group">
+              {g.id === "archived" ? (
+                <h2 className="group-label archived">
+                  <button
+                    className="group-toggle"
+                    aria-expanded={!collapsed}
+                    onClick={() => setShowArchived((v) => !v)}
+                  >
+                    <span className="caret" aria-hidden="true">{collapsed ? "▸" : "▾"}</span>
+                    <span>{g.label}</span>
+                  </button>
+                  <span className="count">{g.items.length}</span>
+                </h2>
+              ) : (
+                <h2 className={`group-label ${g.id}`}>
+                  <span>{g.label}</span>
+                  <span className="count">{g.items.length}</span>
+                </h2>
+              )}
+              {!collapsed && g.items.map((p) => {
+                const line = headline(p.ws);
+                const stale = p.host.status !== "connected";
+                return (
+                  <button
+                    key={p.key}
+                    className={`ws-row${p.key === selected && !hostPage ? " selected" : ""}${stale ? " stale" : ""}`}
+                    aria-current={p.key === selected ? "page" : undefined}
+                    onClick={() => onSelect(p.key)}
+                  >
+                    <span className="ws-glyph">
+                      <Glyph kind={workspaceGlyph(p.ws)} />
                     </span>
-                    <span className="ws-line sub">
-                      <span className="ws-summary">{line.text}</span>
-                      <span className="ws-age">{ago(line.since, now)}</span>
+                    <span className="ws-text">
+                      <span className="ws-line">
+                        <span className="ws-name">{p.ws.name}</span>
+                        <span className="ws-host">{p.host.name}</span>
+                      </span>
+                      <span className="ws-line sub">
+                        <span className="ws-summary">{line.text}</span>
+                        <span className="ws-age">{ago(line.since, now)}</span>
+                      </span>
                     </span>
-                  </span>
-                </button>
-              );
-            })}
-          </section>
-        ))}
+                  </button>
+                );
+              })}
+            </section>
+          );
+        })}
       </div>
       <footer className="hosts">
         <h2 className="group-label hosts-label">

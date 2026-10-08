@@ -139,6 +139,10 @@ code, .mono { font-family: var(--mono); }
 .group-label.needs { color: var(--needs-text); }
 .group-label.working { color: var(--working-text); }
 .group-label .count { color: var(--faint); }
+.group-label.archived { color: var(--faint); }
+.group-toggle { display: inline-flex; align-items: center; gap: 4px; font: inherit; letter-spacing: inherit; color: inherit; }
+.group-toggle:hover { color: var(--muted); }
+.group-toggle .caret { font-size: 9px; width: 8px; }
 .ws-row { width: 100%; display: flex; gap: 10px; padding: 9px 10px; border-radius: 8px; }
 .ws-row:hover { background: var(--hover); }
 .ws-row.selected { background: var(--selected); }

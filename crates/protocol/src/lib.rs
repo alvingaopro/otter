@@ -100,6 +100,15 @@ pub enum Request {
     /// Stops all sessions and removes managed resources. Result: `null`.
     #[serde(rename = "workspace.delete")]
     WorkspaceDelete(WorkspaceDelete),
+    /// Put a workspace away: stop its sessions and resolve its attention,
+    /// keeping its files, branch and sessions. Result:
+    /// [`otter_core::Workspace`].
+    #[serde(rename = "workspace.archive")]
+    WorkspaceArchive(WorkspaceRef),
+    /// Bring an archived workspace back: prepare it again (sessions stay
+    /// stopped until restarted). Result: [`otter_core::Workspace`].
+    #[serde(rename = "workspace.unarchive")]
+    WorkspaceUnarchive(WorkspaceRef),
 
     /// Create and start a session. Result: [`otter_core::Session`].
     #[serde(rename = "session.create")]
@@ -162,6 +171,8 @@ impl Request {
             Request::WorkspaceGet(_) => "workspace.get",
             Request::WorkspacePrepare(_) => "workspace.prepare",
             Request::WorkspaceDelete(_) => "workspace.delete",
+            Request::WorkspaceArchive(_) => "workspace.archive",
+            Request::WorkspaceUnarchive(_) => "workspace.unarchive",
             Request::SessionCreate(_) => "session.create",
             Request::SessionStop(_) => "session.stop",
             Request::SessionRestart(_) => "session.restart",

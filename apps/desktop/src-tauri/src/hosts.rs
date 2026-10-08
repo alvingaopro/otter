@@ -572,6 +572,36 @@ pub async fn workspace_prepare(
         .map_err(err)
 }
 
+/// Put a workspace away: its sessions stop, its files stay (D-036).
+#[tauri::command]
+pub async fn workspace_archive(
+    app: AppHandle,
+    host: String,
+    workspace: String,
+) -> Result<(), String> {
+    rpc(&app, &host)
+        .await?
+        .workspace_archive(&workspace)
+        .await
+        .map(|_| ())
+        .map_err(err)
+}
+
+/// Bring an archived workspace back; it prepares again.
+#[tauri::command]
+pub async fn workspace_unarchive(
+    app: AppHandle,
+    host: String,
+    workspace: String,
+) -> Result<(), String> {
+    rpc(&app, &host)
+        .await?
+        .workspace_unarchive(&workspace)
+        .await
+        .map(|_| ())
+        .map_err(err)
+}
+
 /// Start a new session in a workspace. Returns its id.
 #[tauri::command]
 pub async fn session_create(

@@ -1,6 +1,6 @@
 // Mirrors src-tauri/src/view.rs (the only daemon-derived shapes the UI sees).
 
-export type Activity = "needs_you" | "failed" | "working" | "completed" | "idle" | "preparing";
+export type Activity = "needs_you" | "failed" | "working" | "completed" | "idle" | "preparing" | "archived";
 export type HostStatus = "connecting" | "connected" | "unreachable" | "incompatible" | "not_installed";
 export type SessionKind = "agent" | "terminal" | "service" | "task";
 export type SessionStatus = "pending" | "running" | "completed" | "failed" | "stopped" | "lost";

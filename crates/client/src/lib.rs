@@ -446,6 +446,16 @@ impl Connection {
             .await
     }
 
+    pub async fn workspace_archive(&mut self, workspace: &str) -> Result<Workspace> {
+        self.call(Request::WorkspaceArchive(ws_ref(workspace)))
+            .await
+    }
+
+    pub async fn workspace_unarchive(&mut self, workspace: &str) -> Result<Workspace> {
+        self.call(Request::WorkspaceUnarchive(ws_ref(workspace)))
+            .await
+    }
+
     pub async fn session_create(&mut self, p: SessionCreate) -> Result<Session> {
         self.call(Request::SessionCreate(p)).await
     }

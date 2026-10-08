@@ -14,7 +14,10 @@ use std::time::Duration;
 use anyhow::{Result, bail};
 use chrono::Utc;
 use otter_client::Connection;
-use otter_core::{Activity, AgentState, SessionKind, SessionStatus, Timestamp, Workspace};
+use otter_core::{
+    Activity, AgentState, SessionKind, SessionStatus, Timestamp, Workspace, WorkspaceSource,
+    WorkspaceState,
+};
 use tokio::task::JoinSet;
 
 use crate::config::Config;
@@ -49,7 +52,8 @@ pub async fn fetch_all(config: &Config) -> Result<Vec<HostResult>> {
     Ok(results.into_iter().map(|(_, r)| r).collect())
 }
 
-pub async fn show(config: &Config, json: bool) -> Result<()> {
+/// Archived workspaces are left out unless `archived` (D-036).
+pub async fn show(config: &Config, json: bool, archived: bool) -> Result<()> {
     let results = fetch_all(config).await?;
     if json {
         let v: Vec<_> = results
@@ -58,6 +62,7 @@ pub async fn show(config: &Config, json: bool) -> Result<()> {
                 Ok(list) => {
                     let ws: Vec<_> = list
                         .iter()
+                        .filter(|w| archived || w.state != WorkspaceState::Archived)
                         .map(|w| serde_json::json!({"activity": w.activity(), "workspace": w}))
                         .collect();
                     serde_json::json!({"host": r.host, "workspaces": ws})
@@ -67,13 +72,16 @@ pub async fn show(config: &Config, json: bool) -> Result<()> {
             .collect();
         return output::print_json(&v);
     }
-    print!("{}", render(&results, std::io::stdout().is_terminal()));
+    print!(
+        "{}",
+        render(&results, std::io::stdout().is_terminal(), archived)
+    );
     Ok(())
 }
 
 /// Redraw whenever any host reports an event (and periodically, so relative
 /// times stay fresh). Ctrl-C to quit.
-pub async fn watch(config: &Config) -> Result<()> {
+pub async fn watch(config: &Config, archived: bool) -> Result<()> {
     let (tx, mut rx) = tokio::sync::mpsc::channel::<()>(64);
     for host in &config.hosts {
         let transport = config.transport(host);
@@ -97,7 +105,7 @@ pub async fn watch(config: &Config) -> Result<()> {
     let color = std::io::stdout().is_terminal();
     loop {
         let results = fetch_all(config).await?;
-        print!("\x1b[H\x1b[2J{}", render(&results, color));
+        print!("\x1b[H\x1b[2J{}", render(&results, color, archived));
         println!(
             "\n{}",
             dim(
@@ -115,20 +123,35 @@ pub async fn watch(config: &Config) -> Result<()> {
     }
 }
 
-pub fn render(results: &[HostResult], color: bool) -> String {
+pub fn render(results: &[HostResult], color: bool, archived: bool) -> String {
     let mut rows: Vec<(Activity, &str, &Workspace)> = Vec::new();
     let mut out = String::new();
+    let mut hidden = 0;
     for r in results {
         match &r.result {
-            Ok(list) => rows.extend(list.iter().map(|w| (w.activity(), r.host.as_str(), w))),
+            Ok(list) => {
+                for w in list {
+                    let activity = w.activity();
+                    if activity == Activity::Archived && !archived {
+                        hidden += 1;
+                    } else {
+                        rows.push((activity, r.host.as_str(), w));
+                    }
+                }
+            }
             Err(e) => out.push_str(&format!(
                 "{}\n",
                 dim(&format!("{}: unreachable ({e})", r.host), color)
             )),
         }
     }
+    let hidden_note = format!("{hidden} archived (`otter ls --archived` to show)");
     if rows.is_empty() {
-        out.push_str("no workspaces (create one with `otter new <name>`)\n");
+        if hidden > 0 {
+            out.push_str(&format!("no active workspaces; {hidden_note}\n"));
+        } else {
+            out.push_str("no workspaces (create one with `otter new <name>`)\n");
+        }
         return out;
     }
     // Most urgent first; within a group, the longest-waiting first.
@@ -165,6 +188,9 @@ pub fn render(results: &[HostResult], color: bool) -> String {
             Some(t) => out.push_str(&format!("{line}  {}\n", dim(&ago(t), color))),
             None => out.push_str(&format!("{line}\n")),
         }
+    }
+    if hidden > 0 {
+        out.push_str(&format!("\n{}\n", dim(&hidden_note, color)));
     }
     out
 }
@@ -221,6 +247,14 @@ fn detail(activity: Activity, ws: &Workspace) -> (String, Option<Timestamp>) {
             (parts.join(" · "), None)
         }
         Activity::Idle => (output::sessions_summary(ws), None),
+        // Files are kept: say where its work is.
+        Activity::Archived => (
+            match &ws.source {
+                WorkspaceSource::Git(g) if !g.branch.is_empty() => format!("branch {}", g.branch),
+                _ => ws.root.clone(),
+            },
+            Some(ws.updated_at),
+        ),
     }
 }
 
@@ -230,6 +264,7 @@ fn heading(activity: Activity, color: bool) -> String {
         Activity::Working => "1;32",
         Activity::Completed => "1;34",
         Activity::Idle | Activity::Preparing => "1",
+        Activity::Archived => "2",
     };
     paint(activity.label(), code, color)
 }
@@ -242,6 +277,7 @@ fn bullet(activity: Activity, color: bool) -> String {
         Activity::Completed => paint("✓", "34", color),
         Activity::Preparing => paint("◌", "33", color),
         Activity::Idle => paint("·", "2", color),
+        Activity::Archived => paint("▪", "2", color),
     }
 }
 
@@ -273,5 +309,56 @@ pub fn ago(t: Timestamp) -> String {
         60..3600 => format!("{}m", secs / 60),
         3600..86400 => format!("{}h", secs / 3600),
         _ => format!("{}d", secs / 86400),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use otter_core::{Environment, WorkspaceState};
+
+    fn ws(name: &str, state: WorkspaceState) -> Workspace {
+        let now = Utc::now();
+        Workspace {
+            id: format!("ws_{name}").as_str().into(),
+            name: name.into(),
+            root: format!("/w/{name}"),
+            brief: Default::default(),
+            source: Default::default(),
+            environment: Environment::default(),
+            state,
+            state_message: None,
+            created_at: now,
+            updated_at: now,
+            sessions: Vec::new(),
+            attention: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn archived_workspaces_are_hidden_unless_asked_for() {
+        let results = vec![HostResult {
+            host: "dev".into(),
+            result: Ok(vec![
+                ws("live", WorkspaceState::Ready),
+                ws("old", WorkspaceState::Archived),
+            ]),
+        }];
+        let default = render(&results, false, false);
+        assert!(default.contains("live"), "{default}");
+        assert!(!default.contains("old"), "{default}");
+        assert!(!default.contains("ARCHIVED"), "{default}");
+        assert!(default.contains("1 archived"), "{default}");
+
+        let all = render(&results, false, true);
+        let (before, after) = all.split_once("ARCHIVED").expect("an ARCHIVED group");
+        assert!(before.contains("live") && after.contains("old"), "{all}");
+
+        let only_archived = vec![HostResult {
+            host: "dev".into(),
+            result: Ok(vec![ws("old", WorkspaceState::Archived)]),
+        }];
+        let out = render(&only_archived, false, false);
+        assert!(out.starts_with("no active workspaces; 1 archived"), "{out}");
     }
 }

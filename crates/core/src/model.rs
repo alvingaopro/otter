@@ -533,6 +533,8 @@ pub enum Activity {
     Completed,
     Idle,
     Preparing,
+    /// Put away: nothing runs and nothing asks for attention.
+    Archived,
 }
 
 impl Activity {
@@ -544,12 +546,16 @@ impl Activity {
             Activity::Completed => "COMPLETED",
             Activity::Idle => "IDLE",
             Activity::Preparing => "PREPARING",
+            Activity::Archived => "ARCHIVED",
         }
     }
 }
 
 impl Workspace {
     pub fn activity(&self) -> Activity {
+        if self.state == WorkspaceState::Archived {
+            return Activity::Archived;
+        }
         if self.attention.iter().any(|a| a.kind.needs_you()) {
             return Activity::NeedsYou;
         }

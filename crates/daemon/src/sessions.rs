@@ -36,6 +36,9 @@ impl Daemon {
             .workspace(&p.workspace)
             .cloned()
             .ok_or_else(|| workspace_not_found(&p.workspace))?;
+        if ws.state == WorkspaceState::Archived {
+            return Err(crate::workspaces::archived(&ws));
+        }
         let session_id = self.add_session_record(&mut store, &ws.id, p.spec)?;
         // Sessions added while the workspace is still preparing start when it
         // becomes ready.
@@ -491,7 +494,7 @@ fn held_execution(session: &Session) -> RpcResult<Execution> {
         .ok_or_else(|| not_running(session))
 }
 
-fn mark_ended(
+pub(crate) fn mark_ended(
     store: &mut Store,
     ws_id: &WorkspaceId,
     session_id: &SessionId,

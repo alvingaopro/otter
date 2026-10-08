@@ -77,6 +77,8 @@ pub fn run() {
             hosts::workspace_create,
             hosts::workspace_delete,
             hosts::workspace_prepare,
+            hosts::workspace_archive,
+            hosts::workspace_unarchive,
             hosts::session_create,
             hosts::session_stop,
             hosts::session_delete,
