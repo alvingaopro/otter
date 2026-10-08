@@ -29,14 +29,8 @@ pub struct Launched {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ProcessState {
-    Alive {
-        pid: Option<u32>,
-        /// When the process last produced terminal output (unix seconds).
-        last_output: Option<i64>,
-    },
-    Dead {
-        exit_code: Option<i32>,
-    },
+    Alive { pid: Option<u32> },
+    Dead { exit_code: Option<i32> },
 }
 
 /// How to run an interactive client attached to a process. The daemon runs it

@@ -33,6 +33,9 @@ pub struct Paths {
     pub log_dir: PathBuf,
     pub log_file: PathBuf,
     pub workspaces_dir: PathBuf,
+    /// Per-session private directories for agent providers (e.g. hook
+    /// output), `agents/<session-id>`.
+    pub agents_dir: PathBuf,
 }
 
 impl Paths {
@@ -51,6 +54,7 @@ impl Paths {
             events_file: state_dir.join("events.jsonl"),
             log_file: log_dir.join("workd.log"),
             workspaces_dir: home.join("workspaces"),
+            agents_dir: run_dir.join("agents"),
             run_dir,
             state_dir,
             log_dir,

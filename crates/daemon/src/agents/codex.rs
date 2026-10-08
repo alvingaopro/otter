@@ -12,9 +12,14 @@
 //! - **State:** `event_msg` records in the rollout — `task_started` (working),
 //!   `task_complete` (turn finished, with `last_agent_message`),
 //!   `turn_aborted`.
-//! - **Heuristic:** approval prompts and questions aren't in the rollout. A
-//!   turn whose terminal and rollout have both gone quiet is reported as
-//!   blocked; a freshly started Codex that goes quiet is idle.
+//! - **Heuristic:** approval prompts and questions aren't in the rollout,
+//!   and Codex has no other signal Otter may use without changing the user's
+//!   configuration or a "dangerous" flag (D-013). A turn whose screen and
+//!   rollout have both stood still is reported as blocked (`agents::settle`):
+//!   measured on codex-cli 0.154.0, the TUI shows a ticking `Working (Ns …)`
+//!   while it thinks or runs a command, and a static approval prompt — but
+//!   it redraws the terminal every second either way, so terminal *output*
+//!   alone never goes quiet.
 //!
 //! The rollout format belongs to a self-updating binary: everything parses
 //! defensively and ignores what it doesn't know.
@@ -29,7 +34,7 @@ use otter_core::{AgentCapability, AgentInfo, AgentState, Timestamp};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use super::{AgentProvider, Observation, ObserveContext, excerpt, settle};
+use super::{AgentProvider, LaunchContext, Observation, ObserveContext, excerpt, settle};
 use crate::env::{EnvMap, which};
 
 /// Tolerance between our launch time and Codex's own timestamps.
@@ -88,8 +93,8 @@ impl AgentProvider for Codex {
         cap
     }
 
-    fn launch_argv(&self, info: &AgentInfo, env: &EnvMap) -> Result<Vec<String>> {
-        let codex = which("codex", env)
+    fn launch_argv(&self, info: &AgentInfo, ctx: &LaunchContext<'_>) -> Result<Vec<String>> {
+        let codex = which("codex", ctx.env)
             .context("codex is not installed on this host (not on the login PATH)")?;
         let mut argv = vec![codex.to_string_lossy().into_owned(), "--no-daemon".into()];
         match (&info.provider_session_id, &info.prompt) {
@@ -153,7 +158,13 @@ impl AgentProvider for Codex {
         }
 
         // Approval prompts and questions aren't in the rollout.
-        next = settle(next, grew, ctx.last_output.max(rollout_mtime), ctx.now);
+        next = settle(
+            next,
+            grew,
+            ctx.screen.map(|s| s.since).max(rollout_mtime),
+            ctx.now,
+            info.prompt.is_some(),
+        );
 
         if next != info.state {
             obs.state = Some(next);
@@ -410,9 +421,10 @@ mod tests {
     ) -> ObserveContext<'a> {
         ObserveContext {
             cwd,
+            dir: Path::new("/nonexistent"),
             started_at,
             pid: None,
-            last_output: None,
+            screen: None,
             now: Utc::now(),
             env,
             claimed,
@@ -458,21 +470,31 @@ mod tests {
         assert!(!Codex.detect(&EnvMap::new()).await.available);
     }
 
+    fn launch<'a>(env: &'a EnvMap, dir: &'a Path) -> LaunchContext<'a> {
+        LaunchContext {
+            env,
+            dir,
+            otterd: Path::new("/usr/bin/otterd"),
+        }
+    }
+
     #[test]
     fn launch_and_resume_command_lines() {
         let dir = tempfile::tempdir().unwrap();
         let env = fake_codex_env(dir.path());
+        let l = launch(&env, dir.path());
         let argv = Codex
-            .launch_argv(&info(None, Some("fix the tests")), &env)
+            .launch_argv(&info(None, Some("fix the tests")), &l)
             .unwrap();
         assert_eq!(argv[1..], ["--no-daemon", "fix the tests"]);
         let argv = Codex
-            .launch_argv(&info(Some("0199-abc"), Some("ignored")), &env)
+            .launch_argv(&info(Some("0199-abc"), Some("ignored")), &l)
             .unwrap();
         assert_eq!(argv[1..], ["--no-daemon", "resume", "0199-abc"]);
+        let empty = EnvMap::new();
         assert!(
             Codex
-                .launch_argv(&info(None, None), &EnvMap::new())
+                .launch_argv(&info(None, None), &launch(&empty, dir.path()))
                 .is_err()
         );
     }
@@ -557,18 +579,35 @@ mod tests {
         assert!(obs.state.is_none() && obs.provider_state.is_none());
     }
 
+    fn still(since: Timestamp) -> super::super::Screen {
+        super::super::Screen {
+            since,
+            changed: true,
+        }
+    }
+
     #[test]
-    fn quiet_turn_is_blocked_and_quiet_start_is_idle() {
+    fn still_turn_is_blocked_and_still_start_is_idle_or_a_dialog() {
         let dir = tempfile::tempdir().unwrap();
         let env = fake_codex_env(dir.path());
         let none = HashSet::new();
         let mut c = ctx(&env, "/nowhere", Utc::now(), &none);
-        c.last_output = Some(c.now - Duration::seconds(60));
+        c.screen = Some(still(c.now - Duration::seconds(60)));
         let mut agent = info(None, None);
         assert_eq!(Codex.observe(&c, &agent).state, Some(AgentState::Idle));
+        // Started on a prompt but nothing happened: a startup dialog (e.g.
+        // folder trust) is waiting.
+        let prompted = info(None, Some("go"));
+        assert_eq!(
+            Codex.observe(&c, &prompted).state,
+            Some(AgentState::Blocked)
+        );
         agent.state = AgentState::Working;
         assert_eq!(Codex.observe(&c, &agent).state, Some(AgentState::Blocked));
-        c.last_output = Some(c.now);
+        // Thinking or running a command: the screen keeps changing.
+        c.screen = Some(still(c.now - Duration::seconds(1)));
+        assert_eq!(Codex.observe(&c, &agent).state, None);
+        c.screen = Some(still(c.now));
         agent.state = AgentState::Blocked;
         assert_eq!(Codex.observe(&c, &agent).state, Some(AgentState::Working));
     }

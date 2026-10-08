@@ -45,6 +45,9 @@ pub struct Daemon {
     pub(crate) workspace_env: std::sync::Mutex<HashMap<WorkspaceId, EnvMap>>,
     /// Running preparation tasks, so deleting a workspace can cancel them.
     pub(crate) preparing: std::sync::Mutex<HashMap<WorkspaceId, tokio::task::AbortHandle>>,
+    /// What each agent's screen showed last (a digest) and since when, by
+    /// backend ref (reconcile.rs).
+    pub(crate) screens: std::sync::Mutex<HashMap<String, (u64, crate::agents::Screen)>>,
     /// Resource usage, sampled in the background for the host page.
     metrics: crate::metrics::Sampler,
     /// Browser login requests waiting for an app, and how many apps listen.
@@ -78,6 +81,7 @@ impl Daemon {
             started_at: Utc::now(),
             workspace_env: Default::default(),
             preparing: Default::default(),
+            screens: Default::default(),
             metrics,
             logins: Default::default(),
             browser_subscribers: Default::default(),

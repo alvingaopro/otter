@@ -468,8 +468,8 @@ pub enum AgentState {
     Idle,
     /// Working on a turn.
     Working,
-    /// Mid-turn and quiet: probably waiting for an approval or an answer.
-    /// (Heuristic; see docs/decisions.md.)
+    /// Waiting for an approval or an answer: reported by the agent where it
+    /// can, else inferred from a still turn (docs/decisions.md D-035).
     Blocked,
     /// Finished a turn; waiting for the developer's next message.
     WaitingForInput,

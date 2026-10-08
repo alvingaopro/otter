@@ -326,7 +326,14 @@ impl Daemon {
                 .ok_or_else(|| anyhow::anyhow!("unknown agent provider `{}`", info.provider))?;
             // Run the agent binary directly so the session's process *is* the
             // agent (its open files and exit status are the agent's).
-            return provider.launch_argv(info, env);
+            let otterd = std::env::current_exe()?;
+            let dir = self.paths.agents_dir.join(session.id.as_str());
+            let ctx = agents::LaunchContext {
+                env,
+                dir: &dir,
+                otterd: &otterd,
+            };
+            return provider.launch_argv(info, &ctx);
         }
         Ok(match &session.command {
             // An interactive login shell, like `ssh host`.
@@ -345,7 +352,9 @@ impl Daemon {
                 .terminate(&exec.backend_ref)
                 .await
                 .map_err(internal)?;
+            self.screens.lock().unwrap().remove(&exec.backend_ref);
         }
+        let _ = std::fs::remove_dir_all(self.paths.agents_dir.join(session.id.as_str()));
         Ok(())
     }
 }

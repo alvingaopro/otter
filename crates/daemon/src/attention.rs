@@ -1,7 +1,7 @@
 //! Human attention (design §21): which work needs the developer right now.
 //!
 //! Attention items are raised from state transitions — an agent finishing a
-//! turn or going quiet mid-turn, a task or service failing, preparation
+//! turn or waiting on an approval or a question, a task or service failing, preparation
 //! failing — and resolved when the developer engages with the session (attach,
 //! send, restart, stop), when the situation changes (the agent starts working
 //! again), or explicitly. Each session has at most one open item; a newer one
@@ -16,6 +16,7 @@ use otter_core::{
 };
 use otter_protocol::{AttentionResolve, Event, RpcError};
 
+use crate::agents::Blocker;
 use crate::daemon::{Daemon, RpcResult, save, workspace_not_found};
 
 /// Raise an item, replacing the session's (or workspace's) open one. Returns
@@ -108,6 +109,7 @@ pub fn on_execution_ended(ws: &mut Workspace, session: &Session) -> Vec<Event> {
 pub fn on_agent_state(
     ws: &mut Workspace,
     session_id: &SessionId,
+    blocker: Option<&Blocker>,
     name: &str,
     state: AgentState,
     last_message: Option<&str>,
@@ -120,14 +122,29 @@ pub fn on_agent_state(
             };
             raise(ws, Some(session_id), AttentionKind::Review, summary)
         }
-        AgentState::Blocked => raise(
-            ws,
-            Some(session_id),
-            AttentionKind::Approval,
-            format!("{name} seems to be waiting for you (approval or question?)"),
-        ),
-        AgentState::Working => resolve_session(ws, session_id),
-        AgentState::Starting | AgentState::Idle | AgentState::Exited => Vec::new(),
+        AgentState::Blocked => {
+            let (kind, summary) = match blocker {
+                // The agent said what it waits for.
+                Some(b) => (
+                    b.kind,
+                    match (b.kind, &b.detail) {
+                        (AttentionKind::Question, Some(q)) => format!("{name} asks: {q}"),
+                        (AttentionKind::Question, None) => format!("{name} has a question"),
+                        (_, Some(what)) => format!("{name} needs your approval: {what}"),
+                        (_, None) => format!("{name} needs your approval"),
+                    },
+                ),
+                // Inferred from quiet (agents::settle).
+                None => (
+                    AttentionKind::Approval,
+                    format!("{name} seems to be waiting for you (approval or question?)"),
+                ),
+            };
+            raise(ws, Some(session_id), kind, summary)
+        }
+        // Back at work, or the prompt was declined / the turn interrupted.
+        AgentState::Working | AgentState::Idle => resolve_session(ws, session_id),
+        AgentState::Starting | AgentState::Exited => Vec::new(),
     }
 }
 

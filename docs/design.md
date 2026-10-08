@@ -601,6 +601,11 @@ terminal-output-idleness heuristics the primary architecture unless no
 structured mechanism exists. A temporary heuristic adapter is acceptable for
 early dogfooding.
 
+Current choice ([D-035](decisions.md)): Claude Code reports permission
+prompts and questions through hooks passed per launch; Codex has no usable
+structured signal, so a still screen *and* transcript mid-turn is read as
+waiting (calibrated against the real TUIs).
+
 ## 24. Host Daemon Responsibilities
 
 `otterd` on each Host owns:
@@ -921,7 +926,7 @@ These are intentionally not settled by this document. Current choices live in
   versioning.
 - **Persistence format** — on-disk representation of durable state and events.
 - **Codex state detection** — structured Codex events/APIs vs. a temporary
-  heuristic adapter.
+  heuristic adapter (still the heuristic; D-013, D-035).
 
 ## 36. V1 Success Criterion
 

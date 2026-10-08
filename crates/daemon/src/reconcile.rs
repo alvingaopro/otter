@@ -3,12 +3,13 @@
 //! (from agent providers) — and raise attention for what changed.
 
 use std::collections::{HashMap, HashSet};
+use std::hash::{Hash, Hasher};
 
 use chrono::{DateTime, Utc};
 use otter_core::{AgentState, ExecutionState, Workspace};
 use otter_protocol::Event;
 
-use crate::agents::{self, ObserveContext};
+use crate::agents::{self, ObserveContext, Screen};
 use crate::attention;
 use crate::backend::ProcessState;
 use crate::daemon::Daemon;
@@ -21,6 +22,7 @@ impl Daemon {
         let mut store = self.store.lock().await;
         let observed = self.backend.inspect().await?;
         let now = Utc::now();
+        let screens = self.watch_screens(&store.state.workspaces, now).await;
         let claimed: HashSet<String> = store
             .state
             .workspaces
@@ -45,7 +47,15 @@ impl Daemon {
                 .cloned()
                 .unwrap_or_else(|| self.environments.base().clone());
             for i in 0..ws.sessions.len() {
-                changed |= observe_agent(ws, i, &observed, now, &claimed, &env, &mut events);
+                let dir = self.paths.agents_dir.join(ws.sessions[i].id.as_str());
+                let seen = Seen {
+                    now,
+                    claimed: &claimed,
+                    env: &env,
+                    screens: &screens,
+                    dir: &dir,
+                };
+                changed |= observe_agent(ws, i, &seen, &mut events);
             }
         }
         if changed || !events.is_empty() {
@@ -55,6 +65,64 @@ impl Daemon {
         self.emit_all(events);
         Ok(())
     }
+
+    /// How long each agent's screen has looked as it does, by backend ref.
+    /// Only agents that may be mid-turn are looked at (one capture each).
+    async fn watch_screens(
+        &self,
+        workspaces: &[Workspace],
+        now: DateTime<Utc>,
+    ) -> HashMap<String, Screen> {
+        let watched: Vec<String> = workspaces
+            .iter()
+            .flat_map(|w| &w.sessions)
+            .filter(|s| {
+                s.agent.as_ref().is_some_and(|a| {
+                    matches!(
+                        a.state,
+                        AgentState::Starting | AgentState::Working | AgentState::Blocked
+                    )
+                })
+            })
+            .filter_map(|s| s.current_execution().filter(|e| e.is_running()))
+            .map(|e| e.backend_ref.clone())
+            .collect();
+        let mut digests = Vec::new();
+        for r in &watched {
+            if let Ok(text) = self.backend.capture(r, Some(0)).await {
+                let mut h = std::collections::hash_map::DefaultHasher::new();
+                text.hash(&mut h);
+                digests.push((r.clone(), h.finish()));
+            }
+        }
+        let mut screens = self.screens.lock().unwrap();
+        screens.retain(|r, _| watched.contains(r));
+        for (r, digest) in digests {
+            let seen = |changed| Screen {
+                since: now,
+                changed,
+            };
+            match screens.get_mut(&r) {
+                Some((d, _)) if *d == digest => {}
+                Some(entry) => *entry = (digest, seen(true)),
+                None => {
+                    screens.insert(r, (digest, seen(false)));
+                }
+            }
+        }
+        screens.iter().map(|(r, (_, s))| (r.clone(), *s)).collect()
+    }
+}
+
+/// What one reconciliation pass knows, for observing agents.
+struct Seen<'a> {
+    now: DateTime<Utc>,
+    claimed: &'a HashSet<String>,
+    env: &'a EnvMap,
+    /// How long each agent's screen has looked as it does, by backend ref.
+    screens: &'a HashMap<String, Screen>,
+    /// The session's private directory.
+    dir: &'a std::path::Path,
 }
 
 fn reconcile_executions(
@@ -117,37 +185,26 @@ fn reconcile_executions(
 
 /// Advance one agent session's state. How the agent is observed is entirely
 /// up to its provider; this only applies the result and raises attention.
-fn observe_agent(
-    ws: &mut Workspace,
-    i: usize,
-    observed: &HashMap<String, ProcessState>,
-    now: DateTime<Utc>,
-    claimed: &HashSet<String>,
-    env: &EnvMap,
-    events: &mut Vec<Event>,
-) -> bool {
+fn observe_agent(ws: &mut Workspace, i: usize, seen: &Seen<'_>, events: &mut Vec<Event>) -> bool {
+    let now = seen.now;
     let session = &ws.sessions[i];
     let (Some(mut info), Some(exec)) = (session.agent.clone(), session.current_execution()) else {
         return false;
     };
     let mut changed = false;
+    let mut blocker = None;
     let next = if !exec.is_running() {
         AgentState::Exited
     } else if let Some(provider) = agents::provider(&info.provider) {
-        let last_output = match observed.get(&exec.backend_ref) {
-            Some(ProcessState::Alive { last_output, .. }) => {
-                last_output.and_then(|t| DateTime::from_timestamp(t, 0))
-            }
-            _ => None,
-        };
         let ctx = ObserveContext {
             cwd: &ws.root,
+            dir: seen.dir,
             started_at: exec.started_at,
             pid: exec.pid,
-            last_output,
+            screen: seen.screens.get(&exec.backend_ref).copied(),
             now,
-            env,
-            claimed,
+            env: seen.env,
+            claimed: seen.claimed,
         };
         let obs = provider.observe(&ctx, &info);
         if let Some(id) = obs.provider_session_id {
@@ -165,6 +222,7 @@ fn observe_agent(
             changed |= info.last_message.as_ref() != Some(&message);
             info.last_message = Some(message);
         }
+        blocker = obs.blocker;
         obs.state.unwrap_or(info.state)
     } else {
         info.state
@@ -185,6 +243,7 @@ fn observe_agent(
         events.extend(attention::on_agent_state(
             ws,
             &id,
+            blocker.as_ref(),
             &name,
             next,
             message.as_deref(),

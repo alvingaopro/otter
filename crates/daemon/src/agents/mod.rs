@@ -7,19 +7,27 @@
 //! (`AgentInfo::provider_session_id`, `AgentInfo::provider_state`).
 //!
 //! Everything about *how* a particular agent is launched, resumed and observed
-//! (for Codex: CLI flags, rollout files, transcript parsing, the quiet-turn
-//! heuristic) lives in that provider's module: `codex`, `claude` (Claude
+//! (for Codex: CLI flags, rollout files, transcript parsing; for Claude Code:
+//! also its hooks) lives in that provider's module: `codex`, `claude` (Claude
 //! Code). Adding another means adding a module here, not changing Workspace
 //! or Session.
+//!
+//! Knowing that an agent needs the developer (D-035): a provider reports
+//! [`AgentState::Blocked`] plus a [`Blocker`] when the agent itself says so
+//! (Claude Code's hooks); where no such signal exists (Codex) it falls back
+//! to [`settle`], which reads a turn whose transcript *and screen* have stood
+//! still as waiting on the developer.
 
 pub mod claude;
 pub mod codex;
 
 use std::collections::HashSet;
+use std::io::{Read, Write};
+use std::path::Path;
 
 use anyhow::Result;
 use async_trait::async_trait;
-use otter_core::{AgentCapability, AgentInfo, AgentState, Timestamp};
+use otter_core::{AgentCapability, AgentInfo, AgentState, AttentionKind, Timestamp};
 
 use crate::env::EnvMap;
 
@@ -50,21 +58,53 @@ pub async fn detect_all(env: &EnvMap) -> Vec<AgentCapability> {
     out
 }
 
+/// What a provider gets when starting an agent.
+pub struct LaunchContext<'a> {
+    /// The environment the agent will run with (login + workspace env).
+    pub env: &'a EnvMap,
+    /// A private directory Otter manages for this session (created on
+    /// demand, removed with the session), e.g. for hook output.
+    pub dir: &'a Path,
+    /// This `otterd`, for commands the agent should call back
+    /// (`otterd internal-agent-hook`).
+    pub otterd: &'a Path,
+}
+
 /// What a provider can see when observing one agent session.
 pub struct ObserveContext<'a> {
     /// The session's working directory (on this host).
     pub cwd: &'a str,
+    /// The session's private directory (see [`LaunchContext::dir`]).
+    pub dir: &'a Path,
     /// When the current execution started.
     pub started_at: Timestamp,
     /// The agent's process, if known.
     pub pid: Option<u32>,
-    /// When the session last produced terminal output, if known.
-    pub last_output: Option<Timestamp>,
+    /// What the session's terminal *shows*, if watched. (Not when it last
+    /// wrote: TUIs redraw unchanged screens constantly.)
+    pub screen: Option<Screen>,
     pub now: Timestamp,
     /// The environment the agent was launched with (login + workspace env).
     pub env: &'a EnvMap,
     /// `provider_session_id`s already bound to other sessions.
     pub claimed: &'a HashSet<String>,
+}
+
+/// How long a session's screen has looked as it does now.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Screen {
+    /// Since when it has shown what it shows now.
+    pub since: Timestamp,
+    /// Whether Otter saw it change to that (false: the first look, e.g.
+    /// after otterd restarted, so `since` is only a lower bound).
+    pub changed: bool,
+}
+
+impl Screen {
+    /// Whether it was seen changing after `t`.
+    pub fn changed_after(&self, t: Timestamp) -> bool {
+        self.changed && self.since > t
+    }
 }
 
 /// What changed since the last observation. `None` fields are unchanged.
@@ -75,6 +115,18 @@ pub struct Observation {
     pub provider_state: Option<serde_json::Value>,
     /// Excerpt of the agent's latest message.
     pub last_message: Option<String>,
+    /// What a blocked agent is waiting for, when the agent said so.
+    pub blocker: Option<Blocker>,
+}
+
+/// What a blocked agent waits for, as reported by the agent itself (as
+/// opposed to inferred from quiet).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Blocker {
+    /// [`AttentionKind::Approval`] or [`AttentionKind::Question`].
+    pub kind: AttentionKind,
+    /// What it wants approved, or what it asks (an excerpt).
+    pub detail: Option<String>,
 }
 
 #[async_trait]
@@ -87,12 +139,52 @@ pub trait AgentProvider: Send + Sync {
 
     /// Command line that starts the agent — resuming
     /// `info.provider_session_id` if set, else starting fresh (with
-    /// `info.prompt`, if any).
-    fn launch_argv(&self, info: &AgentInfo, env: &EnvMap) -> Result<Vec<String>>;
+    /// `info.prompt`, if any). May prepare files in `ctx.dir`.
+    fn launch_argv(&self, info: &AgentInfo, ctx: &LaunchContext<'_>) -> Result<Vec<String>>;
 
     /// Observe a running agent. Called periodically; must be cheap and must
     /// not block on the agent.
     fn observe(&self, ctx: &ObserveContext<'_>, info: &AgentInfo) -> Observation;
+
+    /// The line to record for one hook call the agent made to
+    /// `otterd internal-agent-hook <provider> <file>` (its JSON input), or
+    /// `None` to record nothing. Keep it small: no tool output, no file
+    /// contents.
+    fn hook_record(&self, _input: &serde_json::Value) -> Option<serde_json::Value> {
+        None
+    }
+}
+
+/// Entry point for `otterd internal-agent-hook <provider> <file>`: an agent
+/// calls this from its hooks with the event as JSON on stdin; the provider
+/// picks what to keep and it is appended to `file` with the time it arrived.
+/// Never fails and prints nothing: what a hook prints or how it exits can
+/// steer the agent, and this must only observe.
+pub fn run_hook(provider: &str, file: &Path) {
+    let mut input = Vec::new();
+    if std::io::stdin().read_to_end(&mut input).is_err() {
+        return;
+    }
+    let (Some(p), Ok(value)) = (
+        self::provider(provider),
+        serde_json::from_slice::<serde_json::Value>(&input),
+    ) else {
+        return;
+    };
+    let Some(mut record) = p.hook_record(&value) else {
+        return;
+    };
+    record["t"] = serde_json::json!(chrono::Utc::now().timestamp_millis());
+    let mut line = record.to_string();
+    line.push('\n');
+    // One small append: concurrent hooks don't interleave.
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(file)
+    {
+        let _ = f.write_all(line.as_bytes());
+    }
 }
 
 /// Default for `OTTER_AGENT_QUIET_SECS`.
@@ -106,17 +198,24 @@ fn quiet_threshold() -> i64 {
         .unwrap_or(DEFAULT_QUIET_SECS)
 }
 
-/// The quiet-turn heuristic, for agents whose approval prompts and questions
-/// don't appear in their transcripts: a turn whose terminal and transcript
-/// have both gone quiet is blocked on the user; a freshly started agent that
-/// goes quiet is idle (waiting for its first prompt, or a startup dialog).
-/// `grew`: the transcript grew in this observation. If the agent keeps
-/// animating while it waits, this misses rather than crying wolf.
+/// The quiet-turn heuristic, the fallback for agents that don't say when
+/// they wait on the developer: a turn whose transcript and screen have both
+/// stood still is blocked on the user. Calibrated against the real TUIs
+/// (D-035): while they think or run a command they show a ticking elapsed
+/// time, so the screen changes every second; an approval prompt or question
+/// is a static screen. A freshly started agent that goes still is waiting
+/// at a startup dialog (e.g. "trust this folder?") if it was given a prompt
+/// to start on, else for its first prompt (idle).
+///
+/// `grew`: the transcript grew in this observation. `last_activity`: the
+/// later of the screen's and the transcript's last change. If an agent kept
+/// animating while it waits, this would miss rather than cry wolf.
 pub fn settle(
     state: AgentState,
     grew: bool,
     last_activity: Option<Timestamp>,
     now: Timestamp,
+    has_prompt: bool,
 ) -> AgentState {
     let Some(last) = last_activity.filter(|_| !grew) else {
         return state;
@@ -125,7 +224,13 @@ pub fn settle(
     match state {
         AgentState::Working if quiet >= quiet_threshold() => AgentState::Blocked,
         AgentState::Blocked if quiet < 2 => AgentState::Working,
-        AgentState::Starting if quiet >= quiet_threshold() => AgentState::Idle,
+        AgentState::Starting if quiet >= quiet_threshold() => {
+            if has_prompt {
+                AgentState::Blocked
+            } else {
+                AgentState::Idle
+            }
+        }
         other => other,
     }
 }

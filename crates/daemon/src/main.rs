@@ -70,6 +70,9 @@ enum Command {
         #[arg(last = true, required = true)]
         argv: Vec<String>,
     },
+    /// What an agent's hooks call (agents::run_hook).
+    #[command(hide = true)]
+    InternalAgentHook { provider: String, file: PathBuf },
 }
 
 fn main() -> Result<()> {
@@ -81,6 +84,10 @@ fn main() -> Result<()> {
         }
         Command::InternalExec { env_file, argv } => {
             return env::exec_with_env_file(env_file, argv);
+        }
+        Command::InternalAgentHook { provider, file } => {
+            agents::run_hook(provider, file);
+            return Ok(());
         }
         _ => {}
     }
@@ -107,7 +114,10 @@ fn main() -> Result<()> {
                 std::process::exit(1);
             }
         },
-        Command::Version | Command::InternalDumpEnv | Command::InternalExec { .. } => {
+        Command::Version
+        | Command::InternalDumpEnv
+        | Command::InternalExec { .. }
+        | Command::InternalAgentHook { .. } => {
             unreachable!()
         }
     }
