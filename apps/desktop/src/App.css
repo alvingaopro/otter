@@ -437,3 +437,10 @@ code, .mono { font-family: var(--mono); }
 .timeline-detail { font-size: 12px; }
 .timeline-age { font-size: 12px; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .files-hint { padding: 6px 12px 10px; margin: 0; font-size: 11.5px; border-top: 1px solid var(--line); }
+.context-menu { position: fixed; right: auto; z-index: 20; }
+
+/* Pinned workspaces: drag to reorder. */
+.group-label.pinned { color: var(--muted); }
+.ws-row.pin-row { touch-action: none; }
+.ws-row.dragging { background: var(--raised); box-shadow: 0 4px 14px var(--shadow); cursor: grabbing; position: relative; z-index: 1; }
+.sidebar.reordering .ws-row:not(.dragging) { pointer-events: none; }

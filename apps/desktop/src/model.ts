@@ -137,3 +137,33 @@ export function kindLabel(s: SessionView): string {
   }
   return s.name === s.kind ? "" : s.kind;
 }
+
+// Pins (D-040): `host/workspace-id` keys, top first, kept on this Mac. A pin
+// whose workspace isn't loaded (its host still connecting) keeps its place.
+
+/** The pinned workspaces that are loaded, in pin order. */
+export function pinnedOf(placed: Placed[], pins: string[]): Placed[] {
+  return pins.flatMap((k) => placed.find((p) => p.key === k) ?? []);
+}
+
+export function togglePin(pins: string[], key: string): string[] {
+  return pins.includes(key) ? pins.filter((k) => k !== key) : [...pins, key];
+}
+
+/** Move a pinned workspace to `to` among the loaded ones (`shown`, in order). */
+export function movePin(pins: string[], shown: string[], key: string, to: number): string[] {
+  const order = shown.filter((k) => k !== key);
+  order.splice(Math.max(0, Math.min(to, order.length)), 0, key);
+  const next = order[Symbol.iterator]();
+  const visible = new Set(shown);
+  return pins.map((k) => (visible.has(k) ? next.next().value! : k));
+}
+
+/** Pins of workspaces gone from a connected host (deleted elsewhere). */
+export function stalePins(pins: string[], hosts: HostsPayload["hosts"]): string[] {
+  return pins.filter((k) => {
+    const slash = k.indexOf("/");
+    const host = hosts.find((h) => h.name === k.slice(0, slash));
+    return host?.status === "connected" && !host.workspaces.some((w) => w.id === k.slice(slash + 1));
+  });
+}

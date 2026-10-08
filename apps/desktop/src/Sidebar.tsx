@@ -1,6 +1,7 @@
-import { useState } from "react";
+import { useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 import { Glyph } from "./Glyph";
-import { ago, groups, headline, workspaceGlyph } from "./model";
+import { ContextMenu, type MenuItem } from "./Menu";
+import { ago, groups, headline, pinnedOf, workspaceGlyph } from "./model";
 import type { ThemeChoice } from "./theme";
 import type { HostView, Placed } from "./types";
 import otterIcon from "./assets/otter.png";
@@ -23,6 +24,12 @@ interface Props {
   /** Set when the command-line tools are missing or another version. */
   cliAction?: string;
   onCli: () => void;
+  /** Pinned workspace keys, top first (D-040). */
+  pins: string[];
+  /** Pin, unpin and move items for a workspace's menus. */
+  pinMenu: (key: string) => MenuItem[];
+  /** Move a pinned workspace to `to` among the shown pinned ones. */
+  onMovePin: (key: string, to: number) => void;
 }
 
 const HOST_STATE: Record<HostView["status"], string> = {
@@ -59,14 +66,107 @@ export function Sidebar(props: Props) {
     });
   };
 
-  const grouped = groups(placed);
-  const inGroup = (id: string) => grouped.find((g) => g.id === id)?.items ?? [];
+  const [menu, setMenu] = useState<{ key: string; x: number; y: number } | null>(null);
+  // Reordering pins with the pointer (HTML5 drag-and-drop is taken by file drops).
+  const [drag, setDrag] = useState<{ key: string; to: number } | null>(null);
+  const dragged = useRef(false);
+  const pinRows = useRef(new Map<string, HTMLElement>());
+
+  const pinned = pinnedOf(placed, props.pins);
+  const pinnedKeys = pinned.map((p) => p.key);
+  const rest = placed.filter((p) => !props.pins.includes(p.key));
+  const grouped = groups(rest);
+  // The badges count every workspace, pinned or not.
+  const all = groups(placed);
+  const inGroup = (id: string) => all.find((g) => g.id === id)?.items ?? [];
   const needs = inGroup("needs");
   const working = inGroup("working");
   const connected = hosts.filter((h) => h.status === "connected").length;
 
+  function startDrag(e: ReactPointerEvent, key: string) {
+    if (e.button !== 0) return;
+    const startY = e.clientY;
+    const from = pinnedKeys.indexOf(key);
+    let to = from;
+    let active = false;
+    // Rows as laid out when the drag starts; the target is how many of the
+    // others sit above the pointer.
+    const mids = pinnedKeys
+      .filter((k) => k !== key)
+      .map((k) => {
+        const r = pinRows.current.get(k)?.getBoundingClientRect();
+        return r ? r.top + r.height / 2 : 0;
+      });
+    const move = (ev: PointerEvent) => {
+      if (!active && Math.abs(ev.clientY - startY) < 4) return;
+      active = true;
+      dragged.current = true;
+      to = mids.filter((m) => m < ev.clientY).length;
+      setDrag({ key, to });
+    };
+    const up = () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+      if (!active) return;
+      setDrag(null);
+      if (to !== from) props.onMovePin(key, to);
+      // The click that ends a drag doesn't select.
+      setTimeout(() => (dragged.current = false), 0);
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+  }
+
+  // While dragging, show the pins in their would-be order.
+  const shownPins = (() => {
+    if (!drag) return pinned;
+    const others = pinned.filter((p) => p.key !== drag.key);
+    others.splice(drag.to, 0, pinned.find((p) => p.key === drag.key)!);
+    return others;
+  })();
+
+  const row = (p: Placed, pin: boolean) => {
+    const line = headline(p.ws);
+    const stale = p.host.status !== "connected";
+    const cls = [
+      "ws-row",
+      p.key === selected && !hostPage && "selected",
+      stale && "stale",
+      pin && "pin-row",
+      drag?.key === p.key && "dragging",
+    ];
+    return (
+      <button
+        key={p.key}
+        ref={pin ? (el) => void (el ? pinRows.current.set(p.key, el) : pinRows.current.delete(p.key)) : undefined}
+        className={cls.filter(Boolean).join(" ")}
+        aria-current={p.key === selected ? "page" : undefined}
+        onClick={() => !dragged.current && onSelect(p.key)}
+        onPointerDown={pin ? (e) => startDrag(e, p.key) : undefined}
+        onContextMenu={(e) => {
+          e.preventDefault();
+          setMenu({ key: p.key, x: e.clientX, y: e.clientY });
+        }}
+      >
+        <span className="ws-glyph">
+          <Glyph kind={workspaceGlyph(p.ws)} />
+        </span>
+        <span className="ws-text">
+          <span className="ws-line">
+            <span className="ws-name">{p.ws.name}</span>
+            <span className="ws-host">{p.host.name}</span>
+          </span>
+          <span className="ws-line sub">
+            <span className="ws-summary">{line.text}</span>
+            <span className="ws-age">{ago(line.since, now)}</span>
+          </span>
+        </span>
+      </button>
+    );
+  };
+
   return (
-    <nav className="sidebar" aria-label="Workspaces">
+    <nav className={drag ? "sidebar reordering" : "sidebar"} aria-label="Workspaces">
       <div className="sidebar-top" data-tauri-drag-region>
         <span className="spacer" data-tauri-drag-region />
         <ThemeButton choice={props.themeChoice} onClick={props.onTheme} />
@@ -86,6 +186,15 @@ export function Sidebar(props: Props) {
       </div>
 
       <div className="sidebar-groups">
+        {pinned.length > 0 && (
+          <section className="group" aria-label="Pinned">
+            <h2 className="group-label pinned">
+              <span>PINNED</span>
+              <span className="count">{pinned.length}</span>
+            </h2>
+            {shownPins.map((p) => row(p, true))}
+          </section>
+        )}
         {grouped.map((g) => {
           const collapsed = g.id === "archived" && !showArchived;
           return (
@@ -108,32 +217,7 @@ export function Sidebar(props: Props) {
                   <span className="count">{g.items.length}</span>
                 </h2>
               )}
-              {!collapsed && g.items.map((p) => {
-                const line = headline(p.ws);
-                const stale = p.host.status !== "connected";
-                return (
-                  <button
-                    key={p.key}
-                    className={`ws-row${p.key === selected && !hostPage ? " selected" : ""}${stale ? " stale" : ""}`}
-                    aria-current={p.key === selected ? "page" : undefined}
-                    onClick={() => onSelect(p.key)}
-                  >
-                    <span className="ws-glyph">
-                      <Glyph kind={workspaceGlyph(p.ws)} />
-                    </span>
-                    <span className="ws-text">
-                      <span className="ws-line">
-                        <span className="ws-name">{p.ws.name}</span>
-                        <span className="ws-host">{p.host.name}</span>
-                      </span>
-                      <span className="ws-line sub">
-                        <span className="ws-summary">{line.text}</span>
-                        <span className="ws-age">{ago(line.since, now)}</span>
-                      </span>
-                    </span>
-                  </button>
-                );
-              })}
+              {!collapsed && g.items.map((p) => row(p, false))}
             </section>
           );
         })}
@@ -189,6 +273,9 @@ export function Sidebar(props: Props) {
           {appVersion && <span className="app-version">v{appVersion}</span>}
         </div>
       </footer>
+      {menu && (
+        <ContextMenu x={menu.x} y={menu.y} items={props.pinMenu(menu.key)} onClose={() => setMenu(null)} />
+      )}
     </nav>
   );
 }

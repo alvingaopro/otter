@@ -6,7 +6,7 @@ library `otter` uses. Design and rationale: `docs/decisions.md` D-018.
 It shows the hosts in `$OTTER_CONFIG_DIR/hosts.toml` (default
 `~/.config/otter`, shared with `otter`; hosts can be added and removed in
 the app or with `otter host add/rm`), every workspace on them grouped by
-what needs you, and an embedded terminal attached to the selected session.
+what needs you (pinned ones first, in your order), and an embedded terminal attached to the selected session.
 It can install `otterd` on a host and the command-line tools on this Mac from
 the matching release (D-020).
 
@@ -33,6 +33,7 @@ Layout:
   forwards each event (`host-event`) and stream restarts (`host-resync`) to timelines.
 - `src-tauri/src/view.rs` — the view model, with values derived by `otter-core`.
 - `src-tauri/src/attach.rs` — terminal bridge (raw-byte channel out, commands in).
+- `src-tauri/src/pins.rs` — pinned workspaces, kept in `pins.toml` (D-040).
 - `src/` — React: `Sidebar`, `WorkspacePane`, `Terminal` (xterm.js), `model.ts`
   (grouping and wording only), `TimelinePanel` + `timeline.ts` (a workspace's
   events as one line each).

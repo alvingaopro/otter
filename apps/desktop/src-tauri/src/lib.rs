@@ -7,6 +7,7 @@ mod attach;
 mod files;
 mod forwards;
 mod hosts;
+mod pins;
 mod tray;
 mod view;
 
@@ -74,6 +75,8 @@ pub fn run() {
             forwards::forward_add,
             forwards::forward_remove,
             forwards::forward_pin,
+            pins::pins_get,
+            pins::pins_set,
             hosts::workspace_create,
             hosts::workspace_delete,
             hosts::workspace_prepare,

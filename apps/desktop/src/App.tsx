@@ -11,7 +11,8 @@ import { CliDialog } from "./CliDialog";
 import { WorkspacePane } from "./WorkspacePane";
 import { NewWorkspaceDialog } from "./NewWorkspaceDialog";
 import { useTheme } from "./theme";
-import { defaultSession, groups, headline, placeAll } from "./model";
+import { defaultSession, groups, headline, movePin, pinnedOf, placeAll, stalePins, togglePin } from "./model";
+import type { MenuItem } from "./Menu";
 import type { ForwardView, HostsPayload, Placed } from "./types";
 import "./App.css";
 
@@ -39,6 +40,8 @@ export default function App() {
   const [hostPage, setHostPage] = useState<string | null>(null);
   const [forwards, setForwards] = useState<ForwardView[]>([]);
   const [cli, setCli] = useState<{ version?: string } | null>(null);
+  /** Pinned workspace keys, top first, from `pins.toml` (D-040). */
+  const [pins, setPinsState] = useState<string[]>([]);
   const { choice: themeChoice, resolved: theme, cycle: cycleTheme } = useTheme();
   /** A workspace just created here: select it once it shows up. */
   const wanted = useRef<string | null>(null);
@@ -61,6 +64,7 @@ export default function App() {
       setHostPage(null);
     });
     void invoke<{ version?: string }>("cli_status").then(setCli);
+    void invoke<string[]>("pins_get").then(setPinsState).catch(() => {});
     // ⌘N: new workspace (capture phase, so the terminal doesn't swallow it).
     const onKey = (e: KeyboardEvent) => {
       if (e.metaKey && !e.shiftKey && !e.altKey && e.key.toLowerCase() === "n") {
@@ -96,6 +100,31 @@ export default function App() {
   }, []);
 
   const placed = useMemo(() => (payload ? placeAll(payload) : []), [payload]);
+
+  const setPins = (next: string[]) => {
+    setPinsState(next);
+    void invoke("pins_set", { workspaces: next }).catch(() => {});
+  };
+  // A pinned workspace deleted elsewhere drops out once its host says so.
+  useEffect(() => {
+    if (!payload) return;
+    const stale = stalePins(pins, payload.hosts);
+    if (stale.length > 0) setPins(pins.filter((k) => !stale.includes(k)));
+  }, [payload, pins]);
+
+  const shownPins = pinnedOf(placed, pins).map((p) => p.key);
+  const pinMenu = (key: string): MenuItem[] => {
+    const at = shownPins.indexOf(key);
+    return [
+      { label: at < 0 ? "Pin" : "Unpin", onSelect: () => setPins(togglePin(pins, key)) },
+      { label: "Move up", hidden: at <= 0, onSelect: () => setPins(movePin(pins, shownPins, key, at - 1)) },
+      {
+        label: "Move down",
+        hidden: at < 0 || at === shownPins.length - 1,
+        onSelect: () => setPins(movePin(pins, shownPins, key, at + 1)),
+      },
+    ];
+  };
 
   // Notify on attention that is new since we last looked: needs-you items and
   // failures, unless that workspace is already in front of the user.
@@ -177,6 +206,9 @@ export default function App() {
               : undefined
           }
           onCli={() => setOpen({ kind: "cli" })}
+          pins={pins}
+          pinMenu={pinMenu}
+          onMovePin={(key, to) => setPins(movePin(pins, shownPins, key, to))}
         />
         {!payload ? (
           <main className="pane empty">
@@ -221,6 +253,7 @@ export default function App() {
             now={now}
             theme={theme}
             appVersion={version}
+            pinItems={pinMenu(current.key)}
           />
         ) : (
           <main className="pane empty">

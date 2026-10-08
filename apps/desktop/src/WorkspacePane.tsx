@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { Glyph } from "./Glyph";
 import { Dialog } from "./Dialog";
-import { Menu } from "./Menu";
+import { Menu, type MenuItem } from "./Menu";
 import { NewSessionDialog } from "./NewSessionDialog";
 import { FilesPanel } from "./FilesPanel";
 import { TimelinePanel } from "./TimelinePanel";
@@ -19,11 +19,13 @@ interface Props {
   theme: "light" | "dark";
   /** This app's version: a host on another otterd version is offered an update. */
   appVersion?: string;
+  /** Pin, unpin and move items for the workspace menu. */
+  pinItems: MenuItem[];
 }
 
 type Open = "brief" | "new-session" | "archive-workspace" | "delete-workspace" | "delete-session" | null;
 
-export function WorkspacePane({ placed, session, onSession, now, theme, appVersion }: Props) {
+export function WorkspacePane({ placed, session, onSession, now, theme, appVersion, pinItems }: Props) {
   const { host, ws } = placed;
   const current = ws.sessions.find((s) => s.id === session) ?? ws.sessions[0];
   const [ending, setEnding] = useState<Ending | null>(null);
@@ -157,6 +159,7 @@ export function WorkspacePane({ placed, session, onSession, now, theme, appVersi
               onSelect: () => setOpen("archive-workspace"),
             },
             { label: "Unarchive workspace", hidden: !archived, onSelect: () => void unarchive() },
+            ...pinItems,
             { label: brief.text ? "Edit brief…" : "Add a goal…", onSelect: () => setOpen("brief") },
             { label: "Delete workspace…", danger: true, onSelect: () => setOpen("delete-workspace") },
           ]}

@@ -1046,3 +1046,34 @@ first, with relative times (full time on hover), updating live.
 - Not done: filtering, paging, a timeline across workspaces, and the
   terminal's own output (events never carry it).
 
+## D-040 — Desktop chrome, and pinned workspaces (2026-10-08)
+
+The window stacked a full-width title bar, a large workspace header, a tab
+row and an inset terminal card before any output. Flattened:
+
+- **The sidebar's top row is the title bar** (overlay style: traffic lights,
+  theme, New); the workspace pane's header is one row of the same height:
+  name, host, source, path, brief, Timeline, Files, ⋯
+  (Timeline and Files left the tab row: they are about the workspace, not a
+  session). The brief moves there from the
+  line under the name (D-038), cut off when long. "N need you · N working"
+  becomes two badges by the Otter mark. The selected tab joins the
+  terminal, which runs edge to edge. The hosts list collapses (remembered
+  per Mac); its header says "N of M connected" so collapsing never hides a
+  host that is down.
+- **Pinned workspaces** sit in a Pinned section above the status groups, in
+  an order the developer sets (drag, or Move up/down in the menus). Pin from
+  the workspace ⋯ menu or by right-clicking a sidebar row.
+  - **Kept by the app, in `pins.toml`** next to `hosts.toml`: an ordered list
+    of `host/workspace-id`. Not in `otterd`: the list spans hosts and no one
+    host could hold the order, and it is a view preference, not runtime
+    state (invariant 11). Another Mac has its own pins.
+  - A pinned workspace leaves its status group but keeps its status mark
+    and still counts in the badges, so one that needs you shows orange in
+    Pinned, once.
+  - A pin whose workspace isn't loaded (host still connecting, or offline
+    with no last state) keeps its place; it is dropped only when its host is
+    connected and no longer has the workspace.
+  - Reordering uses pointer events, not HTML5 drag-and-drop, which the
+    webview's file drop (Files panel) takes over.
+- Not done: pins in `otter ls`, which could read the same file.
