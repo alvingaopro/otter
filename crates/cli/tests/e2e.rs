@@ -231,6 +231,42 @@ fn local_host_normal_flow() {
 }
 
 #[test]
+fn archive_hides_a_workspace_until_unarchived() {
+    let home = Home::new();
+    let cli = Cli::new();
+    cli.add_local_host("here", &home);
+    cli.ok(&["new", "live", "--no-agent"]);
+    cli.ok(&["new", "old", "--no-agent"]);
+
+    let out = cli.ok(&["ws", "archive", "old"]);
+    assert!(out.starts_with("archived workspace old on here"), "{out}");
+    assert_eq!(cli.workspace("old")["state"], "archived");
+    let ls = cli.ok(&["ls"]);
+    assert!(ls.contains("live") && !ls.contains("old "), "{ls}");
+    assert!(
+        ls.contains("1 archived (`otter ls --archived` to show)"),
+        "{ls}"
+    );
+    let table = cli.ok(&["ls", "--table"]);
+    assert!(!table.contains("old"), "{table}");
+    let all = cli.ok(&["ls", "--archived"]);
+    let (_, archived) = all
+        .split_once("ARCHIVED\n")
+        .unwrap_or_else(|| panic!("{all}"));
+    assert!(archived.contains("old"), "{all}");
+    let err = cli.fails(&["start", "old"]);
+    assert!(err.contains("archived; unarchive it first"), "{err}");
+
+    let out = cli.ok(&["ws", "unarchive", "old"]);
+    assert!(out.contains("workspace old ready on here"), "{out}");
+    assert!(out.contains("shell  stopped"), "{out}");
+    assert!(out.contains("`otter session restart old/shell`"), "{out}");
+    let out = cli.ok(&["session", "restart", "old/shell"]);
+    assert!(out.contains("running"), "{out}");
+    assert!(cli.ok(&["ls"]).contains("old"));
+}
+
+#[test]
 fn same_name_on_two_hosts_needs_the_host() {
     let (a, b) = (Home::new(), Home::new());
     let cli = Cli::new();
