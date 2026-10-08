@@ -71,10 +71,45 @@ jobs:
           gh release create "v$version" --draft --title "Workd v$version" --generate-notes --verify-tag
           echo "version=$version" >> "$GITHUB_OUTPUT"
 
-  desktop:
-    name: Desktop app (macOS universal)
+  # The app is built per architecture in parallel, then combined into a
+  # universal binary and bundled once (D-022).
+  desktop-build:
+    name: Desktop app (${{ matrix.target }})
     needs: version
     if: needs.version.outputs.version != ''
+    strategy:
+      matrix:
+        target: [aarch64-apple-darwin, x86_64-apple-darwin]
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: v${{ needs.version.outputs.version }}
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: apps/desktop/package-lock.json
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: apps/desktop/src-tauri
+          key: release-${{ matrix.target }}
+      - run: npm ci
+        working-directory: apps/desktop
+      - run: npm run tauri build -- --target ${{ matrix.target }} --no-bundle
+        working-directory: apps/desktop
+      - uses: actions/upload-artifact@v7
+        with:
+          name: desktop-${{ matrix.target }}
+          path: apps/desktop/src-tauri/target/${{ matrix.target }}/release/workd-desktop
+          retention-days: 1
+
+  desktop:
+    name: Desktop app (bundle, universal)
+    needs: [version, desktop-build]
     runs-on: macos-latest
     env:
       VERSION: ${{ needs.version.outputs.version }}
@@ -89,14 +124,23 @@ jobs:
           cache: npm
           cache-dependency-path: apps/desktop/package-lock.json
       - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: aarch64-apple-darwin, x86_64-apple-darwin
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: apps/desktop/src-tauri
-      - run: npm ci
+      # The UI is already inside the binaries; built only so the config's
+      # frontendDist exists.
+      - run: npm ci && npm run build
         working-directory: apps/desktop
-      - run: npm run tauri build -- --target universal-apple-darwin --bundles app,dmg
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: desktop-*
+          path: built
+      - name: Combine into a universal binary
+        run: |
+          out=apps/desktop/src-tauri/target/universal-apple-darwin/release
+          mkdir -p "$out"
+          lipo -create -output "$out/workd-desktop" \
+            built/desktop-aarch64-apple-darwin/workd-desktop built/desktop-x86_64-apple-darwin/workd-desktop
+          chmod +x "$out/workd-desktop"
+          lipo -info "$out/workd-desktop"
+      - run: npm run tauri bundle -- --target universal-apple-darwin --bundles app,dmg
         working-directory: apps/desktop
       - name: Upload
         run: |
