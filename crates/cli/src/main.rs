@@ -57,6 +57,9 @@ enum Command {
         /// Plain table instead of the grouped view.
         #[arg(long)]
         table: bool,
+        /// Include archived workspaces.
+        #[arg(short, long)]
+        archived: bool,
     },
     /// Mark what a workspace (or one session) was asking for as handled.
     Ack {
@@ -155,12 +158,23 @@ enum WorkspaceCommand {
     Create(WorkspaceCreateArgs),
     /// List workspaces on all hosts.
     #[command(visible_alias = "ls")]
-    List,
+    List {
+        /// Include archived workspaces.
+        #[arg(short, long)]
+        archived: bool,
+    },
     /// Show a workspace and its sessions.
     Show { target: String },
     /// Retry a failed workspace, or reload its environment (e.g. after
     /// editing .envrc; restart sessions to pick it up).
     Prepare { target: String },
+    /// Put a workspace away: stop its sessions and clear what it asks for,
+    /// keeping its files, branch and sessions. Hidden from `otter ls`.
+    Archive { target: String },
+    /// Bring an archived workspace back. Its sessions stay stopped until you
+    /// restart them.
+    #[command(visible_alias = "restore")]
+    Unarchive { target: String },
     /// Stop all sessions and delete the workspace and its directory. Git
     /// branches are kept.
     #[command(visible_alias = "rm")]
@@ -274,13 +288,17 @@ async fn run(cli: Cli) -> Result<()> {
         Command::Host(cmd) => host_command(&mut config, cmd, json).await,
         Command::Workspace(cmd) => workspace_command(&config, cmd, json).await,
         Command::Session(cmd) => session_command(&config, cmd, json).await,
-        Command::Ls { watch, table } => {
+        Command::Ls {
+            watch,
+            table,
+            archived,
+        } => {
             if watch {
-                dashboard::watch(&config).await
+                dashboard::watch(&config, archived).await
             } else if table {
-                list_workspaces(&config, json).await
+                list_workspaces(&config, json, archived).await
             } else {
-                dashboard::show(&config, json).await
+                dashboard::show(&config, json, archived).await
             }
         }
         Command::Ack { target } => {
@@ -482,7 +500,7 @@ async fn host_command(config: &mut Config, cmd: HostCommand, json: bool) -> Resu
 async fn workspace_command(config: &Config, cmd: WorkspaceCommand, json: bool) -> Result<()> {
     match cmd {
         WorkspaceCommand::Create(args) => create_workspace(config, args, json).await,
-        WorkspaceCommand::List => list_workspaces(config, json).await,
+        WorkspaceCommand::List { archived } => list_workspaces(config, json, archived).await,
         WorkspaceCommand::Show { target } => {
             let found = find(config, &Target::parse(&target)?).await?;
             if json {
@@ -496,6 +514,33 @@ async fn workspace_command(config: &Config, cmd: WorkspaceCommand, json: bool) -
             let ws = found
                 .conn
                 .workspace_prepare(found.workspace.id.as_str())
+                .await?;
+            let ws = wait_until_prepared(&mut found.conn, ws).await?;
+            if json {
+                return output::print_json(&ws);
+            }
+            report_prepared(&found.host.name, &ws)
+        }
+        WorkspaceCommand::Archive { target } => {
+            let mut found = find(config, &Target::parse(&target)?).await?;
+            let ws = found
+                .conn
+                .workspace_archive(found.workspace.id.as_str())
+                .await?;
+            if json {
+                return output::print_json(&ws);
+            }
+            println!(
+                "archived workspace {} on {} (files kept in {}; `otter ws unarchive {}` to bring it back)",
+                ws.name, found.host.name, ws.root, ws.name
+            );
+            Ok(())
+        }
+        WorkspaceCommand::Unarchive { target } => {
+            let mut found = find(config, &Target::parse(&target)?).await?;
+            let ws = found
+                .conn
+                .workspace_unarchive(found.workspace.id.as_str())
                 .await?;
             let ws = wait_until_prepared(&mut found.conn, ws).await?;
             if json {
@@ -636,7 +681,7 @@ fn report_prepared(host: &str, ws: &Workspace) -> Result<()> {
     Ok(())
 }
 
-async fn list_workspaces(config: &Config, json: bool) -> Result<()> {
+async fn list_workspaces(config: &Config, json: bool, archived: bool) -> Result<()> {
     if config.hosts.is_empty() {
         bail!("no hosts registered; add one with `otter host add <name>`");
     }
@@ -654,6 +699,13 @@ async fn list_workspaces(config: &Config, json: bool) -> Result<()> {
     }
     let mut results: Vec<_> = tasks.join_all().await;
     results.sort_by_key(|(i, _)| *i);
+    if !archived {
+        for (_, r) in &mut results {
+            if let Ok(list) = r {
+                list.retain(|w| w.state != WorkspaceState::Archived);
+            }
+        }
+    }
 
     if json {
         let v: Vec<_> = results

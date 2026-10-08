@@ -1879,3 +1879,181 @@ async fn browser_login_opens_trusted_pages_through_a_connected_app() {
     let out = wait_output(&host, "login", "sh", "bad-done-42").await;
     assert!(out.contains("not a trusted sign-in provider"), "{out}");
 }
+
+#[tokio::test]
+async fn archive_stops_sessions_and_unarchive_brings_the_workspace_back() {
+    let host = TestHost::new();
+    let ws = create(
+        &host,
+        "shelf",
+        Some(vec![
+            spec(SessionKind::Service, "server", "sleep 600"),
+            spec(SessionKind::Task, "tests", "exit 3"),
+        ]),
+    )
+    .await;
+    std::fs::write(Path::new(&ws.root).join("notes.txt"), "keep me").unwrap();
+    let server = ws.session("server").unwrap().clone();
+    let server_exec = server.current_execution().unwrap().clone();
+    let tests_exec = wait_status(&host, "shelf", "tests", SessionStatus::Failed)
+        .await
+        .session("tests")
+        .unwrap()
+        .current_execution()
+        .unwrap()
+        .clone();
+    let ws = eventually("the failed task asks for attention", || async {
+        let w = host.conn().await.workspace_get("shelf").await.unwrap();
+        (!w.attention.is_empty()).then_some(w)
+    })
+    .await;
+    assert!(host.tmux_has_session(&server_exec.backend_ref));
+
+    let mut stream = host.conn().await.subscribe(None).await.unwrap();
+    let mut conn = host.conn().await;
+    let archived = conn.workspace_archive("shelf").await.unwrap();
+    assert_eq!(archived.state, WorkspaceState::Archived);
+    assert_eq!(archived.activity(), otter_core::Activity::Archived);
+    assert!(archived.attention.is_empty());
+    let s = archived.session("server").unwrap();
+    assert_eq!(
+        (s.id.clone(), s.status()),
+        (server.id.clone(), SessionStatus::Stopped)
+    );
+    assert_eq!(
+        archived.session("tests").unwrap().status(),
+        SessionStatus::Failed
+    );
+    // Processes (and retained output) are released; the files are kept.
+    assert!(!host.tmux_has_session(&server_exec.backend_ref));
+    assert!(!host.tmux_has_session(&tests_exec.backend_ref));
+    assert_eq!(
+        std::fs::read_to_string(Path::new(&ws.root).join("notes.txt")).unwrap(),
+        "keep me"
+    );
+
+    let mut kinds = Vec::new();
+    tokio::time::timeout(Duration::from_secs(15), async {
+        while let Some(rec) = stream.next().await.unwrap() {
+            kinds.push(rec.event.kind());
+            if rec.event.kind() == "WorkspaceArchived" {
+                break;
+            }
+        }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("events so far: {kinds:?}"));
+    assert_eq!(
+        kinds,
+        ["SessionStopped", "AttentionResolved", "WorkspaceArchived"]
+    );
+
+    // Nothing runs or starts in an archived workspace.
+    let err = conn.workspace_archive("shelf").await.unwrap_err();
+    assert!(err.to_string().contains("already archived"), "{err}");
+    let err = conn
+        .session_create(SessionCreate {
+            workspace: "shelf".into(),
+            spec: spec(SessionKind::Task, "more", "exit 0"),
+        })
+        .await
+        .unwrap_err();
+    assert!(err.to_string().contains("unarchive it first"), "{err}");
+    let err = conn.session_restart("shelf", "server").await.unwrap_err();
+    assert!(err.to_string().contains("archived"), "{err}");
+    let err = conn.workspace_prepare("shelf").await.unwrap_err();
+    assert!(err.to_string().contains("unarchive it first"), "{err}");
+    let err = conn.workspace_unarchive("nope").await.unwrap_err();
+    assert!(err.to_string().contains("no workspace"), "{err}");
+
+    // Archived survives a daemon restart, still quiet.
+    host.stop_daemon().await;
+    tokio::time::sleep(Duration::from_millis(1200)).await; // a few reconcile ticks
+    let ws = host.conn().await.workspace_get("shelf").await.unwrap();
+    assert_eq!(ws.state, WorkspaceState::Archived);
+    assert!(ws.attention.is_empty());
+    assert_eq!(
+        ws.session("server").unwrap().status(),
+        SessionStatus::Stopped
+    );
+    assert!(ws.sessions.iter().all(|s| s.executions.len() == 1));
+    let listed = host.conn().await.workspace_list().await.unwrap();
+    assert_eq!(
+        listed.len(),
+        1,
+        "workspace.list still returns archived ones"
+    );
+
+    // Unarchiving prepares it again; sessions stay stopped until restarted,
+    // which starts a new execution of the same session.
+    let mut conn = host.conn().await;
+    let back = conn.workspace_unarchive("shelf").await.unwrap();
+    let back = if back.state == WorkspaceState::Preparing {
+        wait_prepared(&host, "shelf").await
+    } else {
+        back
+    };
+    assert_eq!(
+        back.state,
+        WorkspaceState::Ready,
+        "{:?}",
+        back.state_message
+    );
+    assert_eq!(
+        back.session("server").unwrap().status(),
+        SessionStatus::Stopped
+    );
+    assert_eq!(back.session("server").unwrap().executions.len(), 1);
+    let err = conn.workspace_unarchive("shelf").await.unwrap_err();
+    assert!(err.to_string().contains("not archived"), "{err}");
+    let restarted = conn.session_restart("shelf", "server").await.unwrap();
+    assert_eq!(restarted.id, server.id);
+    assert_eq!(restarted.executions.len(), 2);
+    assert_eq!(restarted.status(), SessionStatus::Running);
+    assert_ne!(restarted.current_execution().unwrap().id, server_exec.id);
+}
+
+#[tokio::test]
+async fn archived_git_workspace_keeps_its_worktree_until_deleted() {
+    let host = TestHost::new();
+    let src = make_repo(&host, "src", &[("README.md", "hello\n")]);
+    let mut conn = host.conn().await;
+    conn.workspace_create(git_ws(
+        "parked",
+        &src,
+        None,
+        vec![spec(SessionKind::Service, "srv", "sleep 600")],
+    ))
+    .await
+    .unwrap();
+    let ws = wait_prepared(&host, "parked").await;
+    assert_eq!(ws.state, WorkspaceState::Ready, "{:?}", ws.state_message);
+    let root = Path::new(&ws.root).to_owned();
+    std::fs::write(root.join("wip.txt"), "unpushed").unwrap();
+
+    conn.workspace_archive("parked").await.unwrap();
+    let base = host
+        .home()
+        .join("repos")
+        .join(&git_source(&ws).repo_id)
+        .join("base");
+    let worktrees = git(&base, &["worktree", "list", "--porcelain"]);
+    assert!(worktrees.contains(&ws.root), "{worktrees}");
+    assert!(root.join("wip.txt").is_file());
+
+    // Back again: same worktree, same uncommitted work.
+    conn.workspace_unarchive("parked").await.unwrap();
+    let ws = wait_prepared(&host, "parked").await;
+    assert_eq!(ws.state, WorkspaceState::Ready, "{:?}", ws.state_message);
+    assert_eq!(git_source(&ws).branch, "otterd/parked");
+    assert!(root.join("wip.txt").is_file());
+
+    // Deleting an archived workspace still protects uncommitted work, then
+    // removes the worktree and keeps the branch.
+    conn.workspace_archive("parked").await.unwrap();
+    let err = conn.workspace_delete("parked", false).await.unwrap_err();
+    assert!(err.to_string().contains("uncommitted"), "{err}");
+    conn.workspace_delete("parked", true).await.unwrap();
+    assert!(!root.exists());
+    git(&base, &["show-ref", "--verify", "refs/heads/otterd/parked"]);
+}

@@ -135,6 +135,8 @@ impl Daemon {
             Request::WorkspaceGet(r) => json(self.workspace_get(&r.workspace).await?),
             Request::WorkspacePrepare(r) => json(self.workspace_prepare(&r.workspace).await?),
             Request::WorkspaceDelete(p) => json(self.workspace_delete(&p).await?),
+            Request::WorkspaceArchive(r) => json(self.workspace_archive(&r.workspace).await?),
+            Request::WorkspaceUnarchive(r) => json(self.workspace_unarchive(&r.workspace).await?),
             Request::SessionCreate(p) => json(self.session_create(p).await?),
             Request::SessionStop(r) => json(self.session_stop(&r).await?),
             Request::SessionRestart(r) => json(self.session_restart(&r).await?),

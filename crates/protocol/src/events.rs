@@ -41,6 +41,15 @@ pub enum Event {
         workspace_id: WorkspaceId,
         message: String,
     },
+    /// Sessions stopped and attention resolved; files kept.
+    WorkspaceArchived {
+        workspace_id: WorkspaceId,
+        name: String,
+    },
+    /// Back from the archive; preparing again.
+    WorkspaceUnarchived {
+        workspace_id: WorkspaceId,
+    },
     EnvironmentPreparing {
         workspace_id: WorkspaceId,
     },
@@ -131,6 +140,8 @@ impl Event {
             Event::WorkspaceDeleted { .. } => "WorkspaceDeleted",
             Event::WorkspaceReady { .. } => "WorkspaceReady",
             Event::WorkspaceFailed { .. } => "WorkspaceFailed",
+            Event::WorkspaceArchived { .. } => "WorkspaceArchived",
+            Event::WorkspaceUnarchived { .. } => "WorkspaceUnarchived",
             Event::EnvironmentPreparing { .. } => "EnvironmentPreparing",
             Event::EnvironmentReady { .. } => "EnvironmentReady",
             Event::EnvironmentFailed { .. } => "EnvironmentFailed",
@@ -156,6 +167,8 @@ impl Event {
             | Event::WorkspaceDeleted { workspace_id, .. }
             | Event::WorkspaceReady { workspace_id }
             | Event::WorkspaceFailed { workspace_id, .. }
+            | Event::WorkspaceArchived { workspace_id, .. }
+            | Event::WorkspaceUnarchived { workspace_id }
             | Event::EnvironmentPreparing { workspace_id }
             | Event::EnvironmentReady { workspace_id }
             | Event::EnvironmentFailed { workspace_id, .. }

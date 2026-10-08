@@ -5,7 +5,12 @@
 //!              │  files: empty dir | git worktree | existing directory
 //!              │  environment: none | direnv
 //!              └──► FAILED (retry with workspace.prepare)
+//!
+//! READY | FAILED ──archive──► ARCHIVED ──unarchive──► PREPARING
 //! ```
+//!
+//! Archiving is not deleting (D-036): sessions are stopped but kept, attention
+//! is resolved, and the files, worktree and branch stay where they are.
 //!
 //! Preparation runs in a background task so slow steps (clone, Nix builds) never
 //! block the daemon. `workspace.create` waits briefly so fast cases (an empty
@@ -18,8 +23,9 @@ use std::time::Duration;
 use anyhow::{Context, Result, bail};
 use chrono::Utc;
 use otter_core::{
-    AttentionKind, Environment, EnvironmentKind, EnvironmentStatus, GitSource, SessionSpec,
-    SourceSpec, Workspace, WorkspaceId, WorkspaceSource, WorkspaceState, validate_name,
+    AttentionKind, Environment, EnvironmentKind, EnvironmentStatus, ExecutionState, GitSource,
+    SessionSpec, SourceSpec, Workspace, WorkspaceId, WorkspaceSource, WorkspaceState,
+    validate_name,
 };
 use otter_protocol::{ErrorCode, Event, RpcError, WorkspaceCreate, WorkspaceDelete};
 
@@ -27,7 +33,7 @@ use crate::attention;
 use crate::daemon::{Daemon, RpcResult, internal, save, workspace_not_found};
 use crate::environment::EnvironmentManager;
 use crate::git::{repo_id, slug};
-use crate::sessions::validate_spec;
+use crate::sessions::{mark_ended, validate_spec};
 
 /// How long `workspace.create` waits for preparation before returning a
 /// still-preparing workspace.
@@ -139,16 +145,115 @@ impl Daemon {
             let ws = store
                 .workspace_mut(r)
                 .ok_or_else(|| workspace_not_found(r))?;
-            if ws.state == WorkspaceState::Preparing {
-                return Err(RpcError::conflict(format!(
-                    "workspace `{}` is already preparing",
-                    ws.name
-                )));
+            match ws.state {
+                WorkspaceState::Preparing => {
+                    return Err(RpcError::conflict(format!(
+                        "workspace `{}` is already preparing",
+                        ws.name
+                    )));
+                }
+                WorkspaceState::Archived => return Err(archived(ws)),
+                WorkspaceState::Ready | WorkspaceState::Failed => {}
             }
             ws.state = WorkspaceState::Preparing;
             ws.state_message = None;
             let id = ws.id.clone();
             save(&store)?;
+            id
+        };
+        self.workspace_env.lock().unwrap().remove(&id);
+        let task = self.spawn_preparation(id.clone());
+        let _ = tokio::time::timeout(CREATE_WAIT, task).await;
+        self.workspace_get(id.as_str()).await
+    }
+
+    /// Put a workspace away (D-036): stop its sessions (they stay, and can be
+    /// restarted after unarchiving), resolve its attention, keep its files.
+    pub(crate) async fn workspace_archive(&self, r: &str) -> RpcResult<Workspace> {
+        let mut store = self.store.lock().await;
+        let ws = store
+            .workspace(r)
+            .cloned()
+            .ok_or_else(|| workspace_not_found(r))?;
+        match ws.state {
+            WorkspaceState::Ready | WorkspaceState::Failed => {}
+            // Preparation would mark it ready and start its sessions when it
+            // finishes; let it finish (or fail) first.
+            WorkspaceState::Preparing => {
+                return Err(RpcError::conflict(format!(
+                    "workspace `{}` is preparing; archive it once it is ready, or delete it",
+                    ws.name
+                )));
+            }
+            WorkspaceState::Archived => {
+                return Err(RpcError::conflict(format!(
+                    "workspace `{}` is already archived",
+                    ws.name
+                )));
+            }
+        }
+
+        let mut events = Vec::new();
+        for session in &ws.sessions {
+            if let Some(exec) = session.current_execution().filter(|e| e.is_running()) {
+                self.backend
+                    .terminate(&exec.backend_ref)
+                    .await
+                    .map_err(internal)?;
+                mark_ended(
+                    &mut store,
+                    &ws.id,
+                    &session.id,
+                    &exec.id,
+                    ExecutionState::Stopped,
+                );
+                events.push(Event::SessionStopped {
+                    workspace_id: ws.id.clone(),
+                    session_id: session.id.clone(),
+                });
+            }
+            // Also releases exited processes' retained output.
+            self.terminate_all(session).await?;
+        }
+
+        let w = store.workspace_mut(ws.id.as_str()).expect("exists");
+        events.extend(attention::resolve(w, |_| true));
+        w.state = WorkspaceState::Archived;
+        w.state_message = None;
+        w.updated_at = Utc::now();
+        save(&store)?;
+        self.workspace_env.lock().unwrap().remove(&ws.id);
+        self.emit_all(events);
+        self.events.emit(Event::WorkspaceArchived {
+            workspace_id: ws.id.clone(),
+            name: ws.name.clone(),
+        });
+        Ok(store.workspace(ws.id.as_str()).cloned().expect("exists"))
+    }
+
+    /// Bring an archived workspace back: prepare it again (files are checked,
+    /// the environment re-resolved). Its stopped sessions stay stopped until
+    /// restarted; sessions that never started start when it is ready.
+    pub(crate) async fn workspace_unarchive(self: &Arc<Self>, r: &str) -> RpcResult<Workspace> {
+        let id = {
+            let mut store = self.store.lock().await;
+            let ws = store
+                .workspace_mut(r)
+                .ok_or_else(|| workspace_not_found(r))?;
+            if ws.state != WorkspaceState::Archived {
+                return Err(RpcError::conflict(format!(
+                    "workspace `{}` is not archived",
+                    ws.name
+                )));
+            }
+            ws.state = WorkspaceState::Preparing;
+            ws.state_message = None;
+            ws.updated_at = Utc::now();
+            let id = ws.id.clone();
+            save(&store)?;
+            self.events.emit(Event::WorkspaceUnarchived {
+                workspace_id: id.clone(),
+            });
             id
         };
         self.workspace_env.lock().unwrap().remove(&id);
@@ -257,6 +362,9 @@ impl Daemon {
         let Some(ws) = store.workspace_mut(id.as_str()) else {
             return; // deleted meanwhile
         };
+        if ws.state != WorkspaceState::Preparing {
+            return; // e.g. archived meanwhile: don't start its sessions
+        }
         ws.updated_at = Utc::now();
         match result {
             Ok(()) => {
@@ -424,6 +532,13 @@ impl Daemon {
             let _ = store.save();
         }
     }
+}
+
+pub(crate) fn archived(ws: &Workspace) -> RpcError {
+    RpcError::conflict(format!(
+        "workspace `{}` is archived; unarchive it first",
+        ws.name
+    ))
 }
 
 fn remove_managed_dir(dir: &Path) -> RpcResult<()> {
