@@ -418,15 +418,25 @@ function Mappings({ host, forwards }: { host: HostView; forwards: ForwardView[] 
                 </td>
                 <td className="mono">{there}</td>
                 <td>
-                  {f.state === "active" ? "Active" : f.state === "pending" ? "Waiting for connection" : <span className="error-text">{f.message}</span>}
+                  {f.state === "failed" ? (
+                    <span className="error-text">{f.message}</span>
+                  ) : f.login ? (
+                    "Sign-in (closes when done)"
+                  ) : f.state === "active" ? (
+                    "Active"
+                  ) : (
+                    "Waiting for connection"
+                  )}
                 </td>
                 <td className="num">
-                  <input
-                    type="checkbox"
-                    aria-label="Keep across restarts"
-                    checked={f.pinned}
-                    onChange={(e) => void call("forward_pin", { ...key, pinned: e.target.checked })}
-                  />
+                  {!f.login && (
+                    <input
+                      type="checkbox"
+                      aria-label="Keep across restarts"
+                      checked={f.pinned}
+                      onChange={(e) => void call("forward_pin", { ...key, pinned: e.target.checked })}
+                    />
+                  )}
                 </td>
                 <td className="num">
                   <button className="btn outline small-btn" onClick={() => void call("forward_remove", key)}>

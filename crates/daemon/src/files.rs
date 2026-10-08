@@ -70,6 +70,42 @@ exit 1
     let path = dir.join("wl-paste");
     std::fs::write(&path, script)?;
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))?;
+
+    // Browser login (login.rs): links a tool opens go to the Otter app's
+    // browser on the Mac. One script under the names tools use.
+    let otterd = std::env::current_exe()?;
+    let open = format!(
+        r#"#!/bin/sh
+# otterd's browser stand-in (generated; see login.rs). Opens sign-in pages
+# from this host in the Otter app's browser on the Mac.
+name=$(basename "$0")
+self={dir}
+real() {{
+  [ "$name" = otter-open ] && exit 1
+  IFS=:
+  for d in $PATH; do
+    [ "$d" = "$self" ] && continue
+    [ -x "$d/$name" ] && exec "$d/$name" "$@"
+  done
+  exit 1
+}}
+case $1 in
+  http://* | https://*) ;;
+  *) real "$@" ;;
+esac
+# A desktop session on this host opens its own browser.
+if [ -n "$DISPLAY$WAYLAND_DISPLAY" ] && [ "$name" != otter-open ]; then real "$@"; fi
+{otterd} --home {home} open-url "$1" || real "$@"
+"#,
+        dir = q(&dir),
+        otterd = q(&otterd),
+        home = q(&paths.home),
+    );
+    for name in ["xdg-open", "www-browser", "otter-open"] {
+        let path = dir.join(name);
+        std::fs::write(&path, &open)?;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))?;
+    }
     Ok(())
 }
 

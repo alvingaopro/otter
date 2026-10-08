@@ -216,7 +216,11 @@ impl Daemon {
         env.insert("OTTER_SESSION_ID".into(), session.id.to_string());
         env.insert("OTTER_SESSION_NAME".into(), session.name.clone());
         env.insert("OTTER_EXECUTION_ID".into(), exec_id.to_string());
-        // The wl-paste stand-in for pasting images (files.rs) comes first.
+        // Python's webbrowser only uses xdg-open with a display: point it at
+        // the browser stand-in (login.rs) unless the user chose a browser.
+        env.entry("BROWSER".into())
+            .or_insert_with(|| "otter-open".into());
+        // The stand-ins (wl-paste, xdg-open, …; files.rs) come first.
         let shim = crate::files::shim_dir(&self.paths);
         let path = env.get("PATH").cloned().unwrap_or_default();
         env.insert(

@@ -675,3 +675,32 @@ stretch with no recording shows as a gap, and plot average with peak.
   host never gets a way to read the Mac's clipboard. Works in sessions
   attached through the app (not plain `ssh`), and in login shells whose
   profile keeps the inherited PATH.
+
+## D-032 — Browser login (2026-10-08)
+
+Portkeeper's browser login, adapted. CLI logins on a host open their sign-in
+page in the Mac's browser and finish on the host.
+
+- **Caught where tools open browsers:** `xdg-open` (Go, Node, Rust tools),
+  `www-browser` (Python with `TERM`), and `BROWSER=otter-open` set in sessions
+  that don't choose a browser (Python without a display). One stand-in in
+  `run/bin` (first on every session's PATH) runs `otterd open-url`; a host
+  with its own display, a non-URL argument, or a refusal falls through to a
+  real command of the same name.
+- **Policy (portkeeper's):** https only; trusted sign-in providers only (AWS
+  IAM Identity Center, Google, Microsoft, GitHub, HashiCorp); at most one
+  callback port — the explicit port of a loopback `redirect_uri`, also inside
+  wrapped https URLs (two levels), unprivileged. Never a reverse mapping or
+  anything else.
+- **Through the existing connection, not a new channel.** otterd queues the
+  request and emits `BrowserOpenRequested` (provider and port only — no URL
+  in `events.jsonl`); an app subscribed with `browser: true` takes the URL
+  once (`browser.take`), maps the callback port with a temporary `-L`
+  mapping, and opens the page. With no such app connected the request is
+  refused, so the tool prints the URL as it would without a browser. Two
+  Macs: the first to take it opens it.
+- **Callback mappings clean up:** removed when the host stops listening on the
+  port (the tool got its redirect) or after 10 minutes, shown meanwhile as
+  "Sign-in" among the host's mappings.
+- Not built: asking before opening an untrusted provider, an editable list,
+  a per-host off switch.

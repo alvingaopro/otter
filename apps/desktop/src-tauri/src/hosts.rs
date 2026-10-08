@@ -261,13 +261,26 @@ async fn follow(app: &AppHandle, name: &str, transport: &Transport) -> Result<Ne
     // the stream isn't cancel-safe, so it gets its own task.
     let mut stream = Connection::connect(transport)
         .await?
-        .subscribe(Some(snapshot.seq))
+        .subscribe_for_browser(Some(snapshot.seq))
         .await?;
     let (tx, mut rx) = tokio::sync::mpsc::channel::<Result<(), ClientError>>(64);
+    let (login_app, login_host) = (app.clone(), name.to_owned());
     let reader = tauri::async_runtime::spawn(async move {
         loop {
             let item = match stream.next().await {
-                Ok(Some(_)) => Ok(()),
+                Ok(Some(rec)) => {
+                    // Browser login: a tool on the host wants a sign-in page.
+                    if let otter_protocol::Event::BrowserOpenRequested { request_id, .. } =
+                        rec.event
+                    {
+                        tauri::async_runtime::spawn(crate::forwards::open_login(
+                            login_app.clone(),
+                            login_host.clone(),
+                            request_id,
+                        ));
+                    }
+                    Ok(())
+                }
                 Ok(None) => Err(ClientError::Closed(String::new())),
                 Err(e) => Err(e),
             };

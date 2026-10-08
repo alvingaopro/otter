@@ -121,6 +121,8 @@ export interface ForwardView {
   targetHost: string;
   targetPort: number;
   pinned: boolean;
+  /** A browser login's callback port, removed when the login is done. */
+  login: boolean;
   state: "pending" | "active" | "failed";
   message?: string;
 }

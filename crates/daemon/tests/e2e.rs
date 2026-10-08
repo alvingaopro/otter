@@ -1805,3 +1805,76 @@ async fn pasted_image_reaches_wl_paste_in_the_session() {
         .unwrap_err();
     assert!(err.to_string().contains("not a PNG"), "{err}");
 }
+
+// ---------------------------------------------------------------------------
+// Browser login
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn browser_login_opens_trusted_pages_through_a_connected_app() {
+    let host = TestHost::new();
+    sh_session(&host, "login").await;
+    let mut conn = host.conn().await;
+
+    // No app connected: the tool hears why (and falls back to printing).
+    conn.session_write(
+        "login",
+        "sh",
+        "xdg-open https://github.com/login/device; echo rc-$?",
+        true,
+    )
+    .await
+    .unwrap();
+    let out = wait_output(&host, "login", "sh", "rc-1").await;
+    assert!(out.contains("no Otter app is connected"), "{out}");
+
+    // An app subscribes as the browser.
+    let mut stream = host.conn().await.subscribe_for_browser(None).await.unwrap();
+    let aws = "https://oidc.us-east-1.amazonaws.com/authorize?client_id=x&redirect_uri=http%3A%2F%2F127.0.0.1%3A37265%2Foauth%2Fcallback";
+    conn.session_write(
+        "login",
+        "sh",
+        &format!("xdg-open '{aws}'; echo ok-$?; echo browser=$BROWSER"),
+        true,
+    )
+    .await
+    .unwrap();
+    let event = tokio::time::timeout(Duration::from_secs(15), async {
+        loop {
+            let rec = stream.next().await.unwrap().unwrap();
+            if let Event::BrowserOpenRequested {
+                request_id,
+                provider,
+                callback_port,
+                workspace_id,
+            } = rec.event
+            {
+                return (request_id, provider, callback_port, workspace_id);
+            }
+        }
+    })
+    .await
+    .expect("BrowserOpenRequested");
+    assert_eq!(event.1, "oidc.us-east-1.amazonaws.com");
+    assert_eq!(event.2, Some(37265));
+    assert!(event.3.is_some(), "attributed to the workspace");
+    wait_output(&host, "login", "sh", "browser=otter-open").await;
+    // The URL stays out of the event log, and is taken once.
+    let log = std::fs::read_to_string(host.home().join("state/events.jsonl")).unwrap();
+    assert!(!log.contains("client_id=x"), "URL leaked into the log");
+    let opening = conn.browser_take(&event.0).await.unwrap();
+    assert_eq!(opening.url, aws);
+    assert!(conn.browser_take(&event.0).await.is_err());
+
+    // Not a trusted provider: refused, with the reason on the host.
+    conn.session_write(
+        "login",
+        "sh",
+        "xdg-open https://example.com/; echo bad-$?",
+        true,
+    )
+    .await
+    .unwrap();
+    let out = wait_output(&host, "login", "sh", "bad-1").await;
+    assert!(out.contains("not a trusted sign-in provider"), "{out}");
+}

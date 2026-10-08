@@ -105,6 +105,18 @@ pub enum Event {
         workspace_id: WorkspaceId,
         attention_id: AttentionId,
     },
+    /// A tool on the host wants a sign-in page opened on the Mac (browser
+    /// login). The URL isn't here: an app takes it with `browser.take`.
+    BrowserOpenRequested {
+        request_id: String,
+        /// The sign-in host, e.g. `oidc.us-east-1.amazonaws.com`.
+        provider: String,
+        /// A loopback callback port the tool is waiting on.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        callback_port: Option<u16>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        workspace_id: Option<WorkspaceId>,
+    },
     /// A kind this build doesn't know (from a newer daemon, or an older log
     /// line). New kinds are a compatible protocol change; clients ignore them.
     #[serde(other)]
@@ -132,6 +144,7 @@ impl Event {
             Event::AgentStateChanged { .. } => "AgentStateChanged",
             Event::AttentionCreated { .. } => "AttentionCreated",
             Event::AttentionResolved { .. } => "AttentionResolved",
+            Event::BrowserOpenRequested { .. } => "BrowserOpenRequested",
             Event::Unknown => "Unknown",
         }
     }
@@ -156,6 +169,7 @@ impl Event {
             | Event::AgentStateChanged { workspace_id, .. }
             | Event::AttentionCreated { workspace_id, .. }
             | Event::AttentionResolved { workspace_id, .. } => Some(workspace_id),
+            Event::BrowserOpenRequested { workspace_id, .. } => workspace_id.as_ref(),
         }
     }
 

@@ -30,6 +30,11 @@ something needs you.
   text copies it).
 - **Paste screenshots into Claude Code.** Copy a screenshot on the Mac,
   press **Ctrl+V** in a Claude Code session on the host, and it's attached.
+- **Browser login.** `aws sso login`, `gcloud auth login`, `gh auth login`
+  and the like, run on a host, open their sign-in page in your Mac's browser
+  and finish on the host — including logins that wait for a callback on a
+  local port. Only https pages of known sign-in providers (AWS, Google,
+  Microsoft, GitHub, HashiCorp) open.
 - **Files.** Browse a workspace's files, download them, and upload by button
   or by dropping files on the window.
 - **Host dashboard.** For each host: CPU, load, memory, disks, network and

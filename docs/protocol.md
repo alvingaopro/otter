@@ -131,6 +131,20 @@ Both are additions (no protocol bump); daemons before them answer
   for that session; the session's stand-in `wl-paste` (first on its PATH)
   serves it for two minutes, so Claude Code's Ctrl+V picks it up.
 
+## Browser login
+
+- `browser.open {url, session?}` — from the host's browser stand-ins
+  (`otterd open-url`, behind `xdg-open`, `www-browser` and `BROWSER=otter-open`
+  in sessions). Accepted only for https pages of trusted sign-in providers,
+  and only while an app is subscribed with `events.subscribe {browser: true}`;
+  otherwise an error says why and the tool prints the URL itself.
+- Accepting it emits `BrowserOpenRequested {request_id, provider,
+  callback_port?, workspace_id?}` — the URL is not in the event (or the log).
+- `browser.take {request_id}` → `{url, provider, callback_port?}`, once, for
+  two minutes. The app opens the URL on the Mac and maps `callback_port` (a
+  loopback `redirect_uri` port) to this Mac until the host stops listening on
+  it or ten minutes pass.
+
 ## Attach mode
 
 After a successful `session.attach` response
