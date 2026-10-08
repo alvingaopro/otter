@@ -8,6 +8,8 @@ publish.workspace = true
 
 [dependencies]
 workd-core.workspace = true
+anyhow.workspace = true
+toml.workspace = true
 workd-protocol.workspace = true
 serde.workspace = true
 serde_json.workspace = true

@@ -7,12 +7,22 @@ manage them as **workspaces** — closer to browser tabs plus an inbox than to
 SSH + tmux. Remote work keeps running when your laptop sleeps.
 
 - `workd` runs on each host (started on demand over SSH, no open ports).
-- `workctl` is the control-plane CLI (a desktop app will follow).
+- `workctl` is the control-plane CLI; `apps/desktop` is the desktop app over
+  the same client library.
 
 See [`docs/design.md`](docs/design.md) for the architecture and
 [`docs/decisions.md`](docs/decisions.md) for implementation decisions.
 
-## Quick start
+## Install
+
+Each merge to `main` publishes a [release](https://github.com/alvingaopro/workd/releases)
+with the macOS desktop app (`.dmg`, universal) and `workd` + `workctl`
+binaries for Linux x86_64 and macOS arm64. Hosts and clients should run the
+same version (see [`docs/protocol.md`](docs/protocol.md)). The app isn't
+signed yet: the first time, right-click → Open, or
+`xattr -dr com.apple.quarantine /Applications/Workd.app`.
+
+## Quick start (from source)
 
 On each host (needs tmux ≥ 3.2):
 
@@ -57,8 +67,8 @@ workctl events [-n N] [-f]
 Implemented: design phases 1–7 (daemon over SSH, workspaces, tmux-backed
 sessions, Codex sessions with resume and state detection, Git worktrees on
 shared repositories, direnv/Nix environments, events and attention), all
-through `workctl`. Next: CLI dogfooding (phase 8), then the Tauri desktop app
-(phase 9). Open decisions are listed at the end of
+through `workctl`, event cursors and attach hardening (D-016, D-017), and
+desktop M1, the attention dashboard (D-018). Open decisions are listed at the end of
 [`docs/decisions.md`](docs/decisions.md) (D-013).
 
 Add `--json` to any command for machine-readable output.

@@ -5,9 +5,9 @@
 
 use std::path::{Path, PathBuf};
 
+use crate::Transport;
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
-use workd_client::Transport;
 
 /// Default location of `workd` on remote hosts. Interpreted by the remote
 /// shell, so `~` expands there.
@@ -178,7 +178,7 @@ impl Config {
     }
 }
 
-/// `workd` next to this `workctl` binary if present, else from `PATH`.
+/// `workd` next to the running client binary if present, else from `PATH`.
 fn local_workd() -> String {
     std::env::current_exe()
         .ok()

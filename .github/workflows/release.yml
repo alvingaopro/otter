@@ -1,0 +1,146 @@
+name: Release
+
+# Every merge to main ships: bump the version, tag it, build the desktop app
+# and the workd/workctl binaries, and publish a GitHub release.
+#
+# Bump size comes from the merged PR's labels: `release:major`,
+# `release:minor`, otherwise patch; `release:skip` releases nothing. Manual
+# runs choose it explicitly. The bump commit is pushed with GITHUB_TOKEN,
+# which does not trigger workflows, so releases don't loop.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: Version bump
+        type: choice
+        options: [patch, minor, major]
+        default: patch
+
+permissions:
+  contents: write
+  pull-requests: read
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  version:
+    name: Bump and tag
+    if: ${{ !startsWith(github.event.head_commit.message, 'Release v') }}
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.bump.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: Choose the bump
+        id: kind
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MANUAL: ${{ inputs.bump }}
+        run: |
+          kind="$MANUAL"
+          if [ -z "$kind" ]; then
+            labels=$(gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/pulls" --jq '.[0].labels[].name' 2>/dev/null || true)
+            kind=patch
+            if echo "$labels" | grep -qx 'release:minor'; then kind=minor; fi
+            if echo "$labels" | grep -qx 'release:major'; then kind=major; fi
+            if echo "$labels" | grep -qx 'release:skip'; then kind=skip; fi
+          fi
+          echo "kind=$kind" >> "$GITHUB_OUTPUT"
+          echo "bump: $kind"
+      - name: Bump, commit and tag
+        id: bump
+        if: steps.kind.outputs.kind != 'skip'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version=$(python3 scripts/version.py next "${{ steps.kind.outputs.kind }}")
+          python3 scripts/version.py set "$version"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -am "Release v$version"
+          git tag -a "v$version" -m "Workd v$version"
+          git push origin "HEAD:${GITHUB_REF_NAME}" "v$version"
+          # A draft until every artifact is attached.
+          gh release create "v$version" --draft --title "Workd v$version" --generate-notes --verify-tag
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+  desktop:
+    name: Desktop app (macOS universal)
+    needs: version
+    if: needs.version.outputs.version != ''
+    runs-on: macos-latest
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: v${{ needs.version.outputs.version }}
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: apps/desktop/package-lock.json
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin, x86_64-apple-darwin
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: apps/desktop/src-tauri
+      - run: npm ci
+        working-directory: apps/desktop
+      - run: npm run tauri build -- --target universal-apple-darwin --bundles app,dmg
+        working-directory: apps/desktop
+      - name: Upload
+        run: |
+          bundle=apps/desktop/src-tauri/target/universal-apple-darwin/release/bundle
+          mkdir -p out
+          cp "$bundle"/dmg/*.dmg "out/Workd_${VERSION}_macos_universal.dmg"
+          tar -czf "out/Workd_${VERSION}_macos_universal.app.tar.gz" -C "$bundle/macos" Workd.app
+          gh release upload "v$VERSION" out/* --clobber
+
+  binaries:
+    name: workd + workctl (${{ matrix.name }})
+    needs: version
+    if: needs.version.outputs.version != ''
+    strategy:
+      matrix:
+        include:
+          - name: linux-x86_64
+            os: ubuntu-latest
+          - name: macos-arm64
+            os: macos-latest
+    runs-on: ${{ matrix.os }}
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: v${{ needs.version.outputs.version }}
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --release --locked -p workd -p workctl
+      - name: Upload
+        run: |
+          name="workd-${VERSION}-${{ matrix.name }}"
+          mkdir -p "$name"
+          cp target/release/workd target/release/workctl "$name"/
+          tar -czf "$name.tar.gz" "$name"
+          gh release upload "v$VERSION" "$name.tar.gz" --clobber
+
+  publish:
+    name: Publish release
+    needs: [version, desktop, binaries]
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - run: gh release edit "v${{ needs.version.outputs.version }}" --repo "$GITHUB_REPOSITORY" --draft=false --latest

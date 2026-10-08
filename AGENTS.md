@@ -14,6 +14,7 @@ must keep, with the tests that guard them.
 | sessions, executions, tmux, attach                     | design §10–§12 · decisions D-007, D-009 · invariants 2, 3, 7               |
 | an agent integration (Codex, or adding a provider)     | `crates/daemon/src/agents/mod.rs` docs · decisions D-013, D-015 · invariants 5, 6 |
 | attention, the `workctl ls` view                       | design §21, §26 · decision D-014                                           |
+| the desktop app                                        | `apps/desktop/README.md` · decision D-018 · invariants 11, 12               |
 | the wire protocol, events or client                    | [`docs/protocol.md`](docs/protocol.md) · decisions D-004, D-016 · invariant 12 |
 | transport, daemon lifecycle, persistence               | decisions D-003, D-005, D-008 · invariants 4, 8, 11, 12                    |
 | the architecture itself                                | [`docs/design.md`](docs/design.md), [`docs/decisions.md`](docs/decisions.md), [`docs/architecture-lessons.md`](docs/architecture-lessons.md) |
@@ -31,6 +32,7 @@ architecture (architecture-lessons §24–§25).
 | `crates/client`   | `Connection` over `workd dial` (local or `ssh host workd dial`)      |
 | `crates/daemon`   | `workd` — host daemon (managers, tmux backend, attach bridge)        |
 | `crates/cli`      | `workctl` — control-plane CLI                                         |
+| `apps/desktop`    | Desktop app (Tauri 2 + React); own cargo workspace, see its README    |
 
 Inside the daemon (`crates/daemon/src`):
 

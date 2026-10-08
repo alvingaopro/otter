@@ -1,0 +1,35 @@
+[package]
+name = "workd-desktop"
+version = "0.1.0"
+description = "Workd desktop: a thin client over workd-client."
+edition = "2024"
+publish = false
+
+# Its own workspace: Tauri's dependency tree (WebKit on Linux) stays out of
+# the main `cargo build` / `cargo test`.
+[workspace]
+
+[lib]
+name = "workd_desktop_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+workd-core = { path = "../../../crates/core" }
+workd-protocol = { path = "../../../crates/protocol" }
+workd-client = { path = "../../../crates/client" }
+tauri = { version = "2", features = [] }
+tauri-plugin-notification = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["full"] }
+chrono = { version = "0.4", default-features = false, features = ["clock", "serde", "std"] }
+
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = 3
+panic = "abort"
+strip = true

@@ -1,0 +1,56 @@
+name: CI
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  rust:
+    name: Daemon, CLI and crates
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      # End-to-end tests drive a real tmux; the direnv test runs when direnv is present.
+      - run: sudo apt-get update && sudo apt-get install -y tmux direnv
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --all --check
+      - run: cargo clippy --all-targets --locked -- -D warnings
+      - run: cargo test --locked
+      - run: python3 scripts/version.py current
+
+  desktop:
+    name: Desktop app
+    runs-on: macos-latest
+    defaults:
+      run:
+        working-directory: apps/desktop
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: apps/desktop/package-lock.json
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: apps/desktop/src-tauri
+      - run: npm ci
+      # Type-checks and bundles the UI; Tauri's build embeds dist/.
+      - run: npm run build
+      - run: cargo fmt --check
+        working-directory: apps/desktop/src-tauri
+      - run: cargo clippy --locked -- -D warnings
+        working-directory: apps/desktop/src-tauri
