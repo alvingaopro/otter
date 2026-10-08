@@ -399,6 +399,17 @@ impl Connection {
         .await
     }
 
+    /// Take a sign-in page announced by `BrowserOpenRequested`, once.
+    pub async fn browser_take(
+        &mut self,
+        request_id: &str,
+    ) -> Result<otter_protocol::BrowserOpening> {
+        self.call(Request::BrowserTake(otter_protocol::BrowserTake {
+            request_id: request_id.to_owned(),
+        }))
+        .await
+    }
+
     /// TCP ports listening on the host.
     pub async fn host_ports(&mut self) -> Result<Vec<otter_protocol::host::ListeningPort>> {
         self.call(Request::HostPorts).await
@@ -531,9 +542,19 @@ impl Connection {
     /// given), then live ones. A cursor the host can no longer serve fails with
     /// [`ErrorCode::CursorExpired`](otter_protocol::ErrorCode::CursorExpired);
     /// reload a snapshot then.
-    pub async fn subscribe(mut self, after: Option<u64>) -> Result<EventStream> {
+    pub async fn subscribe(self, after: Option<u64>) -> Result<EventStream> {
+        self.subscribe_with(after, false).await
+    }
+
+    /// Like [`Self::subscribe`], as an app that opens sign-in pages for
+    /// browser login (`BrowserOpenRequested`).
+    pub async fn subscribe_for_browser(self, after: Option<u64>) -> Result<EventStream> {
+        self.subscribe_with(after, true).await
+    }
+
+    async fn subscribe_with(mut self, after: Option<u64>, browser: bool) -> Result<EventStream> {
         let ready: Subscribed = self
-            .call(Request::EventsSubscribe(EventsSubscribe { after }))
+            .call(Request::EventsSubscribe(EventsSubscribe { after, browser }))
             .await?;
         Ok(EventStream {
             seq: ready.seq,

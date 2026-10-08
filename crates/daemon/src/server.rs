@@ -116,6 +116,9 @@ async fn subscribe(
     mut w: OwnedWriteHalf,
 ) -> Result<()> {
     let (head, mut live) = daemon.events.subscribe();
+    let _browser = params
+        .browser
+        .then(|| crate::daemon::BrowserSubscriber::new(&daemon));
     let backlog = match params.after {
         None => Vec::new(),
         Some(after) => match daemon.events.since(after) {

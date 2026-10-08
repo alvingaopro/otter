@@ -12,6 +12,7 @@ mod events;
 mod files;
 mod git;
 mod history;
+mod login;
 mod metrics;
 mod paths;
 mod reconcile;
@@ -56,6 +57,10 @@ enum Command {
     Dial,
     /// Print the version.
     Version,
+    /// Open a sign-in page in the connected Otter app's browser (what the
+    /// xdg-open/www-browser stand-ins run).
+    #[command(hide = true)]
+    OpenUrl { url: String },
     #[command(hide = true)]
     InternalDumpEnv,
     #[command(hide = true)]
@@ -94,6 +99,13 @@ fn main() -> Result<()> {
             // Don't wait for the blocking stdin reader thread.
             std::process::exit(0);
         }
+        Command::OpenUrl { url } => match runtime.block_on(open_url(&paths, url)) {
+            Ok(()) => Ok(()),
+            Err(e) => {
+                eprintln!("otter: {e:#}");
+                std::process::exit(1);
+            }
+        },
         Command::Version | Command::InternalDumpEnv | Command::InternalExec { .. } => {
             unreachable!()
         }
@@ -224,4 +236,29 @@ async fn acquire_lock(paths: &Paths) -> Result<Option<std::fs::File>> {
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
     Ok(None)
+}
+
+/// `otterd open-url`: ask the running daemon to open a sign-in page on the Mac.
+async fn open_url(paths: &Paths, url: String) -> Result<()> {
+    use otter_protocol::wire::{read_json, write_json};
+    use otter_protocol::{BrowserOpen, ClientMessage, Request, ServerMessage};
+    let stream = tokio::net::UnixStream::connect(&paths.socket)
+        .await
+        .map_err(|_| anyhow::anyhow!("otterd is not running"))?;
+    let (r, mut w) = stream.into_split();
+    let mut r = tokio::io::BufReader::new(r);
+    let _hello: Option<ServerMessage> = read_json(&mut r).await?;
+    let msg = ClientMessage {
+        id: 1,
+        request: Request::BrowserOpen(BrowserOpen {
+            url,
+            session: std::env::var("OTTER_SESSION_ID").ok(),
+        }),
+    };
+    write_json(&mut w, &msg).await?;
+    match read_json::<_, ServerMessage>(&mut r).await? {
+        Some(ServerMessage::Response { error: None, .. }) => Ok(()),
+        Some(ServerMessage::Response { error: Some(e), .. }) => anyhow::bail!("{}", e.message),
+        _ => anyhow::bail!("no answer from otterd"),
+    }
 }

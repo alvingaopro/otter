@@ -47,6 +47,9 @@ pub struct Daemon {
     pub(crate) preparing: std::sync::Mutex<HashMap<WorkspaceId, tokio::task::AbortHandle>>,
     /// Resource usage, sampled in the background for the host page.
     metrics: crate::metrics::Sampler,
+    /// Browser login requests waiting for an app, and how many apps listen.
+    pub(crate) logins: crate::login::Pending,
+    pub(crate) browser_subscribers: std::sync::atomic::AtomicUsize,
     shutdown: watch::Sender<bool>,
 }
 
@@ -76,6 +79,8 @@ impl Daemon {
             workspace_env: Default::default(),
             preparing: Default::default(),
             metrics,
+            logins: Default::default(),
+            browser_subscribers: Default::default(),
             shutdown: watch::channel(false).0,
         }
     }
@@ -107,6 +112,17 @@ impl Daemon {
             Request::FsRead(p) => json(self.fs_read(&p).await?),
             Request::FsWrite(p) => json(self.fs_write(&p).await?),
             Request::SessionPasteImage(p) => json(self.paste_image(&p).await?),
+            Request::BrowserOpen(p) => json(self.browser_open(&p).await?),
+            Request::BrowserTake(p) => match self.logins.take(&p.request_id) {
+                Some(o) => json(otter_protocol::BrowserOpening {
+                    url: o.url,
+                    provider: o.provider,
+                    callback_port: o.callback_port,
+                }),
+                None => Err(RpcError::not_found(
+                    "no such sign-in request (taken or expired)",
+                )),
+            },
             Request::HostHistory(q) => match self.metrics.history(&q.range) {
                 Some(h) => json(h),
                 None => Err(RpcError::invalid(format!(
@@ -251,4 +267,69 @@ fn hostname() -> String {
     }
     let end = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
     String::from_utf8_lossy(&buf[..end]).into_owned()
+}
+
+/// Counts an app subscribed for browser login while it stays subscribed.
+pub(crate) struct BrowserSubscriber(Arc<Daemon>);
+
+impl BrowserSubscriber {
+    pub(crate) fn new(daemon: &Arc<Daemon>) -> Self {
+        daemon
+            .browser_subscribers
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        BrowserSubscriber(daemon.clone())
+    }
+}
+
+impl Drop for BrowserSubscriber {
+    fn drop(&mut self) {
+        self.0
+            .browser_subscribers
+            .fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+impl Daemon {
+    /// A browser stand-in on this host asks for a sign-in page on the Mac.
+    async fn browser_open(&self, p: &otter_protocol::BrowserOpen) -> RpcResult<()> {
+        let opening = crate::login::check(&p.url).map_err(RpcError::invalid)?;
+        if self
+            .browser_subscribers
+            .load(std::sync::atomic::Ordering::SeqCst)
+            == 0
+        {
+            return Err(RpcError::new(
+                otter_protocol::ErrorCode::Unavailable,
+                "no Otter app is connected to open it",
+            ));
+        }
+        let workspace_id = match &p.session {
+            Some(sid) => {
+                let store = self.store.lock().await;
+                store
+                    .state
+                    .workspaces
+                    .iter()
+                    .find(|w| w.sessions.iter().any(|s| s.id.as_str() == sid))
+                    .map(|w| w.id.clone())
+            }
+            None => None,
+        };
+        let request_id = format!(
+            "login_{}",
+            otter_core::SessionId::generate()
+                .as_str()
+                .trim_start_matches("ses_")
+        );
+        tracing::info!(provider = %opening.provider, port = ?opening.callback_port, "browser login requested");
+        self.events
+            .emit(otter_protocol::Event::BrowserOpenRequested {
+                request_id: request_id.clone(),
+                provider: opening.provider.clone(),
+                callback_port: opening.callback_port,
+                workspace_id,
+            });
+        self.logins.add(request_id, opening);
+        Ok(())
+    }
 }

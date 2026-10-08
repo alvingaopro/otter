@@ -68,6 +68,14 @@ pub enum Request {
     /// Code and other tools that read images with `wl-paste`. Result: `null`.
     #[serde(rename = "session.paste_image")]
     SessionPasteImage(fs::PasteImage),
+    /// From the host's browser stand-ins: open a sign-in page on the Mac (see
+    /// `docs/protocol.md`). Result: `null`, or an error saying why not.
+    #[serde(rename = "browser.open")]
+    BrowserOpen(BrowserOpen),
+    /// From an app, after `BrowserOpenRequested`: the page to open, once.
+    /// Result: [`BrowserOpening`].
+    #[serde(rename = "browser.take")]
+    BrowserTake(BrowserTake),
     /// Recorded usage over a range. Result: [`host::HostHistory`].
     #[serde(rename = "host.history")]
     HostHistory(host::HistoryQuery),
@@ -142,6 +150,8 @@ impl Request {
             Request::HostMetrics => "host.metrics",
             Request::HostPorts => "host.ports",
             Request::HostHistory(_) => "host.history",
+            Request::BrowserOpen(_) => "browser.open",
+            Request::BrowserTake(_) => "browser.take",
             Request::FsList(_) => "fs.list",
             Request::FsRead(_) => "fs.read",
             Request::FsWrite(_) => "fs.write",
@@ -273,11 +283,36 @@ pub struct EventsList {
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BrowserOpen {
+    pub url: String,
+    /// The session the tool runs in (its `OTTER_SESSION_ID`), if known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session: Option<String>,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BrowserTake {
+    pub request_id: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BrowserOpening {
+    pub url: String,
+    pub provider: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub callback_port: Option<u16>,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct EventsSubscribe {
     /// Replay events with `seq` greater than this before streaming live ones.
     /// Without it, only events after [`Subscribed::seq`] are streamed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub after: Option<u64>,
+    /// This subscriber opens sign-in pages (`BrowserOpenRequested`): the
+    /// Otter app. Browser login is refused while there is none.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub browser: bool,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -386,7 +421,10 @@ mod tests {
         );
         let msg = ClientMessage {
             id: 2,
-            request: Request::EventsSubscribe(EventsSubscribe { after: Some(41) }),
+            request: Request::EventsSubscribe(EventsSubscribe {
+                after: Some(41),
+                browser: false,
+            }),
         };
         let json = serde_json::to_string(&msg).unwrap();
         assert_eq!(

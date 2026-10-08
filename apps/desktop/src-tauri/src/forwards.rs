@@ -29,6 +29,9 @@ struct Entry {
     state: State,
     /// Master pid the mapping was last applied on.
     applied_on: Option<u32>,
+    /// A browser login's callback: removed when the host stops listening on
+    /// the port (the login finished) or at this time.
+    login_until: Option<std::time::Instant>,
 }
 
 #[derive(Clone, Debug, Serialize, PartialEq)]
@@ -48,6 +51,8 @@ pub struct ForwardView {
     target_host: String,
     target_port: u16,
     pinned: bool,
+    /// A browser login's callback, removed when the login is done.
+    login: bool,
     #[serde(flatten)]
     state: State,
 }
@@ -65,6 +70,7 @@ impl Forwards {
                 target_host: e.mapping.target_host.clone(),
                 target_port: e.mapping.target_port,
                 pinned: e.mapping.pinned,
+                login: e.login_until.is_some(),
                 state: e.state.clone(),
             })
             .collect()
@@ -109,6 +115,7 @@ pub fn start(app: &AppHandle) {
                         mapping,
                         state: State::Pending,
                         applied_on: None,
+                        login_until: None,
                     })
                     .collect();
             }
@@ -126,6 +133,7 @@ pub fn start(app: &AppHandle) {
 
 /// Re-apply the mappings of every host whose connection changed.
 async fn keep_applied(app: &AppHandle) {
+    reap_logins(app).await;
     let entries = app.state::<Forwards>().inner.lock().unwrap().clone();
     let mut by_host: HashMap<String, Vec<Entry>> = HashMap::new();
     for e in entries {
@@ -211,6 +219,7 @@ pub async fn forward_add(
         mapping,
         state: State::Active,
         applied_on: pid,
+        login_until: None,
     });
     if pinned {
         save_pins(&app);
@@ -274,4 +283,101 @@ pub fn forward_pin(
     }
     save_pins(&app);
     publish(&app);
+}
+
+/// How long a browser login's callback port stays mapped at most.
+const LOGIN_TTL: std::time::Duration = std::time::Duration::from_secs(600);
+
+/// A tool on `host` asked for a sign-in page (`BrowserOpenRequested`): take
+/// it, map its callback port to this Mac if it has one, and open it here.
+pub async fn open_login(app: AppHandle, host: String, request_id: String) {
+    use tauri_plugin_opener::OpenerExt;
+    let Ok(transport) = app.state::<Hosts>().transport(&host) else {
+        return;
+    };
+    let Ok(mut conn) = otter_client::Connection::connect(&transport).await else {
+        return;
+    };
+    // Another app (another Mac) may have taken it first: then it's theirs.
+    let Ok(opening) = conn.browser_take(&request_id).await else {
+        return;
+    };
+    if let Some(port) = opening.callback_port {
+        let mapping = Mapping {
+            host: host.clone(),
+            direction: Direction::ToLocal,
+            listen_port: port,
+            target_host: "localhost".into(),
+            target_port: port,
+            pinned: false,
+        };
+        let state = match forward::apply(&transport, &mapping).await {
+            Ok(()) => State::Active,
+            Err(e) => State::Failed {
+                message: format!("sign-in callback: {e}"),
+            },
+        };
+        let pid = forward::master_pid(&transport).await;
+        {
+            let forwards = app.state::<Forwards>();
+            let mut all = forwards.inner.lock().unwrap();
+            all.retain(|e| !e.mapping.same_slot(&mapping));
+            all.push(Entry {
+                mapping,
+                state,
+                applied_on: pid,
+                login_until: Some(std::time::Instant::now() + LOGIN_TTL),
+            });
+        }
+        publish(&app);
+    }
+    if let Err(e) = app.opener().open_url(&opening.url, None::<&str>) {
+        tracing_log(&format!("opening a sign-in page: {e}"));
+    }
+}
+
+/// Drop login callbacks whose time is up or whose port the host no longer
+/// listens on (the tool got its redirect and exited).
+async fn reap_logins(app: &AppHandle) {
+    let logins: Vec<Entry> = app
+        .state::<Forwards>()
+        .inner
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|e| e.login_until.is_some())
+        .cloned()
+        .collect();
+    let mut gone = Vec::new();
+    for e in logins {
+        let expired = e.login_until.is_some_and(|t| std::time::Instant::now() > t);
+        let Ok(transport) = app.state::<Hosts>().transport(&e.mapping.host) else {
+            gone.push(e);
+            continue;
+        };
+        let listening = if expired {
+            false
+        } else {
+            match otter_client::Connection::connect(&transport).await {
+                Ok(mut c) => c
+                    .host_ports()
+                    .await
+                    .map(|ports| ports.iter().any(|p| p.port == e.mapping.target_port))
+                    .unwrap_or(true),
+                Err(_) => true,
+            }
+        };
+        if !listening {
+            let _ = forward::cancel(&transport, &e.mapping).await;
+            gone.push(e);
+        }
+    }
+    if !gone.is_empty() {
+        {
+            let forwards = app.state::<Forwards>();
+            let mut all = forwards.inner.lock().unwrap();
+            all.retain(|c| !gone.iter().any(|g| g.mapping.same_slot(&c.mapping)));
+        }
+        publish(app);
+    }
 }
