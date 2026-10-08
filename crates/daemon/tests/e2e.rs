@@ -1817,15 +1817,16 @@ async fn browser_login_opens_trusted_pages_through_a_connected_app() {
     let mut conn = host.conn().await;
 
     // No app connected: the tool hears why (and falls back to printing).
+    // A real xdg-open on the host then gets its turn, so its exit status varies.
     conn.session_write(
         "login",
         "sh",
-        "xdg-open https://github.com/login/device; echo rc-$?",
+        "xdg-open https://github.com/login/device; echo first-done-$((40+2))",
         true,
     )
     .await
     .unwrap();
-    let out = wait_output(&host, "login", "sh", "rc-1").await;
+    let out = wait_output(&host, "login", "sh", "first-done-42").await;
     assert!(out.contains("no Otter app is connected"), "{out}");
 
     // An app subscribes as the browser.
@@ -1870,11 +1871,11 @@ async fn browser_login_opens_trusted_pages_through_a_connected_app() {
     conn.session_write(
         "login",
         "sh",
-        "xdg-open https://example.com/; echo bad-$?",
+        "xdg-open https://example.com/; echo bad-done-$((40+2))",
         true,
     )
     .await
     .unwrap();
-    let out = wait_output(&host, "login", "sh", "bad-1").await;
+    let out = wait_output(&host, "login", "sh", "bad-done-42").await;
     assert!(out.contains("not a trusted sign-in provider"), "{out}");
 }
