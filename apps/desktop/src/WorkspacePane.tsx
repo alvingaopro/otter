@@ -27,6 +27,7 @@ export function WorkspacePane({ placed, session, onSession, now, theme }: Props)
   const [error, setError] = useState<string | null>(null);
   const [open, setOpen] = useState<Open>(null);
   const [force, setForce] = useState(false);
+  const [closing, setClosing] = useState<string | null>(null);
 
   // A new session, or a new execution of it, starts a fresh attach.
   const running = current?.status === "running";
@@ -50,6 +51,20 @@ export function WorkspacePane({ placed, session, onSession, now, theme }: Props)
     }, 2000);
     return () => clearTimeout(t);
   }, [ending, host.status]);
+
+  // A session that isn't running, however it got there (also when we never
+  // watched it end): the last screen stays visible, dimmed.
+  const over: string | null = !current
+    ? null
+    : current.status === "completed" || current.status === "failed"
+      ? `${current.name} exited${current.exitCode !== undefined ? ` with status ${current.exitCode}` : ""}.`
+      : current.status === "stopped"
+        ? `${current.name} was stopped.`
+        : current.status === "lost"
+          ? `${current.name}'s process is gone.`
+          : current.status === "pending" && current.launchError
+            ? `${current.name} failed to start: ${current.launchError}`
+            : null;
 
   const attention: AttentionView | undefined =
     current?.attention ?? ws.attention.find((a) => !a.sessionId);
@@ -110,17 +125,26 @@ export function WorkspacePane({ placed, session, onSession, now, theme }: Props)
 
       <div className="tabs" role="tablist" aria-label="Sessions">
         {ws.sessions.map((s) => (
-          <button
-            key={s.id}
-            role="tab"
-            aria-selected={s.id === current?.id}
-            className={s.id === current?.id ? "tab selected" : "tab"}
-            onClick={() => onSession(s.id)}
-          >
-            <Glyph kind={sessionGlyph(s)} size={10} />
-            <span className="tab-name">{s.name}</span>
-            <span className="tab-kind">{kindLabel(s)}</span>
-          </button>
+          <div key={s.id} className={s.id === current?.id ? "tab selected" : "tab"}>
+            <button role="tab" aria-selected={s.id === current?.id} className="tab-main" onClick={() => onSession(s.id)}>
+              <Glyph kind={sessionGlyph(s)} size={10} />
+              <span className="tab-name">{s.name}</span>
+              <span className="tab-kind">{kindLabel(s)}</span>
+            </button>
+            <button
+              className="tab-close"
+              aria-label={`Close ${s.name}`}
+              title={s.status === "running" ? `Stop and delete ${s.name}` : `Delete ${s.name}`}
+              onClick={() => {
+                setClosing(s.id);
+                setOpen("delete-session");
+              }}
+            >
+              <svg width="9" height="9" viewBox="0 0 10 10" aria-hidden="true">
+                <path d="M2 2l6 6M8 2l-6 6" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+              </svg>
+            </button>
+          </div>
         ))}
         <button className="icon-btn new-tab" aria-label="New session" title="New session" onClick={() => setOpen("new-session")}>
           <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true">
@@ -134,7 +158,14 @@ export function WorkspacePane({ placed, session, onSession, now, theme }: Props)
             items={[
               { label: "Restart", onSelect: () => void act("session_restart", sessionArgs()) },
               { label: "Stop", hidden: current.status !== "running", onSelect: () => void act("session_stop", sessionArgs()) },
-              { label: "Delete session…", danger: true, onSelect: () => setOpen("delete-session") },
+              {
+                label: "Delete session…",
+                danger: true,
+                onSelect: () => {
+                  setClosing(current.id);
+                  setOpen("delete-session");
+                },
+              },
             ]}
           />
         )}
@@ -172,9 +203,22 @@ export function WorkspacePane({ placed, session, onSession, now, theme }: Props)
             onEnd={setEnding}
             label={current.name}
             where={host.name}
-            dimmed={ending !== null}
+            dimmed={ending !== null || over !== null}
             theme={theme}
           />
+          {!ending && over && (
+            <div className="ending">
+              <span>{over}</span>
+              <span className="banner-actions">
+                <button className="btn outline" disabled={busy} onClick={() => { setClosing(current.id); setOpen("delete-session"); }}>
+                  Delete
+                </button>
+                <button className="btn primary" disabled={busy} onClick={restart}>
+                  {current.agent ? "Restart (resumes the conversation)" : "Restart"}
+                </button>
+              </span>
+            </div>
+          )}
           {ending && (
             <div className="ending">
               <span>
@@ -256,25 +300,38 @@ export function WorkspacePane({ placed, session, onSession, now, theme }: Props)
           </div>
         </Dialog>
       )}
-      {open === "delete-session" && current && (
-        <Dialog title={`Delete ${current.name}?`} onClose={() => setOpen(null)}>
-          <p className="muted">Stops it if it is running and removes it from {ws.name}. The workspace’s files stay.</p>
-          {error && <div className="notice error">{error}</div>}
-          <div className="form-actions">
-            <span className="spacer" />
-            <button className="btn outline" onClick={() => setOpen(null)}>
-              Cancel
-            </button>
-            <button
-              className="btn danger"
-              disabled={busy}
-              onClick={() => void act("session_delete", sessionArgs()).then((ok) => ok && setOpen(null))}
-            >
-              Delete session
-            </button>
-          </div>
-        </Dialog>
-      )}
+      {open === "delete-session" &&
+        (() => {
+          const target = ws.sessions.find((s) => s.id === closing) ?? current;
+          if (!target) return null;
+          const running = target.status === "running";
+          return (
+            <Dialog title={`${running ? "Stop and delete" : "Delete"} ${target.name}?`} onClose={() => setOpen(null)}>
+              <p className="muted">
+                {running ? "It is still running; it will be stopped. " : ""}It is removed from {ws.name}; the workspace’s
+                files stay.
+              </p>
+              {error && <div className="notice error">{error}</div>}
+              <div className="form-actions">
+                <span className="spacer" />
+                <button className="btn outline" onClick={() => setOpen(null)}>
+                  Cancel
+                </button>
+                <button
+                  className="btn danger"
+                  disabled={busy}
+                  onClick={() =>
+                    void act("session_delete", { host: host.name, workspace: ws.id, session: target.id }).then(
+                      (ok) => ok && setOpen(null),
+                    )
+                  }
+                >
+                  {running ? "Stop and delete" : "Delete"}
+                </button>
+              </div>
+            </Dialog>
+          );
+        })()}
     </main>
   );
 }

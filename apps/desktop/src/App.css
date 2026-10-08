@@ -168,8 +168,12 @@ code, .mono { font-family: var(--mono); }
 .notice.error { background: var(--fail-bg); border: 1px solid var(--fail-border); color: var(--text); }
 
 .tabs { margin-top: 16px; padding: 0 16px; display: flex; flex-wrap: wrap; align-items: flex-end; gap: 2px; border-bottom: 1px solid var(--line); }
-.tab { display: flex; align-items: center; gap: 8px; height: 38px; padding: 0 14px; border-radius: 8px 8px 0 0; font-size: 13.5px; color: var(--muted); }
+.tab { display: flex; align-items: center; height: 38px; padding: 0 6px 0 14px; border-radius: 8px 8px 0 0; font-size: 13.5px; color: var(--muted); }
 .tab:hover { color: var(--text); }
+.tab-main { display: flex; align-items: center; gap: 8px; height: 100%; padding-right: 4px; }
+.tab-close { width: 20px; height: 20px; border-radius: 5px; display: inline-flex; align-items: center; justify-content: center; color: var(--faint); opacity: 0; }
+.tab:hover .tab-close, .tab.selected .tab-close, .tab-close:focus-visible { opacity: 1; }
+.tab-close:hover { background: var(--hover); color: var(--text); }
 .tab.selected { background: var(--term); color: var(--text); box-shadow: inset 0 1px 0 var(--line-strong), inset 1px 0 0 var(--line-strong), inset -1px 0 0 var(--line-strong); }
 .tab-name { font-weight: 500; }
 .tab-kind { color: var(--faint); font-size: 12px; }

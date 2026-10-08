@@ -126,11 +126,10 @@ export function ago(iso: string | undefined, now: number): string {
   return `${Math.floor(secs / 86400)}d`;
 }
 
-/** A hint next to the session name, unless it would just repeat it. */
+/** A hint next to the session name: the agent, or the kind of process. */
 export function kindLabel(s: SessionView): string {
   if (s.agent) {
-    if (s.name === s.agent.provider) return "agent";
-    return s.agent.provider === "claude" ? "Claude Code" : s.agent.provider === "codex" ? "Codex" : s.agent.provider;
+    return ({ codex: "Codex", claude: "Claude Code" } as Record<string, string>)[s.agent.provider] ?? s.agent.provider;
   }
   return s.name === s.kind ? "" : s.kind;
 }
