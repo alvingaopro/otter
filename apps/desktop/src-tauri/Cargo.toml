@@ -1,6 +1,6 @@
 [package]
 name = "workd-desktop"
-version = "0.1.1"
+version = "0.1.2"
 description = "Workd desktop: a thin client over workd-client."
 edition = "2024"
 publish = false
