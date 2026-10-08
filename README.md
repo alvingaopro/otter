@@ -23,8 +23,11 @@ aarch64) and macOS. macOS downloads come universal (any Mac) or per
 architecture (`arm64` for Apple silicon, `x86_64` for Intel; half the size). Hosts and clients should run
 the same version (see [`docs/protocol.md`](docs/protocol.md)).
 
-- **Desktop app:** open the `.dmg`. It isn't signed yet: the first time,
-  right-click → Open, or `xattr -dr com.apple.quarantine /Applications/Otter.app`.
+- **Desktop app:** open the `.dmg` and drag Otter to Applications. It is
+  ad-hoc signed but not notarized by Apple yet, so the first launch says
+  Apple couldn't verify it: open **System Settings → Privacy & Security** and
+  click **Open Anyway** (or run
+  `xattr -dr com.apple.quarantine /Applications/Otter.app` once).
   Then **Add a host**: give it a name and an SSH destination (anything
   `ssh <destination>` reaches) or pick this Mac. If the host has no `otterd`
   (or an older one), the app offers to install the matching release into
