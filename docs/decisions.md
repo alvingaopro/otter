@@ -239,22 +239,42 @@ and the rollout transcript.
 - **State** from transcript records: `task_started` → working;
   `task_complete` → waiting for input (with `last_agent_message`);
   `turn_aborted` → idle.
-- **Heuristic (unverified against real approval prompts):** approval requests
-  and questions aren't in the transcript. An agent that is mid-turn and whose
-  terminal *and* transcript have been quiet for `OTTER_AGENT_QUIET_SECS`
-  (default 8 s) is marked `blocked`. If the Codex spinner keeps animating
-  during an approval prompt, this misses (never cries wolf during long model
-  thinking). Likewise a freshly started agent that goes quiet becomes `idle`.
+- **Needs you (amended by D-035):** Codex offers no signal Otter may use
+  (see below), so this stays a heuristic: an agent mid-turn whose rollout
+  *and screen* have stood still for `OTTER_AGENT_QUIET_SECS` (default 8 s)
+  is `blocked`. Originally this used terminal *output*; calibration showed
+  that never fired for Codex (it redraws every second). A freshly started
+  agent that stands still is `idle`, or `blocked` if it was given a prompt
+  (a startup dialog such as folder trust is up).
 
-**Open for the user to decide:**
-1. Use hooks via `--dangerously-bypass-hook-trust` for exact approval detection
-   (`PermissionRequest`)? Precise, but bypasses Codex's hook trust checks for
-   that process.
-2. Calibrate the quiet heuristic with a few real Codex turns.
-3. Codex asks "trust this folder?" for every new worktree path and stores the
-   answer in `~/.codex/config.toml`. Otter could pre-trust its own worktrees
-   with `-c projects."<root>".trust_level=…`, but trust level changes Codex's
-   approval defaults, so that's left to the user.
+**Closed (2026-10-08, D-035):**
+1. Hooks via `--dangerously-bypass-hook-trust` — not used: it is a
+   "dangerous" flag, and the rollout records nothing during a prompt, so
+   there is nothing else structured to read.
+2. Calibrated against real Codex — codex-cli **0.154.0** (the version
+   installed on the dogfooding Mac; note it rejects `--no-daemon` with
+   `error: unexpected argument '--no-daemon' found`, so Otter's launch line
+   needs a newer Codex). In a tmux pane, `approval_policy` on-request, asked
+   to `touch` a file outside the sandbox:
+   - rollout: `response_item custom_tool_call` (`status: "completed"`, input
+     `tools.exec_command({cmd:"touch …", sandbox_permissions:"require_escalated"…})`)
+     then `token_usage_record`, then **nothing** for the 84 s the prompt
+     ("Would you like to run the following command? … › 1. Yes, proceed (y)")
+     stayed up; declining wrote `custom_tool_call_output` "aborted by user
+     after 84.0s" and `event_msg turn_aborted` (`reason: interrupted`).
+   - terminal: tmux `window_activity` advanced every second throughout, but
+     the captured screen was identical for 13+ s.
+   - `sleep 25` (running a command) and a 9 s think with no tool (rollout
+     silent from `item_completed` to `reasoning`): the screen changed every
+     second (`Working (23s • esc to interrupt)`).
+   So "screen and rollout still" separates waiting from thinking/running;
+   "no terminal output" does not.
+3. Folder trust: for a new directory Codex shows "Do you trust the contents
+   of this directory? … › 1. Yes, continue 2. No, quit" before writing any
+   rollout, and stores the answer as `[projects."<dir>"] trust_level =
+   "trusted"` in `$CODEX_HOME/config.toml`. Otter still doesn't pre-trust
+   (that would change the user's configuration and approval defaults); it
+   reports the dialog instead (still start + prompt → `blocked`).
 
 Everything parses defensively: the rollout format belongs to a self-updating
 binary. The message excerpt is stored in `state.json` only, never in
@@ -263,12 +283,15 @@ binary. The message excerpt is stored in `state.json` only, never in
 ## D-014 — Attention: derived from transitions, one open item per session (2026-10-07)
 
 - Raised by: agent finished a turn (`review`, with the message excerpt),
-  agent quiet mid-turn (`approval`, heuristic), task succeeded (`completion`),
+  agent waiting on a permission prompt (`approval`) or a question
+  (`question`) — reported by the agent where it can, else inferred from a
+  still turn (D-035) —, task succeeded (`completion`),
   task/service failed or a process disappeared (`failure`), a session failed to
   start or a workspace failed to prepare (`failure`). Leaving a shell or
   quitting an agent cleanly raises nothing.
 - Resolved by: attaching to or typing into the session, restarting / stopping /
-  deleting it, the agent starting to work again, a newer item for the same
+  deleting it, the agent starting to work again or going idle (a declined
+  prompt, an interrupted turn), a newer item for the same
   session, or `otter ack`.
 - Stored on the workspace (`state.json`); `AttentionCreated` /
   `AttentionResolved` events carry ids and kinds only.
@@ -499,7 +522,8 @@ Asked for directly, so the "no other providers yet" rule (D-015) gives way;
 the provider boundary from D-015 made it a new module, not a redesign.
 
 - `agents/claude.rs`, id `claude`: launch `claude [prompt]`, resume
-  `claude --resume <session-id>`.
+  `claude --resume <session-id>` (both with `--settings <file>` for Otter's
+  hooks since D-035).
 - Identity: Claude Code's transcript
   `$CLAUDE_CONFIG_DIR|~/.claude/projects/<cwd with non-alphanumerics → '->/<session-id>.jsonl`
   (checked against real transcripts; the cwd is tried as given and with
@@ -511,8 +535,14 @@ the provider boundary from D-015 made it a new module, not a redesign.
   `stop_reason: tool_use` (or streaming) → working, `end_turn` →
   waiting for input with its text as the last message, an interruption →
   idle. Sidechain (subagent) and meta records are ignored.
-- The quiet-turn heuristic (permission prompts aren't in the transcript) is
-  now shared: `agents::settle`, used by both providers.
+- ~~The quiet-turn heuristic is shared (`agents::settle`).~~ Amended by
+  D-035: permission prompts and questions come from Claude Code's hooks,
+  passed per launch; the shared heuristic is only the fallback when no hook
+  reports (hooks disabled by policy). Observed on Claude Code 2.1.295: while
+  a permission prompt is up the transcript's last record is the assistant
+  `tool_use` and nothing more is written; approving writes the `tool_result`
+  when the tool finishes; declining writes the rejection `tool_result` and
+  `[Request interrupted by user for tool use]` (→ idle).
 - `otter new --agent claude`; the app offers Codex / Claude Code / none in
   New workspace and Claude Code in New session, per what the host reports.
 - Test: a fake `claude` writing transcripts the same way
@@ -746,6 +776,102 @@ messages, exit codes) was never run end to end; and nothing went through
   built binary). Skips when `ssh -o BatchMode=yes localhost true` fails,
   like the direnv test; CI sets up a passwordless key for `ssh localhost`
   and sets `OTTER_E2E_REQUIRE_SSH=1`, which turns a skip into a failure.
+
+## D-035 — Knowing when an agent needs you: real signals first (2026-10-08)
+
+"Needs approval" came from `agents::settle` flagging ~8 s of quiet, never
+checked against a real prompt, and `AttentionKind::Question` was never
+raised. Calibrated against the real CLIs (tmux, scratch git dirs, tiny
+prompts; the user's config files only read), then changed:
+
+**Claude Code: its hooks, passed per launch.** Otter writes
+`run/agents/<session-id>/claude-settings.json` (hooks only) and launches
+`claude --settings <file> …`. Every hook runs `'<otterd>' internal-agent-hook
+claude '<dir>/claude-hooks.jsonl'` (`async: true`): otterd keeps event, tool,
+notification type, subagent id and a short detail (the question, or the tool
+plus Claude Code's own description of the call — never tool input or output)
+and appends one line; it prints nothing and always exits 0, so it can't
+steer a decision. Why this is within D-013's rule (don't change the user's
+agent configuration, no "dangerous" flags): `--settings` is an ordinary
+per-invocation flag; nothing of the user's is written; and hooks *merge*
+across settings sources — verified: with Otter's settings the user's own
+`Stop` hook (`~/.claude/hooks/notify-schedule.sh`) still ran in the same
+session. A policy that disables hooks (`disableAllHooks`,
+`allowManagedHooksOnly`) silences Otter's too; then the fallback below
+applies.
+
+Observed on Claude Code **2.1.295** (permission mode `default`; its default
+is now `auto`, which asked nothing for `touch`/`rm -rf` here):
+
+| when | hook stdin (trimmed) |
+|------|------------------------|
+| tool needs permission | `PreToolUse` then, ~50 ms later, `{"hook_event_name":"PermissionRequest","tool_name":"Bash","tool_input":{"command":"touch z","description":"Create empty file z"},"permission_suggestions":[…]}` |
+| prompt still up ~6 s later | `{"hook_event_name":"Notification","message":"Claude needs your permission","notification_type":"permission_prompt"}` |
+| approved | `PostToolUse` (when the tool finishes), later `Stop` |
+| declined | no hook; transcript gets the rejection + `[Request interrupted by user for tool use]` |
+| AskUserQuestion (also in auto mode) | `PreToolUse` + `PermissionRequest` with `"tool_name":"AskUserQuestion","tool_input":{"questions":[{"question":"Should the file be named a or b?",…}]}` |
+| before the folder-trust dialog is answered | nothing (`SessionStart` comes after) |
+
+`idle_prompt` never arrived (115 s idle after a declined prompt); not used.
+During the prompt the screen and terminal were completely still; during a
+20 s command the screen changed every second (`Running… (20s)`).
+
+Rules (`agents/claude.rs`): `PermissionRequest` → `blocked` + `approval`
+("claude needs your approval: Bash: Create empty file z"); for
+`AskUserQuestion` (or `PreToolUse` for it, or MCP `Elicitation`) → `blocked`
++ **`question`** ("claude asks: …"). Cleared by `PostToolUse*` (same
+subagent), `UserPromptSubmit`, `Stop`, or a transcript user record after it
+(a decline). A long approved command shows as the screen changing more than
+2 s after the prompt appeared → `working` before `PostToolUse`. Once any hook
+has reported for the execution the heuristic is off: a long think with a
+still screen stays `working`.
+
+Checked end to end with the real Claude Code through a dev otterd: question
+→ "NEEDS YOU · claude asks: Should the new file be named a or b?";
+`touch` in manual mode → "needs your approval: Bash: Create an empty probe
+file" within 3 s, still there at 18 s; Esc → idle, resolved; approved `sleep
+15 && touch …` → working during the sleep, then review.
+
+**Codex: still a heuristic, now on the screen.** No signal is usable (D-013,
+items 1–2). `settle` now takes "when the screen last changed": the daemon
+captures the visible screen of agents that are starting, working or blocked
+each pass (one capture each) and keeps a digest in memory; `window_activity`
+is no longer read. Codex shows a ticking elapsed time while thinking or
+running a command, so only a prompt is still. It can't tell an approval from
+a question, so it raises `approval` with the hedged "seems to be waiting for
+you (approval or question?)". A status line that changes on its own would
+make it miss; it never fires during the ticking states.
+
+Known limits: attaching resizes the pane, which reads as "answered" (shown
+as working until the tool finishes; the item was resolved by attaching
+anyway, but detaching without answering doesn't re-raise it). Hooks are
+trusted for the whole execution once one reports; if they stop (otterd
+moved — the installer keeps it at `~/.local/bin/otterd`) there is no
+fallback until the agent restarts. After an otterd restart the first look
+at a screen is not taken as a change, so a pending prompt stays reported.
+A Claude Code too old for `--settings` fails to start visibly. Codex was
+measured directly in tmux and through a faithful fake, not through otterd:
+the installed 0.154.0 rejects `--no-daemon` (D-013).
+
+**Startup dialogs:** an agent given a prompt that stands still before its
+transcript exists is `blocked` (folder trust for both CLIs, D-013 item 3);
+without a prompt, `idle` as before.
+
+Generic changes: `LaunchContext` (env, the session's private dir under
+`run/agents/`, removed with the session; the otterd path) for `launch_argv`;
+`ObserveContext` gets the dir and `screen_changed` (replacing `last_output`);
+`Observation::blocker` (kind + detail) picks the attention kind and summary.
+`AgentState` and the protocol are unchanged. A `blocked` → `idle` transition
+now resolves the item.
+
+Tests: unit tests replay the recorded hook/transcript sequence (approve,
+long command, long think, question, decline) and the no-hooks fallback;
+e2e fakes call the hooks from `--settings` like Claude Code
+(`claude_code_prompts_come_from_its_hooks`), ignore them
+(`claude_code_without_hooks_falls_back_to_the_quiet_turn`), and a fake Codex
+redraws an unchanged prompt every 0.3 s (which the old output-based rule
+missed — checked) or ticks for 6 s without a rollout record
+(`long_thinking_with_a_ticking_screen_is_not_waiting`).
 
 ## D-036 — Archive is not delete (2026-10-08)
 

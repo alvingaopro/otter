@@ -44,7 +44,7 @@ pub fn install_shim(paths: &Paths) -> anyhow::Result<()> {
         .recursive(true)
         .mode(0o700)
         .create(clipboard_dir(paths))?;
-    let q = |p: &Path| otter_client_quote(&p.to_string_lossy());
+    let q = |p: &Path| shell_quote(&p.to_string_lossy());
     let script = format!(
         r#"#!/bin/sh
 # otterd's stand-in for wl-paste (generated; see files.rs). Serves an image
@@ -110,7 +110,7 @@ if [ -n "$DISPLAY$WAYLAND_DISPLAY" ] && [ "$name" != otter-open ]; then real "$@
 }
 
 /// POSIX shell quoting.
-fn otter_client_quote(s: &str) -> String {
+pub(crate) fn shell_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', r"'\''"))
 }
 

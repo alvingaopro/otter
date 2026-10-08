@@ -63,9 +63,10 @@ record it in [`decisions.md`](decisions.md) first.
 ### 6. Codex-specific details do not define the generic Session model.
 
 - `Session.agent: Option<AgentInfo>` holds provider id, opaque provider data,
-  and generic `AgentState`. Launch flags, rollout/transcript files and
-  transcript parsing live in each provider (`agents/codex.rs`,
-  `agents/claude.rs`); the shared quiet-turn heuristic is `agents::settle`.
+  and generic `AgentState`. Launch flags, rollout/transcript files,
+  transcript parsing and hooks live in each provider (`agents/codex.rs`,
+  `agents/claude.rs`); generic code only sees `Observation` (state, opaque
+  data, a `Blocker` kind) and the shared quiet-turn fallback `agents::settle`.
 - Tests: `agents::codex::tests::*` and `agents::claude::tests::*` (providers),
   and the end-to-end agent tests, which drive everything through the generic
   API with a fake `codex` / `claude`.

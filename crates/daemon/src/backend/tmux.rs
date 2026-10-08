@@ -209,7 +209,7 @@ impl TmuxBackend {
                 "-a",
                 "-F",
                 // `|` never appears in the fields and is never escaped.
-                "#{session_name}|#{pane_dead}|#{pane_dead_status}|#{pane_dead_signal}|#{pane_pid}|#{window_activity}",
+                "#{session_name}|#{pane_dead}|#{pane_dead_status}|#{pane_dead_signal}|#{pane_pid}",
             ])
             .await
         {
@@ -227,7 +227,6 @@ impl TmuxBackend {
                 continue;
             }
             let pid = f[4].parse().ok();
-            let last_output = f.get(5).and_then(|t| t.parse().ok());
             let state = if f[1] == "1" {
                 let exit_code = f[2]
                     .parse::<i32>()
@@ -237,12 +236,12 @@ impl TmuxBackend {
                 let since = awaiting.get(f[0]).copied().unwrap_or_else(Instant::now);
                 if exit_code.is_none() && since.elapsed() < EXIT_STATUS_GRACE {
                     still_awaiting.insert(f[0].to_owned(), since);
-                    ProcessState::Alive { pid, last_output }
+                    ProcessState::Alive { pid }
                 } else {
                     ProcessState::Dead { exit_code }
                 }
             } else {
-                ProcessState::Alive { pid, last_output }
+                ProcessState::Alive { pid }
             };
             map.insert(f[0].to_owned(), state);
         }

@@ -1391,8 +1391,18 @@ sleep 1
 printf '%s\n' '{"type":"event_msg","payload":{"type":"task_started","turn_id":"t"}}' >&3
 case "$FAKE_CODEX_MODE" in
   approval)
-    echo "Allow command? [y/n]"
+    # Like the Codex TUI at an approval prompt: the terminal is redrawn
+    # every second, but what it shows doesn't change.
+    (while :; do printf '\rAllow command? [y/n] '; sleep 0.3; done) &
+    redraw=$!
     read answer
+    kill $redraw
+    ;;
+  thinking)
+    # Like Codex thinking at length: nothing in the rollout, but the
+    # elapsed time ticks on screen.
+    for i in 1 2 3 4 5 6 7 8 9 10 11 12; do printf '\rWorking (%ss)' "$i"; sleep 0.5; done
+    echo
     ;;
   *)
     for i in 1 2; do echo "working $i"; sleep 0.5; done
@@ -1437,9 +1447,19 @@ fn tmux_dir() -> String {
 
 /// A stand-in for Claude Code: records its arguments, writes a transcript
 /// where Claude Code does (one JSON record per line, appended as the turn
-/// goes), and plays a scripted turn. `--resume <id>` continues that file.
+/// goes), calls the hooks Otter passes with `--settings` the way Claude Code
+/// 2.1.295 does (event JSON on stdin), and plays a scripted turn.
+/// `--resume <id>` continues that file. Modes: `approval` / `question` stop
+/// at a permission prompt / AskUserQuestion until a line is typed;
+/// `nohooks` ignores the settings (hooks disabled) and stops at a prompt.
 const FAKE_CLAUDE: &str = r#"#!/bin/sh
 if [ "$1" = --version ]; then echo "2.0.0-fake (Claude Code)"; exit 0; fi
+hook_cmd=
+if [ "$1" = --settings ]; then
+  hook_cmd=$(sed -n 's/^ *"command": "\(.*\)",$/\1/p' "$2" | head -n 1)
+  shift 2
+fi
+[ "$FAKE_CODEX_MODE" = nohooks ] && hook_cmd=
 echo "claude $*" >> "$FAKE_CODEX_LOG"
 dir="$CLAUDE_CONFIG_DIR/projects/$(pwd -P | sed 's/[^A-Za-z0-9]/-/g')"
 mkdir -p "$dir"
@@ -1449,13 +1469,43 @@ else
   id=$(cat /proc/sys/kernel/random/uuid 2>/dev/null || uuidgen | tr A-Z a-z)
 fi
 f="$dir/$id.jsonl"
+now() { date -u +%Y-%m-%dT%H:%M:%S.000Z; }
 rec() { printf '%s\n' "$1" >> "$f"; }
+hook() {
+  [ -n "$hook_cmd" ] || return 0
+  printf '{"session_id":"%s","transcript_path":"%s","cwd":"%s","permission_mode":"default","hook_event_name":"%s"%s}' \
+    "$id" "$f" "$(pwd)" "$1" "$2" | sh -c "$hook_cmd"
+}
+hook SessionStart ',"source":"startup"'
 echo "claude ready"
-rec '{"type":"user","sessionId":"'$id'","message":{"role":"user","content":"go"}}'
-rec '{"type":"assistant","message":{"role":"assistant","stop_reason":"tool_use","content":[{"type":"tool_use","name":"Bash"}]}}'
-for i in 1 2; do echo "working $i"; sleep 0.5; done
-rec '{"type":"user","message":{"role":"user","content":[{"type":"tool_result","content":"ok"}]}}'
-rec '{"type":"assistant","message":{"role":"assistant","stop_reason":"end_turn","content":[{"type":"text","text":"All   tests\npass."}]}}'
+hook UserPromptSubmit ',"prompt":"go"'
+rec '{"type":"user","timestamp":"'$(now)'","sessionId":"'$id'","message":{"role":"user","content":"go"}}'
+case "$FAKE_CODEX_MODE" in
+  question)
+    rec '{"type":"assistant","timestamp":"'$(now)'","message":{"role":"assistant","stop_reason":"tool_use","content":[{"type":"tool_use","name":"AskUserQuestion"}]}}'
+    hook PreToolUse ',"tool_name":"AskUserQuestion","tool_input":{"questions":[{"question":"Name the file a or b?","options":[]}]}'
+    hook PermissionRequest ',"tool_name":"AskUserQuestion","tool_input":{"questions":[{"question":"Name the file a or b?","options":[]}]}'
+    echo "Name the file a or b?"
+    read answer
+    hook PostToolUse ',"tool_name":"AskUserQuestion","tool_response":{}'
+    ;;
+  approval | nohooks)
+    rec '{"type":"assistant","timestamp":"'$(now)'","message":{"role":"assistant","stop_reason":"tool_use","content":[{"type":"tool_use","name":"Bash"}]}}'
+    hook PreToolUse ',"tool_name":"Bash","tool_input":{"command":"touch z","description":"Create empty file z"}'
+    hook PermissionRequest ',"tool_name":"Bash","tool_input":{"command":"touch z","description":"Create empty file z"}'
+    echo "Do you want to proceed?"
+    read answer
+    hook PostToolUse ',"tool_name":"Bash","tool_response":{"stdout":""}'
+    ;;
+  *)
+    rec '{"type":"assistant","timestamp":"'$(now)'","message":{"role":"assistant","stop_reason":"tool_use","content":[{"type":"tool_use","name":"Bash"}]}}'
+    for i in 1 2; do echo "working $i"; sleep 0.5; done
+    hook PostToolUse ',"tool_name":"Bash","tool_response":{"stdout":"ok"}'
+    ;;
+esac
+rec '{"type":"user","timestamp":"'$(now)'","message":{"role":"user","content":[{"type":"tool_result","content":"ok"}]}}'
+rec '{"type":"assistant","timestamp":"'$(now)'","message":{"role":"assistant","stop_reason":"end_turn","content":[{"type":"text","text":"All   tests\npass."}]}}'
+hook Stop ',"stop_hook_active":false'
 echo "done"
 exec sleep 600
 "#;
@@ -1685,6 +1735,99 @@ async fn quiet_agent_mid_turn_is_flagged_and_answering_clears_it() {
     let ws = wait_agent(host, "ask", "codex", AgentState::WaitingForInput).await;
     assert_eq!(ws.attention.len(), 1);
     assert_eq!(ws.attention[0].kind, AttentionKind::Review);
+}
+
+#[tokio::test]
+async fn long_thinking_with_a_ticking_screen_is_not_waiting() {
+    use otter_core::AgentState;
+    // No signal from the agent: only the heuristic (quiet after 2 s here)
+    // could flag this turn, and the ticking screen keeps it working.
+    let fake = fake_codex_host("thinking").await;
+    let host = &fake.host;
+    create(host, "think", Some(vec![SessionSpec::agent("codex")])).await;
+    wait_agent(host, "think", "codex", AgentState::Working).await;
+    let start = std::time::Instant::now();
+    loop {
+        let ws = host.conn().await.workspace_get("think").await.unwrap();
+        let state = ws.session("codex").unwrap().agent.as_ref().unwrap().state;
+        assert_ne!(state, AgentState::Blocked, "{:?}", ws.attention);
+        if state == AgentState::WaitingForInput {
+            break;
+        }
+        assert!(
+            start.elapsed() < Duration::from_secs(20),
+            "turn never ended"
+        );
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    assert!(start.elapsed() > Duration::from_secs(4));
+}
+
+#[tokio::test]
+async fn claude_code_prompts_come_from_its_hooks() {
+    use otter_core::{Activity, AgentState, AttentionKind};
+    let fake = fake_codex_host("approval").await;
+    let host = &fake.host;
+    create(host, "perm", Some(vec![SessionSpec::agent("claude")])).await;
+    let ws = wait_agent(host, "perm", "claude", AgentState::Blocked).await;
+    assert_eq!(ws.activity(), Activity::NeedsYou);
+    assert_eq!(ws.attention.len(), 1);
+    assert_eq!(ws.attention[0].kind, AttentionKind::Approval);
+    // What the hook said, not the quiet-turn guess.
+    assert_eq!(
+        ws.attention[0].summary,
+        "claude needs your approval: Bash: Create empty file z"
+    );
+    let log = std::fs::read_to_string(host.home().join("state/events.jsonl")).unwrap();
+    assert!(!log.contains("empty file"));
+
+    // Approving clears it and the turn goes on to its end.
+    host.conn()
+        .await
+        .session_write("perm", "claude", "1", true)
+        .await
+        .unwrap();
+    let ws = wait_agent(host, "perm", "claude", AgentState::WaitingForInput).await;
+    assert_eq!(ws.attention.len(), 1);
+    assert_eq!(ws.attention[0].kind, AttentionKind::Review);
+
+    // A question is a question.
+    let fake = fake_codex_host("question").await;
+    let host = &fake.host;
+    create(host, "ask", Some(vec![SessionSpec::agent("claude")])).await;
+    let ws = wait_agent(host, "ask", "claude", AgentState::Blocked).await;
+    assert_eq!(ws.attention[0].kind, AttentionKind::Question);
+    assert_eq!(
+        ws.attention[0].summary,
+        "claude asks: Name the file a or b?"
+    );
+    host.conn()
+        .await
+        .session_write("ask", "claude", "a", true)
+        .await
+        .unwrap();
+    wait_agent(host, "ask", "claude", AgentState::WaitingForInput).await;
+}
+
+#[tokio::test]
+async fn claude_code_without_hooks_falls_back_to_the_quiet_turn() {
+    use otter_core::{AgentState, AttentionKind};
+    let fake = fake_codex_host("nohooks").await;
+    let host = &fake.host;
+    create(host, "nohooks", Some(vec![SessionSpec::agent("claude")])).await;
+    let ws = wait_agent(host, "nohooks", "claude", AgentState::Blocked).await;
+    assert_eq!(ws.attention[0].kind, AttentionKind::Approval);
+    assert!(
+        ws.attention[0].summary.contains("seems to be waiting"),
+        "{:?}",
+        ws.attention
+    );
+    host.conn()
+        .await
+        .session_write("nohooks", "claude", "1", true)
+        .await
+        .unwrap();
+    wait_agent(host, "nohooks", "claude", AgentState::WaitingForInput).await;
 }
 
 #[tokio::test]
