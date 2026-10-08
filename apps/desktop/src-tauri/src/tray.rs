@@ -3,11 +3,21 @@
 //! window is closed, so the status and notifications keep coming.
 
 use serde::Deserialize;
+use tauri::image::Image;
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::TrayIconBuilder;
 use tauri::{AppHandle, Emitter, Manager, Wry};
 
 const TRAY: &str = "otter";
+
+/// Gray when nothing needs you, orange when something does.
+fn icon(waiting: bool) -> Image<'static> {
+    if waiting {
+        tauri::include_image!("icons/tray-waiting.png")
+    } else {
+        tauri::include_image!("icons/tray-idle.png")
+    }
+}
 
 #[derive(Debug, Deserialize)]
 pub struct Waiting {
@@ -19,7 +29,7 @@ pub struct Waiting {
 pub fn setup(app: &AppHandle) -> tauri::Result<()> {
     let menu = build_menu(app, &[])?;
     TrayIconBuilder::with_id(TRAY)
-        .icon(tauri::include_image!("icons/32x32.png"))
+        .icon(icon(false))
         .tooltip("Otter")
         .menu(&menu)
         .show_menu_on_left_click(true)
@@ -98,6 +108,8 @@ pub fn tray_update(app: AppHandle, waiting: Vec<Waiting>) -> Result<(), String> 
     };
     let menu = build_menu(&app, &waiting).map_err(|e| e.to_string())?;
     tray.set_menu(Some(menu)).map_err(|e| e.to_string())?;
+    tray.set_icon(Some(icon(!waiting.is_empty())))
+        .map_err(|e| e.to_string())?;
     let title = (!waiting.is_empty()).then(|| waiting.len().to_string());
     tray.set_title(title.as_deref())
         .map_err(|e| e.to_string())?;
