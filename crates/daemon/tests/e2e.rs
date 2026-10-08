@@ -603,6 +603,87 @@ async fn attach_shows_existing_screen_and_survives_repeated_cycles() {
     assert_eq!(ws.sessions[0].status(), SessionStatus::Running);
 }
 
+/// What a terminal sends for the mouse wheel once tmux has turned on mouse
+/// reporting (SGR encoding; 64 = wheel up, 65 = wheel down).
+const WHEEL_UP: &[u8] = b"\x1b[<64;20;10M";
+
+#[tokio::test]
+async fn mouse_wheel_scrolls_session_history() {
+    let host = TestHost::new();
+    sh_session(&host, "wheel").await;
+    let (mut reader, mut writer) = attach(&host, "wheel", "sh").await;
+    send(
+        &mut writer,
+        "i=0; while [ $i -lt 300 ]; do i=$((i+1)); echo line-$i; done; echo printed-all\r",
+    )
+    .await;
+    read_until(&mut reader, "printed-all").await;
+    let exec = host
+        .conn()
+        .await
+        .workspace_get("wheel")
+        .await
+        .unwrap()
+        .sessions[0]
+        .current_execution()
+        .unwrap()
+        .backend_ref
+        .clone();
+    let in_history = || {
+        let out = host.tmux(&[
+            "display-message",
+            "-p",
+            "-t",
+            &format!("={exec}:"),
+            "#{pane_in_mode} #{scroll_position}",
+        ]);
+        String::from_utf8_lossy(&out.stdout).trim().to_owned()
+    };
+    assert!(in_history().starts_with('0'), "{}", in_history());
+
+    for _ in 0..3 {
+        writer.send(&Frame::Data(WHEEL_UP.to_vec())).await.unwrap();
+    }
+    eventually("wheel scrolls into history", || {
+        let state = in_history();
+        async move {
+            let mut it = state.split_whitespace();
+            let in_mode = it.next() == Some("1");
+            let pos: u32 = it.next().and_then(|p| p.parse().ok()).unwrap_or(0);
+            (in_mode && pos > 0).then_some(())
+        }
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn mouse_drag_copies_to_the_client_clipboard() {
+    let host = TestHost::new();
+    sh_session(&host, "copy").await;
+    let (mut reader, mut writer) = attach(&host, "copy", "sh").await;
+    send(&mut writer, "clear; echo copy-$((40+2))-me\r").await;
+    read_until(&mut reader, "copy-42-me").await;
+    // Press on row 2, drag along it, release (SGR mouse, 1-based cells).
+    for seq in [
+        &b"\x1b[<0;1;2M"[..],
+        b"\x1b[<32;5;2M",
+        b"\x1b[<32;12;2M",
+        b"\x1b[<0;12;2m",
+    ] {
+        writer.send(&Frame::Data(seq.to_vec())).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    // tmux hands the selection to the client terminal as OSC 52.
+    let out = read_until(&mut reader, "\x1b]52;").await;
+    let b64 = out
+        .split("\x1b]52;")
+        .nth(1)
+        .and_then(|rest| rest.split(';').nth(1))
+        .map(|p| p.trim_end_matches(['\x07', '\x1b', '\\']).to_owned())
+        .unwrap_or_default();
+    assert!(!b64.is_empty(), "no OSC 52 payload in {out:?}");
+}
+
 #[tokio::test]
 async fn attach_carries_utf8_and_ctrl_c() {
     let host = TestHost::new();

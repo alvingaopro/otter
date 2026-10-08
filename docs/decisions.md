@@ -594,3 +594,18 @@ Dogfooding v0.2.3:
   lines) and leaves it at the bottom; text copied there reaches the Mac
   clipboard (OSC 52, `set-clipboard on`, xterm's clipboard addon).
   Option-drag still selects locally in the app.
+
+## D-028 — Copying from the terminal; outdated hosts said plainly (2026-10-08)
+
+- With tmux mouse mode (D-027), dragging selects in tmux, which hands the
+  text to the client as OSC 52 on mouse-up. xterm's clipboard addon then used
+  the WebView's clipboard API, which refuses writes that don't follow a user
+  gesture — nothing was copied. Writes now go through Tauri's native
+  clipboard plugin (programs still can't *read* the Mac clipboard via OSC 52),
+  and ⌘C copies a local Option-drag selection. E2E tests check the daemon
+  side: the wheel scrolls tmux history, and a drag makes tmux send OSC 52
+  through the attach bridge.
+- Scrolling "didn't work" after v0.2.4 because the host still ran 0.2.3: the
+  version mismatch was only a small label in the hosts list. A workspace on a
+  host whose otterd differs from the app now says so at the top, with an
+  **Update otterd** button.
