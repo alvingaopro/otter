@@ -588,3 +588,9 @@ Dogfooding v0.2.3:
   option is now written only for tmux ≥ 3.3 (version from `tmux -V`; unknown
   builds are assumed recent); on 3.2 tmux's own "Pane is dead" line is
   stripped from `logs` like ours.
+- **No scrolling back.** A session's history lives in tmux; the client only
+  ever sees the screen tmux draws, so the app's terminal had nothing to scroll.
+  tmux now has `mouse on`: the wheel scrolls the session's history (50,000
+  lines) and leaves it at the bottom; text copied there reaches the Mac
+  clipboard (OSC 52, `set-clipboard on`, xterm's clipboard addon).
+  Option-drag still selects locally in the app.

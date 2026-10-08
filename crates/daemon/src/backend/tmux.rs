@@ -457,6 +457,11 @@ set -g set-titles off
 set -g allow-rename off
 set -g remain-on-exit on
 {exit_format}set -g window-size latest
+# The wheel scrolls a session's history (tmux keeps it; the client only sees
+# the screen), and text copied there reaches the client's clipboard.
+set -g mouse on
+set -g set-clipboard on
+set -as terminal-features \",xterm*:clipboard\"
 set -g automatic-rename off
 "
     )
@@ -468,6 +473,7 @@ mod tests {
 
     #[test]
     fn exit_format_only_for_tmux_that_has_it() {
+        assert!(config("tmux-256color", true).contains("set -g mouse on"));
         assert_eq!(parse_version("tmux 3.2a"), Some((3, 2)));
         assert_eq!(parse_version("tmux 3.6a"), Some((3, 6)));
         assert_eq!(parse_version("tmux next-3.4"), Some((3, 4)));

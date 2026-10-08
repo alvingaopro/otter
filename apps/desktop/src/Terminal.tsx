@@ -7,6 +7,7 @@ import { Channel, invoke } from "@tauri-apps/api/core";
 import { Terminal as XTerm } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebglAddon } from "@xterm/addon-webgl";
+import { ClipboardAddon } from "@xterm/addon-clipboard";
 import "@xterm/xterm/css/xterm.css";
 import type { AttachEvent } from "./types";
 
@@ -103,9 +104,14 @@ export function Terminal({ host, workspace, session, onEnd, generation, label, w
       scrollback: 5000,
       theme: themeRef.current === "light" ? LIGHT : DARK,
       allowProposedApi: false,
+      // The session (tmux) handles the mouse: the wheel scrolls its history.
+      // Option-drag selects locally instead.
+      macOptionClickForcesSelection: true,
     });
     const fit = new FitAddon();
     term.loadAddon(fit);
+    // Text copied in the session (OSC 52) goes to the Mac clipboard.
+    term.loadAddon(new ClipboardAddon());
     term.open(el.current!);
     termRef.current = term;
     try {
