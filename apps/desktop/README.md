@@ -3,10 +3,12 @@
 A thin desktop client (Tauri 2 + React/TypeScript) over the same Rust client
 library `workctl` uses. Design and rationale: `docs/decisions.md` D-018.
 
-It shows the hosts registered with `workctl host add` (from
-`$WORKCTL_CONFIG_DIR/hosts.toml`, default `~/.config/workd`), every workspace
-on them grouped by what needs you, and an embedded terminal attached to the
-selected session.
+It shows the hosts in `$WORKCTL_CONFIG_DIR/hosts.toml` (default
+`~/.config/workd`, shared with `workctl`; hosts can be added and removed in
+the app or with `workctl host add/rm`), every workspace on them grouped by
+what needs you, and an embedded terminal attached to the selected session.
+It can install `workd` on a host and the command-line tools on this Mac from
+the matching release (D-020).
 
 ```sh
 cd apps/desktop

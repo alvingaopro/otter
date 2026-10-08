@@ -5,6 +5,9 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { getVersion } from "@tauri-apps/api/app";
 import { isPermissionGranted, requestPermission, sendNotification } from "@tauri-apps/plugin-notification";
 import { Sidebar } from "./Sidebar";
+import { AddHostDialog } from "./AddHostDialog";
+import { HostDialog } from "./HostDialog";
+import { CliDialog } from "./CliDialog";
 import { WorkspacePane } from "./WorkspacePane";
 import { defaultSession, groups, placeAll } from "./model";
 import type { HostsPayload, Placed } from "./types";
@@ -12,6 +15,8 @@ import "./App.css";
 
 /** Activating the app this soon after a notification jumps to its workspace. */
 const JUMP_WINDOW_MS = 2 * 60 * 1000;
+
+type Open = { kind: "add" } | { kind: "host"; name: string } | { kind: "cli" } | null;
 
 interface Jump {
   key: string;
@@ -25,6 +30,7 @@ export default function App() {
   const [sessions, setSessions] = useState<Record<string, string>>({});
   const [now, setNow] = useState(Date.now());
   const [version, setVersion] = useState<string | undefined>();
+  const [open, setOpen] = useState<Open>(null);
 
   const focused = useRef(document.hasFocus());
   const selectedRef = useRef(selected);
@@ -37,6 +43,7 @@ export default function App() {
     void invoke<HostsPayload>("hosts_get").then(setPayload);
     void getVersion().then(setVersion);
     const unlisten = listen<HostsPayload>("hosts", (e) => setPayload(e.payload));
+    const unmenu = listen<string>("menu", (e) => e.payload === "install-cli" && setOpen({ kind: "cli" }));
     const tick = setInterval(() => setNow(Date.now()), 15_000);
     void (async () => {
       if (!(await isPermissionGranted())) await requestPermission();
@@ -52,6 +59,7 @@ export default function App() {
     });
     return () => {
       void unlisten.then((f) => f());
+      void unmenu.then((f) => f());
       void unfocus.then((f) => f());
       clearInterval(tick);
     };
@@ -131,6 +139,8 @@ export default function App() {
             onSelect={setSelected}
             now={now}
             appVersion={version}
+            onAddHost={() => setOpen({ kind: "add" })}
+            onHost={(name) => setOpen({ kind: "host", name })}
           />
         )}
         {!payload ? (
@@ -141,10 +151,18 @@ export default function App() {
           </main>
         ) : payload.hosts.length === 0 ? (
           <main className="pane empty">
-            <p>No hosts yet.</p>
+            <h1 className="empty-title">Add your first host</h1>
             <p className="muted">
-              Add one with <code>workctl host add &lt;name&gt;</code> — the app reads {payload.configDir}/hosts.toml.
+              A machine where your work runs: a server or VM you reach with <code>ssh</code>, or this Mac.
             </p>
+            <div className="empty-actions">
+              <button className="btn primary" onClick={() => setOpen({ kind: "add" })}>
+                Add a host
+              </button>
+              <button className="btn outline" onClick={() => setOpen({ kind: "cli" })}>
+                Install command line tools
+              </button>
+            </div>
           </main>
         ) : current ? (
           <WorkspacePane
@@ -163,6 +181,13 @@ export default function App() {
           </main>
         )}
       </div>
+      {open?.kind === "add" && <AddHostDialog version={version} onClose={() => setOpen(null)} />}
+      {open?.kind === "cli" && <CliDialog version={version} onClose={() => setOpen(null)} />}
+      {open?.kind === "host" &&
+        (() => {
+          const host = payload?.hosts.find((h) => h.name === open.name);
+          return host ? <HostDialog host={host} version={version} onClose={() => setOpen(null)} /> : null;
+        })()}
     </div>
   );
 }

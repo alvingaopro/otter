@@ -4657,6 +4657,7 @@ dependencies = [
 name = "workd-desktop"
 version = "0.1.1"
 dependencies = [
+ "anyhow",
  "chrono",
  "serde",
  "serde_json",

@@ -6,18 +6,48 @@ mod attach;
 mod hosts;
 mod view;
 
+use tauri::Emitter;
+use tauri::menu::{Menu, MenuItem, MenuItemKind};
+
+const INSTALL_CLI: &str = "install-cli";
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_notification::init())
         .manage(hosts::Hosts::default())
         .manage(attach::Attaches::default())
+        .menu(|app| {
+            // The standard menu, plus "Install Command Line Tools…" in the app
+            // menu (the UI handles it).
+            let menu = Menu::default(app)?;
+            if let Some(MenuItemKind::Submenu(app_menu)) = menu.items()?.into_iter().next() {
+                let item = MenuItem::with_id(
+                    app,
+                    INSTALL_CLI,
+                    "Install Command Line Tools…",
+                    true,
+                    None::<&str>,
+                )?;
+                app_menu.insert(&item, 2)?;
+            }
+            Ok(menu)
+        })
+        .on_menu_event(|app, event| {
+            if event.id() == INSTALL_CLI {
+                let _ = app.emit("menu", INSTALL_CLI);
+            }
+        })
         .setup(|app| {
             hosts::start(app.handle());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             hosts::hosts_get,
+            hosts::host_add,
+            hosts::host_remove,
+            hosts::host_install,
+            hosts::install_cli,
             hosts::attention_resolve,
             hosts::session_restart,
             attach::attach_open,

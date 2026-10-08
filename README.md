@@ -16,11 +16,20 @@ See [`docs/design.md`](docs/design.md) for the architecture and
 ## Install
 
 Each merge to `main` publishes a [release](https://github.com/alvingaopro/workd/releases)
-with the macOS desktop app (`.dmg`, universal) and `workd` + `workctl`
-binaries for Linux x86_64 and macOS arm64. Hosts and clients should run the
-same version (see [`docs/protocol.md`](docs/protocol.md)). The app isn't
-signed yet: the first time, right-click → Open, or
-`xattr -dr com.apple.quarantine /Applications/Workd.app`.
+with the macOS desktop app (`.dmg`, universal) and `workd` + `workctl` for
+Linux (x86_64, aarch64) and macOS (universal). Hosts and clients should run
+the same version (see [`docs/protocol.md`](docs/protocol.md)).
+
+- **Desktop app:** open the `.dmg`. It isn't signed yet: the first time,
+  right-click → Open, or `xattr -dr com.apple.quarantine /Applications/Workd.app`.
+  Then **Add a host**: give it a name and an SSH destination (anything
+  `ssh <destination>` reaches) or pick this Mac. If the host has no `workd`
+  (or an older one), the app offers to install the matching release into
+  `~/.local/bin` there — the host needs tmux 3.2+ and curl or wget.
+- **Command line:** in the app, *Workd → Install Command Line Tools…* puts
+  `workctl` and `workd` in `~/.local/bin`. Without the app, download the
+  release tarball for your platform and copy both binaries onto your `PATH`.
+  `workctl host install <host>` installs or updates `workd` on a host.
 
 ## Quick start (from source)
 
