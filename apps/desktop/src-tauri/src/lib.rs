@@ -56,6 +56,7 @@ pub fn run() {
             hosts::cli_status,
             hosts::host_metrics,
             hosts::host_ports,
+            hosts::host_history,
             forwards::forwards_get,
             forwards::forward_add,
             forwards::forward_remove,

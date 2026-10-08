@@ -5,7 +5,22 @@ import { Dialog } from "./Dialog";
 import { Menu } from "./Menu";
 import { LineChart, Meter, Sparkline } from "./charts";
 import { bytes, percent, rate, uptime } from "./format";
-import type { Direction, ForwardView, HostMetrics, HostView, ListeningPort } from "./types";
+import type { Direction, ForwardView, HostHistory, HostMetrics, HostView, ListeningPort } from "./types";
+
+type Range = "live" | "1h" | "24h" | "7d" | "30d";
+const RANGES: [Range, string][] = [
+  ["live", "10 min"],
+  ["1h", "1 hour"],
+  ["24h", "24 hours"],
+  ["7d", "7 days"],
+  ["30d", "30 days"],
+];
+const SPAN_MS: Record<Exclude<Range, "live">, number> = {
+  "1h": 3600e3,
+  "24h": 86400e3,
+  "7d": 7 * 86400e3,
+  "30d": 30 * 86400e3,
+};
 
 const STATUS: Record<HostView["status"], string> = {
   connecting: "Connecting…",
@@ -35,6 +50,8 @@ export function HostPage({
   const [error, setError] = useState<string | null>(null);
   const [confirmRemove, setConfirmRemove] = useState(false);
   const [mapping, setMapping] = useState<{ direction: Direction; port?: number } | null>(null);
+  const [range, setRange] = useState<Range>("live");
+  const [history, setHistory] = useState<HostHistory | null>(null);
 
   const connected = host.status === "connected";
   const outdated = host.version !== undefined && version !== undefined && host.version !== version;
@@ -74,6 +91,27 @@ export function HostPage({
       clearInterval(b);
     };
   }, [host.name, connected]);
+
+  // Recorded history for the chosen range, refreshed every minute.
+  useEffect(() => {
+    if (!connected || range === "live") return;
+    let live = true;
+    setHistory(null);
+    const load = async () => {
+      try {
+        const h = await invoke<HostHistory>("host_history", { host: host.name, range });
+        if (live) setHistory(h);
+      } catch {
+        if (live) setHistory({ resolution_secs: 0, points: [] });
+      }
+    };
+    void load();
+    const t = setInterval(load, 60000);
+    return () => {
+      live = false;
+      clearInterval(t);
+    };
+  }, [host.name, connected, range]);
 
   async function install() {
     setBusy(`Installing otterd ${version} on ${host.name}…`);
@@ -143,7 +181,19 @@ export function HostPage({
         {output && <pre className="output">{output}</pre>}
 
         <section aria-labelledby="usage">
-          <h2 id="usage" className="section-title">Usage</h2>
+          <div className="section-row">
+            <h2 id="usage" className="section-title">Usage</h2>
+            {connected && metrics && (
+              <div className="segmented" role="radiogroup" aria-label="Time range">
+                {RANGES.map(([value, label]) => (
+                  <label key={value} className={range === value ? "on" : ""}>
+                    <input type="radio" name="range" checked={range === value} onChange={() => setRange(value)} />
+                    {label}
+                  </label>
+                ))}
+              </div>
+            )}
+          </div>
           {!connected ? (
             <p className="muted">Shown when {host.name} is connected.</p>
           ) : unsupported ? (
@@ -151,7 +201,7 @@ export function HostPage({
           ) : !metrics ? (
             <p className="muted">{metricsError?.includes("measuring") || !metricsError ? "Measuring…" : metricsError}</p>
           ) : (
-            <Usage m={metrics} />
+            <Usage m={metrics} range={range} history={history} />
           )}
         </section>
 
@@ -202,7 +252,7 @@ export function HostPage({
   );
 }
 
-function Usage({ m }: { m: HostMetrics }) {
+function Usage({ m, range, history }: { m: HostMetrics; range: Range; history: HostHistory | null }) {
   const h = m.history;
   const cpu = h.map((s) => s.cpu_percent);
   const mem = h.map((s) => s.memory_used);
@@ -243,7 +293,8 @@ function Usage({ m }: { m: HostMetrics }) {
         </div>
       </div>
 
-      <div className="charts">
+      {range === "live" ? (
+        <div className="charts">
         <LineChart title="CPU" series={[{ name: "CPU", color: "var(--series-1)", values: cpu }]} interval={m.interval_secs} format={percent} max={100} />
         <LineChart
           title="Memory used"
@@ -274,6 +325,9 @@ function Usage({ m }: { m: HostMetrics }) {
           binary
         />
       </div>
+      ) : (
+        <Trends range={range} history={history} total={m.memory.total} />
+      )}
 
       <div className="host-grid">
         <div>
@@ -526,5 +580,89 @@ function MapDialog({
         </div>
       </form>
     </Dialog>
+  );
+}
+
+/** Usage over a recorded range: averages, with peaks for CPU and memory. */
+function Trends({
+  range,
+  history,
+  total,
+}: {
+  range: Exclude<Range, "live">;
+  history: HostHistory | null;
+  total: number;
+}) {
+  if (!history) return <p className="muted">Loading…</p>;
+  const pts = history.points;
+  if (pts.length === 0) {
+    return (
+      <p className="muted">
+        Nothing recorded for this range yet. otterd records usage every minute while it runs (this needs otterd 0.3.1
+        or later on the host), so trends fill in from now on.
+      </p>
+    );
+  }
+  const to = Date.now();
+  const from = to - SPAN_MS[range];
+  const at = pts.map((p) => Date.parse(p.at));
+  const day = range === "7d" || range === "30d";
+  const time = {
+    at,
+    from,
+    to,
+    // Join points at most two periods apart; a longer stretch wasn't recorded.
+    gap: history.resolution_secs * 2000 + 1,
+    label: (t: number) =>
+      new Date(t).toLocaleString(undefined, day ? { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" } : { hour: "2-digit", minute: "2-digit" }),
+  };
+  return (
+    <div className="charts">
+      <LineChart
+        title="CPU"
+        series={[
+          { name: "Average", color: "var(--series-1)", values: pts.map((p) => p.cpu_avg) },
+          { name: "Peak", color: "var(--series-2)", values: pts.map((p) => p.cpu_max) },
+        ]}
+        interval={history.resolution_secs}
+        format={percent}
+        max={100}
+        time={time}
+      />
+      <LineChart
+        title="Memory used"
+        series={[
+          { name: "Average", color: "var(--series-1)", values: pts.map((p) => p.memory_avg) },
+          { name: "Peak", color: "var(--series-2)", values: pts.map((p) => p.memory_max) },
+        ]}
+        interval={history.resolution_secs}
+        format={bytes}
+        max={total}
+        binary
+        time={time}
+      />
+      <LineChart
+        title="Network"
+        series={[
+          { name: "In", color: "var(--series-1)", values: pts.map((p) => p.net_rx_bps) },
+          { name: "Out", color: "var(--series-2)", values: pts.map((p) => p.net_tx_bps) },
+        ]}
+        interval={history.resolution_secs}
+        format={rate}
+        binary
+        time={time}
+      />
+      <LineChart
+        title="Disk I/O"
+        series={[
+          { name: "Read", color: "var(--series-1)", values: pts.map((p) => p.disk_read_bps) },
+          { name: "Write", color: "var(--series-2)", values: pts.map((p) => p.disk_write_bps) },
+        ]}
+        interval={history.resolution_secs}
+        format={rate}
+        binary
+        time={time}
+      />
+    </div>
   );
 }

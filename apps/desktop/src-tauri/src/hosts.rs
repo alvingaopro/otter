@@ -684,3 +684,17 @@ pub async fn host_ports(
 ) -> Result<Vec<otter_protocol::host::ListeningPort>, String> {
     rpc(&app, &host).await?.host_ports().await.map_err(err)
 }
+
+/// Recorded usage of a host over a range (`1h`, `24h`, `7d`, `30d`).
+#[tauri::command]
+pub async fn host_history(
+    app: AppHandle,
+    host: String,
+    range: String,
+) -> Result<otter_protocol::host::HostHistory, String> {
+    rpc(&app, &host)
+        .await?
+        .host_history(&range)
+        .await
+        .map_err(err)
+}

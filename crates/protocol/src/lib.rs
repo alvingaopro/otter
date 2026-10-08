@@ -54,6 +54,9 @@ pub enum Request {
     /// TCP ports listening on the host. Result: `Vec<`[`host::ListeningPort`]`>`.
     #[serde(rename = "host.ports")]
     HostPorts,
+    /// Recorded usage over a range. Result: [`host::HostHistory`].
+    #[serde(rename = "host.history")]
+    HostHistory(host::HistoryQuery),
     /// Stop the daemon. Managed processes keep running. Result: `null`.
     #[serde(rename = "daemon.shutdown")]
     Shutdown,
@@ -124,6 +127,7 @@ impl Request {
             Request::HostStatus => "host.status",
             Request::HostMetrics => "host.metrics",
             Request::HostPorts => "host.ports",
+            Request::HostHistory(_) => "host.history",
             Request::Shutdown => "daemon.shutdown",
             Request::WorkspaceCreate(_) => "workspace.create",
             Request::WorkspaceList => "workspace.list",

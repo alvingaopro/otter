@@ -108,6 +108,10 @@ display; it is not a sync mechanism.
   history of samples (CPU %, memory, network and disk I/O rates) every
   `interval_secs` for about the last 10 minutes. Sampled in the background
   from the daemon's start; fails with `unavailable` until the first sample.
+- `host.history {range}` → recorded usage for `1h` (1-minute points), `24h`
+  (5 min), `7d` (30 min) or `30d` (1 h): averages, with peaks for CPU and
+  memory. Recorded on the host and kept for 7 days per minute, 90 days per
+  hour; missing stretches (otterd not running) are absent.
 - `host.ports` → TCP ports listening on the host (`ss` on Linux, `lsof` on
   macOS), with the process when the daemon's user may see it.
 

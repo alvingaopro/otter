@@ -1670,6 +1670,14 @@ async fn host_reports_usage_and_listening_ports() {
     assert!(metrics.memory.total >= metrics.memory.used, "{metrics:?}");
     assert!(!metrics.disks.is_empty() && !metrics.history.is_empty());
 
+    // Recorded history: a fresh host has no complete minute yet, but answers.
+    let mut conn = host.conn().await;
+    let day = conn.host_history("24h").await.unwrap();
+    assert_eq!(day.resolution_secs, 300);
+    let err = conn.host_history("forever").await.unwrap_err();
+    assert!(err.to_string().contains("unknown range"), "{err}");
+    assert!(host.home().join("state/metrics").is_dir());
+
     // A port opened here shows up among the host's listening ports.
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();

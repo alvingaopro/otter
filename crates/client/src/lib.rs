@@ -344,6 +344,14 @@ impl Connection {
         self.call(Request::HostMetrics).await
     }
 
+    /// Recorded usage over `range` (`1h`, `24h`, `7d` or `30d`).
+    pub async fn host_history(&mut self, range: &str) -> Result<otter_protocol::host::HostHistory> {
+        self.call(Request::HostHistory(otter_protocol::host::HistoryQuery {
+            range: range.to_owned(),
+        }))
+        .await
+    }
+
     /// TCP ports listening on the host.
     pub async fn host_ports(&mut self) -> Result<Vec<otter_protocol::host::ListeningPort>> {
         self.call(Request::HostPorts).await

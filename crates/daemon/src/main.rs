@@ -10,6 +10,7 @@ mod env;
 mod environment;
 mod events;
 mod git;
+mod history;
 mod metrics;
 mod paths;
 mod reconcile;
