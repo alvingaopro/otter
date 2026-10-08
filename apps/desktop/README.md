@@ -12,7 +12,7 @@ selected session.
 cd apps/desktop
 npm install
 npm run tauri dev                       # development, hot reload
-WORKCTL_CONFIG_DIR=../../.dev/ctl npm run tauri dev   # against a dev host list
+WORKCTL_CONFIG_DIR=$(git rev-parse --show-toplevel)/.dev/ctl npm run tauri dev   # a dev host list (absolute path)
 npm run tauri build                     # .app / .dmg in src-tauri/target/release/bundle
 ```
 
