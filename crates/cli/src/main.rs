@@ -205,6 +205,15 @@ struct WorkspaceCreateArgs {
     /// shell).
     #[arg(long)]
     no_agent: bool,
+    /// Which coding agent to start: `codex` (default) or `claude` (Claude
+    /// Code).
+    #[arg(
+        long,
+        value_name = "PROVIDER",
+        default_value = "codex",
+        conflicts_with = "no_agent"
+    )]
+    agent: String,
     /// Initial prompt for the agent.
     #[arg(long, conflicts_with = "no_agent")]
     prompt: Option<String>,
@@ -564,7 +573,7 @@ async fn create_workspace(config: &Config, args: WorkspaceCreateArgs, json: bool
 fn default_sessions(args: &WorkspaceCreateArgs) -> Vec<SessionSpec> {
     let mut sessions = Vec::new();
     if !args.no_agent {
-        let mut agent = SessionSpec::agent("codex");
+        let mut agent = SessionSpec::agent(&args.agent);
         agent.prompt = args.prompt.clone();
         sessions.push(agent);
     }

@@ -487,3 +487,29 @@ LTO 15 s; binary 5.0 / 6.2 / 6.0 MB.
 - The two architectures build in parallel jobs (`tauri build --target …
   --no-bundle`), each with its own Rust cache; a third job `lipo`s them into
   the universal binary and runs `tauri bundle` (~20 s for app + dmg).
+
+## D-023 — Claude Code as a second agent provider (2026-10-08)
+
+Asked for directly, so the "no other providers yet" rule (D-015) gives way;
+the provider boundary from D-015 made it a new module, not a redesign.
+
+- `agents/claude.rs`, id `claude`: launch `claude [prompt]`, resume
+  `claude --resume <session-id>`.
+- Identity: Claude Code's transcript
+  `$CLAUDE_CONFIG_DIR|~/.claude/projects/<cwd with non-alphanumerics → '->/<session-id>.jsonl`
+  (checked against real transcripts; the cwd is tried as given and with
+  symlinks resolved). Bound to the newest transcript for the cwd written
+  since the execution started and not bound elsewhere; until the current file
+  is written by this execution, a newer one wins (a resume may continue the
+  old file or start a new one).
+- State from turn records: user prompt / tool result → working, assistant
+  `stop_reason: tool_use` (or streaming) → working, `end_turn` →
+  waiting for input with its text as the last message, an interruption →
+  idle. Sidechain (subagent) and meta records are ignored.
+- The quiet-turn heuristic (permission prompts aren't in the transcript) is
+  now shared: `agents::settle`, used by both providers.
+- `workctl new --agent claude`; the app offers Codex / Claude Code / none in
+  New workspace and Claude Code in New session, per what the host reports.
+- Test: a fake `claude` writing transcripts the same way
+  (`claude_code_session_is_observed_resumed_and_needs_you_when_done`),
+  checked against a deliberately broken end-of-turn rule.

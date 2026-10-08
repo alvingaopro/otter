@@ -8,10 +8,11 @@
 //!
 //! Everything about *how* a particular agent is launched, resumed and observed
 //! (for Codex: CLI flags, rollout files, transcript parsing, the quiet-turn
-//! heuristic) lives in that provider's module. Codex is the only provider in
-//! V1; adding another means adding a module here, not changing Workspace or
-//! Session.
+//! heuristic) lives in that provider's module: `codex`, `claude` (Claude
+//! Code). Adding another means adding a module here, not changing Workspace
+//! or Session.
 
+pub mod claude;
 pub mod codex;
 
 use std::collections::HashSet;
@@ -25,7 +26,7 @@ use crate::env::EnvMap;
 /// Provider used when a session doesn't name one.
 pub const DEFAULT_PROVIDER: &str = "codex";
 
-static PROVIDERS: [&dyn AgentProvider; 1] = [&codex::Codex];
+static PROVIDERS: [&dyn AgentProvider; 2] = [&codex::Codex, &claude::ClaudeCode];
 
 /// Every provider this build supports.
 pub fn all() -> &'static [&'static dyn AgentProvider] {
@@ -92,6 +93,40 @@ pub trait AgentProvider: Send + Sync {
     /// Observe a running agent. Called periodically; must be cheap and must
     /// not block on the agent.
     fn observe(&self, ctx: &ObserveContext<'_>, info: &AgentInfo) -> Observation;
+}
+
+/// Default for `WORKD_AGENT_QUIET_SECS`.
+const DEFAULT_QUIET_SECS: i64 = 8;
+
+fn quiet_threshold() -> i64 {
+    std::env::var("WORKD_AGENT_QUIET_SECS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(DEFAULT_QUIET_SECS)
+}
+
+/// The quiet-turn heuristic, for agents whose approval prompts and questions
+/// don't appear in their transcripts: a turn whose terminal and transcript
+/// have both gone quiet is blocked on the user; a freshly started agent that
+/// goes quiet is idle (waiting for its first prompt, or a startup dialog).
+/// `grew`: the transcript grew in this observation. If the agent keeps
+/// animating while it waits, this misses rather than crying wolf.
+pub fn settle(
+    state: AgentState,
+    grew: bool,
+    last_activity: Option<Timestamp>,
+    now: Timestamp,
+) -> AgentState {
+    let Some(last) = last_activity.filter(|_| !grew) else {
+        return state;
+    };
+    let quiet = (now - last).num_seconds();
+    match state {
+        AgentState::Working if quiet >= quiet_threshold() => AgentState::Blocked,
+        AgentState::Blocked if quiet < 2 => AgentState::Working,
+        AgentState::Starting if quiet >= quiet_threshold() => AgentState::Idle,
+        other => other,
+    }
 }
 
 /// A single-line excerpt suitable for a status line.

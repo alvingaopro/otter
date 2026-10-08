@@ -5,6 +5,12 @@ import type { HostView } from "./types";
 
 type Source = "empty" | "git" | "directory";
 
+/** Coding agents the app can start, by provider id. */
+export const AGENTS: [string, string][] = [
+  ["codex", "Codex"],
+  ["claude", "Claude Code"],
+];
+
 /** Create a workspace on a host: where its files come from, what starts in it. */
 export function NewWorkspaceDialog({
   hosts,
@@ -27,14 +33,16 @@ export function NewWorkspaceDialog({
   const [branch, setBranch] = useState("");
   const [base, setBase] = useState("");
   const [dir, setDir] = useState("");
-  const [agent, setAgent] = useState(true);
+  const [agent, setAgent] = useState<string | null>(null);
   const [prompt, setPrompt] = useState("");
   const [shell, setShell] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const codex = usable.find((h) => h.name === host)?.agents.find((a) => a.provider === "codex");
-  const codexMissing = codex !== undefined && !codex.available;
+  const hostAgents = usable.find((h) => h.name === host)?.agents ?? [];
+  const available = (id: string) => hostAgents.find((a) => a.provider === id)?.available ?? false;
+  // Default to the first agent this host can run; "none" once chosen sticks.
+  const chosen = agent ?? AGENTS.find(([id]) => available(id))?.[0] ?? "none";
 
   async function submit(e: FormEvent) {
     e.preventDefault();
@@ -42,7 +50,8 @@ export function NewWorkspaceDialog({
     setBusy(true);
     setError(null);
     const sessions = [];
-    if (agent && !codexMissing) sessions.push({ kind: "agent", provider: "codex", prompt: prompt.trim() || undefined });
+    if (chosen !== "none" && available(chosen))
+      sessions.push({ kind: "agent", provider: chosen, prompt: prompt.trim() || undefined });
     if (shell) sessions.push({ kind: "terminal" });
     const spec =
       source === "git"
@@ -157,16 +166,34 @@ export function NewWorkspaceDialog({
 
         <fieldset className="field">
           <legend>Start</legend>
-          <label className="check">
-            <input type="checkbox" checked={agent && !codexMissing} disabled={codexMissing} onChange={(e) => setAgent(e.target.checked)} />
-            Codex
-            {codexMissing && <span className="muted small"> — not installed on {host}</span>}
-          </label>
-          {agent && !codexMissing && (
+          <div className="segmented">
+            {[...AGENTS, ["none", "No agent"] as [string, string]].map(([id, label]) => {
+              const missing = id !== "none" && !available(id);
+              return (
+                <label
+                  key={id}
+                  className={chosen === id ? "on" : missing ? "off" : ""}
+                  title={missing ? `${label} isn’t installed on ${host}` : undefined}
+                >
+                  <input type="radio" name="agent" checked={chosen === id} disabled={missing} onChange={() => setAgent(id)} />
+                  {label}
+                </label>
+              );
+            })}
+          </div>
+          {AGENTS.some(([id]) => !available(id)) && (
+            <span className="muted small">
+              Not installed on {host}:{" "}
+              {AGENTS.filter(([id]) => !available(id))
+                .map(([, label]) => label)
+                .join(", ")}
+            </span>
+          )}
+          {chosen !== "none" && (
             <textarea
               value={prompt}
               onChange={(e) => setPrompt(e.target.value)}
-              placeholder="What should Codex do? (optional)"
+              placeholder={`What should ${AGENTS.find(([id]) => id === chosen)?.[1]} do? (optional)`}
               rows={3}
             />
           )}

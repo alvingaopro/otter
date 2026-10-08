@@ -3,11 +3,12 @@ import { invoke } from "@tauri-apps/api/core";
 import { Dialog } from "./Dialog";
 import type { HostView } from "./types";
 
-type Kind = "terminal" | "agent" | "service" | "task";
+type Kind = "terminal" | "codex" | "claude" | "service" | "task";
 
 const KINDS: [Kind, string, string][] = [
   ["terminal", "Shell", "An interactive shell (or a command you run interactively)."],
-  ["agent", "Codex", "A Codex session; it remembers its conversation across restarts."],
+  ["codex", "Codex", "A Codex session; it remembers its conversation across restarts."],
+  ["claude", "Claude Code", "A Claude Code session; it remembers its conversation across restarts."],
   ["service", "Service", "A long-running command, like a dev server."],
   ["task", "Task", "A command that runs to completion, like tests; you’re told if it fails."],
 ];
@@ -30,7 +31,8 @@ export function NewSessionDialog({
   const [prompt, setPrompt] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const codex = host.agents.find((a) => a.provider === "codex");
+  const isAgent = kind === "codex" || kind === "claude";
+  const agent = isAgent ? host.agents.find((a) => a.provider === kind) : undefined;
   const needsCommand = kind === "service" || kind === "task";
 
   async function submit(e: FormEvent) {
@@ -39,11 +41,11 @@ export function NewSessionDialog({
     setBusy(true);
     setError(null);
     const spec = {
-      kind,
+      kind: isAgent ? "agent" : kind,
       name: name.trim() || undefined,
-      command: kind === "agent" ? undefined : command.trim() || undefined,
-      provider: kind === "agent" ? "codex" : undefined,
-      prompt: kind === "agent" ? prompt.trim() || undefined : undefined,
+      command: isAgent ? undefined : command.trim() || undefined,
+      provider: isAgent ? kind : undefined,
+      prompt: isAgent ? prompt.trim() || undefined : undefined,
     };
     try {
       onCreated(await invoke<string>("session_create", { host: host.name, workspace, spec }));
@@ -69,10 +71,12 @@ export function NewSessionDialog({
           <span className="muted small">{KINDS.find((k) => k[0] === kind)![2]}</span>
         </fieldset>
 
-        {kind === "agent" && codex && !codex.available && (
-          <div className="notice error">Codex isn’t installed on {host.name}.</div>
+        {agent && !agent.available && (
+          <div className="notice error">
+            {KINDS.find((k) => k[0] === kind)![1]} isn’t installed on {host.name}.
+          </div>
         )}
-        {kind === "agent" ? (
+        {isAgent ? (
           <label className="field">
             <span>Prompt</span>
             <textarea value={prompt} onChange={(e) => setPrompt(e.target.value)} placeholder="Optional" rows={3} />
