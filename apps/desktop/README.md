@@ -29,8 +29,10 @@ terminal that launched the app; a built `.app` asks for permission itself.
 
 Layout:
 
-- `src-tauri/src/hosts.rs` — one task per host: snapshot, follow events, re-snapshot.
+- `src-tauri/src/hosts.rs` — one task per host: snapshot, follow events, re-snapshot;
+  forwards each event (`host-event`) and stream restarts (`host-resync`) to timelines.
 - `src-tauri/src/view.rs` — the view model, with values derived by `otter-core`.
 - `src-tauri/src/attach.rs` — terminal bridge (raw-byte channel out, commands in).
 - `src/` — React: `Sidebar`, `WorkspacePane`, `Terminal` (xterm.js), `model.ts`
-  (grouping and wording only).
+  (grouping and wording only), `TimelinePanel` + `timeline.ts` (a workspace's
+  events as one line each).

@@ -5,6 +5,7 @@ import { Dialog } from "./Dialog";
 import { Menu } from "./Menu";
 import { NewSessionDialog } from "./NewSessionDialog";
 import { FilesPanel } from "./FilesPanel";
+import { TimelinePanel } from "./TimelinePanel";
 import { BriefDialog, briefSummary } from "./BriefDialog";
 import { ago, kindLabel, sessionGlyph } from "./model";
 import { Terminal, type Ending } from "./Terminal";
@@ -32,7 +33,9 @@ export function WorkspacePane({ placed, session, onSession, now, theme, appVersi
   const [open, setOpen] = useState<Open>(null);
   const [force, setForce] = useState(false);
   const [closing, setClosing] = useState<string | null>(null);
-  const [files, setFiles] = useState(false);
+  // The side panel: files or the timeline.
+  const [side, setSide] = useState<"files" | "timeline" | null>(null);
+  const toggle = (panel: "files" | "timeline") => setSide((s) => (s === panel ? null : panel));
 
   // A new session, or a new execution of it, starts a fresh attach.
   const running = current?.status === "running";
@@ -196,9 +199,17 @@ export function WorkspacePane({ placed, session, onSession, now, theme, appVersi
         )}
         <span className="spacer" />
         <button
-          className={files ? "btn outline small-btn files-toggle on" : "btn outline small-btn files-toggle"}
-          aria-pressed={files}
-          onClick={() => setFiles((f) => !f)}
+          className={side === "timeline" ? "btn outline small-btn files-toggle on" : "btn outline small-btn files-toggle"}
+          aria-pressed={side === "timeline"}
+          onClick={() => toggle("timeline")}
+          title="What happened in this workspace"
+        >
+          Timeline
+        </button>
+        <button
+          className={side === "files" ? "btn outline small-btn files-toggle on" : "btn outline small-btn files-toggle"}
+          aria-pressed={side === "files"}
+          onClick={() => toggle("files")}
           title="Browse, download and upload files"
         >
           Files
@@ -318,7 +329,8 @@ export function WorkspacePane({ placed, session, onSession, now, theme, appVersi
       )}
 
         </div>
-        {files && <FilesPanel host={host.name} workspace={ws.id} onClose={() => setFiles(false)} />}
+        {side === "files" && <FilesPanel host={host.name} workspace={ws.id} onClose={() => setSide(null)} />}
+        {side === "timeline" && <TimelinePanel host={host.name} ws={ws} now={now} onClose={() => setSide(null)} />}
       </div>
 
       {open === "brief" && (

@@ -80,6 +80,7 @@ pub fn run() {
             hosts::workspace_archive,
             hosts::workspace_unarchive,
             hosts::workspace_set_brief,
+            hosts::workspace_events,
             hosts::session_create,
             hosts::session_stop,
             hosts::session_delete,

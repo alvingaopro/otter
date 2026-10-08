@@ -271,6 +271,10 @@ async fn follow(app: &AppHandle, name: &str, transport: &Transport) -> Result<Ne
             Err(e) => return Err(e),
         }
     };
+    // Timelines may have missed events while the stream was down (or the
+    // host's log started over): they reload, then follow the events
+    // forwarded below.
+    let _ = app.emit("host-resync", HostResync { host: name });
     // Reading the stream isn't cancel-safe, so it gets its own task.
     let (tx, mut rx) = tokio::sync::mpsc::channel::<Result<(), ClientError>>(64);
     let (login_app, login_host) = (app.clone(), name.to_owned());
@@ -278,6 +282,13 @@ async fn follow(app: &AppHandle, name: &str, transport: &Transport) -> Result<Ne
         loop {
             let item = match stream.next().await {
                 Ok(Some(rec)) => {
+                    let _ = login_app.emit(
+                        "host-event",
+                        HostEvent {
+                            host: &login_host,
+                            record: &rec,
+                        },
+                    );
                     // Browser login: a tool on the host wants a sign-in page.
                     if let otter_protocol::Event::BrowserOpenRequested { request_id, .. } =
                         rec.event
@@ -323,6 +334,19 @@ async fn follow(app: &AppHandle, name: &str, transport: &Transport) -> Result<Ne
     };
     reader.abort();
     Err(result)
+}
+
+/// One event as it arrives from a host, for open timelines.
+#[derive(Clone, Serialize)]
+struct HostEvent<'a> {
+    host: &'a str,
+    record: &'a otter_protocol::EventRecord,
+}
+
+/// A host's event stream (re)started: what came before may have been missed.
+#[derive(Clone, Serialize)]
+struct HostResync<'a> {
+    host: &'a str,
 }
 
 fn show(app: &AppHandle, name: &str, workspaces: &[otter_core::Workspace]) {
@@ -626,6 +650,41 @@ pub async fn workspace_set_brief(
         .await
         .map(|_| ())
         .map_err(err)
+}
+
+/// How many of a host's most recent events a timeline looks through.
+const TIMELINE_WINDOW: u32 = 2000;
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Timeline {
+    /// This workspace's events, oldest first.
+    records: Vec<otter_protocol::EventRecord>,
+    /// Reaches back to the workspace's creation.
+    complete: bool,
+}
+
+/// A workspace's recent history, from the host's event log (D-039). Live
+/// events follow as `host-event`; after `host-resync`, load again.
+#[tauri::command]
+pub async fn workspace_events(
+    app: AppHandle,
+    host: String,
+    workspace: String,
+) -> Result<Timeline, String> {
+    let all = rpc(&app, &host)
+        .await?
+        .events_list(Some(TIMELINE_WINDOW))
+        .await
+        .map_err(err)?;
+    let records: Vec<_> = all
+        .into_iter()
+        .filter(|r| r.event.workspace_id().map(|w| w.as_str()) == Some(workspace.as_str()))
+        .collect();
+    let complete = records
+        .first()
+        .is_some_and(|r| matches!(r.event, otter_protocol::Event::WorkspaceCreated { .. }));
+    Ok(Timeline { records, complete })
 }
 
 /// Start a new session in a workspace. Returns its id.
