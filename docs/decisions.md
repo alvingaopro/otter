@@ -569,3 +569,28 @@ both architectures and then for another macOS runner to `lipo` (5 minutes of
 queueing in one release). The installer picks `macos-arm64` or
 `macos-x86_64` from `uname -m` (Rosetta reports x86_64, which runs fine).
 Every release job now runs in parallel after the version bump.
+
+## D-027 — Exited sessions and tmux 3.2 (2026-10-08)
+
+Dogfooding v0.2.3:
+
+- **Exited sessions were a dead end in the app.** The "exited · Restart" bar
+  only appeared when the exit happened while attached; opening an
+  already-exited session showed its last screen as "attached", with Restart
+  and Delete only in the tab row's ⋯ menu. Now the pane derives it from the
+  session's status (completed, failed, stopped, lost, or failed to start):
+  the last screen dimmed, the reason, **Restart** (for agents: resumes the
+  conversation) and **Delete**. Tabs have a close button (delete, or stop and
+  delete when running, after a confirmation). Agent tabs always name their
+  agent.
+- **tmux 3.2 showed a config error over the first window** (`invalid option:
+  remain-on-exit-format`, a 3.3 option) — the documented minimum is 3.2. The
+  option is now written only for tmux ≥ 3.3 (version from `tmux -V`; unknown
+  builds are assumed recent); on 3.2 tmux's own "Pane is dead" line is
+  stripped from `logs` like ours.
+- **No scrolling back.** A session's history lives in tmux; the client only
+  ever sees the screen tmux draws, so the app's terminal had nothing to scroll.
+  tmux now has `mouse on`: the wheel scrolls the session's history (50,000
+  lines) and leaves it at the bottom; text copied there reaches the Mac
+  clipboard (OSC 52, `set-clipboard on`, xterm's clipboard addon).
+  Option-drag still selects locally in the app.
