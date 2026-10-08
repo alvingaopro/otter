@@ -896,6 +896,8 @@ this phase is the gate, not the start.
 
 **Phase 9 — Desktop UI (Tauri):** workspace dashboard, attention inbox,
 workspace tabs, session tabs, timeline — as another client of the same API.
+(The timeline is the workspace pane's Timeline panel: the workspace's events
+from the host's log, newest first, live — D-039.)
 
 ## 34. Critical Architectural Rules
 

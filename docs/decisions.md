@@ -1015,3 +1015,34 @@ the brief has to be editable, so it got an RPC end to end:
   per line. The sidebar is unchanged.
 - Not done: agents reading the brief (e.g. as context for a new agent
   session), and history of brief edits beyond the event.
+
+## D-039 — A workspace timeline in the app (2026-10-08)
+
+Design §33 Phase 9 lists a timeline; only `otter events` showed history. The
+workspace pane now has a **Timeline** panel (next to Files; one side panel at
+a time): what happened in this workspace, one human line per event, newest
+first, with relative times (full time on hover), updating live.
+
+- **No new protocol.** History is `events.list` (the host's most recent 2000
+  events, filtered to the workspace in the app's backend); live rows are the
+  events the host task already follows for re-snapshots, now also forwarded to
+  the UI as `host-event`. Listening starts before the load and both are merged
+  by `seq`, so nothing falls between them.
+- **Resync = reload.** Whenever a host's event stream (re)starts — reconnect,
+  or `cursor_expired` after the log rotated or started over (D-037) — the
+  backend emits `host-resync` and an open timeline loads again, replacing
+  what it had (seqs from a log that started over mean nothing). Events missed
+  while the stream was down are thereby picked up from the log.
+- **Bounded.** When the window doesn't reach back to `WorkspaceCreated`
+  (busy host, or rotated away), the panel says earlier events aren't in the
+  host's recent history rather than paging. A per-workspace filter on
+  `events.list` would make this exact; not worth a protocol change until a
+  long-lived workspace shows the gap.
+- **Wording lives in `timeline.ts`** (presentation, D-018): sessions are named
+  from the workspace or from `SessionCreated` events (deleted sessions); agent
+  state changes show only real changes (not `starting`, not repeats); a
+  failure/completion flagged right after its process exited isn't repeated;
+  resolved attention says what it was about. Unknown kinds are left out.
+- Not done: filtering, paging, a timeline across workspaces, and the
+  terminal's own output (events never carry it).
+
