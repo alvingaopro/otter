@@ -10,7 +10,7 @@ import { WebglAddon } from "@xterm/addon-webgl";
 import "@xterm/xterm/css/xterm.css";
 import type { AttachEvent } from "./types";
 
-const THEME = {
+const DARK = {
   background: "#0B0C0E",
   foreground: "#E8E6E1",
   cursor: "#E8E6E1",
@@ -34,6 +34,30 @@ const THEME = {
   brightWhite: "#F2F0EC",
 };
 
+const LIGHT = {
+  background: "#FBFAF7",
+  foreground: "#1D1E21",
+  cursor: "#1D1E21",
+  cursorAccent: "#FBFAF7",
+  selectionBackground: "#C9DCF7",
+  black: "#1D1E21",
+  red: "#C4352B",
+  green: "#3E7A47",
+  yellow: "#A25A12",
+  blue: "#2160C4",
+  magenta: "#8A3FB8",
+  cyan: "#18797A",
+  white: "#6E7178",
+  brightBlack: "#5A5D64",
+  brightRed: "#D9473C",
+  brightGreen: "#4C8F56",
+  brightYellow: "#B66A1C",
+  brightBlue: "#2F6FD6",
+  brightMagenta: "#9D52CC",
+  brightCyan: "#1F8E8F",
+  brightWhite: "#2E3036",
+};
+
 export type Ending =
   | { kind: "exited"; exitCode?: number }
   | { kind: "ended" }
@@ -53,13 +77,22 @@ interface Props {
   where: string;
   /** Dim the screen (the attach is over or lost). */
   dimmed: boolean;
+  theme: "light" | "dark";
 }
 
-export function Terminal({ host, workspace, session, onEnd, generation, label, where, dimmed }: Props) {
+export function Terminal({ host, workspace, session, onEnd, generation, label, where, dimmed, theme }: Props) {
   const el = useRef<HTMLDivElement>(null);
   const onEndRef = useRef(onEnd);
   onEndRef.current = onEnd;
   const [size, setSize] = useState<string>("");
+  const termRef = useRef<XTerm | null>(null);
+  const themeRef = useRef(theme);
+  themeRef.current = theme;
+
+  // Switch colors in place; no reattach.
+  useEffect(() => {
+    if (termRef.current) termRef.current.options.theme = theme === "light" ? LIGHT : DARK;
+  }, [theme]);
 
   useEffect(() => {
     const term = new XTerm({
@@ -68,12 +101,13 @@ export function Terminal({ host, workspace, session, onEnd, generation, label, w
       lineHeight: 1.25,
       cursorBlink: true,
       scrollback: 5000,
-      theme: THEME,
+      theme: themeRef.current === "light" ? LIGHT : DARK,
       allowProposedApi: false,
     });
     const fit = new FitAddon();
     term.loadAddon(fit);
     term.open(el.current!);
+    termRef.current = term;
     try {
       const webgl = new WebglAddon();
       webgl.onContextLoss(() => webgl.dispose());
@@ -134,6 +168,7 @@ export function Terminal({ host, workspace, session, onEnd, generation, label, w
       input.dispose();
       resized.dispose();
       if (id !== null) void invoke("attach_close", { id });
+      termRef.current = null;
       term.dispose();
     };
   }, [host, workspace, session, generation]);

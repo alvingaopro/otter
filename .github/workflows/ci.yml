@@ -52,5 +52,7 @@ jobs:
       - run: npm run build
       - run: cargo fmt --check
         working-directory: apps/desktop/src-tauri
-      - run: cargo clippy --locked -- -D warnings
+      - run: cargo clippy --all-targets --locked -- -D warnings
+        working-directory: apps/desktop/src-tauri
+      - run: cargo test --locked
         working-directory: apps/desktop/src-tauri

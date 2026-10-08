@@ -451,3 +451,25 @@ its own:
   same install, locally, without touching a running daemon.
 - A host added as "this Mac" points at `~/.local/bin/workd` explicitly: an app
   started from Finder has no useful `PATH`.
+
+## D-021 — The app covers the whole daily loop; light and dark (2026-10-08)
+
+Dogfooding v0.1.2: with a host connected the app dead-ended at "Create one
+with `workctl new`". M1 had deliberately left creation out (D-018), but a
+client you can't start work from isn't one you can live in. Added, all as thin
+RPCs the daemon already had:
+
+- **New workspace** (title bar, ⌘N, first-run screen): name, host, files
+  (empty / Git repository with branch and base / existing folder), and what
+  starts — Codex with an optional prompt (offered only when the host reports
+  `codex` available, from `host.status` fetched once per connection) and a
+  shell. The new workspace is selected as soon as it appears.
+- **Sessions:** `+` after the tabs (shell, Codex, service, task); per session
+  Restart / Stop / Delete. **Workspaces:** Retry preparation, Delete (Git
+  worktrees can discard uncommitted changes; existing folders are kept).
+- **Command-line tools:** the title bar offers to install or update them when
+  `~/.local/bin/workctl` is missing or a different version — installing workd
+  on a *host* puts `workctl` there, not on this Mac, which is what confused us.
+- **Theme:** System / Light / Dark, remembered per Mac, applied to the UI, the
+  terminal and the native title bar. Colors are role tokens with one light
+  override block.

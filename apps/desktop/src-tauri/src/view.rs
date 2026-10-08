@@ -34,6 +34,8 @@ pub struct HostView {
     /// The host's workd version, once connected.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub version: Option<String>,
+    /// Agent providers workd supports and whether this host can run them.
+    pub agents: Vec<workd_core::AgentCapability>,
     pub workspaces: Vec<WorkspaceView>,
 }
 

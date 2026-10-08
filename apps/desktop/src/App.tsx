@@ -9,6 +9,8 @@ import { AddHostDialog } from "./AddHostDialog";
 import { HostDialog } from "./HostDialog";
 import { CliDialog } from "./CliDialog";
 import { WorkspacePane } from "./WorkspacePane";
+import { NewWorkspaceDialog } from "./NewWorkspaceDialog";
+import { useTheme } from "./theme";
 import { defaultSession, groups, placeAll } from "./model";
 import type { HostsPayload, Placed } from "./types";
 import "./App.css";
@@ -16,7 +18,7 @@ import "./App.css";
 /** Activating the app this soon after a notification jumps to its workspace. */
 const JUMP_WINDOW_MS = 2 * 60 * 1000;
 
-type Open = { kind: "add" } | { kind: "host"; name: string } | { kind: "cli" } | null;
+type Open = { kind: "add" } | { kind: "host"; name: string } | { kind: "cli" } | { kind: "new" } | null;
 
 interface Jump {
   key: string;
@@ -31,6 +33,10 @@ export default function App() {
   const [now, setNow] = useState(Date.now());
   const [version, setVersion] = useState<string | undefined>();
   const [open, setOpen] = useState<Open>(null);
+  const [cli, setCli] = useState<{ version?: string } | null>(null);
+  const { choice: themeChoice, resolved: theme, cycle: cycleTheme } = useTheme();
+  /** A workspace just created here: select it once it shows up. */
+  const wanted = useRef<string | null>(null);
 
   const focused = useRef(document.hasFocus());
   const selectedRef = useRef(selected);
@@ -42,6 +48,15 @@ export default function App() {
   useEffect(() => {
     void invoke<HostsPayload>("hosts_get").then(setPayload);
     void getVersion().then(setVersion);
+    void invoke<{ version?: string }>("cli_status").then(setCli);
+    // ⌘N: new workspace (capture phase, so the terminal doesn't swallow it).
+    const onKey = (e: KeyboardEvent) => {
+      if (e.metaKey && !e.shiftKey && !e.altKey && e.key.toLowerCase() === "n") {
+        e.preventDefault();
+        setOpen({ kind: "new" });
+      }
+    };
+    window.addEventListener("keydown", onKey, true);
     const unlisten = listen<HostsPayload>("hosts", (e) => setPayload(e.payload));
     const unmenu = listen<string>("menu", (e) => e.payload === "install-cli" && setOpen({ kind: "cli" }));
     const tick = setInterval(() => setNow(Date.now()), 15_000);
@@ -61,6 +76,7 @@ export default function App() {
       void unlisten.then((f) => f());
       void unmenu.then((f) => f());
       void unfocus.then((f) => f());
+      window.removeEventListener("keydown", onKey, true);
       clearInterval(tick);
     };
   }, []);
@@ -97,10 +113,12 @@ export default function App() {
 
   // Keep a valid selection: the most urgent workspace by default.
   useEffect(() => {
-    if (placed.length === 0) return;
-    if (!selected || !placed.some((p) => p.key === selected)) {
-      setSelected(groups(placed)[0]?.items[0]?.key);
+    if (selected && placed.some((p) => p.key === selected)) {
+      if (wanted.current === selected) wanted.current = null;
+      return;
     }
+    if (selected && selected === wanted.current) return; // still on its way
+    if (placed.length > 0) setSelected(groups(placed)[0]?.items[0]?.key);
   }, [placed, selected]);
 
   const current: Placed | undefined = placed.find((p) => p.key === selected);
@@ -128,7 +146,43 @@ export default function App() {
             </span>
           )}
         </div>
-        {version && <span className="app-version">v{version}</span>}
+        <div className="titlebar-actions">
+          {cli && version && cli.version !== version && (
+            <button className="link-btn" onClick={() => setOpen({ kind: "cli" })}>
+              {cli.version ? "Update command line tools" : "Install command line tools"}
+            </button>
+          )}
+          <button
+            className="icon-btn"
+            onClick={cycleTheme}
+            aria-label={`Theme: ${themeChoice}`}
+            title={`Theme: ${themeChoice === "system" ? "match system" : themeChoice} (click to change)`}
+          >
+            {themeChoice === "light" ? (
+              <svg width="15" height="15" viewBox="0 0 16 16" aria-hidden="true">
+                <circle cx="8" cy="8" r="3" fill="none" stroke="currentColor" strokeWidth="1.5" />
+                <path d="M8 1.5v1.5M8 13v1.5M1.5 8H3M13 8h1.5M3.4 3.4l1 1M11.6 11.6l1 1M3.4 12.6l1-1M11.6 4.4l1-1" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+              </svg>
+            ) : themeChoice === "dark" ? (
+              <svg width="15" height="15" viewBox="0 0 16 16" aria-hidden="true">
+                <path d="M13 9.5A5.5 5.5 0 0 1 6.5 3a5.5 5.5 0 1 0 6.5 6.5z" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round" />
+              </svg>
+            ) : (
+              <svg width="15" height="15" viewBox="0 0 16 16" aria-hidden="true">
+                <circle cx="8" cy="8" r="6" fill="none" stroke="currentColor" strokeWidth="1.5" />
+                <path d="M8 2a6 6 0 0 1 0 12z" fill="currentColor" />
+              </svg>
+            )}
+          </button>
+          <button className="btn outline new-btn" onClick={() => setOpen({ kind: "new" })} title="New workspace (⌘N)">
+            <svg width="11" height="11" viewBox="0 0 12 12" aria-hidden="true">
+              <path d="M6 1.5v9M1.5 6h9" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+            </svg>
+            New
+            <span className="kbd">⌘N</span>
+          </button>
+          {version && <span className="app-version">v{version}</span>}
+        </div>
       </header>
       <div className="body">
         {payload && (
@@ -171,18 +225,43 @@ export default function App() {
             session={currentSession}
             onSession={(id) => setSessions((m) => ({ ...m, [current.key]: id }))}
             now={now}
+            theme={theme}
           />
         ) : (
           <main className="pane empty">
-            <p>No workspaces yet.</p>
-            <p className="muted">
-              Create one with <code>workctl new &lt;name&gt;</code>.
-            </p>
+            <h1 className="empty-title">Start your first workspace</h1>
+            <p className="muted">A place on a host for one piece of work: its files, a Codex session, a shell.</p>
+            <div className="empty-actions">
+              <button className="btn primary" onClick={() => setOpen({ kind: "new" })}>
+                New workspace
+              </button>
+            </div>
           </main>
         )}
       </div>
       {open?.kind === "add" && <AddHostDialog version={version} onClose={() => setOpen(null)} />}
-      {open?.kind === "cli" && <CliDialog version={version} onClose={() => setOpen(null)} />}
+      {open?.kind === "cli" && (
+        <CliDialog
+          version={version}
+          onClose={() => {
+            setOpen(null);
+            void invoke<{ version?: string }>("cli_status").then(setCli);
+          }}
+        />
+      )}
+      {open?.kind === "new" && payload && (
+        <NewWorkspaceDialog
+          hosts={payload.hosts}
+          defaultHost={current?.host.name}
+          onClose={() => setOpen(null)}
+          onCreated={(host, id) => {
+            const key = `${host}/${id}`;
+            wanted.current = key;
+            setSelected(key);
+            setOpen(null);
+          }}
+        />
+      )}
       {open?.kind === "host" &&
         (() => {
           const host = payload?.hosts.find((h) => h.name === open.name);
