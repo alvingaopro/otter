@@ -1291,7 +1291,7 @@ checksum = "1ebf944e87a7c253233ad6766e082e3cd714b5d03812acc24c318f549614536e"
 
 [[package]]
 name = "workctl"
-version = "0.1.3"
+version = "0.1.4"
 dependencies = [
  "anyhow",
  "chrono",
@@ -1309,7 +1309,7 @@ dependencies = [
 
 [[package]]
 name = "workd"
-version = "0.1.3"
+version = "0.1.4"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1330,7 +1330,7 @@ dependencies = [
 
 [[package]]
 name = "workd-client"
-version = "0.1.3"
+version = "0.1.4"
 dependencies = [
  "anyhow",
  "serde",
@@ -1344,7 +1344,7 @@ dependencies = [
 
 [[package]]
 name = "workd-core"
-version = "0.1.3"
+version = "0.1.4"
 dependencies = [
  "chrono",
  "rand",
@@ -1354,7 +1354,7 @@ dependencies = [
 
 [[package]]
 name = "workd-protocol"
-version = "0.1.3"
+version = "0.1.4"
 dependencies = [
  "chrono",
  "serde",
