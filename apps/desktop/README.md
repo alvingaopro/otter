@@ -19,8 +19,8 @@ npm run tauri build                     # .app / .dmg in src-tauri/target/releas
 ```
 
 Releases: every merge to `main` builds an arm64 and an x86_64 `.dmg` and publishes them
-with `otterd`/`otter` binaries (D-019). The version shown in the title bar is
-the release version; a host running a different `otterd` shows its version in
+with `otterd`/`otter` binaries (D-019). The version shown at the bottom of the
+sidebar is the release version; a host running a different `otterd` shows its version in
 the hosts list.
 
 Remote hosts need a `otterd` that speaks the same protocol version (see

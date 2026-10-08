@@ -140,20 +140,23 @@ export function HostPage({
 
   return (
     <main className="pane host-page">
-      <div className="pane-head">
+      <div className="pane-head" data-tauri-drag-region>
+        <h1 data-tauri-drag-region>{host.name}</h1>
+        <span className="head-sep" aria-hidden="true" />
+        <div className="chips" data-tauri-drag-region>
+          <span className="chip mono">{host.describe}</span>
+          <span className="chip">
+            <span className={`host-dot ${host.status}`} />
+            {STATUS[host.status]}
+          </span>
+          {host.version && <span className="chip mono">otterd {host.version}</span>}
+          {metrics && <span className="muted">up {uptime(metrics.uptime_secs)} · {metrics.cpus} CPUs</span>}
+        </div>
+        <span className="spacer" data-tauri-drag-region />
         <Menu
           label="Host actions"
           items={[{ label: "Remove host…", danger: true, onSelect: () => setConfirmRemove(true) }]}
         />
-        <div className="pane-title">
-          <h1>{host.name}</h1>
-          <div className="chips">
-            <span className="chip mono">{host.describe}</span>
-            <span className="chip">{STATUS[host.status]}</span>
-            {host.version && <span className="chip mono">otterd {host.version}</span>}
-            {metrics && <span className="muted">up {uptime(metrics.uptime_secs)} · {metrics.cpus} CPUs</span>}
-          </div>
-        </div>
       </div>
 
       <div className="host-body">

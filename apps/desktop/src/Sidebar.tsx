@@ -1,7 +1,9 @@
 import { useState } from "react";
 import { Glyph } from "./Glyph";
 import { ago, groups, headline, workspaceGlyph } from "./model";
+import type { ThemeChoice } from "./theme";
 import type { HostView, Placed } from "./types";
+import otterIcon from "./assets/otter.png";
 
 interface Props {
   placed: Placed[];
@@ -15,6 +17,12 @@ interface Props {
   onHost: (name: string) => void;
   /** The host whose page is open. */
   hostPage?: string;
+  onNew: () => void;
+  themeChoice: ThemeChoice;
+  onTheme: () => void;
+  /** Set when the command-line tools are missing or another version. */
+  cliAction?: string;
+  onCli: () => void;
 }
 
 const HOST_STATE: Record<HostView["status"], string> = {
@@ -25,13 +33,60 @@ const HOST_STATE: Record<HostView["status"], string> = {
   not_installed: "otterd not installed",
 };
 
-export function Sidebar({ placed, hosts, selected, onSelect, now, appVersion, onAddHost, onHost, hostPage }: Props) {
+const HOSTS_OPEN_KEY = "otter.hostsOpen";
+
+function storedHostsOpen(): boolean {
+  try {
+    return localStorage.getItem(HOSTS_OPEN_KEY) !== "false";
+  } catch {
+    return true;
+  }
+}
+
+export function Sidebar(props: Props) {
+  const { placed, hosts, selected, onSelect, now, appVersion, onAddHost, onHost, hostPage } = props;
   // Archived workspaces are out of the way until asked for (D-036).
   const [showArchived, setShowArchived] = useState(false);
+  const [hostsOpen, setHostsOpen] = useState(storedHostsOpen);
+  const toggleHosts = () => {
+    setHostsOpen((open) => {
+      try {
+        localStorage.setItem(HOSTS_OPEN_KEY, String(!open));
+      } catch {
+        // Storage unavailable: the choice lasts until the app quits.
+      }
+      return !open;
+    });
+  };
+
+  const grouped = groups(placed);
+  const inGroup = (id: string) => grouped.find((g) => g.id === id)?.items ?? [];
+  const needs = inGroup("needs");
+  const working = inGroup("working");
+  const connected = hosts.filter((h) => h.status === "connected").length;
+
   return (
     <nav className="sidebar" aria-label="Workspaces">
+      <div className="sidebar-top" data-tauri-drag-region>
+        <span className="spacer" data-tauri-drag-region />
+        <ThemeButton choice={props.themeChoice} onClick={props.onTheme} />
+        <button className="icon-btn" aria-label="New workspace" title="New workspace (⌘N)" onClick={props.onNew}>
+          <svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true">
+            <path d="M7 2v10M2 7h10" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+          </svg>
+        </button>
+      </div>
+
+      <div className="brand" data-tauri-drag-region>
+        <img src={otterIcon} width={24} height={24} alt="" className="brand-icon" />
+        <span className="brand-name" data-tauri-drag-region>Otter</span>
+        <span className="spacer" data-tauri-drag-region />
+        <CountBadge kind="needs" count={needs.length} label="need you" onClick={() => onSelect(needs[0].key)} />
+        <CountBadge kind="working" count={working.length} label="working" onClick={() => onSelect(working[0].key)} />
+      </div>
+
       <div className="sidebar-groups">
-        {groups(placed).map((g) => {
+        {grouped.map((g) => {
           const collapsed = g.id === "archived" && !showArchived;
           return (
             <section key={g.id} className="group">
@@ -83,32 +138,100 @@ export function Sidebar({ placed, hosts, selected, onSelect, now, appVersion, on
           );
         })}
       </div>
+
       <footer className="hosts">
         <h2 className="group-label hosts-label">
-          <span>HOSTS</span>
+          <button className="group-toggle" aria-expanded={hostsOpen} aria-controls="host-list" onClick={toggleHosts}>
+            <span className="caret" aria-hidden="true">{hostsOpen ? "▾" : "▸"}</span>
+            <span>HOSTS</span>
+            {hosts.length > 0 && (
+              <span className={connected < hosts.length ? "hosts-summary warn" : "hosts-summary"}>
+                {connected < hosts.length ? `${connected} of ${hosts.length} connected` : `${connected} connected`}
+              </span>
+            )}
+          </button>
           <button className="icon-btn" aria-label="Add a host" title="Add a host" onClick={onAddHost}>
             <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true">
               <path d="M6 1.5v9M1.5 6h9" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
             </svg>
           </button>
         </h2>
-        {hosts.map((h) => (
-          <button
-            key={h.name}
-            className={h.name === hostPage ? "host-row selected" : "host-row"}
-            aria-current={h.name === hostPage ? "page" : undefined}
-            onClick={() => onHost(h.name)}
-            title={[h.describe, h.version && `otterd ${h.version}`, h.message].filter(Boolean).join(" — ")}
-          >
-            <span className={`host-dot ${h.status}`} />
-            <span className="host-name">{h.name}</span>
-            <span className="host-state">{HOST_STATE[h.status]}</span>
-            {h.version && appVersion && h.version !== appVersion && (
-              <span className="host-version">otterd {h.version}</span>
-            )}
-          </button>
-        ))}
+        {hostsOpen && (
+          <div id="host-list" className="host-list">
+            {hosts.map((h) => (
+              <button
+                key={h.name}
+                className={h.name === hostPage ? "host-row selected" : "host-row"}
+                aria-current={h.name === hostPage ? "page" : undefined}
+                onClick={() => onHost(h.name)}
+                title={[h.describe, h.version && `otterd ${h.version}`, h.message].filter(Boolean).join(" — ")}
+              >
+                <span className={`host-dot ${h.status}`} />
+                <span className="host-name">{h.name}</span>
+                <span className="host-state">{HOST_STATE[h.status]}</span>
+                {h.version && appVersion && h.version !== appVersion && (
+                  <span className="host-version">otterd {h.version}</span>
+                )}
+              </button>
+            ))}
+          </div>
+        )}
+        <div className="sidebar-foot">
+          {props.cliAction && (
+            <button className="btn small-btn cli-btn" onClick={props.onCli}>
+              <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true">
+                <path d="M6 1.5v6.5M3.2 5.5L6 8.3l2.8-2.8M2 10.5h8" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
+              </svg>
+              {props.cliAction}
+            </button>
+          )}
+          <span className="spacer" />
+          {appVersion && <span className="app-version">v{appVersion}</span>}
+        </div>
       </footer>
     </nav>
+  );
+}
+
+/** "N need you" / "N working": dim at zero; otherwise jumps to the first one. */
+function CountBadge({ kind, count, label, onClick }: { kind: "needs" | "working"; count: number; label: string; onClick: () => void }) {
+  return (
+    <button
+      className={count > 0 ? `count-badge ${kind} on` : `count-badge ${kind}`}
+      disabled={count === 0}
+      aria-label={`${count} ${label}`}
+      title={`${count} ${label}`}
+      onClick={onClick}
+    >
+      <span className="count-dot" />
+      {count}
+    </button>
+  );
+}
+
+function ThemeButton({ choice, onClick }: { choice: ThemeChoice; onClick: () => void }) {
+  return (
+    <button
+      className="icon-btn"
+      onClick={onClick}
+      aria-label={`Theme: ${choice}`}
+      title={`Theme: ${choice === "system" ? "match system" : choice} (click to change)`}
+    >
+      {choice === "light" ? (
+        <svg width="15" height="15" viewBox="0 0 16 16" aria-hidden="true">
+          <circle cx="8" cy="8" r="3" fill="none" stroke="currentColor" strokeWidth="1.5" />
+          <path d="M8 1.5v1.5M8 13v1.5M1.5 8H3M13 8h1.5M3.4 3.4l1 1M11.6 11.6l1 1M3.4 12.6l1-1M11.6 4.4l1-1" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+        </svg>
+      ) : choice === "dark" ? (
+        <svg width="15" height="15" viewBox="0 0 16 16" aria-hidden="true">
+          <path d="M13 9.5A5.5 5.5 0 0 1 6.5 3a5.5 5.5 0 1 0 6.5 6.5z" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round" />
+        </svg>
+      ) : (
+        <svg width="15" height="15" viewBox="0 0 16 16" aria-hidden="true">
+          <circle cx="8" cy="8" r="6" fill="none" stroke="currentColor" strokeWidth="1.5" />
+          <path d="M8 2a6 6 0 0 1 0 12z" fill="currentColor" />
+        </svg>
+      )}
+    </button>
   );
 }
