@@ -118,6 +118,19 @@ display; it is not a sync mechanism.
 Both are additions (no protocol bump); daemons before them answer
 `invalid_request`.
 
+## Files and image paste
+
+- `fs.list {workspace, path}` → a directory (`path` relative to the
+  workspace root, or absolute): entries with kind, size and modification time,
+  directories first.
+- `fs.read {workspace, path, offset, len}` → `{data (base64), size, eof}`, at
+  most 1 MiB per call; `fs.write {workspace, path, offset, data, create,
+  overwrite}` writes a chunk (`create` starts the file and fails if it exists
+  unless `overwrite`).
+- `session.paste_image {workspace, session, png}` → stores the PNG (≤ 20 MB)
+  for that session; the session's stand-in `wl-paste` (first on its PATH)
+  serves it for two minutes, so Claude Code's Ctrl+V picks it up.
+
 ## Attach mode
 
 After a successful `session.attach` response

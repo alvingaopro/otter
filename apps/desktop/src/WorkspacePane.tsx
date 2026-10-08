@@ -4,6 +4,7 @@ import { Glyph } from "./Glyph";
 import { Dialog } from "./Dialog";
 import { Menu } from "./Menu";
 import { NewSessionDialog } from "./NewSessionDialog";
+import { FilesPanel } from "./FilesPanel";
 import { ago, kindLabel, sessionGlyph } from "./model";
 import { Terminal, type Ending } from "./Terminal";
 import type { AttentionView, Placed } from "./types";
@@ -30,6 +31,7 @@ export function WorkspacePane({ placed, session, onSession, now, theme, appVersi
   const [open, setOpen] = useState<Open>(null);
   const [force, setForce] = useState(false);
   const [closing, setClosing] = useState<string | null>(null);
+  const [files, setFiles] = useState(false);
 
   // A new session, or a new execution of it, starts a fresh attach.
   const running = current?.status === "running";
@@ -169,6 +171,14 @@ export function WorkspacePane({ placed, session, onSession, now, theme, appVersi
           </svg>
         </button>
         <span className="spacer" />
+        <button
+          className={files ? "btn outline small-btn files-toggle on" : "btn outline small-btn files-toggle"}
+          aria-pressed={files}
+          onClick={() => setFiles((f) => !f)}
+          title="Browse, download and upload files"
+        >
+          Files
+        </button>
         {current && (
           <Menu
             label={`${current.name} actions`}
@@ -209,6 +219,8 @@ export function WorkspacePane({ placed, session, onSession, now, theme, appVersi
       )}
       {error && <div className="notice error">{error}</div>}
 
+      <div className="work-row">
+        <div className="work">
       {current ? (
         <>
           <Terminal
@@ -270,6 +282,10 @@ export function WorkspacePane({ placed, session, onSession, now, theme, appVersi
           </button>
         </div>
       )}
+
+        </div>
+        {files && <FilesPanel host={host.name} workspace={ws.id} onClose={() => setFiles(false)} />}
+      </div>
 
       {open === "new-session" && (
         <NewSessionDialog

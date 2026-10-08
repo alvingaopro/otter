@@ -352,6 +352,53 @@ impl Connection {
         .await
     }
 
+    /// List a directory in a workspace (`path` relative to its root, or absolute).
+    pub async fn fs_list(
+        &mut self,
+        workspace: &str,
+        path: &str,
+    ) -> Result<otter_protocol::fs::DirListing> {
+        self.call(Request::FsList(otter_protocol::fs::FsPath {
+            workspace: workspace.to_owned(),
+            path: path.to_owned(),
+        }))
+        .await
+    }
+
+    /// Read up to `len` bytes of a file from `offset`.
+    pub async fn fs_read(
+        &mut self,
+        workspace: &str,
+        path: &str,
+        offset: u64,
+        len: u64,
+    ) -> Result<otter_protocol::fs::FileChunk> {
+        self.call(Request::FsRead(otter_protocol::fs::FsRead {
+            at: otter_protocol::fs::FsPath {
+                workspace: workspace.to_owned(),
+                path: path.to_owned(),
+            },
+            offset,
+            len,
+        }))
+        .await
+    }
+
+    /// Write a chunk (base64 `data`) of a file; `create` starts it.
+    pub async fn fs_write(&mut self, w: otter_protocol::fs::FsWrite) -> Result<()> {
+        self.call(Request::FsWrite(w)).await
+    }
+
+    /// Hand a PNG (base64) to a session's clipboard stand-in.
+    pub async fn paste_image(&mut self, workspace: &str, session: &str, png: String) -> Result<()> {
+        self.call(Request::SessionPasteImage(otter_protocol::fs::PasteImage {
+            workspace: workspace.to_owned(),
+            session: session.to_owned(),
+            png,
+        }))
+        .await
+    }
+
     /// TCP ports listening on the host.
     pub async fn host_ports(&mut self) -> Result<Vec<otter_protocol::host::ListeningPort>> {
         self.call(Request::HostPorts).await

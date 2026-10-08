@@ -365,3 +365,30 @@ code, .mono { font-family: var(--mono); }
 .table a:hover { text-decoration: underline; }
 .small-btn { height: 26px; padding: 0 10px; font-size: 12px; }
 @media (max-width: 1100px) { .charts { grid-template-columns: minmax(0, 1fr); } }
+
+/* Workspace: terminal column + files panel */
+.work-row { flex: 1; min-height: 0; display: flex; }
+.work { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.files-toggle.on { background: var(--btn); }
+.tabs .files-toggle { align-self: center; margin: 0 8px 2px 0; }
+.files {
+  width: 300px; flex: none; margin: 12px 16px 0 0; display: flex; flex-direction: column; min-height: 0;
+  border: 1px solid var(--line); border-radius: 10px; background: var(--term); overflow: hidden;
+}
+.files.dropping { outline: 2px dashed var(--working); outline-offset: -4px; }
+.files-head { display: flex; align-items: center; justify-content: space-between; padding: 10px 10px 6px 12px; }
+.files-title { font-weight: 600; font-size: 13px; }
+.files-actions { display: flex; align-items: center; gap: 6px; }
+.files-path { display: flex; align-items: center; gap: 4px; padding: 0 8px 6px; border-bottom: 1px solid var(--line); }
+.files-where { flex: 1; min-width: 0; font-size: 12px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; direction: rtl; text-align: left; }
+.files-list { list-style: none; margin: 0; padding: 4px; flex: 1; overflow-y: auto; }
+.files-row { width: 100%; display: flex; align-items: center; gap: 8px; padding: 5px 8px; border-radius: 6px; font-size: 13px; }
+.files-row:hover { background: var(--hover); }
+.files-icon { width: 10px; color: var(--faint); }
+.files-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.files-size { font-size: 12px; font-variant-numeric: tabular-nums; }
+.files-empty { padding: 8px; font-size: 13px; }
+.files .notice { margin: 8px; }
+.transfer { padding: 6px 12px; font-size: 12px; display: grid; grid-template-columns: 1fr auto; gap: 4px; border-top: 1px solid var(--line); }
+.transfer .meter { grid-column: 1 / -1; }
+.files-hint { padding: 6px 12px 10px; margin: 0; font-size: 11.5px; border-top: 1px solid var(--line); }

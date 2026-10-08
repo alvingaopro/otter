@@ -652,3 +652,26 @@ when trimmed). `host.history {range}` (1h at 1 min, 24h at 5 min, 7d at
 which old clients send without params. The host page gets a range picker
 (10 min live · 1 h · 24 h · 7 d · 30 d); trend charts use a time axis so a
 stretch with no recording shows as a gap, and plot average with peak.
+
+## D-031 — Menu bar, files, image paste (2026-10-08)
+
+- **Menu bar.** A tray item shows how many workspaces need you (title) and
+  lists them; picking one opens the app on it. Closing the window hides it,
+  so notifications and the status keep working; the Dock icon and the menu
+  bar bring it back, Quit quits.
+- **Files.** `fs.list/read/write` on otterd (paths relative to the
+  workspace root, or absolute; 1 MiB base64 chunks, no message-size limit on
+  the wire). The workspace view has a Files panel: browse, click a file to
+  download (save dialog), upload by button or by dropping files on the
+  window, with progress. Uploads don't replace a file unless confirmed.
+- **Image paste (portkeeper's feature, done differently).** Claude Code on
+  Linux reads a clipboard image by running `xclip`, then `wl-paste`.
+  Portkeeper serves the Mac pasteboard to a stand-in `wl-paste` over a
+  reverse-forwarded socket. Otter's terminal sees the keystroke itself, so on
+  Ctrl+V the app reads the Mac clipboard image (native plugin), sends it to
+  otterd (`session.paste_image`, stored 0600 for that session), then sends
+  the key; otterd's stand-in `wl-paste` (first on every session's PATH)
+  serves it for two minutes and otherwise defers to a real `wl-paste`. The
+  host never gets a way to read the Mac's clipboard. Works in sessions
+  attached through the app (not plain `ssh`), and in login shells whose
+  profile keeps the inherited PATH.

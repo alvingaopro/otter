@@ -9,6 +9,7 @@ mod dial;
 mod env;
 mod environment;
 mod events;
+mod files;
 mod git;
 mod history;
 mod metrics;

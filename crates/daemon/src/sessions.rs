@@ -216,6 +216,17 @@ impl Daemon {
         env.insert("OTTER_SESSION_ID".into(), session.id.to_string());
         env.insert("OTTER_SESSION_NAME".into(), session.name.clone());
         env.insert("OTTER_EXECUTION_ID".into(), exec_id.to_string());
+        // The wl-paste stand-in for pasting images (files.rs) comes first.
+        let shim = crate::files::shim_dir(&self.paths);
+        let path = env.get("PATH").cloned().unwrap_or_default();
+        env.insert(
+            "PATH".into(),
+            if path.is_empty() {
+                shim.display().to_string()
+            } else {
+                format!("{}:{path}", shim.display())
+            },
+        );
         let result = match argv {
             Ok(argv) => {
                 let spec = LaunchSpec {

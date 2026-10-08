@@ -10,6 +10,9 @@
     "core:window:allow-set-theme",
     "notification:default",
     "clipboard-manager:allow-write-text",
-    "opener:default"
+    "opener:default",
+    "dialog:allow-save",
+    "dialog:allow-open",
+    "dialog:allow-ask"
   ]
 }

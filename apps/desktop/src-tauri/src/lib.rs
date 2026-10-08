@@ -1,10 +1,13 @@
 //! Otter desktop: a thin client. All state comes from the hosts' daemons
 //! through `otter-client`; this crate only connects, flattens state for the
-//! UI (`view`) and bridges terminals (`attach`).
+//! UI (`view`), bridges terminals (`attach`), moves files (`files`), keeps
+//! port mappings (`forwards`) and the menu bar item (`tray`).
 
 mod attach;
+mod files;
 mod forwards;
 mod hosts;
+mod tray;
 mod view;
 
 use tauri::Emitter;
@@ -18,6 +21,7 @@ pub fn run() {
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_dialog::init())
         .manage(hosts::Hosts::default())
         .manage(attach::Attaches::default())
         .manage(forwards::Forwards::default())
@@ -45,7 +49,16 @@ pub fn run() {
         .setup(|app| {
             hosts::start(app.handle());
             forwards::start(app.handle());
+            tray::setup(app.handle())?;
             Ok(())
+        })
+        // Closing the window keeps Otter in the menu bar (status and
+        // notifications); Quit is in the menu bar item and the app menu.
+        .on_window_event(|window, event| {
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                api.prevent_close();
+                let _ = window.hide();
+            }
         })
         .invoke_handler(tauri::generate_handler![
             hosts::hosts_get,
@@ -73,7 +86,18 @@ pub fn run() {
             attach::attach_input,
             attach::attach_resize,
             attach::attach_close,
+            files::fs_list,
+            files::file_download,
+            files::file_upload,
+            files::paste_image,
+            tray::tray_update,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running the Otter desktop app");
+        .build(tauri::generate_context!())
+        .expect("error while building the Otter desktop app")
+        .run(|app, event| {
+            // Clicking the Dock icon brings the hidden window back.
+            if let tauri::RunEvent::Reopen { .. } = event {
+                tray::show(app);
+            }
+        });
 }

@@ -11,7 +11,7 @@ import { CliDialog } from "./CliDialog";
 import { WorkspacePane } from "./WorkspacePane";
 import { NewWorkspaceDialog } from "./NewWorkspaceDialog";
 import { useTheme } from "./theme";
-import { defaultSession, groups, placeAll } from "./model";
+import { defaultSession, groups, headline, placeAll } from "./model";
 import type { ForwardView, HostsPayload, Placed } from "./types";
 import otterIcon from "./assets/otter.png";
 import "./App.css";
@@ -54,6 +54,11 @@ export default function App() {
     void getVersion().then(setVersion);
     void invoke<ForwardView[]>("forwards_get").then(setForwards);
     const unforwards = listen<ForwardView[]>("forwards", (e) => setForwards(e.payload));
+    // A workspace picked in the menu bar item.
+    const unjump = listen<string>("jump", (e) => {
+      setSelected(e.payload);
+      setHostPage(null);
+    });
     void invoke<{ version?: string }>("cli_status").then(setCli);
     // ⌘N: new workspace (capture phase, so the terminal doesn't swallow it).
     const onKey = (e: KeyboardEvent) => {
@@ -82,6 +87,7 @@ export default function App() {
       void unlisten.then((f) => f());
       void unmenu.then((f) => f());
       void unforwards.then((f) => f());
+      void unjump.then((f) => f());
       void unfocus.then((f) => f());
       window.removeEventListener("keydown", onKey, true);
       clearInterval(tick);
@@ -117,6 +123,14 @@ export default function App() {
       }
     }
   }, [payload]);
+
+  // The menu bar item shows what needs you.
+  useEffect(() => {
+    const waiting = placed
+      .filter((p) => p.ws.activity === "needs_you" || p.ws.activity === "failed")
+      .map((p) => ({ key: p.key, label: `${p.ws.name} — ${headline(p.ws).text} (${p.host.name})` }));
+    void invoke("tray_update", { waiting }).catch(() => {});
+  }, [placed]);
 
   // Keep a valid selection: the most urgent workspace by default.
   useEffect(() => {
