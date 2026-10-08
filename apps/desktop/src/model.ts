@@ -128,6 +128,9 @@ export function ago(iso: string | undefined, now: number): string {
 
 /** A hint next to the session name, unless it would just repeat it. */
 export function kindLabel(s: SessionView): string {
-  const label = s.agent ? "agent" : s.kind;
-  return s.name === label || s.name === s.agent?.provider ? (s.agent ? "agent" : "") : label;
+  if (s.agent) {
+    if (s.name === s.agent.provider) return "agent";
+    return s.agent.provider === "claude" ? "Claude Code" : s.agent.provider === "codex" ? "Codex" : s.agent.provider;
+  }
+  return s.name === s.kind ? "" : s.kind;
 }

@@ -244,6 +244,7 @@ code, .mono { font-family: var(--mono); }
 .segmented { display: inline-flex; gap: 4px; padding: 3px; border-radius: 8px; background: var(--bg); border: 1px solid var(--line-strong); align-self: flex-start; }
 .segmented label { padding: 5px 12px; border-radius: 6px; color: var(--muted); cursor: pointer; }
 .segmented label.on { background: var(--btn); color: var(--text); }
+.segmented label.off { opacity: 0.45; cursor: default; }
 .segmented label:has(input:focus-visible) { outline: 2px solid var(--working); }
 .segmented input { position: absolute; opacity: 0; width: 1px; height: 1px; }
 .advanced summary { cursor: pointer; color: var(--muted); font-size: 12.5px; }

@@ -29,14 +29,12 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use workd_core::{AgentCapability, AgentInfo, AgentState, Timestamp};
 
-use super::{AgentProvider, Observation, ObserveContext, excerpt};
+use super::{AgentProvider, Observation, ObserveContext, excerpt, settle};
 use crate::env::{EnvMap, which};
 
 /// Tolerance between our launch time and Codex's own timestamps.
 const CLOCK_SLACK: i64 = 5;
 const MESSAGE_EXCERPT: usize = 240;
-/// Default for `WORKD_AGENT_QUIET_SECS`.
-const DEFAULT_QUIET_SECS: i64 = 8;
 
 pub struct Codex;
 
@@ -154,20 +152,8 @@ impl AgentProvider for Codex {
                 .map(DateTime::<Utc>::from);
         }
 
-        // Approval prompts and questions aren't in the rollout: infer them
-        // from a turn that has gone completely quiet. If the TUI keeps
-        // animating while it waits, this misses rather than crying wolf.
-        if !grew && let Some(last) = ctx.last_output.max(rollout_mtime) {
-            let quiet = (ctx.now - last).num_seconds();
-            next = match next {
-                AgentState::Working if quiet >= quiet_threshold() => AgentState::Blocked,
-                AgentState::Blocked if quiet < 2 => AgentState::Working,
-                // Settled without starting a conversation: waiting for its
-                // first prompt (or a startup dialog).
-                AgentState::Starting if quiet >= quiet_threshold() => AgentState::Idle,
-                other => other,
-            };
-        }
+        // Approval prompts and questions aren't in the rollout.
+        next = settle(next, grew, ctx.last_output.max(rollout_mtime), ctx.now);
 
         if next != info.state {
             obs.state = Some(next);
@@ -177,13 +163,6 @@ impl AgentProvider for Codex {
         }
         obs
     }
-}
-
-fn quiet_threshold() -> i64 {
-    std::env::var("WORKD_AGENT_QUIET_SECS")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(DEFAULT_QUIET_SECS)
 }
 
 // ---------------------------------------------------------------------------

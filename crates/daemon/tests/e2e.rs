@@ -1242,6 +1242,31 @@ fn tmux_dir() -> String {
         .into_owned()
 }
 
+/// A stand-in for Claude Code: records its arguments, writes a transcript
+/// where Claude Code does (one JSON record per line, appended as the turn
+/// goes), and plays a scripted turn. `--resume <id>` continues that file.
+const FAKE_CLAUDE: &str = r#"#!/bin/sh
+if [ "$1" = --version ]; then echo "2.0.0-fake (Claude Code)"; exit 0; fi
+echo "claude $*" >> "$FAKE_CODEX_LOG"
+dir="$CLAUDE_CONFIG_DIR/projects/$(pwd -P | sed 's/[^A-Za-z0-9]/-/g')"
+mkdir -p "$dir"
+if [ "$1" = --resume ]; then
+  id="$2"
+else
+  id=$(cat /proc/sys/kernel/random/uuid 2>/dev/null || uuidgen | tr A-Z a-z)
+fi
+f="$dir/$id.jsonl"
+rec() { printf '%s\n' "$1" >> "$f"; }
+echo "claude ready"
+rec '{"type":"user","sessionId":"'$id'","message":{"role":"user","content":"go"}}'
+rec '{"type":"assistant","message":{"role":"assistant","stop_reason":"tool_use","content":[{"type":"tool_use","name":"Bash"}]}}'
+for i in 1 2; do echo "working $i"; sleep 0.5; done
+rec '{"type":"user","message":{"role":"user","content":[{"type":"tool_result","content":"ok"}]}}'
+rec '{"type":"assistant","message":{"role":"assistant","stop_reason":"end_turn","content":[{"type":"text","text":"All   tests\npass."}]}}'
+echo "done"
+exec sleep 600
+"#;
+
 async fn fake_codex_host(mode: &str) -> FakeCodex {
     let scratch = tempfile::Builder::new().prefix("wdc").tempdir().unwrap();
     let bin = scratch.path().join("bin");
@@ -1250,6 +1275,9 @@ async fn fake_codex_host(mode: &str) -> FakeCodex {
     std::fs::write(&codex, FAKE_CODEX).unwrap();
     use std::os::unix::fs::PermissionsExt;
     std::fs::set_permissions(&codex, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let claude = bin.join("claude");
+    std::fs::write(&claude, FAKE_CLAUDE).unwrap();
+    std::fs::set_permissions(&claude, std::fs::Permissions::from_mode(0o755)).unwrap();
     let home = scratch.path().join("home");
     std::fs::create_dir_all(&home).unwrap();
     let log = scratch.path().join("codex-args.log");
@@ -1263,6 +1291,10 @@ async fn fake_codex_host(mode: &str) -> FakeCodex {
             format!("{}:{}:/usr/local/bin:/usr/bin:/bin", p(&bin), tmux_dir()),
         ),
         ("CODEX_HOME", p(&scratch.path().join("codex-home"))),
+        (
+            "CLAUDE_CONFIG_DIR",
+            p(&scratch.path().join("claude-config")),
+        ),
         ("FAKE_CODEX_LOG", p(&log)),
         ("FAKE_CODEX_MODE", mode.into()),
         ("WORKD_AGENT_QUIET_SECS", "2".into()),
@@ -1376,6 +1408,60 @@ async fn codex_session_is_observed_resumed_and_needs_you_when_done() {
     assert_eq!(
         lines,
         ["--no-daemon", &format!("--no-daemon resume {conversation}")]
+    );
+}
+
+#[tokio::test]
+async fn claude_code_session_is_observed_resumed_and_needs_you_when_done() {
+    use workd_core::{Activity, AgentState, AttentionKind};
+    let fake = fake_codex_host("normal").await;
+    let host = &fake.host;
+    let status = host.conn().await.host_status().await.unwrap();
+    let claude = status
+        .agents
+        .iter()
+        .find(|a| a.provider == "claude")
+        .unwrap();
+    assert!(claude.available && claude.can_resume, "{:?}", status.agents);
+    assert_eq!(claude.version.as_deref(), Some("2.0.0-fake (Claude Code)"));
+
+    let mut spec = SessionSpec::agent("claude");
+    spec.prompt = Some("fix the tests".into());
+    let ws = create(host, "cc", Some(vec![spec])).await;
+    assert_eq!(ws.sessions[0].name, "claude");
+
+    let ws = wait_agent(host, "cc", "claude", AgentState::WaitingForInput).await;
+    let info = ws.session("claude").unwrap().agent.clone().unwrap();
+    let id = info
+        .provider_session_id
+        .clone()
+        .expect("session discovered");
+    assert_eq!(info.last_message.as_deref(), Some("All tests pass."));
+    assert_eq!(ws.activity(), Activity::NeedsYou);
+    assert_eq!(ws.attention[0].kind, AttentionKind::Review);
+
+    // Restarting resumes the same Claude Code session.
+    host.conn()
+        .await
+        .attention_resolve("cc", Some("claude"))
+        .await
+        .unwrap();
+    let restarted = host
+        .conn()
+        .await
+        .session_restart("cc", "claude")
+        .await
+        .unwrap();
+    assert_eq!(
+        restarted.agent.unwrap().provider_session_id.as_deref(),
+        Some(id.as_str())
+    );
+    wait_agent(host, "cc", "claude", AgentState::WaitingForInput).await;
+    let args = std::fs::read_to_string(&fake.log).unwrap();
+    let lines: Vec<&str> = args.lines().collect();
+    assert_eq!(
+        lines,
+        ["claude fix the tests", &format!("claude --resume {id}")]
     );
 }
 
