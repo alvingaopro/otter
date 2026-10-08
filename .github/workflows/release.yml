@@ -74,13 +74,20 @@ jobs:
   # The app is built per architecture in parallel, then combined into a
   # universal binary and bundled once (D-022).
   desktop-build:
-    name: Desktop app (${{ matrix.target }})
+    name: Desktop app (${{ matrix.arch }})
     needs: version
     if: needs.version.outputs.version != ''
     strategy:
       matrix:
-        target: [aarch64-apple-darwin, x86_64-apple-darwin]
+        include:
+          - target: aarch64-apple-darwin
+            arch: arm64
+          - target: x86_64-apple-darwin
+            arch: x86_64
     runs-on: macos-latest
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+      GH_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -101,6 +108,16 @@ jobs:
         working-directory: apps/desktop
       - run: npm run tauri build -- --target ${{ matrix.target }} --no-bundle
         working-directory: apps/desktop
+      # This architecture's own app, published as is (half the universal size).
+      - run: npm run tauri bundle -- --target ${{ matrix.target }} --bundles app,dmg
+        working-directory: apps/desktop
+      - name: Upload ${{ matrix.arch }} app
+        run: |
+          bundle=apps/desktop/src-tauri/target/${{ matrix.target }}/release/bundle
+          mkdir -p out
+          cp "$bundle"/dmg/*.dmg "out/Workd_${VERSION}_macos_${{ matrix.arch }}.dmg"
+          tar -czf "out/Workd_${VERSION}_macos_${{ matrix.arch }}.app.tar.gz" -C "$bundle/macos" Workd.app
+          gh release upload "v$VERSION" out/* --clobber
       - uses: actions/upload-artifact@v7
         with:
           name: desktop-${{ matrix.target }}
@@ -156,14 +173,19 @@ jobs:
     if: needs.version.outputs.version != ''
     strategy:
       matrix:
-        # Names match what `workd_client::install` downloads for `uname -sm`.
+        # Names match what `workd_client::install` downloads for `uname -sm`
+        # (macOS uses the universal build assembled below).
         include:
           - name: linux-x86_64
             os: ubuntu-latest
           - name: linux-aarch64
             os: ubuntu-24.04-arm
-          - name: macos-universal
+          - name: macos-arm64
             os: macos-latest
+            target: aarch64-apple-darwin
+          - name: macos-x86_64
+            os: macos-latest
+            target: x86_64-apple-darwin
     runs-on: ${{ matrix.os }}
     env:
       VERSION: ${{ needs.version.outputs.version }}
@@ -174,20 +196,17 @@ jobs:
           ref: v${{ needs.version.outputs.version }}
       - uses: dtolnay/rust-toolchain@stable
         with:
-          targets: ${{ matrix.name == 'macos-universal' && 'aarch64-apple-darwin, x86_64-apple-darwin' || '' }}
+          targets: ${{ matrix.target }}
       - uses: Swatinem/rust-cache@v2
+        with:
+          key: binaries-${{ matrix.name }}
       - name: Build
         run: |
           name="workd-${VERSION}-${{ matrix.name }}"
           mkdir -p "$name"
-          if [ "${{ matrix.name }}" = macos-universal ]; then
-            for t in aarch64-apple-darwin x86_64-apple-darwin; do
-              cargo build --release --locked -p workd -p workctl --target "$t"
-            done
-            for b in workd workctl; do
-              lipo -create -output "$name/$b" \
-                "target/aarch64-apple-darwin/release/$b" "target/x86_64-apple-darwin/release/$b"
-            done
+          if [ -n "${{ matrix.target }}" ]; then
+            cargo build --release --locked -p workd -p workctl --target "${{ matrix.target }}"
+            cp "target/${{ matrix.target }}/release/workd" "target/${{ matrix.target }}/release/workctl" "$name"/
           else
             cargo build --release --locked -p workd -p workctl
             cp target/release/workd target/release/workctl "$name"/
@@ -195,10 +214,40 @@ jobs:
           tar -czf "$name.tar.gz" "$name"
       - name: Upload
         run: gh release upload "v$VERSION" "workd-${VERSION}-${{ matrix.name }}.tar.gz" --clobber
+      - if: startsWith(matrix.name, 'macos-')
+        uses: actions/upload-artifact@v7
+        with:
+          name: binaries-${{ matrix.name }}
+          path: workd-${{ needs.version.outputs.version }}-${{ matrix.name }}
+          retention-days: 1
+
+  binaries-universal:
+    name: workd + workctl (macos-universal)
+    needs: [version, binaries]
+    runs-on: macos-latest
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: binaries-macos-*
+          path: built
+      - name: Combine and upload
+        run: |
+          name="workd-${VERSION}-macos-universal"
+          mkdir -p "$name"
+          for b in workd workctl; do
+            lipo -create -output "$name/$b" "built/binaries-macos-arm64/$b" "built/binaries-macos-x86_64/$b"
+            chmod +x "$name/$b"
+          done
+          lipo -info "$name/workd"
+          tar -czf "$name.tar.gz" "$name"
+          gh release upload "v$VERSION" "$name.tar.gz" --clobber --repo "$GITHUB_REPOSITORY"
 
   publish:
     name: Publish release
-    needs: [version, desktop, binaries]
+    needs: [version, desktop, binaries, binaries-universal]
     runs-on: ubuntu-latest
     env:
       GH_TOKEN: ${{ github.token }}

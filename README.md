@@ -16,8 +16,9 @@ See [`docs/design.md`](docs/design.md) for the architecture and
 ## Install
 
 Each merge to `main` publishes a [release](https://github.com/alvingaopro/workd/releases)
-with the macOS desktop app (`.dmg`, universal) and `workd` + `workctl` for
-Linux (x86_64, aarch64) and macOS (universal). Hosts and clients should run
+with the macOS desktop app and `workd` + `workctl` for Linux (x86_64,
+aarch64) and macOS. macOS downloads come universal (any Mac) or per
+architecture (`arm64` for Apple silicon, `x86_64` for Intel; half the size). Hosts and clients should run
 the same version (see [`docs/protocol.md`](docs/protocol.md)).
 
 - **Desktop app:** open the `.dmg`. It isn't signed yet: the first time,
