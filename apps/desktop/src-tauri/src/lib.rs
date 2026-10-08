@@ -15,6 +15,7 @@ const INSTALL_CLI: &str = "install-cli";
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_clipboard_manager::init())
         .manage(hosts::Hosts::default())
         .manage(attach::Attaches::default())
         .menu(|app| {

@@ -293,3 +293,4 @@ code, .mono { font-family: var(--mono); }
 .check input { width: 15px; height: 15px; accent-color: var(--working); }
 .dialog .check { margin-top: 12px; }
 .empty .btn { margin-top: 12px; }
+.notice-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }

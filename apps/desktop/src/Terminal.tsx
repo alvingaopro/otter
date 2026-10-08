@@ -7,9 +7,21 @@ import { Channel, invoke } from "@tauri-apps/api/core";
 import { Terminal as XTerm } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebglAddon } from "@xterm/addon-webgl";
-import { ClipboardAddon } from "@xterm/addon-clipboard";
+import { ClipboardAddon, type IClipboardProvider } from "@xterm/addon-clipboard";
+import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import "@xterm/xterm/css/xterm.css";
 import type { AttachEvent } from "./types";
+
+/**
+ * Clipboard writes go through the native plugin: text copied in the session
+ * (tmux sends it as OSC 52) arrives after the mouse-up, which the WebView's
+ * own clipboard API refuses as not user-initiated. Programs may not read the
+ * Mac clipboard this way.
+ */
+const clipboard: IClipboardProvider = {
+  readText: () => "",
+  writeText: (_selection, text) => writeText(text),
+};
 
 const DARK = {
   background: "#0B0C0E",
@@ -111,7 +123,16 @@ export function Terminal({ host, workspace, session, onEnd, generation, label, w
     const fit = new FitAddon();
     term.loadAddon(fit);
     // Text copied in the session (OSC 52) goes to the Mac clipboard.
-    term.loadAddon(new ClipboardAddon());
+    term.loadAddon(new ClipboardAddon(undefined, clipboard));
+    // ⌘C copies a local (Option-drag) selection; otherwise it goes to the
+    // session as usual.
+    term.attachCustomKeyEventHandler((e) => {
+      if (e.type === "keydown" && e.metaKey && e.key === "c" && term.hasSelection()) {
+        void writeText(term.getSelection());
+        return false;
+      }
+      return true;
+    });
     term.open(el.current!);
     termRef.current = term;
     try {

@@ -224,6 +224,7 @@ export default function App() {
             onSession={(id) => setSessions((m) => ({ ...m, [current.key]: id }))}
             now={now}
             theme={theme}
+            appVersion={version}
           />
         ) : (
           <main className="pane empty">

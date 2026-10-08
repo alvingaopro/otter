@@ -14,11 +14,13 @@ interface Props {
   onSession: (id: string) => void;
   now: number;
   theme: "light" | "dark";
+  /** This app's version: a host on another otterd version is offered an update. */
+  appVersion?: string;
 }
 
 type Open = "new-session" | "delete-workspace" | "delete-session" | null;
 
-export function WorkspacePane({ placed, session, onSession, now, theme }: Props) {
+export function WorkspacePane({ placed, session, onSession, now, theme, appVersion }: Props) {
   const { host, ws } = placed;
   const current = ws.sessions.find((s) => s.id === session) ?? ws.sessions[0];
   const [ending, setEnding] = useState<Ending | null>(null);
@@ -115,6 +117,21 @@ export function WorkspacePane({ placed, session, onSession, now, theme }: Props)
         </div>
       </div>
 
+      {host.status === "connected" && host.version && appVersion && host.version !== appVersion && (
+        <div className="notice notice-row">
+          <span>
+            {host.name} runs otterd {host.version}; this app is {appVersion}. Fixes in this version may need the
+            host updated (running sessions keep going).
+          </span>
+          <button
+            className="btn primary"
+            disabled={busy}
+            onClick={() => void act("host_install", { name: host.name })}
+          >
+            {busy ? "Updating…" : `Update otterd on ${host.name}`}
+          </button>
+        </div>
+      )}
       {ws.state === "preparing" && <div className="notice">{ws.stateMessage ?? "Preparing workspace…"}</div>}
       {host.status !== "connected" && (
         <div className="notice">
