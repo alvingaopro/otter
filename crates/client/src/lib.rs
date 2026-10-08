@@ -89,7 +89,7 @@ impl Transport {
                 let mut remote = workd_path.clone();
                 if let Some(home) = home {
                     remote.push_str(" --home ");
-                    remote.push_str(&sh_quote(home));
+                    remote.push_str(&remote_path(home));
                 }
                 remote.push_str(" dial");
                 cmd.arg(remote);
@@ -485,6 +485,15 @@ fn session_ref(workspace: &str, session: &str) -> SessionRef {
     }
 }
 
+/// Quote a path for the remote shell, leaving a leading `~/` unquoted so it
+/// expands to the remote home (as in `workd_path`).
+fn remote_path(path: &str) -> String {
+    match path.strip_prefix("~/") {
+        Some(rest) => format!("~/{}", sh_quote(rest)),
+        None => sh_quote(path),
+    }
+}
+
 /// Quote `s` for a POSIX shell.
 pub fn sh_quote(s: &str) -> String {
     let safe = !s.is_empty()
@@ -506,6 +515,14 @@ mod tests {
         assert_eq!(sh_quote("/a/b"), "/a/b");
         assert_eq!(sh_quote("a b"), "'a b'");
         assert_eq!(sh_quote("it's"), r"'it'\''s'");
+    }
+
+    #[test]
+    fn remote_home_keeps_tilde_expandable() {
+        assert_eq!(remote_path("~/.workd-dev"), "~/.workd-dev");
+        assert_eq!(remote_path("~/my dir"), "~/'my dir'");
+        assert_eq!(remote_path("/tmp/x y"), "'/tmp/x y'");
+        assert_eq!(remote_path("~bob/x"), "'~bob/x'");
     }
 
     #[test]
