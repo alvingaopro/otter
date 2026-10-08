@@ -1,4 +1,4 @@
-//! `workctl attach`: an interactive terminal on a session.
+//! `otter attach`: an interactive terminal on a session.
 //!
 //! The local terminal is put in raw mode and bridged to the session through
 //! the daemon. `Ctrl-]` detaches; the session keeps running.
@@ -6,10 +6,10 @@
 use std::io::{IsTerminal, Read, Write};
 
 use anyhow::{Result, bail};
+use otter_client::Connection;
+use otter_protocol::frame::{AttachExit, AttachExitReason, Frame};
+use otter_protocol::{SessionAttach, SessionRef};
 use tokio::sync::mpsc;
-use workd_client::Connection;
-use workd_protocol::frame::{AttachExit, AttachExitReason, Frame};
-use workd_protocol::{SessionAttach, SessionRef};
 
 /// Ctrl-]
 pub const DETACH_KEY: u8 = 0x1d;
@@ -49,7 +49,7 @@ impl Drop for RawMode {
 
 pub async fn run(conn: Connection, workspace_id: &str, session: &str, label: &str) -> Result<()> {
     if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
-        bail!("attach needs an interactive terminal (try `workctl logs` / `workctl send`)");
+        bail!("attach needs an interactive terminal (try `otter logs` / `otter send`)");
     }
     let (cols, rows) = terminal_size();
     let term = std::env::var("TERM").ok().filter(|t| !t.is_empty());

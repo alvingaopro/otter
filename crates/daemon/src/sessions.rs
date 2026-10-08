@@ -4,12 +4,12 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use chrono::Utc;
-use workd_core::{
+use otter_core::{
     AgentInfo, AgentState, AttentionKind, EnvironmentKind, Execution, ExecutionId, ExecutionState,
     Session, SessionId, SessionKind, SessionSpec, Workspace, WorkspaceId, WorkspaceState,
     validate_name,
 };
-use workd_protocol::{
+use otter_protocol::{
     AttachReady, ErrorCode, Event, RpcError, SessionCreate, SessionOutput, SessionRead, SessionRef,
     SessionWrite,
 };
@@ -211,11 +211,11 @@ impl Daemon {
         let argv = self.argv(session, env);
 
         let mut env = env.clone();
-        env.insert("WORKD_WORKSPACE_ID".into(), ws.id.to_string());
-        env.insert("WORKD_WORKSPACE_NAME".into(), ws.name.clone());
-        env.insert("WORKD_SESSION_ID".into(), session.id.to_string());
-        env.insert("WORKD_SESSION_NAME".into(), session.name.clone());
-        env.insert("WORKD_EXECUTION_ID".into(), exec_id.to_string());
+        env.insert("OTTER_WORKSPACE_ID".into(), ws.id.to_string());
+        env.insert("OTTER_WORKSPACE_NAME".into(), ws.name.clone());
+        env.insert("OTTER_SESSION_ID".into(), session.id.to_string());
+        env.insert("OTTER_SESSION_NAME".into(), session.name.clone());
+        env.insert("OTTER_EXECUTION_ID".into(), exec_id.to_string());
         let result = match argv {
             Ok(argv) => {
                 let spec = LaunchSpec {

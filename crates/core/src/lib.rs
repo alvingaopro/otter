@@ -1,7 +1,7 @@
-//! Workd domain model.
+//! Otter domain model.
 //!
-//! These types are shared verbatim (via serde) by the host daemon (`workd`),
-//! the control-plane CLI (`workctl`) and the future desktop app.
+//! These types are shared verbatim (via serde) by the host daemon (`otterd`),
+//! the control-plane CLI (`otter`) and the future desktop app.
 
 pub mod ids;
 pub mod model;

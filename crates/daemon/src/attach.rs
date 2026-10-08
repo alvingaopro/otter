@@ -15,12 +15,12 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
+use otter_protocol::frame::{AttachExit, AttachExitReason, Frame, read_frame, write_frame};
+use otter_protocol::{Event, SessionAttach};
 use portable_pty::{CommandBuilder, PtySize, native_pty_system};
 use tokio::io::BufReader;
 use tokio::net::unix::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::sync::{broadcast::error::RecvError, mpsc};
-use workd_protocol::frame::{AttachExit, AttachExitReason, Frame, read_frame, write_frame};
-use workd_protocol::{Event, SessionAttach};
 
 use crate::daemon::Daemon;
 use crate::server::respond;
@@ -59,7 +59,7 @@ pub async fn run(
             respond(
                 &mut w,
                 id,
-                Err(workd_protocol::RpcError::internal(format!("{e:#}"))),
+                Err(otter_protocol::RpcError::internal(format!("{e:#}"))),
             )
             .await?;
             return Ok(());
@@ -213,8 +213,8 @@ pub async fn run(
 /// Whether `event` means the attached execution is over.
 fn ends_attach(
     event: &Event,
-    workspace_id: &workd_core::WorkspaceId,
-    target: &workd_protocol::AttachReady,
+    workspace_id: &otter_core::WorkspaceId,
+    target: &otter_protocol::AttachReady,
 ) -> Option<AttachExit> {
     match event {
         Event::ExecutionExited {

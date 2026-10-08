@@ -23,9 +23,9 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use chrono::{DateTime, Duration, Utc};
+use otter_core::{AgentCapability, AgentInfo, AgentState, Timestamp};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use workd_core::{AgentCapability, AgentInfo, AgentState, Timestamp};
 
 use super::{AgentProvider, Observation, ObserveContext, excerpt, settle};
 use crate::env::{EnvMap, which};
@@ -36,7 +36,7 @@ const MESSAGE_EXCERPT: usize = 240;
 
 pub struct ClaudeCode;
 
-/// What Workd keeps in `AgentInfo::provider_state` for a Claude Code session.
+/// What Otter keeps in `AgentInfo::provider_state` for a Claude Code session.
 #[derive(Debug, Default, Serialize, Deserialize, PartialEq)]
 struct ClaudeState {
     /// The transcript being followed.

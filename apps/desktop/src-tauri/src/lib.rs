@@ -1,5 +1,5 @@
-//! Workd desktop: a thin client. All state comes from the hosts' daemons
-//! through `workd-client`; this crate only connects, flattens state for the
+//! Otter desktop: a thin client. All state comes from the hosts' daemons
+//! through `otter-client`; this crate only connects, flattens state for the
 //! UI (`view`) and bridges terminals (`attach`).
 
 mod attach;
@@ -63,5 +63,5 @@ pub fn run() {
             attach::attach_close,
         ])
         .run(tauri::generate_context!())
-        .expect("error while running the Workd desktop app");
+        .expect("error while running the Otter desktop app");
 }

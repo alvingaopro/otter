@@ -1,7 +1,7 @@
 //! Git repository management (design §13, §14).
 //!
 //! Each repository is cloned once per host into a bare backing repository,
-//! `~/.workd/repos/<repo-id>/base`, and every Git-backed workspace gets its own
+//! `~/.otter/repos/<repo-id>/base`, and every Git-backed workspace gets its own
 //! worktree of it. Worktrees share the object store, so a new workspace costs a
 //! fetch and a checkout, not a clone.
 

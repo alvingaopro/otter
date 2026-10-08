@@ -1,11 +1,11 @@
 //! Resolving the environment launched processes run in (design §17, §19).
 //!
-//! The daemon is usually started from a non-interactive `ssh host workd dial`,
+//! The daemon is usually started from a non-interactive `ssh host otterd dial`,
 //! whose environment is minimal (e.g. `~/.local/bin` is not on `PATH`). Rather
 //! than depending on shell startup hooks inside each session, the daemon asks
 //! the user's login shell for its environment once, explicitly, and launches
 //! every managed process with it — so anything that works after `ssh host`
-//! works inside Workd.
+//! works inside Otter.
 
 use std::collections::BTreeMap;
 use std::time::Duration;
@@ -17,7 +17,7 @@ pub type EnvMap = BTreeMap<String, String>;
 
 const BEGIN: &str = "__WORKD_ENV_BEGIN__";
 const END: &str = "__WORKD_ENV_END__";
-const SELF_VAR: &str = "WORKD_SELF_EXE";
+const SELF_VAR: &str = "OTTER_SELF_EXE";
 
 /// Variables that describe a particular terminal, shell process or SSH
 /// connection rather than the user's environment.
@@ -77,7 +77,7 @@ pub async fn resolve_login_env(shell: &str) -> ResolvedEnv {
 
 async fn capture_login_env(shell: &str) -> Result<EnvMap> {
     let exe = self_exe()?;
-    // The shell re-executes workd, which prints its inherited environment as
+    // The shell re-executes otterd, which prints its inherited environment as
     // JSON between markers; anything profile scripts print is ignored.
     let mut cmd = Command::new(shell);
     cmd.arg("-l")
@@ -129,7 +129,7 @@ pub fn write_env_file(path: &std::path::Path, env: &EnvMap) -> Result<()> {
     Ok(())
 }
 
-/// Entry point for `workd internal-exec <env-file> -- <argv>`: replace the
+/// Entry point for `otterd internal-exec <env-file> -- <argv>`: replace the
 /// environment with the one in `env_file` (deleting the file), then exec.
 pub fn exec_with_env_file(env_file: &std::path::Path, argv: &[String]) -> Result<()> {
     use std::os::unix::process::CommandExt;
@@ -151,10 +151,10 @@ pub fn exec_with_env_file(env_file: &std::path::Path, argv: &[String]) -> Result
     Err(err).with_context(|| format!("executing {program}"))
 }
 
-/// Path of the running workd binary, usable for re-executing it even after an
+/// Path of the running otterd binary, usable for re-executing it even after an
 /// upgrade replaced the file.
 pub fn self_exe() -> Result<std::path::PathBuf> {
-    let exe = std::env::current_exe().context("locating workd executable")?;
+    let exe = std::env::current_exe().context("locating otterd executable")?;
     let s = exe.to_string_lossy();
     Ok(match s.strip_suffix(" (deleted)") {
         Some(stripped) => stripped.into(),
@@ -162,7 +162,7 @@ pub fn self_exe() -> Result<std::path::PathBuf> {
     })
 }
 
-/// Entry point for `workd internal-dump-env`.
+/// Entry point for `otterd internal-dump-env`.
 pub fn dump_env() {
     let vars: EnvMap = std::env::vars().collect();
     print!("{BEGIN}{}{END}", serde_json::to_string(&vars).unwrap());

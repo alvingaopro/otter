@@ -1,7 +1,7 @@
-//! `workd dial`: bridge stdin/stdout to the daemon socket, starting the
+//! `otterd dial`: bridge stdin/stdout to the daemon socket, starting the
 //! daemon first if it isn't running.
 //!
-//! This is how clients reach the daemon over SSH (`ssh host workd dial`): the
+//! This is how clients reach the daemon over SSH (`ssh host otterd dial`): the
 //! SSH channel carries the connection and the socket never leaves the host.
 
 use std::os::unix::process::CommandExt;
@@ -67,7 +67,7 @@ async fn connect_or_start(paths: &Paths) -> Result<UnixStream> {
         }
         if tokio::time::Instant::now() > deadline {
             bail!(
-                "workd did not start within {}s; see {}",
+                "otterd did not start within {}s; see {}",
                 START_TIMEOUT.as_secs(),
                 paths.log_file.display()
             );
@@ -75,10 +75,10 @@ async fn connect_or_start(paths: &Paths) -> Result<UnixStream> {
     }
 }
 
-/// Start `workd serve` fully detached (own session, stdio to the log file) so
+/// Start `otterd serve` fully detached (own session, stdio to the log file) so
 /// it outlives this SSH connection.
 fn spawn_daemon(paths: &Paths) -> Result<()> {
-    let exe = std::env::current_exe().context("locating workd executable")?;
+    let exe = std::env::current_exe().context("locating otterd executable")?;
     let log = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
@@ -99,6 +99,6 @@ fn spawn_daemon(paths: &Paths) -> Result<()> {
             Ok(())
         });
     }
-    cmd.spawn().context("starting workd serve")?;
+    cmd.spawn().context("starting otterd serve")?;
     Ok(())
 }

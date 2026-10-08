@@ -54,7 +54,7 @@ export interface HostView {
   describe: string;
   status: HostStatus;
   message?: string;
-  /** The host's workd version, once connected. */
+  /** The host's otterd version, once connected. */
   version?: string;
   /** Agent providers and whether this host can run them. */
   agents: { provider: string; available: boolean; version?: string; can_resume: boolean }[];

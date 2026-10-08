@@ -1,6 +1,6 @@
-//! `workctl` — the Workd control-plane CLI.
+//! `otter` — the Otter control-plane CLI.
 //!
-//! Talks to `workd` on each registered host (over SSH) and presents
+//! Talks to `otterd` on each registered host (over SSH) and presents
 //! workspaces independently of where they run.
 
 mod attach;
@@ -13,20 +13,20 @@ use std::io::IsTerminal;
 
 use anyhow::{Context, Result, bail};
 use clap::{Args, Parser, Subcommand};
+use otter_client::Connection;
+pub(crate) use otter_client::config;
+use otter_core::{Brief, EnvironmentKind, SessionKind, Workspace, WorkspaceSource, WorkspaceState};
+use otter_protocol::{SessionCreate, SessionSpec, SourceSpec, WorkspaceCreate};
 use tokio::task::JoinSet;
-use workd_client::Connection;
-pub(crate) use workd_client::config;
-use workd_core::{Brief, EnvironmentKind, SessionKind, Workspace, WorkspaceSource, WorkspaceState};
-use workd_protocol::{SessionCreate, SessionSpec, SourceSpec, WorkspaceCreate};
 
-use crate::config::{Config, DEFAULT_REMOTE_WORKD, HostEntry, HostTransport};
+use crate::config::{Config, DEFAULT_REMOTE_OTTERD, HostEntry, HostTransport};
 use crate::target::{Target, connect, find};
 
 #[derive(Parser)]
 #[command(
-    name = "workctl",
+    name = "otter",
     version,
-    about = "Manage Workd workspaces across hosts"
+    about = "Manage Otter workspaces across hosts"
 )]
 struct Cli {
     /// Print machine-readable JSON instead of tables.
@@ -106,7 +106,7 @@ enum Command {
 #[derive(Subcommand)]
 enum HostCommand {
     /// Register a host. Uses your SSH config: if `ssh <destination>` works,
-    /// workctl can connect.
+    /// otter can connect.
     Add {
         name: String,
         /// SSH destination (default: the host name).
@@ -118,10 +118,10 @@ enum HostCommand {
         /// This machine, without SSH.
         #[arg(long)]
         local: bool,
-        /// Path of workd on the host.
+        /// Path of otterd on the host.
         #[arg(long)]
-        workd_path: Option<String>,
-        /// Daemon state directory on the host (default ~/.workd).
+        otterd_path: Option<String>,
+        /// Daemon state directory on the host (default ~/.otter).
         #[arg(long)]
         home: Option<String>,
         /// Make this the default host.
@@ -141,8 +141,8 @@ enum HostCommand {
     Default { name: String },
     /// Show daemon status and capabilities.
     Status { name: Option<String> },
-    /// Install (or update) workd and workctl on a host from the release
-    /// matching this workctl, then restart its daemon. Sessions keep running.
+    /// Install (or update) otterd and otter on a host from the release
+    /// matching this otter, then restart its daemon. Sessions keep running.
     Install { name: String },
     /// Stop the daemon on a host. Sessions keep running; the next command
     /// starts it again.
@@ -189,13 +189,13 @@ struct WorkspaceCreateArgs {
     #[arg(long, conflicts_with = "dir")]
     repo: Option<String>,
     /// Branch: checked out if it exists, otherwise created (default:
-    /// workd/<name>).
+    /// otterd/<name>).
     #[arg(long, requires = "repo")]
     branch: Option<String>,
     /// Revision to branch from (default: the remote's default branch).
     #[arg(long, requires = "repo")]
     base: Option<String>,
-    /// Use an existing directory on the host instead (never deleted by workd).
+    /// Use an existing directory on the host instead (never deleted by otterd).
     #[arg(long)]
     dir: Option<String>,
     /// Don't start a shell.
@@ -262,7 +262,7 @@ struct SessionCreateArgs {
 async fn main() {
     let cli = Cli::parse();
     if let Err(e) = run(cli).await {
-        eprintln!("workctl: {e:#}");
+        eprintln!("otter: {e:#}");
         std::process::exit(1);
     }
 }
@@ -356,18 +356,18 @@ async fn host_command(config: &mut Config, cmd: HostCommand, json: bool) -> Resu
             ssh,
             ssh_args,
             local,
-            workd_path,
+            otterd_path,
             home,
             default,
             no_check,
         } => {
             let transport = if local {
-                HostTransport::Local { workd_path, home }
+                HostTransport::Local { otterd_path, home }
             } else {
                 HostTransport::Ssh {
                     destination: ssh.unwrap_or_else(|| name.clone()),
                     ssh_args,
-                    workd_path: workd_path.unwrap_or_else(|| DEFAULT_REMOTE_WORKD.to_owned()),
+                    otterd_path: otterd_path.unwrap_or_else(|| DEFAULT_REMOTE_OTTERD.to_owned()),
                     home,
                 }
             };
@@ -378,11 +378,11 @@ async fn host_command(config: &mut Config, cmd: HostCommand, json: bool) -> Resu
             if !no_check {
                 let mut conn = connect(config, &entry)
                     .await
-                    .context("could not reach workd (register anyway with --no-check)")?;
+                    .context("could not reach otterd (register anyway with --no-check)")?;
                 let status = conn.host_status().await?;
                 println!(
-                    "{name}: workd {} on {} ({}/{})",
-                    status.workd_version, status.hostname, status.os, status.arch
+                    "{name}: otterd {} on {} ({}/{})",
+                    status.otterd_version, status.hostname, status.os, status.arch
                 );
             }
             config.add_host(entry)?;
@@ -421,9 +421,9 @@ async fn host_command(config: &mut Config, cmd: HostCommand, json: bool) -> Resu
         HostCommand::Install { name } => {
             let host = config.host(&name)?.clone();
             let version = env!("CARGO_PKG_VERSION");
-            println!("installing workd {version} on {name}…");
+            println!("installing otterd {version} on {name}…");
             let out =
-                workd_client::install::install(&config.transport(&host), version, true).await?;
+                otter_client::install::install(&config.transport(&host), version, true).await?;
             println!("{out}");
             Ok(())
         }
@@ -440,7 +440,7 @@ async fn host_command(config: &mut Config, cmd: HostCommand, json: bool) -> Resu
                 None => config.hosts.clone(),
             };
             if hosts.is_empty() {
-                bail!("no hosts registered; add one with `workctl host add <name>`");
+                bail!("no hosts registered; add one with `otter host add <name>`");
             }
             let mut statuses = Vec::new();
             for host in hosts {
@@ -469,7 +469,7 @@ async fn host_command(config: &mut Config, cmd: HostCommand, json: bool) -> Resu
         HostCommand::Shutdown { name } => {
             let host = config.host(&name)?.clone();
             connect(config, &host).await?.shutdown().await?;
-            println!("workd on {name} stopped; sessions keep running");
+            println!("otterd on {name} stopped; sessions keep running");
             Ok(())
         }
     }
@@ -603,7 +603,7 @@ fn report_prepared(host: &str, ws: &Workspace) -> Result<()> {
     match ws.state {
         WorkspaceState::Failed => {
             bail!(
-                "workspace {} failed: {}\n(fix the problem and run `workctl ws prepare {}`, or delete it)",
+                "workspace {} failed: {}\n(fix the problem and run `otter ws prepare {}`, or delete it)",
                 ws.name,
                 ws.state_message.as_deref().unwrap_or("unknown error"),
                 ws.name
@@ -638,7 +638,7 @@ fn report_prepared(host: &str, ws: &Workspace) -> Result<()> {
 
 async fn list_workspaces(config: &Config, json: bool) -> Result<()> {
     if config.hosts.is_empty() {
-        bail!("no hosts registered; add one with `workctl host add <name>`");
+        bail!("no hosts registered; add one with `otter host add <name>`");
     }
     let mut tasks = JoinSet::new();
     for (i, host) in config.hosts.iter().enumerate() {
@@ -687,7 +687,7 @@ async fn list_workspaces(config: &Config, json: bool) -> Result<()> {
         }
     }
     if rows.is_empty() {
-        println!("no workspaces (create one with `workctl new <name>`)");
+        println!("no workspaces (create one with `otter new <name>`)");
         return Ok(());
     }
     output::table(&["WORKSPACE", "HOST", "STATE", "SESSIONS"], rows);
@@ -733,7 +733,7 @@ async fn session_command(config: &Config, cmd: SessionCommand, json: bool) -> Re
 async fn session_op<F, Fut>(config: &Config, target: &str, json: bool, op: F) -> Result<()>
 where
     F: FnOnce(Connection, String, String) -> Fut,
-    Fut: std::future::Future<Output = workd_client::Result<workd_core::Session>>,
+    Fut: std::future::Future<Output = otter_client::Result<otter_core::Session>>,
 {
     let target = Target::parse(target)?;
     let found = find(config, &target).await?;
@@ -798,7 +798,7 @@ fn join_command(argv: &[String]) -> String {
         return argv[0].clone();
     }
     argv.iter()
-        .map(|a| workd_client::sh_quote(a))
+        .map(|a| otter_client::sh_quote(a))
         .collect::<Vec<_>>()
         .join(" ")
 }
@@ -810,10 +810,10 @@ fn join_command(argv: &[String]) -> String {
 /// Stream a host's events after `cursor` into `tx`, reconnecting (and resuming
 /// from the last event seen) whenever the connection drops.
 async fn follow_events(
-    transport: workd_client::Transport,
+    transport: otter_client::Transport,
     host: String,
     mut cursor: u64,
-    tx: tokio::sync::mpsc::Sender<(String, workd_protocol::EventRecord)>,
+    tx: tokio::sync::mpsc::Sender<(String, otter_protocol::EventRecord)>,
 ) {
     loop {
         let stream = match Connection::connect(&transport).await {
@@ -829,10 +829,10 @@ async fn follow_events(
                     }
                 }
             }
-            Err(workd_client::ClientError::Rpc(e))
-                if e.code == workd_protocol::ErrorCode::CursorExpired =>
+            Err(otter_client::ClientError::Rpc(e))
+                if e.code == otter_protocol::ErrorCode::CursorExpired =>
             {
-                eprintln!("workctl: {host}: {e}; some events were missed, following from now");
+                eprintln!("otter: {host}: {e}; some events were missed, following from now");
                 if let Ok(mut conn) = Connection::connect(&transport).await
                     && let Ok(snapshot) = conn.snapshot().await
                 {
@@ -860,7 +860,7 @@ async fn events(
         bail!("no hosts registered");
     }
 
-    let (tx, mut rx) = tokio::sync::mpsc::channel::<(String, workd_protocol::EventRecord)>(256);
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<(String, otter_protocol::EventRecord)>(256);
     let mut names: HashMap<String, String> = HashMap::new();
     let mut backlog = Vec::new();
     for host in &hosts {

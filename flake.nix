@@ -1,5 +1,5 @@
 {
-  description = "workd — dev environment";
+  description = "otterd — dev environment";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
@@ -26,7 +26,7 @@
             # Desktop app (apps/desktop): Vite + Tauri CLI via npm
             nodejs_22
 
-            # Runtime deps of workd and its end-to-end tests
+            # Runtime deps of otterd and its end-to-end tests
             tmux
             git
             direnv

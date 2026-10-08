@@ -1,7 +1,7 @@
 name: Release
 
 # Every merge to main ships: bump the version, tag it, build the desktop app
-# and the workd/workctl binaries, and publish a GitHub release.
+# and the otterd/otter binaries, and publish a GitHub release.
 #
 # Bump size comes from the merged PR's labels: `release:major`,
 # `release:minor`, otherwise patch; `release:skip` releases nothing. Manual
@@ -65,10 +65,10 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git commit -am "Release v$version"
-          git tag -a "v$version" -m "Workd v$version"
+          git tag -a "v$version" -m "Otter v$version"
           git push origin "HEAD:${GITHUB_REF_NAME}" "v$version"
           # A draft until every artifact is attached.
-          gh release create "v$version" --draft --title "Workd v$version" --generate-notes --verify-tag
+          gh release create "v$version" --draft --title "Otter v$version" --generate-notes --verify-tag
           echo "version=$version" >> "$GITHUB_OUTPUT"
 
   # The app is built per architecture in parallel, then combined into a
@@ -115,13 +115,13 @@ jobs:
         run: |
           bundle=apps/desktop/src-tauri/target/${{ matrix.target }}/release/bundle
           mkdir -p out
-          cp "$bundle"/dmg/*.dmg "out/Workd_${VERSION}_macos_${{ matrix.arch }}.dmg"
-          tar -czf "out/Workd_${VERSION}_macos_${{ matrix.arch }}.app.tar.gz" -C "$bundle/macos" Workd.app
+          cp "$bundle"/dmg/*.dmg "out/Otter_${VERSION}_macos_${{ matrix.arch }}.dmg"
+          tar -czf "out/Otter_${VERSION}_macos_${{ matrix.arch }}.app.tar.gz" -C "$bundle/macos" Otter.app
           gh release upload "v$VERSION" out/* --clobber
       - uses: actions/upload-artifact@v7
         with:
           name: desktop-${{ matrix.target }}
-          path: apps/desktop/src-tauri/target/${{ matrix.target }}/release/workd-desktop
+          path: apps/desktop/src-tauri/target/${{ matrix.target }}/release/otter-desktop
           retention-days: 1
 
   desktop:
@@ -153,27 +153,27 @@ jobs:
         run: |
           out=apps/desktop/src-tauri/target/universal-apple-darwin/release
           mkdir -p "$out"
-          lipo -create -output "$out/workd-desktop" \
-            built/desktop-aarch64-apple-darwin/workd-desktop built/desktop-x86_64-apple-darwin/workd-desktop
-          chmod +x "$out/workd-desktop"
-          lipo -info "$out/workd-desktop"
+          lipo -create -output "$out/otter-desktop" \
+            built/desktop-aarch64-apple-darwin/otter-desktop built/desktop-x86_64-apple-darwin/otter-desktop
+          chmod +x "$out/otter-desktop"
+          lipo -info "$out/otter-desktop"
       - run: npm run tauri bundle -- --target universal-apple-darwin --bundles app,dmg
         working-directory: apps/desktop
       - name: Upload
         run: |
           bundle=apps/desktop/src-tauri/target/universal-apple-darwin/release/bundle
           mkdir -p out
-          cp "$bundle"/dmg/*.dmg "out/Workd_${VERSION}_macos_universal.dmg"
-          tar -czf "out/Workd_${VERSION}_macos_universal.app.tar.gz" -C "$bundle/macos" Workd.app
+          cp "$bundle"/dmg/*.dmg "out/Otter_${VERSION}_macos_universal.dmg"
+          tar -czf "out/Otter_${VERSION}_macos_universal.app.tar.gz" -C "$bundle/macos" Otter.app
           gh release upload "v$VERSION" out/* --clobber
 
   binaries:
-    name: workd + workctl (${{ matrix.name }})
+    name: otterd + otter (${{ matrix.name }})
     needs: version
     if: needs.version.outputs.version != ''
     strategy:
       matrix:
-        # Names match what `workd_client::install` downloads for `uname -sm`
+        # Names match what `otter_client::install` downloads for `uname -sm`
         # (macOS uses the universal build assembled below).
         include:
           - name: linux-x86_64
@@ -202,27 +202,27 @@ jobs:
           key: binaries-${{ matrix.name }}
       - name: Build
         run: |
-          name="workd-${VERSION}-${{ matrix.name }}"
+          name="otter-${VERSION}-${{ matrix.name }}"
           mkdir -p "$name"
           if [ -n "${{ matrix.target }}" ]; then
-            cargo build --release --locked -p workd -p workctl --target "${{ matrix.target }}"
-            cp "target/${{ matrix.target }}/release/workd" "target/${{ matrix.target }}/release/workctl" "$name"/
+            cargo build --release --locked -p otterd -p otter --target "${{ matrix.target }}"
+            cp "target/${{ matrix.target }}/release/otterd" "target/${{ matrix.target }}/release/otter" "$name"/
           else
-            cargo build --release --locked -p workd -p workctl
-            cp target/release/workd target/release/workctl "$name"/
+            cargo build --release --locked -p otterd -p otter
+            cp target/release/otterd target/release/otter "$name"/
           fi
           tar -czf "$name.tar.gz" "$name"
       - name: Upload
-        run: gh release upload "v$VERSION" "workd-${VERSION}-${{ matrix.name }}.tar.gz" --clobber
+        run: gh release upload "v$VERSION" "otter-${VERSION}-${{ matrix.name }}.tar.gz" --clobber
       - if: startsWith(matrix.name, 'macos-')
         uses: actions/upload-artifact@v7
         with:
           name: binaries-${{ matrix.name }}
-          path: workd-${{ needs.version.outputs.version }}-${{ matrix.name }}
+          path: otter-${{ needs.version.outputs.version }}-${{ matrix.name }}
           retention-days: 1
 
   binaries-universal:
-    name: workd + workctl (macos-universal)
+    name: otterd + otter (macos-universal)
     needs: [version, binaries]
     runs-on: macos-latest
     env:
@@ -235,13 +235,13 @@ jobs:
           path: built
       - name: Combine and upload
         run: |
-          name="workd-${VERSION}-macos-universal"
+          name="otter-${VERSION}-macos-universal"
           mkdir -p "$name"
-          for b in workd workctl; do
+          for b in otterd otter; do
             lipo -create -output "$name/$b" "built/binaries-macos-arm64/$b" "built/binaries-macos-x86_64/$b"
             chmod +x "$name/$b"
           done
-          lipo -info "$name/workd"
+          lipo -info "$name/otterd"
           tar -czf "$name.tar.gz" "$name"
           gh release upload "v$VERSION" "$name.tar.gz" --clobber --repo "$GITHUB_REPOSITORY"
 

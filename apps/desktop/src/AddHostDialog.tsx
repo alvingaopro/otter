@@ -13,20 +13,20 @@ export function AddHostDialog({ version, onClose }: { version?: string; onClose:
   const [name, setName] = useState("");
   const [where, setWhere] = useState<"ssh" | "local">("ssh");
   const [destination, setDestination] = useState("");
-  const [workdPath, setWorkdPath] = useState("");
+  const [otterdPath, setOtterPath] = useState("");
   const [home, setHome] = useState("");
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [needsInstall, setNeedsInstall] = useState<string | null>(null);
 
   async function add(install: boolean, force: boolean) {
-    setBusy(install ? `Installing workd ${version ?? ""} on ${name}…` : `Connecting to ${name}…`);
+    setBusy(install ? `Installing otterd ${version ?? ""} on ${name}…` : `Connecting to ${name}…`);
     setError(null);
     try {
       const out = await invoke<Outcome>("host_add", {
         name,
         destination: where === "ssh" ? destination || name : null,
-        workdPath: workdPath || null,
+        otterdPath: otterdPath || null,
         home: home || null,
         install,
         force,
@@ -95,17 +95,17 @@ export function AddHostDialog({ version, onClose }: { version?: string; onClose:
         <details className="advanced">
           <summary>Advanced</summary>
           <label className="field">
-            <span>workd path on the host</span>
+            <span>otterd path on the host</span>
             <input
-              value={workdPath}
-              onChange={(e) => setWorkdPath(e.target.value)}
-              placeholder="~/.local/bin/workd"
+              value={otterdPath}
+              onChange={(e) => setOtterPath(e.target.value)}
+              placeholder="~/.local/bin/otterd"
               spellCheck={false}
             />
           </label>
           <label className="field">
             <span>State directory on the host</span>
-            <input value={home} onChange={(e) => setHome(e.target.value)} placeholder="~/.workd" spellCheck={false} />
+            <input value={home} onChange={(e) => setHome(e.target.value)} placeholder="~/.otter" spellCheck={false} />
           </label>
         </details>
 
@@ -113,7 +113,7 @@ export function AddHostDialog({ version, onClose }: { version?: string; onClose:
           <div className="notice">
             <p>{needsInstall}</p>
             <p className="muted">
-              Install workd {version} on {name}? It goes to ~/.local/bin; the host needs tmux 3.2+ and curl or wget.
+              Install otterd {version} on {name}? It goes to ~/.local/bin; the host needs tmux 3.2+ and curl or wget.
             </p>
           </div>
         )}
@@ -132,7 +132,7 @@ export function AddHostDialog({ version, onClose }: { version?: string; onClose:
           </button>
           {needsInstall ? (
             <button type="button" className="btn primary" disabled={!!busy} onClick={() => void add(true, false)}>
-              Install workd and add
+              Install otterd and add
             </button>
           ) : (
             <button type="submit" className="btn primary" disabled={!!busy || !name.trim()}>

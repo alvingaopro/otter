@@ -8,7 +8,7 @@ interface Props {
   selected?: string;
   onSelect: (key: string) => void;
   now: number;
-  /** This app's version, to point out hosts running a different workd. */
+  /** This app's version, to point out hosts running a different otterd. */
   appVersion?: string;
   onAddHost: () => void;
   onHost: (name: string) => void;
@@ -18,8 +18,8 @@ const HOST_STATE: Record<HostView["status"], string> = {
   connecting: "connecting…",
   connected: "connected",
   unreachable: "unreachable · retrying",
-  incompatible: "incompatible workd",
-  not_installed: "workd not installed",
+  incompatible: "incompatible otterd",
+  not_installed: "otterd not installed",
 };
 
 export function Sidebar({ placed, hosts, selected, onSelect, now, appVersion, onAddHost, onHost }: Props) {
@@ -75,13 +75,13 @@ export function Sidebar({ placed, hosts, selected, onSelect, now, appVersion, on
             key={h.name}
             className="host-row"
             onClick={() => onHost(h.name)}
-            title={[h.describe, h.version && `workd ${h.version}`, h.message].filter(Boolean).join(" — ")}
+            title={[h.describe, h.version && `otterd ${h.version}`, h.message].filter(Boolean).join(" — ")}
           >
             <span className={`host-dot ${h.status}`} />
             <span className="host-name">{h.name}</span>
             <span className="host-state">{HOST_STATE[h.status]}</span>
             {h.version && appVersion && h.version !== appVersion && (
-              <span className="host-version">workd {h.version}</span>
+              <span className="host-version">otterd {h.version}</span>
             )}
           </button>
         ))}

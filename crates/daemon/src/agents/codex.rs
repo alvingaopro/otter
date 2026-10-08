@@ -1,7 +1,7 @@
 //! Codex provider. Everything Codex-specific lives here (decisions.md D-013).
 //!
 //! - **Launch:** `codex --no-daemon [prompt]`; resume: `codex --no-daemon
-//!   resume <id>`. `--no-daemon` keeps the agent inside the process Workd
+//!   resume <id>`. `--no-daemon` keeps the agent inside the process Otter
 //!   manages (by default the Codex TUI attaches to a shared, self-updating
 //!   background daemon, and the work would live outside the session).
 //! - **Identity:** the rollout file `$CODEX_HOME/sessions/YYYY/MM/DD/
@@ -25,9 +25,9 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use chrono::{DateTime, Duration, Local, Utc};
+use otter_core::{AgentCapability, AgentInfo, AgentState, Timestamp};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use workd_core::{AgentCapability, AgentInfo, AgentState, Timestamp};
 
 use super::{AgentProvider, Observation, ObserveContext, excerpt, settle};
 use crate::env::{EnvMap, which};
@@ -38,7 +38,7 @@ const MESSAGE_EXCERPT: usize = 240;
 
 pub struct Codex;
 
-/// What Workd keeps in `AgentInfo::provider_state` for a Codex session.
+/// What Otter keeps in `AgentInfo::provider_state` for a Codex session.
 #[derive(Debug, Default, Serialize, Deserialize, PartialEq)]
 struct CodexState {
     /// The rollout file being followed.

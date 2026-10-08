@@ -1,7 +1,7 @@
-//! Workd wire protocol.
+//! Otter wire protocol.
 //!
-//! A connection to `workd` is a byte stream (in V1: the daemon's Unix socket,
-//! reached over an SSH channel via `workd dial`). The protocol has two modes:
+//! A connection to `otterd` is a byte stream (in V1: the daemon's Unix socket,
+//! reached over an SSH channel via `otterd dial`). The protocol has two modes:
 //!
 //! 1. **RPC mode** (initial): newline-delimited JSON. The server first sends a
 //!    [`ServerMessage::Hello`]. The client then sends [`ClientMessage`]s; the
@@ -20,9 +20,9 @@ pub mod events;
 pub mod frame;
 pub mod wire;
 
+use otter_core::Brief;
+pub use otter_core::{SessionSpec, SourceSpec};
 use serde::{Deserialize, Serialize};
-use workd_core::Brief;
-pub use workd_core::{SessionSpec, SourceSpec};
 
 pub use events::{Event, EventRecord};
 
@@ -43,38 +43,38 @@ pub enum Request {
     /// Liveness check. Result: `null`.
     #[serde(rename = "ping")]
     Ping,
-    /// Result: [`workd_core::HostStatus`].
+    /// Result: [`otter_core::HostStatus`].
     #[serde(rename = "host.status")]
     HostStatus,
     /// Stop the daemon. Managed processes keep running. Result: `null`.
     #[serde(rename = "daemon.shutdown")]
     Shutdown,
 
-    /// Result: [`workd_core::Workspace`].
+    /// Result: [`otter_core::Workspace`].
     #[serde(rename = "workspace.create")]
     WorkspaceCreate(WorkspaceCreate),
-    /// Result: `Vec<`[`workd_core::Workspace`]`>`.
+    /// Result: `Vec<`[`otter_core::Workspace`]`>`.
     #[serde(rename = "workspace.list")]
     WorkspaceList,
-    /// Result: [`workd_core::Workspace`].
+    /// Result: [`otter_core::Workspace`].
     #[serde(rename = "workspace.get")]
     WorkspaceGet(WorkspaceRef),
     /// Re-run preparation (environment, then start sessions that aren't
     /// running yet), e.g. after fixing a failed `.envrc`. Result:
-    /// [`workd_core::Workspace`].
+    /// [`otter_core::Workspace`].
     #[serde(rename = "workspace.prepare")]
     WorkspacePrepare(WorkspaceRef),
     /// Stops all sessions and removes managed resources. Result: `null`.
     #[serde(rename = "workspace.delete")]
     WorkspaceDelete(WorkspaceDelete),
 
-    /// Create and start a session. Result: [`workd_core::Session`].
+    /// Create and start a session. Result: [`otter_core::Session`].
     #[serde(rename = "session.create")]
     SessionCreate(SessionCreate),
-    /// Result: [`workd_core::Session`].
+    /// Result: [`otter_core::Session`].
     #[serde(rename = "session.stop")]
     SessionStop(SessionRef),
-    /// Start a new execution of the session. Result: [`workd_core::Session`].
+    /// Start a new execution of the session. Result: [`otter_core::Session`].
     #[serde(rename = "session.restart")]
     SessionRestart(SessionRef),
     /// Stop the session and remove it from the workspace. Result: `null`.
@@ -218,8 +218,8 @@ pub struct SessionAttach {
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AttachReady {
-    pub session_id: workd_core::SessionId,
-    pub execution_id: workd_core::ExecutionId,
+    pub session_id: otter_core::SessionId,
+    pub execution_id: otter_core::ExecutionId,
 }
 
 /// Resolves the workspace's attention items, narrowed to one session or one
@@ -260,7 +260,7 @@ pub struct StateSnapshot {
     /// reflects every event up to `seq` and may already reflect later ones,
     /// so applying an event must be idempotent (e.g. refetch).
     pub seq: u64,
-    pub workspaces: Vec<workd_core::Workspace>,
+    pub workspaces: Vec<otter_core::Workspace>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -388,7 +388,7 @@ mod tests {
                 workspace: "scratch".into(),
                 spec: SessionSpec {
                     name: Some("dev".into()),
-                    kind: workd_core::SessionKind::Service,
+                    kind: otter_core::SessionKind::Service,
                     command: Some("npm run dev".into()),
                     provider: None,
                     prompt: None,

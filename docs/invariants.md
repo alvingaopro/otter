@@ -41,7 +41,7 @@ record it in [`decisions.md`](decisions.md) first.
 
 ### 4. The control plane does not own agent process lifetime.
 
-- `workd dial` starts the daemon detached (`setsid`); `daemon.shutdown` stops
+- `otterd dial` starts the daemon detached (`setsid`); `daemon.shutdown` stops
   the daemon but not managed processes, and a new daemon adopts them
   (`reconcile`).
 - Test: `daemon_restart_adopts_running_sessions_and_records_changes`.
@@ -71,7 +71,7 @@ record it in [`decisions.md`](decisions.md) first.
 ### 7. tmux is an execution backend, not the Session abstraction.
 
 - `ExecutionBackend` (`backend/mod.rs`); only `backend/tmux.rs` knows tmux.
-  Executions are tmux sessions named by Workd's own execution id, so no tmux
+  Executions are tmux sessions named by Otter's own execution id, so no tmux
   identifier enters the domain model. tmux's own messages are filtered from
   attach output and captures.
 - Quick check: `grep -rn tmux crates --include='*.rs'` outside `backend/`
@@ -83,7 +83,7 @@ record it in [`decisions.md`](decisions.md) first.
 
 - A host is a durable `HostEntry` in the control plane's registry
   (`crates/cli/src/config.rs`); `Transport` (`crates/client`) is how it is
-  reached (`ssh … workd dial`, or locally). The daemon knows nothing about SSH.
+  reached (`ssh … otterd dial`, or locally). The daemon knows nothing about SSH.
 
 ### 9. A remote Workspace's filesystem lives on its Host.
 
@@ -109,7 +109,7 @@ record it in [`decisions.md`](decisions.md) first.
 - Any client can disconnect at any time; everything it shows comes from
   `state.snapshot` / `workspace.list` plus `events.subscribe`. A reconnecting
   client resumes from its last event `seq` and never silently misses events
-  (`cursor_expired` → reload a snapshot). `workctl ls --watch` and
-  `workctl events --follow` reconnect to hosts that drop.
+  (`cursor_expired` → reload a snapshot). `otter ls --watch` and
+  `otter events --follow` reconnect to hosts that drop.
 - Tests: `event_replay_resumes_after_disconnect_and_daemon_restart`,
   `snapshot_then_subscribe_has_no_gap_and_stale_cursors_are_rejected`.

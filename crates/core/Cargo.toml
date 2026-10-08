@@ -1,6 +1,6 @@
 [package]
-name = "workd-core"
-description = "Workd domain model: Workspace, Session, Execution, Host."
+name = "otter-core"
+description = "Otter domain model: Workspace, Session, Execution, Host."
 version.workspace = true
 edition.workspace = true
 license.workspace = true

@@ -105,6 +105,7 @@ code, .mono { font-family: var(--mono); }
 }
 .brand { display: flex; align-items: center; gap: 10px; }
 .brand-name { font-weight: 600; letter-spacing: 0.2px; }
+.brand-icon { border-radius: 5px; display: block; }
 .brand-sub { color: var(--faint); font-size: 13px; }
 .app-version { color: var(--faint); font-size: 12px; font-family: var(--mono); }
 

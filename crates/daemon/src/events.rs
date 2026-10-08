@@ -6,8 +6,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use anyhow::{Context, Result};
+use otter_protocol::{Event, EventRecord};
 use tokio::sync::broadcast;
-use workd_protocol::{Event, EventRecord};
 
 pub struct EventLog {
     path: PathBuf,

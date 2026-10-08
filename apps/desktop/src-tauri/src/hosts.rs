@@ -2,9 +2,9 @@
 //! the event stream from that snapshot's cursor, and re-snapshot whenever
 //! events arrive (coalesced). The UI gets the whole host list on every change.
 //!
-//! The host list is `hosts.toml`, shared with `workctl`. The app reconciles
+//! The host list is `hosts.toml`, shared with `otter`. The app reconciles
 //! its tasks against the file at startup, whenever the file changes (so
-//! `workctl host add` shows up live) and after it edits the file itself.
+//! `otter host add` shows up live) and after it edits the file itself.
 //!
 //! The desktop holds no state of its own: everything shown comes from the
 //! hosts, and a lost connection just means "reconnect and snapshot again".
@@ -14,11 +14,11 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 use std::time::{Duration, SystemTime};
 
+use otter_client::config::{Config, HostEntry, HostTransport};
+use otter_client::{ClientError, Connection, Transport};
 use serde::Serialize;
 use tauri::async_runtime::JoinHandle;
 use tauri::{AppHandle, Emitter, Manager};
-use workd_client::config::{Config, HostEntry, HostTransport};
-use workd_client::{ClientError, Connection, Transport};
 
 use crate::view::{HostStatus, HostView, WorkspaceView};
 
@@ -193,7 +193,7 @@ fn describe(entry: &HostEntry) -> String {
     }
 }
 
-/// Restart one host's task now (e.g. after installing workd on it).
+/// Restart one host's task now (e.g. after installing otterd on it).
 fn restart(app: &AppHandle, name: &str) {
     {
         let hosts = app.state::<Hosts>();
@@ -303,7 +303,7 @@ async fn follow(app: &AppHandle, name: &str, transport: &Transport) -> Result<Ne
     Err(result)
 }
 
-fn show(app: &AppHandle, name: &str, workspaces: &[workd_core::Workspace]) {
+fn show(app: &AppHandle, name: &str, workspaces: &[otter_core::Workspace]) {
     let views: Vec<WorkspaceView> = workspaces.iter().map(WorkspaceView::from).collect();
     app.state::<Hosts>().update(name, |v| {
         v.status = HostStatus::Connected;
@@ -357,7 +357,7 @@ pub async fn session_restart(
 }
 
 // ---------------------------------------------------------------------------
-// Managing hosts (the same `hosts.toml` edits as `workctl host add/rm`)
+// Managing hosts (the same `hosts.toml` edits as `otter host add/rm`)
 // ---------------------------------------------------------------------------
 
 fn app_version(app: &AppHandle) -> String {
@@ -368,43 +368,43 @@ fn app_version(app: &AppHandle) -> String {
 #[serde(rename_all = "camelCase")]
 pub struct AddOutcome {
     added: bool,
-    /// workd is missing or too old there; adding with `install` fixes that.
+    /// otterd is missing or too old there; adding with `install` fixes that.
     needs_install: bool,
     message: String,
 }
 
 /// Register a host. `destination` (anything `ssh` accepts) makes it remote;
 /// without one it is this Mac. Unless `force`, the host must answer first;
-/// with `install`, workd is installed (or updated) on it before that.
+/// with `install`, otterd is installed (or updated) on it before that.
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
 pub async fn host_add(
     app: AppHandle,
     name: String,
     destination: Option<String>,
-    workd_path: Option<String>,
+    otterd_path: Option<String>,
     home: Option<String>,
     install: bool,
     force: bool,
 ) -> Result<AddOutcome, String> {
     let name = name.trim().to_owned();
     let nonempty = |s: Option<String>| s.map(|s| s.trim().to_owned()).filter(|s| !s.is_empty());
-    let (destination, workd_path, home) =
-        (nonempty(destination), nonempty(workd_path), nonempty(home));
+    let (destination, otterd_path, home) =
+        (nonempty(destination), nonempty(otterd_path), nonempty(home));
     let mut config = load_config().map_err(|e| format!("{e:#}"))?;
     let transport = match destination {
         Some(destination) => HostTransport::Ssh {
             destination,
             ssh_args: Vec::new(),
-            workd_path: workd_path
-                .unwrap_or_else(|| workd_client::config::DEFAULT_REMOTE_WORKD.to_owned()),
+            otterd_path: otterd_path
+                .unwrap_or_else(|| otter_client::config::DEFAULT_REMOTE_OTTERD.to_owned()),
             home,
         },
         // A Finder-launched app has no useful PATH: point at where installs go.
         None => HostTransport::Local {
-            workd_path: Some(workd_path.unwrap_or_else(|| {
+            otterd_path: Some(otterd_path.unwrap_or_else(|| {
                 let home = std::env::var("HOME").unwrap_or_default();
-                format!("{home}/.local/bin/workd")
+                format!("{home}/.local/bin/otterd")
             })),
             home,
         },
@@ -424,7 +424,7 @@ pub async fn host_add(
     let transport = config.transport(&entry);
     let mut message = String::new();
     if install {
-        message = workd_client::install::install(&transport, &app_version(&app), true)
+        message = otter_client::install::install(&transport, &app_version(&app), true)
             .await
             .map_err(|e| e.to_string())?;
     }
@@ -440,8 +440,8 @@ pub async fn host_add(
                     message.push('\n');
                 }
                 message.push_str(&format!(
-                    "workd {} on {} ({}/{})",
-                    status.workd_version, status.hostname, status.os, status.arch
+                    "otterd {} on {} ({}/{})",
+                    status.otterd_version, status.hostname, status.os, status.arch
                 ));
             }
             Err(e @ (ClientError::NotInstalled { .. } | ClientError::ProtocolMismatch { .. })) => {
@@ -474,26 +474,26 @@ pub fn host_remove(app: AppHandle, name: String) -> Result<(), String> {
     Ok(())
 }
 
-/// Install or update workd on a registered host to this app's version, and
+/// Install or update otterd on a registered host to this app's version, and
 /// restart its daemon (sessions keep running).
 #[tauri::command]
 pub async fn host_install(app: AppHandle, name: String) -> Result<String, String> {
     let transport = app.state::<Hosts>().transport(&name)?;
-    let out = workd_client::install::install(&transport, &app_version(&app), true)
+    let out = otter_client::install::install(&transport, &app_version(&app), true)
         .await
         .map_err(|e| e.to_string())?;
     restart(&app, &name);
     Ok(out)
 }
 
-/// Install `workctl` and `workd` for this user on this Mac (`~/.local/bin`).
+/// Install `otter` and `otterd` for this user on this Mac (`~/.local/bin`).
 #[tauri::command]
 pub async fn install_cli(app: AppHandle) -> Result<String, String> {
     let here = Transport::Local {
-        workd_path: String::new(),
+        otterd_path: String::new(),
         home: None,
     };
-    workd_client::install::install(&here, &app_version(&app), false)
+    otter_client::install::install(&here, &app_version(&app), false)
         .await
         .map_err(|e| e.to_string())
 }
@@ -512,12 +512,12 @@ pub async fn workspace_create(
     app: AppHandle,
     host: String,
     name: String,
-    source: workd_protocol::SourceSpec,
-    sessions: Vec<workd_protocol::SessionSpec>,
+    source: otter_protocol::SourceSpec,
+    sessions: Vec<otter_protocol::SessionSpec>,
 ) -> Result<String, String> {
     let ws = rpc(&app, &host)
         .await?
-        .workspace_create(workd_protocol::WorkspaceCreate {
+        .workspace_create(otter_protocol::WorkspaceCreate {
             name: name.trim().to_owned(),
             brief: None,
             source,
@@ -565,11 +565,11 @@ pub async fn session_create(
     app: AppHandle,
     host: String,
     workspace: String,
-    spec: workd_protocol::SessionSpec,
+    spec: otter_protocol::SessionSpec,
 ) -> Result<String, String> {
     let s = rpc(&app, &host)
         .await?
-        .session_create(workd_protocol::SessionCreate { workspace, spec })
+        .session_create(otter_protocol::SessionCreate { workspace, spec })
         .await
         .map_err(err)?;
     Ok(s.id.to_string())
@@ -607,7 +607,7 @@ pub async fn session_delete(
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CliStatus {
-    /// `workctl` in `~/.local/bin`, if there.
+    /// `otter` in `~/.local/bin`, if there.
     #[serde(skip_serializing_if = "Option::is_none")]
     version: Option<String>,
     path: String,
@@ -617,7 +617,7 @@ pub struct CliStatus {
 #[tauri::command]
 pub async fn cli_status() -> CliStatus {
     let path = format!(
-        "{}/.local/bin/workctl",
+        "{}/.local/bin/otter",
         std::env::var("HOME").unwrap_or_default()
     );
     let version = tokio::process::Command::new(&path)
@@ -637,8 +637,8 @@ pub async fn cli_status() -> CliStatus {
 
 #[cfg(test)]
 mod tests {
-    use workd_core::SessionKind;
-    use workd_protocol::{SessionSpec, SourceSpec};
+    use otter_core::SessionKind;
+    use otter_protocol::{SessionSpec, SourceSpec};
 
     /// The shapes the New workspace / New session dialogs send.
     #[test]

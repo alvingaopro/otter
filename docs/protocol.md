@@ -1,14 +1,14 @@
-# Workd protocol (v2)
+# Otter protocol (v2)
 
-The contract between `workd` and its clients (`workctl`, later the desktop
+The contract between `otterd` and its clients (`otter`, later the desktop
 app). Types live in `crates/protocol`; this document is the prose. Decisions:
 D-004 (shape), D-016 (cursors, snapshot, compatibility).
 
 ## Connection
 
 A connection is a byte stream to one host's daemon: the Unix socket
-`~/.workd/run/workd.sock`, reached through `workd dial` (locally, or as
-`ssh host workd dial`). `workd dial` starts the daemon if it isn't running.
+`~/.otter/run/workd.sock`, reached through `otterd dial` (locally, or as
+`ssh host otterd dial`). `otterd dial` starts the daemon if it isn't running.
 
 1. The server sends `{"type":"hello","protocol":2,"version":"0.1.0"}`.
    `protocol` is checked by the client; a mismatch is a clear error
@@ -34,7 +34,7 @@ potentially secret data.
 
 ## State and events
 
-`workd` is not event-sourced: current state comes from a snapshot, events say
+`otterd` is not event-sourced: current state comes from a snapshot, events say
 what changed after it.
 
 ### `state.snapshot`
@@ -95,7 +95,7 @@ reconnecting:   subscribe(after = last seen seq)
                   └─ cursor_expired ─► fresh client
 ```
 
-`workctl events --follow` is the reference implementation (it resumes from the
+`otter events --follow` is the reference implementation (it resumes from the
 last event it printed whenever its connection drops).
 
 `events.list {limit}` returns the most recent `limit` events (oldest first) for
@@ -134,7 +134,7 @@ After a successful `session.attach` response
   unaffected. If the daemon goes away, the client sees the connection close
   without an `exit` frame; the session is unaffected and can be attached again
   once a daemon is back. An attach is disposable; the execution is durable.
-- **Dead connections**: a client must not wait forever. `workctl attach` gives
+- **Dead connections**: a client must not wait forever. `otter attach` gives
   up 5 s after sending `detach` without an `exit`, and SSH transports use
   keepalives (`ServerAliveInterval=15`, `ServerAliveCountMax=3`) so a dead
   network is noticed within about a minute even when idle.

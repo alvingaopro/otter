@@ -1,6 +1,6 @@
 //! Execution backends (design §12).
 //!
-//! A backend owns concrete processes for [`workd_core::Execution`]s and keeps
+//! A backend owns concrete processes for [`otter_core::Execution`]s and keeps
 //! them alive independently of the daemon and of any client. tmux is the V1
 //! backend; nothing outside this module knows about tmux.
 

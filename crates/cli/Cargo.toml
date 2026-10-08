@@ -1,19 +1,19 @@
 [package]
-name = "workctl"
-description = "Workd control-plane CLI."
+name = "otter"
+description = "Otter control-plane CLI."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 publish.workspace = true
 
 [[bin]]
-name = "workctl"
+name = "otter"
 path = "src/main.rs"
 
 [dependencies]
-workd-core.workspace = true
-workd-protocol.workspace = true
-workd-client.workspace = true
+otter-core.workspace = true
+otter-protocol.workspace = true
+otter-client.workspace = true
 anyhow.workspace = true
 chrono.workspace = true
 clap.workspace = true

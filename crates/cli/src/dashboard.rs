@@ -13,9 +13,9 @@ use std::time::Duration;
 
 use anyhow::{Result, bail};
 use chrono::Utc;
+use otter_client::Connection;
+use otter_core::{Activity, AgentState, SessionKind, SessionStatus, Timestamp, Workspace};
 use tokio::task::JoinSet;
-use workd_client::Connection;
-use workd_core::{Activity, AgentState, SessionKind, SessionStatus, Timestamp, Workspace};
 
 use crate::config::Config;
 use crate::output;
@@ -28,7 +28,7 @@ pub struct HostResult {
 /// Every host's workspaces, queried concurrently, in registry order.
 pub async fn fetch_all(config: &Config) -> Result<Vec<HostResult>> {
     if config.hosts.is_empty() {
-        bail!("no hosts registered; add one with `workctl host add <name>`");
+        bail!("no hosts registered; add one with `otter host add <name>`");
     }
     let mut tasks = JoinSet::new();
     for (i, host) in config.hosts.iter().enumerate() {
@@ -128,7 +128,7 @@ pub fn render(results: &[HostResult], color: bool) -> String {
         }
     }
     if rows.is_empty() {
-        out.push_str("no workspaces (create one with `workctl new <name>`)\n");
+        out.push_str("no workspaces (create one with `otter new <name>`)\n");
         return out;
     }
     // Most urgent first; within a group, the longest-waiting first.

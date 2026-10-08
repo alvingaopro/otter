@@ -1,7 +1,7 @@
 //! Filesystem layout of a host (design §13):
 //!
 //! ```text
-//! ~/.workd/
+//! ~/.otter/
 //!     run/            daemon socket, lock, pid, tmux socket + config
 //!     state/          state.json, events.jsonl
 //!     logs/           workd.log
@@ -58,21 +58,31 @@ impl Paths {
         }
     }
 
-    /// Resolve the home directory: explicit `--home` / `WORKD_HOME`, else
-    /// `$HOME/.workd`.
+    /// Resolve the home directory: explicit `--home` / `OTTER_HOME` (or the
+    /// pre-rename `WORKD_HOME`), else `$HOME/.otter` — or `$HOME/.workd` when
+    /// only that exists, so a host keeps its workspaces and running sessions
+    /// across the rename (D-024).
     pub fn resolve(explicit: Option<PathBuf>) -> Result<Self> {
+        let explicit = explicit.or_else(|| std::env::var_os("WORKD_HOME").map(PathBuf::from));
         let home = match explicit {
             Some(p) => absolutize(&p)?,
             None => {
-                let user_home = std::env::var_os("HOME").context("$HOME is not set")?;
-                PathBuf::from(user_home).join(".workd")
+                let user_home =
+                    PathBuf::from(std::env::var_os("HOME").context("$HOME is not set")?);
+                let home = user_home.join(".otter");
+                let legacy = user_home.join(".workd");
+                if !home.exists() && legacy.exists() {
+                    legacy
+                } else {
+                    home
+                }
             }
         };
         let paths = Paths::new(home);
         for sock in [&paths.socket, &paths.tmux_socket] {
             if sock.as_os_str().len() > MAX_SOCKET_PATH {
                 bail!(
-                    "socket path {} is too long for a Unix socket; use a shorter WORKD_HOME",
+                    "socket path {} is too long for a Unix socket; use a shorter OTTER_HOME",
                     sock.display()
                 );
             }
