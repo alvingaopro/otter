@@ -1371,12 +1371,20 @@ async fn direnv_environment_is_resolved_and_inherited() {
 
 /// A stand-in for the Codex TUI: records its arguments, writes a rollout
 /// transcript like Codex does (holding it open), and plays a scripted turn.
+/// Mode `old` is a Codex before 0.156, which rejects `--no-daemon`.
 const FAKE_CODEX: &str = r#"#!/bin/sh
+case " $* " in *" --version "*) ;; *) echo "$*" >> "$FAKE_CODEX_LOG" ;; esac
+if [ "$1" = --no-daemon ]; then
+  if [ "$FAKE_CODEX_MODE" = old ]; then
+    echo "error: unexpected argument '--no-daemon' found" >&2
+    exit 2
+  fi
+  shift
+fi
 if [ "$1" = --version ]; then echo "codex-cli 0.0.0-fake"; exit 0; fi
-echo "$*" >> "$FAKE_CODEX_LOG"
 now() { date -u +%Y-%m-%dT%H:%M:%S.000Z; }
-if [ "$2" = resume ]; then
-  id="$3"
+if [ "$1" = resume ]; then
+  id="$2"
   f=$(ls "$CODEX_HOME"/sessions/*/*/*/rollout-*-"$id".jsonl | head -n 1)
 else
   id=$(cat /proc/sys/kernel/random/uuid 2>/dev/null || uuidgen | tr A-Z a-z)
@@ -1652,6 +1660,26 @@ async fn codex_session_is_observed_resumed_and_needs_you_when_done() {
         lines,
         ["--no-daemon", &format!("--no-daemon resume {conversation}")]
     );
+}
+
+#[tokio::test]
+async fn codex_without_no_daemon_is_launched_without_it() {
+    use otter_core::AgentState;
+    let fake = fake_codex_host("old").await;
+    let host = &fake.host;
+    create(host, "old", Some(vec![SessionSpec::agent("codex")])).await;
+    let ws = wait_agent(host, "old", "codex", AgentState::WaitingForInput).await;
+    let conversation = ws.session("codex").unwrap().agent.as_ref().unwrap();
+    let conversation = conversation.provider_session_id.clone().unwrap();
+    host.conn()
+        .await
+        .session_restart("old", "codex")
+        .await
+        .unwrap();
+    wait_agent(host, "old", "codex", AgentState::WaitingForInput).await;
+    let args = std::fs::read_to_string(&fake.log).unwrap();
+    let lines: Vec<&str> = args.lines().collect();
+    assert_eq!(lines, ["", &format!("resume {conversation}")]);
 }
 
 #[tokio::test]

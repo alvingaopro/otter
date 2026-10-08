@@ -4,6 +4,8 @@
 //!   resume <id>`. `--no-daemon` keeps the agent inside the process Otter
 //!   manages (by default the Codex TUI attaches to a shared, self-updating
 //!   background daemon, and the work would live outside the session).
+//!   Codex before 0.156 has no such daemon and rejects the flag, so it is
+//!   passed only when the installed binary accepts it (`supports_no_daemon`).
 //! - **Identity:** the rollout file `$CODEX_HOME/sessions/YYYY/MM/DD/
 //!   rollout-<ts>-<id>.jsonl`, whose first record (`session_meta`) carries the
 //!   conversation id (= `provider_session_id`) and cwd. Codex creates it
@@ -24,8 +26,11 @@
 //! The rollout format belongs to a self-updating binary: everything parses
 //! defensively and ignores what it doesn't know.
 
+use std::collections::HashMap;
 use std::io::{BufRead, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
+use std::time::SystemTime;
 
 use anyhow::{Context, Result};
 use async_trait::async_trait;
@@ -42,6 +47,59 @@ const CLOCK_SLACK: i64 = 5;
 const MESSAGE_EXCERPT: usize = 240;
 
 pub struct Codex;
+
+/// Whether this `codex` binary accepts `--no-daemon` (added in 0.156; older
+/// versions exit with "unexpected argument"). Asks the binary itself —
+/// `codex --no-daemon --version` succeeds only if the flag parses — rather
+/// than guessing from a version number. Cached per binary (resolved path and
+/// modification time), so an upgrade in place is noticed; a probe that can't
+/// run or doesn't answer is not cached and leaves the flag out.
+fn supports_no_daemon(codex: &Path, env: &EnvMap) -> bool {
+    type Key = (PathBuf, Option<SystemTime>);
+    static CACHE: Mutex<Option<HashMap<Key, bool>>> = Mutex::new(None);
+    let real = std::fs::canonicalize(codex).unwrap_or_else(|_| codex.to_owned());
+    let key = (
+        real.clone(),
+        real.metadata().and_then(|m| m.modified()).ok(),
+    );
+    if let Some(&known) = CACHE.lock().unwrap().get_or_insert_default().get(&key) {
+        return known;
+    }
+    let Some(supported) = probe_no_daemon(codex, env) else {
+        return false;
+    };
+    tracing::debug!(codex = %real.display(), supported, "codex --no-daemon probed");
+    CACHE
+        .lock()
+        .unwrap()
+        .get_or_insert_default()
+        .insert(key, supported);
+    supported
+}
+
+fn probe_no_daemon(codex: &Path, env: &EnvMap) -> Option<bool> {
+    let mut child = std::process::Command::new(codex)
+        .args(["--no-daemon", "--version"])
+        .env_clear()
+        .envs(env)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .ok()?;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        if let Some(status) = child.try_wait().ok()? {
+            return Some(status.success());
+        }
+        if std::time::Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            return None;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+}
 
 /// What Otter keeps in `AgentInfo::provider_state` for a Codex session.
 #[derive(Debug, Default, Serialize, Deserialize, PartialEq)]
@@ -71,6 +129,9 @@ impl AgentProvider for Codex {
             return cap;
         };
         cap.available = true;
+        // Learn the launch flags now, so starting a session rarely has to.
+        let (probe, probe_env) = (codex.clone(), env.clone());
+        let _ = tokio::task::spawn_blocking(move || supports_no_daemon(&probe, &probe_env)).await;
         let out = tokio::time::timeout(
             std::time::Duration::from_secs(5),
             tokio::process::Command::new(codex)
@@ -96,7 +157,10 @@ impl AgentProvider for Codex {
     fn launch_argv(&self, info: &AgentInfo, ctx: &LaunchContext<'_>) -> Result<Vec<String>> {
         let codex = which("codex", ctx.env)
             .context("codex is not installed on this host (not on the login PATH)")?;
-        let mut argv = vec![codex.to_string_lossy().into_owned(), "--no-daemon".into()];
+        let mut argv = vec![codex.to_string_lossy().into_owned()];
+        if supports_no_daemon(&codex, ctx.env) {
+            argv.push("--no-daemon".into());
+        }
         match (&info.provider_session_id, &info.prompt) {
             (Some(id), _) => {
                 argv.push("resume".into());
@@ -497,6 +561,28 @@ mod tests {
                 .launch_argv(&info(None, None), &launch(&empty, dir.path()))
                 .is_err()
         );
+    }
+
+    #[test]
+    fn older_codex_launches_without_no_daemon() {
+        // Like codex-cli < 0.156: `--no-daemon` is an unknown argument.
+        let dir = tempfile::tempdir().unwrap();
+        let env = fake_codex_env(dir.path());
+        let codex = dir.path().join("bin/codex");
+        std::fs::write(
+            &codex,
+            "#!/bin/sh\nfor a; do [ \"$a\" = --no-daemon ] && exit 2; done\necho codex-cli 0.154.0\n",
+        )
+        .unwrap();
+        let l = launch(&env, dir.path());
+        let argv = Codex
+            .launch_argv(&info(None, Some("fix the tests")), &l)
+            .unwrap();
+        assert_eq!(argv[1..], ["fix the tests"]);
+        let argv = Codex
+            .launch_argv(&info(Some("0199-abc"), None), &l)
+            .unwrap();
+        assert_eq!(argv[1..], ["resume", "0199-abc"]);
     }
 
     #[test]

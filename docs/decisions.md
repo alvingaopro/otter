@@ -230,6 +230,20 @@ and the rollout transcript.
   agent's work would live outside the process Otter manages; `--no-daemon`
   keeps execution/lost/restart semantics meaningful. Cost: those sessions
   don't appear in `codex agents` / remote control.
+  *Amended 2026-10-08:* the flag is passed **only when the installed Codex
+  accepts it**. It appeared in codex-cli 0.156.0 (`--help`: "Run without the
+  shared background server, even if it is already running"); 0.154.0 and
+  0.155.0 exit 2 with `error: unexpected argument '--no-daemon' found`, so
+  Otter could not start Codex at all on such hosts. Those versions don't
+  route the TUI through a shared daemon (connecting to an app server is the
+  opt-in `--remote`; a 0.154.0 TUI in tmux was the pane's only process, with
+  no app-server running), so without the flag the agent still lives in the
+  session's process. Detection asks the binary rather than guessing from a
+  version: `codex --no-daemon --version` exits 0 only if the flag parses
+  (checked against 0.154.0, 0.155.0 → 2; 0.156.0–0.159.1 → 0). The answer is
+  cached per resolved binary and modification time, warmed by `detect`; a
+  probe that can't run or times out (5 s) isn't cached and leaves the flag
+  out.
 - The agent binary is the session's process (no shell in between).
 - **Identity:** the rollout file `$CODEX_HOME/sessions/YYYY/MM/DD/rollout-*.jsonl`;
   its first record (`session_meta`) has the conversation id (stored as the
@@ -252,9 +266,8 @@ and the rollout transcript.
    "dangerous" flag, and the rollout records nothing during a prompt, so
    there is nothing else structured to read.
 2. Calibrated against real Codex — codex-cli **0.154.0** (the version
-   installed on the dogfooding Mac; note it rejects `--no-daemon` with
-   `error: unexpected argument '--no-daemon' found`, so Otter's launch line
-   needs a newer Codex). In a tmux pane, `approval_policy` on-request, asked
+   installed on the dogfooding Mac; it rejects `--no-daemon`, which Otter
+   now leaves out for it — see Launch above). In a tmux pane, `approval_policy` on-request, asked
    to `touch` a file outside the sandbox:
    - rollout: `response_item custom_tool_call` (`status: "completed"`, input
      `tools.exec_command({cmd:"touch …", sandbox_permissions:"require_escalated"…})`)
@@ -851,7 +864,7 @@ fallback until the agent restarts. After an otterd restart the first look
 at a screen is not taken as a change, so a pending prompt stays reported.
 A Claude Code too old for `--settings` fails to start visibly. Codex was
 measured directly in tmux and through a faithful fake, not through otterd:
-the installed 0.154.0 rejects `--no-daemon` (D-013).
+the installed 0.154.0 rejected `--no-daemon` (since fixed, D-013 Launch).
 
 **Startup dialogs:** an agent given a prompt that stands still before its
 transcript exists is `blocked` (folder trust for both CLIs, D-013 item 3);
