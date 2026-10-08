@@ -704,6 +704,17 @@ page in the Mac's browser and finish on the host.
 - **Callback mappings clean up:** removed when the host stops listening on the
   port (the tool got its redirect) or after 10 minutes, shown meanwhile as
   "Sign-in" among the host's mappings.
+- **`otter attach` does it too** (follow-up): while attached, the CLI
+  subscribes with `browser: true` like the app (`otter_client::login`), takes
+  pages, maps a callback port over the shared SSH connection (not for a local
+  host, where the port is already here) and opens them with `open` /
+  `xdg-open`. Same once-only take, so with the app also running exactly one
+  of them opens the page. Its callback mappings go when the host stops
+  listening, after 10 minutes, or when the attach ends — detaching mid-login
+  breaks that login's redirect (rerun it attached). Skipped when `otter`
+  itself runs inside an Otter session (its "browser" would be a host's
+  stand-in). Only attach: it's where these tools are run; `ls --watch` and
+  `events --follow` don't serve logins.
 - Not built: asking before opening an untrusted provider, an editable list,
   a per-host off switch.
 

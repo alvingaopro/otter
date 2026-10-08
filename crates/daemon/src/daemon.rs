@@ -271,7 +271,8 @@ fn hostname() -> String {
     String::from_utf8_lossy(&buf[..end]).into_owned()
 }
 
-/// Counts an app subscribed for browser login while it stays subscribed.
+/// Counts a client (the app, `otter attach`) subscribed for browser login
+/// while it stays subscribed.
 pub(crate) struct BrowserSubscriber(Arc<Daemon>);
 
 impl BrowserSubscriber {
@@ -302,7 +303,7 @@ impl Daemon {
         {
             return Err(RpcError::new(
                 otter_protocol::ErrorCode::Unavailable,
-                "no Otter app is connected to open it",
+                "no Otter app or attached terminal is connected to open it",
             ));
         }
         let workspace_id = match &p.session {

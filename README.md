@@ -34,7 +34,8 @@ something needs you.
   and the like, run on a host, open their sign-in page in your Mac's browser
   and finish on the host — including logins that wait for a callback on a
   local port. Only https pages of known sign-in providers (AWS, Google,
-  Microsoft, GitHub, HashiCorp) open.
+  Microsoft, GitHub, HashiCorp) open. Works in the app and under
+  `otter attach`.
 - **Files.** Browse a workspace's files, download them, and upload by button
   or by dropping files on the window.
 - **Host dashboard.** For each host: CPU, load, memory, disks, network and
