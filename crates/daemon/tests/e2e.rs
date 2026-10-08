@@ -216,8 +216,11 @@ async fn scratch_workspace_with_default_login_shell() {
     let server_pid = String::from_utf8_lossy(&server_pid.stdout)
         .trim()
         .to_owned();
-    let cmdline = std::fs::read(format!("/proc/{server_pid}/cmdline")).unwrap();
-    let cmdline = String::from_utf8_lossy(&cmdline);
+    let cmdline = Command::new("ps")
+        .args(["-ww", "-o", "command=", "-p", &server_pid])
+        .output()
+        .unwrap();
+    let cmdline = String::from_utf8_lossy(&cmdline.stdout);
     assert!(
         !cmdline.contains("PATH="),
         "env leaked into tmux argv: {cmdline}"
@@ -241,7 +244,9 @@ async fn scratch_workspace_with_default_login_shell() {
     .await
     .unwrap();
     let text = wait_output(&host, "scratch", "shell", &format!("id={}", shell.id)).await;
-    assert!(text.contains(&format!("pwd={}", ws.root)), "{text}");
+    // `pwd` reports the resolved path (on macOS the temp dir is under a symlink).
+    let root = std::fs::canonicalize(&ws.root).unwrap();
+    assert!(text.contains(&format!("pwd={}", root.display())), "{text}");
 
     // Names are unique per host.
     let err = host
@@ -544,6 +549,170 @@ async fn client_disconnect_does_not_affect_session() {
     assert_eq!(ws.sessions[0].status(), SessionStatus::Running);
 }
 
+async fn sh_session(host: &TestHost, ws: &str) {
+    create(
+        host,
+        ws,
+        Some(vec![spec(SessionKind::Terminal, "sh", "sh")]),
+    )
+    .await;
+}
+
+async fn send(writer: &mut workd_client::AttachWriter, text: &str) {
+    writer
+        .send(&Frame::Data(text.as_bytes().to_vec()))
+        .await
+        .unwrap();
+}
+
+/// tmux clients attached to the host's server (one per live attach).
+fn attach_clients(host: &TestHost) -> usize {
+    let out = host.tmux(&["list-clients", "-F", "#{client_tty}"]);
+    String::from_utf8_lossy(&out.stdout).lines().count()
+}
+
+#[tokio::test]
+async fn attach_shows_existing_screen_and_survives_repeated_cycles() {
+    let host = TestHost::new();
+    sh_session(&host, "cyc").await;
+    let mut conn = host.conn().await;
+    conn.session_write("cyc", "sh", "echo before-$((2*3))-attach", true)
+        .await
+        .unwrap();
+    wait_output(&host, "cyc", "sh", "before-6-attach").await;
+
+    for i in 0..5 {
+        let (mut reader, mut writer) = attach(&host, "cyc", "sh").await;
+        if i == 0 {
+            // Attaching shows what is already on the screen, unprompted.
+            read_until(&mut reader, "before-6-attach").await;
+        }
+        send(&mut writer, &format!("echo cycle-$((100+{i}))\r")).await;
+        read_until(&mut reader, &format!("cycle-{}", 100 + i)).await;
+        writer.send(&Frame::Detach).await.unwrap();
+        assert_eq!(
+            read_exit(&mut reader).await.reason,
+            AttachExitReason::Detached
+        );
+    }
+    eventually("no attach clients left", || async {
+        (attach_clients(&host) == 0).then_some(())
+    })
+    .await;
+    let ws = host.conn().await.workspace_get("cyc").await.unwrap();
+    assert_eq!(ws.sessions[0].status(), SessionStatus::Running);
+}
+
+#[tokio::test]
+async fn attach_carries_utf8_and_ctrl_c() {
+    let host = TestHost::new();
+    sh_session(&host, "keys").await;
+    let (mut reader, mut writer) = attach(&host, "keys", "sh").await;
+
+    // Output: bytes the typed command doesn't contain literally (é ✓).
+    send(&mut writer, "printf 'out-\\303\\251\\342\\234\\223\\n'\r").await;
+    read_until(&mut reader, "out-é✓").await;
+    // Input: multi-byte characters typed into the session.
+    send(&mut writer, "echo 日本-$((1+1))\r").await;
+    read_until(&mut reader, "日本-2").await;
+
+    // Ctrl-C interrupts the foreground process, not the session.
+    send(&mut writer, "sleep 600\r").await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    send(&mut writer, "\x03").await;
+    send(&mut writer, "echo after-$((3*3))\r").await;
+    read_until(&mut reader, "after-9").await;
+    writer.send(&Frame::Detach).await.unwrap();
+    assert_eq!(
+        read_exit(&mut reader).await.reason,
+        AttachExitReason::Detached
+    );
+}
+
+#[tokio::test]
+async fn attach_ends_cleanly_when_the_session_restarts_or_is_deleted() {
+    let host = TestHost::new();
+    sh_session(&host, "end").await;
+
+    let (mut reader, _writer) = attach(&host, "end", "sh").await;
+    host.conn()
+        .await
+        .session_restart("end", "sh")
+        .await
+        .unwrap();
+    assert_eq!(read_exit(&mut reader).await.reason, AttachExitReason::Ended);
+
+    // The restarted session (a new execution) can be attached again.
+    let (mut reader, mut writer) = attach(&host, "end", "sh").await;
+    send(&mut writer, "echo again-$((5+5))\r").await;
+    read_until(&mut reader, "again-10").await;
+
+    host.conn()
+        .await
+        .workspace_delete("end", true)
+        .await
+        .unwrap();
+    assert_eq!(read_exit(&mut reader).await.reason, AttachExitReason::Ended);
+    eventually("no attach clients left", || async {
+        (attach_clients(&host) == 0).then_some(())
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn attach_is_disposable_across_daemon_restart() {
+    let host = TestHost::new();
+    sh_session(&host, "dr").await;
+    let exec = host
+        .conn()
+        .await
+        .workspace_get("dr")
+        .await
+        .unwrap()
+        .sessions[0]
+        .current_execution()
+        .unwrap()
+        .id
+        .clone();
+    let (mut reader, mut writer) = attach(&host, "dr", "sh").await;
+    send(&mut writer, "echo first-$((4*4))\r").await;
+    read_until(&mut reader, "first-16").await;
+
+    // The daemon goes away mid-attach: the attach ends, the session doesn't.
+    host.stop_daemon().await;
+    let end = tokio::time::timeout(Duration::from_secs(15), async {
+        loop {
+            match reader.next().await {
+                Ok(Some(Frame::Data(_))) => continue,
+                other => return other.map(|f| f.is_none()).unwrap_or(true),
+            }
+        }
+    })
+    .await
+    .expect("attach noticed the daemon going away");
+    assert!(end, "connection should close");
+
+    // A new daemon adopts the same, still running, execution (nothing was
+    // typed into it on the way out) and it can be attached again with the
+    // earlier output still on screen.
+    let ws = host.conn().await.workspace_get("dr").await.unwrap();
+    let now = ws.sessions[0].current_execution().unwrap();
+    assert_eq!((&now.id, now.state), (&exec, ExecutionState::Running));
+    let (mut reader, mut writer) = attach(&host, "dr", "sh").await;
+    read_until(&mut reader, "first-16").await;
+    send(&mut writer, "echo second-$((5*5))\r").await;
+    read_until(&mut reader, "second-25").await;
+    writer.send(&Frame::Detach).await.unwrap();
+    assert_eq!(
+        read_exit(&mut reader).await.reason,
+        AttachExitReason::Detached
+    );
+    eventually("no attach clients left", || async {
+        (attach_clients(&host) == 0).then_some(())
+    })
+    .await;
+}
+
 #[tokio::test]
 async fn daemon_restart_adopts_running_sessions_and_records_changes() {
     let host = TestHost::new();
@@ -597,7 +766,7 @@ async fn daemon_restart_adopts_running_sessions_and_records_changes() {
 async fn event_stream_reports_lifecycle() {
     let host = TestHost::new();
     create(&host, "ev", Some(vec![])).await;
-    let mut stream = host.conn().await.subscribe().await.unwrap();
+    let mut stream = host.conn().await.subscribe(None).await.unwrap();
     host.conn()
         .await
         .session_create(SessionCreate {
@@ -621,6 +790,110 @@ async fn event_stream_reports_lifecycle() {
         kinds,
         ["SessionCreated", "ExecutionStarted", "ExecutionExited"]
     );
+}
+
+/// Events from `stream` up to and including `seq`.
+async fn events_through(
+    stream: &mut workd_client::EventStream,
+    seq: u64,
+) -> Vec<workd_protocol::EventRecord> {
+    let mut out: Vec<workd_protocol::EventRecord> = Vec::new();
+    tokio::time::timeout(Duration::from_secs(15), async {
+        while out.last().is_none_or(|r| r.seq < seq) {
+            out.push(stream.next().await.unwrap().expect("stream open"));
+        }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("waiting for event {seq}; got {out:?}"));
+    out
+}
+
+async fn task(host: &TestHost, ws: &str, name: &str) {
+    host.conn()
+        .await
+        .session_create(SessionCreate {
+            workspace: ws.into(),
+            spec: spec(SessionKind::Task, name, "exit 0"),
+        })
+        .await
+        .unwrap();
+    wait_status(host, ws, name, SessionStatus::Completed).await;
+}
+
+#[tokio::test]
+async fn event_replay_resumes_after_disconnect_and_daemon_restart() {
+    let host = TestHost::new();
+    create(&host, "ev", Some(vec![])).await;
+    let snapshot = host.conn().await.snapshot().await.unwrap();
+    assert!(snapshot.workspaces.iter().any(|w| w.name == "ev"));
+    // A subscriber that goes away (laptop sleeps).
+    let stream = host
+        .conn()
+        .await
+        .subscribe(Some(snapshot.seq))
+        .await
+        .unwrap();
+    assert!(stream.seq >= snapshot.seq);
+    drop(stream);
+
+    // Meanwhile: a task runs, and the daemon restarts.
+    task(&host, "ev", "t").await;
+    host.stop_daemon().await;
+
+    // Reconnecting with the cursor replays exactly what was missed, in order.
+    let mut stream = host
+        .conn()
+        .await
+        .subscribe(Some(snapshot.seq))
+        .await
+        .unwrap();
+    let head = stream.seq;
+    let missed = events_through(&mut stream, head).await;
+    let seqs: Vec<u64> = missed.iter().map(|r| r.seq).collect();
+    assert_eq!(seqs, (snapshot.seq + 1..=head).collect::<Vec<_>>());
+    let kinds: Vec<&str> = missed.iter().map(|r| r.event.kind()).collect();
+    for want in [
+        "SessionCreated",
+        "ExecutionStarted",
+        "ExecutionExited",
+        "DaemonStarted",
+    ] {
+        assert!(kinds.contains(&want), "{want} missing from {kinds:?}");
+    }
+
+    // Then it continues live, without a gap.
+    task(&host, "ev", "u").await;
+    let next = events_through(&mut stream, head + 1).await;
+    assert_eq!(next[0].seq, head + 1);
+    assert_eq!(next[0].event.kind(), "SessionCreated");
+}
+
+#[tokio::test]
+async fn snapshot_then_subscribe_has_no_gap_and_stale_cursors_are_rejected() {
+    let host = TestHost::new();
+    create(&host, "snap", Some(vec![])).await;
+    let snapshot = host.conn().await.snapshot().await.unwrap();
+
+    // Following on from a snapshot: the next event is the next seq.
+    let mut stream = host
+        .conn()
+        .await
+        .subscribe(Some(snapshot.seq))
+        .await
+        .unwrap();
+    task(&host, "snap", "t").await;
+    let first = events_through(&mut stream, snapshot.seq + 1).await;
+    assert_eq!(first[0].seq, snapshot.seq + 1);
+
+    // A cursor this host never issued (e.g. its log was reset) is refused,
+    // not silently treated as "from now".
+    match host.conn().await.subscribe(Some(snapshot.seq + 1000)).await {
+        Err(workd_client::ClientError::Rpc(e)) => {
+            assert_eq!(e.code, workd_protocol::ErrorCode::CursorExpired, "{e}")
+        }
+        Err(e) => panic!("unexpected error: {e}"),
+        Ok(_) => panic!("stale cursor accepted"),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -913,7 +1186,7 @@ if [ "$2" = resume ]; then
   id="$3"
   f=$(ls "$CODEX_HOME"/sessions/*/*/*/rollout-*-"$id".jsonl | head -n 1)
 else
-  id=$(cat /proc/sys/kernel/random/uuid)
+  id=$(cat /proc/sys/kernel/random/uuid 2>/dev/null || uuidgen | tr A-Z a-z)
   d="$CODEX_HOME/sessions/$(date +%Y/%m/%d)"
   mkdir -p "$d"
   f="$d/rollout-$(date +%Y-%m-%dT%H-%M-%S)-$id.jsonl"
@@ -943,6 +1216,32 @@ struct FakeCodex {
     _scratch: tempfile::TempDir,
 }
 
+/// A login shell for an isolated test user that skips the system profile: on
+/// macOS `/etc/profile` runs `path_helper`, which moves system directories
+/// (e.g. `/opt/homebrew/bin`, where a real `codex` may live) ahead of `PATH`.
+fn isolated_shell(dir: &Path) -> String {
+    use std::os::unix::fs::PermissionsExt;
+    let shell = dir.join("login-sh");
+    std::fs::write(
+        &shell,
+        "#!/bin/sh\n[ \"$1\" = -l ] && shift\nexec /bin/sh \"$@\"\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&shell, std::fs::Permissions::from_mode(0o755)).unwrap();
+    shell.to_string_lossy().into_owned()
+}
+
+/// The directory holding the `tmux` the tests use, for isolated `PATH`s (it is
+/// not in a system directory on macOS).
+fn tmux_dir() -> String {
+    let path = std::env::var_os("PATH").unwrap_or_default();
+    std::env::split_paths(&path)
+        .find(|d| d.join("tmux").is_file())
+        .expect("tmux on PATH")
+        .to_string_lossy()
+        .into_owned()
+}
+
 async fn fake_codex_host(mode: &str) -> FakeCodex {
     let scratch = tempfile::Builder::new().prefix("wdc").tempdir().unwrap();
     let bin = scratch.path().join("bin");
@@ -958,8 +1257,11 @@ async fn fake_codex_host(mode: &str) -> FakeCodex {
     let host = TestHost::with_env(&[
         // An isolated user: no dotfiles that could put the real codex first.
         ("HOME", p(&home)),
-        ("SHELL", "/bin/sh".into()),
-        ("PATH", format!("{}:/usr/local/bin:/usr/bin:/bin", p(&bin))),
+        ("SHELL", isolated_shell(scratch.path())),
+        (
+            "PATH",
+            format!("{}:{}:/usr/local/bin:/usr/bin:/bin", p(&bin), tmux_dir()),
+        ),
         ("CODEX_HOME", p(&scratch.path().join("codex-home"))),
         ("FAKE_CODEX_LOG", p(&log)),
         ("FAKE_CODEX_MODE", mode.into()),
@@ -1163,7 +1465,7 @@ async fn missing_agent_binary_is_a_visible_failure() {
     std::fs::create_dir_all(&home).unwrap();
     let host = TestHost::with_env(&[
         ("HOME", home.to_string_lossy().into_owned()),
-        ("SHELL", "/bin/sh".into()),
+        ("SHELL", isolated_shell(scratch.path())),
         ("PATH", "/usr/bin:/bin".into()),
     ])
     .await;

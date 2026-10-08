@@ -12,7 +12,9 @@
 //!    connection is dedicated to that attach until it ends.
 //!
 //! `events.subscribe` similarly dedicates a connection to a stream of
-//! [`ServerMessage::Event`]s.
+//! [`ServerMessage::Event`]s, optionally replaying from a cursor.
+//!
+//! Wire format, cursor semantics and compatibility rules: `docs/protocol.md`.
 
 pub mod events;
 pub mod frame;
@@ -24,8 +26,8 @@ pub use workd_core::{SessionSpec, SourceSpec};
 
 pub use events::{Event, EventRecord};
 
-/// Bumped on incompatible protocol changes.
-pub const PROTOCOL_VERSION: u32 = 1;
+/// Bumped on incompatible protocol changes only (`docs/protocol.md`).
+pub const PROTOCOL_VERSION: u32 = 2;
 
 /// A request with its correlation id.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -96,9 +98,15 @@ pub enum Request {
     /// Result: `Vec<`[`EventRecord`]`>`, oldest first.
     #[serde(rename = "events.list")]
     EventsList(EventsList),
-    /// Result: `null`, after which the connection streams events.
+    /// Result: [`Subscribed`], after which the connection streams events:
+    /// first those after `after` (if given), then live ones. Fails with
+    /// [`ErrorCode::CursorExpired`] if the cursor can't be served.
     #[serde(rename = "events.subscribe")]
-    EventsSubscribe,
+    EventsSubscribe(EventsSubscribe),
+    /// Current runtime state plus the event cursor it corresponds to. Result:
+    /// [`StateSnapshot`].
+    #[serde(rename = "state.snapshot")]
+    StateSnapshot,
 }
 
 impl Request {
@@ -121,7 +129,8 @@ impl Request {
             Request::SessionAttach(_) => "session.attach",
             Request::AttentionResolve(_) => "attention.resolve",
             Request::EventsList(_) => "events.list",
-            Request::EventsSubscribe => "events.subscribe",
+            Request::EventsSubscribe(_) => "events.subscribe",
+            Request::StateSnapshot => "state.snapshot",
         }
     }
 }
@@ -231,6 +240,29 @@ pub struct EventsList {
     pub limit: Option<u32>,
 }
 
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct EventsSubscribe {
+    /// Replay events with `seq` greater than this before streaming live ones.
+    /// Without it, only events after [`Subscribed::seq`] are streamed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub after: Option<u64>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct Subscribed {
+    /// The latest event when the subscription started. Live events follow it.
+    pub seq: u64,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct StateSnapshot {
+    /// Subscribe with `after = seq` to follow on from this snapshot. The state
+    /// reflects every event up to `seq` and may already reflect later ones,
+    /// so applying an event must be idempotent (e.g. refetch).
+    pub seq: u64,
+    pub workspaces: Vec<workd_core::Workspace>,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ServerMessage {
@@ -298,11 +330,43 @@ pub enum ErrorCode {
     Conflict,
     Unsupported,
     Internal,
+    /// `events.subscribe` cursor is older than the retained log or newer than
+    /// the latest event (the log was reset). Reload a snapshot.
+    CursorExpired,
+    /// A code this build doesn't know.
+    #[serde(other)]
+    Unknown,
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn subscribe_params_are_optional() {
+        let msg: ClientMessage =
+            serde_json::from_str(r#"{"id":1,"method":"events.subscribe","params":{}}"#).unwrap();
+        assert_eq!(
+            msg.request,
+            Request::EventsSubscribe(EventsSubscribe::default())
+        );
+        let msg = ClientMessage {
+            id: 2,
+            request: Request::EventsSubscribe(EventsSubscribe { after: Some(41) }),
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        assert_eq!(
+            json,
+            r#"{"id":2,"method":"events.subscribe","params":{"after":41}}"#
+        );
+    }
+
+    #[test]
+    fn unknown_error_codes_parse() {
+        let e: RpcError =
+            serde_json::from_str(r#"{"code":"rate_limited","message":"slow down"}"#).unwrap();
+        assert_eq!(e.code, ErrorCode::Unknown);
+    }
 
     #[test]
     fn unit_request_encodes_without_params() {

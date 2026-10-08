@@ -18,7 +18,7 @@ use chrono::Utc;
 use serde::Serialize;
 use tokio::sync::{Mutex, watch};
 use workd_core::{Capability, HostStatus, Session, Timestamp, WorkspaceId};
-use workd_protocol::{PROTOCOL_VERSION, Request, RpcError};
+use workd_protocol::{PROTOCOL_VERSION, Request, RpcError, StateSnapshot};
 
 use crate::backend::ExecutionBackend;
 use crate::env::{EnvMap, ResolvedEnv, which};
@@ -104,7 +104,18 @@ impl Daemon {
                 let limit = p.limit.unwrap_or(100) as usize;
                 json(self.events.recent(limit).map_err(internal)?)
             }
-            Request::Shutdown | Request::SessionAttach(_) | Request::EventsSubscribe => {
+            Request::StateSnapshot => {
+                // Read both under the store lock. Every change to the store
+                // happens under it and its event is emitted afterwards, so the
+                // snapshot reflects every event up to `seq` (and maybe later
+                // ones). Keep emits after the change they describe.
+                let store = self.store.lock().await;
+                json(StateSnapshot {
+                    seq: self.events.head(),
+                    workspaces: store.state.workspaces.clone(),
+                })
+            }
+            Request::Shutdown | Request::SessionAttach(_) | Request::EventsSubscribe(_) => {
                 Err(RpcError::invalid(format!(
                     "{} must be handled by the connection",
                     req.method()

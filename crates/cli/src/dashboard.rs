@@ -81,7 +81,7 @@ pub async fn watch(config: &Config) -> Result<()> {
         tokio::spawn(async move {
             loop {
                 if let Ok(conn) = Connection::connect(&transport).await
-                    && let Ok(mut stream) = conn.subscribe().await
+                    && let Ok(mut stream) = conn.subscribe(None).await
                 {
                     while let Ok(Some(_)) = stream.next().await {
                         if tx.send(()).await.is_err() {

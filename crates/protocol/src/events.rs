@@ -11,7 +11,8 @@ use workd_core::{
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct EventRecord {
-    /// Monotonic per-host sequence number.
+    /// Per-host cursor: strictly increasing, not necessarily contiguous. See
+    /// `docs/protocol.md` for replay semantics.
     pub seq: u64,
     pub ts: Timestamp,
     #[serde(flatten)]
@@ -104,6 +105,10 @@ pub enum Event {
         workspace_id: WorkspaceId,
         attention_id: AttentionId,
     },
+    /// A kind this build doesn't know (from a newer daemon, or an older log
+    /// line). New kinds are a compatible protocol change; clients ignore them.
+    #[serde(other)]
+    Unknown,
 }
 
 impl Event {
@@ -127,12 +132,13 @@ impl Event {
             Event::AgentStateChanged { .. } => "AgentStateChanged",
             Event::AttentionCreated { .. } => "AttentionCreated",
             Event::AttentionResolved { .. } => "AttentionResolved",
+            Event::Unknown => "Unknown",
         }
     }
 
     pub fn workspace_id(&self) -> Option<&WorkspaceId> {
         match self {
-            Event::DaemonStarted { .. } => None,
+            Event::DaemonStarted { .. } | Event::Unknown => None,
             Event::WorkspaceCreated { workspace_id, .. }
             | Event::WorkspaceDeleted { workspace_id, .. }
             | Event::WorkspaceReady { workspace_id }
@@ -199,5 +205,15 @@ mod tests {
         assert!(json.contains(r#""seq":3"#), "{json}");
         let back: EventRecord = serde_json::from_str(&json).unwrap();
         assert_eq!(back, rec);
+    }
+
+    #[test]
+    fn unknown_kinds_still_parse() {
+        let rec: EventRecord = serde_json::from_str(
+            r#"{"seq":9,"ts":"2026-10-07T00:00:00Z","type":"PortForwarded","port":3000}"#,
+        )
+        .unwrap();
+        assert_eq!(rec.seq, 9);
+        assert_eq!(rec.event, Event::Unknown);
     }
 }

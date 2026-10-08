@@ -303,3 +303,65 @@ control plane). Changed only what leaked:
 
 Deliberately not done (architecture-lessons §24): other providers, plugin
 mechanisms, orchestration. Next: dogfooding.
+
+## D-016 — Event cursors, snapshots and protocol v2 (2026-10-07)
+
+Prerequisite for a desktop client that reconnects after sleep or network loss.
+Details: [`protocol.md`](protocol.md).
+
+- **Snapshot + events, not event sourcing.** `state.snapshot` returns the
+  workspaces and the event `seq` they correspond to, read under the store lock.
+  Every store change happens under that lock and its event is emitted after
+  the change, so a snapshot reflects every event up to `seq` (maybe more);
+  clients apply events idempotently. Emitting an event *before* the change it
+  describes would break this.
+- **Replay cursors.** `events.subscribe {after}` replays `seq > after` from
+  `events.jsonl`, then streams live events, each once and in order. The
+  broadcast receiver is taken atomically with the head `seq`, and a lagging
+  subscriber catches up from the log instead of dropping events. A cursor the
+  log can't serve (older than the oldest retained event, or newer than the
+  latest one) fails with `cursor_expired`; the client reloads a snapshot.
+- **Storage unchanged** (D-005): replay reads the whole log, which is fine at
+  current sizes and happens only on reconnect or lag. Rotation, an index or
+  SQLite wait until the log is actually a problem.
+- **Known gap:** a reset log that has since grown past a client's cursor is
+  not detected. Fix if it bites: a log id generated with the file, returned by
+  `state.snapshot` / `events.subscribe` and echoed by clients.
+- **Protocol v2.** `events.subscribe` gained params and a `{seq}` result, plus
+  the `cursor_expired` code; v1 clients couldn't parse those, so the version
+  was bumped. v1 was pre-stabilization. From v2 the compatibility rules in
+  `protocol.md` apply: optional fields, new methods, new event kinds and new
+  error codes are compatible (`Event::Unknown`, `ErrorCode::Unknown` make old
+  clients tolerate them); frame changes and semantic changes bump.
+
+## D-017 — Attach hardening (2026-10-07)
+
+Audit of `session.attach` against repeated cycles and failure modes (dogfood
+plan §6–§8), with tests for each that can run locally and a manual network
+test against a real SSH host.
+
+- **Teardown typed EOF into the session (fixed).** `portable_pty`'s writer
+  sends `"\n"` + `VEOF` into the PTY when dropped. If the daemon stopped
+  mid-attach the tmux client was still alive and forwarded it — the attached
+  shell read `^D` and exited. The bridge now writes through a plain dup of the
+  PTY master fd. Test: `attach_is_disposable_across_daemon_restart`.
+- **A lagging attach could miss its own end.** If the bridge fell behind the
+  event broadcast it ignored the gap and could keep showing a dead pane; it now
+  checks the missed events in the log (as `events.subscribe` does, D-016).
+- **Clients never hang on a dead connection.** `workctl attach` gives up 5 s
+  after Ctrl-] with no answer (restoring the terminal and saying the session
+  keeps running), and SSH transports set `ServerAliveInterval=15` /
+  `ServerAliveCountMax=3` after the host's own `ssh_args` (so explicit options
+  win). Verified by `SIGSTOP`ing the remote sshd mid-attach: with Ctrl-] the
+  client returns in 5 s; without input it notices in ~60 s; the session
+  survives either way.
+- **Initial terminal state:** tmux's own attach redraw shows the current
+  screen (tested for a shell; alternate-screen apps rely on the same redraw
+  but aren't tested). No `capture-pane` snapshot was added (plan §8: only if
+  a client needs it). Scrollback stays server-side.
+- Verified unchanged: repeated attach/detach (no leftover tmux clients), UTF-8
+  both ways, Ctrl-C reaching the foreground process, restart/delete ending the
+  attach with `ended`, re-attach after restart.
+
+Not covered by automated tests: the network-loss timings above (manual), and
+terminal rendering of colors/alternate screen in a real terminal emulator.
