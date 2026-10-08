@@ -4,7 +4,6 @@
 //! workspaces independently of where they run.
 
 mod attach;
-mod config;
 mod dashboard;
 mod output;
 mod target;
@@ -16,6 +15,7 @@ use anyhow::{Context, Result, bail};
 use clap::{Args, Parser, Subcommand};
 use tokio::task::JoinSet;
 use workd_client::Connection;
+pub(crate) use workd_client::config;
 use workd_core::{Brief, EnvironmentKind, SessionKind, Workspace, WorkspaceSource, WorkspaceState};
 use workd_protocol::{SessionCreate, SessionSpec, SourceSpec, WorkspaceCreate};
 

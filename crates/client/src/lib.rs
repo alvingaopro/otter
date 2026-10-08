@@ -4,6 +4,8 @@
 //! and speaks the protocol over its stdin/stdout. SSH is the only remote
 //! transport (design rule 4); the user's SSH config and agent are used as-is.
 
+pub mod config;
+
 use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::{Arc, Mutex};
