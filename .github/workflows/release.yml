@@ -71,8 +71,7 @@ jobs:
           gh release create "v$version" --draft --title "Otter v$version" --generate-notes --verify-tag
           echo "version=$version" >> "$GITHUB_OUTPUT"
 
-  # The app is built per architecture in parallel, then combined into a
-  # universal binary and bundled once (D-022).
+  # The app is built and bundled per architecture, in parallel (D-022).
   desktop-build:
     name: Desktop app (${{ matrix.arch }})
     needs: version
@@ -106,10 +105,7 @@ jobs:
           key: release-${{ matrix.target }}
       - run: npm ci
         working-directory: apps/desktop
-      - run: npm run tauri build -- --target ${{ matrix.target }} --no-bundle
-        working-directory: apps/desktop
-      # This architecture's own app, published as is (half the universal size).
-      - run: npm run tauri bundle -- --target ${{ matrix.target }} --bundles app,dmg
+      - run: npm run tauri build -- --target ${{ matrix.target }} --bundles app,dmg
         working-directory: apps/desktop
       - name: Upload ${{ matrix.arch }} app
         run: |
@@ -120,55 +116,6 @@ jobs:
           cp "$bundle"/dmg/*.dmg "out/Otter_${VERSION}_macos_${{ matrix.arch }}.dmg"
           tar -czf "out/Otter_${VERSION}_macos_${{ matrix.arch }}.app.tar.gz" -C "$bundle/macos" Otter.app
           gh release upload "v$VERSION" out/* --clobber
-      - uses: actions/upload-artifact@v7
-        with:
-          name: desktop-${{ matrix.target }}
-          path: apps/desktop/src-tauri/target/${{ matrix.target }}/release/otter-desktop
-          retention-days: 1
-
-  desktop:
-    name: Desktop app (bundle, universal)
-    needs: [version, desktop-build]
-    runs-on: macos-latest
-    env:
-      VERSION: ${{ needs.version.outputs.version }}
-      GH_TOKEN: ${{ github.token }}
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          ref: v${{ needs.version.outputs.version }}
-      - uses: actions/setup-node@v7
-        with:
-          node-version: 22
-          cache: npm
-          cache-dependency-path: apps/desktop/package-lock.json
-      - uses: dtolnay/rust-toolchain@stable
-      # The UI is already inside the binaries; built only so the config's
-      # frontendDist exists.
-      - run: npm ci && npm run build
-        working-directory: apps/desktop
-      - uses: actions/download-artifact@v8
-        with:
-          pattern: desktop-*
-          path: built
-      - name: Combine into a universal binary
-        run: |
-          out=apps/desktop/src-tauri/target/universal-apple-darwin/release
-          mkdir -p "$out"
-          lipo -create -output "$out/otter-desktop" \
-            built/desktop-aarch64-apple-darwin/otter-desktop built/desktop-x86_64-apple-darwin/otter-desktop
-          chmod +x "$out/otter-desktop"
-          lipo -info "$out/otter-desktop"
-      - run: npm run tauri bundle -- --target universal-apple-darwin --bundles app,dmg
-        working-directory: apps/desktop
-      - name: Upload
-        run: |
-          bundle=apps/desktop/src-tauri/target/universal-apple-darwin/release/bundle
-          codesign --verify --deep --strict --verbose=2 "$bundle/macos/Otter.app"
-          mkdir -p out
-          cp "$bundle"/dmg/*.dmg "out/Otter_${VERSION}_macos_universal.dmg"
-          tar -czf "out/Otter_${VERSION}_macos_universal.app.tar.gz" -C "$bundle/macos" Otter.app
-          gh release upload "v$VERSION" out/* --clobber
 
   binaries:
     name: otterd + otter (${{ matrix.name }})
@@ -176,8 +123,7 @@ jobs:
     if: needs.version.outputs.version != ''
     strategy:
       matrix:
-        # Names match what `otter_client::install` downloads for `uname -sm`
-        # (macOS uses the universal build assembled below).
+        # Names match what `otter_client::install` downloads for `uname -sm`.
         include:
           - name: linux-x86_64
             os: ubuntu-latest
@@ -217,43 +163,10 @@ jobs:
           tar -czf "$name.tar.gz" "$name"
       - name: Upload
         run: gh release upload "v$VERSION" "otter-${VERSION}-${{ matrix.name }}.tar.gz" --clobber
-      - if: startsWith(matrix.name, 'macos-')
-        uses: actions/upload-artifact@v7
-        with:
-          name: binaries-${{ matrix.name }}
-          path: otter-${{ needs.version.outputs.version }}-${{ matrix.name }}
-          retention-days: 1
-
-  binaries-universal:
-    name: otterd + otter (macos-universal)
-    needs: [version, binaries]
-    runs-on: macos-latest
-    env:
-      VERSION: ${{ needs.version.outputs.version }}
-      GH_TOKEN: ${{ github.token }}
-    steps:
-      - uses: actions/download-artifact@v8
-        with:
-          pattern: binaries-macos-*
-          path: built
-      - name: Combine and upload
-        run: |
-          name="otter-${VERSION}-macos-universal"
-          mkdir -p "$name"
-          for b in otterd otter; do
-            lipo -create -output "$name/$b" "built/binaries-macos-arm64/$b" "built/binaries-macos-x86_64/$b"
-            chmod +x "$name/$b"
-            # Re-seal the combined binary (ad-hoc) and check it.
-            codesign --force --sign - "$name/$b"
-            codesign --verify --strict --verbose=2 "$name/$b"
-          done
-          lipo -info "$name/otterd"
-          tar -czf "$name.tar.gz" "$name"
-          gh release upload "v$VERSION" "$name.tar.gz" --clobber --repo "$GITHUB_REPOSITORY"
 
   publish:
     name: Publish release
-    needs: [version, desktop, binaries, binaries-universal]
+    needs: [version, desktop-build, binaries]
     runs-on: ubuntu-latest
     env:
       GH_TOKEN: ${{ github.token }}

@@ -19,8 +19,7 @@ See [`docs/design.md`](docs/design.md) for the architecture and
 
 Each merge to `main` publishes a [release](https://github.com/alvingaopro/otter/releases)
 with the macOS desktop app and `otterd` + `otter` for Linux (x86_64,
-aarch64) and macOS. macOS downloads come universal (any Mac) or per
-architecture (`arm64` for Apple silicon, `x86_64` for Intel; half the size). Hosts and clients should run
+aarch64) and macOS (`arm64` for Apple silicon, `x86_64` for Intel). Hosts and clients should run
 the same version (see [`docs/protocol.md`](docs/protocol.md)).
 
 - **Desktop app:** open the `.dmg` and drag Otter to Applications. It is

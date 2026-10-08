@@ -18,7 +18,7 @@ OTTER_CONFIG_DIR=$(git rev-parse --show-toplevel)/.dev/ctl npm run tauri dev   #
 npm run tauri build                     # .app / .dmg in src-tauri/target/release/bundle
 ```
 
-Releases: every merge to `main` builds the universal `.dmg` and publishes it
+Releases: every merge to `main` builds an arm64 and an x86_64 `.dmg` and publishes them
 with `otterd`/`otter` binaries (D-019). The version shown in the title bar is
 the release version; a host running a different `otterd` shows its version in
 the hosts list.

@@ -560,3 +560,12 @@ download as damaged, with no way past it.
   before uploading, and re-signs the `lipo`ed CLI binaries.
 - A Developer ID certificate plus notarization (Apple Developer Program) would
   remove the first-launch prompt entirely; not done.
+
+## D-026 — No universal macOS builds (2026-10-08)
+
+With per-architecture downloads (arm64, x86_64), the universal `.dmg` and CLI
+tarball were redundant. Dropped both, and with them the jobs that waited for
+both architectures and then for another macOS runner to `lipo` (5 minutes of
+queueing in one release). The installer picks `macos-arm64` or
+`macos-x86_64` from `uname -m` (Rosetta reports x86_64, which runs fine).
+Every release job now runs in parallel after the version bump.

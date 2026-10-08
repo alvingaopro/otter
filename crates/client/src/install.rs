@@ -29,7 +29,8 @@ v={version}
 case "$(uname -s)-$(uname -m)" in
   Linux-x86_64) t=linux-x86_64 ;;
   Linux-aarch64 | Linux-arm64) t=linux-aarch64 ;;
-  Darwin-*) t=macos-universal ;;
+  Darwin-arm64) t=macos-arm64 ;;
+  Darwin-x86_64) t=macos-x86_64 ;;
   *) echo "otterd has no build for $(uname -sm)" >&2; exit 3 ;;
 esac
 url="{RELEASES}/v$v/otter-$v-$t.tar.gz"
