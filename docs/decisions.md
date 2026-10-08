@@ -543,3 +543,20 @@ Existing installs keep working:
 - Installing/updating from the app stops a running old `workd … serve` as
   well as `otterd`, so the next connection starts `otterd` on the same home.
 - Sessions now get `OTTER_SESSION_ID` etc. (was `WORKD_*`).
+
+## D-025 — Sign the app bundle (2026-10-08)
+
+v0.2.0's `.dmg`s opened as "Otter is damaged". The bundles were never
+signed: Tauri signs only when `bundle.macOS.signingIdentity` is set, so the
+app carried just the linker's ad-hoc signature on its binary (arm64: "code
+has no resources but signature indicates they must be present") or none at
+all after `lipo` (universal). macOS reports an invalid signature on a
+download as damaged, with no way past it.
+
+- `signingIdentity: "-"`: Tauri ad-hoc signs the binary and seals the bundle.
+  Gatekeeper then treats it as an unnotarized app (System Settings → Open
+  Anyway), not a damaged one.
+- The release verifies every bundle with `codesign --verify --deep --strict`
+  before uploading, and re-signs the `lipo`ed CLI binaries.
+- A Developer ID certificate plus notarization (Apple Developer Program) would
+  remove the first-launch prompt entirely; not done.

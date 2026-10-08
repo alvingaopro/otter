@@ -114,6 +114,8 @@ jobs:
       - name: Upload ${{ matrix.arch }} app
         run: |
           bundle=apps/desktop/src-tauri/target/${{ matrix.target }}/release/bundle
+          # An invalid signature makes macOS call a download "damaged".
+          codesign --verify --deep --strict --verbose=2 "$bundle/macos/Otter.app"
           mkdir -p out
           cp "$bundle"/dmg/*.dmg "out/Otter_${VERSION}_macos_${{ matrix.arch }}.dmg"
           tar -czf "out/Otter_${VERSION}_macos_${{ matrix.arch }}.app.tar.gz" -C "$bundle/macos" Otter.app
@@ -162,6 +164,7 @@ jobs:
       - name: Upload
         run: |
           bundle=apps/desktop/src-tauri/target/universal-apple-darwin/release/bundle
+          codesign --verify --deep --strict --verbose=2 "$bundle/macos/Otter.app"
           mkdir -p out
           cp "$bundle"/dmg/*.dmg "out/Otter_${VERSION}_macos_universal.dmg"
           tar -czf "out/Otter_${VERSION}_macos_universal.app.tar.gz" -C "$bundle/macos" Otter.app
@@ -240,6 +243,9 @@ jobs:
           for b in otterd otter; do
             lipo -create -output "$name/$b" "built/binaries-macos-arm64/$b" "built/binaries-macos-x86_64/$b"
             chmod +x "$name/$b"
+            # Re-seal the combined binary (ad-hoc) and check it.
+            codesign --force --sign - "$name/$b"
+            codesign --verify --strict --verbose=2 "$name/$b"
           done
           lipo -info "$name/otterd"
           tar -czf "$name.tar.gz" "$name"
