@@ -609,3 +609,32 @@ Dogfooding v0.2.3:
   version mismatch was only a small label in the hosts list. A workspace on a
   host whose otterd differs from the app now says so at the top, with an
   **Update otterd** button.
+
+## D-029 — Host page: usage and port mappings (2026-10-08)
+
+Asked for: a per-host dashboard to tell whether a host is fully occupied
+(as in a monitoring tool), and portkeeper's port mappings in both directions.
+
+- **Host page** (click a host): status, version, update/remove, then
+  **Usage** — stat tiles (CPU, load per CPU, memory + swap, network), charts
+  over the last 10 minutes (CPU, memory, network in/out, disk I/O), disk space
+  per filesystem and the busiest processes — and **Ports**.
+- **Usage** comes from the daemon: `host.metrics`, sampled every 5 s by a
+  background thread with `sysinfo` (Linux and macOS), keeping 120 samples so
+  the charts are full on open. Charts follow the dataviz rules (one axis, 2px
+  lines, a legend for two series, values as text, a crosshair tooltip);
+  the series pair was validated against both theme surfaces (light orange is
+  just under 3:1, carried by visible values). Meters escalate to the reserved
+  warning/critical colors at 75 % / 90 %, always with their numbers.
+- **Ports**: `host.ports` lists listening TCP ports with their process
+  (`ss -ltnp` / `lsof`), each with **Map to this Mac**. Mappings follow
+  portkeeper: added and removed on the host's existing ControlMaster
+  (`ssh -O forward|cancel -L|-R 127.0.0.1:…`), so no new connections and
+  nothing listens beyond loopback. `to_local` (-L) opens a host port (or a
+  machine it reaches, e.g. a database) here; `to_host` (-R) the reverse.
+  The logic lives in `otter_client::forward`; the app re-applies a host's
+  mappings whenever its connection's master pid changes (reconnect, sleep,
+  app start) and shows each mapping's state. **Keep across restarts** pins it
+  in `ports.toml` next to `hosts.toml`.
+- Not yet: `otter port …` / `otter host top` in the CLI, mapping a host's
+  port ranges, image paste and browser login from portkeeper.

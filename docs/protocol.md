@@ -101,6 +101,19 @@ last event it printed whenever its connection drops).
 `events.list {limit}` returns the most recent `limit` events (oldest first) for
 display; it is not a sync mechanism.
 
+## Host views
+
+- `host.metrics` → resource usage for the host page: CPUs, load, uptime,
+  memory and swap, disk space per filesystem, the busiest processes, and a
+  history of samples (CPU %, memory, network and disk I/O rates) every
+  `interval_secs` for about the last 10 minutes. Sampled in the background
+  from the daemon's start; fails with `unavailable` until the first sample.
+- `host.ports` → TCP ports listening on the host (`ss` on Linux, `lsof` on
+  macOS), with the process when the daemon's user may see it.
+
+Both are additions (no protocol bump); daemons before them answer
+`invalid_request`.
+
 ## Attach mode
 
 After a successful `session.attach` response

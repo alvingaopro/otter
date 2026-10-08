@@ -6,20 +6,20 @@ import { getVersion } from "@tauri-apps/api/app";
 import { isPermissionGranted, requestPermission, sendNotification } from "@tauri-apps/plugin-notification";
 import { Sidebar } from "./Sidebar";
 import { AddHostDialog } from "./AddHostDialog";
-import { HostDialog } from "./HostDialog";
+import { HostPage } from "./HostPage";
 import { CliDialog } from "./CliDialog";
 import { WorkspacePane } from "./WorkspacePane";
 import { NewWorkspaceDialog } from "./NewWorkspaceDialog";
 import { useTheme } from "./theme";
 import { defaultSession, groups, placeAll } from "./model";
-import type { HostsPayload, Placed } from "./types";
+import type { ForwardView, HostsPayload, Placed } from "./types";
 import otterIcon from "./assets/otter.png";
 import "./App.css";
 
 /** Activating the app this soon after a notification jumps to its workspace. */
 const JUMP_WINDOW_MS = 2 * 60 * 1000;
 
-type Open = { kind: "add" } | { kind: "host"; name: string } | { kind: "cli" } | { kind: "new" } | null;
+type Open = { kind: "add" } | { kind: "cli" } | { kind: "new" } | null;
 
 interface Jump {
   key: string;
@@ -34,6 +34,9 @@ export default function App() {
   const [now, setNow] = useState(Date.now());
   const [version, setVersion] = useState<string | undefined>();
   const [open, setOpen] = useState<Open>(null);
+  /** A host's page, shown instead of the selected workspace. */
+  const [hostPage, setHostPage] = useState<string | null>(null);
+  const [forwards, setForwards] = useState<ForwardView[]>([]);
   const [cli, setCli] = useState<{ version?: string } | null>(null);
   const { choice: themeChoice, resolved: theme, cycle: cycleTheme } = useTheme();
   /** A workspace just created here: select it once it shows up. */
@@ -49,6 +52,8 @@ export default function App() {
   useEffect(() => {
     void invoke<HostsPayload>("hosts_get").then(setPayload);
     void getVersion().then(setVersion);
+    void invoke<ForwardView[]>("forwards_get").then(setForwards);
+    const unforwards = listen<ForwardView[]>("forwards", (e) => setForwards(e.payload));
     void invoke<{ version?: string }>("cli_status").then(setCli);
     // ⌘N: new workspace (capture phase, so the terminal doesn't swallow it).
     const onKey = (e: KeyboardEvent) => {
@@ -76,6 +81,7 @@ export default function App() {
     return () => {
       void unlisten.then((f) => f());
       void unmenu.then((f) => f());
+      void unforwards.then((f) => f());
       void unfocus.then((f) => f());
       window.removeEventListener("keydown", onKey, true);
       clearInterval(tick);
@@ -188,11 +194,15 @@ export default function App() {
             placed={placed}
             hosts={payload.hosts}
             selected={selected}
-            onSelect={setSelected}
+            onSelect={(key) => {
+              setSelected(key);
+              setHostPage(null);
+            }}
+            hostPage={hostPage ?? undefined}
             now={now}
             appVersion={version}
             onAddHost={() => setOpen({ kind: "add" })}
-            onHost={(name) => setOpen({ kind: "host", name })}
+            onHost={setHostPage}
           />
         )}
         {!payload ? (
@@ -216,6 +226,14 @@ export default function App() {
               </button>
             </div>
           </main>
+        ) : hostPage && payload.hosts.some((h) => h.name === hostPage) ? (
+          <HostPage
+            key={hostPage}
+            host={payload.hosts.find((h) => h.name === hostPage)!}
+            version={version}
+            forwards={forwards}
+            onRemoved={() => setHostPage(null)}
+          />
         ) : current ? (
           <WorkspacePane
             key={current.key}
@@ -261,11 +279,6 @@ export default function App() {
           }}
         />
       )}
-      {open?.kind === "host" &&
-        (() => {
-          const host = payload?.hosts.find((h) => h.name === open.name);
-          return host ? <HostDialog host={host} version={version} onClose={() => setOpen(null)} /> : null;
-        })()}
     </div>
   );
 }

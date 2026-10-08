@@ -3,6 +3,7 @@
 //! UI (`view`) and bridges terminals (`attach`).
 
 mod attach;
+mod forwards;
 mod hosts;
 mod view;
 
@@ -16,8 +17,10 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_clipboard_manager::init())
+        .plugin(tauri_plugin_opener::init())
         .manage(hosts::Hosts::default())
         .manage(attach::Attaches::default())
+        .manage(forwards::Forwards::default())
         .menu(|app| {
             // The standard menu, plus "Install Command Line Tools…" in the app
             // menu (the UI handles it).
@@ -41,6 +44,7 @@ pub fn run() {
         })
         .setup(|app| {
             hosts::start(app.handle());
+            forwards::start(app.handle());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -50,6 +54,12 @@ pub fn run() {
             hosts::host_install,
             hosts::install_cli,
             hosts::cli_status,
+            hosts::host_metrics,
+            hosts::host_ports,
+            forwards::forwards_get,
+            forwards::forward_add,
+            forwards::forward_remove,
+            forwards::forward_pin,
             hosts::workspace_create,
             hosts::workspace_delete,
             hosts::workspace_prepare,

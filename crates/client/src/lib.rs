@@ -5,6 +5,7 @@
 //! transport (design rule 4); the user's SSH config and agent are used as-is.
 
 pub mod config;
+pub mod forward;
 pub mod install;
 
 use std::path::PathBuf;
@@ -77,6 +78,12 @@ impl Transport {
 
     /// `ssh … destination`, ready for a remote command; `None` for local.
     fn ssh(&self) -> Option<Command> {
+        self.ssh_with(&[])
+    }
+
+    /// Like [`Self::ssh`], with `extra` options before the destination (e.g.
+    /// `-O forward -L …` for the shared connection).
+    pub(crate) fn ssh_with(&self, extra: &[String]) -> Option<Command> {
         let Transport::Ssh {
             destination,
             ssh_args,
@@ -106,6 +113,7 @@ impl Transport {
             "-o",
             "ServerAliveCountMax=3",
         ]);
+        cmd.args(extra);
         cmd.arg(destination);
         Some(cmd)
     }
@@ -160,6 +168,8 @@ pub enum ClientError {
     Protocol(String),
     #[error("installing otterd failed: {0}")]
     Install(String),
+    #[error("port forwarding: {0}")]
+    Forward(String),
     #[error(transparent)]
     Io(#[from] std::io::Error),
 }
@@ -327,6 +337,16 @@ impl Connection {
 
     pub async fn host_status(&mut self) -> Result<HostStatus> {
         self.call(Request::HostStatus).await
+    }
+
+    /// Resource usage now and over the last minutes.
+    pub async fn host_metrics(&mut self) -> Result<otter_protocol::host::HostMetrics> {
+        self.call(Request::HostMetrics).await
+    }
+
+    /// TCP ports listening on the host.
+    pub async fn host_ports(&mut self) -> Result<Vec<otter_protocol::host::ListeningPort>> {
+        self.call(Request::HostPorts).await
     }
 
     pub async fn shutdown(&mut self) -> Result<()> {

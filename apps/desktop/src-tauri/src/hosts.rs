@@ -666,3 +666,21 @@ mod tests {
         assert_eq!(sessions[2].command.as_deref(), Some("cargo test"));
     }
 }
+
+/// Resource usage of a host, for its page.
+#[tauri::command]
+pub async fn host_metrics(
+    app: AppHandle,
+    host: String,
+) -> Result<otter_protocol::host::HostMetrics, String> {
+    rpc(&app, &host).await?.host_metrics().await.map_err(err)
+}
+
+/// TCP ports listening on a host.
+#[tauri::command]
+pub async fn host_ports(
+    app: AppHandle,
+    host: String,
+) -> Result<Vec<otter_protocol::host::ListeningPort>, String> {
+    rpc(&app, &host).await?.host_ports().await.map_err(err)
+}

@@ -9,6 +9,7 @@
     "core:default",
     "core:window:allow-set-theme",
     "notification:default",
-    "clipboard-manager:allow-write-text"
+    "clipboard-manager:allow-write-text",
+    "opener:default"
   ]
 }

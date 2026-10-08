@@ -12,6 +12,8 @@ interface Props {
   appVersion?: string;
   onAddHost: () => void;
   onHost: (name: string) => void;
+  /** The host whose page is open. */
+  hostPage?: string;
 }
 
 const HOST_STATE: Record<HostView["status"], string> = {
@@ -22,7 +24,7 @@ const HOST_STATE: Record<HostView["status"], string> = {
   not_installed: "otterd not installed",
 };
 
-export function Sidebar({ placed, hosts, selected, onSelect, now, appVersion, onAddHost, onHost }: Props) {
+export function Sidebar({ placed, hosts, selected, onSelect, now, appVersion, onAddHost, onHost, hostPage }: Props) {
   return (
     <nav className="sidebar" aria-label="Workspaces">
       <div className="sidebar-groups">
@@ -38,7 +40,7 @@ export function Sidebar({ placed, hosts, selected, onSelect, now, appVersion, on
               return (
                 <button
                   key={p.key}
-                  className={`ws-row${p.key === selected ? " selected" : ""}${stale ? " stale" : ""}`}
+                  className={`ws-row${p.key === selected && !hostPage ? " selected" : ""}${stale ? " stale" : ""}`}
                   aria-current={p.key === selected ? "page" : undefined}
                   onClick={() => onSelect(p.key)}
                 >
@@ -73,7 +75,8 @@ export function Sidebar({ placed, hosts, selected, onSelect, now, appVersion, on
         {hosts.map((h) => (
           <button
             key={h.name}
-            className="host-row"
+            className={h.name === hostPage ? "host-row selected" : "host-row"}
+            aria-current={h.name === hostPage ? "page" : undefined}
             onClick={() => onHost(h.name)}
             title={[h.describe, h.version && `otterd ${h.version}`, h.message].filter(Boolean).join(" — ")}
           >

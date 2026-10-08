@@ -45,6 +45,8 @@ pub struct Daemon {
     pub(crate) workspace_env: std::sync::Mutex<HashMap<WorkspaceId, EnvMap>>,
     /// Running preparation tasks, so deleting a workspace can cancel them.
     pub(crate) preparing: std::sync::Mutex<HashMap<WorkspaceId, tokio::task::AbortHandle>>,
+    /// Resource usage, sampled in the background for the host page.
+    metrics: crate::metrics::Sampler,
     shutdown: watch::Sender<bool>,
 }
 
@@ -69,6 +71,7 @@ impl Daemon {
             started_at: Utc::now(),
             workspace_env: Default::default(),
             preparing: Default::default(),
+            metrics: crate::metrics::Sampler::start(),
             shutdown: watch::channel(false).0,
         }
     }
@@ -88,6 +91,14 @@ impl Daemon {
         match req {
             Request::Ping => json(()),
             Request::HostStatus => json(self.host_status().await),
+            Request::HostMetrics => match self.metrics.latest() {
+                Some(m) => json(m),
+                None => Err(RpcError::new(
+                    otter_protocol::ErrorCode::Unavailable,
+                    "measuring; try again in a few seconds",
+                )),
+            },
+            Request::HostPorts => json(crate::metrics::listening_ports().await),
             Request::WorkspaceCreate(p) => json(self.workspace_create(p).await?),
             Request::WorkspaceList => json(self.store.lock().await.state.workspaces.clone()),
             Request::WorkspaceGet(r) => json(self.workspace_get(&r.workspace).await?),
