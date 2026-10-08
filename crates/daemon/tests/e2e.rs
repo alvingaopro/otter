@@ -1924,9 +1924,11 @@ async fn archive_stops_sessions_and_unarchive_brings_the_workspace_back() {
         archived.session("tests").unwrap().status(),
         SessionStatus::Failed
     );
-    // Processes (and retained output) are released; the files are kept.
+    // Running processes are stopped; an exited one keeps its last screen;
+    // the files are kept.
     assert!(!host.tmux_has_session(&server_exec.backend_ref));
-    assert!(!host.tmux_has_session(&tests_exec.backend_ref));
+    assert!(host.tmux_has_session(&tests_exec.backend_ref));
+    conn.session_read("shelf", "tests", None).await.unwrap();
     assert_eq!(
         std::fs::read_to_string(Path::new(&ws.root).join("notes.txt")).unwrap(),
         "keep me"

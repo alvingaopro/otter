@@ -121,7 +121,8 @@ Both are additions (no protocol bump); daemons before them answer
 ## Archiving workspaces
 
 - `workspace.archive {workspace}` → the workspace, now `state: "archived"`.
-  Running sessions are stopped (`SessionStopped`), open attention is resolved
+  Running sessions are stopped (`SessionStopped`; exited ones keep their
+  output for `session.read`), open attention is resolved
   (`AttentionResolved`), then `WorkspaceArchived {workspace_id, name}`. Files,
   Git worktree and branch are kept. Only `ready` or `failed` workspaces can be
   archived (`conflict` otherwise, also while `preparing`).

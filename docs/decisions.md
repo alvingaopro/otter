@@ -741,10 +741,10 @@ as a state but nothing set it. Now `workspace.archive` / `workspace.unarchive`
 menu). Conservative choices, since §28 only names the state:
 
 - **What archiving does:** stops running executions (marked `stopped`, like
-  `session.stop`) and releases every backend resource the workspace's
-  sessions hold; resolves all its attention; keeps everything else — the
-  sessions themselves (identity, agent conversation ids), the files, the Git
-  worktree, the branch and uncommitted changes. Nothing on disk changes, so
+  `session.stop`); exited ones keep their retained output (D-027), so their
+  last screen stays readable; resolves all its attention; keeps everything
+  else — the sessions themselves (identity, agent conversation ids), the
+  files, the Git worktree, the branch and uncommitted changes. Nothing on disk changes, so
   the managed-resources-only rule is trivially kept.
 - **Only from `ready` or `failed`.** Archiving a `preparing` workspace is
   refused: preparation ends by marking it ready and starting its sessions.

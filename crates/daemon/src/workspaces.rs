@@ -212,8 +212,8 @@ impl Daemon {
                     session_id: session.id.clone(),
                 });
             }
-            // Also releases exited processes' retained output.
-            self.terminate_all(session).await?;
+            // Exited processes keep their retained output (D-027), as after
+            // `session.stop`: their last screen stays readable.
         }
 
         let w = store.workspace_mut(ws.id.as_str()).expect("exists");
