@@ -113,7 +113,10 @@ code, .mono { font-family: var(--mono); }
 .titlebar {
   height: 44px; flex: none; display: flex; align-items: center; justify-content: space-between;
   padding: 0 16px 0 20px; border-bottom: 1px solid var(--line); background: var(--sidebar);
+  user-select: none; -webkit-user-select: none;
 }
+/* macOS: the header is the title bar; leave room for the traffic lights. */
+.mac .titlebar { padding-left: 84px; }
 .brand { display: flex; align-items: center; gap: 10px; }
 .brand-name { font-weight: 600; letter-spacing: 0.2px; }
 .brand-icon { border-radius: 5px; display: block; }
