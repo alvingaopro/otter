@@ -86,6 +86,26 @@ impl Brief {
     pub fn is_empty(&self) -> bool {
         *self == Brief::default()
     }
+
+    /// Trimmed, with blank text cleared and blank list items dropped, so an
+    /// emptied field is absent rather than `""`.
+    pub fn normalized(self) -> Brief {
+        let text = |s: Option<String>| s.map(|s| s.trim().to_owned()).filter(|s| !s.is_empty());
+        let list = |v: Vec<String>| {
+            v.into_iter()
+                .map(|s| s.trim().to_owned())
+                .filter(|s| !s.is_empty())
+                .collect()
+        };
+        Brief {
+            title: text(self.title),
+            goal: text(self.goal),
+            description: text(self.description),
+            constraints: list(self.constraints),
+            references: list(self.references),
+            decisions: list(self.decisions),
+        }
+    }
 }
 
 /// Where a workspace's files come from. Git is optional (design rule 1).
@@ -715,5 +735,20 @@ mod tests {
         assert!(json.contains(r#""source":{"type":"empty"}"#), "{json}");
         let back: Workspace = serde_json::from_str(&json).unwrap();
         assert_eq!(back, ws);
+    }
+
+    #[test]
+    fn normalized_brief_drops_blank_text() {
+        let b = Brief {
+            title: Some("  ".into()),
+            goal: Some(" fix it \n".into()),
+            decisions: vec!["".into(), " keep v1 ".into()],
+            ..Default::default()
+        }
+        .normalized();
+        assert_eq!(b.title, None);
+        assert_eq!(b.goal.as_deref(), Some("fix it"));
+        assert_eq!(b.decisions, vec!["keep v1".to_owned()]);
+        assert!(Brief::default().normalized().is_empty());
     }
 }

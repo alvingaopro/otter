@@ -109,6 +109,10 @@ pub enum Request {
     /// stopped until restarted). Result: [`otter_core::Workspace`].
     #[serde(rename = "workspace.unarchive")]
     WorkspaceUnarchive(WorkspaceRef),
+    /// Replace the workspace's brief (why it exists). Result:
+    /// [`otter_core::Workspace`].
+    #[serde(rename = "workspace.set_brief")]
+    WorkspaceSetBrief(WorkspaceSetBrief),
 
     /// Create and start a session. Result: [`otter_core::Session`].
     #[serde(rename = "session.create")]
@@ -173,6 +177,7 @@ impl Request {
             Request::WorkspaceDelete(_) => "workspace.delete",
             Request::WorkspaceArchive(_) => "workspace.archive",
             Request::WorkspaceUnarchive(_) => "workspace.unarchive",
+            Request::WorkspaceSetBrief(_) => "workspace.set_brief",
             Request::SessionCreate(_) => "session.create",
             Request::SessionStop(_) => "session.stop",
             Request::SessionRestart(_) => "session.restart",
@@ -208,6 +213,14 @@ pub struct WorkspaceCreate {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct WorkspaceRef {
     pub workspace: String,
+}
+
+/// The whole new brief: fields left out are cleared. Clients edit by
+/// read-modify-write of the workspace's current brief.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct WorkspaceSetBrief {
+    pub workspace: String,
+    pub brief: Brief,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]

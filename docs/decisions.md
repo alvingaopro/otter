@@ -787,3 +787,36 @@ menu). Conservative choices, since §28 only names the state:
   `WorkspaceUnarchived`) — compatible additions, no version bump.
 - Not done: COMPLETED and CLEANED from §28's diagram, auto-archiving, and
   freeing disk for archived workspaces.
+
+## D-038 — The brief in the app, and editable (2026-10-08)
+
+Design §8's brief existed in the model, but only `otter new --goal` could set
+it, nothing could change it, and the app neither set nor showed it. Since §8
+lists `decisions:` and `constraints:`, which accrue while the work goes on,
+the brief has to be editable, so it got an RPC end to end:
+
+- **`workspace.set_brief {workspace, brief}` replaces the whole brief**
+  rather than patching fields. Every client already holds the current brief
+  (snapshots carry it), so read-modify-write is simple and a patch format
+  with "clear this field" semantics isn't needed. Two clients editing at once:
+  last write wins, which is fine for a human-edited note.
+- **The daemon normalizes** (trim; blank text absent, blank list items
+  dropped) on create and on set, so an emptied field is absent, not `""`, and
+  `Brief::is_empty` means what it says.
+- **Any state**, archived included: the brief describes the workspace and
+  runs nothing.
+- **`WorkspaceBriefChanged {workspace_id}`, with no text.** Brief text is
+  user content (it may mention anything), and events stay ids and kinds
+  (§19). The event matters anyway: clients re-read on events, so it is what
+  updates the app and `otter ls --watch` after an edit elsewhere. An
+  unchanged brief emits nothing.
+- **CLI:** `otter ws brief <ws>` prints it; `--title/--goal/--description`
+  set (`""` clears), repeatable `--constraint/--reference/--decision` append,
+  `--clear` starts from empty. `otter ws show` lists the brief too.
+- **App, kept compact:** an optional Goal field in New workspace; in the
+  workspace pane one line under the name with the goal (or title), "+N more"
+  when the brief holds more, and "Add a goal" when it is empty; clicking it
+  (or the workspace menu) opens a dialog with all six fields, the lists one
+  per line. The sidebar is unchanged.
+- Not done: agents reading the brief (e.g. as context for a new agent
+  session), and history of brief edits beyond the event.

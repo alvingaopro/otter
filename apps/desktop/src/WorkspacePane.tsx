@@ -5,6 +5,7 @@ import { Dialog } from "./Dialog";
 import { Menu } from "./Menu";
 import { NewSessionDialog } from "./NewSessionDialog";
 import { FilesPanel } from "./FilesPanel";
+import { BriefDialog, briefSummary } from "./BriefDialog";
 import { ago, kindLabel, sessionGlyph } from "./model";
 import { Terminal, type Ending } from "./Terminal";
 import type { AttentionView, Placed } from "./types";
@@ -19,7 +20,7 @@ interface Props {
   appVersion?: string;
 }
 
-type Open = "new-session" | "archive-workspace" | "delete-workspace" | "delete-session" | null;
+type Open = "brief" | "new-session" | "archive-workspace" | "delete-workspace" | "delete-session" | null;
 
 export function WorkspacePane({ placed, session, onSession, now, theme, appVersion }: Props) {
   const { host, ws } = placed;
@@ -75,6 +76,7 @@ export function WorkspacePane({ placed, session, onSession, now, theme, appVersi
   const failed = current && (current.status === "failed" || attention?.kind === "failure");
   // Archived (D-036): sessions are stopped, files kept, until unarchived.
   const archived = ws.state === "archived";
+  const brief = briefSummary(ws.brief);
   const unarchive = () => act("workspace_unarchive", { host: host.name, workspace: ws.id });
 
   async function act(command: string, args: Record<string, unknown>): Promise<boolean> {
@@ -113,6 +115,7 @@ export function WorkspacePane({ placed, session, onSession, now, theme, appVersi
               onSelect: () => setOpen("archive-workspace"),
             },
             { label: "Unarchive workspace", hidden: !archived, onSelect: () => void unarchive() },
+            { label: brief.text ? "Edit brief…" : "Add a goal…", onSelect: () => setOpen("brief") },
             { label: "Delete workspace…", danger: true, onSelect: () => setOpen("delete-workspace") },
           ]}
         />
@@ -125,6 +128,16 @@ export function WorkspacePane({ placed, session, onSession, now, theme, appVersi
             {ws.sourceKind === "empty" && <span className="chip">scratch</span>}
             <span className="root mono">{ws.root}</span>
           </div>
+          {brief.text ? (
+            <button className="brief-line" onClick={() => setOpen("brief")} title={`${brief.text}\n\nEdit the brief`}>
+              <span className="brief-text">{brief.text}</span>
+              {brief.more > 0 && <span className="brief-more">+{brief.more} more</span>}
+            </button>
+          ) : (
+            <button className="link-btn brief-add" onClick={() => setOpen("brief")}>
+              Add a goal
+            </button>
+          )}
         </div>
       </div>
 
@@ -308,6 +321,9 @@ export function WorkspacePane({ placed, session, onSession, now, theme, appVersi
         {files && <FilesPanel host={host.name} workspace={ws.id} onClose={() => setFiles(false)} />}
       </div>
 
+      {open === "brief" && (
+        <BriefDialog host={host.name} workspace={ws.id} name={ws.name} brief={ws.brief} onClose={() => setOpen(null)} />
+      )}
       {open === "new-session" && (
         <NewSessionDialog
           host={host}

@@ -4,8 +4,8 @@
 //! frontend never re-implements them.
 
 use otter_core::{
-    Activity, AgentState, Attention, AttentionKind, Session, SessionKind, SessionStatus, Timestamp,
-    Workspace, WorkspaceSource, WorkspaceState,
+    Activity, AgentState, Attention, AttentionKind, Brief, Session, SessionKind, SessionStatus,
+    Timestamp, Workspace, WorkspaceSource, WorkspaceState,
 };
 use serde::Serialize;
 
@@ -49,6 +49,8 @@ pub struct WorkspaceView {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub state_message: Option<String>,
     pub root: String,
+    /// Why the workspace exists (design §8); every field optional.
+    pub brief: Brief,
     /// `git` | `directory` | `empty`.
     pub source_kind: &'static str,
     /// Branch, directory path, or empty.
@@ -126,6 +128,7 @@ impl From<&Workspace> for WorkspaceView {
             state: ws.state,
             state_message: ws.state_message.clone(),
             root: ws.root.clone(),
+            brief: ws.brief.clone(),
             source_kind,
             source,
             sessions: ws.sessions.iter().map(|s| session_view(ws, s)).collect(),

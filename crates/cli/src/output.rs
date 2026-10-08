@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::io::Write;
 
 use anyhow::Result;
-use otter_core::{HostStatus, Session, SessionStatus, Workspace, WorkspaceSource};
+use otter_core::{Brief, HostStatus, Session, SessionStatus, Workspace, WorkspaceSource};
 use otter_protocol::{Event, EventRecord};
 
 use crate::config::HostEntry;
@@ -117,6 +117,16 @@ pub fn workspace_details(host: &str, ws: &Workspace) {
     }
     if let Some(d) = &brief.description {
         println!("  about:    {d}");
+    }
+    let lists = [
+        ("must:", &brief.constraints),
+        ("ref:", &brief.references),
+        ("decided:", &brief.decisions),
+    ];
+    for (label, items) in lists {
+        for item in items {
+            println!("  {label:<9} {item}");
+        }
     }
     println!("  created:  {}", ws.created_at.format("%Y-%m-%d %H:%M"));
     if ws.sessions.is_empty() {
@@ -267,4 +277,35 @@ pub fn event_line(host: &str, rec: &EventRecord, names: &mut HashMap<String, Str
         subject,
         detail
     );
+}
+
+/// `otter ws brief`: the whole brief, one field per line.
+pub fn brief(workspace: &str, b: &Brief) {
+    if b.is_empty() {
+        println!("{workspace} has no brief (set one with `otter ws brief {workspace} --goal …`)");
+        return;
+    }
+    let text = [
+        ("title", &b.title),
+        ("goal", &b.goal),
+        ("description", &b.description),
+    ];
+    for (label, value) in text {
+        if let Some(v) = value {
+            println!("{label}: {v}");
+        }
+    }
+    let lists = [
+        ("constraints", &b.constraints),
+        ("references", &b.references),
+        ("decisions", &b.decisions),
+    ];
+    for (label, items) in lists {
+        if !items.is_empty() {
+            println!("{label}:");
+            for item in items {
+                println!("  - {item}");
+            }
+        }
+    }
 }

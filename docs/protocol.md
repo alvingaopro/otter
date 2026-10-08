@@ -138,6 +138,21 @@ Both are additions (no protocol bump); daemons before them answer
 All additions (no protocol bump): daemons before them answer
 `invalid_request`, and `archived` was already a `WorkspaceState` value.
 
+## Workspace brief
+
+- `workspace.create {…, brief}` and `workspace.set_brief {workspace, brief}`
+  take a `Brief`: `{title?, goal?, description?, constraints?, references?,
+  decisions?}` (strings and string lists, all optional).
+- `workspace.set_brief` → the workspace. It **replaces** the whole brief
+  (fields left out are cleared): clients edit by read-modify-write of the
+  brief they were shown. The daemon trims text, drops blank text and blank
+  list items. Allowed in any state, including `archived`.
+- A change emits `WorkspaceBriefChanged {workspace_id}`; setting the same
+  brief again emits nothing. The event never carries the brief's text: read
+  the workspace.
+
+An addition (no protocol bump): daemons before it answer `invalid_request`.
+
 ## Files and image paste
 
 - `fs.list {workspace, path}` → a directory (`path` relative to the

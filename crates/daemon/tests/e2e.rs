@@ -2132,3 +2132,97 @@ async fn browser_login_opens_pages_from_attached_terminals_once() {
     );
     assert_eq!(opened.lock().unwrap().len(), 1);
 }
+
+#[tokio::test]
+async fn brief_is_set_at_creation_and_edited_later() {
+    let host = TestHost::new();
+    let mut conn = host.conn().await;
+    let ws = conn
+        .workspace_create(WorkspaceCreate {
+            name: "why".into(),
+            brief: Some(otter_core::Brief {
+                goal: Some("  Fix renewal validation \n".into()),
+                title: Some(" ".into()),
+                ..Default::default()
+            }),
+            sessions: Some(vec![]),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert_eq!(ws.brief.goal.as_deref(), Some("Fix renewal validation"));
+    assert_eq!(ws.brief.title, None, "blank text is absent, not empty");
+
+    let mut stream = host.conn().await.subscribe(None).await.unwrap();
+    let mut brief = ws.brief.clone();
+    brief.title = Some("GCP renewal".into());
+    brief.decisions = vec!["Renewal count includes the initial term.".into(), "".into()];
+    let edited = conn.workspace_set_brief("why", brief).await.unwrap();
+    assert_eq!(edited.brief.title.as_deref(), Some("GCP renewal"));
+    assert_eq!(edited.brief.goal.as_deref(), Some("Fix renewal validation"));
+    assert_eq!(edited.brief.decisions.len(), 1);
+    assert_eq!(conn.workspace_get("why").await.unwrap().brief, edited.brief);
+    let rec = tokio::time::timeout(Duration::from_secs(10), stream.next())
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        rec.event,
+        Event::WorkspaceBriefChanged {
+            workspace_id: ws.id.clone()
+        }
+    );
+    // The event names the workspace; what the brief says stays out of the log.
+    let log = std::fs::read_to_string(host.home().join("state/events.jsonl")).unwrap();
+    assert!(log.contains("WorkspaceBriefChanged"), "{log}");
+    assert!(!log.contains("Renewal count"), "{log}");
+
+    // Setting the same brief again changes nothing; replacing clears fields.
+    conn.workspace_set_brief("why", edited.brief.clone())
+        .await
+        .unwrap();
+    let cleared = conn
+        .workspace_set_brief("why", otter_core::Brief::default())
+        .await
+        .unwrap();
+    assert!(cleared.brief.is_empty());
+    let rec = tokio::time::timeout(Duration::from_secs(10), stream.next())
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    assert!(rec.seq > 0 && rec.event.kind() == "WorkspaceBriefChanged");
+    assert_eq!(
+        host.conn()
+            .await
+            .events_list(None)
+            .await
+            .unwrap()
+            .iter()
+            .filter(|r| r.event.kind() == "WorkspaceBriefChanged")
+            .count(),
+        2,
+        "an unchanged brief emits nothing"
+    );
+
+    // Archived workspaces can still be described.
+    conn.workspace_archive("why").await.unwrap();
+    let ws = conn
+        .workspace_set_brief(
+            "why",
+            otter_core::Brief {
+                goal: Some("parked".into()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(ws.state, WorkspaceState::Archived);
+    assert_eq!(ws.brief.goal.as_deref(), Some("parked"));
+    let err = conn
+        .workspace_set_brief("nope", otter_core::Brief::default())
+        .await
+        .unwrap_err();
+    assert!(err.to_string().contains("no workspace"), "{err}");
+}

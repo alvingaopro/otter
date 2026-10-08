@@ -14,14 +14,14 @@ use std::process::Stdio;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use otter_core::{HostStatus, Session, Workspace};
+use otter_core::{Brief, HostStatus, Session, Workspace};
 use otter_protocol::frame::{Frame, read_frame, write_frame};
 use otter_protocol::wire::{read_json, write_json};
 use otter_protocol::{
     AttachReady, AttentionResolve, ClientMessage, EventRecord, EventsList, EventsSubscribe,
     PROTOCOL_VERSION, Request, RpcError, ServerMessage, SessionAttach, SessionCreate,
     SessionOutput, SessionRead, SessionRef, SessionWrite, StateSnapshot, Subscribed,
-    WorkspaceCreate, WorkspaceDelete, WorkspaceRef,
+    WorkspaceCreate, WorkspaceDelete, WorkspaceRef, WorkspaceSetBrief,
 };
 use serde::de::DeserializeOwned;
 use tokio::io::{AsyncReadExt, BufReader};
@@ -455,6 +455,19 @@ impl Connection {
     pub async fn workspace_unarchive(&mut self, workspace: &str) -> Result<Workspace> {
         self.call(Request::WorkspaceUnarchive(ws_ref(workspace)))
             .await
+    }
+
+    /// Replace a workspace's brief.
+    pub async fn workspace_set_brief(
+        &mut self,
+        workspace: &str,
+        brief: Brief,
+    ) -> Result<Workspace> {
+        self.call(Request::WorkspaceSetBrief(WorkspaceSetBrief {
+            workspace: workspace.to_owned(),
+            brief,
+        }))
+        .await
     }
 
     pub async fn session_create(&mut self, p: SessionCreate) -> Result<Session> {

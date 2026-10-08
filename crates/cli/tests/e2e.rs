@@ -267,6 +267,51 @@ fn archive_hides_a_workspace_until_unarchived() {
 }
 
 #[test]
+fn brief_is_set_shown_and_edited() {
+    let home = Home::new();
+    let cli = Cli::new();
+    cli.add_local_host("here", &home);
+    cli.ok(&[
+        "new",
+        "why",
+        "--no-agent",
+        "--goal",
+        "Fix renewal validation",
+    ]);
+    let out = cli.ok(&["ws", "brief", "why"]);
+    assert_eq!(out.trim(), "goal: Fix renewal validation");
+
+    let out = cli.ok(&[
+        "ws",
+        "brief",
+        "why",
+        "--title",
+        "GCP renewal",
+        "--decision",
+        "Renewal count includes the initial term.",
+        "--constraint",
+        "Preserve Salesforce behavior.",
+    ]);
+    assert!(out.contains("title: GCP renewal"), "{out}");
+    assert!(out.contains("goal: Fix renewal validation"), "{out}");
+    assert!(
+        out.contains("decisions:\n  - Renewal count includes the initial term."),
+        "{out}"
+    );
+    let show = cli.ok(&["ws", "show", "why"]);
+    assert!(
+        show.contains("must:     Preserve Salesforce behavior."),
+        "{show}"
+    );
+    assert_eq!(cli.workspace("why")["brief"]["title"], "GCP renewal");
+
+    cli.ok(&["ws", "brief", "why", "--goal", ""]);
+    assert!(cli.workspace("why")["brief"].get("goal").is_none());
+    let out = cli.ok(&["ws", "brief", "why", "--clear"]);
+    assert!(out.starts_with("why has no brief"), "{out}");
+}
+
+#[test]
 fn same_name_on_two_hosts_needs_the_host() {
     let (a, b) = (Home::new(), Home::new());
     let cli = Cli::new();

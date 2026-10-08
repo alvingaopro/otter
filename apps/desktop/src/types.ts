@@ -34,6 +34,16 @@ export interface SessionView {
   attention?: AttentionView;
 }
 
+/** Why a workspace exists (design §8). Absent fields are unset. */
+export interface Brief {
+  title?: string;
+  goal?: string;
+  description?: string;
+  constraints?: string[];
+  references?: string[];
+  decisions?: string[];
+}
+
 export interface WorkspaceView {
   id: string;
   name: string;
@@ -41,6 +51,7 @@ export interface WorkspaceView {
   state: "preparing" | "ready" | "failed" | "archived";
   stateMessage?: string;
   root: string;
+  brief: Brief;
   sourceKind: "git" | "directory" | "empty";
   source: string;
   sessions: SessionView[];
