@@ -166,6 +166,7 @@ fn reconcile(app: &AppHandle) {
                             status: HostStatus::Connecting,
                             message: None,
                             version: None,
+                            agents: Vec::new(),
                             workspaces: Vec::new(),
                         });
                     views.push(view);
@@ -246,8 +247,13 @@ enum Never {}
 async fn follow(app: &AppHandle, name: &str, transport: &Transport) -> Result<Never, ClientError> {
     let mut rpc = Connection::connect(transport).await?;
     let version = rpc.server_version.clone();
-    app.state::<Hosts>()
-        .update(name, |v| v.version = Some(version));
+    // Which agents the host can run (for the new-workspace form); probing
+    // is cheap enough to do once per connection.
+    let agents = rpc.host_status().await?.agents;
+    app.state::<Hosts>().update(name, |v| {
+        v.version = Some(version);
+        v.agents = agents;
+    });
     let snapshot = rpc.snapshot().await?;
     show(app, name, &snapshot.workspaces);
 
@@ -490,4 +496,173 @@ pub async fn install_cli(app: AppHandle) -> Result<String, String> {
     workd_client::install::install(&here, &app_version(&app), false)
         .await
         .map_err(|e| e.to_string())
+}
+
+// ---------------------------------------------------------------------------
+// Workspaces and sessions (thin RPCs; the daemon does the work)
+// ---------------------------------------------------------------------------
+
+fn err(e: ClientError) -> String {
+    e.to_string()
+}
+
+/// Create a workspace. Returns its id; it appears through the event stream.
+#[tauri::command]
+pub async fn workspace_create(
+    app: AppHandle,
+    host: String,
+    name: String,
+    source: workd_protocol::SourceSpec,
+    sessions: Vec<workd_protocol::SessionSpec>,
+) -> Result<String, String> {
+    let ws = rpc(&app, &host)
+        .await?
+        .workspace_create(workd_protocol::WorkspaceCreate {
+            name: name.trim().to_owned(),
+            brief: None,
+            source,
+            sessions: Some(sessions),
+        })
+        .await
+        .map_err(err)?;
+    Ok(ws.id.to_string())
+}
+
+/// Delete a workspace and its sessions. `force` discards uncommitted changes
+/// in a Git worktree; an existing directory is never deleted.
+#[tauri::command]
+pub async fn workspace_delete(
+    app: AppHandle,
+    host: String,
+    workspace: String,
+    force: bool,
+) -> Result<(), String> {
+    rpc(&app, &host)
+        .await?
+        .workspace_delete(&workspace, force)
+        .await
+        .map_err(err)
+}
+
+/// Retry a failed workspace's preparation.
+#[tauri::command]
+pub async fn workspace_prepare(
+    app: AppHandle,
+    host: String,
+    workspace: String,
+) -> Result<(), String> {
+    rpc(&app, &host)
+        .await?
+        .workspace_prepare(&workspace)
+        .await
+        .map(|_| ())
+        .map_err(err)
+}
+
+/// Start a new session in a workspace. Returns its id.
+#[tauri::command]
+pub async fn session_create(
+    app: AppHandle,
+    host: String,
+    workspace: String,
+    spec: workd_protocol::SessionSpec,
+) -> Result<String, String> {
+    let s = rpc(&app, &host)
+        .await?
+        .session_create(workd_protocol::SessionCreate { workspace, spec })
+        .await
+        .map_err(err)?;
+    Ok(s.id.to_string())
+}
+
+#[tauri::command]
+pub async fn session_stop(
+    app: AppHandle,
+    host: String,
+    workspace: String,
+    session: String,
+) -> Result<(), String> {
+    rpc(&app, &host)
+        .await?
+        .session_stop(&workspace, &session)
+        .await
+        .map(|_| ())
+        .map_err(err)
+}
+
+#[tauri::command]
+pub async fn session_delete(
+    app: AppHandle,
+    host: String,
+    workspace: String,
+    session: String,
+) -> Result<(), String> {
+    rpc(&app, &host)
+        .await?
+        .session_delete(&workspace, &session)
+        .await
+        .map_err(err)
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CliStatus {
+    /// `workctl` in `~/.local/bin`, if there.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    version: Option<String>,
+    path: String,
+}
+
+/// Whether this Mac has the command-line tools, and which version.
+#[tauri::command]
+pub async fn cli_status() -> CliStatus {
+    let path = format!(
+        "{}/.local/bin/workctl",
+        std::env::var("HOME").unwrap_or_default()
+    );
+    let version = tokio::process::Command::new(&path)
+        .arg("--version")
+        .output()
+        .await
+        .ok()
+        .filter(|o| o.status.success())
+        .and_then(|o| {
+            String::from_utf8_lossy(&o.stdout)
+                .split_whitespace()
+                .nth(1)
+                .map(str::to_owned)
+        });
+    CliStatus { version, path }
+}
+
+#[cfg(test)]
+mod tests {
+    use workd_core::SessionKind;
+    use workd_protocol::{SessionSpec, SourceSpec};
+
+    /// The shapes the New workspace / New session dialogs send.
+    #[test]
+    fn dialog_payloads_deserialize() {
+        let git: SourceSpec = serde_json::from_str(
+            r#"{"type":"git","repository":"git@github.com:org/repo.git","branch":"fix/x"}"#,
+        )
+        .unwrap();
+        assert!(
+            matches!(git, SourceSpec::Git { ref branch, base: None, .. } if branch.as_deref() == Some("fix/x"))
+        );
+        let empty: SourceSpec = serde_json::from_str(r#"{"type":"empty"}"#).unwrap();
+        assert_eq!(empty, SourceSpec::Empty);
+        let dir: SourceSpec =
+            serde_json::from_str(r#"{"type":"directory","path":"~/src/p"}"#).unwrap();
+        assert!(matches!(dir, SourceSpec::Directory { .. }));
+
+        let sessions: Vec<SessionSpec> = serde_json::from_str(
+            r#"[{"kind":"agent","provider":"codex","prompt":"fix it"},{"kind":"terminal"},{"kind":"task","name":"tests","command":"cargo test"}]"#,
+        )
+        .unwrap();
+        assert_eq!(sessions[0].kind, SessionKind::Agent);
+        assert_eq!(sessions[0].prompt.as_deref(), Some("fix it"));
+        assert_eq!(sessions[1], SessionSpec::shell());
+        assert_eq!(sessions[2].command.as_deref(), Some("cargo test"));
+    }
 }

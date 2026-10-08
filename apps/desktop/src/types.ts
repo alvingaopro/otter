@@ -56,6 +56,8 @@ export interface HostView {
   message?: string;
   /** The host's workd version, once connected. */
   version?: string;
+  /** Agent providers and whether this host can run them. */
+  agents: { provider: string; available: boolean; version?: string; can_resume: boolean }[];
   workspaces: WorkspaceView[];
 }
 
