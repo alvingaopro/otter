@@ -18,6 +18,7 @@
 
 pub mod events;
 pub mod frame;
+pub mod fs;
 pub mod host;
 pub mod wire;
 
@@ -54,6 +55,19 @@ pub enum Request {
     /// TCP ports listening on the host. Result: `Vec<`[`host::ListeningPort`]`>`.
     #[serde(rename = "host.ports")]
     HostPorts,
+    /// List a directory. Result: [`fs::DirListing`].
+    #[serde(rename = "fs.list")]
+    FsList(fs::FsPath),
+    /// Read part of a file. Result: [`fs::FileChunk`].
+    #[serde(rename = "fs.read")]
+    FsRead(fs::FsRead),
+    /// Write part of a file. Result: `null`.
+    #[serde(rename = "fs.write")]
+    FsWrite(fs::FsWrite),
+    /// Hand an image to a session's clipboard stand-in, for Ctrl+V in Claude
+    /// Code and other tools that read images with `wl-paste`. Result: `null`.
+    #[serde(rename = "session.paste_image")]
+    SessionPasteImage(fs::PasteImage),
     /// Recorded usage over a range. Result: [`host::HostHistory`].
     #[serde(rename = "host.history")]
     HostHistory(host::HistoryQuery),
@@ -128,6 +142,10 @@ impl Request {
             Request::HostMetrics => "host.metrics",
             Request::HostPorts => "host.ports",
             Request::HostHistory(_) => "host.history",
+            Request::FsList(_) => "fs.list",
+            Request::FsRead(_) => "fs.read",
+            Request::FsWrite(_) => "fs.write",
+            Request::SessionPasteImage(_) => "session.paste_image",
             Request::Shutdown => "daemon.shutdown",
             Request::WorkspaceCreate(_) => "workspace.create",
             Request::WorkspaceList => "workspace.list",

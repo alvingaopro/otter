@@ -11,6 +11,7 @@ name = "otterd"
 path = "src/main.rs"
 
 [dependencies]
+base64.workspace = true
 otter-core.workspace = true
 otter-protocol.workspace = true
 anyhow.workspace = true

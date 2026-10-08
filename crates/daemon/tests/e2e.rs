@@ -1687,3 +1687,121 @@ async fn host_reports_usage_and_listening_ports() {
         "{port} not in {ports:?}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Files and image paste
+// ---------------------------------------------------------------------------
+
+fn b64(data: &[u8]) -> String {
+    use base64::Engine;
+    base64::engine::general_purpose::STANDARD.encode(data)
+}
+
+#[tokio::test]
+async fn files_upload_list_download_in_chunks() {
+    use otter_protocol::fs::{EntryKind, FsPath, FsWrite};
+    let host = TestHost::new();
+    create(&host, "files", Some(vec![])).await;
+    let mut conn = host.conn().await;
+    let at = |path: &str| FsPath {
+        workspace: "files".into(),
+        path: path.into(),
+    };
+    // Upload in two chunks.
+    let content: Vec<u8> = (0..300_000u32).map(|i| (i % 251) as u8).collect();
+    let (a, b) = content.split_at(200_000);
+    conn.fs_write(FsWrite {
+        at: at("data.bin"),
+        offset: 0,
+        data: b64(a),
+        create: true,
+        overwrite: false,
+    })
+    .await
+    .unwrap();
+    conn.fs_write(FsWrite {
+        at: at("data.bin"),
+        offset: a.len() as u64,
+        data: b64(b),
+        create: false,
+        overwrite: false,
+    })
+    .await
+    .unwrap();
+    // Creating it again without overwrite is refused.
+    let err = conn
+        .fs_write(FsWrite {
+            at: at("data.bin"),
+            offset: 0,
+            data: b64(b"x"),
+            create: true,
+            overwrite: false,
+        })
+        .await
+        .unwrap_err();
+    assert!(err.to_string().contains("already exists"), "{err}");
+
+    let listing = conn.fs_list("files", "").await.unwrap();
+    let entry = listing
+        .entries
+        .iter()
+        .find(|e| e.name == "data.bin")
+        .unwrap();
+    assert_eq!((entry.kind, entry.size), (EntryKind::File, 300_000));
+
+    // Download in 128 KB chunks.
+    let mut got = Vec::new();
+    loop {
+        let chunk = conn
+            .fs_read("files", "data.bin", got.len() as u64, 128 * 1024)
+            .await
+            .unwrap();
+        use base64::Engine;
+        got.extend(
+            base64::engine::general_purpose::STANDARD
+                .decode(&chunk.data)
+                .unwrap(),
+        );
+        if chunk.eof {
+            break;
+        }
+    }
+    assert_eq!(got, content);
+}
+
+#[tokio::test]
+async fn pasted_image_reaches_wl_paste_in_the_session() {
+    let host = TestHost::new();
+    sh_session(&host, "paste").await;
+    let png = b"\x89PNG\r\n\x1a\n-not-really-an-image-";
+    host.conn()
+        .await
+        .paste_image("paste", "sh", b64(png))
+        .await
+        .unwrap();
+    // What Claude Code runs on Ctrl+V, inside the session.
+    let mut conn = host.conn().await;
+    conn.session_write(
+        "paste",
+        "sh",
+        "echo types=$(wl-paste -l) bytes=$(wl-paste --type image/png | wc -c | tr -d ' ')",
+        true,
+    )
+    .await
+    .unwrap();
+    wait_output(
+        &host,
+        "paste",
+        "sh",
+        &format!("types=image/png bytes={}", png.len()),
+    )
+    .await;
+    // Not a PNG: refused.
+    let err = host
+        .conn()
+        .await
+        .paste_image("paste", "sh", b64(b"GIF89a"))
+        .await
+        .unwrap_err();
+    assert!(err.to_string().contains("not a PNG"), "{err}");
+}

@@ -131,6 +131,16 @@ export function Terminal({ host, workspace, session, onEnd, generation, label, w
         void writeText(term.getSelection());
         return false;
       }
+      // Ctrl+V (not ⌘V): an image on the Mac's clipboard goes to the session
+      // first, so Claude Code's paste finds it; then the key itself.
+      if (e.type === "keydown" && e.ctrlKey && !e.metaKey && !e.altKey && e.key === "v") {
+        void invoke("paste_image", { host, workspace, session })
+          .catch(() => false)
+          .finally(() => {
+            if (id !== null) void invoke("attach_input", { id, data: "\x16" });
+          });
+        return false;
+      }
       return true;
     });
     term.open(el.current!);

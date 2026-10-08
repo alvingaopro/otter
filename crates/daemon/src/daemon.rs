@@ -60,6 +60,9 @@ impl Daemon {
         shell: String,
     ) -> Self {
         let metrics = crate::metrics::Sampler::start(paths.state_dir.join("metrics"));
+        if let Err(e) = crate::files::install_shim(&paths) {
+            tracing::warn!("installing the wl-paste stand-in: {e:#}");
+        }
         Daemon {
             git: GitManager::new(paths.home.join("repos"), &env.vars),
             environments: EnvironmentManager::new(&env.vars),
@@ -100,6 +103,10 @@ impl Daemon {
                 )),
             },
             Request::HostPorts => json(crate::metrics::listening_ports().await),
+            Request::FsList(p) => json(self.fs_list(&p).await?),
+            Request::FsRead(p) => json(self.fs_read(&p).await?),
+            Request::FsWrite(p) => json(self.fs_write(&p).await?),
+            Request::SessionPasteImage(p) => json(self.paste_image(&p).await?),
             Request::HostHistory(q) => match self.metrics.history(&q.range) {
                 Some(h) => json(h),
                 None => Err(RpcError::invalid(format!(
