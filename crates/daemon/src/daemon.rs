@@ -157,6 +157,7 @@ impl Daemon {
                 let store = self.store.lock().await;
                 json(StateSnapshot {
                     seq: self.events.head(),
+                    log_id: Some(self.events.log_id().to_owned()),
                     workspaces: store.state.workspaces.clone(),
                 })
             }

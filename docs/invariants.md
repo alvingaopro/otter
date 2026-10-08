@@ -110,8 +110,12 @@ record it in [`decisions.md`](decisions.md) first.
 
 - Any client can disconnect at any time; everything it shows comes from
   `state.snapshot` / `workspace.list` plus `events.subscribe`. A reconnecting
-  client resumes from its last event `seq` and never silently misses events
-  (`cursor_expired` → reload a snapshot). `otter ls --watch` and
+  client resumes from its last event `seq` (and the log id it came from) and
+  never silently misses events (`cursor_expired` → reload a snapshot), also
+  when the log was rotated or started over. `otter ls --watch` and
   `otter events --follow` reconnect to hosts that drop.
 - Tests: `event_replay_resumes_after_disconnect_and_daemon_restart`,
-  `snapshot_then_subscribe_has_no_gap_and_stale_cursors_are_rejected`.
+  `snapshot_then_subscribe_has_no_gap_and_stale_cursors_are_rejected`,
+  `rotated_cursors_resync_and_recent_ones_replay`,
+  `a_log_that_started_over_is_detected_even_past_the_old_cursor`, and for the
+  CLI `events_follow_resyncs_when_the_hosts_log_starts_over`.

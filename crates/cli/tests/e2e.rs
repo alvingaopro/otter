@@ -312,6 +312,92 @@ fn brief_is_set_shown_and_edited() {
 }
 
 #[test]
+fn events_follow_resyncs_when_the_hosts_log_starts_over() {
+    use std::io::BufRead;
+
+    let home = Home::new();
+    let cli = Cli::new();
+    cli.add_local_host("here", &home);
+    cli.ok(&["new", "first", "--no-agent"]);
+
+    let mut follow = Command::new(env!("CARGO_BIN_EXE_otter"))
+        .args(["events", "--follow", "--json", "--limit", "1"])
+        .env("OTTER_CONFIG_DIR", cli.config.path())
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let lines = |pipe: Box<dyn std::io::Read + Send>| {
+        let (tx, rx) = std::sync::mpsc::channel::<String>();
+        std::thread::spawn(move || {
+            for line in std::io::BufReader::new(pipe).lines() {
+                let Ok(line) = line else { return };
+                if tx.send(line).is_err() {
+                    return;
+                }
+            }
+        });
+        rx
+    };
+    let stdout = lines(Box::new(follow.stdout.take().unwrap()));
+    let stderr = lines(Box::new(follow.stderr.take().unwrap()));
+    let wait_for = |rx: &std::sync::mpsc::Receiver<String>, needle: &str| {
+        let deadline = Instant::now() + Duration::from_secs(20);
+        let mut seen = Vec::new();
+        while let Ok(line) = rx.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
+            if line.contains(needle) {
+                return;
+            }
+            seen.push(line);
+        }
+        panic!("no {needle:?} in {seen:#?}");
+    };
+    // The backlog (one event) is printed once it follows on from its cursor.
+    wait_for(&stdout, r#""seq""#);
+    cli.ok(&["new", "second", "--no-agent"]);
+    wait_for(&stdout, r#""name":"second""#);
+
+    // The daemon goes away and its event log with it; the follower's cursor
+    // now names a log that no longer exists.
+    let run = home.dir.path().join("run");
+    let pid = std::fs::read_to_string(run.join("workd.pid")).unwrap();
+    Command::new("kill").arg(pid.trim()).status().unwrap();
+    // Remove the log before the daemon is gone, so a daemon that the
+    // follower's reconnect autostarts can only find an empty one.
+    for entry in std::fs::read_dir(home.dir.path().join("state")).unwrap() {
+        let path = entry.unwrap().path();
+        if path
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .starts_with("events.")
+        {
+            std::fs::remove_file(path).unwrap();
+        }
+    }
+    let deadline = Instant::now() + Duration::from_secs(15);
+    while Command::new("kill")
+        .args(["-0", pid.trim()])
+        .stderr(Stdio::null())
+        .status()
+        .unwrap()
+        .success()
+    {
+        assert!(Instant::now() < deadline, "daemon didn't exit");
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    cli.ok(&["new", "third", "--no-agent"]);
+
+    // It says events were missed, resyncs, and keeps following.
+    wait_for(&stderr, "some events were missed");
+    cli.ok(&["new", "fourth", "--no-agent"]);
+    wait_for(&stdout, r#""name":"fourth""#);
+    let _ = follow.kill();
+    let _ = follow.wait();
+}
+
+#[test]
 fn same_name_on_two_hosts_needs_the_host() {
     let (a, b) = (Home::new(), Home::new());
     let cli = Cli::new();

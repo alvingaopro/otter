@@ -145,7 +145,7 @@ async fn serve(paths: Paths) -> Result<()> {
         None => tracing::warn!("tmux not found; sessions cannot be started"),
     }
     let store = Store::load(&paths.state_file)?;
-    let events = EventLog::open(&paths.events_file)?;
+    let events = EventLog::open_with(&paths.events_file, events::Limits::from_env())?;
     let daemon = Arc::new(Daemon::new(
         paths.clone(),
         store,

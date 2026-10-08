@@ -958,31 +958,32 @@ fn join_command(argv: &[String]) -> String {
 async fn follow_events(
     transport: otter_client::Transport,
     host: String,
-    mut cursor: u64,
+    mut cursor: otter_protocol::Cursor,
     tx: tokio::sync::mpsc::Sender<(String, otter_protocol::EventRecord)>,
 ) {
     loop {
         let stream = match Connection::connect(&transport).await {
-            Ok(conn) => conn.subscribe(Some(cursor)).await,
+            Ok(conn) => conn.subscribe(Some(cursor.clone())).await,
             Err(e) => Err(e),
         };
         match stream {
             Ok(mut stream) => {
                 while let Ok(Some(rec)) = stream.next().await {
-                    cursor = rec.seq;
                     if tx.send((host.clone(), rec)).await.is_err() {
                         return;
                     }
                 }
+                cursor = stream.cursor();
             }
-            Err(otter_client::ClientError::Rpc(e))
-                if e.code == otter_protocol::ErrorCode::CursorExpired =>
-            {
+            // Rotated away, or the host's log started over: resync from a
+            // snapshot and say that events were missed.
+            Err(e) if e.is_cursor_expired() => {
                 eprintln!("otter: {host}: {e}; some events were missed, following from now");
                 if let Ok(mut conn) = Connection::connect(&transport).await
                     && let Ok(snapshot) = conn.snapshot().await
                 {
-                    cursor = snapshot.seq;
+                    cursor = snapshot.cursor();
+                    continue;
                 }
             }
             Err(_) => {}
@@ -1012,15 +1013,15 @@ async fn events(
     for host in &hosts {
         let mut conn = connect(config, host).await?;
         let snapshot = conn.snapshot().await?;
+        let mut cursor = snapshot.cursor();
         for ws in snapshot.workspaces {
             for s in &ws.sessions {
                 names.insert(s.id.to_string(), s.name.clone());
             }
             names.insert(ws.id.to_string(), ws.name);
         }
-        let mut cursor = snapshot.seq;
         for rec in conn.events_list(Some(limit)).await? {
-            cursor = cursor.max(rec.seq);
+            cursor.seq = cursor.seq.max(rec.seq);
             backlog.push((host.name.clone(), rec));
         }
         if follow {

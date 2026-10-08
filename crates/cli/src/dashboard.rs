@@ -91,6 +91,11 @@ pub async fn watch(config: &Config, archived: bool) -> Result<()> {
                 if let Ok(conn) = Connection::connect(&transport).await
                     && let Ok(mut stream) = conn.subscribe(None).await
                 {
+                    // (Re)connected: whatever happened while away shows up in
+                    // a fresh fetch.
+                    if tx.send(()).await.is_err() {
+                        return;
+                    }
                     while let Ok(Some(_)) = stream.next().await {
                         if tx.send(()).await.is_err() {
                             return;

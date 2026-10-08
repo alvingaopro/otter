@@ -18,7 +18,7 @@ use otter_core::{Brief, HostStatus, Session, Workspace};
 use otter_protocol::frame::{Frame, read_frame, write_frame};
 use otter_protocol::wire::{read_json, write_json};
 use otter_protocol::{
-    AttachReady, AttentionResolve, ClientMessage, EventRecord, EventsList, EventsSubscribe,
+    AttachReady, AttentionResolve, ClientMessage, Cursor, EventRecord, EventsList, EventsSubscribe,
     PROTOCOL_VERSION, Request, RpcError, ServerMessage, SessionAttach, SessionCreate,
     SessionOutput, SessionRead, SessionRef, SessionWrite, StateSnapshot, Subscribed,
     WorkspaceCreate, WorkspaceDelete, WorkspaceRef, WorkspaceSetBrief,
@@ -173,6 +173,14 @@ pub enum ClientError {
     Forward(String),
     #[error(transparent)]
     Io(#[from] std::io::Error),
+}
+
+impl ClientError {
+    /// The host can't serve the event cursor (rotated away, or its log started
+    /// over): reload a snapshot and follow on from its cursor.
+    pub fn is_cursor_expired(&self) -> bool {
+        matches!(self, ClientError::Rpc(e) if e.code == otter_protocol::ErrorCode::CursorExpired)
+    }
 }
 
 pub type Result<T, E = ClientError> = std::result::Result<T, E>;
@@ -557,31 +565,42 @@ impl Connection {
     }
 
     /// Current state and the event cursor it corresponds to; follow on with
-    /// `subscribe(Some(snapshot.seq))`.
+    /// `subscribe(Some(snapshot.cursor()))`.
     pub async fn snapshot(&mut self) -> Result<StateSnapshot> {
         self.call(Request::StateSnapshot).await
     }
 
     /// Turn this connection into a stream of events: those after `after` (if
     /// given), then live ones. A cursor the host can no longer serve fails with
-    /// [`ErrorCode::CursorExpired`](otter_protocol::ErrorCode::CursorExpired);
-    /// reload a snapshot then.
-    pub async fn subscribe(self, after: Option<u64>) -> Result<EventStream> {
+    /// [`ErrorCode::CursorExpired`](otter_protocol::ErrorCode::CursorExpired)
+    /// ([`ClientError::is_cursor_expired`]); reload a snapshot then.
+    pub async fn subscribe(self, after: Option<Cursor>) -> Result<EventStream> {
         self.subscribe_with(after, false).await
     }
 
     /// Like [`Self::subscribe`], as an app that opens sign-in pages for
     /// browser login (`BrowserOpenRequested`).
-    pub async fn subscribe_for_browser(self, after: Option<u64>) -> Result<EventStream> {
+    pub async fn subscribe_for_browser(self, after: Option<Cursor>) -> Result<EventStream> {
         self.subscribe_with(after, true).await
     }
 
-    async fn subscribe_with(mut self, after: Option<u64>, browser: bool) -> Result<EventStream> {
+    async fn subscribe_with(mut self, after: Option<Cursor>, browser: bool) -> Result<EventStream> {
+        let (after, log_id) = match after {
+            Some(c) => (Some(c.seq), c.log_id),
+            None => (None, None),
+        };
         let ready: Subscribed = self
-            .call(Request::EventsSubscribe(EventsSubscribe { after, browser }))
+            .call(Request::EventsSubscribe(EventsSubscribe {
+                after,
+                log_id: log_id.clone(),
+                browser,
+            }))
             .await?;
         Ok(EventStream {
             seq: ready.seq,
+            last: after.unwrap_or(ready.seq),
+            // A daemon before D-037 names no log.
+            log_id: ready.log_id.or(log_id),
             conn: self,
         })
     }
@@ -613,6 +632,9 @@ impl AttachWriter {
 pub struct EventStream {
     /// The latest event when the subscription started.
     pub seq: u64,
+    /// The last event received (or the cursor subscribed from).
+    last: u64,
+    log_id: Option<String>,
     conn: Connection,
 }
 
@@ -624,9 +646,21 @@ impl EventStream {
                 .map_err(|e| ClientError::Protocol(e.to_string()))?
             {
                 None => return Ok(None),
-                Some(ServerMessage::Event { event }) => return Ok(Some(event)),
+                Some(ServerMessage::Event { event }) => {
+                    self.last = self.last.max(event.seq);
+                    return Ok(Some(event));
+                }
                 Some(_) => continue,
             }
+        }
+    }
+
+    /// Where to resume after this stream ends: the last event received, in
+    /// this host's log.
+    pub fn cursor(&self) -> Cursor {
+        Cursor {
+            seq: self.last,
+            log_id: self.log_id.clone(),
         }
     }
 }
