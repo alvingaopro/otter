@@ -1,7 +1,7 @@
 # Otter protocol (v2)
 
-The contract between `otterd` and its clients (`otter`, later the desktop
-app). Types live in `crates/protocol`; this document is the prose. Decisions:
+The contract between `otterd` and its clients (the `otter` CLI and the
+desktop app). Types live in `crates/protocol`; this document is the prose. Decisions:
 D-004 (shape), D-016 (cursors, snapshot, compatibility).
 
 ## Connection
