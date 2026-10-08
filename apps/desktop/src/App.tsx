@@ -18,6 +18,8 @@ import "./App.css";
 
 /** Activating the app this soon after a notification jumps to its workspace. */
 const JUMP_WINDOW_MS = 2 * 60 * 1000;
+/** On macOS the header doubles as the title bar (overlay style, see tauri.conf.json). */
+const IS_MAC = navigator.userAgent.includes("Mac");
 
 type Open = { kind: "add" } | { kind: "cli" } | { kind: "new" } | null;
 
@@ -153,13 +155,13 @@ export default function App() {
   const working = placed.filter((p) => p.ws.activity === "working").length;
 
   return (
-    <div className="app">
-      <header className="titlebar">
-        <div className="brand">
+    <div className={IS_MAC ? "app mac" : "app"}>
+      <header className="titlebar" data-tauri-drag-region>
+        <div className="brand" data-tauri-drag-region>
           <img src={otterIcon} width={22} height={22} alt="" className="brand-icon" />
-          <span className="brand-name">Otter</span>
+          <span className="brand-name" data-tauri-drag-region>Otter</span>
           {placed.length > 0 && (
-            <span className="brand-sub">
+            <span className="brand-sub" data-tauri-drag-region>
               {needs} need you · {working} working
             </span>
           )}
