@@ -365,3 +365,40 @@ test against a real SSH host.
 
 Not covered by automated tests: the network-loss timings above (manual), and
 terminal rendering of colors/alternate screen in a real terminal emulator.
+
+## D-018 — Desktop client M1: Tauri 2, a thin view over workd-client (2026-10-07)
+
+`apps/desktop`: Tauri 2 + React/TypeScript. The Rust side uses `workd-client`
+(which now owns the `hosts.toml` registry, so the app sees exactly the hosts
+`workctl` does), `workd-protocol` and `workd-core`; it never shells out to
+`workctl`. It is its own cargo workspace so Tauri's dependency tree stays out
+of `cargo build/test` for the daemon and CLI.
+
+- **State:** one task per host: `state.snapshot` → `events.subscribe(after =
+  snapshot.seq)` → on each burst of events (150 ms coalescing) a fresh
+  snapshot. The whole host list goes to the webview as one `hosts` event. The
+  app keeps nothing of its own; a lost host shows its last known workspaces,
+  dimmed, and reconnects every 5 s (30 s for a protocol mismatch).
+- **Derived values come from core:** the backend flattens workspaces into a
+  view model with `activity`, session `status` and per-session attention
+  already computed by `workd-core`. TypeScript only groups, orders and words
+  them (mirroring `workctl ls`).
+- **Terminal (the spike):** xterm.js 6 with the WebGL renderer (DOM fallback).
+  Output crosses the Tauri boundary as raw bytes —
+  `Channel<InvokeResponseBody::Raw>`, an `ArrayBuffer` in JS — not JSON or
+  base64; input, resize and detach are commands. One `session.attach`
+  connection per visible terminal; switching sessions detaches and attaches
+  again, and tmux redraws the screen. Throughput under heavy output (e.g.
+  `yes | head -n 200000`) is not measured yet.
+- **Notifications:** diffed in the webview from attention ids — the first
+  snapshot per host is the baseline, later new needs-you or failure items
+  notify once, unless that workspace is on screen with the window focused.
+  Replays after sleep therefore notify for what was missed. The notification
+  plugin reports no clicks on desktop, so activating the app within two
+  minutes of a notification jumps to its workspace and session.
+- **Scope held:** no workspace creation, settings, Git/file UI, layouts or
+  multiple simultaneous terminals. Actions are the thin RPCs the design shows:
+  Mark handled (`attention.resolve`) and Restart (`session.restart`).
+
+Not done: Linux build dependencies (WebKitGTK) in the flake; notification
+delivery verified only up to the permission prompt under `tauri dev`.

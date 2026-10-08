@@ -1,6 +1,8 @@
 [workspace]
 resolver = "3"
 members = ["crates/core", "crates/protocol", "crates/client", "crates/daemon", "crates/cli"]
+# Built on its own (see its Cargo.toml).
+exclude = ["apps/desktop/src-tauri"]
 
 [workspace.package]
 version = "0.1.0"

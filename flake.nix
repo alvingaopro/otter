@@ -23,6 +23,9 @@
             rustfmt
             rust-analyzer
 
+            # Desktop app (apps/desktop): Vite + Tauri CLI via npm
+            nodejs_22
+
             # Runtime deps of workd and its end-to-end tests
             tmux
             git
