@@ -47,6 +47,7 @@ code, .mono { font-family: var(--mono); }
 .brand { display: flex; align-items: center; gap: 10px; }
 .brand-name { font-weight: 600; letter-spacing: 0.2px; }
 .brand-sub { color: var(--faint); font-size: 13px; }
+.app-version { color: var(--faint); font-size: 12px; font-family: var(--mono); }
 
 .body { flex: 1; min-height: 0; display: flex; }
 
@@ -86,6 +87,7 @@ code, .mono { font-family: var(--mono); }
 .host-dot.incompatible { border-color: var(--failed); }
 .host-name { font-family: var(--mono); }
 .host-state { color: var(--faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.host-version { margin-left: auto; flex: none; color: var(--needs-text); font-family: var(--mono); font-size: 11.5px; }
 
 /* Workspace pane */
 .pane { flex: 1; min-width: 0; display: flex; flex-direction: column; background: var(--panel); padding-bottom: 16px; }

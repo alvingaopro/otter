@@ -402,3 +402,24 @@ of `cargo build/test` for the daemon and CLI.
 
 Not done: Linux build dependencies (WebKitGTK) in the flake; notification
 delivery verified only up to the permission prompt under `tauri dev`.
+
+## D-019 — One version, released on every merge (2026-10-07)
+
+- **One product version** for workd, workctl, the crates and the desktop app
+  (the workspace `Cargo.toml`, the desktop `Cargo.toml` and `package.json`;
+  Tauri reads the crate's). `scripts/version.py` reads, bumps and writes it,
+  including the lockfiles' local entries so `--locked` builds hold. The app
+  shows its version in the title bar, and a host's `workd` version in the
+  hosts list when it differs.
+- **CI** (`ci.yml`, on pull requests): fmt, clippy `-D warnings` and the full
+  test suite on Linux (with tmux); the desktop UI build and clippy on macOS.
+- **Release** (`release.yml`, on every push to `main`): bump (patch, or the
+  merged PR's `release:minor` / `release:major` label; `release:skip` skips),
+  commit `Release vX.Y.Z` and tag it, then build from the tag — the universal
+  macOS app (`.dmg` and `.app.tar.gz`) and `workd`/`workctl` for linux-x86_64
+  and macos-arm64 — and publish the GitHub release once every artifact is
+  attached (a draft until then). The bump is pushed with `GITHUB_TOKEN`, which
+  starts no workflows, so it cannot loop; it requires `main` to accept pushes
+  from Actions.
+- Not yet: code signing and notarization (the app is unsigned; README says how
+  to open it), auto-update inside the app, and Linux desktop builds.

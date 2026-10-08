@@ -52,6 +52,8 @@ export interface HostView {
   name: string;
   status: HostStatus;
   message?: string;
+  /** The host's workd version, once connected. */
+  version?: string;
   workspaces: WorkspaceView[];
 }
 

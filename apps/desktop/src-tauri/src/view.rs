@@ -27,6 +27,9 @@ pub struct HostView {
     pub status: HostStatus,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub message: Option<String>,
+    /// The host's workd version, once connected.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
     pub workspaces: Vec<WorkspaceView>,
 }
 

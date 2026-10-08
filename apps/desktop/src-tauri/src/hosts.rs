@@ -92,6 +92,7 @@ pub fn start(app: &AppHandle) {
                         name: host.name.clone(),
                         status: HostStatus::Connecting,
                         message: None,
+                        version: None,
                         workspaces: Vec::new(),
                     });
                 }
@@ -148,6 +149,9 @@ enum Never {}
 
 async fn follow(app: &AppHandle, name: &str, transport: &Transport) -> Result<Never, ClientError> {
     let mut rpc = Connection::connect(transport).await?;
+    let version = rpc.server_version.clone();
+    app.state::<Hosts>()
+        .update(name, |v| v.version = Some(version));
     let snapshot = rpc.snapshot().await?;
     show(app, name, &snapshot.workspaces);
 

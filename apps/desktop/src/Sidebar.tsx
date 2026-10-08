@@ -8,6 +8,8 @@ interface Props {
   selected?: string;
   onSelect: (key: string) => void;
   now: number;
+  /** This app's version, to point out hosts running a different workd. */
+  appVersion?: string;
 }
 
 const HOST_STATE: Record<HostView["status"], string> = {
@@ -17,7 +19,7 @@ const HOST_STATE: Record<HostView["status"], string> = {
   incompatible: "incompatible workd",
 };
 
-export function Sidebar({ placed, hosts, selected, onSelect, now }: Props) {
+export function Sidebar({ placed, hosts, selected, onSelect, now, appVersion }: Props) {
   return (
     <nav className="sidebar" aria-label="Workspaces">
       <div className="sidebar-groups">
@@ -59,10 +61,17 @@ export function Sidebar({ placed, hosts, selected, onSelect, now }: Props) {
       <footer className="hosts">
         <h2 className="group-label">HOSTS</h2>
         {hosts.map((h) => (
-          <div key={h.name} className="host-row" title={h.message}>
+          <div
+            key={h.name}
+            className="host-row"
+            title={[h.version && `workd ${h.version}`, h.message].filter(Boolean).join(" — ") || undefined}
+          >
             <span className={`host-dot ${h.status}`} />
             <span className="host-name">{h.name}</span>
             <span className="host-state">{HOST_STATE[h.status]}</span>
+            {h.version && appVersion && h.version !== appVersion && (
+              <span className="host-version">workd {h.version}</span>
+            )}
           </div>
         ))}
       </footer>

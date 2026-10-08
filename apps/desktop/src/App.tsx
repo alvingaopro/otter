@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { getVersion } from "@tauri-apps/api/app";
 import { isPermissionGranted, requestPermission, sendNotification } from "@tauri-apps/plugin-notification";
 import { Sidebar } from "./Sidebar";
 import { WorkspacePane } from "./WorkspacePane";
@@ -23,6 +24,7 @@ export default function App() {
   const [selected, setSelected] = useState<string | undefined>();
   const [sessions, setSessions] = useState<Record<string, string>>({});
   const [now, setNow] = useState(Date.now());
+  const [version, setVersion] = useState<string | undefined>();
 
   const focused = useRef(document.hasFocus());
   const selectedRef = useRef(selected);
@@ -33,6 +35,7 @@ export default function App() {
 
   useEffect(() => {
     void invoke<HostsPayload>("hosts_get").then(setPayload);
+    void getVersion().then(setVersion);
     const unlisten = listen<HostsPayload>("hosts", (e) => setPayload(e.payload));
     const tick = setInterval(() => setNow(Date.now()), 15_000);
     void (async () => {
@@ -117,10 +120,18 @@ export default function App() {
             </span>
           )}
         </div>
+        {version && <span className="app-version">v{version}</span>}
       </header>
       <div className="body">
         {payload && (
-          <Sidebar placed={placed} hosts={payload.hosts} selected={selected} onSelect={setSelected} now={now} />
+          <Sidebar
+            placed={placed}
+            hosts={payload.hosts}
+            selected={selected}
+            onSelect={setSelected}
+            now={now}
+            appVersion={version}
+          />
         )}
         {!payload ? (
           <main className="pane empty">Loading…</main>
