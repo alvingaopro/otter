@@ -59,13 +59,20 @@ impl Logins {
     }
 
     /// Stop serving and remove the callback mappings still in place.
-    pub async fn stop(self) {
+    pub async fn stop(mut self) {
         self.task.abort();
-        let _ = self.task.await;
+        let _ = (&mut self.task).await;
         let left = std::mem::take(&mut *self.callbacks.lock().unwrap());
         for (mapping, _) in left {
             let _ = forward::cancel(&self.transport, &mapping).await;
         }
+    }
+}
+
+impl Drop for Logins {
+    /// Dropped without [`Logins::stop`] (an early error): stop serving at least.
+    fn drop(&mut self) {
+        self.task.abort();
     }
 }
 
