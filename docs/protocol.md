@@ -2,7 +2,8 @@
 
 The contract between `otterd` and its clients (the `otter` CLI and the
 desktop app). Types live in `crates/protocol`; this document is the prose. Decisions:
-D-004 (shape), D-016 (cursors, snapshot, compatibility).
+D-004 (shape), D-016 (cursors, snapshot, compatibility), D-037 (bounded
+log, log id).
 
 ## Connection
 
@@ -92,7 +93,7 @@ it closes the connection instead (the client's next subscribe gets
 closing the connection ends the subscription.
 
 Replay reads only the log segments from the cursor on, and recent cursors
-(the last ~2000 events) are served from memory.
+(up to the last ~2000 events) are served from memory.
 
 **Cursor errors.** If `after` cannot be served, the request fails with
 `cursor_expired`, after which the server closes the connection (open a new

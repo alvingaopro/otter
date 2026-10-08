@@ -363,17 +363,8 @@ fn events_follow_resyncs_when_the_hosts_log_starts_over() {
     let run = home.dir.path().join("run");
     let pid = std::fs::read_to_string(run.join("workd.pid")).unwrap();
     Command::new("kill").arg(pid.trim()).status().unwrap();
-    let deadline = Instant::now() + Duration::from_secs(15);
-    while Command::new("kill")
-        .args(["-0", pid.trim()])
-        .stderr(Stdio::null())
-        .status()
-        .unwrap()
-        .success()
-    {
-        assert!(Instant::now() < deadline, "daemon didn't exit");
-        std::thread::sleep(Duration::from_millis(100));
-    }
+    // Remove the log before the daemon is gone, so a daemon that the
+    // follower's reconnect autostarts can only find an empty one.
     for entry in std::fs::read_dir(home.dir.path().join("state")).unwrap() {
         let path = entry.unwrap().path();
         if path
@@ -384,6 +375,17 @@ fn events_follow_resyncs_when_the_hosts_log_starts_over() {
         {
             std::fs::remove_file(path).unwrap();
         }
+    }
+    let deadline = Instant::now() + Duration::from_secs(15);
+    while Command::new("kill")
+        .args(["-0", pid.trim()])
+        .stderr(Stdio::null())
+        .status()
+        .unwrap()
+        .success()
+    {
+        assert!(Instant::now() < deadline, "daemon didn't exit");
+        std::thread::sleep(Duration::from_millis(100));
     }
     cli.ok(&["new", "third", "--no-agent"]);
 
