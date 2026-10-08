@@ -18,14 +18,31 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       # End-to-end tests drive a real tmux; the direnv test runs when direnv is present.
-      - run: sudo apt-get update && sudo apt-get install -y tmux direnv
+      - run: sudo apt-get update && sudo apt-get install -y tmux direnv openssh-server
+      # Passwordless `ssh localhost` for the CLI's SSH transport test.
+      - name: Enable ssh localhost
+        run: |
+          sudo systemctl start ssh || sudo service ssh start
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh && chmod go-w ~
+          ssh-keygen -q -t ed25519 -N '' -f ~/.ssh/id_ed25519
+          cat ~/.ssh/id_ed25519.pub >> ~/.ssh/authorized_keys
+          chmod 600 ~/.ssh/authorized_keys
+          ssh-keyscan -H localhost >> ~/.ssh/known_hosts 2>/dev/null
+          ssh -o BatchMode=yes localhost true
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy, rustfmt
       - uses: Swatinem/rust-cache@v2
       - run: cargo fmt --all --check
       - run: cargo clippy --all-targets --locked -- -D warnings
+      # A skipped SSH test is a failure here.
       - run: cargo test --locked
+        env:
+          OTTER_E2E_REQUIRE_SSH: "1"
+      # Show the SSH test's own output in the log.
+      - run: cargo test --locked -p otter --test e2e ssh_host_normal_flow -- --nocapture
+        env:
+          OTTER_E2E_REQUIRE_SSH: "1"
       - run: python3 scripts/version.py current
 
   desktop:
