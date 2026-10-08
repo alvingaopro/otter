@@ -5,6 +5,7 @@
 //! transport (design rule 4); the user's SSH config and agent are used as-is.
 
 pub mod config;
+pub mod install;
 
 use std::path::PathBuf;
 use std::process::Stdio;
@@ -59,42 +60,76 @@ impl Transport {
                 cmd
             }
             Transport::Ssh {
-                destination,
-                ssh_args,
-                workd_path,
-                home,
-                control_dir,
+                workd_path, home, ..
             } => {
-                let mut cmd = Command::new("ssh");
-                cmd.arg("-T");
-                if let Some(dir) = control_dir {
-                    cmd.arg("-o")
-                        .arg("ControlMaster=auto")
-                        .arg("-o")
-                        .arg(format!("ControlPath={}/%C", dir.display()))
-                        .arg("-o")
-                        .arg("ControlPersist=600");
-                }
-                cmd.args(ssh_args);
-                // Notice a dead network (laptop asleep, Wi-Fi gone) within
-                // ~45s instead of hanging until TCP gives up. After
-                // `ssh_args`, so explicit options there take precedence.
-                cmd.args([
-                    "-o",
-                    "ServerAliveInterval=15",
-                    "-o",
-                    "ServerAliveCountMax=3",
-                ]);
-                cmd.arg(destination);
                 let mut remote = workd_path.clone();
                 if let Some(home) = home {
                     remote.push_str(" --home ");
                     remote.push_str(&remote_path(home));
                 }
                 remote.push_str(" dial");
+                let mut cmd = self.ssh().expect("ssh transport");
                 cmd.arg(remote);
                 cmd
             }
+        }
+    }
+
+    /// `ssh … destination`, ready for a remote command; `None` for local.
+    fn ssh(&self) -> Option<Command> {
+        let Transport::Ssh {
+            destination,
+            ssh_args,
+            control_dir,
+            ..
+        } = self
+        else {
+            return None;
+        };
+        let mut cmd = Command::new("ssh");
+        cmd.arg("-T");
+        if let Some(dir) = control_dir {
+            cmd.arg("-o")
+                .arg("ControlMaster=auto")
+                .arg("-o")
+                .arg(format!("ControlPath={}/%C", dir.display()))
+                .arg("-o")
+                .arg("ControlPersist=600");
+        }
+        cmd.args(ssh_args);
+        // Notice a dead network (laptop asleep, Wi-Fi gone) within ~45s
+        // instead of hanging until TCP gives up. After `ssh_args`, so explicit
+        // options there take precedence.
+        cmd.args([
+            "-o",
+            "ServerAliveInterval=15",
+            "-o",
+            "ServerAliveCountMax=3",
+        ]);
+        cmd.arg(destination);
+        Some(cmd)
+    }
+
+    /// A POSIX shell on the host reading a script from stdin.
+    pub(crate) fn shell(&self) -> Command {
+        match self.ssh() {
+            Some(mut cmd) => {
+                cmd.arg("sh -s");
+                cmd
+            }
+            None => {
+                let mut cmd = Command::new("/bin/sh");
+                cmd.arg("-s");
+                cmd
+            }
+        }
+    }
+
+    /// The daemon state directory on the host, as configured (`None`: the
+    /// default `~/.workd`).
+    pub fn home(&self) -> Option<&str> {
+        match self {
+            Transport::Local { home, .. } | Transport::Ssh { home, .. } => home.as_deref(),
         }
     }
 
@@ -121,6 +156,8 @@ pub enum ClientError {
     Closed(String),
     #[error("protocol error: {0}")]
     Protocol(String),
+    #[error("installing workd failed: {0}")]
+    Install(String),
     #[error(transparent)]
     Io(#[from] std::io::Error),
 }

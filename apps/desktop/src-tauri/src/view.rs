@@ -18,12 +18,16 @@ pub enum HostStatus {
     Unreachable,
     /// The host's workd speaks another protocol version.
     Incompatible,
+    /// workd isn't installed where the host entry says.
+    NotInstalled,
 }
 
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HostView {
     pub name: String,
+    /// How it is reached: `ssh dev-01`, `this Mac`.
+    pub describe: String,
     pub status: HostStatus,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub message: Option<String>,

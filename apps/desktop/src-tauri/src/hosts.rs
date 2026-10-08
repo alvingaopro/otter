@@ -2,16 +2,22 @@
 //! the event stream from that snapshot's cursor, and re-snapshot whenever
 //! events arrive (coalesced). The UI gets the whole host list on every change.
 //!
+//! The host list is `hosts.toml`, shared with `workctl`. The app reconciles
+//! its tasks against the file at startup, whenever the file changes (so
+//! `workctl host add` shows up live) and after it edits the file itself.
+//!
 //! The desktop holds no state of its own: everything shown comes from the
 //! hosts, and a lost connection just means "reconnect and snapshot again".
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::Mutex;
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 use serde::Serialize;
+use tauri::async_runtime::JoinHandle;
 use tauri::{AppHandle, Emitter, Manager};
-use workd_client::config::Config;
+use workd_client::config::{Config, HostEntry, HostTransport};
 use workd_client::{ClientError, Connection, Transport};
 
 use crate::view::{HostStatus, HostView, WorkspaceView};
@@ -20,6 +26,8 @@ use crate::view::{HostStatus, HostView, WorkspaceView};
 const COALESCE: Duration = Duration::from_millis(150);
 const RETRY_UNREACHABLE: Duration = Duration::from_secs(5);
 const RETRY_INCOMPATIBLE: Duration = Duration::from_secs(30);
+/// How often to look for edits to `hosts.toml`.
+const CONFIG_POLL: Duration = Duration::from_secs(2);
 
 #[derive(Default)]
 pub struct Hosts {
@@ -30,9 +38,16 @@ pub struct Hosts {
 struct Inner {
     /// In `hosts.toml` order.
     views: Vec<HostView>,
-    transports: HashMap<String, Transport>,
+    running: HashMap<String, Running>,
     config_error: Option<String>,
     config_dir: String,
+    config_mtime: Option<SystemTime>,
+}
+
+struct Running {
+    entry: HostEntry,
+    transport: Transport,
+    task: JoinHandle<()>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -58,9 +73,9 @@ impl Hosts {
         self.inner
             .lock()
             .unwrap()
-            .transports
+            .running
             .get(host)
-            .cloned()
+            .map(|r| r.transport.clone())
             .ok_or_else(|| format!("unknown host `{host}`"))
     }
 
@@ -72,45 +87,125 @@ impl Hosts {
     }
 }
 
-/// Load `hosts.toml` (the one `workctl` uses) and start following every host.
+fn config_dir() -> anyhow::Result<PathBuf> {
+    Config::dir_from_env()
+}
+
+fn load_config() -> anyhow::Result<Config> {
+    Config::load(&config_dir()?)
+}
+
+fn config_mtime() -> Option<SystemTime> {
+    let path = config_dir().ok()?.join("hosts.toml");
+    std::fs::metadata(path).and_then(|m| m.modified()).ok()
+}
+
+/// Start following the configured hosts, and keep following `hosts.toml`.
 pub fn start(app: &AppHandle) {
-    let hosts = app.state::<Hosts>();
-    let loaded = Config::dir_from_env().and_then(|dir| {
-        let config = Config::load(&dir)?;
-        Ok((dir, config))
+    reconcile(app);
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        loop {
+            tokio::time::sleep(CONFIG_POLL).await;
+            let mtime = config_mtime();
+            if mtime != app.state::<Hosts>().inner.lock().unwrap().config_mtime {
+                reconcile(&app);
+            }
+        }
     });
+}
+
+/// Make the running host tasks match `hosts.toml`: start new hosts, stop
+/// removed ones, restart changed ones.
+fn reconcile(app: &AppHandle) {
+    let hosts = app.state::<Hosts>();
+    let loaded = load_config();
     {
         let mut inner = hosts.inner.lock().unwrap();
+        inner.config_mtime = config_mtime();
+        inner.config_dir = config_dir()
+            .map(|d| d.display().to_string())
+            .unwrap_or_default();
         match loaded {
-            Ok((dir, config)) => {
-                inner.config_dir = dir.display().to_string();
-                for host in &config.hosts {
-                    inner
-                        .transports
-                        .insert(host.name.clone(), config.transport(host));
-                    inner.views.push(HostView {
-                        name: host.name.clone(),
-                        status: HostStatus::Connecting,
-                        message: None,
-                        version: None,
-                        workspaces: Vec::new(),
-                    });
-                }
-            }
             Err(e) => inner.config_error = Some(format!("{e:#}")),
+            Ok(config) => {
+                inner.config_error = None;
+                let mut views = Vec::new();
+                for entry in &config.hosts {
+                    let same = inner
+                        .running
+                        .get(&entry.name)
+                        .is_some_and(|r| r.entry == *entry);
+                    if !same {
+                        if let Some(old) = inner.running.remove(&entry.name) {
+                            old.task.abort();
+                        }
+                        let transport = config.transport(entry);
+                        let task = tauri::async_runtime::spawn(follow_host(
+                            app.clone(),
+                            entry.name.clone(),
+                            transport.clone(),
+                        ));
+                        inner.running.insert(
+                            entry.name.clone(),
+                            Running {
+                                entry: entry.clone(),
+                                transport,
+                                task,
+                            },
+                        );
+                    }
+                    let view = inner
+                        .views
+                        .iter()
+                        .find(|v| v.name == entry.name && same)
+                        .cloned()
+                        .unwrap_or_else(|| HostView {
+                            name: entry.name.clone(),
+                            describe: describe(entry),
+                            status: HostStatus::Connecting,
+                            message: None,
+                            version: None,
+                            workspaces: Vec::new(),
+                        });
+                    views.push(view);
+                }
+                let keep: Vec<String> = config.hosts.iter().map(|h| h.name.clone()).collect();
+                inner.running.retain(|name, r| {
+                    let k = keep.contains(name);
+                    if !k {
+                        r.task.abort();
+                    }
+                    k
+                });
+                inner.views = views;
+            }
         }
     }
-    let names: Vec<(String, Transport)> = {
-        let inner = hosts.inner.lock().unwrap();
-        inner
-            .views
-            .iter()
-            .map(|v| (v.name.clone(), inner.transports[&v.name].clone()))
-            .collect()
-    };
-    for (name, transport) in names {
-        tauri::async_runtime::spawn(follow_host(app.clone(), name, transport));
+    publish(app);
+}
+
+fn describe(entry: &HostEntry) -> String {
+    match &entry.transport {
+        HostTransport::Ssh { destination, .. } => format!("ssh {destination}"),
+        HostTransport::Local { .. } => "this Mac".to_owned(),
     }
+}
+
+/// Restart one host's task now (e.g. after installing workd on it).
+fn restart(app: &AppHandle, name: &str) {
+    {
+        let hosts = app.state::<Hosts>();
+        let mut inner = hosts.inner.lock().unwrap();
+        if let Some(r) = inner.running.remove(name) {
+            r.task.abort();
+        }
+        if let Some(v) = inner.views.iter_mut().find(|v| v.name == name) {
+            v.status = HostStatus::Connecting;
+            v.message = None;
+        }
+    }
+    reconcile(app);
 }
 
 fn publish(app: &AppHandle) {
@@ -123,6 +218,7 @@ async fn follow_host(app: AppHandle, name: String, transport: Transport) {
         let err = follow_once(&app, &name, &transport).await;
         let (status, retry) = match &err {
             ClientError::ProtocolMismatch { .. } => (HostStatus::Incompatible, RETRY_INCOMPATIBLE),
+            ClientError::NotInstalled { .. } => (HostStatus::NotInstalled, RETRY_INCOMPATIBLE),
             _ => (HostStatus::Unreachable, RETRY_UNREACHABLE),
         };
         app.state::<Hosts>().update(&name, |v| {
@@ -251,5 +347,147 @@ pub async fn session_restart(
         .session_restart(&workspace, &session)
         .await
         .map(|_| ())
+        .map_err(|e| e.to_string())
+}
+
+// ---------------------------------------------------------------------------
+// Managing hosts (the same `hosts.toml` edits as `workctl host add/rm`)
+// ---------------------------------------------------------------------------
+
+fn app_version(app: &AppHandle) -> String {
+    app.package_info().version.to_string()
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AddOutcome {
+    added: bool,
+    /// workd is missing or too old there; adding with `install` fixes that.
+    needs_install: bool,
+    message: String,
+}
+
+/// Register a host. `destination` (anything `ssh` accepts) makes it remote;
+/// without one it is this Mac. Unless `force`, the host must answer first;
+/// with `install`, workd is installed (or updated) on it before that.
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+pub async fn host_add(
+    app: AppHandle,
+    name: String,
+    destination: Option<String>,
+    workd_path: Option<String>,
+    home: Option<String>,
+    install: bool,
+    force: bool,
+) -> Result<AddOutcome, String> {
+    let name = name.trim().to_owned();
+    let nonempty = |s: Option<String>| s.map(|s| s.trim().to_owned()).filter(|s| !s.is_empty());
+    let (destination, workd_path, home) =
+        (nonempty(destination), nonempty(workd_path), nonempty(home));
+    let mut config = load_config().map_err(|e| format!("{e:#}"))?;
+    let transport = match destination {
+        Some(destination) => HostTransport::Ssh {
+            destination,
+            ssh_args: Vec::new(),
+            workd_path: workd_path
+                .unwrap_or_else(|| workd_client::config::DEFAULT_REMOTE_WORKD.to_owned()),
+            home,
+        },
+        // A Finder-launched app has no useful PATH: point at where installs go.
+        None => HostTransport::Local {
+            workd_path: Some(workd_path.unwrap_or_else(|| {
+                let home = std::env::var("HOME").unwrap_or_default();
+                format!("{home}/.local/bin/workd")
+            })),
+            home,
+        },
+    };
+    let entry = HostEntry {
+        name: name.clone(),
+        transport,
+    };
+    // Validate before touching the host.
+    {
+        let mut probe = Config::default();
+        probe.add_host(entry.clone()).map_err(|e| e.to_string())?;
+        if config.hosts.iter().any(|h| h.name == name) {
+            return Err(format!("host `{name}` is already registered"));
+        }
+    }
+    let transport = config.transport(&entry);
+    let mut message = String::new();
+    if install {
+        message = workd_client::install::install(&transport, &app_version(&app), true)
+            .await
+            .map_err(|e| e.to_string())?;
+    }
+    if !force {
+        let checked = async {
+            let mut conn = Connection::connect(&transport).await?;
+            conn.host_status().await
+        }
+        .await;
+        match checked {
+            Ok(status) => {
+                if !message.is_empty() {
+                    message.push('\n');
+                }
+                message.push_str(&format!(
+                    "workd {} on {} ({}/{})",
+                    status.workd_version, status.hostname, status.os, status.arch
+                ));
+            }
+            Err(e @ (ClientError::NotInstalled { .. } | ClientError::ProtocolMismatch { .. })) => {
+                return Ok(AddOutcome {
+                    added: false,
+                    needs_install: true,
+                    message: e.to_string(),
+                });
+            }
+            Err(e) => return Err(e.to_string()),
+        }
+    }
+    config.add_host(entry).map_err(|e| e.to_string())?;
+    config.save().map_err(|e| format!("{e:#}"))?;
+    reconcile(&app);
+    Ok(AddOutcome {
+        added: true,
+        needs_install: false,
+        message,
+    })
+}
+
+/// Forget a host. Nothing on it is touched; its sessions keep running.
+#[tauri::command]
+pub fn host_remove(app: AppHandle, name: String) -> Result<(), String> {
+    let mut config = load_config().map_err(|e| format!("{e:#}"))?;
+    config.remove_host(&name).map_err(|e| e.to_string())?;
+    config.save().map_err(|e| format!("{e:#}"))?;
+    reconcile(&app);
+    Ok(())
+}
+
+/// Install or update workd on a registered host to this app's version, and
+/// restart its daemon (sessions keep running).
+#[tauri::command]
+pub async fn host_install(app: AppHandle, name: String) -> Result<String, String> {
+    let transport = app.state::<Hosts>().transport(&name)?;
+    let out = workd_client::install::install(&transport, &app_version(&app), true)
+        .await
+        .map_err(|e| e.to_string())?;
+    restart(&app, &name);
+    Ok(out)
+}
+
+/// Install `workctl` and `workd` for this user on this Mac (`~/.local/bin`).
+#[tauri::command]
+pub async fn install_cli(app: AppHandle) -> Result<String, String> {
+    let here = Transport::Local {
+        workd_path: String::new(),
+        home: None,
+    };
+    workd_client::install::install(&here, &app_version(&app), false)
+        .await
         .map_err(|e| e.to_string())
 }

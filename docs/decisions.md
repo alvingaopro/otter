@@ -423,3 +423,31 @@ delivery verified only up to the permission prompt under `tauri dev`.
   from Actions.
 - Not yet: code signing and notarization (the app is unsigned; README says how
   to open it), auto-update inside the app, and Linux desktop builds.
+
+## D-020 — Onboarding: hosts and installs from the app (2026-10-08)
+
+Dogfooding v0.1.1: a fresh install of the app showed "No hosts yet" and
+pointed at a `workctl` nobody had installed. Fixed by making the app enough on
+its own:
+
+- **Hosts are managed in the app** — Add a host (name, SSH destination or
+  this Mac, advanced: workd path and state directory), and per host: status,
+  version, install/update workd, remove. `hosts.toml` stays the one source of
+  truth, shared with `workctl` through `workd_client::config` (`add_host`,
+  `remove_host`); the app reconciles its host tasks against the file at
+  startup, after its own edits and whenever the file changes, so
+  `workctl host add/rm` show up live.
+- **Installing workd from a release** (`workd_client::install`): a POSIX
+  script fed to `sh -s` on the host — over the same SSH options as `workd
+  dial`, or locally — picks the build for `uname -sm`, downloads it with curl
+  or wget and installs `workd` and `workctl` into `~/.local/bin` (the default
+  `workd_path`). For an update it then stops the running daemon by its pid
+  file (checked to be a `workd … serve`); sessions keep running and the next
+  connection starts the new version. Used by Add host (when the check finds
+  workd missing or on another protocol), the host dialog, and `workctl host
+  install`. Releases now ship linux-x86_64, linux-aarch64 and macos-universal
+  binaries, the names the script asks for.
+- **Command-line tools** from the app menu (and the first-run screen): the
+  same install, locally, without touching a running daemon.
+- A host added as "this Mac" points at `~/.local/bin/workd` explicitly: an app
+  started from Finder has no useful `PATH`.

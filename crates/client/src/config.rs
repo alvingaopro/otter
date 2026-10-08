@@ -105,6 +105,29 @@ impl Config {
         Ok(())
     }
 
+    /// Register a host (name rules and uniqueness checked); call `save` after.
+    pub fn add_host(&mut self, entry: HostEntry) -> Result<()> {
+        workd_core::validate_name("host", &entry.name).map_err(anyhow::Error::msg)?;
+        if self.hosts.iter().any(|h| h.name == entry.name) {
+            bail!("host `{}` is already registered", entry.name);
+        }
+        self.hosts.push(entry);
+        Ok(())
+    }
+
+    /// Forget a host (nothing on it is touched); call `save` after.
+    pub fn remove_host(&mut self, name: &str) -> Result<HostEntry> {
+        let idx = self
+            .hosts
+            .iter()
+            .position(|h| h.name == name)
+            .with_context(|| format!("no host `{name}`"))?;
+        if self.default_host.as_deref() == Some(name) {
+            self.default_host = None;
+        }
+        Ok(self.hosts.remove(idx))
+    }
+
     pub fn host(&self, name: &str) -> Result<&HostEntry> {
         self.hosts.iter().find(|h| h.name == name).with_context(|| {
             format!(

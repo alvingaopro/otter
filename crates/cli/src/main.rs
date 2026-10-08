@@ -141,6 +141,9 @@ enum HostCommand {
     Default { name: String },
     /// Show daemon status and capabilities.
     Status { name: Option<String> },
+    /// Install (or update) workd and workctl on a host from the release
+    /// matching this workctl, then restart its daemon. Sessions keep running.
+    Install { name: String },
     /// Stop the daemon on a host. Sessions keep running; the next command
     /// starts it again.
     Shutdown { name: String },
@@ -349,10 +352,6 @@ async fn host_command(config: &mut Config, cmd: HostCommand, json: bool) -> Resu
             default,
             no_check,
         } => {
-            workd_core::validate_name("host", &name).map_err(anyhow::Error::msg)?;
-            if config.hosts.iter().any(|h| h.name == name) {
-                bail!("host `{name}` is already registered");
-            }
             let transport = if local {
                 HostTransport::Local { workd_path, home }
             } else {
@@ -377,7 +376,7 @@ async fn host_command(config: &mut Config, cmd: HostCommand, json: bool) -> Resu
                     status.workd_version, status.hostname, status.os, status.arch
                 );
             }
-            config.hosts.push(entry);
+            config.add_host(entry)?;
             if default {
                 config.default_host = Some(name.clone());
             }
@@ -405,13 +404,18 @@ async fn host_command(config: &mut Config, cmd: HostCommand, json: bool) -> Resu
             Ok(())
         }
         HostCommand::Remove { name } => {
-            config.host(&name)?;
-            config.hosts.retain(|h| h.name != name);
-            if config.default_host.as_deref() == Some(&name) {
-                config.default_host = None;
-            }
+            config.remove_host(&name)?;
             config.save()?;
             println!("removed host {name}");
+            Ok(())
+        }
+        HostCommand::Install { name } => {
+            let host = config.host(&name)?.clone();
+            let version = env!("CARGO_PKG_VERSION");
+            println!("installing workd {version} on {name}…");
+            let out =
+                workd_client::install::install(&config.transport(&host), version, true).await?;
+            println!("{out}");
             Ok(())
         }
         HostCommand::Default { name } => {
