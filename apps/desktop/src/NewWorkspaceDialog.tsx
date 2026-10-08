@@ -146,7 +146,7 @@ export function NewWorkspaceDialog({
                 <input
                   value={branch}
                   onChange={(e) => setBranch(e.target.value)}
-                  placeholder={name ? `workd/${name}` : "existing, or a new one"}
+                  placeholder={name ? `otterd/${name}` : "existing, or a new one"}
                   spellCheck={false}
                 />
               </label>

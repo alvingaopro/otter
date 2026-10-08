@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { Dialog } from "./Dialog";
 
-/** Install `workctl` (and `workd`) for this user, matching this app's version. */
+/** Install `otter` (and `otterd`) for this user, matching this app's version. */
 export function CliDialog({ version, onClose }: { version?: string; onClose: () => void }) {
   const [state, setState] = useState<{ busy: boolean; output?: string; error?: string }>({ busy: false });
 
@@ -26,7 +26,7 @@ export function CliDialog({ version, onClose }: { version?: string; onClose: () 
   return (
     <Dialog title="Command line tools" onClose={onClose}>
       <p className="muted">
-        Installs <code>workctl</code> and <code>workd</code> {version} into <code>~/.local/bin</code>.
+        Installs <code>otter</code> and <code>otterd</code> {version} into <code>~/.local/bin</code>.
       </p>
       {state.busy && <div className="notice">Downloading…</div>}
       {state.output && <pre className="output">{state.output}</pre>}

@@ -1,4 +1,4 @@
-//! `workd` — the Workd host daemon (docs/design.md §24).
+//! `otterd` — the Otter host daemon (docs/design.md §24).
 
 mod agents;
 mod attach;
@@ -25,8 +25,8 @@ use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
+use otter_protocol::Event;
 use tokio::net::UnixListener;
-use workd_protocol::Event;
 
 use crate::backend::tmux::TmuxBackend;
 use crate::daemon::Daemon;
@@ -35,10 +35,10 @@ use crate::paths::Paths;
 use crate::store::Store;
 
 #[derive(Parser)]
-#[command(name = "workd", version, about = "Workd host daemon")]
+#[command(name = "otterd", version, about = "Otter host daemon")]
 struct Cli {
-    /// State directory (default: ~/.workd).
-    #[arg(long, global = true, env = "WORKD_HOME")]
+    /// State directory (default: ~/.otter).
+    #[arg(long, global = true, env = "OTTER_HOME")]
     home: Option<PathBuf>,
     #[command(subcommand)]
     command: Command,
@@ -76,7 +76,7 @@ fn main() -> Result<()> {
         _ => {}
     }
     if let Command::Version = cli.command {
-        println!("workd {}", env!("CARGO_PKG_VERSION"));
+        println!("otterd {}", env!("CARGO_PKG_VERSION"));
         return Ok(());
     }
     let paths = Paths::resolve(cli.home)?;
@@ -98,7 +98,7 @@ fn main() -> Result<()> {
 }
 
 fn init_logging() {
-    let filter = tracing_subscriber::EnvFilter::try_from_env("WORKD_LOG")
+    let filter = tracing_subscriber::EnvFilter::try_from_env("OTTER_LOG")
         .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
     tracing_subscriber::fmt()
         .with_env_filter(filter)
@@ -111,13 +111,13 @@ async fn serve(paths: Paths) -> Result<()> {
     paths.ensure_dirs()?;
     let Some(_lock) = acquire_lock(&paths).await? else {
         tracing::info!(
-            "another workd is already running for {}",
+            "another otterd is already running for {}",
             paths.home.display()
         );
         return Ok(());
     };
     std::fs::write(&paths.pid_file, format!("{}\n", std::process::id()))?;
-    tracing::info!(version = env!("CARGO_PKG_VERSION"), home = %paths.home.display(), "workd starting");
+    tracing::info!(version = env!("CARGO_PKG_VERSION"), home = %paths.home.display(), "otterd starting");
 
     let shell = env::user_shell();
     let resolved = env::resolve_login_env(&shell).await;
@@ -195,7 +195,7 @@ async fn serve(paths: Paths) -> Result<()> {
     poller.abort();
     let _ = std::fs::remove_file(&paths.socket);
     let _ = std::fs::remove_file(&paths.pid_file);
-    tracing::info!("workd stopped");
+    tracing::info!("otterd stopped");
     result
 }
 

@@ -1,6 +1,6 @@
-//! Client for the Workd daemon.
+//! Client for the Otter daemon.
 //!
-//! A [`Connection`] runs `workd dial` — locally or as `ssh <host> workd dial` —
+//! A [`Connection`] runs `otterd dial` — locally or as `ssh <host> otterd dial` —
 //! and speaks the protocol over its stdin/stdout. SSH is the only remote
 //! transport (design rule 4); the user's SSH config and agent are used as-is.
 
@@ -12,35 +12,35 @@ use std::process::Stdio;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use serde::de::DeserializeOwned;
-use tokio::io::{AsyncReadExt, BufReader};
-use tokio::process::{Child, ChildStdin, ChildStdout, Command};
-use workd_core::{HostStatus, Session, Workspace};
-use workd_protocol::frame::{Frame, read_frame, write_frame};
-use workd_protocol::wire::{read_json, write_json};
-use workd_protocol::{
+use otter_core::{HostStatus, Session, Workspace};
+use otter_protocol::frame::{Frame, read_frame, write_frame};
+use otter_protocol::wire::{read_json, write_json};
+use otter_protocol::{
     AttachReady, AttentionResolve, ClientMessage, EventRecord, EventsList, EventsSubscribe,
     PROTOCOL_VERSION, Request, RpcError, ServerMessage, SessionAttach, SessionCreate,
     SessionOutput, SessionRead, SessionRef, SessionWrite, StateSnapshot, Subscribed,
     WorkspaceCreate, WorkspaceDelete, WorkspaceRef,
 };
+use serde::de::DeserializeOwned;
+use tokio::io::{AsyncReadExt, BufReader};
+use tokio::process::{Child, ChildStdin, ChildStdout, Command};
 
 /// How to reach a host's daemon.
 #[derive(Clone, Debug)]
 pub enum Transport {
-    /// Run `workd dial` on this machine.
+    /// Run `otterd dial` on this machine.
     Local {
-        workd_path: String,
+        otterd_path: String,
         home: Option<String>,
     },
-    /// Run `workd dial` on a remote host over SSH.
+    /// Run `otterd dial` on a remote host over SSH.
     Ssh {
         destination: String,
         /// Extra arguments for `ssh` (e.g. `-p 2222`, `-J jump`).
         ssh_args: Vec<String>,
-        /// Path of `workd` on the remote host. Interpreted by the remote shell,
+        /// Path of `otterd` on the remote host. Interpreted by the remote shell,
         /// so `~` works.
-        workd_path: String,
+        otterd_path: String,
         home: Option<String>,
         /// Where to keep SSH ControlMaster sockets; `None` disables
         /// multiplexing.
@@ -51,8 +51,8 @@ pub enum Transport {
 impl Transport {
     fn command(&self) -> Command {
         match self {
-            Transport::Local { workd_path, home } => {
-                let mut cmd = Command::new(workd_path);
+            Transport::Local { otterd_path, home } => {
+                let mut cmd = Command::new(otterd_path);
                 if let Some(home) = home {
                     cmd.arg("--home").arg(home);
                 }
@@ -60,9 +60,9 @@ impl Transport {
                 cmd
             }
             Transport::Ssh {
-                workd_path, home, ..
+                otterd_path, home, ..
             } => {
-                let mut remote = workd_path.clone();
+                let mut remote = otterd_path.clone();
                 if let Some(home) = home {
                     remote.push_str(" --home ");
                     remote.push_str(&remote_path(home));
@@ -126,16 +126,18 @@ impl Transport {
     }
 
     /// The daemon state directory on the host, as configured (`None`: the
-    /// default `~/.workd`).
+    /// default `~/.otter`).
     pub fn home(&self) -> Option<&str> {
         match self {
             Transport::Local { home, .. } | Transport::Ssh { home, .. } => home.as_deref(),
         }
     }
 
-    fn workd_path(&self) -> &str {
+    fn otterd_path(&self) -> &str {
         match self {
-            Transport::Local { workd_path, .. } | Transport::Ssh { workd_path, .. } => workd_path,
+            Transport::Local { otterd_path, .. } | Transport::Ssh { otterd_path, .. } => {
+                otterd_path
+            }
         }
     }
 }
@@ -144,19 +146,19 @@ impl Transport {
 pub enum ClientError {
     #[error(transparent)]
     Rpc(#[from] RpcError),
-    #[error("workd is not installed on the host (looked for `{path}`){detail}")]
+    #[error("otterd is not installed on the host (looked for `{path}`){detail}")]
     NotInstalled { path: String, detail: String },
-    #[error("could not connect to workd: {0}")]
+    #[error("could not connect to otterd: {0}")]
     Connect(String),
     #[error(
-        "workd speaks protocol v{server} but this client speaks v{client}; install matching versions"
+        "otterd speaks protocol v{server} but this client speaks v{client}; install matching versions"
     )]
     ProtocolMismatch { server: u32, client: u32 },
-    #[error("connection to workd closed{0}")]
+    #[error("connection to otterd closed{0}")]
     Closed(String),
     #[error("protocol error: {0}")]
     Protocol(String),
-    #[error("installing workd failed: {0}")]
+    #[error("installing otterd failed: {0}")]
     Install(String),
     #[error(transparent)]
     Io(#[from] std::io::Error),
@@ -183,9 +185,9 @@ impl Connection {
             .stderr(Stdio::piped())
             .kill_on_drop(true);
         let mut child = cmd.spawn().map_err(|e| match (transport, e.kind()) {
-            (Transport::Local { workd_path, .. }, std::io::ErrorKind::NotFound) => {
+            (Transport::Local { otterd_path, .. }, std::io::ErrorKind::NotFound) => {
                 ClientError::NotInstalled {
-                    path: workd_path.clone(),
+                    path: otterd_path.clone(),
                     detail: String::new(),
                 }
             }
@@ -236,7 +238,7 @@ impl Connection {
             ))),
             Ok(None) => Err(conn.startup_failure(transport).await),
             Err(e) => Err(ClientError::Protocol(format!(
-                "unexpected output from workd dial: {e}{}",
+                "unexpected output from otterd dial: {e}{}",
                 conn.stderr_suffix()
             ))),
         }
@@ -258,7 +260,7 @@ impl Connection {
             || stderr.ends_with("not found");
         if missing && !stderr.contains("Could not resolve hostname") {
             return ClientError::NotInstalled {
-                path: transport.workd_path().to_owned(),
+                path: transport.otterd_path().to_owned(),
                 detail: if stderr.is_empty() {
                     String::new()
                 } else {
@@ -268,7 +270,7 @@ impl Connection {
         }
         let what = match code {
             Some(255) if matches!(transport, Transport::Ssh { .. }) => "ssh failed",
-            _ => "workd dial exited",
+            _ => "otterd dial exited",
         };
         ClientError::Connect(if stderr.is_empty() {
             format!(
@@ -452,7 +454,7 @@ impl Connection {
 
     /// Turn this connection into a stream of events: those after `after` (if
     /// given), then live ones. A cursor the host can no longer serve fails with
-    /// [`ErrorCode::CursorExpired`](workd_protocol::ErrorCode::CursorExpired);
+    /// [`ErrorCode::CursorExpired`](otter_protocol::ErrorCode::CursorExpired);
     /// reload a snapshot then.
     pub async fn subscribe(mut self, after: Option<u64>) -> Result<EventStream> {
         let ready: Subscribed = self
@@ -523,7 +525,7 @@ fn session_ref(workspace: &str, session: &str) -> SessionRef {
 }
 
 /// Quote a path for the remote shell, leaving a leading `~/` unquoted so it
-/// expands to the remote home (as in `workd_path`).
+/// expands to the remote home (as in `otterd_path`).
 fn remote_path(path: &str) -> String {
     match path.strip_prefix("~/") {
         Some(rest) => format!("~/{}", sh_quote(rest)),
@@ -556,7 +558,7 @@ mod tests {
 
     #[test]
     fn remote_home_keeps_tilde_expandable() {
-        assert_eq!(remote_path("~/.workd-dev"), "~/.workd-dev");
+        assert_eq!(remote_path("~/.otter-dev"), "~/.otter-dev");
         assert_eq!(remote_path("~/my dir"), "~/'my dir'");
         assert_eq!(remote_path("/tmp/x y"), "'/tmp/x y'");
         assert_eq!(remote_path("~bob/x"), "'~bob/x'");
@@ -567,7 +569,7 @@ mod tests {
         let t = Transport::Ssh {
             destination: "dev-01".into(),
             ssh_args: vec!["-p".into(), "2222".into()],
-            workd_path: "~/.local/bin/workd".into(),
+            otterd_path: "~/.local/bin/otterd".into(),
             home: Some("/tmp/x y".into()),
             control_dir: Some("/c".into()),
         };
@@ -594,7 +596,7 @@ mod tests {
                 "-o",
                 "ServerAliveCountMax=3",
                 "dev-01",
-                "~/.local/bin/workd --home '/tmp/x y' dial"
+                "~/.local/bin/otterd --home '/tmp/x y' dial"
             ]
         );
     }

@@ -17,11 +17,11 @@ use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 use chrono::Utc;
-use workd_core::{
+use otter_core::{
     AttentionKind, Environment, EnvironmentKind, EnvironmentStatus, GitSource, SessionSpec,
     SourceSpec, Workspace, WorkspaceId, WorkspaceSource, WorkspaceState, validate_name,
 };
-use workd_protocol::{ErrorCode, Event, RpcError, WorkspaceCreate, WorkspaceDelete};
+use otter_protocol::{ErrorCode, Event, RpcError, WorkspaceCreate, WorkspaceDelete};
 
 use crate::attention;
 use crate::daemon::{Daemon, RpcResult, internal, save, workspace_not_found};
@@ -314,7 +314,7 @@ impl Daemon {
                 }
             }
             WorkspaceSource::Git(git) => {
-                // Workd created this worktree from a repository the user
+                // Otter created this worktree from a repository the user
                 // asked for, so it may authorize its .envrc.
                 authorize_env = true;
                 if !root.join(".git").exists() {
@@ -325,8 +325,8 @@ impl Daemon {
                     progress("creating worktree");
                     std::fs::create_dir_all(root.parent().unwrap())?;
                     let default_branch = match slug(&ws.name) {
-                        s if s.is_empty() => format!("workd/{}", ws.id),
-                        s => format!("workd/{s}"),
+                        s if s.is_empty() => format!("otterd/{}", ws.id),
+                        s => format!("otterd/{s}"),
                     };
                     let checkout = self
                         .git

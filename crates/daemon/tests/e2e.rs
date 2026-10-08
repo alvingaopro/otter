@@ -1,17 +1,17 @@
-//! End-to-end tests: a real `workd` (auto-started through `workd dial`) with a
+//! End-to-end tests: a real `otterd` (auto-started through `otterd dial`) with a
 //! real, isolated tmux server per test.
 
 use std::path::Path;
 use std::process::Command;
 use std::time::Duration;
 
-use workd_client::{Connection, Transport};
-use workd_core::{
+use otter_client::{Connection, Transport};
+use otter_core::{
     EnvironmentKind, EnvironmentStatus, ExecutionState, SessionKind, SessionStatus, Workspace,
     WorkspaceSource, WorkspaceState,
 };
-use workd_protocol::frame::{AttachExitReason, Frame};
-use workd_protocol::{
+use otter_protocol::frame::{AttachExitReason, Frame};
+use otter_protocol::{
     Event, SessionAttach, SessionCreate, SessionRef, SessionSpec, SourceSpec, WorkspaceCreate,
 };
 
@@ -27,7 +27,7 @@ impl TestHost {
         // Short path: Unix socket paths are length-limited.
         let dir = tempfile::Builder::new().prefix("wd").tempdir().unwrap();
         let transport = Transport::Local {
-            workd_path: env!("CARGO_BIN_EXE_workd").to_owned(),
+            otterd_path: env!("CARGO_BIN_EXE_otterd").to_owned(),
             home: Some(dir.path().to_string_lossy().into_owned()),
         };
         TestHost {
@@ -41,7 +41,7 @@ impl TestHost {
     /// login-shell environment it captures inherits).
     async fn with_env(vars: &[(&str, String)]) -> Self {
         let mut host = Self::new();
-        let daemon = Command::new(env!("CARGO_BIN_EXE_workd"))
+        let daemon = Command::new(env!("CARGO_BIN_EXE_otterd"))
             .arg("--home")
             .arg(host.home())
             .arg("serve")
@@ -184,7 +184,7 @@ async fn dial_autostarts_daemon_and_reports_status() {
     let mut conn = host.conn().await;
     conn.ping().await.unwrap();
     let status = conn.host_status().await.unwrap();
-    assert_eq!(status.protocol_version, workd_protocol::PROTOCOL_VERSION);
+    assert_eq!(status.protocol_version, otter_protocol::PROTOCOL_VERSION);
     let tmux = status
         .capabilities
         .iter()
@@ -233,12 +233,12 @@ async fn scratch_workspace_with_default_login_shell() {
         "env file left behind"
     );
 
-    // The shell runs in the workspace root with workd's variables set.
+    // The shell runs in the workspace root with otterd's variables set.
     let mut conn = host.conn().await;
     conn.session_write(
         "scratch",
         "shell",
-        "echo \"id=$WORKD_SESSION_ID pwd=$(pwd)\"",
+        "echo \"id=$OTTER_SESSION_ID pwd=$(pwd)\"",
         true,
     )
     .await
@@ -383,7 +383,7 @@ async fn attach(
     host: &TestHost,
     ws: &str,
     session: &str,
-) -> (workd_client::AttachReader, workd_client::AttachWriter) {
+) -> (otter_client::AttachReader, otter_client::AttachWriter) {
     let (_, reader, writer) = host
         .conn()
         .await
@@ -402,7 +402,7 @@ async fn attach(
 }
 
 /// Read frames until the accumulated output contains `needle`.
-async fn read_until(reader: &mut workd_client::AttachReader, needle: &str) -> String {
+async fn read_until(reader: &mut otter_client::AttachReader, needle: &str) -> String {
     let mut seen = Vec::new();
     tokio::time::timeout(Duration::from_secs(15), async {
         loop {
@@ -427,7 +427,7 @@ async fn read_until(reader: &mut workd_client::AttachReader, needle: &str) -> St
     String::from_utf8_lossy(&seen).into_owned()
 }
 
-async fn read_exit(reader: &mut workd_client::AttachReader) -> workd_protocol::frame::AttachExit {
+async fn read_exit(reader: &mut otter_client::AttachReader) -> otter_protocol::frame::AttachExit {
     tokio::time::timeout(Duration::from_secs(15), async {
         loop {
             match reader.next().await.unwrap() {
@@ -558,7 +558,7 @@ async fn sh_session(host: &TestHost, ws: &str) {
     .await;
 }
 
-async fn send(writer: &mut workd_client::AttachWriter, text: &str) {
+async fn send(writer: &mut otter_client::AttachWriter, text: &str) {
     writer
         .send(&Frame::Data(text.as_bytes().to_vec()))
         .await
@@ -794,10 +794,10 @@ async fn event_stream_reports_lifecycle() {
 
 /// Events from `stream` up to and including `seq`.
 async fn events_through(
-    stream: &mut workd_client::EventStream,
+    stream: &mut otter_client::EventStream,
     seq: u64,
-) -> Vec<workd_protocol::EventRecord> {
-    let mut out: Vec<workd_protocol::EventRecord> = Vec::new();
+) -> Vec<otter_protocol::EventRecord> {
+    let mut out: Vec<otter_protocol::EventRecord> = Vec::new();
     tokio::time::timeout(Duration::from_secs(15), async {
         while out.last().is_none_or(|r| r.seq < seq) {
             out.push(stream.next().await.unwrap().expect("stream open"));
@@ -888,8 +888,8 @@ async fn snapshot_then_subscribe_has_no_gap_and_stale_cursors_are_rejected() {
     // A cursor this host never issued (e.g. its log was reset) is refused,
     // not silently treated as "from now".
     match host.conn().await.subscribe(Some(snapshot.seq + 1000)).await {
-        Err(workd_client::ClientError::Rpc(e)) => {
-            assert_eq!(e.code, workd_protocol::ErrorCode::CursorExpired, "{e}")
+        Err(otter_client::ClientError::Rpc(e)) => {
+            assert_eq!(e.code, otter_protocol::ErrorCode::CursorExpired, "{e}")
         }
         Err(e) => panic!("unexpected error: {e}"),
         Ok(_) => panic!("stale cursor accepted"),
@@ -961,7 +961,7 @@ async fn wait_prepared(host: &TestHost, name: &str) -> Workspace {
     .await
 }
 
-fn git_source(ws: &Workspace) -> &workd_core::GitSource {
+fn git_source(ws: &Workspace) -> &otter_core::GitSource {
     match &ws.source {
         WorkspaceSource::Git(g) => g,
         other => panic!("not a git workspace: {other:?}"),
@@ -986,7 +986,7 @@ async fn git_workspaces_share_one_backing_repository() {
     assert_eq!(b.state, WorkspaceState::Ready, "{:?}", b.state_message);
 
     let ga = git_source(&a);
-    assert_eq!(ga.branch, "workd/feature-a");
+    assert_eq!(ga.branch, "otterd/feature-a");
     assert_eq!(ga.base.as_deref(), Some("origin/main"));
     assert_eq!(ga.base_commit.as_deref(), Some(head.as_str()));
     assert!(Path::new(&a.root).join("README.md").is_file());
@@ -1012,7 +1012,7 @@ async fn git_workspaces_share_one_backing_repository() {
     assert!(!Path::new(&a.root).exists());
     git(
         &base,
-        &["show-ref", "--verify", "refs/heads/workd/feature-a"],
+        &["show-ref", "--verify", "refs/heads/otterd/feature-a"],
     );
     conn.workspace_delete("feature-b", false).await.unwrap();
     let worktrees = git(&base, &["worktree", "list", "--porcelain"]);
@@ -1120,14 +1120,14 @@ async fn direnv_environment_is_resolved_and_inherited() {
     let src = make_repo(
         &host,
         "src",
-        &[(".envrc", "export WORKD_TEST_VAR=from-direnv\n")],
+        &[(".envrc", "export OTTER_TEST_VAR=from-direnv\n")],
     );
     let mut conn = host.conn().await;
     conn.workspace_create(git_ws(
         "env",
         &src,
         None,
-        vec![spec(SessionKind::Task, "show", "echo var=$WORKD_TEST_VAR")],
+        vec![spec(SessionKind::Task, "show", "echo var=$OTTER_TEST_VAR")],
     ))
     .await
     .unwrap();
@@ -1297,7 +1297,7 @@ async fn fake_codex_host(mode: &str) -> FakeCodex {
         ),
         ("FAKE_CODEX_LOG", p(&log)),
         ("FAKE_CODEX_MODE", mode.into()),
-        ("WORKD_AGENT_QUIET_SECS", "2".into()),
+        ("OTTER_AGENT_QUIET_SECS", "2".into()),
     ])
     .await;
     FakeCodex {
@@ -1311,7 +1311,7 @@ async fn wait_agent(
     host: &TestHost,
     ws: &str,
     session: &str,
-    want: workd_core::AgentState,
+    want: otter_core::AgentState,
 ) -> Workspace {
     eventually(
         &format!("{ws}/{session} agent becomes {want:?}"),
@@ -1326,7 +1326,7 @@ async fn wait_agent(
 
 #[tokio::test]
 async fn codex_session_is_observed_resumed_and_needs_you_when_done() {
-    use workd_core::{Activity, AgentState, AttentionKind};
+    use otter_core::{Activity, AgentState, AttentionKind};
     let fake = fake_codex_host("normal").await;
     let host = &fake.host;
     // The host advertises which agent providers it can run.
@@ -1413,7 +1413,7 @@ async fn codex_session_is_observed_resumed_and_needs_you_when_done() {
 
 #[tokio::test]
 async fn claude_code_session_is_observed_resumed_and_needs_you_when_done() {
-    use workd_core::{Activity, AgentState, AttentionKind};
+    use otter_core::{Activity, AgentState, AttentionKind};
     let fake = fake_codex_host("normal").await;
     let host = &fake.host;
     let status = host.conn().await.host_status().await.unwrap();
@@ -1467,7 +1467,7 @@ async fn claude_code_session_is_observed_resumed_and_needs_you_when_done() {
 
 #[tokio::test]
 async fn quiet_agent_mid_turn_is_flagged_and_answering_clears_it() {
-    use workd_core::{Activity, AgentState, AttentionKind};
+    use otter_core::{Activity, AgentState, AttentionKind};
     let fake = fake_codex_host("approval").await;
     let host = &fake.host;
     create(host, "ask", Some(vec![SessionSpec::agent("codex")])).await;
@@ -1496,7 +1496,7 @@ async fn quiet_agent_mid_turn_is_flagged_and_answering_clears_it() {
 
 #[tokio::test]
 async fn failures_and_completions_raise_attention() {
-    use workd_core::{Activity, AttentionKind};
+    use otter_core::{Activity, AttentionKind};
     let host = TestHost::new();
     create(
         &host,
@@ -1545,7 +1545,7 @@ async fn failures_and_completions_raise_attention() {
 
 #[tokio::test]
 async fn missing_agent_binary_is_a_visible_failure() {
-    use workd_core::AttentionKind;
+    use otter_core::AttentionKind;
     let scratch = tempfile::Builder::new().prefix("wdn").tempdir().unwrap();
     let home = scratch.path().join("home");
     std::fs::create_dir_all(&home).unwrap();

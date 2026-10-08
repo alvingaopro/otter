@@ -1,13 +1,13 @@
 //! What the UI renders: daemon state flattened into plain data, with the
 //! derived values (activity, session status, which attention item belongs to
-//! which session) computed here by the shared `workd-core` rules, so the
+//! which session) computed here by the shared `otter-core` rules, so the
 //! frontend never re-implements them.
 
-use serde::Serialize;
-use workd_core::{
+use otter_core::{
     Activity, AgentState, Attention, AttentionKind, Session, SessionKind, SessionStatus, Timestamp,
     Workspace, WorkspaceSource, WorkspaceState,
 };
+use serde::Serialize;
 
 #[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -16,9 +16,9 @@ pub enum HostStatus {
     Connected,
     /// Not reachable right now; `workspaces` are the last known state.
     Unreachable,
-    /// The host's workd speaks another protocol version.
+    /// The host's otterd speaks another protocol version.
     Incompatible,
-    /// workd isn't installed where the host entry says.
+    /// otterd isn't installed where the host entry says.
     NotInstalled,
 }
 
@@ -31,11 +31,11 @@ pub struct HostView {
     pub status: HostStatus,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub message: Option<String>,
-    /// The host's workd version, once connected.
+    /// The host's otterd version, once connected.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub version: Option<String>,
-    /// Agent providers workd supports and whether this host can run them.
-    pub agents: Vec<workd_core::AgentCapability>,
+    /// Agent providers otterd supports and whether this host can run them.
+    pub agents: Vec<otter_core::AgentCapability>,
     pub workspaces: Vec<WorkspaceView>,
 }
 

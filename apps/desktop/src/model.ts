@@ -1,5 +1,5 @@
 // Presentation rules: grouping, ordering and wording. Classification itself
-// (activity, session status) comes computed from workd-core via the backend.
+// (activity, session status) comes computed from otter-core via the backend.
 
 import type { Activity, Glyph, HostsPayload, Placed, SessionView, WorkspaceView } from "./types";
 
@@ -36,7 +36,7 @@ export function groups(placed: Placed[]): Group[] {
   const sorted = [...placed].sort((a, b) => {
     const d = ORDER.indexOf(a.ws.activity) - ORDER.indexOf(b.ws.activity);
     if (d !== 0) return d;
-    // Longest-waiting first, as in `workctl ls`.
+    // Longest-waiting first, as in `otter ls`.
     return (oldestAttention(a.ws) ?? "").localeCompare(oldestAttention(b.ws) ?? "") || a.ws.name.localeCompare(b.ws.name);
   });
   for (const p of sorted) out.find((g) => g.id === GROUP_OF[p.ws.activity])!.items.push(p);

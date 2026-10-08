@@ -103,7 +103,7 @@ export function WorkspacePane({ placed, session, onSession, now, theme }: Props)
       {ws.state === "preparing" && <div className="notice">{ws.stateMessage ?? "Preparing workspace…"}</div>}
       {host.status !== "connected" && (
         <div className="notice">
-          {host.name} is {host.status === "incompatible" ? "running an incompatible workd" : "not reachable"} — showing
+          {host.name} is {host.status === "incompatible" ? "running an incompatible otterd" : "not reachable"} — showing
           the last known state. {host.message}
         </div>
       )}

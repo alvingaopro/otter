@@ -92,12 +92,12 @@ impl Brief {
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum WorkspaceSource {
-    /// A fresh empty directory under `~/.workd/workspaces/<id>`.
+    /// A fresh empty directory under `~/.otter/workspaces/<id>`.
     #[default]
     Empty,
     /// A worktree of a shared backing repository (design §13).
     Git(GitSource),
-    /// An existing directory on the host. Attached, not managed: Workd never
+    /// An existing directory on the host. Attached, not managed: Otter never
     /// deletes it.
     Directory { path: String },
 }
@@ -106,7 +106,7 @@ pub enum WorkspaceSource {
 pub struct GitSource {
     /// Clone URL (anything `git clone` accepts on the host).
     pub repository: String,
-    /// Backing repository under `~/.workd/repos/`.
+    /// Backing repository under `~/.otter/repos/`.
     pub repo_id: String,
     /// Branch checked out in the worktree. Empty until prepared.
     #[serde(default)]
@@ -357,7 +357,7 @@ pub enum SessionStatus {
     Failed,
     /// Stopped by the user.
     Stopped,
-    /// The backing process disappeared without Workd observing its exit.
+    /// The backing process disappeared without Otter observing its exit.
     Lost,
 }
 
@@ -404,7 +404,7 @@ pub enum ExecutionState {
     Running,
     /// The process exited; see `exit_code`.
     Exited,
-    /// Terminated by Workd at the user's request.
+    /// Terminated by Otter at the user's request.
     Stopped,
     /// The backend no longer knows about the process.
     Lost,
@@ -414,8 +414,8 @@ pub enum ExecutionState {
 // Agents
 // ---------------------------------------------------------------------------
 
-/// What Workd knows about an agent session (design §9, §22, §23). The agent's
-/// own context stays with the provider; Workd keeps only what it needs to
+/// What Otter knows about an agent session (design §9, §22, §23). The agent's
+/// own context stays with the provider; Otter keeps only what it needs to
 /// resume and observe it.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct AgentInfo {
@@ -597,17 +597,17 @@ pub struct HostStatus {
     pub hostname: String,
     pub os: String,
     pub arch: String,
-    pub workd_version: String,
+    pub otterd_version: String,
     pub protocol_version: u32,
     pub pid: u32,
     pub started_at: Timestamp,
-    pub workd_home: String,
+    pub otterd_home: String,
     pub shell: String,
     /// How the environment for launched processes was obtained.
     pub environment_source: String,
     /// Tools the host has (git, tmux, nix, direnv, …).
     pub capabilities: Vec<Capability>,
-    /// Agent providers this workd supports, and whether the host can run them.
+    /// Agent providers this otterd supports, and whether the host can run them.
     #[serde(default)]
     pub agents: Vec<AgentCapability>,
 }
@@ -691,7 +691,7 @@ mod tests {
         let ws = Workspace {
             id: WorkspaceId::generate(),
             name: "scratch".into(),
-            root: "/home/u/.workd/workspaces/ws_x".into(),
+            root: "/home/u/.otter/workspaces/ws_x".into(),
             brief: Brief {
                 goal: Some("try things".into()),
                 ..Default::default()

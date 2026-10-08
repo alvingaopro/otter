@@ -11,9 +11,9 @@ license = "UNLICENSED"
 publish = false
 
 [workspace.dependencies]
-workd-core = { path = "crates/core" }
-workd-protocol = { path = "crates/protocol" }
-workd-client = { path = "crates/client" }
+otter-core = { path = "crates/core" }
+otter-protocol = { path = "crates/protocol" }
+otter-client = { path = "crates/client" }
 
 anyhow = "1"
 async-trait = "0.1"

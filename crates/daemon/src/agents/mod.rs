@@ -19,7 +19,7 @@ use std::collections::HashSet;
 
 use anyhow::Result;
 use async_trait::async_trait;
-use workd_core::{AgentCapability, AgentInfo, AgentState, Timestamp};
+use otter_core::{AgentCapability, AgentInfo, AgentState, Timestamp};
 
 use crate::env::EnvMap;
 
@@ -95,11 +95,12 @@ pub trait AgentProvider: Send + Sync {
     fn observe(&self, ctx: &ObserveContext<'_>, info: &AgentInfo) -> Observation;
 }
 
-/// Default for `WORKD_AGENT_QUIET_SECS`.
+/// Default for `OTTER_AGENT_QUIET_SECS`.
 const DEFAULT_QUIET_SECS: i64 = 8;
 
 fn quiet_threshold() -> i64 {
-    std::env::var("WORKD_AGENT_QUIET_SECS")
+    std::env::var("OTTER_AGENT_QUIET_SECS")
+        .or_else(|_| std::env::var("WORKD_AGENT_QUIET_SECS"))
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(DEFAULT_QUIET_SECS)

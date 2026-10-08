@@ -3,11 +3,11 @@
 //! Events carry identifiers, names, kinds and exit codes only — never commands,
 //! environment variables or other potentially secret data (design §19).
 
-use serde::{Deserialize, Serialize};
-use workd_core::{
+use otter_core::{
     AgentState, AttentionId, AttentionKind, ExecutionId, SessionId, SessionKind, Timestamp,
     WorkspaceId,
 };
+use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct EventRecord {

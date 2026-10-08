@@ -13,6 +13,7 @@ import { NewWorkspaceDialog } from "./NewWorkspaceDialog";
 import { useTheme } from "./theme";
 import { defaultSession, groups, placeAll } from "./model";
 import type { HostsPayload, Placed } from "./types";
+import otterIcon from "./assets/otter.png";
 import "./App.css";
 
 /** Activating the app this soon after a notification jumps to its workspace. */
@@ -135,11 +136,8 @@ export default function App() {
     <div className="app">
       <header className="titlebar">
         <div className="brand">
-          <svg width="18" height="18" viewBox="0 0 18 18" aria-hidden="true">
-            <rect x="1.5" y="1.5" width="15" height="15" rx="4" fill="none" stroke="currentColor" strokeWidth="1.5" />
-            <path d="M5 7l2.5 2.5L5 12M9.5 12H13" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
-          </svg>
-          <span className="brand-name">Workd</span>
+          <img src={otterIcon} width={22} height={22} alt="" className="brand-icon" />
+          <span className="brand-name">Otter</span>
           {placed.length > 0 && (
             <span className="brand-sub">
               {needs} need you · {working} working

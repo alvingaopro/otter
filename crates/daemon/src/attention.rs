@@ -10,11 +10,11 @@
 use std::sync::Arc;
 
 use chrono::Utc;
-use workd_core::{
+use otter_core::{
     AgentState, Attention, AttentionId, AttentionKind, ExecutionState, Session, SessionId,
     SessionKind, Workspace,
 };
-use workd_protocol::{AttentionResolve, Event, RpcError};
+use otter_protocol::{AttentionResolve, Event, RpcError};
 
 use crate::daemon::{Daemon, RpcResult, save, workspace_not_found};
 
@@ -158,7 +158,7 @@ impl Daemon {
     /// whatever it was asking for has been seen.
     pub(crate) async fn engage(
         self: &Arc<Self>,
-        ws_id: &workd_core::WorkspaceId,
+        ws_id: &otter_core::WorkspaceId,
         session_id: &SessionId,
     ) {
         let mut store = self.store.lock().await;

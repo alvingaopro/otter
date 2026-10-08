@@ -1,13 +1,13 @@
 [package]
-name = "workd-protocol"
-description = "Wire protocol shared by workd and its clients."
+name = "otter-protocol"
+description = "Wire protocol shared by otterd and its clients."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 publish.workspace = true
 
 [dependencies]
-workd-core.workspace = true
+otter-core.workspace = true
 chrono.workspace = true
 serde.workspace = true
 serde_json.workspace = true

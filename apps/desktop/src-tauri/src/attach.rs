@@ -11,13 +11,13 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
+use otter_client::Connection;
+use otter_protocol::frame::{AttachExitReason, Frame};
+use otter_protocol::{SessionAttach, SessionRef};
 use serde::Serialize;
 use tauri::ipc::{Channel, InvokeResponseBody};
 use tauri::{AppHandle, Manager};
 use tokio::sync::mpsc;
-use workd_client::Connection;
-use workd_protocol::frame::{AttachExitReason, Frame};
-use workd_protocol::{SessionAttach, SessionRef};
 
 use crate::hosts::Hosts;
 

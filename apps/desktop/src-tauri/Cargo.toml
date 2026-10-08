@@ -1,7 +1,7 @@
 [package]
-name = "workd-desktop"
+name = "otter-desktop"
 version = "0.1.6"
-description = "Workd desktop: a thin client over workd-client."
+description = "Otter desktop: a thin client over otter-client."
 edition = "2024"
 publish = false
 
@@ -10,16 +10,16 @@ publish = false
 [workspace]
 
 [lib]
-name = "workd_desktop_lib"
+name = "otter_desktop_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-workd-core = { path = "../../../crates/core" }
-workd-protocol = { path = "../../../crates/protocol" }
-workd-client = { path = "../../../crates/client" }
+otter-core = { path = "../../../crates/core" }
+otter-protocol = { path = "../../../crates/protocol" }
+otter-client = { path = "../../../crates/client" }
 tauri = { version = "2", features = [] }
 tauri-plugin-notification = "2"
 anyhow = "1"

@@ -15,10 +15,10 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use chrono::Utc;
+use otter_core::{Capability, HostStatus, Session, Timestamp, WorkspaceId};
+use otter_protocol::{PROTOCOL_VERSION, Request, RpcError, StateSnapshot};
 use serde::Serialize;
 use tokio::sync::{Mutex, watch};
-use workd_core::{Capability, HostStatus, Session, Timestamp, WorkspaceId};
-use workd_protocol::{PROTOCOL_VERSION, Request, RpcError, StateSnapshot};
 
 use crate::backend::ExecutionBackend;
 use crate::env::{EnvMap, ResolvedEnv, which};
@@ -137,11 +137,11 @@ impl Daemon {
             hostname: hostname(),
             os: std::env::consts::OS.to_owned(),
             arch: std::env::consts::ARCH.to_owned(),
-            workd_version: env!("CARGO_PKG_VERSION").to_owned(),
+            otterd_version: env!("CARGO_PKG_VERSION").to_owned(),
             protocol_version: PROTOCOL_VERSION,
             pid: std::process::id(),
             started_at: self.started_at,
-            workd_home: self.paths.home.to_string_lossy().into_owned(),
+            otterd_home: self.paths.home.to_string_lossy().into_owned(),
             shell: self.shell.clone(),
             environment_source: self.env_source.clone(),
             capabilities: vec![git, tmux, nix, direnv],

@@ -4,8 +4,8 @@ use std::collections::HashMap;
 use std::io::Write;
 
 use anyhow::Result;
-use workd_core::{HostStatus, Session, SessionStatus, Workspace, WorkspaceSource};
-use workd_protocol::{Event, EventRecord};
+use otter_core::{HostStatus, Session, SessionStatus, Workspace, WorkspaceSource};
+use otter_protocol::{Event, EventRecord};
 
 use crate::config::HostEntry;
 
@@ -98,7 +98,7 @@ pub fn workspace_details(host: &str, ws: &Workspace) {
         WorkspaceSource::Directory { .. } => println!("  source:   existing directory"),
         WorkspaceSource::Empty => {}
     }
-    if ws.environment.kind != workd_core::EnvironmentKind::None {
+    if ws.environment.kind != otter_core::EnvironmentKind::None {
         println!(
             "  env:      {} ({})",
             ws.environment.kind.as_str(),
@@ -173,9 +173,9 @@ pub fn host_status(host: &HostEntry, result: Result<HostStatus>) {
         Err(e) => println!("{}  unreachable: {e:#}", host.name),
         Ok(s) => {
             println!(
-                "{}  workd {} on {} ({}/{}), up since {}",
+                "{}  otterd {} on {} ({}/{}), up since {}",
                 host.name,
-                s.workd_version,
+                s.otterd_version,
                 s.hostname,
                 s.os,
                 s.arch,
@@ -248,7 +248,7 @@ pub fn event_line(host: &str, rec: &EventRecord, names: &mut HashMap<String, Str
             exit_code: Some(c), ..
         } => format!("status {c}"),
         Event::ExecutionFailed { message, .. } => message.clone(),
-        Event::DaemonStarted { version } => format!("workd {version}"),
+        Event::DaemonStarted { version } => format!("otterd {version}"),
         Event::AgentStateChanged { state, .. } => state.as_str().to_owned(),
         Event::AttentionCreated { kind, .. } => kind.as_str().to_owned(),
         Event::WorkspaceFailed { message, .. } | Event::EnvironmentFailed { message, .. } => {

@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 
 export type ThemeChoice = "system" | "light" | "dark";
-const KEY = "workd.theme";
+const KEY = "otter.theme";
 const NEXT: Record<ThemeChoice, ThemeChoice> = { system: "light", light: "dark", dark: "system" };
 
 function stored(): ThemeChoice {

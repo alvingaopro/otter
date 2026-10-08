@@ -7,11 +7,11 @@ const STATUS: Record<HostView["status"], string> = {
   connecting: "Connecting…",
   connected: "Connected",
   unreachable: "Not reachable",
-  incompatible: "Runs a workd this app can’t talk to",
-  not_installed: "workd isn’t installed",
+  incompatible: "Runs a otterd this app can’t talk to",
+  not_installed: "otterd isn’t installed",
 };
 
-/** One host: its state, and installing/updating workd or forgetting it. */
+/** One host: its state, and installing/updating otterd or forgetting it. */
 export function HostDialog({ host, version, onClose }: { host: HostView; version?: string; onClose: () => void }) {
   const [busy, setBusy] = useState<string | null>(null);
   const [output, setOutput] = useState<string | null>(null);
@@ -22,7 +22,7 @@ export function HostDialog({ host, version, onClose }: { host: HostView; version
   const offerInstall = host.status === "not_installed" || host.status === "incompatible" || outdated;
 
   async function install() {
-    setBusy(`Installing workd ${version} on ${host.name}…`);
+    setBusy(`Installing otterd ${version} on ${host.name}…`);
     setError(null);
     try {
       setOutput(await invoke<string>("host_install", { name: host.name }));
@@ -51,7 +51,7 @@ export function HostDialog({ host, version, onClose }: { host: HostView; version
         <dd>{STATUS[host.status]}</dd>
         {host.version && (
           <>
-            <dt>workd</dt>
+            <dt>otterd</dt>
             <dd className="mono">
               {host.version}
               {outdated && <span className="muted"> · this app is {version}</span>}
@@ -85,7 +85,7 @@ export function HostDialog({ host, version, onClose }: { host: HostView; version
             <span className="spacer" />
             {offerInstall && (
               <button className="btn primary" disabled={!!busy} onClick={() => void install()}>
-                {host.status === "not_installed" ? `Install workd ${version}` : `Update workd to ${version}`}
+                {host.status === "not_installed" ? `Install otterd ${version}` : `Update otterd to ${version}`}
               </button>
             )}
             <button className="btn" onClick={onClose}>

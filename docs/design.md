@@ -1,7 +1,7 @@
-# Workd V1 — Design & Architecture
+# Otter V1 — Design & Architecture
 
 > Status: V1 architecture. Some areas are deliberately left as **open decisions**
-> (see §35) rather than over-designed — notably the exact Workd RPC protocol,
+> (see §35) rather than over-designed — notably the exact Otter RPC protocol,
 > the persistence format, and the Codex state-detection mechanism. The
 > foundation can be built without those being perfect.
 >
@@ -10,7 +10,7 @@
 
 ## 1. Overview
 
-Workd is a control plane for managing persistent development work across remote
+Otter is a control plane for managing persistent development work across remote
 machines.
 
 The primary problem is not terminal management. It is managing multiple
@@ -41,7 +41,7 @@ V1 should support:
 
 - Multiple remote hosts.
 - SSH as the only remote transport.
-- A Workd daemon installed on every managed host.
+- A Otter daemon installed on every managed host.
 - Persistent workspaces.
 - Multiple sessions per workspace.
 - Codex sessions.
@@ -141,7 +141,7 @@ name: Development VM
 connection:
   ssh_host: dev-01
 capabilities:
-  workd: true
+  otterd: true
   git: true
   tmux: true
   nix: true
@@ -152,14 +152,14 @@ capabilities:
 SSH is the only transport supported by V1.
 
 The user's existing SSH configuration and SSH agent should be reused whenever
-possible. If `ssh dev-01` works, Workd should ideally be able to connect.
+possible. If `ssh dev-01` works, Otter should ideally be able to connect.
 
 ## 6. Connectivity
 
-Each managed host runs `workd`.
+Each managed host runs `otterd`.
 
 The daemon does not expose a network port. It listens on a **Unix domain
-socket** owned by the user (`~/.workd/run/workd.sock`, mode `0600`), so that
+socket** owned by the user (`~/.otter/run/workd.sock`, mode `0600`), so that
 other local users on a shared host cannot reach it. *(Amended during
 implementation — the original draft used `localhost:<port>`; see
 [decisions.md D-003](decisions.md).)*
@@ -171,14 +171,14 @@ Control Plane
       ▼
 Remote Host
       │
-      ├── workd
-      │    ~/.workd/run/workd.sock
+      ├── otterd
+      │    ~/.otter/run/workd.sock
       │
       └── workspace processes
 ```
 
 The control plane reaches the socket through an SSH channel. In V1 each client
-connection runs `ssh <host> workd dial`, which bridges the channel's stdio to
+connection runs `ssh <host> otterd dial`, which bridges the channel's stdio to
 the daemon socket (starting the daemon if it is not running). SSH connection
 multiplexing (`ControlMaster`) keeps repeated connections cheap.
 
@@ -200,13 +200,13 @@ A Workspace groups related work.
 id: ws_01
 name: Fix GCP renewal validation
 host: dev-01
-root: ~/.workd/workspaces/ws_01/repo
+root: ~/.otter/workspaces/ws_01/repo
 brief:
   goal: Fix scheduled offer renewal validation.
 source:
   type: git
   repository: suger-api
-  branch: workd/ws_01
+  branch: otterd/ws_01
   base: origin/main
 environment:
   type: direnv
@@ -222,7 +222,7 @@ A minimal Workspace may instead be:
 id: ws_02
 name: scratch
 host: dev-01
-root: ~/.workd/workspaces/ws_02
+root: ~/.otter/workspaces/ws_02
 ```
 
 Git is completely optional.
@@ -262,8 +262,8 @@ provider: codex
 resume_id: abc123
 ```
 
-Workd should not attempt to recreate or understand Codex's complete internal
-context. If Codex supports resuming a session, Workd should retain whatever
+Otter should not attempt to recreate or understand Codex's complete internal
+context. If Codex supports resuming a session, Otter should retain whatever
 opaque identifier is required.
 
 ```
@@ -322,7 +322,7 @@ and restart behavior.
 
 ## 12. tmux
 
-tmux is the V1 execution/persistence backend. Workd should use tmux rather than
+tmux is the V1 execution/persistence backend. Otter should use tmux rather than
 attempting to implement terminal persistence itself.
 
 ```
@@ -352,7 +352,7 @@ maintains shared backing repositories.
 Suggested filesystem layout:
 
 ```
-~/.workd/
+~/.otter/
     repos/
         <repo-id>/
             base/
@@ -362,8 +362,8 @@ Suggested filesystem layout:
     state/
 ```
 
-`~/.workd/repos/suger-api/base` acts as the canonical backing checkout.
-Workspace worktrees (`~/.workd/workspaces/ws_01/repo`, `ws_02/repo`, …) share
+`~/.otter/repos/suger-api/base` acts as the canonical backing checkout.
+Workspace worktrees (`~/.otter/workspaces/ws_01/repo`, `ws_02/repo`, …) share
 Git objects:
 
 ```
@@ -385,7 +385,7 @@ For a repository not previously used on a Host:
 Create Workspace
       │
       ▼
-Clone repository into ~/.workd/repos/<repo-id>/base
+Clone repository into ~/.otter/repos/<repo-id>/base
       │
       ▼
 Fetch base revision
@@ -397,7 +397,7 @@ Create branch if required
 git worktree add
       │
       ▼
-~/.workd/workspaces/<workspace-id>/repo
+~/.otter/workspaces/<workspace-id>/repo
 ```
 
 For an existing repository:
@@ -410,7 +410,7 @@ Concurrency around Git fetch/worktree operations must be handled safely.
 
 ## 15. Existing Directory Workspaces
 
-Git should not be required. Workd should eventually support at least these
+Git should not be required. Otter should eventually support at least these
 Workspace sources:
 
 1. Empty workspace
@@ -421,7 +421,7 @@ V1 may initially implement only Empty + Git if necessary.
 
 ## 16. Development Environment
 
-Workd must not become a package manager. The repository owns its development
+Otter must not become a package manager. The repository owns its development
 environment.
 
 For the primary development workflow:
@@ -442,7 +442,7 @@ flake.nix / flake.lock
 Nix
 ```
 
-Workd's responsibility is environment activation, not dependency management.
+Otter's responsibility is environment activation, not dependency management.
 
 ## 17. Environment Provider
 
@@ -462,7 +462,7 @@ The exact interface may evolve during implementation.
 
 All managed Sessions in a Workspace must inherit the same resolved environment.
 
-Do not depend on interactive shell startup hooks to activate direnv. Workd
+Do not depend on interactive shell startup hooks to activate direnv. Otter
 should explicitly obtain/activate the environment before launching managed
 processes.
 
@@ -509,7 +509,7 @@ git clone <private-repository>    # already works
 codex                             # already works
 ```
 
-If those commands work manually, Workd should reuse the same environment.
+If those commands work manually, Otter should reuse the same environment.
 
 SSH connectivity from the control plane should similarly use the user's
 existing SSH configuration / SSH agent.
@@ -594,7 +594,7 @@ early dogfooding.
 
 ## 24. Host Daemon Responsibilities
 
-`workd` on each Host owns:
+`otterd` on each Host owns:
 
 ```
 WorkspaceManager
@@ -613,12 +613,12 @@ terminate remote work.
 
 ## 25. Control Plane Responsibilities
 
-The control plane (the `workctl` CLI first, then the Mac app) owns:
+The control plane (the `otter` CLI first, then the Mac app) owns:
 
 ```
 Host registry
 SSH connectivity
-Workd connections
+Otter connections
 Global workspace index
 Attention aggregation
 User-facing workspace lifecycle
@@ -729,9 +729,9 @@ repository.
 
 ## 29. Managed vs Attached Processes
 
-V1 should distinguish processes Workd owns from things it merely discovers.
+V1 should distinguish processes Otter owns from things it merely discovers.
 
-- **Managed** — Workd controls lifecycle.
+- **Managed** — Otter controls lifecycle.
 - **Attached** — existing external resource.
 
 Automatic cleanup must only affect managed resources. Initial implementation may
@@ -761,7 +761,7 @@ client connection
 live terminal stream
 ```
 
-Restarting Workd should allow it to reconcile its persisted state with existing
+Restarting Otter should allow it to reconcile its persisted state with existing
 tmux sessions.
 
 ## 31. Failure Model
@@ -771,7 +771,7 @@ At minimum handle:
 - Mac app closes
 - Mac sleeps
 - SSH disconnects
-- Workd restarts
+- Otter restarts
 - Session process exits
 - tmux session disappears
 - Git operation fails
@@ -783,14 +783,14 @@ become structured Events and, where appropriate, Attention items.
 
 ## 32. Implementation Stack & Repository Layout
 
-`workd` sits directly on the OS boundary (process lifecycle, PTYs, tmux,
+`otterd` sits directly on the OS boundary (process lifecycle, PTYs, tmux,
 signals, Unix sockets, SSH plumbing, Git/direnv subprocesses, streaming events,
 long-running concurrent sessions), and is expected to drift toward systems
 programming rather than backend-service programming. V1 is written in
 **Rust**.
 
 Both Rust and Go keep the operational model of a single binary
-(`scp workd dev-box:~/.local/bin/`); a Node runtime on every host would not.
+(`scp otterd dev-box:~/.local/bin/`); a Node runtime on every host would not.
 
 The Mac control plane is expected to be **Tauri**, whose core is also Rust, so
 domain and protocol types (`Workspace`, `Session`, `Execution`, `HostStatus`,
@@ -798,22 +798,22 @@ domain and protocol types (`Workspace`, `Session`, `Execution`, `HostStatus`,
 types on every side.
 
 ```
-workd/
+otterd/
 ├── crates/
 │   ├── core/       ← Workspace / Session / Execution domain types
 │   ├── protocol/   ← shared RPC + event types, wire framing
-│   ├── client/     ← connection to workd (SSH / local transport)
-│   ├── daemon/     ← `workd` binary (runs on each host)
-│   └── cli/        ← `workctl` binary (control plane CLI)
+│   ├── client/     ← connection to otterd (SSH / local transport)
+│   ├── daemon/     ← `otterd` binary (runs on each host)
+│   └── cli/        ← `otter` binary (control plane CLI)
 │
 └── apps/
     └── desktop/    ← Tauri (later)
 ```
 
-`workd` and `workctl` live in one Cargo workspace but stay conceptually separate:
+`otterd` and `otter` live in one Cargo workspace but stay conceptually separate:
 
 ```
-workctl                     workd
+otter                     otterd
   │                           │
   │ RPC                       │
   └──────────────────────────►│
@@ -830,11 +830,11 @@ The entire backend can be built and tested without Tauri. The Tauri UI is
 
 ## 33. Suggested V1 Implementation Order
 
-**Phase 1 — Host + daemon:** `workd` daemon, SSH tunnel, ping/status, host
+**Phase 1 — Host + daemon:** `otterd` daemon, SSH tunnel, ping/status, host
 capabilities.
 
 **Phase 2 — Basic workspace:** create empty workspace, list workspaces, delete
-workspace. Filesystem: `~/.workd/workspaces/<id>`.
+workspace. Filesystem: `~/.otter/workspaces/<id>`.
 
 **Phase 3 — tmux sessions:** create shell session, attach/read/write, resize,
 stop/restart.
@@ -851,15 +851,15 @@ sessions inside the resolved environment, report preparation status.
 global attention aggregation.
 
 **Phase 8 — CLI-first dogfooding (explicit gate before any GUI).** Use
-`workctl` daily against real hosts until the Workspace / Session / Attention
+`otter` daily against real hosts until the Workspace / Session / Attention
 abstractions feel excellent from the terminal alone, e.g.:
 
 ```
-workctl host add dev-01
-workctl workspace create --host dev-01 \
+otter host add dev-01
+otter workspace create --host dev-01 \
     --repo git@github.com:sugerio/foo.git --name billing
-workctl session start billing --agent codex
-workctl list
+otter session start billing --agent codex
+otter list
 
 WORKSPACE       HOST       STATE        SESSION
 billing         dev-01     NEEDS YOU    codex
@@ -868,7 +868,7 @@ scratch         dev-02     IDLE         shell
 ```
 
 This validates the abstractions much faster than building the visual
-application at the same time. `workctl` is built alongside every phase above;
+application at the same time. `otter` is built alongside every phase above;
 this phase is the gate, not the start.
 
 **Phase 9 — Desktop UI (Tauri):** workspace dashboard, attention inbox,
@@ -887,7 +887,7 @@ These rules should be preserved during implementation:
 7. Session identity is separate from process/Execution identity.
 8. Workspaces survive client disconnects.
 9. The repository owns its dependency environment.
-10. Workd does not replace Nix or direnv.
+10. Otter does not replace Nix or direnv.
 11. Credentials remain on existing machines for V1.
 12. Shared Git repositories should back multiple worktrees.
 13. Human attention is a first-class product concept.
@@ -899,7 +899,7 @@ These rules should be preserved during implementation:
 These are intentionally not settled by this document. Current choices live in
 [`decisions.md`](decisions.md) and may change.
 
-- **Workd RPC protocol** — framing, method naming, streaming/attach model,
+- **Otter RPC protocol** — framing, method naming, streaming/attach model,
   versioning.
 - **Persistence format** — on-disk representation of durable state and events.
 - **Codex state detection** — structured Codex events/APIs vs. a temporary

@@ -1,4 +1,4 @@
-# Workd — Implementation Decisions
+# Otter — Implementation Decisions
 
 Decisions made while implementing [`design.md`](design.md), including where the
 implementation deliberately deviates from it. Newest last. Each entry says what
@@ -8,32 +8,32 @@ was decided, why, and what would make us revisit it.
 
 ## D-001 — Rust, one Cargo workspace (2026-10-07)
 
-**Decision.** `workd` (daemon) and `workctl` (CLI) are Rust, in one Cargo
+**Decision.** `otterd` (daemon) and `otter` (CLI) are Rust, in one Cargo
 workspace: `crates/{core,protocol,client,daemon,cli}`, with the Tauri desktop
 app to come in `apps/desktop`.
 
 **Why.** The daemon sits on the OS boundary (PTYs, signals, Unix sockets,
 process lifecycle) and is expected to grow downward toward systems code. The
 Tauri app's core is Rust too, so domain and protocol types are shared verbatim.
-Single static-ish binaries keep `scp workd host:~/.local/bin/` as the install
+Single static-ish binaries keep `scp otterd host:~/.local/bin/` as the install
 story. (User decision; see design §32.)
 
 ## D-002 — CLI-first dogfooding before any GUI (2026-10-07)
 
-**Decision.** Every phase lands in `workctl` first; the desktop UI is the last
+**Decision.** Every phase lands in `otter` first; the desktop UI is the last
 phase and is gated on the CLI feeling excellent. (User decision; design §33.)
 
-## D-003 — Daemon listens on a Unix socket, reached via `ssh host workd dial` (2026-10-07)
+## D-003 — Daemon listens on a Unix socket, reached via `ssh host otterd dial` (2026-10-07)
 
 **Deviation from design §6**, which proposed `localhost:<port>` plus an SSH
 port-forward.
 
-**Decision.** `workd` listens on `~/.workd/run/workd.sock` (mode `0600`, in a
-`0700` directory) and never on TCP. Clients run `ssh <host> ~/.local/bin/workd
+**Decision.** `otterd` listens on `~/.otter/run/workd.sock` (mode `0600`, in a
+`0700` directory) and never on TCP. Clients run `ssh <host> ~/.local/bin/otterd
 dial`; `dial` bridges the SSH channel's stdin/stdout to the socket and starts
-the daemon first if it isn't running. `workctl` passes
+the daemon first if it isn't running. `otter` passes
 `-o ControlMaster=auto -o ControlPersist=600` (sockets in
-`~/.config/workd/cm/`) so repeated connections reuse one SSH connection.
+`~/.config/otter/cm/`) so repeated connections reuse one SSH connection.
 
 **Why.**
 - A TCP port on `localhost` is reachable by *every* local user on the host;
@@ -41,7 +41,7 @@ the daemon first if it isn't running. `workctl` passes
   socket is protected by file permissions.
 - No port allocation or tunnel lifecycle to manage, no stale forwards, and it
   works with sshd configs that disable TCP forwarding.
-- Auto-start in `dial` means "if `ssh host` works, workd works" — no service
+- Auto-start in `dial` means "if `ssh host` works, otterd works" — no service
   manager setup needed.
 
 **Still true:** SSH is the only transport (rule 4); the daemon has no network
@@ -69,9 +69,9 @@ Types live in `crates/protocol` and are shared by every client.
 
 *Open decision in design §35; current choice.*
 
-All durable daemon state is one JSON document, `~/.workd/state/state.json`,
+All durable daemon state is one JSON document, `~/.otter/state/state.json`,
 rewritten atomically (temp file + fsync + rename) on every change. Events are
-appended to `~/.workd/state/events.jsonl`. Small, transparent, trivially
+appended to `~/.otter/state/events.jsonl`. Small, transparent, trivially
 inspectable; fine for tens of workspaces.
 
 Events carry ids, names, kinds and exit codes only — never commands or
@@ -83,10 +83,10 @@ event log needs rotation.
 ## D-006 — Launch environment: captured login env, delivered via private file (2026-10-07)
 
 Design §17 says not to rely on interactive shell hooks and §19 says "if it works
-after `ssh host`, it should work in Workd".
+after `ssh host`, it should work in Otter".
 
 **Decision.**
-- At startup the daemon runs `$SHELL -l -c 'exec workd internal-dump-env'` once
+- At startup the daemon runs `$SHELL -l -c 'exec otterd internal-dump-env'` once
   and uses that environment (minus per-terminal variables like `TERM`, `PWD`,
   `SSH_TTY`, `TMUX`) for every launched process. This is what puts
   `~/.local/bin` (e.g. `codex`) on `PATH` even though the daemon itself was
@@ -96,17 +96,17 @@ after `ssh host`, it should work in Workd".
 - Terminal sessions without a command run `$SHELL -l`; commands run as
   `/bin/sh -c '<command>'` (see D-011 for why not `$SHELL`).
 - The environment is handed to the process through a `0600` file read and
-  deleted by `workd internal-exec <file> -- <argv>`, which then `exec`s the
+  deleted by `otterd internal-exec <file> -- <argv>`, which then `exec`s the
   command with exactly that environment. **Never on a command line**: the tmux
   server keeps the argv of the client that started it, and argv is visible to
   all users via `ps`. (Found in testing: API keys from the login env showed up
   in the tmux server's `/proc/<pid>/cmdline`.) Enforced by a test.
-- Every process also gets `WORKD_WORKSPACE_ID/NAME`, `WORKD_SESSION_ID/NAME`,
-  `WORKD_EXECUTION_ID`.
+- Every process also gets `OTTER_WORKSPACE_ID/NAME`, `OTTER_SESSION_ID/NAME`,
+  `OTTER_EXECUTION_ID`.
 
 ## D-007 — tmux backend details (2026-10-07)
 
-- Private tmux server per host (`~/.workd/run/tmux.sock`, own generated
+- Private tmux server per host (`~/.otter/run/tmux.sock`, own generated
   config); the user's own tmux is never touched. Requires tmux ≥ 3.2.
 - One tmux session per **execution**, named after the execution id. Restarting
   a session creates a new execution and a new tmux session (rule 7).
@@ -116,7 +116,7 @@ after `ssh host`, it should work in Workd".
   out of attach output.
 - Attach = the daemon runs `tmux attach` inside a PTY it owns and bridges it to
   the client; detach uses `tmux detach-client` so the user's terminal is
-  restored. Detach key in `workctl` is `Ctrl-]`.
+  restored. Detach key in `otter` is `Ctrl-]`.
 - Exits are observed by polling `list-panes` every 500 ms. The same code
   reconciles state at startup: alive → adopt, dead → record exit, missing →
   `lost`.
@@ -131,17 +131,17 @@ after `ssh host`, it should work in Workd".
     `list-panes` output uses `|` separators.
 
 **Revisit** polling if many hosts × sessions make it costly (tmux hooks →
-`workd` notification).
+`otterd` notification).
 
 ## D-008 — Daemon lifecycle (2026-10-07)
 
-- Single instance per `WORKD_HOME` via `flock` on `run/workd.lock`.
-- `workd dial` auto-starts `workd serve` fully detached (`setsid`, stdio to
+- Single instance per `OTTER_HOME` via `flock` on `run/workd.lock`.
+- `otterd dial` auto-starts `otterd serve` fully detached (`setsid`, stdio to
   `logs/workd.log`) so it outlives the SSH connection.
-- `daemon.shutdown` (`workctl host shutdown`) stops the daemon but **not**
+- `daemon.shutdown` (`otter host shutdown`) stops the daemon but **not**
   managed processes; the next connection starts a fresh daemon, which
   reconciles. This is also the upgrade path: replace the binary, shut down.
-- `WORKD_HOME` / `--home` relocate everything (used by tests and for running
+- `OTTER_HOME` / `--home` relocate everything (used by tests and for running
   several daemons on one machine). Socket paths must stay under ~100 bytes.
 
 ## D-009 — Sessions and addressing (2026-10-07)
@@ -156,21 +156,21 @@ after `ssh host`, it should work in Workd".
   `[host:]workspace[/session]` and searches all hosts concurrently; the host
   prefix is only needed when a name exists on several hosts.
 - Deleting a workspace stops its sessions and removes its directory only if it
-  is the managed `~/.workd/workspaces/<id>` (rule: cleanup only touches managed
+  is the managed `~/.otter/workspaces/<id>` (rule: cleanup only touches managed
   resources).
 
 ## D-010 — Git: bare backing repository, one worktree per workspace (2026-10-07)
 
 - First use of a repository on a host: `git clone --bare` into
-  `~/.workd/repos/<repo-id>/base`, with `remote.origin.fetch` set so branches
+  `~/.otter/repos/<repo-id>/base`, with `remote.origin.fetch` set so branches
   appear as `origin/*` (a bare clone doesn't do that by default). Bare because
   nobody should work in the backing checkout.
 - `<repo-id>` = last path component + a stable hash of the normalized URL
   (`suger-api-1a2b3c4d`): readable, collision-free across orgs.
 - Every Git workspace: `git fetch --prune`, then `git worktree add` at
-  `~/.workd/workspaces/<id>/repo`.
+  `~/.otter/workspaces/<id>/repo`.
   - `--branch B` that exists (locally or as `origin/B`) is checked out;
-    otherwise a new branch is created — `B`, or `workd/<name-slug>` — from
+    otherwise a new branch is created — `B`, or `otterd/<name-slug>` — from
     `--base` (default: origin's default branch, via `remote set-head --auto`).
 - Fetch/worktree operations are serialized per repository.
 - Credentials: whatever `git` on the host already uses; `GIT_TERMINAL_PROMPT=0`
@@ -181,7 +181,7 @@ after `ssh host`, it should work in Workd".
   the worktree has uncommitted changes unless forced (`--force`).
 - Preparation (clone/fetch/worktree/environment) runs in the background: the
   workspace is `preparing` with a progress message, then `ready` (sessions
-  start) or `failed` (sessions stay pending; `workctl ws prepare` retries). A
+  start) or `failed` (sessions stay pending; `otter ws prepare` retries). A
   daemon restart resumes interrupted preparation; deleting cancels it.
 
 ## D-011 — Environments: direnv, resolved explicitly (2026-10-07)
@@ -191,7 +191,7 @@ after `ssh host`, it should work in Workd".
   on top of the login environment, and every managed process in the workspace
   starts with the result. Verified with `use flake` on a real flake: the Nix
   dev shell's tools and `shellHook` exports reach sessions.
-- `direnv allow` is run automatically **only** for worktrees Workd created from
+- `direnv allow` is run automatically **only** for worktrees Otter created from
   a repository the user asked for. An existing directory must already be
   allowed (otherwise the workspace fails with direnv's message).
 - If the environment fails, the workspace fails and its sessions do not start
@@ -207,8 +207,8 @@ after `ssh host`, it should work in Workd".
 ## D-012 — Existing-directory workspaces (2026-10-07)
 
 Design §15 allowed V1 to skip them; they were cheap, so they exist:
-`workctl new x --dir /path`. The directory is **attached, not managed**: never
-created or deleted by Workd (rule §29).
+`otter new x --dir /path`. The directory is **attached, not managed**: never
+created or deleted by Otter (rule §29).
 
 ## D-013 — Codex integration: launch with `--no-daemon`, observe the rollout transcript (2026-10-07)
 
@@ -221,13 +221,13 @@ with `--dangerously-bypass-hook-trust`), the experimental app-server protocol
 (has exactly the states we want: `waitingOnApproval`, `waitingOnUserInput`),
 and the rollout transcript.
 
-**Decision.** Workd changes nothing about Codex's configuration and uses no
+**Decision.** Otter changes nothing about Codex's configuration and uses no
 "dangerous" flags:
 
 - Launch: `codex --no-daemon [prompt]`; restart: `codex --no-daemon resume
   <id>`. By default the Codex TUI attaches to a shared, self-updating
   background daemon (observed at a different version than the CLI), so the
-  agent's work would live outside the process Workd manages; `--no-daemon`
+  agent's work would live outside the process Otter manages; `--no-daemon`
   keeps execution/lost/restart semantics meaningful. Cost: those sessions
   don't appear in `codex agents` / remote control.
 - The agent binary is the session's process (no shell in between).
@@ -241,7 +241,7 @@ and the rollout transcript.
   `turn_aborted` → idle.
 - **Heuristic (unverified against real approval prompts):** approval requests
   and questions aren't in the transcript. An agent that is mid-turn and whose
-  terminal *and* transcript have been quiet for `WORKD_AGENT_QUIET_SECS`
+  terminal *and* transcript have been quiet for `OTTER_AGENT_QUIET_SECS`
   (default 8 s) is marked `blocked`. If the Codex spinner keeps animating
   during an approval prompt, this misses (never cries wolf during long model
   thinking). Likewise a freshly started agent that goes quiet becomes `idle`.
@@ -252,7 +252,7 @@ and the rollout transcript.
    that process.
 2. Calibrate the quiet heuristic with a few real Codex turns.
 3. Codex asks "trust this folder?" for every new worktree path and stores the
-   answer in `~/.codex/config.toml`. Workd could pre-trust its own worktrees
+   answer in `~/.codex/config.toml`. Otter could pre-trust its own worktrees
    with `-c projects."<root>".trust_level=…`, but trust level changes Codex's
    approval defaults, so that's left to the user.
 
@@ -269,14 +269,14 @@ binary. The message excerpt is stored in `state.json` only, never in
   quitting an agent cleanly raises nothing.
 - Resolved by: attaching to or typing into the session, restarting / stopping /
   deleting it, the agent starting to work again, a newer item for the same
-  session, or `workctl ack`.
+  session, or `otter ack`.
 - Stored on the workspace (`state.json`); `AttentionCreated` /
   `AttentionResolved` events carry ids and kinds only.
 - Each workspace derives one **activity** for the primary view:
   NEEDS YOU (question/approval/review) › FAILED › PREPARING › WORKING (an agent
   working, or a service/task running — not an idle shell) › COMPLETED › IDLE.
-  `workctl ls` groups by it; `workctl ls --watch` redraws on every event.
-- `workctl new` starts Codex + a shell by default (design §27); `--no-agent`,
+  `otter ls` groups by it; `otter ls --watch` redraws on every event.
+- `otter new` starts Codex + a shell by default (design §27); `--no-agent`,
   `--no-shell` opt out.
 
 ## D-015 — Hardening pass: agent provider boundary (2026-10-07)
@@ -290,7 +290,7 @@ control plane). Changed only what leaked:
   `detect`, `launch_argv`, `observe`. Generic reconciliation passes an
   `ObserveContext` (cwd, start time, pid, last terminal output, env) and applies
   the returned generic `Observation`; transcript discovery, reading and the
-  quiet-turn heuristic (`WORKD_AGENT_QUIET_SECS`) now live in `agents/codex.rs`.
+  quiet-turn heuristic (`OTTER_AGENT_QUIET_SECS`) now live in `agents/codex.rs`.
 - **Provider data is opaque.** `AgentInfo.transcript` / `transcript_offset`
   became `provider_state` (JSON only the provider reads); `resume_id` became
   `provider_session_id` (older `state.json` still loads via an alias).
@@ -348,7 +348,7 @@ test against a real SSH host.
 - **A lagging attach could miss its own end.** If the bridge fell behind the
   event broadcast it ignored the gap and could keep showing a dead pane; it now
   checks the missed events in the log (as `events.subscribe` does, D-016).
-- **Clients never hang on a dead connection.** `workctl attach` gives up 5 s
+- **Clients never hang on a dead connection.** `otter attach` gives up 5 s
   after Ctrl-] with no answer (restoring the terminal and saying the session
   keeps running), and SSH transports set `ServerAliveInterval=15` /
   `ServerAliveCountMax=3` after the host's own `ssh_args` (so explicit options
@@ -366,12 +366,12 @@ test against a real SSH host.
 Not covered by automated tests: the network-loss timings above (manual), and
 terminal rendering of colors/alternate screen in a real terminal emulator.
 
-## D-018 — Desktop client M1: Tauri 2, a thin view over workd-client (2026-10-07)
+## D-018 — Desktop client M1: Tauri 2, a thin view over otter-client (2026-10-07)
 
-`apps/desktop`: Tauri 2 + React/TypeScript. The Rust side uses `workd-client`
+`apps/desktop`: Tauri 2 + React/TypeScript. The Rust side uses `otter-client`
 (which now owns the `hosts.toml` registry, so the app sees exactly the hosts
-`workctl` does), `workd-protocol` and `workd-core`; it never shells out to
-`workctl`. It is its own cargo workspace so Tauri's dependency tree stays out
+`otter` does), `otter-protocol` and `otter-core`; it never shells out to
+`otter`. It is its own cargo workspace so Tauri's dependency tree stays out
 of `cargo build/test` for the daemon and CLI.
 
 - **State:** one task per host: `state.snapshot` → `events.subscribe(after =
@@ -381,8 +381,8 @@ of `cargo build/test` for the daemon and CLI.
   dimmed, and reconnects every 5 s (30 s for a protocol mismatch).
 - **Derived values come from core:** the backend flattens workspaces into a
   view model with `activity`, session `status` and per-session attention
-  already computed by `workd-core`. TypeScript only groups, orders and words
-  them (mirroring `workctl ls`).
+  already computed by `otter-core`. TypeScript only groups, orders and words
+  them (mirroring `otter ls`).
 - **Terminal (the spike):** xterm.js 6 with the WebGL renderer (DOM fallback).
   Output crosses the Tauri boundary as raw bytes —
   `Channel<InvokeResponseBody::Raw>`, an `ArrayBuffer` in JS — not JSON or
@@ -405,18 +405,18 @@ delivery verified only up to the permission prompt under `tauri dev`.
 
 ## D-019 — One version, released on every merge (2026-10-07)
 
-- **One product version** for workd, workctl, the crates and the desktop app
+- **One product version** for otterd, otter, the crates and the desktop app
   (the workspace `Cargo.toml`, the desktop `Cargo.toml` and `package.json`;
   Tauri reads the crate's). `scripts/version.py` reads, bumps and writes it,
   including the lockfiles' local entries so `--locked` builds hold. The app
-  shows its version in the title bar, and a host's `workd` version in the
+  shows its version in the title bar, and a host's `otterd` version in the
   hosts list when it differs.
 - **CI** (`ci.yml`, on pull requests): fmt, clippy `-D warnings` and the full
   test suite on Linux (with tmux); the desktop UI build and clippy on macOS.
 - **Release** (`release.yml`, on every push to `main`): bump (patch, or the
   merged PR's `release:minor` / `release:major` label; `release:skip` skips),
   commit `Release vX.Y.Z` and tag it, then build from the tag — the universal
-  macOS app (`.dmg` and `.app.tar.gz`) and `workd`/`workctl` for linux-x86_64
+  macOS app (`.dmg` and `.app.tar.gz`) and `otterd`/`otter` for linux-x86_64
   and macos-arm64 — and publish the GitHub release once every artifact is
   attached (a draft until then). The bump is pushed with `GITHUB_TOKEN`, which
   starts no workflows, so it cannot loop; it requires `main` to accept pushes
@@ -427,35 +427,35 @@ delivery verified only up to the permission prompt under `tauri dev`.
 ## D-020 — Onboarding: hosts and installs from the app (2026-10-08)
 
 Dogfooding v0.1.1: a fresh install of the app showed "No hosts yet" and
-pointed at a `workctl` nobody had installed. Fixed by making the app enough on
+pointed at a `otter` nobody had installed. Fixed by making the app enough on
 its own:
 
 - **Hosts are managed in the app** — Add a host (name, SSH destination or
-  this Mac, advanced: workd path and state directory), and per host: status,
-  version, install/update workd, remove. `hosts.toml` stays the one source of
-  truth, shared with `workctl` through `workd_client::config` (`add_host`,
+  this Mac, advanced: otterd path and state directory), and per host: status,
+  version, install/update otterd, remove. `hosts.toml` stays the one source of
+  truth, shared with `otter` through `otter_client::config` (`add_host`,
   `remove_host`); the app reconciles its host tasks against the file at
   startup, after its own edits and whenever the file changes, so
-  `workctl host add/rm` show up live.
-- **Installing workd from a release** (`workd_client::install`): a POSIX
-  script fed to `sh -s` on the host — over the same SSH options as `workd
+  `otter host add/rm` show up live.
+- **Installing otterd from a release** (`otter_client::install`): a POSIX
+  script fed to `sh -s` on the host — over the same SSH options as `otterd
   dial`, or locally — picks the build for `uname -sm`, downloads it with curl
-  or wget and installs `workd` and `workctl` into `~/.local/bin` (the default
-  `workd_path`). For an update it then stops the running daemon by its pid
-  file (checked to be a `workd … serve`); sessions keep running and the next
+  or wget and installs `otterd` and `otter` into `~/.local/bin` (the default
+  `otterd_path`). For an update it then stops the running daemon by its pid
+  file (checked to be a `otterd … serve`); sessions keep running and the next
   connection starts the new version. Used by Add host (when the check finds
-  workd missing or on another protocol), the host dialog, and `workctl host
+  otterd missing or on another protocol), the host dialog, and `otter host
   install`. Releases now ship linux-x86_64, linux-aarch64 and macos-universal
   binaries, the names the script asks for.
 - **Command-line tools** from the app menu (and the first-run screen): the
   same install, locally, without touching a running daemon.
-- A host added as "this Mac" points at `~/.local/bin/workd` explicitly: an app
+- A host added as "this Mac" points at `~/.local/bin/otterd` explicitly: an app
   started from Finder has no useful `PATH`.
 
 ## D-021 — The app covers the whole daily loop; light and dark (2026-10-08)
 
 Dogfooding v0.1.2: with a host connected the app dead-ended at "Create one
-with `workctl new`". M1 had deliberately left creation out (D-018), but a
+with `otter new`". M1 had deliberately left creation out (D-018), but a
 client you can't start work from isn't one you can live in. Added, all as thin
 RPCs the daemon already had:
 
@@ -468,8 +468,8 @@ RPCs the daemon already had:
   Restart / Stop / Delete. **Workspaces:** Retry preparation, Delete (Git
   worktrees can discard uncommitted changes; existing folders are kept).
 - **Command-line tools:** the title bar offers to install or update them when
-  `~/.local/bin/workctl` is missing or a different version — installing workd
-  on a *host* puts `workctl` there, not on this Mac, which is what confused us.
+  `~/.local/bin/otter` is missing or a different version — installing otterd
+  on a *host* puts `otter` there, not on this Mac, which is what confused us.
 - **Theme:** System / Light / Dark, remembered per Mac, applied to the UI, the
   terminal and the native title bar. Colors are role tokens with one light
   override block.
@@ -508,7 +508,7 @@ the provider boundary from D-015 made it a new module, not a redesign.
   idle. Sidechain (subagent) and meta records are ignored.
 - The quiet-turn heuristic (permission prompts aren't in the transcript) is
   now shared: `agents::settle`, used by both providers.
-- `workctl new --agent claude`; the app offers Codex / Claude Code / none in
+- `otter new --agent claude`; the app offers Codex / Claude Code / none in
   New workspace and Claude Code in New session, per what the host reports.
 - Test: a fake `claude` writing transcripts the same way
   (`claude_code_session_is_observed_resumed_and_needs_you_when_done`),
@@ -516,6 +516,30 @@ the provider boundary from D-015 made it a new module, not a redesign.
 
 Follow-up: per-architecture macOS downloads. Each desktop architecture job
 also bundles and publishes its own `.app`/`.dmg` (~20 s, in parallel), and
-`workd`/`workctl` build per macOS architecture in parallel jobs, combined into
-the universal tarball (what `workd_client::install` uses) by a small `lipo`
+`otterd`/`otter` build per macOS architecture in parallel jobs, combined into
+the universal tarball (what `otter_client::install` uses) by a small `lipo`
 job — the macOS binaries no longer build arm64 then x86_64 in one job.
+
+## D-024 — Renamed to Otter (2026-10-08)
+
+The product is **Otter** (icon: `docs/assets/otter.png`): the app `Otter.app`
+(`dev.otter.app`), the CLI `otter` (was `workctl`), the daemon `otterd` (was
+`workd`), crates `otter-*`, repository `alvingaopro/otter`, environment
+variables `OTTER_*`, release assets `otter-<v>-<target>.tar.gz` and
+`Otter_<v>_macos_*.dmg`. Earlier entries in this file use the new names.
+
+Existing installs keep working:
+
+- Config: `~/.config/otter`; `~/.config/workd/hosts.toml` is copied over on
+  first use, `WORKCTL_CONFIG_DIR` is still honored, and hosts.toml's
+  `workd_path` key is accepted (the old default `~/.local/bin/workd` maps to
+  `~/.local/bin/otterd`; custom paths are kept).
+- Daemon home: `~/.otter`, but `~/.workd` when only that exists — a host keeps
+  its workspaces and running sessions. `WORKD_HOME` and
+  `WORKD_AGENT_QUIET_SECS` are still honored.
+- The daemon's run files keep their names (`run/workd.sock`, `workd.lock`,
+  `workd.pid`, `logs/workd.log`): an old daemon still running on a home holds
+  the same lock, so a new one can never run beside it on the same state.
+- Installing/updating from the app stops a running old `workd … serve` as
+  well as `otterd`, so the next connection starts `otterd` on the same home.
+- Sessions now get `OTTER_SESSION_ID` etc. (was `WORKD_*`).

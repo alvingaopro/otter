@@ -4,15 +4,15 @@
 use std::sync::Arc;
 
 use anyhow::Result;
+use otter_protocol::wire::{read_json, write_json};
+use otter_protocol::{
+    ClientMessage, ErrorCode, EventRecord, EventsSubscribe, PROTOCOL_VERSION, Request, RpcError,
+    ServerMessage, Subscribed,
+};
 use tokio::io::{AsyncReadExt, BufReader};
 use tokio::net::unix::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::broadcast::error::RecvError;
-use workd_protocol::wire::{read_json, write_json};
-use workd_protocol::{
-    ClientMessage, ErrorCode, EventRecord, EventsSubscribe, PROTOCOL_VERSION, Request, RpcError,
-    ServerMessage, Subscribed,
-};
 
 use crate::attach;
 use crate::daemon::Daemon;

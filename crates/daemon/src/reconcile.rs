@@ -5,8 +5,8 @@
 use std::collections::{HashMap, HashSet};
 
 use chrono::{DateTime, Utc};
-use workd_core::{AgentState, ExecutionState, Workspace};
-use workd_protocol::Event;
+use otter_core::{AgentState, ExecutionState, Workspace};
+use otter_protocol::Event;
 
 use crate::agents::{self, ObserveContext};
 use crate::attention;

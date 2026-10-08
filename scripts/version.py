@@ -6,7 +6,7 @@
                                             print the version after a bump
     scripts/version.py set X.Y.Z            write X.Y.Z everywhere
 
-Sources of truth it keeps in step: the workspace `Cargo.toml` (workd, workctl
+Sources of truth it keeps in step: the workspace `Cargo.toml` (otterd, otter
 and the crates), the desktop app's `Cargo.toml` and `package.json`, and the
 local entries of the lockfiles (so `--locked` builds keep working). The Tauri
 config has no version of its own; Tauri reads the desktop crate's.

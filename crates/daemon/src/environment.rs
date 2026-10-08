@@ -1,6 +1,6 @@
 //! Environment providers (design §16–§18).
 //!
-//! Workd activates the environment a repository declares; it does not manage
+//! Otter activates the environment a repository declares; it does not manage
 //! dependencies. V1 knows two kinds:
 //!
 //! - **None**: the host user's login environment ([`crate::env`]).
@@ -13,8 +13,8 @@ use std::path::{Path, PathBuf};
 use std::process::Stdio;
 
 use anyhow::{Context, Result, bail};
+use otter_core::EnvironmentKind;
 use tokio::process::Command;
-use workd_core::EnvironmentKind;
 
 use crate::env::{EnvMap, which};
 
@@ -46,7 +46,7 @@ impl EnvironmentManager {
 
     /// The complete environment for processes in `root`.
     ///
-    /// `authorize` runs `direnv allow` first; Workd does this only for
+    /// `authorize` runs `direnv allow` first; Otter does this only for
     /// worktrees it created itself from a repository the user asked for.
     pub async fn resolve(
         &self,

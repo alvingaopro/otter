@@ -1,4 +1,4 @@
-# workd — Architecture Lessons and Hardening Brief
+# otterd — Architecture Lessons and Hardening Brief
 
 > An architecture review/hardening brief, not a refactoring plan. Audit the
 > code against it and change only what the evidence justifies. The concrete
@@ -8,19 +8,19 @@
 
 ## Context
 
-We reviewed the architecture of workd and compared it with Cindy
+We reviewed the architecture of otterd and compared it with Cindy
 (makecindy/cindy), a mature coding-agent desktop application that supports
 multiple agent harnesses, remote execution, persistent sessions, SSH, remote
 filesystem access, and multi-agent orchestration.
 
-The purpose of this document is not to make workd resemble Cindy. The
+The purpose of this document is not to make otterd resemble Cindy. The
 comparison mainly validates several architectural decisions already made in
-workd and reveals a few boundaries worth strengthening before we build more UI
+otterd and reveals a few boundaries worth strengthening before we build more UI
 and higher-level features.
 
 The core conclusion:
 
-> workd's current architecture is fundamentally sound. Do not perform a broad
+> otterd's current architecture is fundamentally sound. Do not perform a broad
 > redesign. Strengthen a few boundaries, then dogfood the system and let real
 > usage drive further changes.
 
@@ -59,9 +59,9 @@ possible source/provisioning mechanism:
 
 ```
 Workspace
-├── Empty directory          workctl new scratch
-├── Existing directory       workctl new experiment --dir ~/experiments/foo
-└── Git-backed workspace     workctl new feature-x --repo git@github.com:org/repo.git
+├── Empty directory          otter new scratch
+├── Existing directory       otter new experiment --dir ~/experiments/foo
+└── Git-backed workspace     otter new feature-x --repo git@github.com:org/repo.git
       └── managed worktree
 ```
 
@@ -72,7 +72,7 @@ Git-backed source.
 ## 3. Keep the shared repository / worktree optimization
 
 ```
-~/.workd/
+~/.otter/
 ├── repos/<repo-id>/base
 └── workspaces/{ws-001, ws-002, ws-003}/
 ```
@@ -85,7 +85,7 @@ the generic Workspace abstraction.
 ## 4. Keep one generic host daemon
 
 ```
-Control Plane ──SSH──► workd
+Control Plane ──SSH──► otterd
                          ├── WorkspaceManager
                          ├── SessionManager
                          ├── ExecutionManager
@@ -104,7 +104,7 @@ operational reason. One host daemon, multiple internal capabilities.
 ## 5. SSH is transport, not the domain model
 
 ```
-Desktop ──SSH──► workd dial ──► ~/.workd/run/workd.sock ──► workd daemon
+Desktop ──SSH──► otterd dial ──► ~/.otter/run/workd.sock ──► otterd daemon
 ```
 
 SSH handles authentication and encryption; no daemon TCP port; Unix socket
@@ -117,7 +117,7 @@ SSH is how the control plane reaches it.
 The UI must not own the lifetime of an agent process.
 
 ```
-Desktop ─► workd ─► Session ─► Execution ─► Codex
+Desktop ─► otterd ─► Session ─► Execution ─► Codex
 ```
 
 If the desktop disconnects, the execution keeps running; later the desktop
@@ -214,9 +214,9 @@ No secret-management system yet; existing host configuration (`~/.ssh`,
 assume credentials always come from the user's shell — a later credential
 store should not require redesigning Workspace or Session.
 
-## 16. Multi-agent is a future layer, not a workd responsibility today
+## 16. Multi-agent is a future layer, not a otterd responsibility today
 
-workd provides reliable primitives — create workspace, create session, launch
+otterd provides reliable primitives — create workspace, create session, launch
 / observe / attach / detach / stop / resume / inspect / destroy — and
 higher-level software can orchestrate them later. Don't build an orchestrator
 now.
@@ -329,15 +329,15 @@ providers → eventually dogfood.
 
 If the primitives prove out, a control plane can schedule work across hosts
 and workspaces (Task → Workspace A/Codex, Workspace B/Claude, Workspace
-C/tests). That orchestration is built on top of workd, not embedded in its
+C/tests). That orchestration is built on top of otterd, not embedded in its
 fundamental abstractions.
 
 ## 28. Final principle
 
-> workd manages durable development environments and processes. Coding agents
+> otterd manages durable development environments and processes. Coding agents
 > are powerful workloads running inside those environments.
 
-Not "workd is a Codex manager", and not yet "workd is a multi-agent
+Not "otterd is a Codex manager", and not yet "otterd is a multi-agent
 orchestration platform".
 
 ```

@@ -5,9 +5,9 @@
 //! `dev-01:scratch/shell`. Workspace ids (`ws_…`) work everywhere names do.
 
 use anyhow::{Context, Result, bail};
+use otter_client::Connection;
+use otter_core::{Session, Workspace};
 use tokio::task::JoinSet;
-use workd_client::Connection;
-use workd_core::{Session, Workspace};
 
 use crate::config::{Config, HostEntry};
 
@@ -94,7 +94,7 @@ pub async fn find(config: &Config, target: &Target) -> Result<Found> {
     let hosts: Vec<HostEntry> = match &target.host {
         Some(h) => vec![config.host(h)?.clone()],
         None if config.hosts.is_empty() => {
-            bail!("no hosts registered; add one with `workctl host add <name>`")
+            bail!("no hosts registered; add one with `otter host add <name>`")
         }
         None => config.hosts.clone(),
     };
@@ -106,7 +106,7 @@ pub async fn find(config: &Config, target: &Target) -> Result<Found> {
             let result = async {
                 let mut conn = Connection::connect(&transport).await?;
                 let list = conn.workspace_list().await?;
-                Ok::<_, workd_client::ClientError>((conn, list))
+                Ok::<_, otter_client::ClientError>((conn, list))
             }
             .await;
             (host, result)

@@ -2,5 +2,5 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 fn main() {
-    workd_desktop_lib::run()
+    otter_desktop_lib::run()
 }

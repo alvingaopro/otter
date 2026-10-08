@@ -8,8 +8,8 @@ use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
+use otter_core::Workspace;
 use serde::{Deserialize, Serialize};
-use workd_core::Workspace;
 
 const STATE_VERSION: u32 = 1;
 
@@ -43,7 +43,7 @@ impl Store {
                     .with_context(|| format!("parsing {}", path.display()))?;
                 if state.version > STATE_VERSION {
                     bail!(
-                        "{} was written by a newer workd (state version {})",
+                        "{} was written by a newer otterd (state version {})",
                         path.display(),
                         state.version
                     );
