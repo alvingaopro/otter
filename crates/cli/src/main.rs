@@ -323,7 +323,11 @@ async fn run(cli: Cli) -> Result<()> {
             let session = found.session(target.session.as_deref())?;
             let label = found.label(&session);
             let ws_id = found.workspace.id.to_string();
-            attach::run(found.conn, &ws_id, session.id.as_str(), &label).await
+            let host = attach::Host {
+                transport: config.transport(&found.host),
+                name: found.host.name.clone(),
+            };
+            attach::run(found.conn, host, &ws_id, session.id.as_str(), &label).await
         }
         Command::Logs { target, lines } => {
             let target = Target::parse(&target)?;

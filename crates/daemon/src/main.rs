@@ -57,7 +57,8 @@ enum Command {
     Dial,
     /// Print the version.
     Version,
-    /// Open a sign-in page in the connected Otter app's browser (what the
+    /// Open a sign-in page in the browser of a connected Otter app or attached
+    /// terminal (what the
     /// xdg-open/www-browser stand-ins run).
     #[command(hide = true)]
     OpenUrl { url: String },

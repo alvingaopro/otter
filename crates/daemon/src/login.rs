@@ -1,7 +1,8 @@
 //! Browser login: a CLI on the host (`aws sso login`, `gcloud auth login`,
 //! `gh auth login`, …) that wants to open a sign-in page gets it opened in
-//! the Otter app's browser on the Mac, and a loopback callback port it waits
-//! on is mapped from the Mac for the few minutes the login takes.
+//! the Otter app's browser on the Mac (or by an `otter attach` there), and a
+//! loopback callback port it waits on is mapped from the Mac for the few
+//! minutes the login takes.
 //!
 //! Tools open browsers through `BROWSER`, `xdg-open` or `www-browser`; the
 //! stand-ins in `run/bin` (first on every session's PATH, see `files.rs`)
@@ -11,11 +12,12 @@
 //! - **One loopback port** at most: the explicit port of a `redirect_uri`
 //!   to `127.0.0.1`/`localhost`/`[::1]`, found in the URL or in an https URL
 //!   wrapped inside it (two levels).
-//! - Refused when no Otter app is connected, so the tool prints the URL as it
-//!   would without a browser.
+//! - Refused when no Otter app or attached terminal is connected, so the tool
+//!   prints the URL as it would without a browser.
 //!
 //! The URL itself never goes into `events.jsonl`: the event names only the
-//! provider and the port; the app takes the URL with `browser.take`, once.
+//! provider and the port; the app (or terminal) takes the URL with
+//! `browser.take`, once.
 
 use std::collections::HashMap;
 use std::sync::Mutex;

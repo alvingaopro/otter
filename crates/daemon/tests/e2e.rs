@@ -1827,7 +1827,10 @@ async fn browser_login_opens_trusted_pages_through_a_connected_app() {
     .await
     .unwrap();
     let out = wait_output(&host, "login", "sh", "first-done-42").await;
-    assert!(out.contains("no Otter app is connected"), "{out}");
+    assert!(
+        out.contains("no Otter app or attached terminal is connected"),
+        "{out}"
+    );
 
     // An app subscribes as the browser.
     let mut stream = host.conn().await.subscribe_for_browser(None).await.unwrap();
@@ -2058,4 +2061,74 @@ async fn archived_git_workspace_keeps_its_worktree_until_deleted() {
     conn.workspace_delete("parked", true).await.unwrap();
     assert!(!root.exists());
     git(&base, &["show-ref", "--verify", "refs/heads/otterd/parked"]);
+}
+
+#[tokio::test]
+async fn browser_login_opens_pages_from_attached_terminals_once() {
+    use otter_client::login::{Logins, Opener};
+    use std::sync::{Arc, Mutex};
+
+    let host = TestHost::new();
+    sh_session(&host, "login").await;
+    let mut conn = host.conn().await;
+
+    // Two clients serve browser login at once (`otter attach` in two
+    // terminals, or one beside the app); each opener records what it opens.
+    let opened = Arc::new(Mutex::new(Vec::<(usize, String)>::new()));
+    let opener = |n: usize| -> Opener {
+        let opened = opened.clone();
+        Arc::new(move |url: &str| {
+            opened.lock().unwrap().push((n, url.to_owned()));
+            Ok(())
+        })
+    };
+    let first = Logins::start(host.transport.clone(), "test", opener(1))
+        .await
+        .unwrap();
+    let second = Logins::start(host.transport.clone(), "test", opener(2))
+        .await
+        .unwrap();
+
+    let github = "https://github.com/login/device";
+    conn.session_write(
+        "login",
+        "sh",
+        &format!("xdg-open '{github}'; echo ok-$((40+$?))"),
+        true,
+    )
+    .await
+    .unwrap();
+    wait_output(&host, "login", "sh", "ok-40").await;
+    let opened_url = eventually("the page opens", || {
+        let first = opened.lock().unwrap().first().map(|(_, u)| u.clone());
+        async move { first }
+    })
+    .await;
+    assert_eq!(opened_url, github);
+    // Taken once: the other client doesn't open it too.
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    assert_eq!(
+        opened.lock().unwrap().len(),
+        1,
+        "{:?}",
+        opened.lock().unwrap()
+    );
+
+    // Once both stop, nothing serves it and the tool hears why.
+    first.stop().await;
+    second.stop().await;
+    conn.session_write(
+        "login",
+        "sh",
+        &format!("xdg-open '{github}'; echo after-done-$((40+2))"),
+        true,
+    )
+    .await
+    .unwrap();
+    let out = wait_output(&host, "login", "sh", "after-done-42").await;
+    assert!(
+        out.contains("no Otter app or attached terminal is connected"),
+        "{out}"
+    );
+    assert_eq!(opened.lock().unwrap().len(), 1);
 }

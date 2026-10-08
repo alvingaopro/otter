@@ -2,11 +2,17 @@
 //!
 //! The local terminal is put in raw mode and bridged to the session through
 //! the daemon. `Ctrl-]` detaches; the session keeps running.
+//!
+//! While attached, sign-in pages that tools on the host open (browser login,
+//! D-032) open in this machine's browser, as they do with the app.
 
 use std::io::{IsTerminal, Read, Write};
 
 use anyhow::{Result, bail};
-use otter_client::Connection;
+use std::sync::Arc;
+
+use otter_client::login::{self, Logins, Opener};
+use otter_client::{Connection, Transport};
 use otter_protocol::frame::{AttachExit, AttachExitReason, Frame};
 use otter_protocol::{SessionAttach, SessionRef};
 use tokio::sync::mpsc;
@@ -47,10 +53,31 @@ impl Drop for RawMode {
     }
 }
 
-pub async fn run(conn: Connection, workspace_id: &str, session: &str, label: &str) -> Result<()> {
+/// Where the session is: its host's name and how to reach it.
+pub struct Host {
+    pub name: String,
+    pub transport: Transport,
+}
+
+pub async fn run(
+    conn: Connection,
+    host: Host,
+    workspace_id: &str,
+    session: &str,
+    label: &str,
+) -> Result<()> {
     if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
         bail!("attach needs an interactive terminal (try `otter logs` / `otter send`)");
     }
+    // Inside an Otter session this machine is itself a host: its "browser"
+    // would hand the page straight back. Otherwise a failure here only means
+    // pages print their URL instead.
+    let logins = if std::env::var_os("OTTER_SESSION_ID").is_some() {
+        None
+    } else {
+        let open: Opener = Arc::new(login::system_open);
+        Logins::start(host.transport, &host.name, open).await.ok()
+    };
     let (cols, rows) = terminal_size();
     let term = std::env::var("TERM").ok().filter(|t| !t.is_empty());
     let (_ready, mut reader, mut writer) = conn
@@ -145,6 +172,9 @@ pub async fn run(conn: Connection, workspace_id: &str, session: &str, label: &st
     };
 
     drop(raw);
+    if let Some(logins) = logins {
+        logins.stop().await;
+    }
     let message = match outcome {
         Some(AttachExit {
             reason: AttachExitReason::Detached,
