@@ -2366,7 +2366,7 @@ dependencies = [
 
 [[package]]
 name = "otter-client"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "anyhow",
  "otter-core",
@@ -2380,7 +2380,7 @@ dependencies = [
 
 [[package]]
 name = "otter-core"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "chrono",
  "rand",
@@ -2390,7 +2390,7 @@ dependencies = [
 
 [[package]]
 name = "otter-desktop"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "anyhow",
  "chrono",
@@ -2407,7 +2407,7 @@ dependencies = [
 
 [[package]]
 name = "otter-protocol"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "chrono",
  "otter-core",

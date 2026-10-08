@@ -1,6 +1,6 @@
 [package]
 name = "otter-desktop"
-version = "0.2.0"
+version = "0.2.1"
 description = "Otter desktop: a thin client over otter-client."
 edition = "2024"
 publish = false
