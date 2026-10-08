@@ -59,6 +59,7 @@ impl Daemon {
         env: ResolvedEnv,
         shell: String,
     ) -> Self {
+        let metrics = crate::metrics::Sampler::start(paths.state_dir.join("metrics"));
         Daemon {
             git: GitManager::new(paths.home.join("repos"), &env.vars),
             environments: EnvironmentManager::new(&env.vars),
@@ -71,7 +72,7 @@ impl Daemon {
             started_at: Utc::now(),
             workspace_env: Default::default(),
             preparing: Default::default(),
-            metrics: crate::metrics::Sampler::start(),
+            metrics,
             shutdown: watch::channel(false).0,
         }
     }
@@ -99,6 +100,13 @@ impl Daemon {
                 )),
             },
             Request::HostPorts => json(crate::metrics::listening_ports().await),
+            Request::HostHistory(q) => match self.metrics.history(&q.range) {
+                Some(h) => json(h),
+                None => Err(RpcError::invalid(format!(
+                    "unknown range `{}` (1h, 24h, 7d or 30d)",
+                    q.range
+                ))),
+            },
             Request::WorkspaceCreate(p) => json(self.workspace_create(p).await?),
             Request::WorkspaceList => json(self.store.lock().await.state.workspaces.clone()),
             Request::WorkspaceGet(r) => json(self.workspace_get(&r.workspace).await?),

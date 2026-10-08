@@ -74,3 +74,36 @@ pub struct ListeningPort {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pid: Option<u32>,
 }
+
+/// Usage over a longer range (`host.history`), from what the daemon has
+/// recorded: per-minute points for up to 7 days, hourly for up to 90.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct HostHistory {
+    /// Seconds each point covers.
+    pub resolution_secs: u32,
+    /// Oldest first. Missing stretches (the daemon wasn't running) are
+    /// simply absent; compare `at` to find gaps.
+    pub points: Vec<TrendPoint>,
+}
+
+/// One period of history: averages, and peaks where a spike matters.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct TrendPoint {
+    /// Start of the period.
+    pub at: Timestamp,
+    pub cpu_avg: f32,
+    pub cpu_max: f32,
+    pub memory_avg: u64,
+    pub memory_max: u64,
+    pub load_avg: f32,
+    pub net_rx_bps: u64,
+    pub net_tx_bps: u64,
+    pub disk_read_bps: u64,
+    pub disk_write_bps: u64,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct HistoryQuery {
+    /// `1h`, `24h`, `7d` or `30d`.
+    pub range: String,
+}

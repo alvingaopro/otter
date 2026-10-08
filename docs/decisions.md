@@ -638,3 +638,17 @@ Asked for: a per-host dashboard to tell whether a host is fully occupied
   in `ports.toml` next to `hosts.toml`.
 - Not yet: `otter port …` / `otter host top` in the CLI, mapping a host's
   port ranges, image paste and browser login from portkeeper.
+
+## D-030 — Recorded usage for trends (2026-10-08)
+
+The host page showed only otterd's in-memory 10 minutes, lost on every
+restart. otterd now records usage on the host (so it accumulates while the
+Mac is closed): `history::Recorder` folds the 5 s samples into per-minute
+points (average, and peak for CPU and memory) in `state/metrics/minutes.jsonl`
+for 7 days, rolling older minutes into hourly points in `hours.jsonl` for 90
+days — so a restart mid-hour loses nothing and the files stay small (rewritten
+when trimmed). `host.history {range}` (1h at 1 min, 24h at 5 min, 7d at
+30 min, 30d at 1 h) is a new method rather than a parameter on `host.metrics`,
+which old clients send without params. The host page gets a range picker
+(10 min live · 1 h · 24 h · 7 d · 30 d); trend charts use a time axis so a
+stretch with no recording shows as a gap, and plot average with peak.

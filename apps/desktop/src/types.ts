@@ -124,3 +124,21 @@ export interface ForwardView {
   state: "pending" | "active" | "failed";
   message?: string;
 }
+
+export interface TrendPoint {
+  at: string;
+  cpu_avg: number;
+  cpu_max: number;
+  memory_avg: number;
+  memory_max: number;
+  load_avg: number;
+  net_rx_bps: number;
+  net_tx_bps: number;
+  disk_read_bps: number;
+  disk_write_bps: number;
+}
+
+export interface HostHistory {
+  resolution_secs: number;
+  points: TrendPoint[];
+}

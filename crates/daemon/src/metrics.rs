@@ -2,16 +2,19 @@
 //! listening on the host (`host.ports`).
 //!
 //! A sampler measures every [`INTERVAL`] and keeps [`HISTORY`] samples, so a
-//! client opening the page sees the last minutes at once. Measurements come
-//! from `sysinfo` (Linux and macOS); nothing is persisted.
+//! client opening the page sees the last minutes at once, and hands every
+//! sample to the [`crate::history::Recorder`] for trends. Measurements come
+//! from `sysinfo` (Linux and macOS).
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use otter_protocol::host::{
-    DiskSpace, HostMetrics, ListeningPort, MemoryUsage, MetricsSample, ProcessUsage,
+    DiskSpace, HostHistory, HostMetrics, ListeningPort, MemoryUsage, MetricsSample, ProcessUsage,
 };
+
+use crate::history::Recorder;
 use sysinfo::{Disks, Networks, ProcessRefreshKind, ProcessesToUpdate, System};
 
 pub const INTERVAL: Duration = Duration::from_secs(5);
@@ -19,9 +22,10 @@ pub const INTERVAL: Duration = Duration::from_secs(5);
 const HISTORY: usize = 120;
 const TOP: usize = 8;
 
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub struct Sampler {
     latest: Arc<Mutex<Option<HostMetrics>>>,
+    recorder: Arc<Mutex<Recorder>>,
 }
 
 struct Probe {
@@ -32,10 +36,14 @@ struct Probe {
 }
 
 impl Sampler {
-    /// Start sampling in the background.
-    pub fn start() -> Sampler {
-        let sampler = Sampler::default();
+    /// Start sampling in the background, recording into `history_dir`.
+    pub fn start(history_dir: std::path::PathBuf) -> Sampler {
+        let sampler = Sampler {
+            latest: Arc::default(),
+            recorder: Arc::new(Mutex::new(Recorder::open(history_dir, chrono::Utc::now()))),
+        };
         let latest = sampler.latest.clone();
+        let recorder = sampler.recorder.clone();
         std::thread::Builder::new()
             .name("metrics".into())
             .spawn(move || {
@@ -50,11 +58,25 @@ impl Sampler {
                 loop {
                     std::thread::sleep(INTERVAL);
                     let metrics = probe.sample();
+                    if let Some(last) = metrics.history.last() {
+                        recorder
+                            .lock()
+                            .unwrap()
+                            .record(last, metrics.load[0] as f32);
+                    }
                     *latest.lock().unwrap() = Some(metrics);
                 }
             })
             .expect("spawning the metrics thread");
         sampler
+    }
+
+    /// Recorded usage over a range (`1h`, `24h`, `7d`, `30d`).
+    pub fn history(&self, range: &str) -> Option<HostHistory> {
+        self.recorder
+            .lock()
+            .unwrap()
+            .history(range, chrono::Utc::now())
     }
 
     /// The latest measurement; `None` until the first interval has passed.

@@ -49,6 +49,7 @@ export function LineChart({
   max,
   height = 132,
   binary = false,
+  time,
 }: {
   title: string;
   series: Series[];
@@ -59,6 +60,12 @@ export function LineChart({
   height?: number;
   /** Values are bytes: axis steps in powers of 1024. */
   binary?: boolean;
+  /**
+   * A time axis instead of evenly spaced samples: each value's time (ms) and
+   * the span shown. Points further apart than `gap` ms aren't joined (the
+   * host wasn't recording).
+   */
+  time?: { at: number[]; from: number; to: number; gap: number; label: (t: number) => string };
 }) {
   const [ref, width] = useWidth();
   const [hover, setHover] = useState<number | null>(null);
@@ -71,16 +78,35 @@ export function LineChart({
   const bottom = 20;
   const plotW = width - left - right;
   const plotH = height - top - bottom;
-  const x = (i: number) => left + (n <= 1 ? plotW : (i / (n - 1)) * plotW);
+  const x = time
+    ? (i: number) => left + ((time.at[i] - time.from) / Math.max(1, time.to - time.from)) * plotW
+    : (i: number) => left + (n <= 1 ? plotW : (i / (n - 1)) * plotW);
   const y = (v: number) => top + plotH - (Math.min(v, yMax) / yMax) * plotH;
   const ticks = [0, yMax / 2, yMax];
-  const path = (vals: number[]) => vals.map((v, i) => `${i ? "L" : "M"}${x(i).toFixed(1)},${y(v).toFixed(1)}`).join("");
+  // A new segment ("M") after a gap in recording.
+  const path = (vals: number[]) =>
+    vals
+      .map((v, i) => {
+        const jump = i === 0 || (time !== undefined && time.at[i] - time.at[i - 1] > time.gap);
+        return `${jump ? "M" : "L"}${x(i).toFixed(1)},${y(v).toFixed(1)}`;
+      })
+      .join("");
   const single = series.length === 1;
 
   function onMove(e: React.PointerEvent<SVGRectElement>) {
+    if (n === 0) return;
     const r = e.currentTarget.getBoundingClientRect();
     const fx = (e.clientX - r.left) / r.width;
-    setHover(Math.max(0, Math.min(n - 1, Math.round(fx * (n - 1)))));
+    if (time) {
+      const t = time.from + fx * (time.to - time.from);
+      let best = 0;
+      time.at.forEach((ti, i) => {
+        if (Math.abs(ti - t) < Math.abs(time.at[best] - t)) best = i;
+      });
+      setHover(best);
+    } else {
+      setHover(Math.max(0, Math.min(n - 1, Math.round(fx * (n - 1)))));
+    }
   }
 
   return (
@@ -110,12 +136,12 @@ export function LineChart({
             </g>
           ))}
           <text x={left} y={height - 4} className="axis">
-            {before((n - 1) * interval)}
+            {time ? time.label(time.from) : before((n - 1) * interval)}
           </text>
           <text x={width - right} y={height - 4} className="axis" textAnchor="end">
             now
           </text>
-          {single && n > 1 && (
+          {single && n > 1 && !time && (
             <path
               d={`${path(series[0].values)}L${x(n - 1)},${y(0)}L${x(0)},${y(0)}Z`}
               fill={series[0].color}
@@ -149,7 +175,7 @@ export function LineChart({
             style={{ left: Math.min(x(hover) + 10, width - 150), top: 6 }}
             role="status"
           >
-            <div className="tooltip-when">{before((n - 1 - hover) * interval)}</div>
+            <div className="tooltip-when">{time ? time.label(time.at[hover]) : before((n - 1 - hover) * interval)}</div>
             {series.map((s) => (
               <div key={s.name} className="tooltip-row">
                 <span className="tooltip-key" style={{ background: s.color }} />
