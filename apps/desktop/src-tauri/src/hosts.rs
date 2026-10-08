@@ -254,15 +254,24 @@ async fn follow(app: &AppHandle, name: &str, transport: &Transport) -> Result<Ne
         v.version = Some(version);
         v.agents = agents;
     });
-    let snapshot = rpc.snapshot().await?;
-    show(app, name, &snapshot.workspaces);
-
-    // Events after the snapshot; each burst triggers a fresh snapshot. Reading
-    // the stream isn't cancel-safe, so it gets its own task.
-    let mut stream = Connection::connect(transport)
-        .await?
-        .subscribe_for_browser(Some(snapshot.seq))
-        .await?;
+    // Events after the snapshot; each burst triggers a fresh snapshot. If the
+    // host can't serve the snapshot's cursor (its event log rotated or started
+    // over in between), take another snapshot rather than report an error.
+    let mut resyncs = 0;
+    let mut stream = loop {
+        let snapshot = rpc.snapshot().await?;
+        show(app, name, &snapshot.workspaces);
+        match Connection::connect(transport)
+            .await?
+            .subscribe_for_browser(Some(snapshot.cursor()))
+            .await
+        {
+            Ok(stream) => break stream,
+            Err(e) if e.is_cursor_expired() && resyncs < 3 => resyncs += 1,
+            Err(e) => return Err(e),
+        }
+    };
+    // Reading the stream isn't cancel-safe, so it gets its own task.
     let (tx, mut rx) = tokio::sync::mpsc::channel::<Result<(), ClientError>>(64);
     let (login_app, login_host) = (app.clone(), name.to_owned());
     let reader = tauri::async_runtime::spawn(async move {

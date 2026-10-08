@@ -333,6 +333,11 @@ pub struct EventsSubscribe {
     /// Without it, only events after [`Subscribed::seq`] are streamed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub after: Option<u64>,
+    /// The log `after` came from ([`StateSnapshot::log_id`] or
+    /// [`Subscribed::log_id`]). A different log fails with
+    /// [`ErrorCode::CursorExpired`] even if it has grown past `after`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub log_id: Option<String>,
     /// This subscriber opens sign-in pages (`BrowserOpenRequested`): the
     /// Otter app. Browser login is refused while there is none.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -343,6 +348,10 @@ pub struct EventsSubscribe {
 pub struct Subscribed {
     /// The latest event when the subscription started. Live events follow it.
     pub seq: u64,
+    /// The host's event log; send it back with the next cursor. Absent from
+    /// daemons before D-037.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub log_id: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -351,7 +360,29 @@ pub struct StateSnapshot {
     /// reflects every event up to `seq` and may already reflect later ones,
     /// so applying an event must be idempotent (e.g. refetch).
     pub seq: u64,
+    /// The event log `seq` belongs to; subscribe with it. Absent from daemons
+    /// before D-037.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub log_id: Option<String>,
     pub workspaces: Vec<otter_core::Workspace>,
+}
+
+impl StateSnapshot {
+    /// Where to follow on from this snapshot.
+    pub fn cursor(&self) -> Cursor {
+        Cursor {
+            seq: self.seq,
+            log_id: self.log_id.clone(),
+        }
+    }
+}
+
+/// A position in a host's event log: the last event seen and the log it came
+/// from (`None` from daemons that don't name their log).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Cursor {
+    pub seq: u64,
+    pub log_id: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -421,8 +452,9 @@ pub enum ErrorCode {
     Conflict,
     Unsupported,
     Internal,
-    /// `events.subscribe` cursor is older than the retained log or newer than
-    /// the latest event (the log was reset). Reload a snapshot.
+    /// `events.subscribe` cursor is older than the retained log, newer than
+    /// the latest event, or from another log (the log was reset). Reload a
+    /// snapshot.
     CursorExpired,
     /// Not available yet; retry shortly (e.g. metrics right after start).
     Unavailable,
@@ -447,6 +479,7 @@ mod tests {
             id: 2,
             request: Request::EventsSubscribe(EventsSubscribe {
                 after: Some(41),
+                log_id: None,
                 browser: false,
             }),
         };
@@ -455,6 +488,42 @@ mod tests {
             json,
             r#"{"id":2,"method":"events.subscribe","params":{"after":41}}"#
         );
+    }
+
+    #[test]
+    fn log_ids_are_optional_both_ways() {
+        // A daemon before D-037 sends neither; a client before it sends none.
+        let snap: StateSnapshot = serde_json::from_str(r#"{"seq":5,"workspaces":[]}"#).unwrap();
+        assert_eq!(
+            snap.cursor(),
+            Cursor {
+                seq: 5,
+                log_id: None
+            }
+        );
+        let sub: Subscribed = serde_json::from_str(r#"{"seq":5}"#).unwrap();
+        assert_eq!(sub.log_id, None);
+        let msg: ClientMessage =
+            serde_json::from_str(r#"{"id":1,"method":"events.subscribe","params":{"after":5}}"#)
+                .unwrap();
+        let Request::EventsSubscribe(p) = msg.request else {
+            panic!()
+        };
+        assert_eq!((p.after, p.log_id), (Some(5), None));
+
+        // A newer daemon's fields round-trip; older peers ignore them.
+        let snap = StateSnapshot {
+            seq: 7,
+            log_id: Some("log_abc".into()),
+            workspaces: vec![],
+        };
+        let json = serde_json::to_string(&snap).unwrap();
+        assert!(json.contains(r#""log_id":"log_abc""#), "{json}");
+        #[derive(Deserialize)]
+        struct OldSnapshot {
+            seq: u64,
+        }
+        assert_eq!(serde_json::from_str::<OldSnapshot>(&json).unwrap().seq, 7);
     }
 
     #[test]

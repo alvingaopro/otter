@@ -40,15 +40,20 @@ what changed after it.
 ### `state.snapshot`
 
 ```json
-{"seq": 103, "workspaces": [ … ]}
+{"seq": 103, "log_id": "log_…", "workspaces": [ … ]}
 ```
 
 `workspaces` include their sessions, executions and attention. (`host.status`
 is separate: it probes the host's tools and is slower.)
 
-`seq` is the event cursor the snapshot corresponds to. The snapshot reflects
-**every event up to `seq`, and possibly some later ones** — so clients apply
-events idempotently (simplest: treat an event as "refetch what it names").
+`seq` is the event cursor the snapshot corresponds to, in the event log named
+by `log_id`. The snapshot reflects **every event up to `seq`, and possibly some
+later ones** — so clients apply events idempotently (simplest: treat an event
+as "refetch what it names").
+
+A snapshot is read from the daemon's current state, not rebuilt from events,
+so it is complete however much of the log has been rotated away: it is always
+the way to resync.
 
 ### Events
 
@@ -56,42 +61,62 @@ events idempotently (simplest: treat an event as "refetch what it names").
 {"type":"event","event":{"seq":104,"ts":"…","type":"AttentionCreated","workspace_id":"ws_…", …}}
 ```
 
-`seq` is per host, strictly increasing and survives daemon restarts. It is not
-guaranteed contiguous (a log line the daemon cannot parse is skipped), so
-clients compare cursors with `>`, never count them.
+`seq` is per event log, strictly increasing and survives daemon restarts. It
+is not guaranteed contiguous (a log line the daemon cannot parse is skipped),
+so clients compare cursors with `>`, never count them.
+
+### The event log
+
+The host keeps a bounded log (D-037): about the last 75–100k events (at most
+~16 MiB in `~/.otter/state/`, in 4 MiB segments; the oldest segment is dropped
+as a new one starts). A cursor is a `seq` **and** the `log_id` it came from.
+The log id stays the same across daemon restarts and rotation; it changes only
+when the log starts over (its files were removed), and `seq` then starts again
+from 1.
 
 ### `events.subscribe`
 
-Params: `{"after": 103}` (optional). Result: `{"seq": 110}` — the latest event
-when the subscription started. Then the connection carries `event` messages:
+Params: `{"after": 103, "log_id": "log_…"}` (both optional; send `log_id`
+whenever the cursor came with one). Result: `{"seq": 110, "log_id": "log_…"}`
+— the latest event when the subscription started, and the log. Then the
+connection carries `event` messages:
 
 - with `after`: every logged event with `seq > after`, in order, then live
   events — each exactly once, with no gap between replay and live;
 - without `after`: live events with `seq > result.seq`.
 
 If the daemon falls behind its internal buffer it catches up from the log
-rather than dropping events. Anything the client sends after subscribing is
-ignored; closing the connection ends the subscription.
+rather than dropping events; if what it missed has meanwhile been rotated away
+it closes the connection instead (the client's next subscribe gets
+`cursor_expired`). Anything the client sends after subscribing is ignored;
+closing the connection ends the subscription.
+
+Replay reads only the log segments from the cursor on, and recent cursors
+(the last ~2000 events) are served from memory.
 
 **Cursor errors.** If `after` cannot be served, the request fails with
 `cursor_expired`, after which the server closes the connection (open a new
 one for the snapshot):
 
-- it is older than the oldest retained event (the log was rotated — not done
-  yet, but clients must handle it), or
-- it is newer than the latest event (the host's log was reset).
+- `log_id` names a different log (the host's log started over — even if it
+  has since grown past `after`),
+- `after` is older than the oldest retained event (rotated away), or
+- `after` is newer than the latest event (the log started over; the only way
+  to notice that when the client sends no `log_id`).
 
-The client then reloads a snapshot and subscribes after its `seq`. Events are
+The client then reloads a snapshot and subscribes after its cursor. Events are
 never silently skipped.
 
-Known gap: a log that was reset *and* has since grown past the client's old
-cursor is not detected (no log identity yet; D-016).
+Versions: daemons before D-037 send no `log_id` and ignore it in requests;
+clients then fall back to `seq` alone (where a log that started over and grew
+past the cursor goes unnoticed). Clients before D-037 send no `log_id`; the
+daemon checks their `seq` as before.
 
 ### Client recipes
 
 ```text
-fresh client:   snapshot ─► subscribe(after = snapshot.seq) ─► apply events
-reconnecting:   subscribe(after = last seen seq)
+fresh client:   snapshot ─► subscribe(after = snapshot.seq, log_id = snapshot.log_id) ─► apply events
+reconnecting:   subscribe(after = last seen seq, log_id = Subscribed.log_id)
                   └─ cursor_expired ─► fresh client
 ```
 

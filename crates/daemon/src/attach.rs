@@ -175,7 +175,9 @@ pub async fn run(
                         ends_attach(&rec.event, &target.workspace_id, &target.ready)
                     }
                     // Fell behind: check what was missed in the log, so an
-                    // exit can't slip by and leave the attach hanging.
+                    // exit can't slip by and leave the attach hanging. (If they
+                    // were rotated away, the attach still ends when its
+                    // terminal closes.)
                     Err(RecvError::Lagged(_)) => {
                         let missed = daemon.events.since(seen).ok().flatten().unwrap_or_default();
                         seen = missed.last().map_or(seen, |r| r.seq);

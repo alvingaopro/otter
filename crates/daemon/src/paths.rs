@@ -3,7 +3,7 @@
 //! ```text
 //! ~/.otter/
 //!     run/            daemon socket, lock, pid, tmux socket + config
-//!     state/          state.json, events.jsonl
+//!     state/          state.json, events.jsonl (+ rotated events.<seq>.jsonl, events.id)
 //!     logs/           workd.log
 //!     workspaces/     <workspace-id>/ …
 //! ```

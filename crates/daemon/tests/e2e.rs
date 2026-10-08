@@ -12,7 +12,8 @@ use otter_core::{
 };
 use otter_protocol::frame::{AttachExitReason, Frame};
 use otter_protocol::{
-    Event, SessionAttach, SessionCreate, SessionRef, SessionSpec, SourceSpec, WorkspaceCreate,
+    Cursor, Event, SessionAttach, SessionCreate, SessionRef, SessionSpec, SourceSpec,
+    WorkspaceCreate,
 };
 
 struct TestHost {
@@ -907,27 +908,31 @@ async fn event_replay_resumes_after_disconnect_and_daemon_restart() {
     create(&host, "ev", Some(vec![])).await;
     let snapshot = host.conn().await.snapshot().await.unwrap();
     assert!(snapshot.workspaces.iter().any(|w| w.name == "ev"));
+    assert!(snapshot.log_id.is_some());
     // A subscriber that goes away (laptop sleeps).
     let stream = host
         .conn()
         .await
-        .subscribe(Some(snapshot.seq))
+        .subscribe(Some(snapshot.cursor()))
         .await
         .unwrap();
     assert!(stream.seq >= snapshot.seq);
+    assert_eq!(stream.cursor(), snapshot.cursor());
     drop(stream);
 
     // Meanwhile: a task runs, and the daemon restarts.
     task(&host, "ev", "t").await;
     host.stop_daemon().await;
 
-    // Reconnecting with the cursor replays exactly what was missed, in order.
+    // Reconnecting with the cursor replays exactly what was missed, in order:
+    // the restarted daemon continues the same log.
     let mut stream = host
         .conn()
         .await
-        .subscribe(Some(snapshot.seq))
+        .subscribe(Some(snapshot.cursor()))
         .await
         .unwrap();
+    assert_eq!(stream.cursor().log_id, snapshot.log_id);
     let head = stream.seq;
     let missed = events_through(&mut stream, head).await;
     let seqs: Vec<u64> = missed.iter().map(|r| r.seq).collect();
@@ -959,7 +964,7 @@ async fn snapshot_then_subscribe_has_no_gap_and_stale_cursors_are_rejected() {
     let mut stream = host
         .conn()
         .await
-        .subscribe(Some(snapshot.seq))
+        .subscribe(Some(snapshot.cursor()))
         .await
         .unwrap();
     task(&host, "snap", "t").await;
@@ -968,13 +973,120 @@ async fn snapshot_then_subscribe_has_no_gap_and_stale_cursors_are_rejected() {
 
     // A cursor this host never issued (e.g. its log was reset) is refused,
     // not silently treated as "from now".
-    match host.conn().await.subscribe(Some(snapshot.seq + 1000)).await {
-        Err(otter_client::ClientError::Rpc(e)) => {
-            assert_eq!(e.code, otter_protocol::ErrorCode::CursorExpired, "{e}")
-        }
-        Err(e) => panic!("unexpected error: {e}"),
-        Ok(_) => panic!("stale cursor accepted"),
+    let ahead = Cursor {
+        seq: snapshot.seq + 1000,
+        ..snapshot.cursor()
+    };
+    assert_cursor_expired(&host, ahead).await;
+    // So is one without a log id (as old clients send) that this log can't
+    // serve.
+    let ahead = Cursor {
+        seq: snapshot.seq + 1000,
+        log_id: None,
+    };
+    assert_cursor_expired(&host, ahead).await;
+}
+
+async fn assert_cursor_expired(host: &TestHost, cursor: Cursor) {
+    match host.conn().await.subscribe(Some(cursor.clone())).await {
+        Err(e) if e.is_cursor_expired() => {}
+        Err(e) => panic!("unexpected error for {cursor:?}: {e}"),
+        Ok(_) => panic!("stale cursor {cursor:?} accepted"),
     }
+}
+
+/// Workspaces are a cheap way to produce events.
+async fn churn(host: &TestHost, prefix: &str, n: usize) {
+    for i in 0..n {
+        create(host, &format!("{prefix}{i}"), Some(vec![])).await;
+    }
+}
+
+#[tokio::test]
+async fn rotated_cursors_resync_and_recent_ones_replay() {
+    // Tiny segments, so a few dozen events rotate the log several times.
+    let host = TestHost::with_env(&[("OTTER_EVENTS_SEGMENT_BYTES", "1024".into())]).await;
+    let old = host.conn().await.snapshot().await.unwrap().cursor();
+    churn(&host, "a", 30).await;
+    let recent = host.conn().await.snapshot().await.unwrap();
+    let segments = std::fs::read_dir(host.home().join("state"))
+        .unwrap()
+        .filter(|e| {
+            let name = e.as_ref().unwrap().file_name();
+            let name = name.to_string_lossy();
+            name.starts_with("events.") && name.ends_with(".jsonl") && name != "events.jsonl"
+        })
+        .count();
+    assert!((1..=3).contains(&segments), "{segments} rotated segments");
+
+    // A cursor from before the retained log is refused; the client resyncs
+    // from a snapshot, which has everything.
+    assert_cursor_expired(&host, old.clone()).await;
+    assert_cursor_expired(
+        &host,
+        Cursor {
+            log_id: None,
+            ..old
+        },
+    )
+    .await;
+    assert_eq!(
+        recent
+            .workspaces
+            .iter()
+            .filter(|w| w.name.starts_with('a'))
+            .count(),
+        30
+    );
+
+    // A recent cursor still replays exactly what followed it.
+    let mut stream = host
+        .conn()
+        .await
+        .subscribe(Some(recent.cursor()))
+        .await
+        .unwrap();
+    create(&host, "b", Some(vec![])).await;
+    let next = events_through(&mut stream, recent.seq + 1).await;
+    assert_eq!(next[0].seq, recent.seq + 1);
+    assert_eq!(next[0].event.kind(), "WorkspaceCreated");
+}
+
+#[tokio::test]
+async fn a_log_that_started_over_is_detected_even_past_the_old_cursor() {
+    let host = TestHost::new();
+    create(&host, "before", Some(vec![])).await;
+    let old = host.conn().await.snapshot().await.unwrap();
+    assert!(old.seq > 0);
+
+    // The host's event log is lost (as if `state/` were restored without it).
+    host.stop_daemon().await;
+    for entry in std::fs::read_dir(host.home().join("state")).unwrap() {
+        let path = entry.unwrap().path();
+        let name = path.file_name().unwrap().to_string_lossy().into_owned();
+        if name.starts_with("events.") {
+            std::fs::remove_file(path).unwrap();
+        }
+    }
+
+    // The new log grows past the old cursor; by `seq` alone it would look
+    // valid and the client would silently miss everything up to it.
+    churn(&host, "after", old.seq as usize + 1).await;
+    let now = host.conn().await.snapshot().await.unwrap();
+    assert!(now.seq > old.seq, "{} <= {}", now.seq, old.seq);
+    assert_ne!(now.log_id, old.log_id);
+    assert_cursor_expired(&host, old.cursor()).await;
+
+    // Resyncing from a fresh snapshot follows on normally.
+    let mut stream = host
+        .conn()
+        .await
+        .subscribe(Some(now.cursor()))
+        .await
+        .unwrap();
+    create(&host, "later", Some(vec![])).await;
+    let next = events_through(&mut stream, now.seq + 1).await;
+    assert_eq!(next[0].seq, now.seq + 1);
 }
 
 // ---------------------------------------------------------------------------

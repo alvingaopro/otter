@@ -78,7 +78,7 @@ Events carry ids, names, kinds and exit codes only — never commands or
 environment values (design §19). Enforced by a test.
 
 **Revisit if** state grows large or needs concurrent writers (→ SQLite), or the
-event log needs rotation.
+event log needs rotation. *(The event log is rotated since D-037.)*
 
 ## D-006 — Launch environment: captured login env, delivered via private file (2026-10-07)
 
@@ -323,10 +323,13 @@ Details: [`protocol.md`](protocol.md).
   latest one) fails with `cursor_expired`; the client reloads a snapshot.
 - **Storage unchanged** (D-005): replay reads the whole log, which is fine at
   current sizes and happens only on reconnect or lag. Rotation, an index or
-  SQLite wait until the log is actually a problem.
+  SQLite wait until the log is actually a problem. *(Superseded by D-037:
+  the log is rotated and replay reads only the segments it needs.)*
 - **Known gap:** a reset log that has since grown past a client's cursor is
   not detected. Fix if it bites: a log id generated with the file, returned by
-  `state.snapshot` / `events.subscribe` and echoed by clients.
+  `state.snapshot` / `events.subscribe` and echoed by clients. *(Closed by
+  D-037, exactly that way; it remains for clients or daemons that predate
+  it.)*
 - **Protocol v2.** `events.subscribe` gained params and a `{seq}` result, plus
   the `cursor_expired` code; v1 clients couldn't parse those, so the version
   was bumped. v1 was pre-stabilization. From v2 the compatibility rules in
@@ -787,6 +790,59 @@ menu). Conservative choices, since §28 only names the state:
   `WorkspaceUnarchived`) — compatible additions, no version bump.
 - Not done: COMPLETED and CLEANED from §28's diagram, auto-archiving, and
   freeing disk for archived workspaces.
+
+## D-037 — A bounded event log with an identity (2026-10-08)
+
+`events.jsonl` grew forever, replay from a cursor read all of it, and a log
+that started over (files lost or removed) and grew past a client's cursor was
+taken for the same log — the client silently missed everything up to its
+cursor (D-016's known gap).
+
+- **Rotation, not compaction.** The active file stays `state/events.jsonl`
+  (tools and tests read it). Past 4 MiB it is renamed
+  `events.<first seq>.jsonl` and a new one started; the newest 3 rotated
+  segments are kept, so the log is at most ~16 MiB (~75–100k events). Rotating happens in `emit`, under the log's lock.
+  `OTTER_EVENTS_SEGMENT_BYTES` overrides the size (for tests). Nothing is
+  compacted into a summary: the daemon isn't event-sourced (D-016), and
+  `state.snapshot` comes from `state.json`, so a client whose cursor was
+  rotated away gets a complete state from a snapshot.
+- **Replay is indexed by segment.** Segment names carry their first `seq`, so
+  `since(after)` opens only the segments from the one holding `after + 1`
+  on. The newest ~2000 events are also kept in memory (a suffix of what is on
+  disk, trimmed with it), which serves reconnects and lagging subscribers
+  without reading files. `events.list` reads newest-first until it has
+  enough.
+- **Log id.** `state/events.id` holds a random `log_…`, generated when there
+  are no log files at all (new host, or the log was removed) and once for a
+  log from an older daemon. It survives restarts and rotation.
+  `state.snapshot` and `events.subscribe` return it as `log_id`; clients echo
+  it as `events.subscribe {log_id}`; a different one fails with
+  `cursor_expired`.
+- **Same error code.** A changed log is reported as `cursor_expired`, not a
+  new code: every shipped client already resyncs on it, while a new code
+  would be `Unknown` to them (the CLI's follower would retry the same cursor
+  forever). The message says which case it is.
+- **No protocol bump.** `log_id` is an optional field in three places. The
+  cursor's meaning (`seq` in one log) is unchanged; the id only lets the
+  daemon refuse cursors it previously had to guess about. Old clients send no
+  id and get the `seq`-only checks; new clients talking to an older daemon
+  get no id, send none and fall back to the same checks (the gap remains
+  there, and only there). The desktop app talks to whatever otterd a host
+  has (D-028), so both directions matter and are unit-tested.
+- **No silent skips from rotation.** A subscriber that lagged behind the
+  broadcast buffer and whose missed events were rotated away is
+  disconnected, so its reconnect gets `cursor_expired`, rather than skipping
+  ahead (invariant 12).
+- **Clients.** `otter_client` carries a `Cursor {seq, log_id}`
+  (`StateSnapshot::cursor`, `EventStream::cursor`,
+  `ClientError::is_cursor_expired`). `otter events --follow` resumes from the
+  stream's cursor and, on `cursor_expired`, says events were missed and
+  follows on from a fresh snapshot. `otter ls --watch` redraws on every
+  (re)connect. The app already took a snapshot on every connect; it now
+  passes the snapshot's log id and re-snapshots on `cursor_expired` instead
+  of reporting the host unreachable.
+- The log holds only what it held before (ids, names, kinds, exit codes);
+  the id file holds only the id.
 
 ## D-038 — The brief in the app, and editable (2026-10-08)
 

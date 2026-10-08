@@ -119,8 +119,18 @@ async fn subscribe(
     let _browser = params
         .browser
         .then(|| crate::daemon::BrowserSubscriber::new(&daemon));
+    let log_id = daemon.events.log_id();
     let backlog = match params.after {
         None => Vec::new(),
+        // A cursor from another log (this one started over) can't be
+        // compared by `seq` at all.
+        Some(after) if params.log_id.as_deref().is_some_and(|l| l != log_id) => {
+            let message = format!(
+                "event cursor {after} is from an earlier event log; the host's log started over"
+            );
+            let err = RpcError::new(ErrorCode::CursorExpired, message);
+            return Ok(respond(&mut w, id, Err(err)).await?);
+        }
         Some(after) => match daemon.events.since(after) {
             Ok(Some(records)) => records,
             Ok(None) => {
@@ -134,7 +144,10 @@ async fn subscribe(
             }
         },
     };
-    let ready = serde_json::to_value(Subscribed { seq: head })?;
+    let ready = serde_json::to_value(Subscribed {
+        seq: head,
+        log_id: Some(log_id.to_owned()),
+    })?;
     respond(&mut w, id, Ok(ready)).await?;
 
     let mut sent = params.after.unwrap_or(head);
@@ -149,7 +162,13 @@ async fn subscribe(
                 // buffered is filtered by `seq`.
                 Err(RecvError::Lagged(n)) => {
                     tracing::warn!("event subscriber lagged by {n}; replaying from the log");
-                    let missed = daemon.events.since(sent)?.unwrap_or_default();
+                    let Some(missed) = daemon.events.since(sent)? else {
+                        // Rotated away meanwhile: end the stream rather than
+                        // skip events; the client's cursor is refused on
+                        // reconnect and it reloads a snapshot.
+                        tracing::warn!("event subscriber fell behind the retained log");
+                        return Ok(());
+                    };
                     send_after(&mut w, &mut sent, missed).await?;
                 }
                 Err(RecvError::Closed) => return Ok(()),
