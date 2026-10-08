@@ -473,3 +473,17 @@ RPCs the daemon already had:
 - **Theme:** System / Light / Dark, remembered per Mac, applied to the UI, the
   terminal and the native title bar. Colors are role tokens with one light
   override block.
+
+## D-022 — Faster app releases (2026-10-08)
+
+The app took ~7 min to release: two release compiles of the whole Tauri tree,
+arm64 then x86_64, each ~2.5 min, because the template's profile was fat LTO
+with one codegen unit (whole-program optimization on one core, every time).
+Measured locally on a cached rebuild: fat/1 unit 60 s, thin/16 units 25 s, no
+LTO 15 s; binary 5.0 / 6.2 / 6.0 MB.
+
+- Release profile: thin LTO, default codegen units (~2.4x faster, ~1 MB
+  larger).
+- The two architectures build in parallel jobs (`tauri build --target …
+  --no-bundle`), each with its own Rust cache; a third job `lipo`s them into
+  the universal binary and runs `tauri bundle` (~20 s for app + dmg).

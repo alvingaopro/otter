@@ -28,9 +28,10 @@ serde_json = "1"
 tokio = { version = "1", features = ["full"] }
 chrono = { version = "0.4", default-features = false, features = ["clock", "serde", "std"] }
 
+# Thin LTO with parallel codegen: ~2.4x faster release builds than fat LTO
+# with one codegen unit, for a ~1 MB larger binary (D-022).
 [profile.release]
-codegen-units = 1
-lto = true
+lto = "thin"
 opt-level = 3
 panic = "abort"
 strip = true
