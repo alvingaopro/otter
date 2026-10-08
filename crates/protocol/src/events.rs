@@ -50,6 +50,10 @@ pub enum Event {
     WorkspaceUnarchived {
         workspace_id: WorkspaceId,
     },
+    /// The brief was edited. What it says isn't here: read the workspace.
+    WorkspaceBriefChanged {
+        workspace_id: WorkspaceId,
+    },
     EnvironmentPreparing {
         workspace_id: WorkspaceId,
     },
@@ -142,6 +146,7 @@ impl Event {
             Event::WorkspaceFailed { .. } => "WorkspaceFailed",
             Event::WorkspaceArchived { .. } => "WorkspaceArchived",
             Event::WorkspaceUnarchived { .. } => "WorkspaceUnarchived",
+            Event::WorkspaceBriefChanged { .. } => "WorkspaceBriefChanged",
             Event::EnvironmentPreparing { .. } => "EnvironmentPreparing",
             Event::EnvironmentReady { .. } => "EnvironmentReady",
             Event::EnvironmentFailed { .. } => "EnvironmentFailed",
@@ -169,6 +174,7 @@ impl Event {
             | Event::WorkspaceFailed { workspace_id, .. }
             | Event::WorkspaceArchived { workspace_id, .. }
             | Event::WorkspaceUnarchived { workspace_id }
+            | Event::WorkspaceBriefChanged { workspace_id }
             | Event::EnvironmentPreparing { workspace_id }
             | Event::EnvironmentReady { workspace_id }
             | Event::EnvironmentFailed { workspace_id, .. }

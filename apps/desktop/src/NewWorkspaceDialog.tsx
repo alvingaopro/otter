@@ -28,6 +28,7 @@ export function NewWorkspaceDialog({
     usable.find((h) => h.name === defaultHost)?.name ?? usable[0]?.name ?? "",
   );
   const [name, setName] = useState("");
+  const [goal, setGoal] = useState("");
   const [source, setSource] = useState<Source>("empty");
   const [repo, setRepo] = useState("");
   const [branch, setBranch] = useState("");
@@ -60,7 +61,8 @@ export function NewWorkspaceDialog({
           ? { type: "directory", path: dir.trim() }
           : { type: "empty" };
     try {
-      const id = await invoke<string>("workspace_create", { host, name, source: spec, sessions });
+      const brief = goal.trim() ? { goal: goal.trim() } : null;
+      const id = await invoke<string>("workspace_create", { host, name, brief, source: spec, sessions });
       onCreated(host, id);
     } catch (err) {
       setError(String(err));
@@ -109,6 +111,11 @@ export function NewWorkspaceDialog({
             </select>
           </label>
         </div>
+
+        <label className="field">
+          <span>Goal (optional)</span>
+          <input className="prose" value={goal} onChange={(e) => setGoal(e.target.value)} placeholder="What this workspace is for" />
+        </label>
 
         <fieldset className="field">
           <legend>Files</legend>

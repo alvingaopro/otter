@@ -525,6 +525,7 @@ pub async fn workspace_create(
     app: AppHandle,
     host: String,
     name: String,
+    brief: Option<otter_core::Brief>,
     source: otter_protocol::SourceSpec,
     sessions: Vec<otter_protocol::SessionSpec>,
 ) -> Result<String, String> {
@@ -532,7 +533,7 @@ pub async fn workspace_create(
         .await?
         .workspace_create(otter_protocol::WorkspaceCreate {
             name: name.trim().to_owned(),
-            brief: None,
+            brief,
             source,
             sessions: Some(sessions),
         })
@@ -597,6 +598,22 @@ pub async fn workspace_unarchive(
     rpc(&app, &host)
         .await?
         .workspace_unarchive(&workspace)
+        .await
+        .map(|_| ())
+        .map_err(err)
+}
+
+/// Replace a workspace's brief (D-038). The pane updates from the event.
+#[tauri::command]
+pub async fn workspace_set_brief(
+    app: AppHandle,
+    host: String,
+    workspace: String,
+    brief: otter_core::Brief,
+) -> Result<(), String> {
+    rpc(&app, &host)
+        .await?
+        .workspace_set_brief(&workspace, brief)
         .await
         .map(|_| ())
         .map_err(err)
@@ -707,6 +724,12 @@ mod tests {
         assert_eq!(sessions[0].prompt.as_deref(), Some("fix it"));
         assert_eq!(sessions[1], SessionSpec::shell());
         assert_eq!(sessions[2].command.as_deref(), Some("cargo test"));
+
+        // The brief the New workspace / Brief dialogs send.
+        let brief: otter_core::Brief =
+            serde_json::from_str(r#"{"goal":"fix it","decisions":["keep v1"]}"#).unwrap();
+        assert_eq!(brief.goal.as_deref(), Some("fix it"));
+        assert_eq!(brief.decisions, ["keep v1"]);
     }
 }
 

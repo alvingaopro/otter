@@ -27,7 +27,9 @@ use otter_core::{
     SessionSpec, SourceSpec, Workspace, WorkspaceId, WorkspaceSource, WorkspaceState,
     validate_name,
 };
-use otter_protocol::{ErrorCode, Event, RpcError, WorkspaceCreate, WorkspaceDelete};
+use otter_protocol::{
+    ErrorCode, Event, RpcError, WorkspaceCreate, WorkspaceDelete, WorkspaceSetBrief,
+};
 
 use crate::attention;
 use crate::daemon::{Daemon, RpcResult, internal, save, workspace_not_found};
@@ -103,7 +105,7 @@ impl Daemon {
                 id: id.clone(),
                 name: p.name.clone(),
                 root: root.to_string_lossy().into_owned(),
-                brief: p.brief.unwrap_or_default(),
+                brief: p.brief.unwrap_or_default().normalized(),
                 source,
                 environment: Environment::default(),
                 state: WorkspaceState::Preparing,
@@ -260,6 +262,27 @@ impl Daemon {
         let task = self.spawn_preparation(id.clone());
         let _ = tokio::time::timeout(CREATE_WAIT, task).await;
         self.workspace_get(id.as_str()).await
+    }
+
+    /// Replace the brief (D-038). Allowed in any state: it describes the
+    /// workspace, it doesn't run anything.
+    pub(crate) async fn workspace_set_brief(&self, p: WorkspaceSetBrief) -> RpcResult<Workspace> {
+        let mut store = self.store.lock().await;
+        let ws = store
+            .workspace_mut(&p.workspace)
+            .ok_or_else(|| workspace_not_found(&p.workspace))?;
+        let brief = p.brief.normalized();
+        if ws.brief == brief {
+            return Ok(ws.clone());
+        }
+        ws.brief = brief;
+        ws.updated_at = Utc::now();
+        let ws = ws.clone();
+        save(&store)?;
+        self.events.emit(Event::WorkspaceBriefChanged {
+            workspace_id: ws.id.clone(),
+        });
+        Ok(ws)
     }
 
     pub(crate) async fn workspace_delete(&self, p: &WorkspaceDelete) -> RpcResult<()> {

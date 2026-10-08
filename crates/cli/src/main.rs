@@ -175,6 +175,9 @@ enum WorkspaceCommand {
     /// restart them.
     #[command(visible_alias = "restore")]
     Unarchive { target: String },
+    /// Show or edit why a workspace exists: its title, goal, description,
+    /// constraints, references and decisions.
+    Brief(BriefArgs),
     /// Stop all sessions and delete the workspace and its directory. Git
     /// branches are kept.
     #[command(visible_alias = "rm")]
@@ -187,6 +190,65 @@ enum WorkspaceCommand {
         #[arg(long)]
         force: bool,
     },
+}
+
+#[derive(Args)]
+struct BriefArgs {
+    target: String,
+    /// Short title (`""` clears it).
+    #[arg(long)]
+    title: Option<String>,
+    /// Why this workspace exists (`""` clears it).
+    #[arg(long)]
+    goal: Option<String>,
+    /// Longer description (`""` clears it).
+    #[arg(long)]
+    description: Option<String>,
+    /// Add a constraint (repeatable).
+    #[arg(long = "constraint", value_name = "TEXT")]
+    constraints: Vec<String>,
+    /// Add a reference, e.g. an issue (repeatable).
+    #[arg(long = "reference", value_name = "TEXT")]
+    references: Vec<String>,
+    /// Add a decision (repeatable).
+    #[arg(long = "decision", value_name = "TEXT")]
+    decisions: Vec<String>,
+    /// Start from an empty brief instead of adding to the current one.
+    #[arg(long)]
+    clear: bool,
+}
+
+impl BriefArgs {
+    fn edits(&self) -> bool {
+        self.clear
+            || self.title.is_some()
+            || self.goal.is_some()
+            || self.description.is_some()
+            || !self.constraints.is_empty()
+            || !self.references.is_empty()
+            || !self.decisions.is_empty()
+    }
+
+    fn apply(self, current: &Brief) -> Brief {
+        let mut b = if self.clear {
+            Brief::default()
+        } else {
+            current.clone()
+        };
+        if let Some(t) = self.title {
+            b.title = Some(t);
+        }
+        if let Some(g) = self.goal {
+            b.goal = Some(g);
+        }
+        if let Some(d) = self.description {
+            b.description = Some(d);
+        }
+        b.constraints.extend(self.constraints);
+        b.references.extend(self.references);
+        b.decisions.extend(self.decisions);
+        b
+    }
 }
 
 #[derive(Args)]
@@ -561,6 +623,23 @@ async fn workspace_command(config: &Config, cmd: WorkspaceCommand, json: bool) -
                     ws.name, s.name
                 );
             }
+            Ok(())
+        }
+        WorkspaceCommand::Brief(args) => {
+            let mut found = find(config, &Target::parse(&args.target)?).await?;
+            let ws = if args.edits() {
+                let brief = args.apply(&found.workspace.brief);
+                found
+                    .conn
+                    .workspace_set_brief(found.workspace.id.as_str(), brief)
+                    .await?
+            } else {
+                found.workspace
+            };
+            if json {
+                return output::print_json(&ws.brief);
+            }
+            output::brief(&ws.name, &ws.brief);
             Ok(())
         }
         WorkspaceCommand::Delete { target, yes, force } => {

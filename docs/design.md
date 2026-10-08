@@ -251,6 +251,10 @@ decisions:
 
 Every field other than the workspace identity should be optional.
 
+The brief is set at creation (`otter new --goal`, the app's New workspace
+goal field) and edited any time, in any state, with `workspace.set_brief`
+(`otter ws brief`, the app's brief line under the workspace name): D-038.
+
 The Brief should not be confused with an agent's internal conversation context.
 
 ## 9. Agent Context
