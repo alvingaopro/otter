@@ -63,10 +63,12 @@ record it in [`decisions.md`](decisions.md) first.
 ### 6. Codex-specific details do not define the generic Session model.
 
 - `Session.agent: Option<AgentInfo>` holds provider id, opaque provider data,
-  and generic `AgentState`. Launch flags, rollout files, transcript parsing and
-  the quiet-turn heuristic live in `agents/codex.rs`.
-- Tests: `agents::codex::tests::*` (provider), and the end-to-end agent tests,
-  which drive everything through the generic API with a fake `codex`.
+  and generic `AgentState`. Launch flags, rollout/transcript files and
+  transcript parsing live in each provider (`agents/codex.rs`,
+  `agents/claude.rs`); the shared quiet-turn heuristic is `agents::settle`.
+- Tests: `agents::codex::tests::*` and `agents::claude::tests::*` (providers),
+  and the end-to-end agent tests, which drive everything through the generic
+  API with a fake `codex` / `claude`.
 
 ### 7. tmux is an execution backend, not the Session abstraction.
 

@@ -42,7 +42,8 @@ Inside the daemon (`crates/daemon/src`):
 - `reconcile.rs` — process exits + agent observation, every 500 ms
 - `attention.rs` — what needs the developer (raise/resolve rules)
 - `agents/` — agent providers behind `AgentProvider` (`detect`, `launch_argv`, `observe`);
-  `codex.rs` holds everything Codex-specific
+  `codex.rs` holds everything Codex-specific, `claude.rs` everything Claude Code-specific,
+  and `mod.rs` the shared quiet-turn heuristic (`settle`)
 - `backend/` — execution backends; tmux is the only one and nothing else may know about tmux
 - `git.rs` (shared repos + worktrees), `environment.rs` (direnv), `env.rs` (login env, exec shim)
 - `attach.rs` (PTY bridge), `server.rs` (connections), `dial.rs`, `store.rs` / `events.rs`

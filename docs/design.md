@@ -578,11 +578,16 @@ Agent Provider
 ```
 
 Future implementations might include Claude Code or other CLI agents. Do not
-build those integrations in V1.
+build those integrations in V1. *(Superseded during implementation — Claude
+Code was added as a second provider, `agents/claude.rs`; see
+[decisions.md D-023](decisions.md).)*
 
 ## 23. Agent State Detection
 
-This remains an implementation investigation.
+This remains an implementation investigation. *(Current approach: each
+provider reads its agent's own transcript, plus a shared quiet-turn heuristic
+for prompts the transcript doesn't show; see
+[decisions.md D-013 and D-023](decisions.md).)*
 
 Desired states: `starting`, `working`, `waiting_for_input`, `completed`,
 `failed`.
@@ -792,7 +797,7 @@ programming rather than backend-service programming. V1 is written in
 Both Rust and Go keep the operational model of a single binary
 (`scp otterd dev-box:~/.local/bin/`); a Node runtime on every host would not.
 
-The Mac control plane is expected to be **Tauri**, whose core is also Rust, so
+The Mac control plane is **Tauri** ([decisions.md D-018](decisions.md)), whose core is also Rust, so
 domain and protocol types (`Workspace`, `Session`, `Execution`, `HostStatus`,
 `Attention`, `WorkspaceEvent`, `AgentState`, …) are literally the same serde
 types on every side.
@@ -807,7 +812,7 @@ otterd/
 │   └── cli/        ← `otter` binary (control plane CLI)
 │
 └── apps/
-    └── desktop/    ← Tauri (later)
+    └── desktop/    ← Tauri app (D-018)
 ```
 
 `otterd` and `otter` live in one Cargo workspace but stay conceptually separate:
