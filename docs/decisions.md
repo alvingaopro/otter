@@ -513,3 +513,9 @@ the provider boundary from D-015 made it a new module, not a redesign.
 - Test: a fake `claude` writing transcripts the same way
   (`claude_code_session_is_observed_resumed_and_needs_you_when_done`),
   checked against a deliberately broken end-of-turn rule.
+
+Follow-up: per-architecture macOS downloads. Each desktop architecture job
+also bundles and publishes its own `.app`/`.dmg` (~20 s, in parallel), and
+`workd`/`workctl` build per macOS architecture in parallel jobs, combined into
+the universal tarball (what `workd_client::install` uses) by a small `lipo`
+job — the macOS binaries no longer build arm64 then x86_64 in one job.
