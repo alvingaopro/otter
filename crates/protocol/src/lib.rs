@@ -18,6 +18,7 @@
 
 pub mod events;
 pub mod frame;
+pub mod host;
 pub mod wire;
 
 use otter_core::Brief;
@@ -46,6 +47,13 @@ pub enum Request {
     /// Result: [`otter_core::HostStatus`].
     #[serde(rename = "host.status")]
     HostStatus,
+    /// Resource usage now and over the last minutes. Result:
+    /// [`host::HostMetrics`].
+    #[serde(rename = "host.metrics")]
+    HostMetrics,
+    /// TCP ports listening on the host. Result: `Vec<`[`host::ListeningPort`]`>`.
+    #[serde(rename = "host.ports")]
+    HostPorts,
     /// Stop the daemon. Managed processes keep running. Result: `null`.
     #[serde(rename = "daemon.shutdown")]
     Shutdown,
@@ -114,6 +122,8 @@ impl Request {
         match self {
             Request::Ping => "ping",
             Request::HostStatus => "host.status",
+            Request::HostMetrics => "host.metrics",
+            Request::HostPorts => "host.ports",
             Request::Shutdown => "daemon.shutdown",
             Request::WorkspaceCreate(_) => "workspace.create",
             Request::WorkspaceList => "workspace.list",
@@ -333,6 +343,8 @@ pub enum ErrorCode {
     /// `events.subscribe` cursor is older than the retained log or newer than
     /// the latest event (the log was reset). Reload a snapshot.
     CursorExpired,
+    /// Not available yet; retry shortly (e.g. metrics right after start).
+    Unavailable,
     /// A code this build doesn't know.
     #[serde(other)]
     Unknown,

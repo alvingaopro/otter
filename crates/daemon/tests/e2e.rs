@@ -1654,3 +1654,28 @@ async fn missing_agent_binary_is_a_visible_failure() {
     );
     assert_eq!(ws.attention[0].kind, AttentionKind::Failure);
 }
+
+// ---------------------------------------------------------------------------
+// Host page: usage and listening ports
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn host_reports_usage_and_listening_ports() {
+    let host = TestHost::new();
+    let metrics = eventually("first metrics sample", || async {
+        host.conn().await.host_metrics().await.ok()
+    })
+    .await;
+    assert!(metrics.cpus > 0, "{metrics:?}");
+    assert!(metrics.memory.total >= metrics.memory.used, "{metrics:?}");
+    assert!(!metrics.disks.is_empty() && !metrics.history.is_empty());
+
+    // A port opened here shows up among the host's listening ports.
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let ports = host.conn().await.host_ports().await.unwrap();
+    assert!(
+        ports.iter().any(|p| p.port == port),
+        "{port} not in {ports:?}"
+    );
+}
