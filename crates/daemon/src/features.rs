@@ -636,22 +636,25 @@ impl Daemon {
         }
         check_text("message", &text, MAX_TEXT)?;
         let cmd = p.command_id.clone();
-        let applied = self.features.lock().await.apply(
-            &FeatureId::from(p.feature.as_str()),
-            Some(&cmd),
-            |f, _| {
-                if f.status.is_terminal() {
-                    return Err(RpcError::conflict(format!(
-                        "the feature is {}",
-                        f.status.as_str()
-                    )));
-                }
-                let (m, c) = message(MessageRole::User, text, Some(cmd.clone()));
-                f.messages.push(m);
-                Ok(vec![c])
-            },
-        )?;
+        let id = FeatureId::from(p.feature.as_str());
+        let said = text.clone();
+        let applied = self.features.lock().await.apply(&id, Some(&cmd), |f, _| {
+            if f.status.is_terminal() {
+                return Err(RpcError::conflict(format!(
+                    "the feature is {}",
+                    f.status.as_str()
+                )));
+            }
+            let (m, c) = message(MessageRole::User, text, Some(cmd.clone()));
+            f.messages.push(m);
+            Ok(vec![c])
+        })?;
         self.feature_changed(&applied);
+        // A coding agent at work hears it with its next turn; the Control
+        // Agent answers (controller.rs).
+        if !applied.duplicate {
+            self.tell_runs(&id, &said).await;
+        }
         Ok(applied.feature)
     }
 

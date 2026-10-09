@@ -101,6 +101,100 @@ pub trait Brain: Send + Sync {
     ) -> Result<Option<(bool, String)>> {
         Ok(None)
     }
+    /// Answer the developer's message (D-049): what's going on, and whether
+    /// they asked to go on or to stop — a model's judgment. Without a model:
+    /// the status only; acting on the message is left to the buttons.
+    async fn reply(&self, cx: &Context<'_>, _message: &str) -> Result<Reply> {
+        Ok(Reply {
+            text: format!(
+                "{} (No model is set for the Control Agent on this host, so I can't act on messages: use the buttons, or choose a model in Settings.)",
+                status_text(cx.feature)
+            ),
+            intent: Intent::None,
+        })
+    }
+}
+
+/// What the developer's message asks the feature to do.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Intent {
+    /// Just talking (or instructions for the coding agent).
+    None,
+    /// Go on: resume, unblock, start, or retry.
+    Continue,
+    Pause,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct Reply {
+    pub text: String,
+    pub intent: Intent,
+}
+
+/// Where the feature stands, in a few lines (deterministic).
+pub fn status_text(f: &Feature) -> String {
+    use otter_core::feature::{FeatureStatus as S, TaskStatus};
+    let done = f
+        .tasks
+        .iter()
+        .filter(|t| matches!(t.status, TaskStatus::Done | TaskStatus::Skipped))
+        .count();
+    let current = f
+        .tasks
+        .iter()
+        .position(|t| t.status == TaskStatus::Running)
+        .map(|i| (i, &f.tasks[i]));
+    let mut lines = vec![match f.status {
+        S::Draft => "This is a draft: say “start” (or press Start) and I'll plan it.".to_owned(),
+        S::Planning => "I'm planning: requirements, acceptance criteria and tasks.".to_owned(),
+        S::Implementing => match current {
+            Some((i, t)) => format!(
+                "A coding agent is working on task {} of {}: “{}”{}.",
+                i + 1,
+                f.tasks.len(),
+                t.title,
+                if t.attempts > 1 {
+                    format!(" (attempt {})", t.attempts)
+                } else {
+                    String::new()
+                }
+            ),
+            None => format!(
+                "Implementing: {done} of {} tasks done; the next one starts shortly.",
+                f.tasks.len()
+            ),
+        },
+        S::Verifying => "I'm checking the work against the acceptance criteria.".to_owned(),
+        S::Review => {
+            "It's verified and waiting for your review (see Delivery for the gates).".to_owned()
+        }
+        S::Done => "It's done.".to_owned(),
+        S::Blocked => format!(
+            "I'm blocked: {}.",
+            f.status_reason
+                .clone()
+                .unwrap_or_else(|| "waiting on you".into())
+        ),
+        S::Paused => "It's paused. Say “continue” to pick it up again.".to_owned(),
+        S::Failed => format!(
+            "It stopped: {}. Say “continue” to retry from the plan.",
+            f.status_reason
+                .clone()
+                .unwrap_or_else(|| "it failed".into())
+        ),
+        S::Cancelled => "It's cancelled.".to_owned(),
+    }];
+    let pending: Vec<&str> = f.pending_decisions().map(|d| d.summary.as_str()).collect();
+    if !pending.is_empty() {
+        lines.push(format!(
+            "Waiting for your decision: {}.",
+            pending.join("; ")
+        ));
+    }
+    if f.status == S::Implementing || f.status == S::Planning {
+        lines.push("Your message goes to the coding agent with its next turn.".into());
+    }
+    lines.join(" ")
 }
 
 /// What the brain is chosen from: the host's settings (D-048), with an
@@ -516,12 +610,68 @@ impl Brain for Model {
             v["notes"].as_str().unwrap_or_default().to_owned(),
         )))
     }
+
+    async fn reply(&self, cx: &Context<'_>, message: &str) -> Result<Reply> {
+        let f = cx.feature;
+        let recent: Vec<String> = f
+            .messages
+            .iter()
+            .rev()
+            .take(12)
+            .rev()
+            .map(|m| format!("{:?}: {}", m.role, super::agents::excerpt(&m.text, 600)))
+            .collect();
+        let tasks: Vec<String> = f
+            .tasks
+            .iter()
+            .enumerate()
+            .map(|(i, t)| format!("{}. {} — {:?}", i + 1, t.title, t.status))
+            .collect();
+        let prompt = format!(
+            "You are the Control Agent running a software feature for the developer. Reply to their \
+             latest message directly and briefly (2-5 sentences), in the language they wrote in. \
+             Say what is happening and what happens next; if they give instructions, say how you'll \
+             act on them (the coding agent receives their message with its next turn). Don't invent \
+             progress.\n{brief}\nStatus: {status}\nTasks:\n{tasks}\nRecent conversation:\n{recent}\n\n\
+             Their message: {message}\n\nintent: \"continue\" if they ask to go on, resume, start or \
+             retry; \"pause\" if they ask to stop or wait; else \"none\".",
+            brief = brief(f),
+            status = status_text(f),
+            tasks = tasks.join("\n"),
+            recent = recent.join("\n"),
+        );
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "reply": {"type": "string"},
+                "intent": {"enum": ["none", "continue", "pause"]}
+            },
+            "required": ["reply", "intent"]
+        });
+        let v = self.ask(cx, &prompt, &schema, None).await?;
+        Ok(Reply {
+            text: v["reply"].as_str().unwrap_or_default().trim().to_owned(),
+            intent: match v["intent"].as_str() {
+                Some("continue") => Intent::Continue,
+                Some("pause") => Intent::Pause,
+                _ => Intent::None,
+            },
+        })
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use otter_core::feature::{Criterion, Evidence, EvidenceKind};
+
+    #[test]
+    fn the_status_says_where_things_stand() {
+        let mut f = feature();
+        assert!(status_text(&f).contains("draft"));
+        f.status = otter_core::feature::FeatureStatus::Paused;
+        assert!(status_text(&f).contains("continue"));
+    }
 
     fn feature() -> Feature {
         Feature::new(

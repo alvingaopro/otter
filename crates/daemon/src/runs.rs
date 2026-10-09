@@ -46,6 +46,8 @@ enum RunCmd {
         decision: DecisionId,
         reply: DecisionReply,
     },
+    /// The developer's message: the agent's next turn, once this one ends.
+    Input(String),
     /// End the run; `state` is how it is recorded.
     Stop {
         state: RunState,
@@ -192,6 +194,8 @@ impl Daemon {
     ) {
         // Our decision ids → the runtime's request ids.
         let mut asks: HashMap<DecisionId, String> = HashMap::new();
+        // The developer's messages that arrived during this turn.
+        let mut queued: Vec<String> = Vec::new();
         let mut last_text: Option<String> = None;
         loop {
             tokio::select! {
@@ -221,6 +225,17 @@ impl Daemon {
                         RuntimeEvent::TurnEnded { ok, summary, .. } => {
                             tracing::debug!(turns = handle.inspect().turns, ok, "run finished its turn");
                             let summary = summary.or(last_text.take());
+                            // The developer wrote meanwhile: the conversation goes on.
+                            if ok && !queued.is_empty() {
+                                let text = format!("From the developer:\n{}", queued.join("\n"));
+                                queued.clear();
+                                if let Some(s) = summary.clone().filter(|s| !s.trim().is_empty()) {
+                                    self.agent_said(&feature, &run, s).await;
+                                }
+                                if handle.send_input(&text).await.is_ok() {
+                                    continue;
+                                }
+                            }
                             let _ = handle.cancel().await;
                             self.finish_run(&feature, &run, if ok { RunState::Completed } else { RunState::Failed }, summary).await;
                             return;
@@ -240,6 +255,7 @@ impl Daemon {
                                 self.update_run(&feature, &run, |r| r.state = RunState::Running).await;
                             }
                         }
+                        Some(RunCmd::Input(text)) => queued.push(text),
                         Some(RunCmd::Stop { state, reason, done }) => {
                             let _ = handle.cancel().await;
                             self.finish_run(&feature, &run, state, Some(reason)).await;
@@ -513,6 +529,33 @@ impl Daemon {
         self.forward_decision(feature_id, decision_id, allow, answer)
             .await;
         Ok(applied.feature)
+    }
+
+    /// What the coding agent said at the end of a turn that isn't the last.
+    async fn agent_said(&self, feature: &FeatureId, run: &RunId, text: String) {
+        let applied = self.features.lock().await.apply(feature, None, |f, _| {
+            let (m, c) = message(MessageRole::Agent, text, Some(run.to_string()));
+            f.messages.push(m);
+            Ok(vec![c])
+        });
+        if let Ok(a) = applied {
+            self.feature_changed(&a);
+        }
+    }
+
+    /// Hand the developer's message to a run in progress (its next turn).
+    pub(crate) async fn tell_runs(&self, feature_id: &FeatureId, text: &str) {
+        let senders: Vec<_> = self
+            .runs
+            .lock()
+            .unwrap()
+            .values()
+            .filter(|r| &r.feature == feature_id)
+            .map(|r| r.tx.clone())
+            .collect();
+        for tx in senders {
+            let _ = tx.send(RunCmd::Input(text.to_owned())).await;
+        }
     }
 
     /// Pass a decision made in the feature on to the run waiting for it.

@@ -2679,13 +2679,27 @@ async fn features_persist_dedupe_commands_and_replay_after_a_restart() {
 /// A project with a `make test` check, a feature on it asking for
 /// `request`, started. Returns the feature id.
 async fn started_feature(host: &TestHost, request: &str) -> String {
+    started_in(host, "proj", request).await
+}
+
+/// Like [`started_feature`], in a workspace of its own (several per host).
+async fn started_feature_named(host: &TestHost, request: &str) -> String {
+    let name: String = request
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric())
+        .collect::<String>()
+        .to_lowercase();
+    started_in(host, &name, request).await
+}
+
+async fn started_in(host: &TestHost, ws: &str, request: &str) -> String {
     use otter_core::feature::FeatureAction;
-    let dir = host.home().join("proj");
+    let dir = host.home().join(ws);
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join("Makefile"), "test:\n\t@echo all good\n").unwrap();
     let mut conn = host.conn().await;
     conn.workspace_create(WorkspaceCreate {
-        name: "proj".into(),
+        name: ws.into(),
         source: SourceSpec::Directory {
             path: dir.to_string_lossy().into_owned(),
         },
@@ -2696,10 +2710,10 @@ async fn started_feature(host: &TestHost, request: &str) -> String {
     .unwrap();
     let f = conn
         .feature_create(otter_protocol::feature::FeatureCreate {
-            command_id: "create".into(),
+            command_id: format!("create-{ws}"),
             title: "CSV export".into(),
             request: request.into(),
-            workspace: Some("proj".into()),
+            workspace: Some(ws.into()),
         })
         .await
         .unwrap();
@@ -2832,14 +2846,15 @@ async fn a_feature_goes_from_request_to_review_with_evidence() {
 async fn an_approval_is_answered_and_the_run_continues() {
     use otter_core::feature::{Decider, DecisionStatus, FeatureAction, FeatureStatus, Risk};
     let fake = fake_agent_host("ok", "rules").await;
-    let id = started_feature(&fake.host, "Add a dependency ASK_INSTALL").await;
+    let id = started_feature(&fake.host, "Pick a colour ASK_QUESTION").await;
     // The rules brain doesn't decide: it's the developer's.
     let f = wait_feature(&fake.host, &id, "blocked on a decision", |f| {
         f.status == FeatureStatus::Blocked && f.pending_decisions().next().is_some()
     })
     .await;
     let d = f.pending_decisions().next().unwrap().clone();
-    assert_eq!(d.summary, "Run `npm install left-pad`");
+    assert_eq!(d.summary, "Pick one");
+    assert_eq!(d.options, ["red", "blue"]);
     assert_eq!(d.risk, Risk::Medium);
     assert!(!d.user_only);
     fake.host
@@ -2851,7 +2866,7 @@ async fn an_approval_is_answered_and_the_run_continues() {
             FeatureAction::Decide {
                 decision_id: d.id.clone(),
                 approve: true,
-                answer: None,
+                answer: Some("blue".into()),
             },
         )
         .await
@@ -2861,9 +2876,37 @@ async fn an_approval_is_answered_and_the_run_continues() {
     })
     .await;
     let d = f.decisions.iter().find(|x| x.id == d.id).unwrap();
-    assert_eq!(d.status, DecisionStatus::Approved);
+    assert_eq!(d.status, DecisionStatus::Answered);
+    assert_eq!(d.answer.as_deref(), Some("blue"));
     assert_eq!(d.decided_by, Some(Decider::User));
-    assert_eq!(f.runs[0].summary.as_deref(), Some("allowed and done"));
+    assert_eq!(f.runs[0].summary.as_deref(), Some("answered"));
+}
+
+#[tokio::test]
+async fn ordinary_work_runs_without_asking() {
+    use otter_core::feature::{Decider, DecisionStatus, FeatureStatus};
+    let fake = fake_agent_host("ok", "rules").await;
+    // Installing a dependency, then editing a file: no one is asked (D-049).
+    for request in ["Add a dependency ASK_INSTALL", "Write a file ASK_EDIT"] {
+        let id = started_feature_named(&fake.host, request).await;
+        let f = wait_feature(&fake.host, &id, "review", |f| {
+            f.status == FeatureStatus::Review
+        })
+        .await;
+        assert!(
+            !f.rationale
+                .iter()
+                .any(|r| r.contains("Needs your decision")),
+            "{:?}",
+            f.rationale
+        );
+        let d = &f.decisions[0];
+        assert_eq!(
+            (d.status, d.decided_by),
+            (DecisionStatus::Approved, Some(Decider::Policy)),
+            "{request}"
+        );
+    }
 }
 
 #[tokio::test]
@@ -2922,7 +2965,8 @@ async fn a_model_cannot_approve_what_only_the_developer_may() {
 async fn the_control_agent_decides_what_policy_leaves_open() {
     use otter_core::feature::{Decider, DecisionStatus, FeatureStatus};
     let fake = fake_agent_host("ok", "yes").await;
-    let id = started_feature(&fake.host, "Add a dependency ASK_INSTALL").await;
+    // The coding agent's question: the Control Agent answers it.
+    let id = started_feature(&fake.host, "Pick a colour ASK_QUESTION").await;
     let f = wait_feature(&fake.host, &id, "review", |f| {
         f.status == FeatureStatus::Review
     })
@@ -2930,8 +2974,9 @@ async fn the_control_agent_decides_what_policy_leaves_open() {
     let d = &f.decisions[0];
     assert_eq!(
         (d.status, d.decided_by),
-        (DecisionStatus::Approved, Some(Decider::Controller))
+        (DecisionStatus::Answered, Some(Decider::Controller))
     );
+    assert_eq!(d.answer.as_deref(), Some("red"));
     assert_eq!(d.rationale.as_deref(), Some("yes"));
 }
 
@@ -3170,37 +3215,6 @@ async fn web_feature(host: &TestHost, expect: &str) -> String {
     f.id.to_string()
 }
 
-/// Approve the pending decision about running the preview command.
-async fn allow_preview(host: &TestHost, id: &str) {
-    use otter_core::feature::{FeatureAction, Risk};
-    let f = wait_feature(host, id, "asked to allow the preview", |f| {
-        f.pending_decisions().any(|d| d.summary.contains(PREVIEW))
-    })
-    .await;
-    let d = f
-        .pending_decisions()
-        .find(|d| d.summary.contains(PREVIEW))
-        .unwrap();
-    assert_eq!(
-        d.risk,
-        Risk::Medium,
-        "an unknown command: the developer or the Control Agent decides"
-    );
-    host.conn()
-        .await
-        .feature_act(
-            &format!("allow-{}", d.id),
-            id,
-            FeatureAction::Decide {
-                decision_id: d.id.clone(),
-                approve: true,
-                answer: None,
-            },
-        )
-        .await
-        .unwrap();
-}
-
 #[tokio::test]
 async fn a_browser_check_verifies_the_ui_with_evidence() {
     use otter_core::feature::{EvidenceKind, FeatureStatus};
@@ -3209,7 +3223,6 @@ async fn a_browser_check_verifies_the_ui_with_evidence() {
     }
     let fake = fake_agent_host("ok", "rules").await;
     let id = web_feature(&fake.host, "Hello, Ada").await;
-    allow_preview(&fake.host, &id).await;
     let f = wait_feature(&fake.host, &id, "review", |f| {
         f.status == FeatureStatus::Review
     })
@@ -3253,8 +3266,8 @@ async fn a_browser_check_verifies_the_ui_with_evidence() {
             .await
             .is_err()
     );
-    // Approved once, remembered.
-    assert!(f.allowed_commands.iter().any(|c| c == PREVIEW));
+    // Starting the preview is ordinary work: nobody was asked.
+    assert!(!f.decisions.iter().any(|d| d.summary.contains(PREVIEW)));
 }
 
 #[tokio::test]
@@ -3266,7 +3279,6 @@ async fn a_broken_ui_fails_verification() {
     let fake = fake_agent_host("ok", "rules").await;
     // The page says "Hello, Ada"; the check wants something else.
     let id = web_feature(&fake.host, "Goodbye, Ada").await;
-    allow_preview(&fake.host, &id).await;
     let f = wait_feature(
         &fake.host,
         &id,
@@ -3310,17 +3322,6 @@ async fn a_preview_runs_as_a_session_on_one_port() {
     let fake = fake_agent_host("ok", "rules").await;
     let id = web_feature(&fake.host, "Hello, Ada").await;
     let mut conn = fake.host.conn().await;
-    // Not allowed yet: asking for it creates the decision.
-    wait_feature(&fake.host, &id, "verification asks", |f| {
-        f.pending_decisions().next().is_some()
-    })
-    .await;
-    let err = conn
-        .feature_act("pv-1", &id, FeatureAction::Preview)
-        .await
-        .unwrap_err();
-    assert!(format!("{err:#}").contains("allow"), "{err:#}");
-    allow_preview(&fake.host, &id).await;
     wait_feature(&fake.host, &id, "review", |f| {
         f.status == FeatureStatus::Review
     })
@@ -3736,4 +3737,60 @@ async fn settings_take_keys_write_only_and_keep_them() {
         .unwrap();
     assert!(!s.secrets[0].set);
     assert!(!std::fs::read_to_string(&secrets).unwrap().contains("sk-or"));
+}
+
+#[tokio::test]
+async fn the_control_agent_answers_the_developer() {
+    use otter_core::feature::{FeatureAction, FeatureStatus, MessageRole};
+    let fake = fake_agent_host("ok", "rules").await;
+    let id = started_feature(&fake.host, "A long job HANG").await;
+    wait_feature(&fake.host, &id, "working", |f| f.live_run().is_some()).await;
+    let mut conn = fake.host.conn().await;
+    conn.feature_act("pause", &id, FeatureAction::Pause)
+        .await
+        .unwrap();
+
+    let f = conn
+        .feature_send("ask-1", &id, "what are you doing?")
+        .await
+        .unwrap();
+    let asked = f.messages.last().unwrap().id.clone();
+    let f = wait_feature(&fake.host, &id, "an answer", |f| {
+        f.messages.iter().any(|m| {
+            m.role == MessageRole::Controller && m.correlation_id.as_deref() == Some(asked.as_str())
+        })
+    })
+    .await;
+    let answer = f.messages.last().unwrap();
+    assert!(answer.text.contains("paused"), "{}", answer.text);
+    // Without a model nothing reads intent into words: still paused, and it says so.
+    assert!(answer.text.contains("No model"), "{}", answer.text);
+    conn.feature_send("ask-2", &id, "continue").await.unwrap();
+    let f = wait_feature(&fake.host, &id, "a second answer", |f| {
+        f.messages
+            .iter()
+            .filter(|m| {
+                m.role == MessageRole::Controller
+                    && m.correlation_id
+                        .as_deref()
+                        .is_some_and(|c| c.starts_with("msg_"))
+            })
+            .count()
+            == 2
+    })
+    .await;
+    assert_eq!(f.status, FeatureStatus::Paused);
+    // Answered once each: no further replies pile up.
+    tokio::time::sleep(Duration::from_millis(800)).await;
+    let f = conn.feature_get(&id).await.unwrap();
+    assert_eq!(
+        f.messages
+            .iter()
+            .filter(|m| m.role == MessageRole::Controller
+                && m.correlation_id
+                    .as_deref()
+                    .is_some_and(|c| c.starts_with("msg_")))
+            .count(),
+        2
+    );
 }
