@@ -196,7 +196,11 @@ export function Terminal({ host, workspace, session, onEnd, generation, label, w
       setSize(`${cols}×${rows}`);
       if (id !== null) void invoke("attach_resize", { id, cols, rows });
     });
-    const observer = new ResizeObserver(() => fit.fit());
+    // A hidden terminal (another view in front, D-041) has no size: fitting
+    // it then would shrink the session for everyone attached.
+    const observer = new ResizeObserver(() => {
+      if (el.current && el.current.offsetWidth > 0 && el.current.offsetHeight > 0) fit.fit();
+    });
     observer.observe(el.current!);
 
     return () => {

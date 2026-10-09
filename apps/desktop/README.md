@@ -34,6 +34,7 @@ Layout:
 - `src-tauri/src/view.rs` — the view model, with values derived by `otter-core`.
 - `src-tauri/src/attach.rs` — terminal bridge (raw-byte channel out, commands in).
 - `src-tauri/src/pins.rs` — pinned workspaces, kept in `pins.toml` (D-040).
-- `src/` — React: `Sidebar`, `WorkspacePane`, `Terminal` (xterm.js), `model.ts`
+- `src/` — React: `ActivityBar` + `nav.ts` (the Features / Workspaces views, D-041),
+  `Sidebar`, `WorkspacePane`, `Terminal` (xterm.js), `model.ts`
   (grouping and wording only), `TimelinePanel` + `timeline.ts` (a workspace's
   events as one line each).

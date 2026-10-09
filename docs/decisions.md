@@ -1077,3 +1077,26 @@ row and an inset terminal card before any output. Flattened:
   - Reordering uses pointer events, not HTML5 drag-and-drop, which the
     webview's file drop (Files panel) takes over.
 - Not done: pins in `otter ls`, which could read the same file.
+
+## D-041 — An Activity Bar: Features and Workspaces are separate views (2026-10-09)
+
+The app grows a product-oriented surface (Features: what should be built)
+next to the engineering one (Workspaces: where work runs). A VS Code-style
+**Activity Bar** at the far left picks the view; Features is first (the
+primary entry), Workspaces second, Settings (theme, add a host, command-line
+tools) at the bottom.
+
+- **Switching views never stops anything.** Every view stays mounted and the
+  ones behind are only hidden (`hidden`), so a terminal keeps its xterm
+  state and its attach; nothing in a view may detach, stop or restart on
+  hide. A hidden terminal has no size, so it doesn't refit (it would shrink
+  the session for every other viewer).
+- Keyboard: the bar is a vertical tab list (arrows, Home/End, roving
+  focus); ⌘1 / ⌘2 switch from anywhere. A notification, a tray pick or a new
+  workspace brings the Workspaces view to the front.
+- The view in front is remembered per Mac in the webview's storage, like the
+  theme: a view preference, not runtime state (invariant 11).
+- The workspace sidebar narrows on small windows.
+- UI tests (`npm test`, vitest in a simulated DOM with Tauri mocked) cover
+  navigation, accessibility roles and that switching never unmounts a
+  terminal; they run in CI.

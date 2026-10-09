@@ -65,6 +65,8 @@ jobs:
         with:
           workspaces: apps/desktop/src-tauri
       - run: npm ci
+      # UI tests: navigation, feature view, contracts (simulated DOM).
+      - run: npm test
       # Type-checks and bundles the UI; Tauri's build embeds dist/.
       - run: npm run build
       - run: cargo fmt --check

@@ -151,8 +151,8 @@ code, .mono { font-family: var(--mono); }
 .ws-age { flex: none; color: var(--faint); }
 
 .sidebar-top { display: flex; align-items: center; gap: 4px; padding: 0 10px 0 16px; }
-/* macOS: leave room for the traffic lights. */
-.mac .sidebar-top { padding-left: 84px; }
+/* macOS: leave room for the traffic lights (the Activity Bar takes 48px of it). */
+.mac .sidebar-top { padding-left: 36px; }
 .sidebar-top .icon-btn { width: 30px; height: 30px; border-radius: 7px; }
 .brand { display: flex; align-items: center; gap: 10px; padding: 14px 16px 8px 20px; }
 .brand-name { font-weight: 600; font-size: 15px; letter-spacing: -0.1px; }
@@ -444,3 +444,33 @@ code, .mono { font-family: var(--mono); }
 .ws-row.pin-row { touch-action: none; }
 .ws-row.dragging { background: var(--raised); box-shadow: 0 4px 14px var(--shadow); cursor: grabbing; position: relative; z-index: 1; }
 .sidebar.reordering .ws-row:not(.dragging) { pointer-events: none; }
+
+/* Activity Bar and views (D-041) */
+.activity-bar {
+  width: 48px; flex: none; display: flex; flex-direction: column; align-items: center; gap: 4px;
+  padding-bottom: 10px; background: var(--statusbar); border-right: 1px solid var(--line);
+}
+.activity-top { height: 52px; width: 100%; flex: none; }
+.app:not(.mac) .activity-top { height: 10px; }
+.activity-views { display: flex; flex-direction: column; gap: 4px; }
+.activity-btn {
+  position: relative; width: 36px; height: 36px; display: inline-flex; align-items: center; justify-content: center;
+  border-radius: 8px; color: var(--faint);
+}
+.activity-btn:hover { color: var(--text); background: var(--hover); }
+.activity-btn.active { color: var(--text); background: var(--selected); }
+.activity-btn.active::before {
+  content: ""; position: absolute; left: -6px; top: 8px; bottom: 8px; width: 2px; border-radius: 2px; background: var(--text);
+}
+.activity-btn:focus-visible { outline: 2px solid var(--working); outline-offset: 1px; }
+.activity-badge { position: absolute; top: 6px; right: 6px; width: 7px; height: 7px; border-radius: 50%; background: var(--needs); }
+.view { flex: 1; min-width: 0; display: flex; }
+.view[hidden] { display: none; }
+
+/* Narrow windows: the sidebar gives way to the work. */
+@media (max-width: 900px) {
+  .sidebar { width: 220px; }
+}
+@media (max-width: 640px) {
+  .sidebar { width: 180px; }
+}
