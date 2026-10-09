@@ -100,10 +100,12 @@ impl Daemon {
                 .list()
                 .into_iter()
                 .filter(|f| {
-                    f.status.is_active()
+                    !unanswered(f).is_empty()
+                        || f.status.is_active()
                         || f.status == FeatureStatus::Review
-                        // Blocked on a decision the brain hasn't seen yet.
-                        || (f.status == FeatureStatus::Blocked && f.pending_decisions().next().is_some())
+                        // Blocked: on a decision the brain hasn't seen yet,
+                        // or on nothing any more (see `unblock`).
+                        || (f.status == FeatureStatus::Blocked && f.workspace_id.is_some())
                 })
                 .map(|f| f.id)
                 .collect();
@@ -130,15 +132,177 @@ impl Daemon {
     }
 
     async fn step(self: &Arc<Self>, id: &FeatureId) -> RpcResult<()> {
-        let f = self.feature_get(id.as_str()).await?;
+        let mut f = self.feature_get(id.as_str()).await?;
+        // The developer said something: answer first (it may pause or go on).
+        if !unanswered(&f).is_empty() {
+            self.converse(&f).await?;
+            f = self.feature_get(id.as_str()).await?;
+        }
         match f.status {
             FeatureStatus::Planning => self.plan_step(&f).await,
             FeatureStatus::Implementing => self.implement_step(&f).await,
             FeatureStatus::Verifying => self.verify_step(&f).await,
             FeatureStatus::Review => self.review_step(&f).await,
-            FeatureStatus::Blocked => self.decide_open(&f).await,
+            FeatureStatus::Blocked => {
+                if f.pending_decisions().next().is_some() {
+                    self.decide_open(&f).await
+                } else {
+                    self.unblock(&f).await
+                }
+            }
             _ => Ok(()),
         }
+    }
+
+    /// Answer the developer's latest messages (D-049), and act on what they
+    /// ask: go on (resume, unblock, start, retry) or pause. Instructions for
+    /// the work reach the coding agent with its next turn.
+    async fn converse(self: &Arc<Self>, f: &Feature) -> RpcResult<()> {
+        use crate::brain::Intent;
+        let open = unanswered(f);
+        let Some(last) = open.last().cloned() else {
+            return Ok(());
+        };
+        let text = open
+            .iter()
+            .map(|m| m.text.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        let reply = match self.feature_workspace(f).await {
+            Ok((root, env)) => {
+                let brain = brain::select(&env, &self.brain_choice());
+                brain
+                    .reply(
+                        &Context {
+                            feature: f,
+                            root: &root,
+                            env: &env,
+                        },
+                        &text,
+                    )
+                    .await
+            }
+            Err(e) => Err(anyhow::anyhow!(e.message)),
+        };
+        let reply = reply.unwrap_or_else(|e| {
+            tracing::warn!(feature = %f.id, "replying: {e:#}");
+            crate::brain::Reply {
+                text: crate::brain::status_text(f),
+                intent: crate::brain::Intent::None,
+            }
+        });
+        let intent = reply.intent;
+        let reply_text = if reply.text.is_empty() {
+            crate::brain::status_text(f)
+        } else {
+            reply.text
+        };
+        let mut stop = false;
+        let applied = self.features.lock().await.apply(&f.id, None, |f, now| {
+            let mut changes = Vec::new();
+            let (m, c) = message(
+                MessageRole::Controller,
+                reply_text.clone(),
+                Some(last.id.to_string()),
+            );
+            f.messages.push(m);
+            changes.push(c);
+            let move_to = |f: &mut Feature, to: FeatureStatus, why: &str| {
+                f.transition(to, Some(why.into()), now)
+                    .ok()
+                    .map(Change::new)
+            };
+            let step = match (intent, f.status) {
+                (Intent::Continue, FeatureStatus::Draft) => {
+                    move_to(f, FeatureStatus::Planning, "You said go on")
+                }
+                (Intent::Continue, FeatureStatus::Paused) => {
+                    let next = crate::features::resume_status(f);
+                    move_to(f, next, "You said go on")
+                }
+                (Intent::Continue, FeatureStatus::Blocked)
+                    if f.pending_decisions().next().is_none() =>
+                {
+                    let next = crate::features::resume_status(f);
+                    move_to(f, next, "You said go on")
+                }
+                (Intent::Continue, FeatureStatus::Failed) => {
+                    f.budget.iterations_used = 0;
+                    for t in &mut f.tasks {
+                        if t.status == TaskStatus::Failed {
+                            t.status = TaskStatus::Pending;
+                            t.attempts = 0;
+                        }
+                    }
+                    let next = crate::features::resume_status(f);
+                    move_to(f, next, "You said go on: retrying with a fresh budget")
+                }
+                (Intent::Pause, s)
+                    if s.is_active()
+                        || s == FeatureStatus::Blocked
+                        || s == FeatureStatus::Review =>
+                {
+                    stop = true;
+                    move_to(f, FeatureStatus::Paused, "Paused: you asked")
+                }
+                // The goal moved (D-050): plan again, keeping what is done.
+                (Intent::Revise, s) if !s.is_terminal() => {
+                    stop = true;
+                    changes.extend(crate::features::replan(
+                        f,
+                        "You changed the goal: planning again",
+                        now,
+                    ));
+                    None
+                }
+                // Satisfied: accept what's in review (its gates still apply),
+                // or stop work in progress.
+                (Intent::Finish, FeatureStatus::Review) => {
+                    let accept = otter_core::feature::FeatureAction::Accept {
+                        override_gates: false,
+                    };
+                    match crate::features::apply_action(f, &accept, last.id.as_str(), now) {
+                        Ok(c) => {
+                            changes.extend(c);
+                            None
+                        }
+                        Err(e) => {
+                            f.rationale.push(format!("Not done yet: {}", e.message));
+                            None
+                        }
+                    }
+                }
+                (Intent::Finish, s) if s.is_active() || s == FeatureStatus::Blocked => {
+                    stop = true;
+                    move_to(f, FeatureStatus::Paused, "Stopped: you said that's enough")
+                }
+                _ => None,
+            };
+            changes.extend(step);
+            Ok(changes)
+        })?;
+        self.feature_changed(&applied);
+        if stop {
+            self.stop_runs(&f.id, RunState::Cancelled, "Paused").await;
+        }
+        Ok(())
+    }
+
+    /// A feature blocked on nothing that is still open (a decision that
+    /// became moot, an interrupted run) picks up where its work stands.
+    async fn unblock(&self, f: &Feature) -> RpcResult<()> {
+        self.controller_apply(&f.id, FeatureStatus::Blocked, |f, now| {
+            if f.workspace_id.is_none() || f.pending_decisions().next().is_some() {
+                return Ok(vec![]);
+            }
+            let next = crate::features::resume_status(f);
+            Ok(vec![Change::new(
+                f.transition(next, Some("Nothing is waiting on you any more".into()), now)
+                    .map_err(RpcError::conflict)?,
+            )])
+        })
+        .await?;
+        Ok(())
     }
 
     /// How the Control Agent thinks on this host (settings + environment).
@@ -230,7 +394,7 @@ impl Daemon {
             .await?;
             return Ok(());
         }
-        if !f.tasks.is_empty() {
+        if !f.tasks.is_empty() && !f.replan {
             // Back from a pause before any plan step was lost: carry on.
             self.controller_apply(&f.id, FeatureStatus::Planning, |f, now| {
                 let next = crate::features::resume_status(f);
@@ -269,8 +433,17 @@ impl Daemon {
                     evidence: vec![],
                 })
                 .collect();
+            // Planning again (D-050): what is done stays; the rest is replaced.
+            let revised = f.replan;
+            let kept: Vec<Task> = f
+                .tasks
+                .iter()
+                .filter(|t| matches!(t.status, TaskStatus::Done | TaskStatus::Skipped))
+                .cloned()
+                .collect();
+            f.replan = false;
             let ids: Vec<TaskId> = plan.tasks.iter().map(|_| TaskId::generate()).collect();
-            f.tasks = plan
+            let fresh: Vec<Task> = plan
                 .tasks
                 .iter()
                 .enumerate()
@@ -291,6 +464,7 @@ impl Daemon {
                     last_error: None,
                 })
                 .collect();
+            f.tasks = kept.into_iter().chain(fresh).collect();
             f.verify_command = verify.clone();
             f.rationale
                 .push(format!("Plan ({brain_name}): {}", plan.rationale));
@@ -339,7 +513,8 @@ impl Daemon {
                 _ => {}
             }
             let mut text = format!(
-                "Plan: {} task(s).\n{}\nAcceptance criteria:\n{}",
+                "{}: {} task(s).\n{}\nAcceptance criteria:\n{}",
+                if revised { "Revised plan" } else { "Plan" },
                 f.tasks.len(),
                 f.tasks
                     .iter()
@@ -417,16 +592,24 @@ impl Daemon {
                 )
                 .await
             {
-                // Policy kept it from the model: it's the developer's.
-                self.escalate(
-                    &f.id,
-                    &d,
-                    &format!(
-                        "the Control Agent wanted to allow it ({rationale}), but {}",
-                        e.message
-                    ),
-                )
-                .await;
+                // Already decided or moot (the run ended meanwhile): nothing
+                // to escalate. Still open: policy kept it from the model, so
+                // it's the developer's.
+                let still_open = self
+                    .feature_get(f.id.as_str())
+                    .await
+                    .is_ok_and(|now| now.pending_decisions().any(|x| x.id == d.id));
+                if still_open {
+                    self.escalate(
+                        &f.id,
+                        &d,
+                        &format!(
+                            "the Control Agent wanted to allow it ({rationale}), but {}",
+                            e.message
+                        ),
+                    )
+                    .await;
+                }
             }
         }
         Ok(())
@@ -1273,6 +1456,24 @@ fn pr_body(f: &Feature) -> String {
     b
 }
 
+/// The developer's messages since the Control Agent last answered one
+/// (the request that created the feature isn't one).
+pub(crate) fn unanswered(f: &Feature) -> Vec<otter_core::feature::Message> {
+    let answered = f.messages.iter().rposition(|m| {
+        m.role == MessageRole::Controller
+            && m.correlation_id
+                .as_deref()
+                .is_some_and(|c| c.starts_with("msg_"))
+    });
+    f.messages
+        .iter()
+        .enumerate()
+        .skip(answered.map_or(1, |i| i + 1))
+        .filter(|(_, m)| m.role == MessageRole::User)
+        .map(|(_, m)| m.clone())
+        .collect()
+}
+
 /// Whether a command may run (see [`Daemon::allowance`]).
 pub(crate) enum Allowance {
     Allowed,
@@ -1467,6 +1668,7 @@ mod tests {
                 ended_at: None,
                 summary: Some((*s).into()),
                 provider_session_id: None,
+                activity: vec![],
             });
         }
         f

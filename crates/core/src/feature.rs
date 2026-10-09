@@ -65,9 +65,10 @@ impl FeatureStatus {
         }
     }
 
-    /// Nothing more will happen without a new feature.
+    /// Nothing more will happen. (Done isn't final: the developer can
+    /// always change the goal and the work picks up again, D-050.)
     pub fn is_terminal(self) -> bool {
-        matches!(self, FeatureStatus::Done | FeatureStatus::Cancelled)
+        matches!(self, FeatureStatus::Cancelled)
     }
 
     /// The controller is (or should be) driving it.
@@ -78,10 +79,11 @@ impl FeatureStatus {
         )
     }
 
-    /// The lifecycle: draft → planning → implementing → verifying → review →
-    /// done, with blocked/paused/failed/cancelled to the side. Verification
-    /// may send work back to implementing; review may too (changes asked
-    /// for, or a delivery gate failing).
+    /// The lifecycle (D-050) is a loop, not a line: plan → implement →
+    /// verify, as many times as it takes, then review; the developer can
+    /// change the goal at any point (even after done), which plans again
+    /// from where the work stands. Blocked, paused and failed are side exits;
+    /// only cancelled is final.
     pub fn can_become(self, to: FeatureStatus) -> bool {
         use FeatureStatus::*;
         if self == to || self.is_terminal() {
@@ -89,7 +91,8 @@ impl FeatureStatus {
         }
         match to {
             Draft => false,
-            Planning => matches!(self, Draft | Paused | Failed | Blocked),
+            // Planning again is always possible: the goal moved.
+            Planning => true,
             Implementing => matches!(
                 self,
                 Planning | Verifying | Review | Paused | Failed | Blocked
@@ -252,6 +255,9 @@ pub struct Run {
     /// The runtime's own conversation id, to resume. Opaque.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider_session_id: Option<String>,
+    /// What the agent did lately (tools it used), newest last, a line each.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub activity: Vec<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -375,6 +381,10 @@ pub struct Feature {
     /// The command that checks the work (e.g. `cargo test`), from the plan.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub verify_command: Option<String>,
+    /// The goal changed since the plan was written: plan again, keeping
+    /// what is done (D-050).
+    #[serde(default)]
+    pub replan: bool,
     /// Policy (or the developer) allowed `verify_command` to run.
     #[serde(default)]
     pub verify_approved: bool,
@@ -430,6 +440,7 @@ impl Feature {
             workspace_id: None,
             active_since: None,
             verify_command: None,
+            replan: false,
             verify_approved: false,
             verify_decision: None,
             rationale: Vec::new(),
@@ -520,16 +531,12 @@ pub enum FeatureAction {
         #[serde(default)]
         override_gates: bool,
     },
-    /// The developer sends a feature in review back with changes.
+    /// The developer changes or adds to the goal (at any point, even after
+    /// done): the Control Agent plans again from where the work stands.
     RequestChanges {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         note: Option<String>,
     },
-    /// The developer takes over the coding agent: the managed run stops and
-    /// its conversation opens in an interactive session (D-044).
-    TakeOver,
-    /// The developer gives the conversation back to the Control Agent.
-    HandBack,
     /// Choose the workspace (id or name, on this host) the work happens in.
     SetWorkspace {
         workspace: String,
@@ -626,8 +633,6 @@ impl FeatureAction {
             FeatureAction::Decide { .. } => "decide",
             FeatureAction::Accept { .. } => "accept",
             FeatureAction::RequestChanges { .. } => "request_changes",
-            FeatureAction::TakeOver => "take_over",
-            FeatureAction::HandBack => "hand_back",
             FeatureAction::SetWorkspace { .. } => "set_workspace",
             FeatureAction::Preview => "preview",
         }
@@ -799,6 +804,19 @@ mod tests {
         assert!(Failed.can_become(Implementing));
         assert!(Draft.can_become(Cancelled) && Review.can_become(Cancelled));
         assert!(!Draft.can_become(Paused));
+        // The goal can move at any point, even after done: plan again.
+        for s in [
+            Implementing,
+            Verifying,
+            Review,
+            Done,
+            Blocked,
+            Paused,
+            Failed,
+        ] {
+            assert!(s.can_become(Planning), "{s:?}");
+        }
+        assert!(!Done.is_terminal() && Cancelled.is_terminal());
     }
 
     #[test]

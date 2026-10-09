@@ -1,13 +1,19 @@
-//! What a managed agent may do without asking (D-044). Deterministic code,
-//! not a model: the Control Agent may decide what this leaves open, and
-//! nothing else.
+//! What a managed agent may do without asking (D-044, revised in D-049).
+//! Deterministic code, not a model.
 //!
-//! - **allow** — low risk, inside the workspace: reading, editing files under
-//!   the workspace root, building and testing.
-//! - **ask** — medium risk: the Control Agent may decide (installing
-//!   packages, fetching, commands it doesn't recognize, questions, plans).
-//! - **ask the developer** — high risk: destructive, credentials, production,
-//!   anything outside the workspace. Only the developer may approve.
+//! - **allow** (the default) — ordinary work inside the workspace: reading
+//!   and writing files there, building, testing, installing dependencies,
+//!   running the project's scripts, fetching documentation.
+//! - **ask the developer** — what is hard to undo or reaches beyond the
+//!   workspace: deleting things (`rm`, `git clean`, `git reset --hard`, …),
+//!   destroying resources (`kubectl delete`, `terraform destroy`, `DROP
+//!   TABLE`, `docker rm`, …), credentials, pushing / publishing / deploying,
+//!   `sudo`, and edits outside the workspace. Only the developer may allow
+//!   these.
+//! - **the Control Agent decides** — the agent's questions, plans, and tools
+//!   policy doesn't know (an MCP tool).
+//! - **never** — a few commands no one may allow (`rm -rf /`, piping a
+//!   download into a shell, …).
 //!
 //! A denial — by policy or by the developer — is final for that request: no
 //! model decision can turn it into an allow ([`resolve`]).
@@ -47,30 +53,54 @@ const NEVER: &[&str] = &[
     "|bash",
 ];
 
-/// Commands that destroy data or history.
+/// Deleting things and destroying resources. Single words match whole
+/// words; the rest match anywhere.
 const DESTRUCTIVE: &[&str] = &[
-    "rm -rf",
-    "rm -fr",
-    "rm -r ",
-    "git push --force",
-    "git push -f",
-    "git reset --hard",
-    "git clean -f",
-    "git branch -D",
-    "drop table",
-    "drop database",
-    "truncate table",
+    // Files.
+    "rm",
+    "rmdir",
+    "unlink",
+    "shred",
+    "-delete",
     "mkfs",
     "dd if=",
-    "shred ",
+    "> /dev/",
+    // Git history and uncommitted work.
+    "git clean",
+    "git reset --hard",
+    "git checkout -- ",
+    "git checkout .",
+    "git restore",
+    "git stash drop",
+    "git stash clear",
+    "git branch -d",
+    "git push --force",
+    "git push -f",
+    "git rebase",
+    "git filter-branch",
+    // Data and infrastructure.
+    "drop table",
+    "drop database",
+    "drop schema",
+    "truncate",
+    "delete from",
+    "dropdb",
+    "flushall",
+    "flushdb",
+    "delete",
+    "destroy",
+    "terminate",
+    "prune",
+    "uninstall",
+    "docker rm",
+    "docker rmi",
+    "docker volume rm",
     "kubectl delete",
-    "terraform destroy",
-    "docker system prune",
-    "> /dev/sd",
+    "helm uninstall",
 ];
 /// Commands or arguments that touch credentials.
 const CREDENTIALS: &[&str] = &[
-    "vault ",
+    "vault",
     "secretsmanager",
     "ssm get-parameter",
     "gh auth",
@@ -84,11 +114,14 @@ const CREDENTIALS: &[&str] = &[
     "password",
     "secret",
     "token",
+    "_token",
+    "_secret",
+    "_password",
     "api_key",
     "apikey",
     "credentials",
 ];
-/// Commands that reach production or publish.
+/// Commands that push, publish or deploy.
 const PRODUCTION: &[&str] = &[
     "prod",
     "deploy",
@@ -102,79 +135,16 @@ const PRODUCTION: &[&str] = &[
     "gh pr merge",
     "gh release",
 ];
-/// Commands that are routine inside a workspace (by first word or prefix).
-const ROUTINE: &[&str] = &[
-    "cargo build",
-    "cargo test",
-    "cargo check",
-    "cargo clippy",
-    "cargo fmt",
-    "cargo run",
-    "npm test",
-    "npm run",
-    "npx tsc",
-    "npx vitest",
-    "pnpm test",
-    "yarn test",
-    "pytest",
-    "python -m pytest",
-    "go test",
-    "go build",
-    "go vet",
-    "make",
-    "git status",
-    "git diff",
-    "git log",
-    "git show",
-    "git add",
-    "git commit",
-    "git checkout -b",
-    "git switch",
-    "git branch",
-    "ls",
-    "cat ",
-    "head ",
-    "tail ",
-    "wc ",
-    "grep ",
-    "rg ",
-    "find ",
-    "pwd",
-    "echo ",
-    "mkdir ",
-    "touch ",
-];
-/// Commands that fetch or install from the network.
-const NETWORK: &[&str] = &[
-    "npm install",
-    "npm i ",
-    "pnpm add",
-    "yarn add",
-    "pip install",
-    "cargo add",
-    "cargo install",
-    "go get",
-    "curl ",
-    "wget ",
-    "brew install",
-    "apt ",
-    "apt-get ",
-];
 
-fn contains_any(haystack: &str, needles: &[&str]) -> Option<String> {
-    needles
-        .iter()
-        .find(|n| haystack.contains(*n))
-        .map(|n| n.trim().to_owned())
-}
-
-/// Like [`contains_any`], but a needle that is a single word matches whole
-/// words only (`token` in `API_TOKEN`, not in `tokenizer`; `prod` in
-/// `deploy.sh prod`, not in `reproduce`). Needles with spaces or
-/// punctuation (`git push`, `.ssh/`) match anywhere.
+/// Whether a needle (from the lists above) occurs in `haystack` (lowercase):
+/// a single word matches whole words only (`rm` in `rm -f x`, not in
+/// `npm run rm-cache` or `format`; `token`, not `tokenizer`); a needle with
+/// spaces or punctuation matches anywhere (`git push`); one starting with
+/// `_` matches the end of a word (`_token` in `API_TOKEN`). Words are runs
+/// of letters, digits, `_` and `-`.
 fn mentions_any(haystack: &str, needles: &[&str]) -> Option<String> {
     let words: Vec<&str> = haystack
-        .split(|c: char| !(c.is_ascii_alphanumeric() || c == '-'))
+        .split(|c: char| !(c.is_ascii_alphanumeric() || c == '-' || c == '_'))
         .filter(|w| !w.is_empty())
         .collect();
     needles
@@ -182,6 +152,9 @@ fn mentions_any(haystack: &str, needles: &[&str]) -> Option<String> {
         .find(|n| {
             if n.chars().all(|c| c.is_ascii_alphanumeric()) {
                 words.contains(n)
+            } else if n.starts_with('_') {
+                // A suffix: `API_TOKEN`, `DB_PASSWORD` (not `x_tokenizer`).
+                words.iter().any(|w| w.ends_with(*n))
             } else {
                 haystack.contains(*n)
             }
@@ -189,7 +162,8 @@ fn mentions_any(haystack: &str, needles: &[&str]) -> Option<String> {
         .map(|n| n.trim().to_owned())
 }
 
-/// Classify one command line (each `&&`/`;`/`|` part; the riskiest wins).
+/// Classify a command line: allowed unless it deletes, destroys, touches
+/// credentials, pushes or publishes, or runs as root.
 fn classify_command(line: &str) -> Verdict {
     let lower = line.to_lowercase();
     // `rm -rf /tmp/x` is not `rm -rf /`: only a bare root, home or a pipe
@@ -213,47 +187,19 @@ fn classify_command(line: &str) -> Verdict {
             why: format!("never allowed in a managed run (`{}`)", n.trim()),
         };
     }
-    if let Some(m) = contains_any(&lower, DESTRUCTIVE) {
-        return ask_user(format!("destructive (`{m}`)"));
+    if let Some(m) = mentions_any(&lower, DESTRUCTIVE) {
+        return ask_user(format!("deletes or destroys something (`{m}`)"));
     }
     if let Some(m) = mentions_any(&lower, CREDENTIALS) {
         return ask_user(format!("touches credentials (`{m}`)"));
     }
     if let Some(m) = mentions_any(&lower, PRODUCTION) {
-        return ask_user(format!("reaches production or publishes (`{m}`)"));
+        return ask_user(format!("pushes, publishes or deploys (`{m}`)"));
     }
-    if lower.contains("sudo ") || lower.starts_with("sudo") {
+    if mentions_any(&lower, &["sudo", "doas"]).is_some() {
         return ask_user("runs as root".into());
     }
-    let parts: Vec<&str> = lower
-        .split(['&', ';', '|', '\n'])
-        .map(str::trim)
-        .filter(|p| !p.is_empty())
-        .collect();
-    let mut verdict = Verdict::Allow;
-    for p in parts {
-        let v = if contains_any(p, NETWORK).is_some() {
-            Verdict::Ask {
-                risk: Risk::Medium,
-                kind: DecisionKind::ToolPermission,
-                user_only: false,
-                why: "fetches or installs from the network".into(),
-            }
-        } else if ROUTINE.iter().any(|r| p == r.trim() || p.starts_with(r)) {
-            Verdict::Allow
-        } else {
-            Verdict::Ask {
-                risk: Risk::Medium,
-                kind: DecisionKind::ToolPermission,
-                user_only: false,
-                why: "a command policy doesn't know".into(),
-            }
-        };
-        if v != Verdict::Allow {
-            verdict = v;
-        }
-    }
-    verdict
+    Verdict::Allow
 }
 
 fn ask_user(why: String) -> Verdict {
@@ -307,12 +253,8 @@ pub fn classify(call: &ToolCall, root: &Path) -> Verdict {
             }
         }
         ToolCall::Command { line } => classify_command(line),
-        ToolCall::Fetch { .. } => Verdict::Ask {
-            risk: Risk::Medium,
-            kind: DecisionKind::ToolPermission,
-            user_only: false,
-            why: "fetches from the network".into(),
-        },
+        // Reading the web (docs, references) changes nothing here.
+        ToolCall::Fetch { .. } => Verdict::Allow,
         ToolCall::Question { .. } => Verdict::Ask {
             risk: Risk::Medium,
             kind: DecisionKind::Question,
@@ -410,12 +352,48 @@ mod tests {
         assert_eq!(cmd("cargo test --all"), Verdict::Allow);
         assert_eq!(cmd("git status && git diff"), Verdict::Allow);
         assert_eq!(cmd("npm run build"), Verdict::Allow);
+        // Ordinary work runs without asking, known or not (D-049).
+        for line in [
+            r#"npm test 2>&1 | tail -9; echo "EXIT CODE: ${pipestatus[1]}""#,
+            "npm install left-pad",
+            "pip install -r requirements.txt",
+            "curl -s https://example.com/docs",
+            "node scripts/gen.js > out.txt",
+            "mv a.txt b.txt && cp -r src backup",
+            "frobnicate --all",
+            "git add -A && git commit -m wip",
+            "npm run rm-cache",
+            "cargo fmt --check",
+        ] {
+            assert_eq!(cmd(line), Verdict::Allow, "{line}");
+        }
+        assert_eq!(
+            classify(
+                &ToolCall::Fetch {
+                    url: "https://docs.rs".into()
+                },
+                root
+            ),
+            Verdict::Allow
+        );
     }
 
     #[test]
     fn destructive_credential_and_production_actions_need_the_developer() {
         for line in [
             "rm -rf build",
+            "rm notes.txt",
+            "rmdir old",
+            "find . -name '*.log' -delete",
+            "git clean -fd",
+            "git restore src/",
+            "git checkout -- .",
+            "docker rm web",
+            "aws s3 rm s3://bucket/x",
+            "gcloud compute instances delete vm-1",
+            "terraform destroy",
+            "npm uninstall left-pad",
+            "redis-cli FLUSHALL",
             "git push --force origin main",
             "git reset --hard HEAD~3",
             "psql -c 'DROP TABLE users'",
@@ -487,28 +465,19 @@ mod tests {
     }
 
     #[test]
-    fn the_rest_is_for_the_control_agent() {
-        for line in [
-            "npm install left-pad",
-            "curl https://example.com",
-            "frobnicate --all",
-        ] {
-            assert!(
-                matches!(
-                    cmd(line),
-                    Verdict::Ask {
-                        user_only: false,
-                        risk: Risk::Medium,
-                        ..
-                    }
-                ),
-                "{line}"
-            );
-        }
-        // One unknown part makes the whole line ask.
+    fn questions_and_unknown_tools_are_for_the_control_agent() {
         assert!(matches!(
-            cmd("cargo test && frobnicate"),
-            Verdict::Ask { .. }
+            classify(
+                &ToolCall::Other {
+                    name: "mcp__db__query".into()
+                },
+                Path::new("/w")
+            ),
+            Verdict::Ask {
+                user_only: false,
+                risk: Risk::Medium,
+                ..
+            }
         ));
         assert!(matches!(
             classify(
@@ -545,7 +514,12 @@ mod tests {
         assert!(resolve(&denied, false, &user(true)).is_err());
         assert!(resolve(&denied, false, &controller(true)).is_err());
 
-        let open = cmd("npm install x");
+        let open = classify(
+            &ToolCall::Other {
+                name: "mcp__x".into(),
+            },
+            Path::new("/w"),
+        );
         assert!(resolve(&open, false, &controller(true)).is_ok());
         // Once the developer said no, a model can't say yes.
         assert!(resolve(&open, true, &controller(true)).is_err());

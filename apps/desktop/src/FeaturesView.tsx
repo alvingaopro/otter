@@ -6,13 +6,12 @@ import { ago } from "./model";
 import type { FeatureSource } from "./featureSource";
 import {
   FILTERS,
-  STAGES,
   STATUS_LABEL,
   featureGlyph,
   matches,
   pendingDecisions,
   sortFeatures,
-  stageIndex,
+  statusDetail,
   type DecisionRequest,
   type Feature,
   type FeatureAction,
@@ -205,6 +204,7 @@ function FeaturePane({
         <Glyph kind={featureGlyph(f)} />
         <h1 className="feature-title">{f.title}</h1>
         <span className={`status-pill ${featureGlyph(f)}`}>{STATUS_LABEL[f.status]}</span>
+        {statusDetail(f) && <span className="status-detail">{statusDetail(f)}</span>}
         <span className="chips">
           <span className="chip">{placed.host}</span>
           {f.workspace_id && (
@@ -262,7 +262,6 @@ function FeaturePane({
         </div>
       )}
       {error && <p className="notice error-text">{error}</p>}
-      <Stages f={f} />
       <div className="feature-body">
         <Conversation placed={placed} source={source} now={now} />
         <section className="feature-detail" aria-label="Details">
@@ -298,29 +297,8 @@ function FeaturePane({
 
 function FeatureActions({ f, act }: { f: Feature; act: (a: FeatureAction) => void }) {
   const live = ["planning", "implementing", "verifying", "blocked"].includes(f.status);
-  // A conversation exists to take over; a task session to give back from.
-  const canTakeOver = !["done", "cancelled"].includes(f.status) && f.runs.some((r) => r.provider_session_id);
-  const tookOver = f.status === "paused" && f.tasks.some((t) => t.session_id);
   return (
     <span className="feature-actions">
-      {canTakeOver && f.status !== "paused" && (
-        <button
-          className="btn"
-          title="Stop the managed agent and continue its conversation yourself in a terminal"
-          onClick={() => act({ action: "take_over" })}
-        >
-          Take over
-        </button>
-      )}
-      {tookOver && (
-        <button
-          className="btn primary"
-          title="Quit the agent in your session first; the Control Agent continues the conversation"
-          onClick={() => act({ action: "hand_back" })}
-        >
-          Hand back
-        </button>
-      )}
       {f.status === "draft" && (
         <button className="btn primary" onClick={() => act({ action: "start" })}>
           Start
@@ -331,7 +309,7 @@ function FeatureActions({ f, act }: { f: Feature; act: (a: FeatureAction) => voi
           Pause
         </button>
       )}
-      {f.status === "paused" && !tookOver && (
+      {f.status === "paused" && (
         <button className="btn primary" onClick={() => act({ action: "resume" })}>
           Resume
         </button>
@@ -343,9 +321,6 @@ function FeatureActions({ f, act }: { f: Feature; act: (a: FeatureAction) => voi
       )}
       {f.status === "review" && (
         <>
-          <button className="btn" onClick={() => act({ action: "request_changes" })}>
-            Request changes
-          </button>
           {gatesClear(f) ? (
             <button className="btn primary" onClick={() => act({ action: "accept" })}>
               Accept
@@ -417,19 +392,6 @@ function StatusBanner({ f, onApprovals, act }: { f: Feature; onApprovals: () => 
   return null;
 }
 
-function Stages({ f }: { f: Feature }) {
-  const at = stageIndex(f);
-  return (
-    <ol className="stages" aria-label="Progress">
-      {STAGES.map((s, i) => (
-        <li key={s} className={i < at ? "stage past" : i === at ? "stage now" : "stage"} aria-current={i === at ? "step" : undefined}>
-          {STATUS_LABEL[s]}
-        </li>
-      ))}
-    </ol>
-  );
-}
-
 const ROLE: Record<string, string> = { user: "You", controller: "Control Agent", agent: "Coding agent", system: "Otter" };
 
 function Conversation({ placed, source, now }: { placed: PlacedFeature; source: FeatureSource; now: number }) {
@@ -437,7 +399,12 @@ function Conversation({ placed, source, now }: { placed: PlacedFeature; source: 
   const [busy, setBusy] = useState(false);
   const end = useRef<HTMLDivElement>(null);
   const messages = placed.feature.messages;
-  useEffect(() => end.current?.scrollIntoView?.({ block: "end" }), [messages.length]);
+  const live = placed.feature.runs.find((r) => ["starting", "running", "waiting"].includes(r.state));
+  const activity = live?.activity ?? [];
+  // The developer spoke last: the Control Agent's answer is on its way.
+  const last = messages[messages.length - 1];
+  const awaitingReply = last?.role === "user" && messages.length > 1 && !["done", "cancelled"].includes(placed.feature.status);
+  useEffect(() => end.current?.scrollIntoView?.({ block: "end" }), [messages.length, activity.length, awaitingReply]);
 
   async function submit(e: FormEvent) {
     e.preventDefault();
@@ -465,12 +432,32 @@ function Conversation({ placed, source, now }: { placed: PlacedFeature; source: 
             <div className="message-text">{m.text}</div>
           </div>
         ))}
+        {live && (
+          <div className="message agent working" aria-live="polite">
+            <div className="message-head">
+              <span className="message-role">Coding agent</span>
+              <span className="message-at">{live.state === "waiting" ? "waiting for a decision" : "working…"}</span>
+            </div>
+            {activity.length > 0 && (
+              <ul className="activity">
+                {activity.slice(-6).map((a, i) => (
+                  <li key={`${activity.length}-${i}`}>{a}</li>
+                ))}
+              </ul>
+            )}
+          </div>
+        )}
+        {awaitingReply && <p className="muted small replying">Control Agent is replying…</p>}
         <div ref={end} />
       </div>
       <form className="composer" onSubmit={submit}>
         <textarea
           aria-label="Message to the Control Agent"
-          placeholder="Message the Control Agent…"
+          placeholder={
+            placed.feature.status === "review" || placed.feature.status === "done"
+              ? "Happy with it? Or say what to change…"
+              : "Tell the Control Agent what you want…"
+          }
           value={text}
           rows={2}
           onChange={(e) => setText(e.target.value)}

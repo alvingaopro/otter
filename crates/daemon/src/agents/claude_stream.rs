@@ -756,7 +756,22 @@ mod process_tests {
                 id: "conv-42".into()
             }
         );
-        next(&mut h).await;
+        // It ran something, said something, and finished.
+        assert_eq!(
+            next(&mut h).await,
+            RuntimeEvent::Tool {
+                tool: "Bash".into(),
+                call: ToolCall::Command {
+                    line: "make test".into()
+                }
+            }
+        );
+        assert_eq!(
+            next(&mut h).await,
+            RuntimeEvent::Text {
+                text: "Did the work.".into()
+            }
+        );
         assert!(matches!(next(&mut h).await,
             RuntimeEvent::TurnEnded { ok: true, summary: Some(s), .. } if s == "done in conv-42"));
         assert_eq!(h.inspect().session_id.as_deref(), Some("conv-42"));
