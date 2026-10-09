@@ -138,6 +138,10 @@ pub enum Event {
         history_seq: u64,
         status: FeatureStatus,
     },
+    /// A feature was deleted (`feature.delete`): it is gone, history and all.
+    FeatureDeleted {
+        feature_id: FeatureId,
+    },
     /// A message being written right now (D-051): the text so far, sent as
     /// it grows. **Transient**: not in the log, not replayed, and its `seq`
     /// is the latest logged one (it doesn't advance a cursor). `done`: the
@@ -183,6 +187,7 @@ impl Event {
             Event::AttentionResolved { .. } => "AttentionResolved",
             Event::BrowserOpenRequested { .. } => "BrowserOpenRequested",
             Event::FeatureChanged { .. } => "FeatureChanged",
+            Event::FeatureDeleted { .. } => "FeatureDeleted",
             Event::FeatureStream { .. } => "FeatureStream",
             Event::Unknown => "Unknown",
         }
@@ -192,6 +197,7 @@ impl Event {
         match self {
             Event::DaemonStarted { .. }
             | Event::FeatureChanged { .. }
+            | Event::FeatureDeleted { .. }
             | Event::FeatureStream { .. }
             | Event::Unknown => None,
             Event::WorkspaceCreated { workspace_id, .. }

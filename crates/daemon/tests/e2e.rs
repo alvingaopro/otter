@@ -3883,3 +3883,56 @@ async fn the_agents_text_streams_as_it_is_written() {
     let log = std::fs::read_to_string(fake.host.home().join("state/events.jsonl")).unwrap();
     assert!(!log.contains("FeatureStream"));
 }
+
+#[tokio::test]
+async fn a_feature_that_isnt_running_can_be_deleted() {
+    use otter_core::feature::FeatureAction;
+    use otter_protocol::feature::FeatureCreate;
+
+    let host = TestHost::with_env(&[("OTTER_CONTROLLER", "off".into())]).await;
+    create(&host, "dw", Some(vec![])).await;
+    let mut conn = host.conn().await;
+    let f = conn
+        .feature_create(FeatureCreate {
+            command_id: "cmd-del-1".into(),
+            title: "Throwaway".into(),
+            request: "Nothing much".into(),
+            workspace: Some("dw".into()),
+        })
+        .await
+        .unwrap();
+    let id = f.id.as_str();
+    let dir = host.home().join("state/features").join(id);
+    assert!(dir.join("feature.json").exists());
+
+    // Being worked on: not until it's paused or cancelled.
+    conn.feature_act("cmd-del-start", id, FeatureAction::Start)
+        .await
+        .unwrap();
+    let err = conn.feature_delete(id).await.unwrap_err();
+    assert!(format!("{err:#}").contains("pause or cancel"), "{err:#}");
+    conn.feature_act("cmd-del-cancel", id, FeatureAction::Cancel)
+        .await
+        .unwrap();
+
+    let mut stream = host.conn().await.subscribe(None).await.unwrap();
+    conn.feature_delete(id).await.unwrap();
+    assert!(conn.feature_list().await.unwrap().is_empty());
+    assert!(conn.feature_get(id).await.is_err());
+    assert!(!dir.exists(), "history and artifacts go with it");
+    // The workspace stays; clients hear the feature is gone.
+    assert!(conn.workspace_get("dw").await.is_ok());
+    tokio::time::timeout(Duration::from_secs(15), async {
+        loop {
+            let r = stream.next().await.unwrap().expect("stream open");
+            if let Event::FeatureDeleted { feature_id } = &r.event {
+                assert_eq!(feature_id.as_str(), id);
+                break;
+            }
+        }
+    })
+    .await
+    .expect("FeatureDeleted");
+    // Twice: there's nothing left to delete.
+    assert!(conn.feature_delete(id).await.is_err());
+}

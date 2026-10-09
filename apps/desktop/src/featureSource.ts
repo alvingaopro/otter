@@ -24,6 +24,8 @@ export interface FeatureSource {
   artifact(key: string, name: string): Promise<string>;
   /** Messages being written right now, oldest first (D-051). */
   drafts?(key: string): Draft[];
+  /** Delete a feature that isn't running; its workspace stays. */
+  remove(key: string): Promise<void>;
 }
 
 let counter = 0;
@@ -189,6 +191,10 @@ export function mockSource(host = "preview", now = Date.now()): FeatureSource {
       }));
       log(key, "MessageAdded", "You sent a message", msg);
     },
+    async remove(key) {
+      list = list.filter((p) => p.key !== key);
+      listeners.forEach((l) => l(list));
+    },
     async act(key, action) {
       const next: Partial<Record<FeatureAction["action"], Feature["status"]>> = {
         start: "planning",
@@ -285,6 +291,10 @@ export function daemonSource(): FeatureSource {
     const { host, record } = e.payload;
     if (!hosts.includes(host)) return;
     if (record.type === "FeatureChanged") void load(host);
+    if (record.type === "FeatureDeleted") {
+      drafts.delete(`${host}/${(record as { feature_id?: string }).feature_id}`);
+      void load(host);
+    }
     if (record.type === "FeatureStream") {
       const r = record as StreamRecord;
       const key = `${host}/${r.feature_id}`;
@@ -326,6 +336,13 @@ export function daemonSource(): FeatureSource {
     async act(key, action) {
       const { host, feature } = splitKey(key);
       put(host, await invoke<Feature>("feature_act", { host, commandId: commandId(), feature, action }));
+    },
+    async remove(key) {
+      const { host, feature } = splitKey(key);
+      await invoke("feature_delete", { host, feature });
+      byHost.set(host, (byHost.get(host) ?? []).filter((f) => f.id !== feature));
+      drafts.delete(key);
+      rebuild();
     },
     async history(key) {
       const { host, feature } = splitKey(key);

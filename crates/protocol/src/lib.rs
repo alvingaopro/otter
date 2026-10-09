@@ -194,6 +194,10 @@ pub enum Request {
     /// [`fs::FileChunk`] with the whole file (at most 8 MiB).
     #[serde(rename = "feature.artifact")]
     FeatureArtifact(feature::FeatureArtifact),
+    /// Remove a feature that isn't running, with its history and artifacts
+    /// (its workspace stays). Result: `null`.
+    #[serde(rename = "feature.delete")]
+    FeatureDelete(feature::FeatureRef),
 }
 
 impl Request {
@@ -240,6 +244,7 @@ impl Request {
             Request::FeatureAct(_) => "feature.act",
             Request::FeatureEvents(_) => "feature.events",
             Request::FeatureArtifact(_) => "feature.artifact",
+            Request::FeatureDelete(_) => "feature.delete",
         }
     }
 }

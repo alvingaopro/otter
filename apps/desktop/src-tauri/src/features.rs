@@ -69,6 +69,16 @@ pub async fn feature_act(
         .map_err(|e| e.to_string())
 }
 
+/// Delete a feature that isn't running; its workspace stays.
+#[tauri::command]
+pub async fn feature_delete(app: AppHandle, host: String, feature: String) -> Result<(), String> {
+    rpc(&app, &host)
+        .await?
+        .feature_delete(&feature)
+        .await
+        .map_err(|e| e.to_string())
+}
+
 /// A screenshot (or other file) a feature's checks produced, base64.
 #[tauri::command]
 pub async fn feature_artifact(

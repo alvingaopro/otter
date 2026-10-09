@@ -103,6 +103,23 @@ describe("Features view", () => {
     expect(q(".banner.needs")).not.toBeNull();
   });
 
+  it("deletes a feature that isn't running, after asking", async () => {
+    await render(mockSource("mac"));
+    const open = async (title: string) => act(async () => byText("button", title)!.click());
+    // Being worked on: no Delete.
+    await open("Export workspace timeline as CSV");
+    expect(byText(".pane-head button", "Delete")).toBeUndefined();
+
+    await open("Show host uptime on the host page");
+    await act(async () => byText(".pane-head button", "Delete")!.click());
+    const dialog = document.querySelector('[role="dialog"]')!;
+    expect(dialog.textContent).toContain("Show host uptime on the host page");
+    await act(async () => byText('[role="dialog"] button', "Delete")!.click());
+    expect(document.querySelector('[role="dialog"]')).toBeNull();
+    expect(byText(".ws-name", "Show host uptime")).toBeUndefined();
+    expect(host.querySelectorAll('[role="listitem"]')).toHaveLength(4);
+  });
+
   it("creates a draft, converses and starts it", async () => {
     await render(mockSource("mac"));
     await act(async () => q('[aria-label="New feature"]')!.click());

@@ -456,6 +456,18 @@ impl Connection {
         self.call(Request::FeatureList).await
     }
 
+    /// Delete a feature that isn't running (its workspace stays).
+    pub async fn feature_delete(&mut self, feature: &str) -> Result<()> {
+        let _: serde_json::Value = self
+            .call(Request::FeatureDelete(
+                otter_protocol::feature::FeatureRef {
+                    feature: feature.to_owned(),
+                },
+            ))
+            .await?;
+        Ok(())
+    }
+
     pub async fn feature_get(&mut self, feature: &str) -> Result<otter_core::feature::Feature> {
         self.call(Request::FeatureGet(otter_protocol::feature::FeatureRef {
             feature: feature.to_owned(),
