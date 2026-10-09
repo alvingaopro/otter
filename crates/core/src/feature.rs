@@ -252,6 +252,9 @@ pub struct Run {
     /// The runtime's own conversation id, to resume. Opaque.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider_session_id: Option<String>,
+    /// What the agent did lately (tools it used), newest last, a line each.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub activity: Vec<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]

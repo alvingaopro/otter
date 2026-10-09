@@ -553,3 +553,8 @@ code, .mono { font-family: var(--mono); }
 .key-row input { flex: 1; height: 32px; padding: 0 10px; border-radius: 7px; border: 1px solid var(--line-strong); background: var(--bg); color: var(--text); font: inherit; font-family: var(--mono); font-size: 13px; }
 .key-state { margin-left: 6px; font-size: 11px; padding: 1px 6px; border-radius: 5px; background: var(--raised); color: var(--muted); }
 .key-state.set { color: var(--done); }
+.message.working { border: 1px dashed var(--line-strong); background: none; }
+.message.working .message-at::before { content: "● "; color: var(--working); }
+.activity { list-style: none; margin: 4px 0 0; padding: 0; font-family: var(--mono); font-size: 12px; color: var(--muted); display: flex; flex-direction: column; gap: 2px; }
+.activity li { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.replying { margin: 0; padding-left: 4px; }

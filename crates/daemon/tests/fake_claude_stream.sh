@@ -43,7 +43,11 @@ while read -r line; do
         *ASK_QUESTION*) ask r3 AskUserQuestion '{"questions":[{"question":"Pick one","options":[{"label":"red"},{"label":"blue"}]}]}' ;;
         *FAIL*) result error_during_execution true "it broke" ;;
         *HANG*) text "working on it" ;;
-        *) text "Did the work."; result success false "done in $sid" ;;
+        *)
+          out '{"type":"assistant","parent_tool_use_id":null,"message":{"role":"assistant","content":[{"type":"tool_use","name":"Bash","input":{"command":"make test"}}]}}'
+          text "Did the work."
+          result success false "done in $sid"
+          ;;
       esac
       ;;
   esac

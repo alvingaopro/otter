@@ -1626,6 +1626,7 @@ mod tests {
                 ended_at: None,
                 summary: Some((*s).into()),
                 provider_session_id: None,
+                activity: vec![],
             });
         }
         f

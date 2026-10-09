@@ -437,7 +437,12 @@ function Conversation({ placed, source, now }: { placed: PlacedFeature; source: 
   const [busy, setBusy] = useState(false);
   const end = useRef<HTMLDivElement>(null);
   const messages = placed.feature.messages;
-  useEffect(() => end.current?.scrollIntoView?.({ block: "end" }), [messages.length]);
+  const live = placed.feature.runs.find((r) => ["starting", "running", "waiting"].includes(r.state));
+  const activity = live?.activity ?? [];
+  // The developer spoke last: the Control Agent's answer is on its way.
+  const last = messages[messages.length - 1];
+  const awaitingReply = last?.role === "user" && messages.length > 1 && !["done", "cancelled"].includes(placed.feature.status);
+  useEffect(() => end.current?.scrollIntoView?.({ block: "end" }), [messages.length, activity.length, awaitingReply]);
 
   async function submit(e: FormEvent) {
     e.preventDefault();
@@ -465,6 +470,22 @@ function Conversation({ placed, source, now }: { placed: PlacedFeature; source: 
             <div className="message-text">{m.text}</div>
           </div>
         ))}
+        {live && (
+          <div className="message agent working" aria-live="polite">
+            <div className="message-head">
+              <span className="message-role">Coding agent</span>
+              <span className="message-at">{live.state === "waiting" ? "waiting for a decision" : "working…"}</span>
+            </div>
+            {activity.length > 0 && (
+              <ul className="activity">
+                {activity.slice(-6).map((a, i) => (
+                  <li key={`${activity.length}-${i}`}>{a}</li>
+                ))}
+              </ul>
+            )}
+          </div>
+        )}
+        {awaitingReply && <p className="muted small replying">Control Agent is replying…</p>}
         <div ref={end} />
       </div>
       <form className="composer" onSubmit={submit}>

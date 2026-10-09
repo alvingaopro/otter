@@ -2787,6 +2787,13 @@ async fn a_feature_goes_from_request_to_review_with_evidence() {
             .iter()
             .any(|m| m.role == MessageRole::Agent && m.text.starts_with("done in"))
     );
+    // Streamed as it happened: what it said, and what it ran.
+    assert!(
+        f.messages
+            .iter()
+            .any(|m| m.role == MessageRole::Agent && m.text == "Did the work.")
+    );
+    assert_eq!(f.runs[0].activity, ["$ make test"]);
     assert!(
         f.messages
             .iter()

@@ -56,6 +56,8 @@ export interface Run {
   summary?: string;
   /** The agent's own conversation id (opaque): what a takeover opens. */
   provider_session_id?: string;
+  /** What the agent did lately (tools it used), newest last. */
+  activity?: string[];
 }
 
 export interface Message {
