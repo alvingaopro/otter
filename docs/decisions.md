@@ -1198,7 +1198,9 @@ interactive agent sessions (which stay as they are).
   publishing, root, anything outside the workspace — is `user_only`, blocks
   the feature, and only the developer can allow it. `policy::resolve` is the
   single gate: a model's "allow" of a `user_only` request is refused, and a
-  denial can't be turned around by anyone.
+  denial can't be turned around by anyone. Single words in the lists
+  (`token`, `secret`, `prod`, `deploy`) match whole words only, so
+  `cargo test tokenizer` or a search for "reproduce" stays routine.
 - **Every decision is a `DecisionRequest`** in the feature (kind, risk,
   who decided, rationale), so the audit trail includes what policy allowed.
   A request's summary can contain a command line the agent proposed: it is
@@ -1322,7 +1324,9 @@ checked. In review the controller (`review_step`, `delivery.rs`):
   no token and puts none on a command line. Calls: `pr view/create/edit`,
   `pr checks --json`, `run view --log-failed`, `run rerun --failed`,
   `pr comment`. Another forge would implement the same few calls.
-- **Follows CI** (every `OTTER_CI_POLL_MS`, 15 s): a failure goes back to
+- **Follows CI** (every `OTTER_CI_POLL_MS`, 15 s; not within
+  `OTTER_CI_SETTLE_MS`, 60 s, of a push, when what `gh` reports is still the
+  previous commit's): a failure goes back to
   implementing as a "Fix what CI found" task with the failed log; a failure
   that reads like the infrastructure (a runner lost, a network error, a full
   disk) is rerun instead, at most twice per pushed commit. Budgets and loop

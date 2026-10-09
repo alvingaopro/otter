@@ -911,10 +911,11 @@ impl Daemon {
         };
         let branch = git.publishable_branch().await;
         let gh = GitHub::find(&root, &env);
-        let cx = delivery::GateContext {
+        let mut cx = delivery::GateContext {
             publishable: branch.is_some() && gh.is_some(),
             has_ci: root.join(".github/workflows").is_dir(),
             browser_checks: crate::browser::load_checks(&root).is_ok_and(|c| !c.is_empty()),
+            ci_settling: false,
         };
         let mut d = f.delivery.clone();
         let mut evidence = Vec::new();
@@ -938,6 +939,7 @@ impl Daemon {
                             branch: branch.clone(),
                             base: None,
                             head,
+                            pushed_at: None,
                             pr_url: None,
                             pr_number: None,
                             ci: vec![],
@@ -963,6 +965,7 @@ impl Daemon {
                             branch: branch.clone(),
                             base: base.clone(),
                             head,
+                            pushed_at: Some(Utc::now()),
                             pr_url: Some(url.clone()),
                             pr_number: Some(number),
                             ci: vec![],
@@ -999,9 +1002,16 @@ impl Daemon {
                     }
                 }
             }
-            // CI, at most every so often.
+            // CI, at most every so often, and not right after a push (it
+            // would still be the previous commit's).
+            let settle = chrono::Duration::from_std(env_ms("OTTER_CI_SETTLE_MS", 60_000)).unwrap();
+            cx.ci_settling = d
+                .as_ref()
+                .and_then(|d| d.pushed_at)
+                .is_some_and(|t| Utc::now() < t + settle);
             if let Some(dl) = d.as_mut()
                 && let Some(n) = dl.pr_number
+                && !cx.ci_settling
                 && self.ci_due(&f.id)
             {
                 match gh.checks(n).await {

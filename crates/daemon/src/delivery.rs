@@ -61,6 +61,8 @@ pub struct GateContext {
     pub has_ci: bool,
     /// The project declares browser checks.
     pub browser_checks: bool,
+    /// A push just happened: CI hasn't caught up with it yet.
+    pub ci_settling: bool,
 }
 
 fn gate(name: &str, status: GateStatus, detail: impl Into<String>) -> Gate {
@@ -166,7 +168,13 @@ pub fn gates(f: &Feature, cx: &GateContext) -> Vec<Gate> {
                     .map(|c| c.name.as_str())
                     .collect();
             let pending = d.ci.iter().any(|c| c.state == "pending");
-            if !failed.is_empty() {
+            if cx.ci_settling {
+                gate(
+                    "CI",
+                    GateStatus::Pending,
+                    "waiting for CI on the new commit",
+                )
+            } else if !failed.is_empty() {
                 gate(
                     "CI",
                     GateStatus::Failed,
@@ -621,6 +629,7 @@ mod tests {
             branch: "feat".into(),
             base: None,
             head: Some("abc".into()),
+            pushed_at: None,
             pr_url: Some("https://github.com/o/r/pull/7".into()),
             pr_number: Some(7),
             ci: ci
@@ -646,6 +655,7 @@ mod tests {
                 publishable: false,
                 has_ci: false,
                 browser_checks: false,
+                ci_settling: false,
             },
         );
         assert_eq!(status(&g, "Requirements met"), GateStatus::Passed);
@@ -663,6 +673,7 @@ mod tests {
             publishable: true,
             has_ci: true,
             browser_checks: true,
+            ci_settling: false,
         };
         let g = gates(&f, &cx);
         assert_eq!(status(&g, "Pull request"), GateStatus::Pending);
@@ -686,6 +697,17 @@ mod tests {
         );
         f.delivery = Some(delivery(&[("test", "pass"), ("lint", "skipping")]));
         assert_eq!(status(&gates(&f, &cx), "CI"), GateStatus::Passed);
+        // Right after a push, what CI says is about the previous commit.
+        let settling = GateContext {
+            ci_settling: true,
+            ..cx
+        };
+        f.delivery = Some(delivery(&[("test", "fail")]));
+        assert_eq!(status(&gates(&f, &settling), "CI"), GateStatus::Pending);
+        let cx = GateContext {
+            ci_settling: false,
+            ..settling
+        };
         // Declining to publish takes the PR and CI gates out of the way.
         f.delivery = Some(Delivery {
             declined: true,
@@ -717,6 +739,7 @@ mod tests {
                 publishable: true,
                 has_ci: true,
                 browser_checks: false,
+                ci_settling: false,
             },
         );
         f.rationale

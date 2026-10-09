@@ -156,6 +156,7 @@ export interface Delivery {
   branch: string;
   base?: string;
   head?: string;
+  pushed_at?: string;
   pr_url?: string;
   pr_number?: number;
   ci: { name: string; state: string; url?: string; description?: string }[];

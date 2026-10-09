@@ -168,6 +168,27 @@ fn contains_any(haystack: &str, needles: &[&str]) -> Option<String> {
         .map(|n| n.trim().to_owned())
 }
 
+/// Like [`contains_any`], but a needle that is a single word matches whole
+/// words only (`token` in `API_TOKEN`, not in `tokenizer`; `prod` in
+/// `deploy.sh prod`, not in `reproduce`). Needles with spaces or
+/// punctuation (`git push`, `.ssh/`) match anywhere.
+fn mentions_any(haystack: &str, needles: &[&str]) -> Option<String> {
+    let words: Vec<&str> = haystack
+        .split(|c: char| !(c.is_ascii_alphanumeric() || c == '-'))
+        .filter(|w| !w.is_empty())
+        .collect();
+    needles
+        .iter()
+        .find(|n| {
+            if n.chars().all(|c| c.is_ascii_alphanumeric()) {
+                words.contains(n)
+            } else {
+                haystack.contains(*n)
+            }
+        })
+        .map(|n| n.trim().to_owned())
+}
+
 /// Classify one command line (each `&&`/`;`/`|` part; the riskiest wins).
 fn classify_command(line: &str) -> Verdict {
     let lower = line.to_lowercase();
@@ -195,10 +216,10 @@ fn classify_command(line: &str) -> Verdict {
     if let Some(m) = contains_any(&lower, DESTRUCTIVE) {
         return ask_user(format!("destructive (`{m}`)"));
     }
-    if let Some(m) = contains_any(&lower, CREDENTIALS) {
+    if let Some(m) = mentions_any(&lower, CREDENTIALS) {
         return ask_user(format!("touches credentials (`{m}`)"));
     }
-    if let Some(m) = contains_any(&lower, PRODUCTION) {
+    if let Some(m) = mentions_any(&lower, PRODUCTION) {
         return ask_user(format!("reaches production or publishes (`{m}`)"));
     }
     if lower.contains("sudo ") || lower.starts_with("sudo") {
@@ -420,6 +441,27 @@ mod tests {
                 is_user_only(&classify(&ToolCall::Edit { path: path.into() }, root)),
                 "{path}"
             );
+        }
+    }
+
+    #[test]
+    fn words_that_merely_contain_a_risky_word_are_routine() {
+        for line in [
+            "cargo test reproduce_tokenizer_product",
+            "cargo build -p secret-sharing",
+            "git log --grep reproduce",
+            "rg product src/",
+            "cargo test passwordless_login",
+        ] {
+            assert_eq!(cmd(line), Verdict::Allow, "{line}");
+        }
+        for line in [
+            "export API_TOKEN=x",
+            "./deploy.sh prod",
+            "cat .env",
+            "echo $DB_PASSWORD",
+        ] {
+            assert!(is_user_only(&cmd(line)), "{line}: {:?}", cmd(line));
         }
     }
 

@@ -1592,6 +1592,7 @@ async fn fake_agent_host(mode: &str, controller: &str) -> FakeCodex {
         ("FAKE_CLAUDE_STREAM", p(&stream)),
         ("FAKE_GH_DIR", p(&gh_dir)),
         ("OTTER_CI_POLL_MS", "0".into()),
+        ("OTTER_CI_SETTLE_MS", "0".into()),
         // Features: the deterministic controller (no model calls in tests).
         ("OTTER_CONTROLLER", controller.into()),
         ("OTTER_CONTROLLER_TICK_MS", "200".into()),

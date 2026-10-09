@@ -586,6 +586,10 @@ pub struct Delivery {
     /// The commit last pushed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub head: Option<String>,
+    /// When it was pushed: CI results right after are the previous
+    /// commit's, so they're read only once things settle.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pushed_at: Option<Timestamp>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pr_url: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
