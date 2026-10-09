@@ -23,8 +23,8 @@ vi.mock("@tauri-apps/api/core", () => ({
     return {
       controller: state.controller,
       secrets: [
-        { name: "OPENROUTER_API_KEY", purpose: "OpenRouter, for the Lead", set: state.set },
-        ...(state.modern ? [{ name: "OPENAI_API_KEY", purpose: "OpenAI, for the Lead", set: false }] : []),
+        { name: "OPENROUTER_API_KEY", purpose: "Lets Otter use OpenRouter", set: state.set },
+        ...(state.modern ? [{ name: "OPENAI_API_KEY", purpose: "Lets Otter use OpenAI", set: false }] : []),
       ],
       ...(state.modern
         ? {
@@ -73,10 +73,10 @@ describe("Settings", () => {
   const dialog = () => document.querySelector('[role="dialog"]')!;
   const button = (text: string) => [...dialog().querySelectorAll("button")].find((b) => b.textContent === text)!;
 
-  it("sets the Lead and a key, which is sent once and never shown", async () => {
+  it("sets what Otter thinks with and a key, which is sent once and never shown", async () => {
     expect(calls[0]).toEqual({ cmd: "settings_get", args: { host: "mac" } });
     expect(dialog().textContent).toContain("not set");
-    const select = dialog().querySelector<HTMLSelectElement>('select[aria-label="Lead"]')!;
+    const select = dialog().querySelector<HTMLSelectElement>('select[aria-label="Thinks with"]')!;
     select.value = "openrouter";
     await act(async () => select.dispatchEvent(new Event("change", { bubbles: true })));
     const key = dialog().querySelector<HTMLInputElement>('input[aria-label="OPENROUTER_API_KEY"]')!;
@@ -120,7 +120,7 @@ describe("Settings", () => {
     expect(dialog().textContent).toContain("OpenAI: GPT X");
 
     // OpenAI: no default, no key yet — the listing says why, Save waits for a model.
-    const select = dialog().querySelector<HTMLSelectElement>('select[aria-label="Lead"]')!;
+    const select = dialog().querySelector<HTMLSelectElement>('select[aria-label="Thinks with"]')!;
     select.value = "openai";
     await act(async () => select.dispatchEvent(new Event("change", { bubbles: true })));
     await flush();

@@ -15,7 +15,7 @@ export interface FeatureSource {
   /** Called with the new list whenever anything changes. Returns an unsubscribe. */
   subscribe(listener: (list: PlacedFeature[]) => void): () => void;
   create(host: string, title: string, request: string, workspace?: string): Promise<PlacedFeature>;
-  /** A message from the developer to the feature's Lead. */
+  /** A message from the developer to Otter, about the feature. */
   send(key: string, text: string): Promise<void>;
   act(key: string, action: FeatureAction): Promise<void>;
   /** The feature's own history, oldest first. */
@@ -181,7 +181,7 @@ export function mockSource(host = "preview", now = Date.now()): FeatureSource {
           {
             id: id("msg"),
             role: "system",
-            text: "Preview: no Lead is connected, so nothing will act on this.",
+            text: "Preview: nothing is connected, so nothing will act on this.",
             at: stamp(),
             correlation_id: msg,
           },

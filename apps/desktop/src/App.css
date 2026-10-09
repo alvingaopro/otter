@@ -510,7 +510,7 @@ code, .mono { font-family: var(--mono); }
 .message { max-width: 720px; padding: 8px 12px; border-radius: 10px; background: var(--raised); }
 .message.user { align-self: flex-end; background: var(--selected); }
 .message.system { background: none; border: 1px dashed var(--line-strong); color: var(--muted); }
-.message-head { display: flex; gap: 8px; align-items: baseline; margin-bottom: 3px; }
+.message-head { display: flex; gap: 8px; align-items: center; margin-bottom: 3px; }
 .message-role { font-size: 12px; font-weight: 600; color: var(--muted); }
 .message.controller .message-role { color: var(--working-text); }
 .message-at { font-size: 11.5px; color: var(--faint); }
@@ -576,3 +576,5 @@ code, .mono { font-family: var(--mono); }
 .settings-intro { margin: 0; line-height: 1.5; }
 .settings-intro strong { color: var(--text); font-weight: 600; }
 .settings-host { font-family: var(--mono); font-size: 13px; }
+.message-role { display: inline-flex; align-items: center; gap: 6px; }
+.message-avatar { border-radius: 50%; display: block; flex: none; }

@@ -43,7 +43,7 @@ const OLD_CONTROLLERS: ControllerInfo[] = [
 type Models = { state: "loading" } | { state: "ready"; list: ModelInfo[] } | { state: "error"; error: string };
 
 /**
- * Settings of one host's Lead: which model thinks, and API keys.
+ * Settings of Otter on one host: which model thinks, and API keys.
  * Keys are sent to that host's otterd and kept there (0600); this app never
  * reads them back, it only knows whether one is set. The models offered are
  * what the provider lists, asked by the host with its key.
@@ -136,7 +136,7 @@ export function SettingsDialog({ hosts, defaultHost, onClose }: { hosts: string[
   if (hosts.length === 0) {
     return (
       <Dialog title="Settings" onClose={onClose}>
-        <p className="muted">Connect a host first: the Lead runs on a host, and its settings are kept there.</p>
+        <p className="muted">Connect a host first: Otter runs on a host, and its settings are kept there.</p>
       </Dialog>
     );
   }
@@ -174,9 +174,9 @@ export function SettingsDialog({ hosts, defaultHost, onClose }: { hosts: string[
     <Dialog title="Settings" onClose={onClose}>
       <form className="form" onSubmit={submit}>
         <p className="muted small settings-intro">
-          The <strong>Lead</strong> runs each feature for you: it plans the work, directs a coding agent, answers its
-          questions, and checks the result before handing it to you. It runs in otterd on the host, so it keeps working
-          while this app is closed.
+          <strong>Otter</strong> runs each feature for you: it plans the work, directs a coding agent, answers its
+          questions, and checks the result before handing it to you. It runs on the host, so it keeps working while
+          this app is closed.
         </p>
         <label className="field">
           <span>Host</span>
@@ -190,15 +190,15 @@ export function SettingsDialog({ hosts, defaultHost, onClose }: { hosts: string[
             <span className="settings-host">{host}</span>
           )}
           <span className="muted small">
-            Each host has its own Lead, with its own model and keys: features on {host} use these.
+            Otter runs on each host with that host's model and keys: features on {host} use these.
           </span>
         </label>
         {!settings && !error && <p className="muted small">Loading…</p>}
         {settings && (
           <>
             <label className="field">
-              <span>Lead</span>
-              <select value={controller} onChange={(e) => choose(e.target.value)} aria-label="Lead">
+              <span>Thinks with</span>
+              <select value={controller} onChange={(e) => choose(e.target.value)} aria-label="Thinks with">
                 <option value="">
                   Automatic{settings.active ? ` (now: ${label(settings.active)})` : " (the first provider with a key, else Claude Code)"}
                 </option>
@@ -239,7 +239,7 @@ export function SettingsDialog({ hosts, defaultHost, onClose }: { hosts: string[
                   )}
                 </div>
                 <span className="muted small">
-                  What the Lead thinks with. The coding agent's own model is set separately.
+                  The model Otter thinks with. The coding agent's own model is set separately.
                 </span>
                 <span className="muted small" aria-live="polite">
                   {models?.state === "loading" && "Loading models…"}
@@ -281,7 +281,7 @@ export function SettingsDialog({ hosts, defaultHost, onClose }: { hosts: string[
   );
 }
 
-/** What a choice of Lead means, in a sentence. */
+/** What a choice of what Otter thinks with means, in a sentence. */
 function explain(id: string, info: ControllerInfo | undefined, automatic: boolean): string {
   const how = !info
     ? "With no key and no Claude Code, it follows fixed rules."
@@ -411,15 +411,12 @@ function ModelPicker({
   );
 }
 
-/** The gear that opens Settings. */
-export function SettingsButton({ onClick }: { onClick: () => void }) {
+/** A gear: Settings (not a sun, which reads as a theme switch). */
+export function GearIcon({ size = 18 }: { size?: number }) {
   return (
-    <button className="icon-btn" aria-label="Settings" title="Settings: Lead and API keys" onClick={onClick}>
-      {/* A gear (not a sun: that reads as a theme switch). */}
-      <svg width="15" height="15" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-        <circle cx="12" cy="12" r="3" />
-        <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
-      </svg>
-    </button>
+    <svg width={size} height={size} viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+      <circle cx="12" cy="12" r="3" />
+      <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
+    </svg>
   );
 }

@@ -221,7 +221,7 @@ export default function App() {
           badges={{ features: featureNeeds, workspaces: placed.filter((p) => p.ws.activity === "needs_you").length }}
           settings={[
             { label: `Theme: ${themeChoice === "system" ? "match system" : themeChoice}`, onSelect: cycleTheme },
-            { label: "Lead: model and API keys…", onSelect: () => setOpen({ kind: "settings" }) },
+            { label: "Otter's model and API keys…", onSelect: () => setOpen({ kind: "settings" }) },
             { label: "Add a host…", onSelect: () => setOpen({ kind: "add" }) },
             {
               label: cli?.version ? "Update command line tools…" : "Install command line tools…",
@@ -233,7 +233,6 @@ export default function App() {
           <FeaturesView
             source={featureSource}
             hosts={connectedHosts}
-            onSettings={() => setOpen({ kind: "settings" })}
             workspaces={Object.fromEntries(
               (payload?.hosts ?? []).map((h) => [
                 h.name,
@@ -283,9 +282,6 @@ export default function App() {
           onAddHost={() => setOpen({ kind: "add" })}
           onHost={setHostPage}
           onNew={() => setOpen({ kind: "new" })}
-          onSettings={() => setOpen({ kind: "settings" })}
-          themeChoice={themeChoice}
-          onTheme={cycleTheme}
           cliAction={
             cli && version && cli.version !== version
               ? cli.version

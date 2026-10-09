@@ -1498,12 +1498,15 @@ actually offers, and isn't tied to OpenRouter.
 - One `model` setting, for the controller chosen: switching provider in the
   app clears it.
 
-## D-053 — The Control Agent is called the Lead (2026-10-09)
+## D-053 — The Control Agent is called Otter (2026-10-09)
 
 "Control Agent" read as jargon next to "coding agent". Everything the
-developer sees says **Lead** — like a tech lead, it plans, directs the
-coding agent, decides what it may, and checks the result; the coding agent
-stays "Agent". Code, protocol and configuration keep their names
+developer sees calls it **Otter**, after the product — like a tech lead, it
+plans, directs the coding agent, decides what it may, and checks the
+result; the coding agent stays "Coding agent", and the app's own notices
+are "System". (Briefly "Lead"; one name for the product and the one you
+talk to reads simpler.) Code, protocol and configuration keep their names
 (`controller`, `MessageRole::Controller`, `OTTER_CONTROLLER`), so nothing
-on the wire changes. Settings explains what the Lead is, that each host
-runs its own (with its own model and keys), and what each choice means.
+on the wire changes. Settings explains what Otter does, that it runs on
+each host with that host's model and keys, and what each choice means;
+the one way into Settings is the gear at the bottom of the Activity Bar.
