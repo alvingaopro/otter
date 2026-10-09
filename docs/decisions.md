@@ -1477,7 +1477,9 @@ actually offers, and isn't tied to OpenRouter.
   `anthropic-version`, `output_config.format` with every object closed).
   Providers without JSON-schema output (DeepSeek, Groq) are asked for a
   JSON object, the schema in the prompt; answers are read leniently as
-  before. Streaming reads either kind of server-sent events. Keys still go
+  before. The OpenAI-style schema request is no longer `strict`: the brain's
+  schemas have optional properties and open objects, which strict mode
+  rejects on OpenAI itself; Anthropic's closed copy is made for it. Streaming reads either kind of server-sent events. Keys still go
   to curl on stdin, never on a command line (D-045, D-048).
 - **Automatic** is the first provider, in table order (OpenRouter first, as
   before), with a key in Settings or otterd's environment; else Claude Code;
