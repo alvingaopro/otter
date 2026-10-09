@@ -512,14 +512,6 @@ pub fn apply_action(
             }
             changes.push(to(f, FeatureStatus::Done, Some("Accepted by you".into()))?);
         }
-        FeatureAction::TakeOver => {
-            if !f.runs.iter().any(|r| r.provider_session_id.is_some()) {
-                return Err(RpcError::conflict("no agent conversation to take over yet"));
-            }
-            if f.status != FeatureStatus::Paused {
-                changes.push(to(f, FeatureStatus::Paused, Some("You took over".into()))?);
-            }
-        }
         FeatureAction::SetWorkspace { workspace } => {
             // `workspace` is an id by now (resolved in `feature_act`).
             if f.live_run().is_some() {
@@ -535,39 +527,35 @@ pub fn apply_action(
         }
         // The preview's session is started by `feature_act`.
         FeatureAction::Preview => {}
-        FeatureAction::HandBack => {
-            if f.status != FeatureStatus::Paused {
-                return Err(RpcError::conflict(
-                    "only a paused feature can be handed back",
-                ));
-            }
-            let next = resume_status(f);
-            changes.push(to(
-                f,
-                next,
-                Some("Handed back to the Control Agent".into()),
-            )?);
-        }
         FeatureAction::RequestChanges { note } => {
-            if f.status != FeatureStatus::Review {
-                return Err(RpcError::conflict(
-                    "only a feature in review can be sent back",
-                ));
-            }
             if let Some(note) = note.as_ref().filter(|n| !n.trim().is_empty()) {
                 check_text("note", note, MAX_TEXT)?;
                 let (m, c) = message(MessageRole::User, note.clone(), Some(command_id.to_owned()));
                 f.messages.push(m);
                 changes.push(c);
             }
-            changes.push(to(
-                f,
-                FeatureStatus::Implementing,
-                Some("Changes requested".into()),
-            )?);
+            changes.extend(replan(f, "The goal changed: planning again", now));
         }
     }
     Ok(changes)
+}
+
+/// The goal moved (D-050): plan again from where the work stands — what is
+/// done stays done. Nothing to do for a cancelled feature.
+pub fn replan(f: &mut Feature, why: &str, now: Timestamp) -> Vec<Change> {
+    if f.status.is_terminal() {
+        return vec![];
+    }
+    f.replan = !f.tasks.is_empty();
+    // The last round's verdict and report are about the old goal.
+    f.report = None;
+    f.gates.clear();
+    if f.status == FeatureStatus::Planning {
+        return vec![];
+    }
+    f.transition(FeatureStatus::Planning, Some(why.into()), now)
+        .map(|e| vec![Change::new(e)])
+        .unwrap_or_default()
 }
 
 impl Daemon {
@@ -672,43 +660,11 @@ impl Daemon {
                 .ok_or_else(|| workspace_not_found(workspace))?;
             *workspace = ws.id.to_string();
         }
-        if p.action == FeatureAction::HandBack {
-            self.check_handed_back(&id).await?;
-        }
         if p.action == FeatureAction::Preview {
             if let Some(f) = self.features.lock().await.applied(&p.command_id) {
                 return Ok(f.clone());
             }
             self.start_preview(&id).await?;
-        }
-        // Taking over opens a session first and records the command only
-        // once that worked, so a failed attempt can be retried as is.
-        if p.action == FeatureAction::TakeOver {
-            if let Some(f) = self.features.lock().await.applied(&p.command_id) {
-                return Ok(f.clone());
-            }
-            let f = self.feature_get(id.as_str()).await?;
-            if f.status.is_terminal() {
-                return Err(RpcError::conflict(format!(
-                    "the feature is {}",
-                    f.status.as_str()
-                )));
-            }
-            if !f.runs.iter().any(|r| r.provider_session_id.is_some()) {
-                return Err(RpcError::conflict("no agent conversation to take over yet"));
-            }
-            // Pause first, so the controller doesn't start another run the
-            // moment this one stops.
-            let paused = self.features.lock().await.apply(&id, None, |f, now| {
-                if f.status == FeatureStatus::Paused {
-                    return Ok(vec![]);
-                }
-                f.transition(FeatureStatus::Paused, Some("You took over".into()), now)
-                    .map(|e| vec![Change::new(e)])
-                    .map_err(RpcError::conflict)
-            })?;
-            self.feature_changed(&paused);
-            self.take_over(&id).await?;
         }
         let applied = self
             .features
@@ -734,6 +690,11 @@ impl Daemon {
             }
             FeatureAction::Pause => self.stop_runs(&id, RunState::Cancelled, "Paused").await,
             FeatureAction::Cancel => self.stop_runs(&id, RunState::Cancelled, "Cancelled").await,
+            // The plan is about to change: the task in progress may not be in it.
+            FeatureAction::RequestChanges { .. } => {
+                self.stop_runs(&id, RunState::Cancelled, "The goal changed")
+                    .await
+            }
             _ => return Ok(applied.feature),
         }
         self.feature_get(id.as_str()).await
@@ -838,34 +799,6 @@ impl Daemon {
             size: meta.len(),
             eof: true,
         })
-    }
-
-    /// Before handing back: the developer's session must be over, so only
-    /// one process ever drives the conversation.
-    async fn check_handed_back(&self, id: &FeatureId) -> RpcResult<()> {
-        let f = self.feature_get(id.as_str()).await?;
-        let Some(ws) = &f.workspace_id else {
-            return Ok(());
-        };
-        let store = self.store.lock().await;
-        let Some(ws) = store.workspace(ws.as_str()) else {
-            return Ok(());
-        };
-        let busy = f
-            .tasks
-            .iter()
-            .filter_map(|t| t.session_id.as_ref())
-            .any(|s| {
-                ws.session(s.as_str())
-                    .and_then(|s| s.current_execution())
-                    .is_some_and(|e| e.is_running())
-            });
-        if busy {
-            return Err(RpcError::conflict(
-                "quit the agent in your session first, then hand back",
-            ));
-        }
-        Ok(())
     }
 
     pub(crate) async fn feature_events(

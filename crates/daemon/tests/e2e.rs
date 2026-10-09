@@ -2847,6 +2847,34 @@ async fn a_feature_goes_from_request_to_review_with_evidence() {
         .await
         .unwrap();
     assert_eq!(f.status, FeatureStatus::Done);
+
+    // Done isn't final (D-050): a new ask plans again, keeps what is done,
+    // and comes back for review.
+    fake.host
+        .conn()
+        .await
+        .feature_act(
+            "more",
+            &id,
+            FeatureAction::RequestChanges {
+                note: Some("Also export JSON".into()),
+            },
+        )
+        .await
+        .unwrap();
+    let f = wait_feature(&fake.host, &id, "back in review", |f| {
+        f.status == FeatureStatus::Review && f.tasks.len() == 2 && f.report.is_some()
+    })
+    .await;
+    assert_eq!(f.tasks[0].status, otter_core::feature::TaskStatus::Done);
+    assert!(
+        f.tasks[1]
+            .detail
+            .as_deref()
+            .unwrap()
+            .contains("Also export JSON")
+    );
+    assert_eq!(f.runs.len(), 2, "the done task wasn't redone");
 }
 
 #[tokio::test]
@@ -2988,7 +3016,7 @@ async fn the_control_agent_decides_what_policy_leaves_open() {
 }
 
 #[tokio::test]
-async fn runs_survive_a_restart_stop_on_cancel_and_hand_over_to_the_developer() {
+async fn runs_survive_a_restart_and_follow_a_changing_goal() {
     use otter_core::feature::{FeatureAction, FeatureStatus, RunState};
     let mut fake = fake_agent_host("ok", "rules").await;
     let id = started_feature(&fake.host, "A long job HANG").await;
@@ -3018,54 +3046,15 @@ async fn runs_survive_a_restart_stop_on_cancel_and_hand_over_to_the_developer() 
     let args = std::fs::read_to_string(&fake.log).unwrap();
     assert!(args.contains(&format!("--resume {conv}")), "{args}");
 
-    // The developer takes over: the managed run stops, the conversation
-    // opens in an interactive session.
+    // Paused and resumed: the same conversation carries on.
     let mut conn = fake.host.conn().await;
-    let f = conn
-        .feature_act("take", &id, FeatureAction::TakeOver)
+    conn.feature_act("pause", &id, FeatureAction::Pause)
         .await
         .unwrap();
-    assert_eq!(f.status, FeatureStatus::Paused);
-    assert_eq!(f.runs[1].state, RunState::HandedOff);
-    let sid = f.tasks[0].session_id.clone().expect("a takeover session");
-    let ws = conn.workspace_get("proj").await.unwrap();
-    let s = ws.session(sid.as_str()).unwrap();
-    assert_eq!(
-        s.agent.as_ref().unwrap().provider_session_id.as_deref(),
-        Some(conv.as_str())
-    );
-    eventually("the interactive agent resumes the conversation", || async {
-        std::fs::read_to_string(&fake.log)
-            .unwrap()
-            .contains(&format!("claude --resume {conv}"))
-            .then_some(())
-    })
-    .await;
-    // Retrying the takeover is harmless.
-    let again = conn
-        .feature_act("take", &id, FeatureAction::TakeOver)
+    conn.feature_act("resume", &id, FeatureAction::Resume)
         .await
         .unwrap();
-    let extra = conn.feature_events(&id, Some(f.history_seq)).await.unwrap();
-    assert!(
-        extra.is_empty(),
-        "the retry changed nothing: {:?}",
-        extra.iter().map(|r| &r.text).collect::<Vec<_>>()
-    );
-    assert_eq!(again.history_seq, f.history_seq);
-
-    // Handing back while the developer's agent still runs is refused...
-    let err = conn
-        .feature_act("back-1", &id, FeatureAction::HandBack)
-        .await
-        .unwrap_err();
-    assert!(format!("{err:#}").contains("quit the agent"), "{err:#}");
-    // ...and works once it has stopped: the managed run picks it up again.
-    conn.session_stop("proj", sid.as_str()).await.unwrap();
-    conn.feature_act("back-2", &id, FeatureAction::HandBack)
-        .await
-        .unwrap();
-    let f = wait_feature(&fake.host, &id, "managed again", |f| {
+    let f = wait_feature(&fake.host, &id, "running again", |f| {
         f.runs.len() == 3 && f.runs[2].state == RunState::Running
     })
     .await;
@@ -3074,13 +3063,44 @@ async fn runs_survive_a_restart_stop_on_cancel_and_hand_over_to_the_developer() 
         Some(conv.as_str())
     );
 
+    // The developer changes the goal mid-way (D-050): the run stops, and
+    // the work is planned again with what they said.
+    conn.feature_act(
+        "revise",
+        &id,
+        FeatureAction::RequestChanges {
+            note: Some("Also write a README".into()),
+        },
+    )
+    .await
+    .unwrap();
+    let f = wait_feature(&fake.host, &id, "a revised plan at work", |f| {
+        f.runs.len() == 4 && f.runs[3].state == RunState::Running
+    })
+    .await;
+    assert_eq!(f.runs[2].state, RunState::Cancelled);
+    assert_eq!(f.tasks.len(), 1, "the unfinished task was replaced");
+    assert!(
+        f.tasks[0]
+            .detail
+            .as_deref()
+            .unwrap()
+            .contains("Also write a README")
+    );
+    assert!(!f.replan);
+    assert!(
+        f.messages
+            .iter()
+            .any(|m| m.text.starts_with("Revised plan"))
+    );
+
     // Cancel stops it for good.
     let f = conn
         .feature_act("cancel", &id, FeatureAction::Cancel)
         .await
         .unwrap();
     assert_eq!(f.status, FeatureStatus::Cancelled);
-    assert_eq!(f.runs[2].state, RunState::Cancelled);
+    assert_eq!(f.runs[3].state, RunState::Cancelled);
 }
 
 #[tokio::test]

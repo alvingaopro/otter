@@ -202,8 +202,6 @@ export type FeatureAction =
   | { action: "decide"; decision_id: string; approve: boolean; answer?: string }
   | { action: "accept"; override_gates?: boolean }
   | { action: "request_changes"; note?: string }
-  | { action: "take_over" }
-  | { action: "hand_back" }
   | { action: "set_workspace"; workspace: string }
   | { action: "preview" };
 
@@ -245,18 +243,33 @@ export function matches(f: Feature, filter: FeatureFilter): boolean {
   }
 }
 
+/**
+ * What the developer sees (D-050): planning, implementing and verifying are
+ * the Control Agent's own loop, all "Working".
+ */
 export const STATUS_LABEL: Record<FeatureStatus, string> = {
   draft: "Draft",
-  planning: "Planning",
-  implementing: "Implementing",
-  verifying: "Verifying",
-  review: "Ready for review",
+  planning: "Working",
+  implementing: "Working",
+  verifying: "Working",
+  review: "Ready to check",
   done: "Done",
-  blocked: "Blocked",
+  blocked: "Needs you",
   paused: "Paused",
-  failed: "Failed",
+  failed: "Stopped",
   cancelled: "Cancelled",
 };
+
+/** One line on what is going on right now. */
+export function statusDetail(f: Feature): string | undefined {
+  if (f.status === "planning") return "planning";
+  const i = f.tasks.findIndex((t) => t.status === "running");
+  if ((f.status === "implementing" || f.status === "verifying") && f.status_reason === undefined) {
+    if (f.status === "verifying") return "checking the work";
+    if (i >= 0) return `task ${i + 1} of ${f.tasks.length}: ${f.tasks[i].title}`;
+  }
+  return f.status_reason;
+}
 
 /** The status mark shared with workspaces (shape, not only color). */
 export function featureGlyph(f: Feature): "needs" | "working" | "done" | "failed" | "idle" {
@@ -265,20 +278,6 @@ export function featureGlyph(f: Feature): "needs" | "working" | "done" | "failed
   if (f.status === "done") return "done";
   if (ACTIVE.includes(f.status)) return "working";
   return "idle";
-}
-
-/** Lifecycle steps shown as progress, in order. */
-export const STAGES: FeatureStatus[] = ["draft", "planning", "implementing", "verifying", "review", "done"];
-
-/** Which stage a feature is at (an off-path status keeps the last stage it reached). */
-export function stageIndex(f: Feature): number {
-  const i = STAGES.indexOf(f.status);
-  if (i >= 0) return i;
-  // Off the happy path: infer from what exists.
-  if (f.evidence.length > 0) return STAGES.indexOf("verifying");
-  if (f.tasks.some((t) => t.status !== "pending")) return STAGES.indexOf("implementing");
-  if (f.tasks.length > 0) return STAGES.indexOf("planning");
-  return 0;
 }
 
 /** Newest activity first; features that need you on top. */

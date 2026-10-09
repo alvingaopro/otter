@@ -1407,3 +1407,28 @@ messages ("what are you doing", "continue") got no answer.
   does. With no model configured it answers with the status and says it
   can't act on messages. A message that arrives while a run is working is
   the coding agent's next turn in that run, right after the current one.
+
+## D-050 — A goal-driven loop, not a pipeline; no takeover (2026-10-09)
+
+The lifecycle of D-043/D-045 read as a line (draft → planning →
+implementing → verifying → review → done) and the app drew it as a
+progress bar. Real work moves the goal: the developer hands over a task,
+the Control Agent plans, implements and verifies as often as it takes, the
+developer checks the result and either is satisfied, adjusts, or stops.
+
+- **The loop is the Control Agent's business.** The app shows one state —
+  Working (planning, implementing and verifying alike), Needs you, Ready to
+  check, Done, Paused, Stopped, Cancelled — and a line on what is happening
+  ("task 2 of 3: …"). No progress bar.
+- **The goal can change at any time, even after done.** Saying so (or
+  `request_changes {note}`) plans again from where the work stands: done
+  tasks stay done, unfinished ones are replaced, a run in progress stops,
+  the old report and gates are cleared. Planning is reachable from every
+  state but cancelled; done is no longer final.
+- **The developer's words decide** (a model's judgment, D-049): go on,
+  pause, change the goal, or finish — accept what's ready (its gates still
+  apply), or stop work in progress.
+- **No takeover.** The developer doesn't drive the coding agent; they talk
+  to the Control Agent. *Take over* / *Hand back* (D-044) are removed, from
+  the app and the protocol. (Interactive agent sessions in workspaces are
+  untouched, and `SessionSpec.resume` stays.)

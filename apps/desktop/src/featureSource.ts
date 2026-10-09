@@ -196,8 +196,6 @@ export function mockSource(host = "preview", now = Date.now()): FeatureSource {
         retry: "implementing",
         accept: "done",
         request_changes: "implementing",
-        take_over: "paused",
-        hand_back: "implementing",
         set_workspace: "planning",
       };
       if (action.action === "preview") return;

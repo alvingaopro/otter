@@ -3,7 +3,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { FeaturesView } from "./FeaturesView";
 import { mockSource, sampleFeatures, type FeatureSource } from "./featureSource";
-import { matches, needsYou, sortFeatures, stageIndex, type Feature, type PlacedFeature } from "./features";
+import { STATUS_LABEL, matches, needsYou, sortFeatures, statusDetail, type Feature, type PlacedFeature } from "./features";
 
 describe("feature contract helpers", () => {
   const [active, blocked, failed, done, draft] = sampleFeatures(Date.parse("2026-10-09T12:00:00Z"));
@@ -22,11 +22,14 @@ describe("feature contract helpers", () => {
     expect(matches(done, "needs")).toBe(false);
   });
 
-  it("places off-path statuses on the progress line", () => {
-    expect(stageIndex(draft)).toBe(0);
-    expect(stageIndex(active)).toBe(2);
-    expect(stageIndex(failed)).toBe(3); // had evidence: got as far as verifying
-    expect(stageIndex(blocked)).toBe(2); // a task was underway
+  it("shows the Control Agent's loop as one state, with what it's doing", () => {
+    // Planning, implementing and verifying are all just "Working" (D-050).
+    expect([STATUS_LABEL.planning, STATUS_LABEL.implementing, STATUS_LABEL.verifying]).toEqual(["Working", "Working", "Working"]);
+    expect(STATUS_LABEL.review).toBe("Ready to check");
+    expect(statusDetail(active)).toBe("task 2 of 2: Wire Export button into Timeline panel");
+    expect(statusDetail(blocked)).toContain("Waiting for your approval");
+    expect(statusDetail(draft)).toBeUndefined();
+    expect(failed.status).toBe("failed");
   });
 
   it("sorts what needs you first, then newest", () => {
@@ -120,7 +123,10 @@ describe("Features view", () => {
     expect(host.querySelector(".message.system")?.textContent).toContain("no Control Agent is connected");
 
     await act(async () => byText("button", "Start")!.click());
-    expect(q(".status-pill")?.textContent).toBe("Planning");
+    expect(q(".status-pill")?.textContent).toBe("Working");
+    // No progress bar, no takeover.
+    expect(q(".stages")).toBeNull();
+    expect(byText("button", "Take over")).toBeUndefined();
   });
 
   it("creates a feature in a chosen workspace", async () => {

@@ -245,6 +245,37 @@ impl Daemon {
                     stop = true;
                     move_to(f, FeatureStatus::Paused, "Paused: you asked")
                 }
+                // The goal moved (D-050): plan again, keeping what is done.
+                (Intent::Revise, s) if !s.is_terminal() => {
+                    stop = true;
+                    changes.extend(crate::features::replan(
+                        f,
+                        "You changed the goal: planning again",
+                        now,
+                    ));
+                    None
+                }
+                // Satisfied: accept what's in review (its gates still apply),
+                // or stop work in progress.
+                (Intent::Finish, FeatureStatus::Review) => {
+                    let accept = otter_core::feature::FeatureAction::Accept {
+                        override_gates: false,
+                    };
+                    match crate::features::apply_action(f, &accept, last.id.as_str(), now) {
+                        Ok(c) => {
+                            changes.extend(c);
+                            None
+                        }
+                        Err(e) => {
+                            f.rationale.push(format!("Not done yet: {}", e.message));
+                            None
+                        }
+                    }
+                }
+                (Intent::Finish, s) if s.is_active() || s == FeatureStatus::Blocked => {
+                    stop = true;
+                    move_to(f, FeatureStatus::Paused, "Stopped: you said that's enough")
+                }
                 _ => None,
             };
             changes.extend(step);
@@ -363,7 +394,7 @@ impl Daemon {
             .await?;
             return Ok(());
         }
-        if !f.tasks.is_empty() {
+        if !f.tasks.is_empty() && !f.replan {
             // Back from a pause before any plan step was lost: carry on.
             self.controller_apply(&f.id, FeatureStatus::Planning, |f, now| {
                 let next = crate::features::resume_status(f);
@@ -402,8 +433,17 @@ impl Daemon {
                     evidence: vec![],
                 })
                 .collect();
+            // Planning again (D-050): what is done stays; the rest is replaced.
+            let revised = f.replan;
+            let kept: Vec<Task> = f
+                .tasks
+                .iter()
+                .filter(|t| matches!(t.status, TaskStatus::Done | TaskStatus::Skipped))
+                .cloned()
+                .collect();
+            f.replan = false;
             let ids: Vec<TaskId> = plan.tasks.iter().map(|_| TaskId::generate()).collect();
-            f.tasks = plan
+            let fresh: Vec<Task> = plan
                 .tasks
                 .iter()
                 .enumerate()
@@ -424,6 +464,7 @@ impl Daemon {
                     last_error: None,
                 })
                 .collect();
+            f.tasks = kept.into_iter().chain(fresh).collect();
             f.verify_command = verify.clone();
             f.rationale
                 .push(format!("Plan ({brain_name}): {}", plan.rationale));
@@ -472,7 +513,8 @@ impl Daemon {
                 _ => {}
             }
             let mut text = format!(
-                "Plan: {} task(s).\n{}\nAcceptance criteria:\n{}",
+                "{}: {} task(s).\n{}\nAcceptance criteria:\n{}",
+                if revised { "Revised plan" } else { "Plan" },
                 f.tasks.len(),
                 f.tasks
                     .iter()

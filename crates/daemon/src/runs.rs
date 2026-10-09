@@ -9,10 +9,6 @@
 //! run interrupted ([`Daemon::recover_runs`]) so the controller resumes it
 //! with that id.
 //!
-//! Handing over: [`Daemon::take_over`] stops the managed run and opens the
-//! same conversation in an interactive agent session in the workspace; the
-//! developer hands it back by quitting that session and choosing Hand back.
-//! At no time do two processes drive one conversation.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -23,8 +19,8 @@ use otter_core::feature::{
     Decider, DecisionKind, DecisionRequest, DecisionStatus, Feature, FeatureEvent, FeatureStatus,
     MessageRole, Risk, Run, RunState, TaskStatus,
 };
-use otter_core::{DecisionId, FeatureId, RunId, SessionKind, SessionSpec, TaskId};
-use otter_protocol::{RpcError, SessionCreate};
+use otter_core::{DecisionId, FeatureId, RunId, TaskId};
+use otter_protocol::RpcError;
 use tokio::sync::{mpsc, oneshot};
 
 use crate::daemon::{Daemon, RpcResult, workspace_not_found};
@@ -648,51 +644,6 @@ impl Daemon {
                 let _ = tokio::time::timeout(std::time::Duration::from_secs(15), wait).await;
             }
         }
-    }
-
-    /// The developer takes the conversation: stop the managed run and open
-    /// it in an interactive agent session. Returns the session's id.
-    pub(crate) async fn take_over(self: &Arc<Self>, feature_id: &FeatureId) -> RpcResult<String> {
-        self.stop_runs(feature_id, RunState::HandedOff, "You took over")
-            .await;
-        let feature = self.feature_get(feature_id.as_str()).await?;
-        let ws = feature
-            .workspace_id
-            .clone()
-            .ok_or_else(|| RpcError::conflict("the feature has no workspace yet"))?;
-        let run = feature
-            .runs
-            .iter()
-            .rev()
-            .find(|r| r.provider_session_id.is_some())
-            .cloned()
-            .ok_or_else(|| RpcError::conflict("no agent conversation to take over yet"))?;
-        let session = self
-            .session_create(SessionCreate {
-                workspace: ws.to_string(),
-                spec: SessionSpec {
-                    name: Some(format!("takeover-{}", &run.id.as_str()[4..])),
-                    kind: SessionKind::Agent,
-                    command: None,
-                    provider: Some(run.runtime.clone()),
-                    prompt: None,
-                    resume: run.provider_session_id.clone(),
-                },
-            })
-            .await?;
-        let (tid, sid) = (run.task_id.clone(), session.id.clone());
-        let applied = self
-            .features
-            .lock()
-            .await
-            .apply(feature_id, None, move |f, _| {
-                if let Some(t) = f.task_mut(&tid) {
-                    t.session_id = Some(sid);
-                }
-                Ok(vec![])
-            })?;
-        self.feature_changed(&applied);
-        Ok(session.id.to_string())
     }
 
     /// After a restart: runs the old daemon left behind ended with it.

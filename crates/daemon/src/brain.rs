@@ -123,6 +123,10 @@ pub enum Intent {
     /// Go on: resume, unblock, start, or retry.
     Continue,
     Pause,
+    /// The goal changed or grew: plan again from where the work stands.
+    Revise,
+    /// They're satisfied: accept it (in review), or stop here.
+    Finish,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -255,6 +259,33 @@ pub fn detect_verify_command(root: &Path) -> Option<String> {
 
 fn rules_plan(cx: &Context<'_>) -> Plan {
     let f = cx.feature;
+    // Planning again without a model: one task carrying what the developer
+    // said since, the criteria as they were.
+    if f.replan {
+        let notes: Vec<String> = f
+            .messages
+            .iter()
+            .skip(1)
+            .filter(|m| m.role == otter_core::feature::MessageRole::User)
+            .map(|m| m.text.clone())
+            .collect();
+        return Plan {
+            requirements: f.requirements.clone(),
+            criteria: f.acceptance.iter().map(|c| c.text.clone()).collect(),
+            tasks: vec![PlannedTask {
+                title: "Apply the developer's changes".into(),
+                detail: notes.join("\n"),
+                depends_on: vec![],
+            }],
+            verify_command: f
+                .verify_command
+                .clone()
+                .or_else(|| detect_verify_command(cx.root)),
+            rationale:
+                "The goal changed (no model configured): one task with the developer's changes."
+                    .into(),
+        };
+    }
     let request = if f.request.trim().is_empty() {
         f.title.clone()
     } else {
@@ -456,12 +487,30 @@ impl Brain for Model {
 
     async fn plan(&self, cx: &Context<'_>) -> Result<Plan> {
         let detected = detect_verify_command(cx.root);
+        // Planning again: what's done stays done; plan what's left.
+        let done: Vec<String> = cx
+            .feature
+            .tasks
+            .iter()
+            .filter(|t| matches!(t.status, otter_core::feature::TaskStatus::Done))
+            .map(|t| format!("- {}", t.title))
+            .collect();
+        let again = if cx.feature.replan && !done.is_empty() {
+            format!(
+                "\nThis is a revised plan: the developer changed or added to the goal (see their later messages). \
+                 Already done (don't redo, don't list again):\n{}\nPlan only the remaining work; restate the \
+                 requirements and criteria for the goal as it is now.\n",
+                done.join("\n")
+            )
+        } else {
+            String::new()
+        };
         let prompt = format!(
             "You are the Control Agent planning a software feature for a coding agent working in {root}.\n\
              {brief}\n\
              Write: requirements (short), acceptance criteria that can be checked, and 1-5 tasks in order \
              (depends_on = indexes of earlier tasks). verify_command: one shell command that checks the work \
-             (the project's tests{hint}), or null. rationale: one sentence.",
+             (the project's tests{hint}), or null. rationale: one sentence.{again}",
             root = cx.root.display(),
             brief = brief(cx.feature),
             hint = detected
@@ -633,8 +682,11 @@ impl Brain for Model {
              Say what is happening and what happens next; if they give instructions, say how you'll \
              act on them (the coding agent receives their message with its next turn). Don't invent \
              progress.\n{brief}\nStatus: {status}\nTasks:\n{tasks}\nRecent conversation:\n{recent}\n\n\
-             Their message: {message}\n\nintent: \"continue\" if they ask to go on, resume, start or \
-             retry; \"pause\" if they ask to stop or wait; else \"none\".",
+             Their message: {message}\n\nintent: \"revise\" if they change, add to or correct what \
+             should be built (new requirements, a different approach, feedback on the result); \
+             \"continue\" if they just ask to go on, resume, start or retry; \"pause\" if they ask to \
+             stop or wait for now; \"finish\" if they're satisfied and want it wrapped up; else \"none\" \
+             (questions, chat).",
             brief = brief(f),
             status = status_text(f),
             tasks = tasks.join("\n"),
@@ -644,7 +696,7 @@ impl Brain for Model {
             "type": "object",
             "properties": {
                 "reply": {"type": "string"},
-                "intent": {"enum": ["none", "continue", "pause"]}
+                "intent": {"enum": ["none", "continue", "pause", "revise", "finish"]}
             },
             "required": ["reply", "intent"]
         });
@@ -654,6 +706,8 @@ impl Brain for Model {
             intent: match v["intent"].as_str() {
                 Some("continue") => Intent::Continue,
                 Some("pause") => Intent::Pause,
+                Some("revise") => Intent::Revise,
+                Some("finish") => Intent::Finish,
                 _ => Intent::None,
             },
         })
