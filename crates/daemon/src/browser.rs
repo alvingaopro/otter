@@ -314,6 +314,8 @@ fn pipe() -> Result<(RawFd, RawFd)> {
 struct Browser {
     child: Child,
     profile: tempfile::TempDir,
+    /// What the browser printed (to explain a browser that stops answering).
+    log: tempfile::NamedTempFile,
     to: std::fs::File,
     from: mpsc::Receiver<Value>,
     next: u64,
@@ -325,6 +327,9 @@ struct Browser {
 impl Browser {
     fn launch(program: &Path) -> Result<Browser> {
         let profile = tempfile::Builder::new().prefix("otter-browser").tempdir()?;
+        let log = tempfile::Builder::new()
+            .prefix("otter-browser-log")
+            .tempfile()?;
         let (to_r, to_w) = pipe()?;
         let (from_r, from_w) = pipe()?;
         let mut cmd = std::process::Command::new(program);
@@ -342,6 +347,10 @@ impl Browser {
             "--use-mock-keychain",
             "--mute-audio",
             "--window-size=1280,800",
+            // Machines without a GPU or with a small /dev/shm (CI runners,
+            // containers): software rendering, shared memory in /tmp.
+            "--disable-gpu",
+            "--disable-dev-shm-usage",
         ])
         .arg(format!("--user-data-dir={}", profile.path().display()));
         // Chrome's sandbox can't run as root, nor where user namespaces are
@@ -357,7 +366,7 @@ impl Browser {
             .arg("about:blank")
             .stdin(Stdio::null())
             .stdout(Stdio::null())
-            .stderr(Stdio::null())
+            .stderr(Stdio::from(log.reopen()?))
             .process_group(0);
         unsafe {
             cmd.pre_exec(move || {
@@ -404,6 +413,7 @@ impl Browser {
         Ok(Browser {
             child,
             profile,
+            log,
             to,
             from: rx,
             next: 0,
@@ -462,10 +472,12 @@ impl Browser {
             let left = deadline
                 .checked_duration_since(Instant::now())
                 .ok_or_else(|| anyhow!("{method} timed out"))?;
-            let v = self
-                .from
-                .recv_timeout(left)
-                .map_err(|_| anyhow!("{method}: the browser stopped answering"))?;
+            let v = self.from.recv_timeout(left).map_err(|_| {
+                anyhow!(
+                    "{method}: the browser stopped answering{}",
+                    self.last_words()
+                )
+            })?;
             if v["id"].as_u64() == Some(id) {
                 if let Some(e) = v.get("error") {
                     bail!("{method}: {}", e["message"].as_str().unwrap_or("failed"));
@@ -490,6 +502,22 @@ impl Browser {
                 Ok(v) => self.on_message(v),
                 Err(_) => bail!("timed out waiting for {method}"),
             }
+        }
+    }
+
+    /// The end of what the browser printed, for an error.
+    fn last_words(&mut self) -> String {
+        let exited = match self.child.try_wait() {
+            Ok(Some(status)) => format!(" (it exited: {status})"),
+            _ => String::new(),
+        };
+        let text = std::fs::read_to_string(self.log.path()).unwrap_or_default();
+        let tail: Vec<&str> = text.lines().rev().take(8).collect();
+        if tail.is_empty() {
+            exited
+        } else {
+            let tail: Vec<&str> = tail.into_iter().rev().collect();
+            format!("{exited}: {}", tail.join(" | "))
         }
     }
 
