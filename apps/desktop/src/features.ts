@@ -54,6 +54,8 @@ export interface Run {
   started_at: string;
   ended_at?: string;
   summary?: string;
+  /** The agent's own conversation id (opaque): what a takeover opens. */
+  provider_session_id?: string;
 }
 
 export interface Message {
@@ -159,7 +161,9 @@ export type FeatureAction =
   | { action: "retry" }
   | { action: "decide"; decision_id: string; approve: boolean; answer?: string }
   | { action: "accept" }
-  | { action: "request_changes"; note?: string };
+  | { action: "request_changes"; note?: string }
+  | { action: "take_over" }
+  | { action: "hand_back" };
 
 // --- Wording and grouping (no runtime state) ---
 

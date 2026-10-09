@@ -17,6 +17,8 @@ mod login;
 mod metrics;
 mod paths;
 mod reconcile;
+mod runs;
+mod runtime;
 mod server;
 mod sessions;
 mod store;
@@ -174,6 +176,8 @@ async fn serve(paths: Paths) -> Result<()> {
         tracing::warn!("initial reconcile failed: {e:#}");
     }
     daemon.resume_workspaces().await;
+    // Managed runs ended with the old daemon; their conversations resume.
+    daemon.recover_runs().await;
 
     // We hold the lock, so any socket file left behind is stale.
     let _ = std::fs::remove_file(&paths.socket);

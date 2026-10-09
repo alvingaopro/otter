@@ -485,6 +485,27 @@ pub fn apply_action(
             }
             changes.push(to(f, FeatureStatus::Done, Some("Accepted by you".into()))?);
         }
+        FeatureAction::TakeOver => {
+            if !f.runs.iter().any(|r| r.provider_session_id.is_some()) {
+                return Err(RpcError::conflict("no agent conversation to take over yet"));
+            }
+            if f.status != FeatureStatus::Paused {
+                changes.push(to(f, FeatureStatus::Paused, Some("You took over".into()))?);
+            }
+        }
+        FeatureAction::HandBack => {
+            if f.status != FeatureStatus::Paused {
+                return Err(RpcError::conflict(
+                    "only a paused feature can be handed back",
+                ));
+            }
+            let next = resume_status(f);
+            changes.push(to(
+                f,
+                next,
+                Some("Handed back to the Control Agent".into()),
+            )?);
+        }
         FeatureAction::RequestChanges { note } => {
             if f.status != FeatureStatus::Review {
                 return Err(RpcError::conflict(
@@ -592,15 +613,85 @@ impl Daemon {
         Ok(applied.feature)
     }
 
-    pub(crate) async fn feature_act(&self, p: FeatureAct) -> RpcResult<Feature> {
+    pub(crate) async fn feature_act(
+        self: std::sync::Arc<Self>,
+        p: FeatureAct,
+    ) -> RpcResult<Feature> {
         check_command_id(&p.command_id)?;
-        let applied = self.features.lock().await.apply(
-            &FeatureId::from(p.feature.as_str()),
-            Some(&p.command_id),
-            |f, now| apply_action(f, &p.action, &p.command_id, now),
-        )?;
+        let id = FeatureId::from(p.feature.as_str());
+        if p.action == FeatureAction::HandBack {
+            self.check_handed_back(&id).await?;
+        }
+        // Taking over opens a session first and records the command only
+        // once that worked, so a failed attempt can be retried as is.
+        if p.action == FeatureAction::TakeOver {
+            if let Some(f) = self.features.lock().await.applied(&p.command_id) {
+                return Ok(f.clone());
+            }
+            let f = self.feature_get(id.as_str()).await?;
+            if f.status.is_terminal() {
+                return Err(RpcError::conflict(format!(
+                    "the feature is {}",
+                    f.status.as_str()
+                )));
+            }
+            self.take_over(&id).await?;
+        }
+        let applied = self
+            .features
+            .lock()
+            .await
+            .apply(&id, Some(&p.command_id), |f, now| {
+                apply_action(f, &p.action, &p.command_id, now)
+            })?;
         self.feature_changed(&applied);
-        Ok(applied.feature)
+        if applied.duplicate {
+            return Ok(applied.feature);
+        }
+        // What the action means for a run in progress.
+        use otter_core::feature::RunState;
+        match &p.action {
+            FeatureAction::Decide {
+                decision_id,
+                approve,
+                answer,
+            } => {
+                self.forward_decision(&id, decision_id, *approve, answer.clone())
+                    .await
+            }
+            FeatureAction::Pause => self.stop_runs(&id, RunState::Cancelled, "Paused").await,
+            FeatureAction::Cancel => self.stop_runs(&id, RunState::Cancelled, "Cancelled").await,
+            _ => return Ok(applied.feature),
+        }
+        self.feature_get(id.as_str()).await
+    }
+
+    /// Before handing back: the developer's session must be over, so only
+    /// one process ever drives the conversation.
+    async fn check_handed_back(&self, id: &FeatureId) -> RpcResult<()> {
+        let f = self.feature_get(id.as_str()).await?;
+        let Some(ws) = &f.workspace_id else {
+            return Ok(());
+        };
+        let store = self.store.lock().await;
+        let Some(ws) = store.workspace(ws.as_str()) else {
+            return Ok(());
+        };
+        let busy = f
+            .tasks
+            .iter()
+            .filter_map(|t| t.session_id.as_ref())
+            .any(|s| {
+                ws.session(s.as_str())
+                    .and_then(|s| s.current_execution())
+                    .is_some_and(|e| e.is_running())
+            });
+        if busy {
+            return Err(RpcError::conflict(
+                "quit the agent in your session first, then hand back",
+            ));
+        }
+        Ok(())
     }
 
     pub(crate) async fn feature_events(

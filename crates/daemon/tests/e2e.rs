@@ -143,6 +143,7 @@ fn spec(kind: SessionKind, name: &str, command: &str) -> SessionSpec {
         command: Some(command.into()),
         provider: None,
         prompt: None,
+        resume: None,
     }
 }
 
@@ -344,6 +345,7 @@ async fn service_without_command_is_rejected() {
                 command: None,
                 provider: None,
                 prompt: None,
+                resume: None,
             },
         })
         .await
@@ -1462,6 +1464,8 @@ fn tmux_dir() -> String {
 /// `nohooks` ignores the settings (hooks disabled) and stops at a prompt.
 const FAKE_CLAUDE: &str = r#"#!/bin/sh
 if [ "$1" = --version ]; then echo "2.0.0-fake (Claude Code)"; exit 0; fi
+# Managed runs (`claude -p`, stream-json): fake_claude_stream.sh.
+if [ "$1" = -p ]; then exec sh "$FAKE_CLAUDE_STREAM" "$@"; fi
 hook_cmd=
 if [ "$1" = --settings ]; then
   hook_cmd=$(sed -n 's/^ *"command": "\(.*\)",$/\1/p' "$2" | head -n 1)
@@ -1529,6 +1533,8 @@ async fn fake_codex_host(mode: &str) -> FakeCodex {
     let claude = bin.join("claude");
     std::fs::write(&claude, FAKE_CLAUDE).unwrap();
     std::fs::set_permissions(&claude, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let stream = scratch.path().join("fake_claude_stream.sh");
+    std::fs::write(&stream, include_str!("fake_claude_stream.sh")).unwrap();
     let home = scratch.path().join("home");
     std::fs::create_dir_all(&home).unwrap();
     let log = scratch.path().join("codex-args.log");
@@ -1548,6 +1554,12 @@ async fn fake_codex_host(mode: &str) -> FakeCodex {
         ),
         ("FAKE_CODEX_LOG", p(&log)),
         ("FAKE_CODEX_MODE", mode.into()),
+        ("FAKE_CLAUDE_STREAM", p(&stream)),
+        // Features: the deterministic controller (no model calls in tests).
+        (
+            "OTTER_CONTROLLER",
+            std::env::var("OTTER_TEST_CONTROLLER").unwrap_or_else(|_| "rules".into()),
+        ),
         ("OTTER_AGENT_QUIET_SECS", "2".into()),
     ])
     .await;

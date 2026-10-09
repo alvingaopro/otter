@@ -400,7 +400,7 @@ impl Daemon {
                 .provider
                 .clone()
                 .unwrap_or_else(|| agents::DEFAULT_PROVIDER.into()),
-            provider_session_id: None,
+            provider_session_id: spec.resume.clone(),
             provider_state: serde_json::Value::Null,
             state: AgentState::Starting,
             state_since: Utc::now(),
@@ -449,9 +449,9 @@ pub(crate) fn validate_spec(spec: &SessionSpec) -> RpcResult<()> {
                 ));
             }
         }
-        _ if spec.provider.is_some() || spec.prompt.is_some() => {
+        _ if spec.provider.is_some() || spec.prompt.is_some() || spec.resume.is_some() => {
             return Err(RpcError::invalid(
-                "provider and prompt only apply to agent sessions",
+                "provider, prompt and resume only apply to agent sessions",
             ));
         }
         SessionKind::Service | SessionKind::Task if spec.command.is_none() => {

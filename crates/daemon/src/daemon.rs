@@ -38,6 +38,8 @@ pub struct Daemon {
     pub features: Mutex<FeatureStore>,
     /// Woken whenever a feature changes, for the controller.
     pub(crate) feature_wake: tokio::sync::Notify,
+    /// Managed agent runs in progress (runs.rs).
+    pub(crate) runs: crate::runs::Runs,
     pub backend: Arc<dyn ExecutionBackend>,
     pub events: EventLog,
     pub git: GitManager,
@@ -83,6 +85,7 @@ impl Daemon {
             store: Mutex::new(store),
             features: Mutex::new(features),
             feature_wake: tokio::sync::Notify::new(),
+            runs: Default::default(),
             backend,
             events,
             shell,
@@ -177,7 +180,7 @@ impl Daemon {
             Request::FeatureGet(r) => json(self.feature_get(&r.feature).await?),
             Request::FeatureCreate(p) => json(self.feature_create(p).await?),
             Request::FeatureSend(p) => json(self.feature_send(p).await?),
-            Request::FeatureAct(p) => json(self.feature_act(p).await?),
+            Request::FeatureAct(p) => json(self.clone().feature_act(p).await?),
             Request::FeatureEvents(p) => json(self.feature_events(&p).await?),
             Request::Shutdown | Request::SessionAttach(_) | Request::EventsSubscribe(_) => {
                 Err(RpcError::invalid(format!(

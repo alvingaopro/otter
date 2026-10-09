@@ -485,6 +485,11 @@ pub enum FeatureAction {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         note: Option<String>,
     },
+    /// The developer takes over the coding agent: the managed run stops and
+    /// its conversation opens in an interactive session (D-044).
+    TakeOver,
+    /// The developer gives the conversation back to the Control Agent.
+    HandBack,
 }
 
 impl FeatureAction {
@@ -498,6 +503,8 @@ impl FeatureAction {
             FeatureAction::Decide { .. } => "decide",
             FeatureAction::Accept => "accept",
             FeatureAction::RequestChanges { .. } => "request_changes",
+            FeatureAction::TakeOver => "take_over",
+            FeatureAction::HandBack => "hand_back",
         }
     }
 }

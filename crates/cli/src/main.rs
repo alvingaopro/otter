@@ -909,6 +909,7 @@ async fn create_session(config: &Config, args: SessionCreateArgs, json: bool) ->
         Some(provider) => SessionSpec {
             name: args.name,
             prompt: args.prompt,
+            resume: None,
             ..SessionSpec::agent(&provider)
         },
         None => SessionSpec {
@@ -917,6 +918,7 @@ async fn create_session(config: &Config, args: SessionCreateArgs, json: bool) ->
             command,
             provider: None,
             prompt: None,
+            resume: None,
         },
     };
     let session = found

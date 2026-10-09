@@ -1162,3 +1162,56 @@ works in that host's workspaces. The app only reads and sends commands.
   daemon, not by a model.
 - The desktop's Features view now reads from every connected host
   (`daemonSource`); an older `otterd` simply shows no features.
+
+## D-044 — Managed agent runs: structured events, policy-checked approvals (2026-10-09)
+
+Features need a coding agent the daemon can drive and observe without
+reading a terminal. A **managed run** is a separate mode next to the
+interactive agent sessions (which stay as they are).
+
+- **Contract** (`runtime/mod.rs`): `AgentRuntime::start` (fresh, or resuming
+  the agent's own conversation id) → a `RunHandle` with `send_input`,
+  `next_event` (the event stream: session id, text, tool use, a decision
+  needed, turn ended, exited), `decide`, `cancel`, `inspect`. Adapters map
+  their tools to generic kinds (`ToolCall`: read, edit, command, fetch,
+  question, plan approval, other).
+- **Claude Code adapter** (`agents/claude_stream.rs`): `claude -p` with
+  stream-json in and out, `--permission-mode default
+  --permission-prompt-tool stdio --setting-sources ""`. Permission prompts,
+  `AskUserQuestion` and plan approval come to Otter as `can_use_tool`
+  control requests and are answered with allow / deny / an answer. The
+  control messages are the Agent SDK's protocol, not a documented CLI
+  contract: **observed on Claude Code 2.1.295** by probing the real CLI
+  (allow, deny, a question answered, interrupt, `session_id` in `init` and
+  `result`), and covered by a fake that plays the same protocol
+  (`tests/fake_claude_stream.sh`). Without `--permission-prompt-tool stdio` a
+  prompt is denied on the spot.
+- **No settings files for managed runs** (`--setting-sources ""`): an allow
+  rule in the user's or the project's settings would let a tool run before
+  Otter's policy saw it, and a project's settings come with the repository.
+  Claude Code's own read-only auto-allow (`echo`, `ls`) still applies.
+- **Policy decides first** (`runtime/policy.rs`, deterministic): low risk
+  inside the workspace runs (reads, edits under the root, build and test
+  commands) and is recorded as decided by policy; medium risk (installs,
+  fetches, unknown commands, questions, plans) is a decision the Control
+  Agent may take; high risk — destructive, credentials, production or
+  publishing, root, anything outside the workspace — is `user_only`, blocks
+  the feature, and only the developer can allow it. `policy::resolve` is the
+  single gate: a model's "allow" of a `user_only` request is refused, and a
+  denial can't be turned around by anyone.
+- **Every decision is a `DecisionRequest`** in the feature (kind, risk,
+  who decided, rationale), so the audit trail includes what policy allowed.
+  A request's summary can contain a command line the agent proposed: it is
+  kept in `feature.json` (0600), never in `events.jsonl`.
+- **Lifetime — a deliberate deviation from invariant 4.** A managed run's
+  protocol is its stdin/stdout, so it is a child of `otterd` and ends with
+  it, unlike an interactive session in tmux. Its *conversation* survives:
+  the run keeps the agent's session id, a new daemon marks interrupted runs
+  (`recover_runs`) and the controller resumes them with `--resume`. Nothing
+  else changes for sessions.
+- **Handing over:** *Take over* stops the managed run (recorded as handed
+  off) and opens the same conversation in an interactive agent session in
+  the workspace (`SessionSpec.resume`); the feature pauses. *Hand back* is
+  refused while that session still runs, so only one process ever drives a
+  conversation; then the controller continues it. The session is created
+  before the command is recorded, so a failed takeover can be retried.

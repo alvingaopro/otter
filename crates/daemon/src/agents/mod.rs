@@ -19,6 +19,7 @@
 //! still as waiting on the developer.
 
 pub mod claude;
+pub mod claude_stream;
 pub mod codex;
 
 use std::collections::HashSet;

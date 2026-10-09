@@ -229,8 +229,29 @@ function FeaturePane({
 
 function FeatureActions({ f, act }: { f: Feature; act: (a: FeatureAction) => void }) {
   const live = ["planning", "implementing", "verifying", "blocked"].includes(f.status);
+  // A conversation exists to take over; a task session to give back from.
+  const canTakeOver = !["done", "cancelled"].includes(f.status) && f.runs.some((r) => r.provider_session_id);
+  const tookOver = f.status === "paused" && f.tasks.some((t) => t.session_id);
   return (
     <span className="feature-actions">
+      {canTakeOver && f.status !== "paused" && (
+        <button
+          className="btn"
+          title="Stop the managed agent and continue its conversation yourself in a terminal"
+          onClick={() => act({ action: "take_over" })}
+        >
+          Take over
+        </button>
+      )}
+      {tookOver && (
+        <button
+          className="btn primary"
+          title="Quit the agent in your session first; the Control Agent continues the conversation"
+          onClick={() => act({ action: "hand_back" })}
+        >
+          Hand back
+        </button>
+      )}
       {f.status === "draft" && (
         <button className="btn primary" onClick={() => act({ action: "start" })}>
           Start
@@ -241,7 +262,7 @@ function FeatureActions({ f, act }: { f: Feature; act: (a: FeatureAction) => voi
           Pause
         </button>
       )}
-      {f.status === "paused" && (
+      {f.status === "paused" && !tookOver && (
         <button className="btn primary" onClick={() => act({ action: "resume" })}>
           Resume
         </button>

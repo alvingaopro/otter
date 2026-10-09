@@ -290,6 +290,10 @@ pub struct SessionSpec {
     /// Initial prompt for `agent` sessions.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prompt: Option<String>,
+    /// Continue this agent conversation (the provider's own id) instead of
+    /// starting a new one, e.g. to take over a managed run (D-044).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resume: Option<String>,
 }
 
 impl SessionSpec {
@@ -300,6 +304,7 @@ impl SessionSpec {
             command: None,
             provider: None,
             prompt: None,
+            resume: None,
         }
     }
 
@@ -310,6 +315,7 @@ impl SessionSpec {
             command: None,
             provider: Some(provider.to_owned()),
             prompt: None,
+            resume: None,
         }
     }
 }

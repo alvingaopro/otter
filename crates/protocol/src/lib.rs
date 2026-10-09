@@ -587,6 +587,7 @@ mod tests {
                     command: Some("npm run dev".into()),
                     provider: None,
                     prompt: None,
+                    resume: None,
                 },
             }),
         };
