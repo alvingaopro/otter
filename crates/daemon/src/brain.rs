@@ -3,11 +3,9 @@
 //! Everything else (lifecycle, limits, retries, what may run) is the
 //! controller's deterministic code.
 //!
-//! `OTTER_CONTROLLER` picks the brain: `claude` (the default when Claude Code
-//! is installed: `claude -p` with structured output, no tools), `openrouter`
-//! (any model on OpenRouter, with `OPENROUTER_API_KEY` in otterd's
-//! environment; the default when that is set and Claude Code isn't
-//! installed), `rules` (no model: one task, every open decision goes to the
+//! `OTTER_CONTROLLER` (or Settings) picks the brain: `openrouter` (any model
+//! on OpenRouter; the default when a key is set), `claude` (`claude -p` with
+//! structured output, no tools; the default otherwise, when installed), `rules` (no model: one task, every open decision goes to the
 //! developer, criteria are met when the check passes), or `yes` (tests
 //! only: approves everything it is asked — to show that policy still stops
 //! it). `OTTER_CONTROLLER_MODEL` picks the model for either.
@@ -212,8 +210,9 @@ pub struct Choice {
     pub openrouter_key: Option<String>,
 }
 
-/// The brain chosen (automatic: Claude Code when installed, else OpenRouter
-/// when a key is set, else rules).
+/// The brain chosen (automatic: OpenRouter when a key is set — the Control
+/// Agent's own model, apart from the coding agent's — else Claude Code when
+/// installed, else rules).
 pub fn select(env: &EnvMap, choice: &Choice) -> Box<dyn Brain> {
     let key = choice
         .openrouter_key
@@ -231,8 +230,8 @@ pub fn select(env: &EnvMap, choice: &Choice) -> Box<dyn Brain> {
         "yes" => Box::new(YesMan),
         "claude" => model(Backend::ClaudeCode),
         "openrouter" => model(Backend::OpenRouter),
-        _ if crate::env::which("claude", env).is_some() => model(Backend::ClaudeCode),
         _ if key.is_some() => model(Backend::OpenRouter),
+        _ if crate::env::which("claude", env).is_some() => model(Backend::ClaudeCode),
         _ => Box::new(Rules),
     }
 }

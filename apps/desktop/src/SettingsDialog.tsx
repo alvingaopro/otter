@@ -11,7 +11,7 @@ export interface HostSettings {
 }
 
 const CONTROLLERS: [string, string][] = [
-  ["", "Automatic (Claude Code if installed, else OpenRouter if a key is set)"],
+  ["", "Automatic (OpenRouter if a key is set, else Claude Code)"],
   ["claude", "Claude Code (its own sign-in on the host)"],
   ["openrouter", "OpenRouter (API key below)"],
   ["rules", "No model: every decision goes to you"],
