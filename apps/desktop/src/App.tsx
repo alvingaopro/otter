@@ -18,7 +18,7 @@ import { WorkspacePane } from "./WorkspacePane";
 import { NewWorkspaceDialog } from "./NewWorkspaceDialog";
 import { SettingsDialog } from "./SettingsDialog";
 import { useTheme } from "./theme";
-import { defaultSession, groups, headline, movePin, pinnedOf, placeAll, stalePins, togglePin } from "./model";
+import { defaultSession, groups, headline, movePin, pinnedOf, placeAll, stalePins, togglePin, trayLabel } from "./model";
 import type { MenuItem } from "./Menu";
 import type { ForwardView, HostsPayload, Placed } from "./types";
 import "./App.css";
@@ -189,9 +189,10 @@ export default function App() {
 
   // The menu bar item shows what needs you.
   useEffect(() => {
+    const showHost = new Set(placed.map((p) => p.host.name)).size > 1;
     const waiting = placed
       .filter((p) => p.ws.activity === "needs_you" || p.ws.activity === "failed")
-      .map((p) => ({ key: p.key, label: `${p.ws.name} — ${headline(p.ws).text} (${p.host.name})` }));
+      .map((p) => ({ key: p.key, label: trayLabel(p.ws.name, headline(p.ws).text, p.host.name, showHost) }));
     void invoke("tray_update", { waiting }).catch(() => {});
   }, [placed]);
 

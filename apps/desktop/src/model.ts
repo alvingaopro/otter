@@ -167,3 +167,29 @@ export function stalePins(pins: string[], hosts: HostsPayload["hosts"]): string[
     return host?.status === "connected" && !host.workspaces.some((w) => w.id === k.slice(slash + 1));
   });
 }
+
+/** Longest glance in the menu bar; the app has the rest. */
+const GLANCE = 52;
+
+/**
+ * What needs you, at a glance: "needs your approval" becomes "Approve", paths
+ * become their last part, and it's cut to fit a menu.
+ *   "claude needs your approval: Read: /home/a/b/createOffer.html"
+ *   → "Approve: Read createOffer.html"
+ */
+export function glance(summary: string): string {
+  let t = summary
+    .replace(/^.*?\bneeds your approval:\s*/i, "Approve: ")
+    .replace(/^(Approve: \w+):\s+/, "$1 ")
+    // Paths: only their last part.
+    .replace(/(?:~|\.{1,2})?\/?(?:[\w.@+-]+\/)+([\w.@+-]+)/g, "$1")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (t.length > GLANCE) t = `${t.slice(0, GLANCE - 1).trimEnd()}…`;
+  return t;
+}
+
+/** A menu bar line for a workspace that needs you. */
+export function trayLabel(name: string, summary: string, host: string, showHost: boolean): string {
+  return `${name} · ${glance(summary)}${showHost ? `  (${host})` : ""}`;
+}
