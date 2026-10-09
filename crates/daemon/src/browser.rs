@@ -142,14 +142,21 @@ pub fn find_browser(env: &EnvMap) -> Option<PathBuf> {
     {
         return Some(PathBuf::from(p));
     }
+    // Google Chrome first; a Snap-packaged Chromium (Ubuntu's
+    // `chromium-browser`) doesn't pass the DevTools pipe through its
+    // launcher, so it is skipped.
     for name in [
-        "chromium",
-        "chromium-browser",
         "google-chrome",
         "google-chrome-stable",
+        "chromium",
+        "chromium-browser",
         "chrome",
     ] {
         if let Some(p) = which(name, env) {
+            let real = std::fs::canonicalize(&p).unwrap_or_else(|_| p.clone());
+            if real.starts_with("/snap") || real.ends_with("snap") {
+                continue;
+            }
             return Some(p);
         }
     }
@@ -952,8 +959,9 @@ document.getElementById('go').addEventListener('click', () => {
         let mut env = EnvMap::new();
         env.insert("PATH".into(), std::env::var("PATH").unwrap_or_default());
         let b = find_browser(&env);
-        if b.is_none() {
-            eprintln!("skipping: no Chrome/Chromium on this host");
+        match &b {
+            Some(p) => eprintln!("browser: {}", p.display()),
+            None => eprintln!("skipping: no Chrome/Chromium on this host"),
         }
         b
     }

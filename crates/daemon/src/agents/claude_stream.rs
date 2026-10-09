@@ -97,17 +97,19 @@ impl AgentRuntime for ClaudeRuntime {
             observed_on = OBSERVED_VERSION,
             "starting claude -p (stream-json)"
         );
-        let mut child = tokio::process::Command::new(&program)
-            .args(argv(&spec))
-            .current_dir(&spec.cwd)
-            .env_clear()
-            .envs(&spec.env)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .kill_on_drop(true)
-            .spawn()
-            .with_context(|| format!("starting {}", program.display()))?;
+        let mut child = crate::env::spawn_tokio(
+            tokio::process::Command::new(&program)
+                .args(argv(&spec))
+                .current_dir(&spec.cwd)
+                .env_clear()
+                .envs(&spec.env)
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::null())
+                .kill_on_drop(true),
+        )
+        .await
+        .with_context(|| format!("starting {}", program.display()))?;
         let stdin = child.stdin.take().expect("piped");
         let stdout = child.stdout.take().expect("piped");
         let pid = child.id();
@@ -309,15 +311,15 @@ pub async fn structured_reading(
     if let Some(model) = model {
         cmd.args(["--model", model]);
     }
-    let mut child = cmd
-        .current_dir(cwd)
+    cmd.current_dir(cwd)
         .env_clear()
         .envs(env)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
-        .kill_on_drop(true)
-        .spawn()
+        .kill_on_drop(true);
+    let mut child = crate::env::spawn_tokio(&mut cmd)
+        .await
         .with_context(|| format!("starting {}", program.display()))?;
     let mut stdin = child.stdin.take().expect("piped");
     stdin.write_all(prompt.as_bytes()).await?;
