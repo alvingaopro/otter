@@ -28,7 +28,6 @@
 //! contract: everything here parses defensively, and the version it was
 //! observed on is recorded. Commands Claude Code itself treats as read-only
 //! (`echo`, `ls`) run without asking — its own rules come first, ours on top.
-#![allow(dead_code)] // TEMP: used by the controller in the next commit (D-045).
 
 use std::collections::HashMap;
 use std::process::Stdio;
@@ -94,6 +93,10 @@ impl AgentRuntime for ClaudeRuntime {
 
     async fn start(&self, spec: RunSpec) -> Result<Box<dyn RunHandle>> {
         let program = which("claude", &spec.env).ok_or_else(|| anyhow!("claude is not on PATH"))?;
+        tracing::debug!(
+            observed_on = OBSERVED_VERSION,
+            "starting claude -p (stream-json)"
+        );
         let mut child = tokio::process::Command::new(&program)
             .args(argv(&spec))
             .current_dir(&spec.cwd)
@@ -275,6 +278,66 @@ impl RunHandle for ClaudeRun {
 impl Drop for ClaudeRun {
     fn drop(&mut self) {
         self.reader.abort();
+    }
+}
+
+/// One structured answer from Claude, for the Control Agent (D-045):
+/// `claude -p --output-format json --json-schema <schema> --tools ""`, the
+/// prompt on stdin, the answer in the result's `structured_output`. No tools
+/// and no settings files: it only thinks. `OTTER_CONTROLLER_MODEL` picks the
+/// model (default: Claude Code's).
+pub async fn structured(
+    env: &crate::env::EnvMap,
+    cwd: &std::path::Path,
+    prompt: &str,
+    schema: &Value,
+) -> Result<Value> {
+    let program = which("claude", env).ok_or_else(|| anyhow!("claude is not on PATH"))?;
+    let mut cmd = tokio::process::Command::new(&program);
+    cmd.args([
+        "-p",
+        "--output-format",
+        "json",
+        "--tools",
+        "",
+        "--setting-sources",
+        "",
+        "--json-schema",
+        &schema.to_string(),
+    ]);
+    if let Ok(model) = std::env::var("OTTER_CONTROLLER_MODEL") {
+        cmd.args(["--model", &model]);
+    }
+    let mut child = cmd
+        .current_dir(cwd)
+        .env_clear()
+        .envs(env)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .kill_on_drop(true)
+        .spawn()
+        .with_context(|| format!("starting {}", program.display()))?;
+    let mut stdin = child.stdin.take().expect("piped");
+    stdin.write_all(prompt.as_bytes()).await?;
+    drop(stdin);
+    let out = tokio::time::timeout(
+        std::time::Duration::from_secs(300),
+        child.wait_with_output(),
+    )
+    .await
+    .map_err(|_| anyhow!("the Control Agent took too long to answer"))??;
+    let v: Value = serde_json::from_slice(&out.stdout)
+        .with_context(|| format!("reading claude's answer (exit {})", out.status))?;
+    if v["is_error"] == true {
+        anyhow::bail!(
+            "claude failed: {}",
+            v["result"].as_str().unwrap_or("no details")
+        );
+    }
+    match v.get("structured_output") {
+        Some(s) if !s.is_null() => Ok(s.clone()),
+        _ => anyhow::bail!("claude gave no structured answer"),
     }
 }
 

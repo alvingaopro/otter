@@ -14,7 +14,7 @@ export interface FeatureSource {
   list(): PlacedFeature[];
   /** Called with the new list whenever anything changes. Returns an unsubscribe. */
   subscribe(listener: (list: PlacedFeature[]) => void): () => void;
-  create(host: string, title: string, request: string): Promise<PlacedFeature>;
+  create(host: string, title: string, request: string, workspace?: string): Promise<PlacedFeature>;
   /** A message from the developer to the feature's Control Agent. */
   send(key: string, text: string): Promise<void>;
   act(key: string, action: FeatureAction): Promise<void>;
@@ -150,13 +150,14 @@ export function mockSource(host = "preview", now = Date.now()): FeatureSource {
       listeners.add(listener);
       return () => listeners.delete(listener);
     },
-    async create(h, title, request) {
+    async create(h, title, request, workspace) {
       const feature: Feature = {
         ...sampleFeatures(Date.now())[4],
         id: id("ft"),
         title,
         request,
         messages: request ? [{ id: id("msg"), role: "user", text: request, at: stamp() }] : [],
+        workspace_id: workspace,
         created_at: stamp(),
         updated_at: stamp(),
       };
@@ -195,6 +196,7 @@ export function mockSource(host = "preview", now = Date.now()): FeatureSource {
         request_changes: "implementing",
         take_over: "paused",
         hand_back: "implementing",
+        set_workspace: "planning",
       };
       if (action.action === "decide") {
         update(key, (f) => ({
@@ -285,8 +287,8 @@ export function daemonSource(): FeatureSource {
       listeners.add(listener);
       return () => listeners.delete(listener);
     },
-    async create(host, title, request) {
-      const feature = await invoke<Feature>("feature_create", { host, commandId: commandId(), title, request, workspace: null });
+    async create(host, title, request, workspace) {
+      const feature = await invoke<Feature>("feature_create", { host, commandId: commandId(), title, request, workspace: workspace ?? null });
       put(host, feature);
       return { host, feature, key: `${host}/${feature.id}` };
     },

@@ -12,7 +12,6 @@
 //! An adapter translates its agent's tool calls into a [`ToolCall`], so the
 //! [`policy`] that decides what may run without asking is the same for every
 //! agent. Agent-specific code (flags, wire format) lives under `agents/`.
-#![allow(dead_code)] // TEMP: used by the controller in the next commit (D-045).
 
 pub mod policy;
 

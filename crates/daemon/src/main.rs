@@ -4,6 +4,8 @@ mod agents;
 mod attach;
 mod attention;
 mod backend;
+mod brain;
+mod controller;
 mod daemon;
 mod dial;
 mod env;
@@ -178,6 +180,8 @@ async fn serve(paths: Paths) -> Result<()> {
     daemon.resume_workspaces().await;
     // Managed runs ended with the old daemon; their conversations resume.
     daemon.recover_runs().await;
+    // The Control Agent steps features from here on (D-045).
+    tokio::spawn(daemon.clone().run_controller());
 
     // We hold the lock, so any socket file left behind is stale.
     let _ = std::fs::remove_file(&paths.socket);

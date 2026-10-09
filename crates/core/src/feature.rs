@@ -372,6 +372,18 @@ pub struct Feature {
     /// When work last (re)started: the time budget counts from here.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub active_since: Option<Timestamp>,
+    /// The command that checks the work (e.g. `cargo test`), from the plan.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verify_command: Option<String>,
+    /// Policy (or the developer) allowed `verify_command` to run.
+    #[serde(default)]
+    pub verify_approved: bool,
+    /// The decision asking to allow `verify_command`, if one was needed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verify_decision: Option<DecisionId>,
+    /// Why the Control Agent did what it did, newest last (short lines).
+    #[serde(default)]
+    pub rationale: Vec<String>,
     pub created_at: Timestamp,
     pub updated_at: Timestamp,
     /// The last entry of this feature's history.
@@ -402,6 +414,10 @@ impl Feature {
             budget: Budget::default(),
             workspace_id: None,
             active_since: None,
+            verify_command: None,
+            verify_approved: false,
+            verify_decision: None,
+            rationale: Vec::new(),
             created_at: now,
             updated_at: now,
             history_seq: 0,
@@ -490,6 +506,10 @@ pub enum FeatureAction {
     TakeOver,
     /// The developer gives the conversation back to the Control Agent.
     HandBack,
+    /// Choose the workspace (id or name, on this host) the work happens in.
+    SetWorkspace {
+        workspace: String,
+    },
 }
 
 impl FeatureAction {
@@ -505,6 +525,7 @@ impl FeatureAction {
             FeatureAction::RequestChanges { .. } => "request_changes",
             FeatureAction::TakeOver => "take_over",
             FeatureAction::HandBack => "hand_back",
+            FeatureAction::SetWorkspace { .. } => "set_workspace",
         }
     }
 }

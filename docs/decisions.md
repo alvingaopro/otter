@@ -1215,3 +1215,53 @@ interactive agent sessions (which stay as they are).
   refused while that session still runs, so only one process ever drives a
   conversation; then the controller continues it. The session is created
   before the command is recorded, so a failed takeover can be retried.
+
+## D-045 — The Control Agent: a deterministic engine that consults a model (2026-10-09)
+
+A feature moves from request to review without the developer, but a model
+decides only where judgment is needed. The engine (`controller.rs`) runs in
+`otterd` — so it works with every client closed — woken by feature changes
+and by a tick (default 5 s, `OTTER_CONTROLLER_TICK_MS`) that enforces time
+limits.
+
+- **Lifecycle** (D-043): planning → implementing → verifying → review,
+  with blocked, paused, failed and cancelled to the side. One feature, one
+  run at a time; features step concurrently, each never twice at once.
+- **The brain** (`brain.rs`, `OTTER_CONTROLLER`) does three things: write
+  the plan (requirements, checkable acceptance criteria, tasks with
+  dependencies, one check command), decide what policy leaves open, and
+  judge the criteria from the evidence. `claude` (default when Claude Code
+  is installed) asks `claude -p --json-schema … --tools "" --setting-sources
+  ""` — structured output, no tools, the developer's own Claude Code
+  sign-in, nothing new to configure or store (`OTTER_CONTROLLER_MODEL` picks
+  a model). `rules` uses no model: one task, every open decision goes to the
+  developer, criteria are met when the check passes. `yes` (tests only)
+  approves everything, to show that policy still stops it.
+- **Code, not the model, enforces:**
+  - what may run: the check command goes through policy like any agent
+    command (routine checks run; anything else becomes a decision); the
+    brain's approvals go through `policy::resolve`, so a `user_only` request
+    stays with the developer whatever the model says (it is recorded that
+    the Control Agent wanted to allow it);
+  - the budget: attempts (default 6 runs) and minutes of active work
+    (default 120) per feature, at most 3 attempts per task, a per-run
+    timeout (`OTTER_RUN_TIMEOUT_MS`, 30 min), and loop detection (the same
+    failure 3 runs in a row since the work last started);
+  - a failed check can't be judged away: if the latest deterministic check
+    failed, no criterion counts as met.
+- **Recovery:** the feature document is the checkpoint. A run cut off by a
+  restart, a pause or a takeover resumes its conversation (`--resume`,
+  "continue where you left off", plus new messages from the developer)
+  without costing an attempt; a failed run starts over with the error in
+  its prompt. Failing keeps the plan; *Retry* starts again from it with a
+  fresh budget.
+- **The developer can always step in:** pause, cancel, take over and hand
+  back, decide any open decision, choose the workspace, accept or send back
+  in review. Developer messages reach the coding agent with its next run
+  (not mid-turn, in this version).
+- **Audit:** the plan, every decision (with who decided and why), the
+  rationale lines, evidence and the history.
+- A feature needs a workspace on its host; without one it blocks with
+  "Choose a workspace" (the app's New feature dialog offers them).
+- Not yet: several runs in parallel, a model reply in the conversation, a
+  plan approval step.

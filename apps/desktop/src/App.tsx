@@ -230,6 +230,12 @@ export default function App() {
           <FeaturesView
             source={featureSource}
             hosts={connectedHosts}
+            workspaces={Object.fromEntries(
+              (payload?.hosts ?? []).map((h) => [
+                h.name,
+                h.workspaces.filter((w) => w.state !== "archived").map((w) => ({ id: w.id, name: w.name })),
+              ]),
+            )}
             now={now}
             onOpenWorkspace={(host, workspace, session) => {
               const key = `${host}/${workspace}`;

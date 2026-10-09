@@ -13,7 +13,6 @@
 //! same conversation in an interactive agent session in the workspace; the
 //! developer hands it back by quitting that session and choosing Hand back.
 //! At no time do two processes drive one conversation.
-#![allow(dead_code)] // TEMP: used by the controller in the next commit (D-045).
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -70,6 +69,12 @@ impl Daemon {
         counts: bool,
     ) -> RpcResult<RunId> {
         let feature = self.feature_get(feature_id.as_str()).await?;
+        if !feature.status.is_active() {
+            return Err(RpcError::conflict(format!(
+                "the feature is {}",
+                feature.status.as_str()
+            )));
+        }
         if feature.live_run().is_some() {
             return Err(RpcError::conflict(
                 "a run is already working on this feature",
@@ -101,6 +106,7 @@ impl Daemon {
         env.insert("OTTER_FEATURE_ID".into(), feature_id.to_string());
         let rt = runtime(DEFAULT_RUNTIME)
             .ok_or_else(|| RpcError::unsupported("no managed agent runtime"))?;
+        tracing::info!(runtime = rt.id(), feature = %feature_id, resume = resume.is_some(), "starting a managed run");
         let root = PathBuf::from(&ws.root);
         let handle = rt
             .start(RunSpec {
@@ -213,6 +219,7 @@ impl Daemon {
                             }
                         }
                         RuntimeEvent::TurnEnded { ok, summary, .. } => {
+                            tracing::debug!(turns = handle.inspect().turns, ok, "run finished its turn");
                             let summary = summary.or(last_text.take());
                             let _ = handle.cancel().await;
                             self.finish_run(&feature, &run, if ok { RunState::Completed } else { RunState::Failed }, summary).await;
@@ -669,12 +676,3 @@ impl Daemon {
 const INSTRUCTIONS: &str = "You are working on one task of a feature, managed by Otter. \
 Stay inside the working directory. Run the project's tests before you finish. \
 End with a short summary of what you changed and how you checked it.";
-
-/// The conversation id to resume a task with, if an earlier run has one.
-pub fn resumable(f: &Feature, task: &TaskId) -> Option<String> {
-    f.runs
-        .iter()
-        .rev()
-        .filter(|r| &r.task_id == task)
-        .find_map(|r| r.provider_session_id.clone())
-}

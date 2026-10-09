@@ -21,6 +21,8 @@ struct TestHost {
     transport: Transport,
     /// A daemon started directly by the test (see `with_env`).
     daemon: Option<std::process::Child>,
+    /// The variables it was started with, to start it again.
+    vars: Vec<(String, String)>,
 }
 
 impl TestHost {
@@ -35,6 +37,7 @@ impl TestHost {
             dir,
             transport,
             daemon: None,
+            vars: Vec::new(),
         }
     }
 
@@ -42,24 +45,43 @@ impl TestHost {
     /// login-shell environment it captures inherits).
     async fn with_env(vars: &[(&str, String)]) -> Self {
         let mut host = Self::new();
+        host.vars = vars
+            .iter()
+            .map(|(k, v)| ((*k).to_owned(), v.clone()))
+            .collect();
+        host.spawn_daemon().await;
+        host
+    }
+
+    async fn spawn_daemon(&mut self) {
+        let _ = std::fs::remove_file(self.home().join("run/workd.sock"));
         let daemon = Command::new(env!("CARGO_BIN_EXE_otterd"))
             .arg("--home")
-            .arg(host.home())
+            .arg(self.home())
             .arg("serve")
-            .envs(vars.iter().map(|(k, v)| (*k, v.as_str())))
+            .envs(self.vars.iter().map(|(k, v)| (k.as_str(), v.as_str())))
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
             .spawn()
             .unwrap();
-        host.daemon = Some(daemon);
-        let socket = host.home().join("run/workd.sock");
+        self.daemon = Some(daemon);
+        let socket = self.home().join("run/workd.sock");
         eventually("daemon listening", || {
             let ok = socket.exists();
             async move { ok.then_some(()) }
         })
         .await;
-        host
+    }
+
+    /// Stop a daemon started by `with_env` and start it again with the same
+    /// variables (a dialed restart wouldn't have them).
+    async fn restart(&mut self) {
+        self.conn().await.shutdown().await.unwrap();
+        if let Some(mut d) = self.daemon.take() {
+            let _ = d.wait();
+        }
+        self.spawn_daemon().await;
     }
 
     fn home(&self) -> &Path {
@@ -1523,6 +1545,12 @@ exec sleep 600
 "#;
 
 async fn fake_codex_host(mode: &str) -> FakeCodex {
+    fake_agent_host(mode, "rules").await
+}
+
+/// A host with fake agents, and the given Control Agent brain for features
+/// (`rules` or `yes`; never a real model in tests).
+async fn fake_agent_host(mode: &str, controller: &str) -> FakeCodex {
     let scratch = tempfile::Builder::new().prefix("wdc").tempdir().unwrap();
     let bin = scratch.path().join("bin");
     std::fs::create_dir_all(&bin).unwrap();
@@ -1556,10 +1584,12 @@ async fn fake_codex_host(mode: &str) -> FakeCodex {
         ("FAKE_CODEX_MODE", mode.into()),
         ("FAKE_CLAUDE_STREAM", p(&stream)),
         // Features: the deterministic controller (no model calls in tests).
-        (
-            "OTTER_CONTROLLER",
-            std::env::var("OTTER_TEST_CONTROLLER").unwrap_or_else(|_| "rules".into()),
-        ),
+        ("OTTER_CONTROLLER", controller.into()),
+        ("OTTER_CONTROLLER_TICK_MS", "200".into()),
+        // A Nix dev shell's SDK paths make macOS's /usr/bin/make look for a
+        // make that isn't there (features check their work with `make test`).
+        ("DEVELOPER_DIR", String::new()),
+        ("SDKROOT", String::new()),
         ("OTTER_AGENT_QUIET_SECS", "2".into()),
     ])
     .await;
@@ -2621,4 +2651,406 @@ async fn features_persist_dedupe_commands_and_replay_after_a_restart() {
     // Features are kept apart from workspace state.
     let state = std::fs::read_to_string(host.home().join("state/state.json")).unwrap();
     assert!(!state.contains(id));
+}
+
+// ---------------------------------------------------------------------------
+// The Control Agent driving managed runs (D-044, D-045), with the fake
+// `claude -p` (tests/fake_claude_stream.sh) and the deterministic brains.
+// ---------------------------------------------------------------------------
+
+/// A project with a `make test` check, a feature on it asking for
+/// `request`, started. Returns the feature id.
+async fn started_feature(host: &TestHost, request: &str) -> String {
+    use otter_core::feature::FeatureAction;
+    let dir = host.home().join("proj");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("Makefile"), "test:\n\t@echo all good\n").unwrap();
+    let mut conn = host.conn().await;
+    conn.workspace_create(WorkspaceCreate {
+        name: "proj".into(),
+        source: SourceSpec::Directory {
+            path: dir.to_string_lossy().into_owned(),
+        },
+        sessions: Some(vec![]),
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+    let f = conn
+        .feature_create(otter_protocol::feature::FeatureCreate {
+            command_id: "create".into(),
+            title: "CSV export".into(),
+            request: request.into(),
+            workspace: Some("proj".into()),
+        })
+        .await
+        .unwrap();
+    conn.feature_act("start", f.id.as_str(), FeatureAction::Start)
+        .await
+        .unwrap();
+    f.id.to_string()
+}
+
+async fn wait_feature(
+    host: &TestHost,
+    id: &str,
+    what: &str,
+    pred: impl Fn(&otter_core::feature::Feature) -> bool,
+) -> otter_core::feature::Feature {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+    loop {
+        let f = host.conn().await.feature_get(id).await.unwrap();
+        if pred(&f) {
+            return f;
+        }
+        if tokio::time::Instant::now() > deadline {
+            let history = host.conn().await.feature_events(id, None).await.unwrap();
+            let lines: Vec<&str> = history.iter().map(|r| r.text.as_str()).collect();
+            panic!(
+                "timed out waiting for: {what}\nstatus: {:?} ({:?})\nhistory: {lines:#?}\nrationale: {:?}\nruns: {:?}\nevidence: {:?}",
+                f.status,
+                f.status_reason,
+                f.rationale,
+                f.runs,
+                f.evidence.last()
+            );
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
+#[tokio::test]
+async fn a_feature_goes_from_request_to_review_with_evidence() {
+    use otter_core::feature::{EvidenceKind, FeatureAction, FeatureStatus, MessageRole, RunState};
+    let fake = fake_agent_host("ok", "rules").await;
+    let id = started_feature(&fake.host, "Export the timeline as CSV").await;
+    let f = wait_feature(&fake.host, &id, "review", |f| {
+        f.status == FeatureStatus::Review
+    })
+    .await;
+    // Planned, ran, reported, checked.
+    assert_eq!(f.tasks.len(), 1);
+    assert_eq!(f.verify_command.as_deref(), Some("make test"));
+    assert!(
+        f.verify_approved,
+        "make test is routine: no one had to approve it"
+    );
+    assert_eq!(f.runs.len(), 1);
+    assert_eq!(f.runs[0].state, RunState::Completed);
+    assert!(
+        f.runs[0]
+            .provider_session_id
+            .as_deref()
+            .unwrap()
+            .starts_with("fake-session-")
+    );
+    assert!(
+        f.messages
+            .iter()
+            .any(|m| m.role == MessageRole::Agent && m.text.starts_with("done in"))
+    );
+    assert!(
+        f.messages
+            .iter()
+            .any(|m| m.role == MessageRole::Controller && m.text.starts_with("Plan:"))
+    );
+    let check = f
+        .evidence
+        .iter()
+        .find(|e| e.kind == EvidenceKind::Test)
+        .unwrap();
+    assert_eq!(check.ok, Some(true));
+    assert!(check.detail.as_deref().unwrap().contains("all good"));
+    assert!(f.acceptance.iter().all(|c| c.met == Some(true)));
+    assert_eq!(f.budget.iterations_used, 1);
+    // The history tells the story in order.
+    let kinds: Vec<String> = fake
+        .host
+        .conn()
+        .await
+        .feature_events(&id, None)
+        .await
+        .unwrap()
+        .iter()
+        .map(|r| {
+            serde_json::to_value(&r.event).unwrap()["type"]
+                .as_str()
+                .unwrap()
+                .to_owned()
+        })
+        .collect();
+    let pos = |k: &str| {
+        kinds
+            .iter()
+            .position(|x| x == k)
+            .unwrap_or_else(|| panic!("{k} in {kinds:?}"))
+    };
+    assert!(pos("PlanSet") < pos("RunStarted"));
+    assert!(pos("RunStarted") < pos("EvidenceAdded"));
+    // Done only when the developer accepts.
+    let f = fake
+        .host
+        .conn()
+        .await
+        .feature_act("accept", &id, FeatureAction::Accept)
+        .await
+        .unwrap();
+    assert_eq!(f.status, FeatureStatus::Done);
+}
+
+#[tokio::test]
+async fn an_approval_is_answered_and_the_run_continues() {
+    use otter_core::feature::{Decider, DecisionStatus, FeatureAction, FeatureStatus, Risk};
+    let fake = fake_agent_host("ok", "rules").await;
+    let id = started_feature(&fake.host, "Add a dependency ASK_INSTALL").await;
+    // The rules brain doesn't decide: it's the developer's.
+    let f = wait_feature(&fake.host, &id, "blocked on a decision", |f| {
+        f.status == FeatureStatus::Blocked && f.pending_decisions().next().is_some()
+    })
+    .await;
+    let d = f.pending_decisions().next().unwrap().clone();
+    assert_eq!(d.summary, "Run `npm install left-pad`");
+    assert_eq!(d.risk, Risk::Medium);
+    assert!(!d.user_only);
+    fake.host
+        .conn()
+        .await
+        .feature_act(
+            "approve",
+            &id,
+            FeatureAction::Decide {
+                decision_id: d.id.clone(),
+                approve: true,
+                answer: None,
+            },
+        )
+        .await
+        .unwrap();
+    let f = wait_feature(&fake.host, &id, "review after the approval", |f| {
+        f.status == FeatureStatus::Review
+    })
+    .await;
+    let d = f.decisions.iter().find(|x| x.id == d.id).unwrap();
+    assert_eq!(d.status, DecisionStatus::Approved);
+    assert_eq!(d.decided_by, Some(Decider::User));
+    assert_eq!(f.runs[0].summary.as_deref(), Some("allowed and done"));
+}
+
+#[tokio::test]
+async fn a_model_cannot_approve_what_only_the_developer_may() {
+    use otter_core::feature::{Decider, DecisionStatus, FeatureAction, FeatureStatus, Risk};
+    // A brain that approves everything it is asked.
+    let fake = fake_agent_host("ok", "yes").await;
+    let id = started_feature(&fake.host, "Clean up ASK_RM").await;
+    let f = wait_feature(&fake.host, &id, "blocked on the developer", |f| {
+        f.status == FeatureStatus::Blocked
+            && f.rationale
+                .iter()
+                .any(|r| r.contains("only the developer may approve"))
+    })
+    .await;
+    let d = f.pending_decisions().next().expect("still pending").clone();
+    assert_eq!(d.summary, "Run `rm -rf build`");
+    assert!(d.user_only);
+    assert_eq!(d.risk, Risk::High);
+    // Some time later, still not approved by anyone but the developer.
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    let f = fake.host.conn().await.feature_get(&id).await.unwrap();
+    assert_eq!(
+        f.decisions.iter().find(|x| x.id == d.id).unwrap().status,
+        DecisionStatus::Pending
+    );
+    // The developer says no; nobody can turn that around.
+    fake.host
+        .conn()
+        .await
+        .feature_act(
+            "deny",
+            &id,
+            FeatureAction::Decide {
+                decision_id: d.id.clone(),
+                approve: false,
+                answer: None,
+            },
+        )
+        .await
+        .unwrap();
+    let f = wait_feature(&fake.host, &id, "the denial reaches the agent", |f| {
+        f.runs
+            .first()
+            .is_some_and(|r| r.summary.as_deref() == Some("denied, so I stopped"))
+    })
+    .await;
+    let d = f.decisions.iter().find(|x| x.id == d.id).unwrap();
+    assert_eq!(
+        (d.status, d.decided_by),
+        (DecisionStatus::Denied, Some(Decider::User))
+    );
+}
+
+#[tokio::test]
+async fn the_control_agent_decides_what_policy_leaves_open() {
+    use otter_core::feature::{Decider, DecisionStatus, FeatureStatus};
+    let fake = fake_agent_host("ok", "yes").await;
+    let id = started_feature(&fake.host, "Add a dependency ASK_INSTALL").await;
+    let f = wait_feature(&fake.host, &id, "review", |f| {
+        f.status == FeatureStatus::Review
+    })
+    .await;
+    let d = &f.decisions[0];
+    assert_eq!(
+        (d.status, d.decided_by),
+        (DecisionStatus::Approved, Some(Decider::Controller))
+    );
+    assert_eq!(d.rationale.as_deref(), Some("yes"));
+}
+
+#[tokio::test]
+async fn runs_survive_a_restart_stop_on_cancel_and_hand_over_to_the_developer() {
+    use otter_core::feature::{FeatureAction, FeatureStatus, RunState};
+    let mut fake = fake_agent_host("ok", "rules").await;
+    let id = started_feature(&fake.host, "A long job HANG").await;
+    let f = wait_feature(&fake.host, &id, "a run with a conversation", |f| {
+        f.runs
+            .first()
+            .is_some_and(|r| r.provider_session_id.is_some() && r.state == RunState::Running)
+    })
+    .await;
+    let conv = f.runs[0].provider_session_id.clone().unwrap();
+
+    // The daemon restarts: the run ends with it, and its conversation resumes.
+    fake.host.restart().await;
+    let f = wait_feature(&fake.host, &id, "the run resumed", |f| {
+        f.runs.len() == 2 && f.runs[1].state == RunState::Running
+    })
+    .await;
+    assert_eq!(f.runs[0].state, RunState::Cancelled);
+    assert_eq!(
+        f.runs[1].provider_session_id.as_deref(),
+        Some(conv.as_str())
+    );
+    assert_eq!(
+        f.budget.iterations_used, 1,
+        "resuming isn't another attempt"
+    );
+    let args = std::fs::read_to_string(&fake.log).unwrap();
+    assert!(args.contains(&format!("--resume {conv}")), "{args}");
+
+    // The developer takes over: the managed run stops, the conversation
+    // opens in an interactive session.
+    let mut conn = fake.host.conn().await;
+    let f = conn
+        .feature_act("take", &id, FeatureAction::TakeOver)
+        .await
+        .unwrap();
+    assert_eq!(f.status, FeatureStatus::Paused);
+    assert_eq!(f.runs[1].state, RunState::HandedOff);
+    let sid = f.tasks[0].session_id.clone().expect("a takeover session");
+    let ws = conn.workspace_get("proj").await.unwrap();
+    let s = ws.session(sid.as_str()).unwrap();
+    assert_eq!(
+        s.agent.as_ref().unwrap().provider_session_id.as_deref(),
+        Some(conv.as_str())
+    );
+    eventually("the interactive agent resumes the conversation", || async {
+        std::fs::read_to_string(&fake.log)
+            .unwrap()
+            .contains(&format!("claude --resume {conv}"))
+            .then_some(())
+    })
+    .await;
+    // Retrying the takeover is harmless.
+    let again = conn
+        .feature_act("take", &id, FeatureAction::TakeOver)
+        .await
+        .unwrap();
+    let extra = conn.feature_events(&id, Some(f.history_seq)).await.unwrap();
+    assert!(
+        extra.is_empty(),
+        "the retry changed nothing: {:?}",
+        extra.iter().map(|r| &r.text).collect::<Vec<_>>()
+    );
+    assert_eq!(again.history_seq, f.history_seq);
+
+    // Handing back while the developer's agent still runs is refused...
+    let err = conn
+        .feature_act("back-1", &id, FeatureAction::HandBack)
+        .await
+        .unwrap_err();
+    assert!(format!("{err:#}").contains("quit the agent"), "{err:#}");
+    // ...and works once it has stopped: the managed run picks it up again.
+    conn.session_stop("proj", sid.as_str()).await.unwrap();
+    conn.feature_act("back-2", &id, FeatureAction::HandBack)
+        .await
+        .unwrap();
+    let f = wait_feature(&fake.host, &id, "managed again", |f| {
+        f.runs.len() == 3 && f.runs[2].state == RunState::Running
+    })
+    .await;
+    assert_eq!(
+        f.runs[2].provider_session_id.as_deref(),
+        Some(conv.as_str())
+    );
+
+    // Cancel stops it for good.
+    let f = conn
+        .feature_act("cancel", &id, FeatureAction::Cancel)
+        .await
+        .unwrap();
+    assert_eq!(f.status, FeatureStatus::Cancelled);
+    assert_eq!(f.runs[2].state, RunState::Cancelled);
+}
+
+#[tokio::test]
+async fn repeated_failures_stop_at_the_limit_and_the_plan_survives() {
+    use otter_core::feature::{FeatureAction, FeatureEvent, FeatureStatus, RunState};
+    let fake = fake_agent_host("ok", "rules").await;
+    let id = started_feature(&fake.host, "This will FAIL").await;
+    let f = wait_feature(&fake.host, &id, "failed", |f| {
+        f.status == FeatureStatus::Failed
+    })
+    .await;
+    assert_eq!(f.runs.len(), 3);
+    assert!(f.runs.iter().all(|r| r.state == RunState::Failed));
+    assert!(
+        f.status_reason
+            .as_deref()
+            .unwrap()
+            .contains("same failure 3 times"),
+        "{:?}",
+        f.status_reason
+    );
+    let history = fake
+        .host
+        .conn()
+        .await
+        .feature_events(&id, None)
+        .await
+        .unwrap();
+    assert!(
+        history
+            .iter()
+            .any(|r| matches!(&r.event, FeatureEvent::LimitReached { limit } if limit == "loop"))
+    );
+    // The plan is kept: retrying starts from it with a fresh budget.
+    let tasks = f.tasks.clone();
+    let f = fake
+        .host
+        .conn()
+        .await
+        .feature_act("retry", &id, FeatureAction::Retry)
+        .await
+        .unwrap();
+    assert_eq!(f.status, FeatureStatus::Implementing);
+    assert_eq!(
+        f.tasks.iter().map(|t| &t.id).collect::<Vec<_>>(),
+        tasks.iter().map(|t| &t.id).collect::<Vec<_>>()
+    );
+    assert_eq!(f.budget.iterations_used, 0);
+    // The earlier failures don't count against the retry: three new ones do.
+    let f = wait_feature(&fake.host, &id, "failed again", |f| {
+        f.status == FeatureStatus::Failed && f.runs.len() == 6
+    })
+    .await;
+    assert_eq!(f.budget.iterations_used, 3);
 }

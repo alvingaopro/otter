@@ -18,19 +18,22 @@ import {
   type FeatureEventRecord,
   type FeatureFilter,
   type PlacedFeature,
+  type WorkspaceChoice,
 } from "./features";
 
 interface Props {
   source: FeatureSource;
   /** Hosts a feature can be created on. */
   hosts: string[];
+  /** Workspaces per host, to work in. */
+  workspaces: Record<string, WorkspaceChoice[]>;
   now: number;
   /** Show a workspace (and session) in the Workspaces view. */
   onOpenWorkspace: (host: string, workspaceId: string, sessionId?: string) => void;
 }
 
 /** The Features view (D-041, D-042): product work, independent of the Workspace view. */
-export function FeaturesView({ source, hosts, now, onOpenWorkspace }: Props) {
+export function FeaturesView({ source, hosts, workspaces, now, onOpenWorkspace }: Props) {
   const [list, setList] = useState<PlacedFeature[]>(() => source.list());
   const [filter, setFilter] = useState<FeatureFilter>("all");
   const [selected, setSelected] = useState<string | undefined>();
@@ -106,7 +109,14 @@ export function FeaturesView({ source, hosts, now, onOpenWorkspace }: Props) {
         </div>
       </nav>
       {current ? (
-        <FeaturePane key={current.key} placed={current} source={source} now={now} onOpenWorkspace={onOpenWorkspace} />
+        <FeaturePane
+          key={current.key}
+          placed={current}
+          source={source}
+          now={now}
+          workspaces={workspaces[current.host] ?? []}
+          onOpenWorkspace={onOpenWorkspace}
+        />
       ) : (
         <main className="pane empty">
           <div className="drag-strip" data-tauri-drag-region />
@@ -122,9 +132,10 @@ export function FeaturesView({ source, hosts, now, onOpenWorkspace }: Props) {
       {creating && (
         <NewFeatureDialog
           hosts={hosts.length > 0 ? hosts : ["preview"]}
+          workspaces={workspaces}
           onClose={() => setCreating(false)}
-          onCreate={async (host, title, request) => {
-            const p = await source.create(host, title, request);
+          onCreate={async (host, title, request, workspace) => {
+            const p = await source.create(host, title, request, workspace);
             setFilter("all");
             setSelected(p.key);
             setCreating(false);
@@ -150,14 +161,17 @@ function FeaturePane({
   placed,
   source,
   now,
+  workspaces,
   onOpenWorkspace,
 }: {
   placed: PlacedFeature;
   source: FeatureSource;
   now: number;
+  workspaces: WorkspaceChoice[];
   onOpenWorkspace: Props["onOpenWorkspace"];
 }) {
   const f = placed.feature;
+  const wsName = workspaces.find((w) => w.id === f.workspace_id)?.name;
   const pending = pendingDecisions(f);
   const [tab, setTab] = useState<Tab>(pending.length > 0 ? "approvals" : "plan");
   const [error, setError] = useState<string | null>(null);
@@ -183,6 +197,11 @@ function FeaturePane({
         <span className={`status-pill ${featureGlyph(f)}`}>{STATUS_LABEL[f.status]}</span>
         <span className="chips">
           <span className="chip">{placed.host}</span>
+          {f.workspace_id && (
+            <button className="chip link-btn" onClick={() => onOpenWorkspace(placed.host, f.workspace_id!)}>
+              {wsName ?? f.workspace_id}
+            </button>
+          )}
         </span>
         <span className="spacer" />
         <FeatureActions f={f} act={act} />
@@ -193,6 +212,27 @@ function FeaturePane({
         </p>
       )}
       <StatusBanner f={f} onApprovals={() => setTab("approvals")} act={act} />
+      {!f.workspace_id && !["done", "cancelled"].includes(f.status) && (
+        <div className="banner info" role="group" aria-label="Workspace">
+          <span className="banner-text">Choose the workspace this feature's work happens in.</span>
+          <span className="banner-actions">
+            <select
+              aria-label="Workspace"
+              defaultValue=""
+              onChange={(e) => e.target.value && act({ action: "set_workspace", workspace: e.target.value })}
+            >
+              <option value="" disabled>
+                {workspaces.length ? "Workspace…" : "No workspaces on this host"}
+              </option>
+              {workspaces.map((w) => (
+                <option key={w.id} value={w.id}>
+                  {w.name}
+                </option>
+              ))}
+            </select>
+          </span>
+        </div>
+      )}
       {error && <p className="notice error-text">{error}</p>}
       <Stages f={f} />
       <div className="feature-body">
@@ -439,10 +479,28 @@ function Plan({ f }: { f: Feature }) {
           ))}
         </ul>
       )}
+      {f.verify_command && (
+        <>
+          <h2 className="sub-title">Check</h2>
+          <p className="small">
+            <code>{f.verify_command}</code>
+          </p>
+        </>
+      )}
       <h2 className="sub-title">Budget</h2>
       <p className="small">
         {f.budget.iterations_used} of {f.budget.max_iterations} attempts used · up to {f.budget.max_minutes} min
       </p>
+      {f.rationale && f.rationale.length > 0 && (
+        <>
+          <h2 className="sub-title">Why</h2>
+          <ul className="plain-list small">
+            {[...f.rationale].reverse().map((r, i) => (
+              <li key={i}>{r}</li>
+            ))}
+          </ul>
+        </>
+      )}
     </div>
   );
 }
@@ -604,14 +662,18 @@ function Timeline({ placed, source, now }: { placed: PlacedFeature; source: Feat
 
 function NewFeatureDialog({
   hosts,
+  workspaces,
   onCreate,
   onClose,
 }: {
   hosts: string[];
-  onCreate: (host: string, title: string, request: string) => Promise<void>;
+  workspaces: Record<string, WorkspaceChoice[]>;
+  onCreate: (host: string, title: string, request: string, workspace?: string) => Promise<void>;
   onClose: () => void;
 }) {
   const [host, setHost] = useState(hosts[0]);
+  const choices = workspaces[host] ?? [];
+  const [workspace, setWorkspace] = useState<string>("");
   const [title, setTitle] = useState("");
   const [request, setRequest] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -623,7 +685,7 @@ function NewFeatureDialog({
     setBusy(true);
     setError(null);
     try {
-      await onCreate(host, title.trim(), request.trim());
+      await onCreate(host, title.trim(), request.trim(), workspace || undefined);
     } catch (err) {
       setError(String(err));
       setBusy(false);
@@ -644,13 +706,30 @@ function NewFeatureDialog({
         {hosts.length > 1 && (
           <label className="field">
             <span>Host</span>
-            <select value={host} onChange={(e) => setHost(e.target.value)}>
+            <select
+              value={host}
+              onChange={(e) => {
+                setHost(e.target.value);
+                setWorkspace("");
+              }}
+            >
               {hosts.map((h) => (
                 <option key={h}>{h}</option>
               ))}
             </select>
           </label>
         )}
+        <label className="field">
+          <span>Workspace (where the work happens)</span>
+          <select value={workspace} onChange={(e) => setWorkspace(e.target.value)}>
+            <option value="">Choose later</option>
+            {choices.map((w) => (
+              <option key={w.id} value={w.id}>
+                {w.name}
+              </option>
+            ))}
+          </select>
+        </label>
         {error && <p className="error-text small">{error}</p>}
         <div className="form-actions">
           <span className="spacer" />

@@ -40,6 +40,8 @@ pub struct Daemon {
     pub(crate) feature_wake: tokio::sync::Notify,
     /// Managed agent runs in progress (runs.rs).
     pub(crate) runs: crate::runs::Runs,
+    /// The Control Agent's working memory (controller.rs).
+    pub(crate) controller: std::sync::Mutex<crate::controller::ControllerState>,
     pub backend: Arc<dyn ExecutionBackend>,
     pub events: EventLog,
     pub git: GitManager,
@@ -86,6 +88,7 @@ impl Daemon {
             features: Mutex::new(features),
             feature_wake: tokio::sync::Notify::new(),
             runs: Default::default(),
+            controller: Default::default(),
             backend,
             events,
             shell,

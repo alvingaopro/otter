@@ -130,6 +130,16 @@ export interface Feature {
   updated_at: string;
   /** The last entry of the feature's own history (`feature.events`). */
   history_seq?: number;
+  /** The command that checks the work, from the plan. */
+  verify_command?: string;
+  /** Why the Control Agent did what it did, newest last. */
+  rationale?: string[];
+}
+
+/** A workspace a feature can work in. */
+export interface WorkspaceChoice {
+  id: string;
+  name: string;
 }
 
 /** One entry of a feature's own append-only history (`feature.events`). */
@@ -163,7 +173,8 @@ export type FeatureAction =
   | { action: "accept" }
   | { action: "request_changes"; note?: string }
   | { action: "take_over" }
-  | { action: "hand_back" };
+  | { action: "hand_back" }
+  | { action: "set_workspace"; workspace: string };
 
 // --- Wording and grouping (no runtime state) ---
 

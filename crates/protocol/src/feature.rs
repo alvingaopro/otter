@@ -24,7 +24,8 @@ pub struct FeatureCreate {
     #[serde(default)]
     pub request: String,
     /// A workspace (id or name) on this host to do the work in. Without
-    /// one, the controller creates one when it starts.
+    /// one, the feature blocks when it starts until one is chosen
+    /// (`feature.act` `set_workspace`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workspace: Option<String>,
 }

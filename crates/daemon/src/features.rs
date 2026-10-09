@@ -493,6 +493,19 @@ pub fn apply_action(
                 changes.push(to(f, FeatureStatus::Paused, Some("You took over".into()))?);
             }
         }
+        FeatureAction::SetWorkspace { workspace } => {
+            // `workspace` is an id by now (resolved in `feature_act`).
+            if f.live_run().is_some() {
+                return Err(RpcError::conflict(
+                    "an agent is working in the current workspace; pause first",
+                ));
+            }
+            f.workspace_id = Some(WorkspaceId::from(workspace.as_str()));
+            if f.status == FeatureStatus::Blocked && f.pending_decisions().next().is_none() {
+                let next = resume_status(f);
+                changes.push(to(f, next, None)?);
+            }
+        }
         FeatureAction::HandBack => {
             if f.status != FeatureStatus::Paused {
                 return Err(RpcError::conflict(
@@ -619,6 +632,14 @@ impl Daemon {
     ) -> RpcResult<Feature> {
         check_command_id(&p.command_id)?;
         let id = FeatureId::from(p.feature.as_str());
+        let mut p = p;
+        if let FeatureAction::SetWorkspace { workspace } = &mut p.action {
+            let store = self.store.lock().await;
+            let ws = store
+                .workspace(workspace)
+                .ok_or_else(|| workspace_not_found(workspace))?;
+            *workspace = ws.id.to_string();
+        }
         if p.action == FeatureAction::HandBack {
             self.check_handed_back(&id).await?;
         }
@@ -635,6 +656,20 @@ impl Daemon {
                     f.status.as_str()
                 )));
             }
+            if !f.runs.iter().any(|r| r.provider_session_id.is_some()) {
+                return Err(RpcError::conflict("no agent conversation to take over yet"));
+            }
+            // Pause first, so the controller doesn't start another run the
+            // moment this one stops.
+            let paused = self.features.lock().await.apply(&id, None, |f, now| {
+                if f.status == FeatureStatus::Paused {
+                    return Ok(vec![]);
+                }
+                f.transition(FeatureStatus::Paused, Some("You took over".into()), now)
+                    .map(|e| vec![Change::new(e)])
+                    .map_err(RpcError::conflict)
+            })?;
+            self.feature_changed(&paused);
             self.take_over(&id).await?;
         }
         let applied = self

@@ -6,10 +6,14 @@
 # FAIL, HANG (works until interrupted); anything else finishes the turn.
 [ -n "$FAKE_CODEX_LOG" ] && echo "claude-stream $*" >> "$FAKE_CODEX_LOG"
 sid="fake-session-$$"
+resumed=
 while [ $# -gt 0 ]; do
-  [ "$1" = --resume ] && sid="$2"
+  [ "$1" = --resume ] && sid="$2" && resumed=1
   shift
 done
+# A conversation remembers how it started (where the log lives, if any).
+memory=
+[ -n "$FAKE_CODEX_LOG" ] && memory="$(dirname "$FAKE_CODEX_LOG")/conversation-$sid"
 out() { printf '%s\n' "$1"; }
 result() { out '{"type":"result","subtype":"'"$1"'","is_error":'"$2"',"session_id":"'"$sid"'","total_cost_usd":0.01,"result":"'"$3"'"}'; }
 text() { out '{"type":"assistant","parent_tool_use_id":null,"message":{"role":"assistant","content":[{"type":"text","text":"'"$1"'"}]}}'; }
@@ -25,6 +29,13 @@ while read -r line; do
     *'"behavior":"allow"'*) text "Ran it."; result success false "allowed and done" ;;
     *'"behavior":"deny"'*) result success false "denied, so I stopped" ;;
     *'"type":"user"'*)
+      if [ -n "$memory" ]; then
+        if [ -n "$resumed" ] && [ -f "$memory" ]; then
+          line="$(cat "$memory") $line"
+        else
+          printf '%s' "$line" > "$memory"
+        fi
+      fi
       case "$line" in
         *ASK_RM*) ask r1 Bash '{"command":"rm -rf build"}' ;;
         *ASK_INSTALL*) ask r2 Bash '{"command":"npm install left-pad"}' ;;

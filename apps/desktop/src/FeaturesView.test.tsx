@@ -53,7 +53,17 @@ function type(el: HTMLInputElement | HTMLTextAreaElement, value: string) {
 
 async function render(s: FeatureSource) {
   source = s;
-  await act(async () => root.render(<FeaturesView source={s} hosts={["mac"]} now={Date.now()} onOpenWorkspace={onOpenWorkspace} />));
+  await act(async () =>
+    root.render(
+      <FeaturesView
+        source={s}
+        hosts={["mac"]}
+        workspaces={{ mac: [{ id: "ws_demo", name: "demo" }] }}
+        now={Date.now()}
+        onOpenWorkspace={onOpenWorkspace}
+      />,
+    ),
+  );
 }
 
 describe("Features view", () => {
@@ -110,6 +120,22 @@ describe("Features view", () => {
 
     await act(async () => byText("button", "Start")!.click());
     expect(q(".status-pill")?.textContent).toBe("Planning");
+  });
+
+  it("creates a feature in a chosen workspace", async () => {
+    await render(mockSource("mac"));
+    await act(async () => q('[aria-label="New feature"]')!.click());
+    const dialog = document.querySelector('[role="dialog"]')!;
+    type(dialog.querySelector("input")!, "In a workspace");
+    const select = [...dialog.querySelectorAll("select")].at(-1)!;
+    select.value = "ws_demo";
+    await act(async () => select.dispatchEvent(new Event("change", { bubbles: true })));
+    await act(async () => byText("button", "Create draft")!.click());
+    const created = source.list().find((p) => p.feature.title === "In a workspace")!;
+    expect(created.feature.workspace_id).toBe("ws_demo");
+    // The header links to it; no "choose a workspace" prompt.
+    expect(byText("button.chip", "demo")).toBeTruthy();
+    expect(q('[aria-label="Workspace"][role="group"]')).toBeNull();
   });
 
   it("answers an approval and the feature moves on", async () => {
