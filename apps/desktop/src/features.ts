@@ -81,6 +81,8 @@ export interface DecisionRequest {
   rationale?: string;
   created_at: string;
   decided_at?: string;
+  /** Only the developer may decide this one (policy). */
+  user_only?: boolean;
 }
 
 export interface Evidence {
@@ -124,6 +126,8 @@ export interface Feature {
   workspace_id?: string;
   created_at: string;
   updated_at: string;
+  /** The last entry of the feature's own history (`feature.events`). */
+  history_seq?: number;
 }
 
 /** One entry of a feature's own append-only history (`feature.events`). */
@@ -153,7 +157,9 @@ export type FeatureAction =
   | { action: "resume" }
   | { action: "cancel" }
   | { action: "retry" }
-  | { action: "decide"; decision_id: string; approve: boolean; answer?: string };
+  | { action: "decide"; decision_id: string; approve: boolean; answer?: string }
+  | { action: "accept" }
+  | { action: "request_changes"; note?: string };
 
 // --- Wording and grouping (no runtime state) ---
 

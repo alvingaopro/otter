@@ -9,6 +9,7 @@ mod dial;
 mod env;
 mod environment;
 mod events;
+mod features;
 mod files;
 mod git;
 mod history;
@@ -156,9 +157,11 @@ async fn serve(paths: Paths) -> Result<()> {
     }
     let store = Store::load(&paths.state_file)?;
     let events = EventLog::open_with(&paths.events_file, events::Limits::from_env())?;
+    let features = features::FeatureStore::load(&paths.features_dir)?;
     let daemon = Arc::new(Daemon::new(
         paths.clone(),
         store,
+        features,
         backend,
         events,
         resolved,

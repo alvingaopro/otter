@@ -179,6 +179,37 @@ All additions (no protocol bump): daemons before them answer
 
 An addition (no protocol bump): daemons before it answer `invalid_request`.
 
+## Features
+
+Product work owned by the daemon (D-043); see `otter_core::feature`.
+
+- `feature.list` → every feature, newest first; `feature.get {feature}` → one.
+- `feature.create {command_id, title, request?, workspace?}` → a `draft`
+  feature; the request becomes the first message.
+- `feature.send {command_id, feature, text}` → the feature, with the
+  developer's message added.
+- `feature.act {command_id, feature, action, …}` → the feature. `action`:
+  `start`, `pause`, `resume`, `cancel`, `retry`, `accept`,
+  `request_changes {note?}`, `decide {decision_id, approve, answer?}`. An
+  action the lifecycle doesn't allow fails with `conflict`.
+- `feature.events {feature, after?, limit?}` → the feature's own history,
+  `seq > after`, oldest first: `{seq, ts, v, correlation_id?, text, type,
+  …}`. `seq` starts at 1 per feature and never repeats; `v` is the record's
+  schema version.
+
+**Commands are idempotent.** `command_id` is the client's id for one intent
+(a random string). A command the daemon has applied is not applied again: a
+retry returns the feature as it is. A command that failed was not applied,
+so its id may be reused.
+
+**Following a feature:** every change emits `FeatureChanged {feature_id,
+history_seq, status}` on the host's event log, so `events.subscribe` with a
+cursor (above) tells a reconnecting client which features changed while it
+was away; it then reads `feature.events {after: <last seq it saw>}`. The
+history is the feature's own: it isn't rotated with the host's log.
+
+An addition (no protocol bump): daemons before it answer `invalid_request`.
+
 ## Files and image paste
 
 - `fs.list {workspace, path}` → a directory (`path` relative to the

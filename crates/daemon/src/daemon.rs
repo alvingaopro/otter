@@ -24,6 +24,7 @@ use crate::backend::ExecutionBackend;
 use crate::env::{EnvMap, ResolvedEnv, which};
 use crate::environment::EnvironmentManager;
 use crate::events::EventLog;
+use crate::features::FeatureStore;
 use crate::git::GitManager;
 use crate::paths::Paths;
 use crate::store::Store;
@@ -33,6 +34,10 @@ pub type RpcResult<T> = Result<T, RpcError>;
 pub struct Daemon {
     pub paths: Paths,
     pub store: Mutex<Store>,
+    /// Features (D-043): kept apart from workspace state, with their own lock.
+    pub features: Mutex<FeatureStore>,
+    /// Woken whenever a feature changes, for the controller.
+    pub(crate) feature_wake: tokio::sync::Notify,
     pub backend: Arc<dyn ExecutionBackend>,
     pub events: EventLog,
     pub git: GitManager,
@@ -60,6 +65,7 @@ impl Daemon {
     pub fn new(
         paths: Paths,
         store: Store,
+        features: FeatureStore,
         backend: Arc<dyn ExecutionBackend>,
         events: EventLog,
         env: ResolvedEnv,
@@ -75,6 +81,8 @@ impl Daemon {
             env_source: env.source,
             paths,
             store: Mutex::new(store),
+            features: Mutex::new(features),
+            feature_wake: tokio::sync::Notify::new(),
             backend,
             events,
             shell,
@@ -165,6 +173,12 @@ impl Daemon {
                     workspaces: store.state.workspaces.clone(),
                 })
             }
+            Request::FeatureList => json(self.feature_list().await),
+            Request::FeatureGet(r) => json(self.feature_get(&r.feature).await?),
+            Request::FeatureCreate(p) => json(self.feature_create(p).await?),
+            Request::FeatureSend(p) => json(self.feature_send(p).await?),
+            Request::FeatureAct(p) => json(self.feature_act(p).await?),
+            Request::FeatureEvents(p) => json(self.feature_events(&p).await?),
             Request::Shutdown | Request::SessionAttach(_) | Request::EventsSubscribe(_) => {
                 Err(RpcError::invalid(format!(
                     "{} must be handled by the connection",

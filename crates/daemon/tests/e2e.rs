@@ -2509,3 +2509,104 @@ async fn brief_is_set_at_creation_and_edited_later() {
         .unwrap_err();
     assert!(err.to_string().contains("no workspace"), "{err}");
 }
+
+// ---------------------------------------------------------------------------
+// Features (D-043)
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn features_persist_dedupe_commands_and_replay_after_a_restart() {
+    use otter_core::feature::{FeatureAction, FeatureStatus, MessageRole};
+    use otter_protocol::feature::FeatureCreate;
+
+    let host = TestHost::new();
+    create(&host, "fw", Some(vec![])).await;
+    let mut conn = host.conn().await;
+    let created = FeatureCreate {
+        command_id: "cmd-create-1".into(),
+        title: "Export CSV".into(),
+        request: "Export the timeline as CSV".into(),
+        workspace: Some("fw".into()),
+    };
+    let f = conn.feature_create(created.clone()).await.unwrap();
+    assert_eq!(f.status, FeatureStatus::Draft);
+    assert!(f.workspace_id.is_some());
+    // The same create again (a retry after a lost reply) is the same feature.
+    let again = conn.feature_create(created).await.unwrap();
+    assert_eq!(again.id, f.id);
+    assert_eq!(conn.feature_list().await.unwrap().len(), 1);
+
+    // A message delivered twice is added once.
+    let id = f.id.as_str();
+    conn.feature_send("cmd-msg-1", id, "Include session names")
+        .await
+        .unwrap();
+    let f = conn
+        .feature_send("cmd-msg-1", id, "Include session names")
+        .await
+        .unwrap();
+    let user: Vec<_> = f
+        .messages
+        .iter()
+        .filter(|m| m.role == MessageRole::User)
+        .collect();
+    assert_eq!(user.len(), 2, "request + one message");
+
+    // A client following the feature remembers where it was.
+    let seen = f.history_seq;
+    let snapshot = conn.snapshot().await.unwrap();
+    drop(conn);
+
+    // While it's away: the feature starts, and the daemon restarts.
+    host.conn()
+        .await
+        .feature_act("cmd-start", id, FeatureAction::Start)
+        .await
+        .unwrap();
+    host.stop_daemon().await;
+
+    // Everything is still there after the restart...
+    let mut conn = host.conn().await;
+    let f = conn.feature_get(id).await.unwrap();
+    assert_eq!(f.status, FeatureStatus::Planning);
+    assert_eq!(f.messages.len(), 2);
+    // ...the host's event stream says the feature changed...
+    let mut stream = host
+        .conn()
+        .await
+        .subscribe(Some(snapshot.cursor()))
+        .await
+        .unwrap();
+    let head = stream.seq;
+    let missed = events_through(&mut stream, head).await;
+    assert!(missed.iter().any(|r| matches!(
+        &r.event,
+        Event::FeatureChanged { feature_id, status: FeatureStatus::Planning, .. } if feature_id == &f.id
+    )));
+    // ...and the feature's own history replays exactly what was missed, in order.
+    let replay = conn.feature_events(id, Some(seen)).await.unwrap();
+    let seqs: Vec<u64> = replay.iter().map(|r| r.seq).collect();
+    assert_eq!(seqs, (seen + 1..=f.history_seq).collect::<Vec<_>>());
+    assert!(
+        replay
+            .iter()
+            .all(|r| r.correlation_id.as_deref() == Some("cmd-start"))
+    );
+    assert!(replay.iter().any(|r| r.text.starts_with("Planning")));
+
+    // The repeated start is harmless; an impossible action is refused.
+    let f2 = conn
+        .feature_act("cmd-start", id, FeatureAction::Start)
+        .await
+        .unwrap();
+    assert_eq!(f2.history_seq, f.history_seq);
+    let err = conn
+        .feature_act("cmd-accept", id, FeatureAction::Accept)
+        .await
+        .unwrap_err();
+    assert!(format!("{err:#}").contains("review"), "{err:#}");
+
+    // Features are kept apart from workspace state.
+    let state = std::fs::read_to_string(host.home().join("state/state.json")).unwrap();
+    assert!(!state.contains(id));
+}

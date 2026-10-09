@@ -1122,3 +1122,43 @@ pull requests) and its timeline.
   workspace doesn't know about features.
 - Needs-you for features: a pending decision, a blocked feature, or one
   ready for review. The Activity Bar shows a dot on Features for these.
+
+## D-043 — Features are durable daemon state, with commands and history (2026-10-09)
+
+Features (D-042) must outlive the desktop app — work goes on while the
+laptop sleeps — so **each host's `otterd` owns its features**, and a feature
+works in that host's workspaces. The app only reads and sends commands.
+
+- **Kept apart from workspaces:** `state/features/<id>/feature.json` (the
+  feature, rewritten atomically) and `history.jsonl` (append-only), under
+  their own lock. A feature links to a workspace, task sessions and runs by
+  id; `state.json` never mentions features and no workspace code knows them
+  (invariants 5, 11 unchanged).
+- **Messages, commands and events are different things.** Messages are the
+  conversation (in the feature). Commands are what a client asks
+  (`feature.create/send/act`), each with a client-chosen `command_id`.
+  Events are what happened: the feature's history, one record per change
+  with a per-feature `seq`, a timestamp, a schema version `v` and the
+  correlation id of the command, decision or run behind it.
+- **Applied once.** A change runs on a copy; the document is then saved
+  with the command id in it (the last 256 per feature) before the history is
+  appended. A repeated `command_id` returns the feature unchanged, so
+  retrying after a lost reply is safe; a failed command isn't remembered. A
+  crash between the save and the append loses history lines, never state
+  (logged on load).
+- **Replay:** every change emits `FeatureChanged {feature_id, history_seq,
+  status}` on the host's event log, so the existing cursor replay
+  (D-016/D-037) tells a reconnecting client what changed; the feature's own
+  history (`feature.events {after}`) fills in the details. It is not rotated
+  with the host log: a feature's history is bounded by the feature.
+- **Schema versions:** `feature.json` has `schema`; loading migrates older
+  documents (schema 1 is the first) and leaves a newer one on disk,
+  untouched, for the otterd that wrote it.
+- **The lifecycle** is a deterministic table (`FeatureStatus::can_become`):
+  draft → planning → implementing → verifying → review → done; verifying and
+  review may send work back to implementing; blocked, paused and failed are
+  side exits that come back where the work left off (`resume_status`);
+  cancelled and done are final. The developer's actions are applied by the
+  daemon, not by a model.
+- The desktop's Features view now reads from every connected host
+  (`daemonSource`); an older `otterd` simply shows no features.

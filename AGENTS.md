@@ -41,6 +41,8 @@ Inside the daemon (`crates/daemon/src`):
 - `sessions.rs` — sessions/executions, launching
 - `reconcile.rs` — process exits + agent observation, every 500 ms
 - `attention.rs` — what needs the developer (raise/resolve rules)
+- `features.rs` — features (D-043): their own store under `state/features/`,
+  idempotent commands, per-feature history
 - `agents/` — agent providers behind `AgentProvider` (`detect`, `launch_argv`, `observe`);
   `codex.rs` holds everything Codex-specific, `claude.rs` everything Claude Code-specific,
   and `mod.rs` the shared quiet-turn heuristic (`settle`)

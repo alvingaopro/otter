@@ -7,7 +7,7 @@ import { isPermissionGranted, requestPermission, sendNotification } from "@tauri
 import { Sidebar } from "./Sidebar";
 import { ActivityBar } from "./ActivityBar";
 import { FeaturesView } from "./FeaturesView";
-import { mockSource } from "./featureSource";
+import { daemonSource } from "./featureSource";
 import { needsYou as featureNeedsYou } from "./features";
 import { saveView, storedView, viewForShortcut, type View } from "./nav";
 import { AddHostDialog } from "./AddHostDialog";
@@ -54,8 +54,8 @@ export default function App() {
   /** Pinned workspace keys, top first, from `pins.toml` (D-040). */
   const [pins, setPinsState] = useState<string[]>([]);
   const { choice: themeChoice, resolved: theme, cycle: cycleTheme } = useTheme();
-  /** Where features come from (D-042): sample data until a host serves them. */
-  const [featureSource] = useState(() => mockSource());
+  /** Features, from each connected host's otterd (D-043). */
+  const [featureSource] = useState(() => daemonSource());
   const [featureNeeds, setFeatureNeeds] = useState(() => featureSource.list().filter((p) => featureNeedsYou(p.feature)).length);
   useEffect(
     () => featureSource.subscribe((list) => setFeatureNeeds(list.filter((p) => featureNeedsYou(p.feature)).length)),
@@ -128,6 +128,9 @@ export default function App() {
   }, []);
 
   const placed = useMemo(() => (payload ? placeAll(payload) : []), [payload]);
+  const connectedHosts = (payload?.hosts ?? []).filter((h) => h.status === "connected").map((h) => h.name);
+  const connectedKey = connectedHosts.join("\n");
+  useEffect(() => featureSource.setHosts?.(connectedKey ? connectedKey.split("\n") : []), [featureSource, connectedKey]);
 
   const setPins = (next: string[]) => {
     setPinsState(next);
@@ -226,7 +229,7 @@ export default function App() {
         <div className="view" id="view-features" role="tabpanel" aria-labelledby="view-tab-features" hidden={view !== "features"}>
           <FeaturesView
             source={featureSource}
-            hosts={(payload?.hosts ?? []).filter((h) => h.status === "connected").map((h) => h.name)}
+            hosts={connectedHosts}
             now={now}
             onOpenWorkspace={(host, workspace, session) => {
               const key = `${host}/${workspace}`;

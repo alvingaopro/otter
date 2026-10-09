@@ -1,11 +1,16 @@
-// Where the Features view gets its data (D-042). The view only talks to a
-// `FeatureSource`; `mockSource` stands in until a daemon serves features.
+// Where the Features view gets its data (D-042, D-043). The view only talks
+// to a `FeatureSource`: `daemonSource` reads each connected host's `otterd`;
+// `mockSource` is sample data for tests and previews.
 
+import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import type { Feature, FeatureAction, FeatureEventRecord, PlacedFeature } from "./features";
 
 export interface FeatureSource {
   /** True for the stand-in: the UI says so. */
   readonly preview: boolean;
+  /** The hosts to read from (connected ones); sources that don't care ignore it. */
+  setHosts?(hosts: string[]): void;
   list(): PlacedFeature[];
   /** Called with the new list whenever anything changes. Returns an unsubscribe. */
   subscribe(listener: (list: PlacedFeature[]) => void): () => void;
@@ -186,6 +191,8 @@ export function mockSource(host = "preview", now = Date.now()): FeatureSource {
         resume: "implementing",
         cancel: "cancelled",
         retry: "implementing",
+        accept: "done",
+        request_changes: "implementing",
       };
       if (action.action === "decide") {
         update(key, (f) => ({
@@ -207,6 +214,91 @@ export function mockSource(host = "preview", now = Date.now()): FeatureSource {
     },
     async history(key) {
       return histories.get(key) ?? [];
+    },
+  };
+}
+
+/** A unique id per intent: the daemon applies a command once, so a retry is harmless. */
+export function commandId(): string {
+  try {
+    return `cmd_${crypto.randomUUID()}`;
+  } catch {
+    return `cmd_${Date.now().toString(36)}${Math.random().toString(36).slice(2)}`;
+  }
+}
+
+const splitKey = (key: string) => {
+  const i = key.indexOf("/");
+  return { host: key.slice(0, i), feature: key.slice(i + 1) };
+};
+
+/**
+ * Features from each connected host's daemon. Reloads a host when it says a
+ * feature changed (`FeatureChanged`) or its event stream restarted; a host
+ * whose otterd predates features simply has none.
+ */
+export function daemonSource(): FeatureSource {
+  const byHost = new Map<string, Feature[]>();
+  let hosts: string[] = [];
+  let list: PlacedFeature[] = [];
+  const listeners = new Set<(l: PlacedFeature[]) => void>();
+
+  const rebuild = () => {
+    list = hosts.flatMap((host) => (byHost.get(host) ?? []).map((feature) => ({ host, feature, key: `${host}/${feature.id}` })));
+    listeners.forEach((l) => l(list));
+  };
+  const load = async (host: string) => {
+    try {
+      byHost.set(host, await invoke<Feature[]>("features_list", { host }));
+    } catch {
+      byHost.delete(host);
+    }
+    if (hosts.includes(host)) rebuild();
+  };
+  /** Put a feature the daemon just returned in place, ahead of the event. */
+  const put = (host: string, feature: Feature) => {
+    const rest = (byHost.get(host) ?? []).filter((f) => f.id !== feature.id);
+    byHost.set(host, [feature, ...rest]);
+    rebuild();
+  };
+
+  void listen<{ host: string; record: { type: string } }>("host-event", (e) => {
+    if (e.payload.record.type === "FeatureChanged" && hosts.includes(e.payload.host)) void load(e.payload.host);
+  });
+  void listen<{ host: string }>("host-resync", (e) => {
+    if (hosts.includes(e.payload.host)) void load(e.payload.host);
+  });
+
+  return {
+    preview: false,
+    setHosts(next) {
+      const added = next.filter((h) => !hosts.includes(h));
+      const changed = added.length > 0 || next.length !== hosts.length;
+      hosts = next;
+      added.forEach((h) => void load(h));
+      if (changed) rebuild();
+    },
+    list: () => list,
+    subscribe(listener) {
+      listeners.add(listener);
+      return () => listeners.delete(listener);
+    },
+    async create(host, title, request) {
+      const feature = await invoke<Feature>("feature_create", { host, commandId: commandId(), title, request, workspace: null });
+      put(host, feature);
+      return { host, feature, key: `${host}/${feature.id}` };
+    },
+    async send(key, text) {
+      const { host, feature } = splitKey(key);
+      put(host, await invoke<Feature>("feature_send", { host, commandId: commandId(), feature, text }));
+    },
+    async act(key, action) {
+      const { host, feature } = splitKey(key);
+      put(host, await invoke<Feature>("feature_act", { host, commandId: commandId(), feature, action }));
+    },
+    async history(key) {
+      const { host, feature } = splitKey(key);
+      return invoke<FeatureEventRecord[]>("feature_events", { host, feature, after: null });
     },
   };
 }

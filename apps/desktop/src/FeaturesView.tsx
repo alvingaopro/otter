@@ -189,7 +189,7 @@ function FeaturePane({
       </header>
       {source.preview && (
         <p className="notice" role="note">
-          Preview with sample data: no Control Agent is connected on this host yet, so nothing here runs.
+          Preview with sample data: nothing here runs.
         </p>
       )}
       <StatusBanner f={f} onApprovals={() => setTab("approvals")} act={act} />
@@ -250,6 +250,16 @@ function FeatureActions({ f, act }: { f: Feature; act: (a: FeatureAction) => voi
         <button className="btn primary" onClick={() => act({ action: "retry" })}>
           Retry
         </button>
+      )}
+      {f.status === "review" && (
+        <>
+          <button className="btn" onClick={() => act({ action: "request_changes" })}>
+            Request changes
+          </button>
+          <button className="btn primary" onClick={() => act({ action: "accept" })}>
+            Accept
+          </button>
+        </>
       )}
       {!["done", "cancelled"].includes(f.status) && (
         <button className="btn outline" onClick={() => act({ action: "cancel" })}>
