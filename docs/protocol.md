@@ -189,6 +189,15 @@ The Control Agent's model and API keys on this host (D-048).
   the same view. Fields left out stay as they are; `""` resets the
   controller to automatic and the model to the default; `null` clears a
   secret. Unknown secret names and controllers fail with `invalid_request`.
+- The view also lists `controllers: [{id, label, secret?, models,
+  default_model?}]` — every model provider (with the secret holding its
+  key), `claude`, `rules` and `off` — and `active`, the controller in use
+  now (what automatic chose). Both are absent from daemons before D-052.
+- `settings.models {controller}` → `[{id, name?}]`: the models that
+  controller offers, as its provider lists them, asked by the host with the
+  key set there (OpenRouter's list needs none); `claude` answers Claude
+  Code's model names. No key, or the provider unreachable: `conflict`;
+  a controller without models: `invalid_argument`.
 
 An addition (no protocol bump): daemons before it answer `invalid_request`.
 
@@ -226,6 +235,14 @@ history_seq, status}` on the host's event log, so `events.subscribe` with a
 cursor (above) tells a reconnecting client which features changed while it
 was away; it then reads `feature.events {after: <last seq it saw>}`. The
 history is the feature's own: it isn't rotated with the host's log.
+
+**Text being written** (D-051): `FeatureStream {feature_id, stream_id, role,
+text, done}` carries a message's text so far while the coding agent or the
+Control Agent writes it, at most every 100 ms. It is **transient**: sent to
+live `events.subscribe` streams only, never logged or replayed, stamped with
+the latest logged `seq` (so it doesn't advance a cursor and may repeat one),
+and outside the `seq` order. A client may drop any of them; with `done` the
+message is complete and stored in the feature.
 
 An addition (no protocol bump): daemons before it answer `invalid_request`.
 

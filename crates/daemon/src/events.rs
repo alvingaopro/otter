@@ -67,6 +67,8 @@ pub struct EventLog {
     limits: Limits,
     inner: Mutex<Inner>,
     tx: broadcast::Sender<EventRecord>,
+    /// Transient events (D-051): live subscribers only, never logged.
+    transient: broadcast::Sender<EventRecord>,
 }
 
 struct Inner {
@@ -135,6 +137,7 @@ impl EventLog {
             .with_context(|| format!("opening {}", path.display()))?;
         let skip = active.records.len().saturating_sub(TAIL);
         let (tx, _) = broadcast::channel(BROADCAST);
+        let (transient, _) = broadcast::channel(BROADCAST);
         Ok(EventLog {
             path: path.to_path_buf(),
             log_id,
@@ -148,6 +151,7 @@ impl EventLog {
                 tail: active.records.into_iter().skip(skip).collect(),
             }),
             tx,
+            transient,
         })
     }
 
@@ -225,6 +229,24 @@ impl EventLog {
             inner.tail.retain(|r| r.seq >= oldest);
         }
         tracing::info!(first, "rotated the event log");
+    }
+
+    /// Send an event to live subscribers only (D-051): not written, not
+    /// replayed, and stamped with the latest logged `seq`, so it never moves
+    /// a cursor. For what changes too fast to keep (text being written).
+    pub fn emit_transient(&self, event: Event) {
+        let record = EventRecord {
+            seq: self.head(),
+            ts: chrono::Utc::now(),
+            event,
+        };
+        // A slow subscriber drops some: the next one carries the whole text.
+        let _ = self.transient.send(record);
+    }
+
+    /// A receiver for transient events from now on.
+    pub fn subscribe_transient(&self) -> broadcast::Receiver<EventRecord> {
+        self.transient.subscribe()
     }
 
     /// The latest event's `seq`, and a receiver for exactly the events after it.

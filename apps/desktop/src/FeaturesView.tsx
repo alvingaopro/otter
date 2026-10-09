@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { Dialog } from "./Dialog";
 import { Glyph } from "./Glyph";
-import { SettingsButton } from "./SettingsDialog";
 import { ago } from "./model";
+import otterIcon from "./assets/otter.png";
 import type { FeatureSource } from "./featureSource";
 import {
   FILTERS,
@@ -32,12 +32,10 @@ interface Props {
   onOpenWorkspace: (host: string, workspaceId: string, sessionId?: string) => void;
   /** Open a preview port of a host in the browser (forwarding it if remote). */
   onOpenPreview: (host: string, port: number, path: string) => Promise<void>;
-  /** Open Settings (Control Agent, API keys). */
-  onSettings?: () => void;
 }
 
 /** The Features view (D-041, D-042): product work, independent of the Workspace view. */
-export function FeaturesView({ source, hosts, workspaces, now, onOpenWorkspace, onOpenPreview, onSettings }: Props) {
+export function FeaturesView({ source, hosts, workspaces, now, onOpenWorkspace, onOpenPreview }: Props) {
   const [list, setList] = useState<PlacedFeature[]>(() => source.list());
   const [filter, setFilter] = useState<FeatureFilter>("all");
   const [selected, setSelected] = useState<string | undefined>();
@@ -58,7 +56,6 @@ export function FeaturesView({ source, hosts, workspaces, now, onOpenWorkspace, 
         <div className="sidebar-top" data-tauri-drag-region>
           <span className="brand-name">Features</span>
           <span className="spacer" />
-          {onSettings && <SettingsButton onClick={onSettings} />}
           <button className="icon-btn" aria-label="New feature" title="New feature" onClick={() => setCreating(true)}>
             <svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true">
               <path d="M7 2v10M2 7h10" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
@@ -127,7 +124,7 @@ export function FeaturesView({ source, hosts, workspaces, now, onOpenWorkspace, 
         <main className="pane empty">
           <div className="drag-strip" data-tauri-drag-region />
           <h1 className="empty-title">Describe a feature</h1>
-          <p className="muted">Say what you want built. A Control Agent plans it, drives a coding agent in a workspace and verifies the result.</p>
+          <p className="muted">Say what you want built. Otter plans it, directs a coding agent in a workspace and verifies the result.</p>
           <div className="empty-actions">
             <button className="btn primary" onClick={() => setCreating(true)}>
               New feature
@@ -392,7 +389,17 @@ function StatusBanner({ f, onApprovals, act }: { f: Feature; onApprovals: () => 
   return null;
 }
 
-const ROLE: Record<string, string> = { user: "You", controller: "Control Agent", agent: "Coding agent", system: "Otter" };
+const ROLE: Record<string, string> = { user: "You", controller: "Otter", agent: "Coding agent", system: "System" };
+
+/** Who said it; Otter with its face. */
+function Speaker({ role }: { role: string }) {
+  return (
+    <span className="message-role">
+      {role === "controller" && <img src={otterIcon} width={16} height={16} alt="" className="message-avatar" />}
+      {ROLE[role] ?? role}
+    </span>
+  );
+}
 
 function Conversation({ placed, source, now }: { placed: PlacedFeature; source: FeatureSource; now: number }) {
   const [text, setText] = useState("");
@@ -400,11 +407,21 @@ function Conversation({ placed, source, now }: { placed: PlacedFeature; source: 
   const end = useRef<HTMLDivElement>(null);
   const messages = placed.feature.messages;
   const live = placed.feature.runs.find((r) => ["starting", "running", "waiting"].includes(r.state));
+  // Being written right now (D-051); a written one shows until its message loads.
+  const drafts = (source.drafts?.(placed.key) ?? []).filter(
+    (d) => !(d.done && messages.some((m) => m.role === d.role && m.text.trim() === d.text.trim())),
+  );
+  const draftText = drafts.map((d) => d.text).join("");
   const activity = live?.activity ?? [];
-  // The developer spoke last: the Control Agent's answer is on its way.
+  // The developer spoke last: Otter's answer is on its way.
   const last = messages[messages.length - 1];
-  const awaitingReply = last?.role === "user" && messages.length > 1 && !["done", "cancelled"].includes(placed.feature.status);
-  useEffect(() => end.current?.scrollIntoView?.({ block: "end" }), [messages.length, activity.length, awaitingReply]);
+  const replying = drafts.some((d) => d.role === "controller");
+  const awaitingReply =
+    !replying && last?.role === "user" && messages.length > 1 && !["done", "cancelled"].includes(placed.feature.status);
+  useEffect(
+    () => end.current?.scrollIntoView?.({ block: "end" }),
+    [messages.length, activity.length, awaitingReply, draftText.length],
+  );
 
   async function submit(e: FormEvent) {
     e.preventDefault();
@@ -426,10 +443,22 @@ function Conversation({ placed, source, now }: { placed: PlacedFeature; source: 
         {messages.map((m) => (
           <div key={m.id} className={`message ${m.role}`}>
             <div className="message-head">
-              <span className="message-role">{ROLE[m.role] ?? m.role}</span>
+              <Speaker role={m.role} />
               <span className="message-at">{ago(m.at, now)}</span>
             </div>
             <div className="message-text">{m.text}</div>
+          </div>
+        ))}
+        {drafts.map((d) => (
+          <div key={d.stream_id} className={`message ${d.role} streaming`}>
+            <div className="message-head">
+              <Speaker role={d.role} />
+              <span className="message-at">{d.done ? "now" : "writing…"}</span>
+            </div>
+            <div className="message-text">
+              {d.text}
+              {!d.done && <span className="cursor" aria-hidden="true" />}
+            </div>
           </div>
         ))}
         {live && (
@@ -447,16 +476,16 @@ function Conversation({ placed, source, now }: { placed: PlacedFeature; source: 
             )}
           </div>
         )}
-        {awaitingReply && <p className="muted small replying">Control Agent is replying…</p>}
+        {awaitingReply && <p className="muted small replying">Otter is replying…</p>}
         <div ref={end} />
       </div>
       <form className="composer" onSubmit={submit}>
         <textarea
-          aria-label="Message to the Control Agent"
+          aria-label="Message to Otter"
           placeholder={
             placed.feature.status === "review" || placed.feature.status === "done"
               ? "Happy with it? Or say what to change…"
-              : "Tell the Control Agent what you want…"
+              : "Tell Otter what you want…"
           }
           value={text}
           rows={2}
@@ -483,7 +512,7 @@ function Plan({ f }: { f: Feature }) {
       <p className="plan-request">{f.request || <span className="muted">—</span>}</p>
       <h2 className="sub-title">Requirements</h2>
       {f.requirements.length === 0 ? (
-        <p className="muted small">None yet: the Control Agent writes them while planning.</p>
+        <p className="muted small">None yet: Otter writes them while planning.</p>
       ) : (
         <ul className="plain-list">
           {f.requirements.map((r) => (

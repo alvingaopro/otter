@@ -3,14 +3,14 @@
 //! Everything else (lifecycle, limits, retries, what may run) is the
 //! controller's deterministic code.
 //!
-//! `OTTER_CONTROLLER` picks the brain: `claude` (the default when Claude Code
-//! is installed: `claude -p` with structured output, no tools), `openrouter`
-//! (any model on OpenRouter, with `OPENROUTER_API_KEY` in otterd's
-//! environment; the default when that is set and Claude Code isn't
-//! installed), `rules` (no model: one task, every open decision goes to the
-//! developer, criteria are met when the check passes), or `yes` (tests
-//! only: approves everything it is asked — to show that policy still stops
-//! it). `OTTER_CONTROLLER_MODEL` picks the model for either.
+//! `OTTER_CONTROLLER` (or Settings) picks the brain: a model provider
+//! (`openrouter`, `anthropic`, `openai`, … — see `providers.rs`; by default
+//! the first one with a key), `claude` (`claude -p` with structured output,
+//! no tools; the default otherwise, when installed), `rules` (no model: one
+//! task, every open decision goes to the developer, criteria are met when
+//! the check passes), or `yes` (tests only: approves everything it is asked
+//! — to show that policy still stops it). `OTTER_CONTROLLER_MODEL` picks the
+//! model for any of them.
 
 use std::path::Path;
 
@@ -21,6 +21,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use crate::env::EnvMap;
+use crate::providers::Provider;
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct PlannedTask {
@@ -104,16 +105,19 @@ pub trait Brain: Send + Sync {
     /// Answer the developer's message (D-049): what's going on, and whether
     /// they asked to go on or to stop — a model's judgment. Without a model:
     /// the status only; acting on the message is left to the buttons.
-    async fn reply(&self, cx: &Context<'_>, _message: &str) -> Result<Reply> {
+    async fn reply(&self, cx: &Context<'_>, _message: &str, _say: &Say<'_>) -> Result<Reply> {
         Ok(Reply {
             text: format!(
-                "{} (No model is set for the Control Agent on this host, so I can't act on messages: use the buttons, or choose a model in Settings.)",
+                "{} (No model is set for Otter on this host, so I can't act on messages: use the buttons, or choose a model in Settings.)",
                 status_text(cx.feature)
             ),
             intent: Intent::None,
         })
     }
 }
+
+/// Where a reply's text goes as it is written: each piece, in order.
+pub type Say<'a> = dyn Fn(&str) + Send + Sync + 'a;
 
 /// What the developer's message asks the feature to do.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -205,35 +209,48 @@ pub fn status_text(f: &Feature) -> String {
 /// explicit environment winning.
 #[derive(Clone, Debug, Default)]
 pub struct Choice {
-    /// `claude`, `openrouter`, `rules`, `yes`, `off`; `None`: automatic.
+    /// `claude`, a provider's id, `rules`, `yes`, `off`; `None`: automatic.
     pub controller: Option<String>,
     pub model: Option<String>,
-    /// From settings, else otterd's environment.
-    pub openrouter_key: Option<String>,
+    /// Providers' keys set in Settings, by name (otterd's environment is
+    /// looked at too).
+    pub keys: std::collections::BTreeMap<String, String>,
 }
 
-/// The brain chosen (automatic: Claude Code when installed, else OpenRouter
-/// when a key is set, else rules).
+impl Choice {
+    fn key(&self, p: &Provider, env: &EnvMap) -> Option<String> {
+        self.keys.get(p.key).cloned().or_else(|| p.env_key(env))
+    }
+}
+
+/// The brain chosen (automatic: the first provider with a key — the Control
+/// Agent's own model, apart from the coding agent's — else Claude Code when
+/// installed, else rules).
 pub fn select(env: &EnvMap, choice: &Choice) -> Box<dyn Brain> {
-    let key = choice
-        .openrouter_key
-        .clone()
-        .or_else(|| crate::openrouter::key(env));
     let model = |backend| {
+        let key = match backend {
+            Backend::Api(p) => choice.key(p, env),
+            Backend::ClaudeCode => None,
+        };
         Box::new(Model {
             backend,
             model: choice.model.clone(),
-            key: key.clone(),
+            key,
         })
     };
     match choice.controller.as_deref().unwrap_or_default() {
         "rules" | "off" => Box::new(Rules),
         "yes" => Box::new(YesMan),
         "claude" => model(Backend::ClaudeCode),
-        "openrouter" => model(Backend::OpenRouter),
-        _ if crate::env::which("claude", env).is_some() => model(Backend::ClaudeCode),
-        _ if key.is_some() => model(Backend::OpenRouter),
-        _ => Box::new(Rules),
+        id => match crate::providers::get(id).or_else(|| {
+            crate::providers::PROVIDERS
+                .iter()
+                .find(|p| choice.key(p, env).is_some())
+        }) {
+            Some(p) => model(Backend::Api(p)),
+            None if crate::env::which("claude", env).is_some() => model(Backend::ClaudeCode),
+            None => Box::new(Rules),
+        },
     }
 }
 
@@ -398,13 +415,13 @@ impl Brain for YesMan {
 }
 
 /// Where a model brain's answers come from.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug)]
 pub enum Backend {
     /// `claude -p` with a JSON schema and no tools (the developer's Claude
     /// Code sign-in).
     ClaudeCode,
-    /// OpenRouter's chat completions (`OPENROUTER_API_KEY`).
-    OpenRouter,
+    /// A provider's API, with its key.
+    Api(&'static Provider),
 }
 
 /// A model deciding where judgment is needed.
@@ -412,8 +429,16 @@ pub struct Model {
     pub backend: Backend,
     /// The model to ask (`None`: the backend's default).
     pub model: Option<String>,
-    /// OpenRouter's key.
+    /// The provider's key.
     pub key: Option<String>,
+}
+
+impl Model {
+    fn key(&self, p: &Provider) -> Result<&str> {
+        self.key.as_deref().ok_or_else(|| {
+            anyhow::anyhow!("no {} API key: set one in Settings on this host", p.label)
+        })
+    }
 }
 
 impl Model {
@@ -441,13 +466,10 @@ impl Model {
                 )
                 .await
             }
-            Backend::OpenRouter => {
-                let key = self.key.as_deref().ok_or_else(|| {
-                    anyhow::anyhow!("no OpenRouter API key: set one in Settings on this host")
-                })?;
-                crate::openrouter::structured(
+            Backend::Api(p) => {
+                p.structured(
                     cx.env,
-                    key,
+                    self.key(p)?,
                     self.model.as_deref(),
                     prompt,
                     schema,
@@ -481,7 +503,7 @@ impl Brain for Model {
     fn name(&self) -> &'static str {
         match self.backend {
             Backend::ClaudeCode => "claude",
-            Backend::OpenRouter => "openrouter",
+            Backend::Api(p) => p.id,
         }
     }
 
@@ -506,7 +528,7 @@ impl Brain for Model {
             String::new()
         };
         let prompt = format!(
-            "You are the Control Agent planning a software feature for a coding agent working in {root}.\n\
+            "You are Otter, the developer's tech lead, planning a software feature for a coding agent working in {root}.\n\
              {brief}\n\
              Write: requirements (short), acceptance criteria that can be checked, and 1-5 tasks in order \
              (depends_on = indexes of earlier tasks). verify_command: one shell command that checks the work \
@@ -542,7 +564,7 @@ impl Brain for Model {
 
     async fn decide(&self, cx: &Context<'_>, d: &DecisionRequest) -> Result<Verdict> {
         let prompt = format!(
-            "You are the Control Agent supervising a coding agent on this feature.\n{brief}\n\
+            "You are Otter, the developer's tech lead, supervising a coding agent on this feature.\n{brief}\n\
              The agent asks ({kind:?}, {risk:?} risk): {summary}\nPolicy note: {detail}\n{options}\
              Decide: allow, deny, answer (for a question: give the answer), or escalate to the developer \
              when it's ambiguous, risky, or not clearly needed for the feature. Be conservative.",
@@ -601,7 +623,7 @@ impl Brain for Model {
             .filter_map(|r| r.summary.clone())
             .collect();
         let prompt = format!(
-            "You are the Control Agent verifying a feature. Judge each acceptance criterion strictly from \
+            "You are Otter, the developer's tech lead, verifying a feature. Judge each acceptance criterion strictly from \
              the evidence (a deterministic check outranks a claim; the coding agent's own summary is a claim, \
              not evidence). If unsure, it is not met.\n{brief}\nCriteria: {criteria}\nEvidence (newest first): \
              {evidence}\nAgent summaries: {summaries:?}\nremediation: what to fix next if anything is not met.",
@@ -660,7 +682,7 @@ impl Brain for Model {
         )))
     }
 
-    async fn reply(&self, cx: &Context<'_>, message: &str) -> Result<Reply> {
+    async fn reply(&self, cx: &Context<'_>, message: &str, say: &Say<'_>) -> Result<Reply> {
         let f = cx.feature;
         let recent: Vec<String> = f
             .messages
@@ -677,47 +699,128 @@ impl Brain for Model {
             .map(|(i, t)| format!("{}. {} — {:?}", i + 1, t.title, t.status))
             .collect();
         let prompt = format!(
-            "You are the Control Agent running a software feature for the developer. Reply to their \
+            "You are Otter, the developer's tech lead, running a software feature for the developer. Reply to their \
              latest message directly and briefly (2-5 sentences), in the language they wrote in. \
              Say what is happening and what happens next; if they give instructions, say how you'll \
-             act on them (the coding agent receives their message with its next turn). Don't invent \
-             progress.\n{brief}\nStatus: {status}\nTasks:\n{tasks}\nRecent conversation:\n{recent}\n\n\
-             Their message: {message}\n\nintent: \"revise\" if they change, add to or correct what \
-             should be built (new requirements, a different approach, feedback on the result); \
-             \"continue\" if they just ask to go on, resume, start or retry; \"pause\" if they ask to \
-             stop or wait for now; \"finish\" if they're satisfied and want it wrapped up; else \"none\" \
-             (questions, chat).",
+             act on them. Don't invent progress.\n{brief}\nStatus: {status}\nTasks:\n{tasks}\n\
+             Recent conversation:\n{recent}\n\nTheir message: {message}\n\n\
+             Write your reply as plain text. Then, on a last line of its own, write `INTENT: <x>` where \
+             <x> is: revise if they change, add to or correct what should be built (new requirements, \
+             a different approach, feedback on the result); continue if they just ask to go on, resume, \
+             start or retry; pause if they ask to stop or wait for now; finish if they're satisfied and \
+             want it wrapped up; else none (questions, chat).",
             brief = brief(f),
             status = status_text(f),
             tasks = tasks.join("\n"),
             recent = recent.join("\n"),
         );
-        let schema = json!({
-            "type": "object",
-            "properties": {
-                "reply": {"type": "string"},
-                "intent": {"enum": ["none", "continue", "pause", "revise", "finish"]}
-            },
-            "required": ["reply", "intent"]
-        });
-        let v = self.ask(cx, &prompt, &schema, None).await?;
-        Ok(Reply {
-            text: v["reply"].as_str().unwrap_or_default().trim().to_owned(),
-            intent: match v["intent"].as_str() {
-                Some("continue") => Intent::Continue,
-                Some("pause") => Intent::Pause,
-                Some("revise") => Intent::Revise,
-                Some("finish") => Intent::Finish,
-                _ => Intent::None,
-            },
-        })
+        // The developer sees the reply as it's written, without the intent line.
+        let written = std::sync::Mutex::new(String::new());
+        let shown = std::sync::Mutex::new(0usize);
+        let on_piece = |piece: &str| {
+            let mut text = written.lock().unwrap();
+            text.push_str(piece);
+            let visible = visible_reply(&text);
+            let mut shown = shown.lock().unwrap();
+            if visible.len() > *shown {
+                say(&visible[*shown..]);
+                *shown = visible.len();
+            }
+        };
+        let full = match self.backend {
+            Backend::ClaudeCode => {
+                crate::agents::claude_stream::stream_text(
+                    cx.env,
+                    cx.root,
+                    &prompt,
+                    self.model.as_deref(),
+                    &on_piece,
+                )
+                .await?
+            }
+            Backend::Api(p) => {
+                p.stream_text(
+                    cx.env,
+                    self.key(p)?,
+                    self.model.as_deref(),
+                    &prompt,
+                    &on_piece,
+                )
+                .await?
+            }
+        };
+        let (text, intent) = split_intent(&full);
+        Ok(Reply { text, intent })
     }
+}
+
+/// A reply without its `INTENT:` line — also while it is still being written
+/// (a last line that may be turning into one is held back).
+pub fn visible_reply(text: &str) -> String {
+    let lines: Vec<&str> = text.split('\n').collect();
+    let n = lines.len();
+    let kept: Vec<&str> = lines
+        .iter()
+        .enumerate()
+        .filter(|(i, l)| {
+            let t = l.trim().to_uppercase();
+            let partial_last = *i == n - 1 && !t.is_empty() && "INTENT:".starts_with(&t);
+            !t.starts_with("INTENT:") && !partial_last
+        })
+        .map(|(_, l)| *l)
+        .collect();
+    let joined = kept.join("\n");
+    // Don't show a trailing blank line that may precede the intent.
+    joined.trim_end().to_owned()
+}
+
+/// The reply and the intent its last `INTENT:` line names (none if absent).
+pub fn split_intent(text: &str) -> (String, Intent) {
+    let intent = text
+        .lines()
+        .rev()
+        .find_map(|l| {
+            let t = l.trim();
+            t.to_uppercase().starts_with("INTENT:").then(|| {
+                t["INTENT:".len()..]
+                    .trim()
+                    .trim_matches(['`', '.', '*'])
+                    .to_lowercase()
+            })
+        })
+        .map(|w| match w.as_str() {
+            "continue" => Intent::Continue,
+            "pause" => Intent::Pause,
+            "revise" => Intent::Revise,
+            "finish" => Intent::Finish,
+            _ => Intent::None,
+        })
+        .unwrap_or(Intent::None);
+    (visible_reply(text).trim().to_owned(), intent)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use otter_core::feature::{Criterion, Evidence, EvidenceKind};
+
+    #[test]
+    fn the_intent_line_is_read_and_never_shown() {
+        let (text, intent) = split_intent("On it: I'll add JSON export.\n\nINTENT: revise");
+        assert_eq!(text, "On it: I'll add JSON export.");
+        assert_eq!(intent, Intent::Revise);
+        assert_eq!(
+            split_intent("Sure.\nintent: `continue`").1,
+            Intent::Continue
+        );
+        assert_eq!(split_intent("Just chatting.").1, Intent::None);
+        // While it's being written, a line that may become the intent is held back.
+        assert_eq!(visible_reply("Done soon.\nINT"), "Done soon.");
+        assert_eq!(
+            visible_reply("Done soon.\nIn the meantime"),
+            "Done soon.\nIn the meantime"
+        );
+    }
 
     #[test]
     fn the_status_says_where_things_stand() {

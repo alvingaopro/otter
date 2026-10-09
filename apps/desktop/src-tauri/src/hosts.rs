@@ -289,6 +289,16 @@ async fn follow(app: &AppHandle, name: &str, transport: &Transport) -> Result<Ne
                             record: &rec,
                         },
                     );
+                    // Features load on their own (featureSource.ts): their
+                    // events, and the text streaming in many times a second
+                    // (D-051), don't need a fresh snapshot of the workspaces.
+                    if matches!(
+                        rec.event,
+                        otter_protocol::Event::FeatureStream { .. }
+                            | otter_protocol::Event::FeatureChanged { .. }
+                    ) {
+                        continue;
+                    }
                     // Browser login: a tool on the host wants a sign-in page.
                     if let otter_protocol::Event::BrowserOpenRequested { request_id, .. } =
                         rec.event

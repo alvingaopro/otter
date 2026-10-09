@@ -22,7 +22,7 @@ describe("feature contract helpers", () => {
     expect(matches(done, "needs")).toBe(false);
   });
 
-  it("shows the Control Agent's loop as one state, with what it's doing", () => {
+  it("shows Otter's loop as one state, with what it's doing", () => {
     // Planning, implementing and verifying are all just "Working" (D-050).
     expect([STATUS_LABEL.planning, STATUS_LABEL.implementing, STATUS_LABEL.verifying]).toEqual(["Working", "Working", "Working"]);
     expect(STATUS_LABEL.review).toBe("Ready to check");
@@ -115,12 +115,12 @@ describe("Features view", () => {
     expect(q(".status-pill")?.textContent).toBe("Draft");
     expect(host.querySelector(".message.user")?.textContent).toContain("Export timelines as CSV");
 
-    const composer = q<HTMLTextAreaElement>('textarea[aria-label="Message to the Control Agent"]')!;
+    const composer = q<HTMLTextAreaElement>('textarea[aria-label="Message to Otter"]')!;
     type(composer, "Also include the session name");
     await act(async () => byText("button", "Send")!.click());
     const messages = [...host.querySelectorAll(".message")].map((m) => m.textContent);
     expect(messages.some((m) => m?.includes("Also include the session name"))).toBe(true);
-    expect(host.querySelector(".message.system")?.textContent).toContain("no Control Agent is connected");
+    expect(host.querySelector(".message.system")?.textContent).toContain("nothing is connected");
 
     await act(async () => byText("button", "Start")!.click());
     expect(q(".status-pill")?.textContent).toBe("Working");

@@ -45,6 +45,10 @@ while read -r line; do
         *HANG*) text "working on it" ;;
         *)
           out '{"type":"assistant","parent_tool_use_id":null,"message":{"role":"assistant","content":[{"type":"tool_use","name":"Bash","input":{"command":"make test"}}]}}'
+          # The text as it is written (--include-partial-messages), then whole.
+          out '{"type":"stream_event","parent_tool_use_id":null,"event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Did "}}}'
+          sleep 0.2
+          out '{"type":"stream_event","parent_tool_use_id":null,"event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"the work."}}}'
           text "Did the work."
           result success false "done in $sid"
           ;;

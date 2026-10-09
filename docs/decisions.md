@@ -1432,3 +1432,81 @@ developer checks the result and either is satisfied, adjusts, or stops.
   to the Control Agent. *Take over* / *Hand back* (D-044) are removed, from
   the app and the protocol. (Interactive agent sessions in workspaces are
   untouched, and `SessionSpec.resume` stays.)
+
+## D-051 — Streaming text: transient events (2026-10-09)
+
+The developer should watch the coding agent and the Control Agent write,
+not wait for whole messages.
+
+- **Where text comes from.** The coding agent runs with
+  `--include-partial-messages`; Claude Code then sends `stream_event`
+  `content_block_delta` / `text_delta` pieces before each whole assistant
+  message (observed on 2.1.295). The Control Agent's reply is now plain
+  text, streamed — OpenRouter's chat completions with `"stream": true`
+  (server-sent events), or `claude -p --output-format stream-json
+  --include-partial-messages` — ending in an `INTENT: …` line, the model's
+  own judgment of what the developer asked (D-049), which is never shown.
+  (Plans, decisions and judgments keep the structured, schema-checked
+  calls.)
+- **Transient events.** `FeatureStream {feature_id, stream_id, role, text,
+  done}` carries the text so far, at most every 100 ms. It is sent to live
+  subscribers only: never written to `events.jsonl`, never replayed, and
+  stamped with the latest logged `seq` so it never moves a client's cursor
+  (D-016, D-037 unchanged). A client that misses some loses nothing: the
+  next one carries the whole text, and the finished message is stored in the
+  feature as before (`done` says so). A lagging subscriber simply skips
+  transient events.
+- The app shows a message being written with a cursor, keeps the finished
+  one until the feature reloads with it, and doesn't re-snapshot the
+  workspaces for feature events.
+- An exception to "events carry ids, not content" (design §19): stream
+  text is conversation the developer is shown anyway, it is never
+  persisted in the log, and it carries no secrets the feature doesn't.
+
+## D-052 — Model providers for the Control Agent, and their model lists (2026-10-09)
+
+The developer chooses the Control Agent's model from what a provider
+actually offers, and isn't tied to OpenRouter.
+
+- **Providers.** OpenRouter, Anthropic, OpenAI, Google Gemini, DeepSeek,
+  xAI, Mistral and Groq, in one table (`providers.rs`): an id (the
+  controller's name), the key's name (the secret, and the environment
+  variable), a base URL, and how it's spoken to. All but Anthropic take
+  OpenAI's chat completions (Gemini through its OpenAI-compatible
+  endpoint); Anthropic takes its Messages API (`x-api-key`,
+  `anthropic-version`, `output_config.format` with every object closed).
+  Providers without JSON-schema output (DeepSeek, Groq) are asked for a
+  JSON object, the schema in the prompt; answers are read leniently as
+  before. The OpenAI-style schema request is no longer `strict`: the brain's
+  schemas have optional properties and open objects, which strict mode
+  rejects on OpenAI itself; Anthropic's closed copy is made for it. Streaming reads either kind of server-sent events. Keys still go
+  to curl on stdin, never on a command line (D-045, D-048).
+- **Automatic** is the first provider, in table order (OpenRouter first, as
+  before), with a key in Settings or otterd's environment; else Claude Code;
+  else rules. `settings.get` says which (`active`).
+- **Models are listed by the host**, not the app: `settings.models` asks the
+  provider's `/models` with the host's key — the key never leaves the host,
+  and the list is what that key may use. Non-chat models (embeddings,
+  speech, images) are left out. Claude Code's list is its model names. The
+  app offers the list as suggestions on a free-text field: any name the
+  provider accepts still works, and a provider that can't be reached
+  doesn't stop anyone from typing one.
+- **Defaults.** Only where a name is stable: `openrouter/auto`,
+  `claude-opus-5-5`, `deepseek-chat`, `mistral-large-latest`. Elsewhere a
+  model must be chosen; the app says so, and the brain fails with "choose a
+  model … in Settings" rather than guess one.
+- One `model` setting, for the controller chosen: switching provider in the
+  app clears it.
+
+## D-053 — The Control Agent is called Otter (2026-10-09)
+
+"Control Agent" read as jargon next to "coding agent". Everything the
+developer sees calls it **Otter**, after the product — like a tech lead, it
+plans, directs the coding agent, decides what it may, and checks the
+result; the coding agent stays "Coding agent", and the app's own notices
+are "System". (Briefly "Lead"; one name for the product and the one you
+talk to reads simpler.) Code, protocol and configuration keep their names
+(`controller`, `MessageRole::Controller`, `OTTER_CONTROLLER`), so nothing
+on the wire changes. Settings explains what Otter does, that it runs on
+each host with that host's model and keys, and what each choice means;
+the one way into Settings is the gear at the bottom of the Activity Bar.

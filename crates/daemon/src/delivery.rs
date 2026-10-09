@@ -324,7 +324,7 @@ pub fn report(f: &Feature, diffstat: Option<&str>) -> String {
             r.push_str(&format!("- {x}\n"));
         }
     }
-    r.push_str("\n_Written by Otter's Control Agent._\n");
+    r.push_str("\n_Written by Otter._\n");
     r
 }
 

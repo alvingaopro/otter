@@ -152,7 +152,7 @@ code, .mono { font-family: var(--mono); }
 
 .sidebar-top { display: flex; align-items: center; gap: 4px; padding: 0 10px 0 16px; }
 /* macOS: leave room for the traffic lights (the Activity Bar takes 48px of it). */
-.mac .sidebar-top { padding-left: 36px; }
+.mac .sidebar-top { padding-left: 48px; }
 .sidebar-top .icon-btn { width: 30px; height: 30px; border-radius: 7px; }
 .brand { display: flex; align-items: center; gap: 10px; padding: 14px 16px 8px 20px; }
 .brand-name { font-weight: 600; font-size: 15px; letter-spacing: -0.1px; }
@@ -510,7 +510,7 @@ code, .mono { font-family: var(--mono); }
 .message { max-width: 720px; padding: 8px 12px; border-radius: 10px; background: var(--raised); }
 .message.user { align-self: flex-end; background: var(--selected); }
 .message.system { background: none; border: 1px dashed var(--line-strong); color: var(--muted); }
-.message-head { display: flex; gap: 8px; align-items: baseline; margin-bottom: 3px; }
+.message-head { display: flex; gap: 8px; align-items: center; margin-bottom: 3px; }
 .message-role { font-size: 12px; font-weight: 600; color: var(--muted); }
 .message.controller .message-role { color: var(--working-text); }
 .message-at { font-size: 11.5px; color: var(--faint); }
@@ -559,3 +559,22 @@ code, .mono { font-family: var(--mono); }
 .activity li { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .replying { margin: 0; padding-left: 4px; }
 .status-detail { min-width: 0; font-size: 12.5px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.message .cursor { display: inline-block; width: 7px; height: 1em; margin-left: 2px; vertical-align: -2px; background: var(--muted); animation: blink 1s steps(2, start) infinite; }
+@keyframes blink { to { visibility: hidden; } }
+.combo { position: relative; flex: 1; min-width: 0; }
+.combo input { width: 100%; }
+.combo-list {
+  position: absolute; z-index: 20; left: 0; right: 0; top: calc(100% + 4px); max-height: 260px; overflow-y: auto;
+  margin: 0; padding: 4px; list-style: none; border-radius: 8px; border: 1px solid var(--line-strong);
+  background: var(--raised); box-shadow: 0 6px 20px var(--shadow);
+}
+.combo-list li { display: flex; flex-direction: column; gap: 1px; padding: 6px 8px; border-radius: 6px; cursor: pointer; }
+.combo-list li.active { background: var(--selected); }
+.combo-name { font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.combo-id { font-size: 11.5px; font-family: var(--mono); color: var(--faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.combo-list li.combo-more { cursor: default; color: var(--faint); font-size: 12px; }
+.settings-intro { margin: 0; line-height: 1.5; }
+.settings-intro strong { color: var(--text); font-weight: 600; }
+.settings-host { font-family: var(--mono); font-size: 13px; }
+.message-role { display: inline-flex; align-items: center; gap: 6px; }
+.message-avatar { border-radius: 50%; display: block; flex: none; }

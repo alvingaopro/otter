@@ -4,7 +4,7 @@
 
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import type { Feature, FeatureAction, FeatureEventRecord, PlacedFeature } from "./features";
+import type { Draft, Feature, FeatureAction, FeatureEventRecord, MessageRole, PlacedFeature } from "./features";
 
 export interface FeatureSource {
   /** True for the stand-in: the UI says so. */
@@ -15,13 +15,15 @@ export interface FeatureSource {
   /** Called with the new list whenever anything changes. Returns an unsubscribe. */
   subscribe(listener: (list: PlacedFeature[]) => void): () => void;
   create(host: string, title: string, request: string, workspace?: string): Promise<PlacedFeature>;
-  /** A message from the developer to the feature's Control Agent. */
+  /** A message from the developer to Otter, about the feature. */
   send(key: string, text: string): Promise<void>;
   act(key: string, action: FeatureAction): Promise<void>;
   /** The feature's own history, oldest first. */
   history(key: string): Promise<FeatureEventRecord[]>;
   /** A screenshot the feature's checks produced (`artifact:<name>`), as a data URL. */
   artifact(key: string, name: string): Promise<string>;
+  /** Messages being written right now, oldest first (D-051). */
+  drafts?(key: string): Draft[];
 }
 
 let counter = 0;
@@ -179,7 +181,7 @@ export function mockSource(host = "preview", now = Date.now()): FeatureSource {
           {
             id: id("msg"),
             role: "system",
-            text: "Preview: no Control Agent is connected, so nothing will act on this.",
+            text: "Preview: nothing is connected, so nothing will act on this.",
             at: stamp(),
             correlation_id: msg,
           },
@@ -255,14 +257,23 @@ export function daemonSource(): FeatureSource {
     list = hosts.flatMap((host) => (byHost.get(host) ?? []).map((feature) => ({ host, feature, key: `${host}/${feature.id}` })));
     listeners.forEach((l) => l(list));
   };
+  // Text streaming in, by feature key, then stream id (D-051).
+  const drafts = new Map<string, Map<string, Draft>>();
   const load = async (host: string) => {
     try {
       byHost.set(host, await invoke<Feature[]>("features_list", { host }));
     } catch {
       byHost.delete(host);
     }
+    // Written drafts give way to the messages just loaded.
+    for (const [key, ds] of drafts) {
+      if (!key.startsWith(`${host}/`)) continue;
+      for (const [id, d] of ds) if (d.done) ds.delete(id);
+      if (ds.size === 0) drafts.delete(key);
+    }
     if (hosts.includes(host)) rebuild();
   };
+  type StreamRecord = { type: string; feature_id: string; stream_id: string; role: MessageRole; text: string; done?: boolean };
   /** Put a feature the daemon just returned in place, ahead of the event. */
   const put = (host: string, feature: Feature) => {
     const rest = (byHost.get(host) ?? []).filter((f) => f.id !== feature.id);
@@ -271,7 +282,19 @@ export function daemonSource(): FeatureSource {
   };
 
   void listen<{ host: string; record: { type: string } }>("host-event", (e) => {
-    if (e.payload.record.type === "FeatureChanged" && hosts.includes(e.payload.host)) void load(e.payload.host);
+    const { host, record } = e.payload;
+    if (!hosts.includes(host)) return;
+    if (record.type === "FeatureChanged") void load(host);
+    if (record.type === "FeatureStream") {
+      const r = record as StreamRecord;
+      const key = `${host}/${r.feature_id}`;
+      const ds = drafts.get(key) ?? new Map<string, Draft>();
+      ds.set(r.stream_id, { stream_id: r.stream_id, role: r.role, text: r.text, done: !!r.done });
+      drafts.set(key, ds);
+      // A new list (same features) so views redraw.
+      list = [...list];
+      listeners.forEach((l) => l(list));
+    }
   });
   void listen<{ host: string }>("host-resync", (e) => {
     if (hosts.includes(e.payload.host)) void load(e.payload.host);
@@ -312,6 +335,9 @@ export function daemonSource(): FeatureSource {
       const { host, feature } = splitKey(key);
       const data = await invoke<string>("feature_artifact", { host, feature, name });
       return `data:image/png;base64,${data}`;
+    },
+    drafts(key) {
+      return [...(drafts.get(key)?.values() ?? [])];
     },
   };
 }

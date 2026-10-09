@@ -1,5 +1,6 @@
 import { useRef, useState, type KeyboardEvent } from "react";
 import { ContextMenu, type MenuItem } from "./Menu";
+import { GearIcon } from "./SettingsDialog";
 import { VIEWS, viewForArrow, type View } from "./nav";
 
 interface Props {
@@ -7,7 +8,7 @@ interface Props {
   onView: (view: View) => void;
   /** How many items need the developer, per view (a dot when > 0). */
   badges: Partial<Record<View, number>>;
-  /** Settings menu: theme, hosts, command-line tools. */
+  /** Settings menu: Otter's model and keys, theme, hosts, command-line tools. */
   settings: MenuItem[];
 }
 
@@ -65,15 +66,7 @@ export function ActivityBar({ view, onView, badges, settings }: Props) {
           setMenu(menu ? null : { x: r.right + 4, y: r.top - 8 * settings.length });
         }}
       >
-        <svg width="18" height="18" viewBox="0 0 18 18" aria-hidden="true">
-          <circle cx="9" cy="9" r="2.4" fill="none" stroke="currentColor" strokeWidth="1.5" />
-          <path
-            d="M9 1.8v2M9 14.2v2M1.8 9h2M14.2 9h2M3.9 3.9l1.4 1.4M12.7 12.7l1.4 1.4M3.9 14.1l1.4-1.4M12.7 5.3l1.4-1.4"
-            stroke="currentColor"
-            strokeWidth="1.5"
-            strokeLinecap="round"
-          />
-        </svg>
+        <GearIcon />
       </button>
       {menu && <ContextMenu x={menu.x} y={menu.y} items={settings} onClose={() => setMenu(null)} />}
     </nav>

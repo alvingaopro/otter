@@ -2,10 +2,8 @@ import { useRef, useState, type PointerEvent as ReactPointerEvent } from "react"
 import { Glyph } from "./Glyph";
 import { ContextMenu, type MenuItem } from "./Menu";
 import { ago, groups, headline, pinnedOf, workspaceGlyph } from "./model";
-import type { ThemeChoice } from "./theme";
 import type { HostView, Placed } from "./types";
 import otterIcon from "./assets/otter.png";
-import { SettingsButton } from "./SettingsDialog";
 
 interface Props {
   placed: Placed[];
@@ -20,10 +18,6 @@ interface Props {
   /** The host whose page is open. */
   hostPage?: string;
   onNew: () => void;
-  /** Open Settings (Control Agent, API keys). */
-  onSettings: () => void;
-  themeChoice: ThemeChoice;
-  onTheme: () => void;
   /** Set when the command-line tools are missing or another version. */
   cliAction?: string;
   onCli: () => void;
@@ -172,8 +166,6 @@ export function Sidebar(props: Props) {
     <nav className={drag ? "sidebar reordering" : "sidebar"} aria-label="Workspaces">
       <div className="sidebar-top" data-tauri-drag-region>
         <span className="spacer" data-tauri-drag-region />
-        <SettingsButton onClick={props.onSettings} />
-        <ThemeButton choice={props.themeChoice} onClick={props.onTheme} />
         <button className="icon-btn" aria-label="New workspace" title="New workspace (⌘N)" onClick={props.onNew}>
           <svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true">
             <path d="M7 2v10M2 7h10" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
@@ -296,33 +288,6 @@ function CountBadge({ kind, count, label, onClick }: { kind: "needs" | "working"
     >
       <span className="count-dot" />
       {count}
-    </button>
-  );
-}
-
-function ThemeButton({ choice, onClick }: { choice: ThemeChoice; onClick: () => void }) {
-  return (
-    <button
-      className="icon-btn"
-      onClick={onClick}
-      aria-label={`Theme: ${choice}`}
-      title={`Theme: ${choice === "system" ? "match system" : choice} (click to change)`}
-    >
-      {choice === "light" ? (
-        <svg width="15" height="15" viewBox="0 0 16 16" aria-hidden="true">
-          <circle cx="8" cy="8" r="3" fill="none" stroke="currentColor" strokeWidth="1.5" />
-          <path d="M8 1.5v1.5M8 13v1.5M1.5 8H3M13 8h1.5M3.4 3.4l1 1M11.6 11.6l1 1M3.4 12.6l1-1M11.6 4.4l1-1" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-        </svg>
-      ) : choice === "dark" ? (
-        <svg width="15" height="15" viewBox="0 0 16 16" aria-hidden="true">
-          <path d="M13 9.5A5.5 5.5 0 0 1 6.5 3a5.5 5.5 0 1 0 6.5 6.5z" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round" />
-        </svg>
-      ) : (
-        <svg width="15" height="15" viewBox="0 0 16 16" aria-hidden="true">
-          <circle cx="8" cy="8" r="6" fill="none" stroke="currentColor" strokeWidth="1.5" />
-          <path d="M8 2a6 6 0 0 1 0 12z" fill="currentColor" />
-        </svg>
-      )}
     </button>
   );
 }

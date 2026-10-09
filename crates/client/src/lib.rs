@@ -441,6 +441,17 @@ impl Connection {
         self.call(Request::SettingsSet(u)).await
     }
 
+    /// The models a controller offers, as the host's provider lists them.
+    pub async fn settings_models(
+        &mut self,
+        controller: &str,
+    ) -> Result<Vec<otter_protocol::host::ModelInfo>> {
+        self.call(Request::SettingsModels(otter_protocol::host::ModelsQuery {
+            controller: controller.to_owned(),
+        }))
+        .await
+    }
+
     pub async fn feature_list(&mut self) -> Result<Vec<otter_core::feature::Feature>> {
         self.call(Request::FeatureList).await
     }

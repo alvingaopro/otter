@@ -118,11 +118,7 @@ impl Daemon {
                     if let Err(e) = daemon.step(&id).await {
                         tracing::warn!(feature = %id, "controller: {}", e.message);
                         daemon
-                            .fail(
-                                &id,
-                                &format!("The Control Agent stopped: {}", e.message),
-                                None,
-                            )
+                            .fail(&id, &format!("Otter stopped: {}", e.message), None)
                             .await;
                     }
                     daemon.controller.lock().unwrap().inflight.remove(&id);
@@ -168,9 +164,18 @@ impl Daemon {
             .map(|m| m.text.as_str())
             .collect::<Vec<_>>()
             .join("\n");
+        let stream_id = format!("reply-{}", last.id);
         let reply = match self.feature_workspace(f).await {
             Ok((root, env)) => {
                 let brain = brain::select(&env, &self.brain_choice());
+                // Streamed to the app as it's written (D-051).
+                let draft = std::sync::Mutex::new(crate::runs::Draft::new(stream_id.clone()));
+                let say = |piece: &str| {
+                    let mut d = draft.lock().unwrap();
+                    if let Some(so_far) = d.push(piece) {
+                        self.stream(&f.id, &d.id, MessageRole::Controller, so_far, false);
+                    }
+                };
                 brain
                     .reply(
                         &Context {
@@ -179,6 +184,7 @@ impl Daemon {
                             env: &env,
                         },
                         &text,
+                        &say,
                     )
                     .await
             }
@@ -282,6 +288,13 @@ impl Daemon {
             Ok(changes)
         })?;
         self.feature_changed(&applied);
+        self.stream(
+            &f.id,
+            &stream_id,
+            MessageRole::Controller,
+            reply_text.clone(),
+            true,
+        );
         if stop {
             self.stop_runs(&f.id, RunState::Cancelled, "Paused").await;
         }
@@ -311,7 +324,10 @@ impl Daemon {
         brain::Choice {
             controller: s.controller(),
             model: s.model(),
-            openrouter_key: s.secret("OPENROUTER_API_KEY"),
+            keys: crate::providers::PROVIDERS
+                .iter()
+                .filter_map(|p| Some((p.key.to_owned(), s.secret(p.key)?)))
+                .collect(),
         }
     }
 
@@ -603,10 +619,7 @@ impl Daemon {
                     self.escalate(
                         &f.id,
                         &d,
-                        &format!(
-                            "the Control Agent wanted to allow it ({rationale}), but {}",
-                            e.message
-                        ),
+                        &format!("Otter wanted to allow it ({rationale}), but {}", e.message),
                     )
                     .await;
                 }
@@ -1452,7 +1465,9 @@ fn pr_body(f: &Feature) -> String {
     if !checks.is_empty() {
         b.push_str(&format!("\n### Checked\n{}\n", checks.join("\n")));
     }
-    b.push_str("\n_Opened by Otter's Control Agent; publishing was approved by the developer. Otter doesn't merge._\n");
+    b.push_str(
+        "\n_Opened by Otter; publishing was approved by the developer. Otter doesn't merge._\n",
+    );
     b
 }
 

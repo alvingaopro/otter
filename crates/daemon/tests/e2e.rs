@@ -3764,6 +3764,23 @@ async fn settings_take_keys_write_only_and_keep_them() {
         .unwrap();
     assert!(!s.secrets[0].set);
     assert!(!std::fs::read_to_string(&secrets).unwrap().contains("sk-or"));
+
+    // Every provider is a choice; models are listed per controller (D-052).
+    for id in [
+        "openrouter",
+        "anthropic",
+        "openai",
+        "gemini",
+        "claude",
+        "off",
+    ] {
+        assert!(s.controllers.iter().any(|c| c.id == id), "{id}");
+    }
+    let models = conn.settings_models("claude").await.unwrap();
+    assert!(models.iter().any(|m| m.id == "sonnet"));
+    let err = conn.settings_models("openai").await.unwrap_err();
+    assert!(format!("{err:#}").contains("set the OpenAI key"), "{err:#}");
+    assert!(conn.settings_models("off").await.is_err());
 }
 
 #[tokio::test]
@@ -3820,4 +3837,49 @@ async fn the_control_agent_answers_the_developer() {
             .count(),
         2
     );
+}
+
+#[tokio::test]
+async fn the_agents_text_streams_as_it_is_written() {
+    use otter_core::feature::MessageRole;
+    let fake = fake_agent_host("ok", "rules").await;
+    // Listen first, then start: everything said is seen.
+    let mut events = fake.host.conn().await.subscribe(None).await.unwrap();
+    let head = events.seq;
+    let id = started_feature(&fake.host, "Stream it").await;
+    let mut pieces = Vec::new();
+    let done = tokio::time::timeout(Duration::from_secs(20), async {
+        loop {
+            let rec = events.next().await.unwrap().unwrap();
+            if let Event::FeatureStream {
+                feature_id,
+                role: MessageRole::Agent,
+                text,
+                done,
+                ..
+            } = rec.event
+            {
+                assert_eq!(feature_id.as_str(), id);
+                // Transient: never past the logged head (no cursor moves).
+                assert!(rec.seq >= head);
+                if done {
+                    return text;
+                }
+                pieces.push(text);
+            }
+        }
+    })
+    .await
+    .expect("the stream finishes");
+    assert_eq!(
+        pieces.first().map(String::as_str),
+        Some("Did "),
+        "{pieces:?}"
+    );
+    assert_eq!(done, "Did the work.");
+    // Kept as a message; not kept in the event log.
+    let f = fake.host.conn().await.feature_get(&id).await.unwrap();
+    assert!(f.messages.iter().any(|m| m.text == "Did the work."));
+    let log = std::fs::read_to_string(fake.host.home().join("state/events.jsonl")).unwrap();
+    assert!(!log.contains("FeatureStream"));
 }

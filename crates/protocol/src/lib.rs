@@ -163,6 +163,10 @@ pub enum Request {
     /// [`host::Settings`].
     #[serde(rename = "settings.set")]
     SettingsSet(host::SettingsUpdate),
+    /// The models a controller offers, asked of its provider with this
+    /// host's key (D-052). Result: `Vec<`[`host::ModelInfo`]`>`.
+    #[serde(rename = "settings.models")]
+    SettingsModels(host::ModelsQuery),
 
     /// Every feature on this host, newest first. Result:
     /// `Vec<`[`otter_core::feature::Feature`]`>`.
@@ -228,6 +232,7 @@ impl Request {
             Request::StateSnapshot => "state.snapshot",
             Request::SettingsGet => "settings.get",
             Request::SettingsSet(_) => "settings.set",
+            Request::SettingsModels(_) => "settings.models",
             Request::FeatureList => "feature.list",
             Request::FeatureGet(_) => "feature.get",
             Request::FeatureCreate(_) => "feature.create",

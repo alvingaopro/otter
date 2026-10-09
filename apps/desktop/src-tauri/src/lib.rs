@@ -85,6 +85,7 @@ pub fn run() {
             features::feature_artifact,
             settings::settings_get,
             settings::settings_set,
+            settings::settings_models,
             pins::pins_get,
             pins::pins_set,
             hosts::workspace_create,

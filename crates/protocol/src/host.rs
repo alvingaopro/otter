@@ -112,7 +112,7 @@ pub struct HistoryQuery {
 /// only say whether they are set.
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
 pub struct Settings {
-    /// `claude`, `openrouter`, `rules` or `off`; absent: automatic.
+    /// One of `controllers`; absent: automatic.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub controller: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -122,6 +122,43 @@ pub struct Settings {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub controller_from_env: Option<String>,
     pub secrets: Vec<SecretState>,
+    /// What the Control Agent can be (D-052). Empty from an older otterd.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub controllers: Vec<ControllerInfo>,
+    /// The controller in use now (what "automatic" chose, or the
+    /// environment's).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active: Option<String>,
+}
+
+/// One choice of Control Agent: a model provider, Claude Code, or none.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct ControllerInfo {
+    pub id: String,
+    pub label: String,
+    /// The secret holding its API key, if it takes one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub secret: Option<String>,
+    /// Whether it asks a model (and so has models to choose from).
+    pub models: bool,
+    /// The model used when none is chosen; absent: one must be chosen.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_model: Option<String>,
+}
+
+/// `settings.models`: the models a controller offers.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ModelsQuery {
+    pub controller: String,
+}
+
+/// One model a provider offers (`settings.models`).
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ModelInfo {
+    /// What to put in Settings' model.
+    pub id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
