@@ -1497,3 +1497,13 @@ actually offers, and isn't tied to OpenRouter.
   model … in Settings" rather than guess one.
 - One `model` setting, for the controller chosen: switching provider in the
   app clears it.
+
+## D-053 — The Control Agent is called the Lead (2026-10-09)
+
+"Control Agent" read as jargon next to "coding agent". Everything the
+developer sees says **Lead** — like a tech lead, it plans, directs the
+coding agent, decides what it may, and checks the result; the coding agent
+stays "Agent". Code, protocol and configuration keep their names
+(`controller`, `MessageRole::Controller`, `OTTER_CONTROLLER`), so nothing
+on the wire changes. Settings explains what the Lead is, that each host
+runs its own (with its own model and keys), and what each choice means.

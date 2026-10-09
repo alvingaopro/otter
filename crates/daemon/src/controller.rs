@@ -118,11 +118,7 @@ impl Daemon {
                     if let Err(e) = daemon.step(&id).await {
                         tracing::warn!(feature = %id, "controller: {}", e.message);
                         daemon
-                            .fail(
-                                &id,
-                                &format!("The Control Agent stopped: {}", e.message),
-                                None,
-                            )
+                            .fail(&id, &format!("The Lead stopped: {}", e.message), None)
                             .await;
                     }
                     daemon.controller.lock().unwrap().inflight.remove(&id);
@@ -624,7 +620,7 @@ impl Daemon {
                         &f.id,
                         &d,
                         &format!(
-                            "the Control Agent wanted to allow it ({rationale}), but {}",
+                            "the Lead wanted to allow it ({rationale}), but {}",
                             e.message
                         ),
                     )
@@ -1472,7 +1468,7 @@ fn pr_body(f: &Feature) -> String {
     if !checks.is_empty() {
         b.push_str(&format!("\n### Checked\n{}\n", checks.join("\n")));
     }
-    b.push_str("\n_Opened by Otter's Control Agent; publishing was approved by the developer. Otter doesn't merge._\n");
+    b.push_str("\n_Opened by Otter's Lead; publishing was approved by the developer. Otter doesn't merge._\n");
     b
 }
 

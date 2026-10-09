@@ -43,7 +43,7 @@ const OLD_CONTROLLERS: ControllerInfo[] = [
 type Models = { state: "loading" } | { state: "ready"; list: ModelInfo[] } | { state: "error"; error: string };
 
 /**
- * Settings of one host's Control Agent: which model thinks, and API keys.
+ * Settings of one host's Lead: which model thinks, and API keys.
  * Keys are sent to that host's otterd and kept there (0600); this app never
  * reads them back, it only knows whether one is set. The models offered are
  * what the provider lists, asked by the host with its key.
@@ -136,7 +136,7 @@ export function SettingsDialog({ hosts, defaultHost, onClose }: { hosts: string[
   if (hosts.length === 0) {
     return (
       <Dialog title="Settings" onClose={onClose}>
-        <p className="muted">Connect a host first: settings belong to the host whose Control Agent uses them.</p>
+        <p className="muted">Connect a host first: the Lead runs on a host, and its settings are kept there.</p>
       </Dialog>
     );
   }
@@ -173,22 +173,32 @@ export function SettingsDialog({ hosts, defaultHost, onClose }: { hosts: string[
   return (
     <Dialog title="Settings" onClose={onClose}>
       <form className="form" onSubmit={submit}>
-        {hosts.length > 1 && (
-          <label className="field">
-            <span>Host</span>
-            <select value={host} onChange={(e) => setHost(e.target.value)}>
+        <p className="muted small settings-intro">
+          The <strong>Lead</strong> runs each feature for you: it plans the work, directs a coding agent, answers its
+          questions, and checks the result before handing it to you. It runs in otterd on the host, so it keeps working
+          while this app is closed.
+        </p>
+        <label className="field">
+          <span>Host</span>
+          {hosts.length > 1 ? (
+            <select value={host} onChange={(e) => setHost(e.target.value)} aria-label="Host">
               {hosts.map((h) => (
                 <option key={h}>{h}</option>
               ))}
             </select>
-          </label>
-        )}
+          ) : (
+            <span className="settings-host">{host}</span>
+          )}
+          <span className="muted small">
+            Each host has its own Lead, with its own model and keys: features on {host} use these.
+          </span>
+        </label>
         {!settings && !error && <p className="muted small">Loading…</p>}
         {settings && (
           <>
             <label className="field">
-              <span>Control Agent</span>
-              <select value={controller} onChange={(e) => choose(e.target.value)} aria-label="Control Agent">
+              <span>Lead</span>
+              <select value={controller} onChange={(e) => choose(e.target.value)} aria-label="Lead">
                 <option value="">
                   Automatic{settings.active ? ` (now: ${label(settings.active)})` : " (the first provider with a key, else Claude Code)"}
                 </option>
@@ -198,6 +208,7 @@ export function SettingsDialog({ hosts, defaultHost, onClose }: { hosts: string[
                   </option>
                 ))}
               </select>
+              <span className="muted small">{explain(effective, info, !controller)}</span>
             </label>
             {settings.controller_from_env && (
               <p className="notice small">
@@ -227,6 +238,9 @@ export function SettingsDialog({ hosts, defaultHost, onClose }: { hosts: string[
                     </button>
                   )}
                 </div>
+                <span className="muted small">
+                  What the Lead thinks with. The coding agent's own model is set separately.
+                </span>
                 <span className="muted small" aria-live="polite">
                   {models?.state === "loading" && "Loading models…"}
                   {models?.state === "ready" &&
@@ -242,6 +256,10 @@ export function SettingsDialog({ hosts, defaultHost, onClose }: { hosts: string[
                 <summary className="muted small">
                   Other API keys ({otherKeys.filter((s) => s.set).length} set)
                 </summary>
+                <p className="muted small">
+                  Keys for the other providers, so you can switch without entering them again. In Automatic, the
+                  first provider with a key is used.
+                </p>
                 {otherKeys.map(keyField)}
               </details>
             )}
@@ -261,6 +279,22 @@ export function SettingsDialog({ hosts, defaultHost, onClose }: { hosts: string[
       </form>
     </Dialog>
   );
+}
+
+/** What a choice of Lead means, in a sentence. */
+function explain(id: string, info: ControllerInfo | undefined, automatic: boolean): string {
+  const how = !info
+    ? "With no key and no Claude Code, it follows fixed rules."
+    : info.secret
+      ? `Asks ${info.label}'s models through its API, with the key below. Usage is billed to that key.`
+      : id === "claude"
+        ? "Uses Claude Code installed on the host, with its own sign-in there: no key needed."
+        : id === "rules"
+          ? "No model: it plans one task, every open decision comes to you, and a passing check counts as done."
+          : id === "off"
+            ? "Features don't move on their own: nothing is planned or run until you change this."
+            : "";
+  return automatic ? `Automatic picks the first provider with a key, else Claude Code, else fixed rules. ${how}` : how;
 }
 
 /** At most this many matches are shown; typing narrows them. */
@@ -380,7 +414,7 @@ function ModelPicker({
 /** The gear that opens Settings. */
 export function SettingsButton({ onClick }: { onClick: () => void }) {
   return (
-    <button className="icon-btn" aria-label="Settings" title="Settings: Control Agent and API keys" onClick={onClick}>
+    <button className="icon-btn" aria-label="Settings" title="Settings: Lead and API keys" onClick={onClick}>
       {/* A gear (not a sun: that reads as a theme switch). */}
       <svg width="15" height="15" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
         <circle cx="12" cy="12" r="3" />

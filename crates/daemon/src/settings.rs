@@ -32,7 +32,7 @@ fn secret_names() -> impl Iterator<Item = (&'static str, String)> {
     PROVIDERS.iter().map(|p| {
         (
             p.key,
-            format!("{}, for the Control Agent (controller `{}`)", p.label, p.id),
+            format!("Lets the Lead use {} (choice `{}`)", p.label, p.id),
         )
     })
 }

@@ -108,7 +108,7 @@ pub trait Brain: Send + Sync {
     async fn reply(&self, cx: &Context<'_>, _message: &str, _say: &Say<'_>) -> Result<Reply> {
         Ok(Reply {
             text: format!(
-                "{} (No model is set for the Control Agent on this host, so I can't act on messages: use the buttons, or choose a model in Settings.)",
+                "{} (No model is set for the Lead on this host, so I can't act on messages: use the buttons, or choose a model in Settings.)",
                 status_text(cx.feature)
             ),
             intent: Intent::None,
@@ -528,7 +528,7 @@ impl Brain for Model {
             String::new()
         };
         let prompt = format!(
-            "You are the Control Agent planning a software feature for a coding agent working in {root}.\n\
+            "You are the Lead (the developer's tech lead) planning a software feature for a coding agent working in {root}.\n\
              {brief}\n\
              Write: requirements (short), acceptance criteria that can be checked, and 1-5 tasks in order \
              (depends_on = indexes of earlier tasks). verify_command: one shell command that checks the work \
@@ -564,7 +564,7 @@ impl Brain for Model {
 
     async fn decide(&self, cx: &Context<'_>, d: &DecisionRequest) -> Result<Verdict> {
         let prompt = format!(
-            "You are the Control Agent supervising a coding agent on this feature.\n{brief}\n\
+            "You are the Lead (the developer's tech lead) supervising a coding agent on this feature.\n{brief}\n\
              The agent asks ({kind:?}, {risk:?} risk): {summary}\nPolicy note: {detail}\n{options}\
              Decide: allow, deny, answer (for a question: give the answer), or escalate to the developer \
              when it's ambiguous, risky, or not clearly needed for the feature. Be conservative.",
@@ -623,7 +623,7 @@ impl Brain for Model {
             .filter_map(|r| r.summary.clone())
             .collect();
         let prompt = format!(
-            "You are the Control Agent verifying a feature. Judge each acceptance criterion strictly from \
+            "You are the Lead (the developer's tech lead) verifying a feature. Judge each acceptance criterion strictly from \
              the evidence (a deterministic check outranks a claim; the coding agent's own summary is a claim, \
              not evidence). If unsure, it is not met.\n{brief}\nCriteria: {criteria}\nEvidence (newest first): \
              {evidence}\nAgent summaries: {summaries:?}\nremediation: what to fix next if anything is not met.",
@@ -699,7 +699,7 @@ impl Brain for Model {
             .map(|(i, t)| format!("{}. {} — {:?}", i + 1, t.title, t.status))
             .collect();
         let prompt = format!(
-            "You are the Control Agent running a software feature for the developer. Reply to their \
+            "You are the Lead (the developer's tech lead) running a software feature for the developer. Reply to their \
              latest message directly and briefly (2-5 sentences), in the language they wrote in. \
              Say what is happening and what happens next; if they give instructions, say how you'll \
              act on them. Don't invent progress.\n{brief}\nStatus: {status}\nTasks:\n{tasks}\n\

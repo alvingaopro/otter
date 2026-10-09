@@ -32,7 +32,7 @@ interface Props {
   onOpenWorkspace: (host: string, workspaceId: string, sessionId?: string) => void;
   /** Open a preview port of a host in the browser (forwarding it if remote). */
   onOpenPreview: (host: string, port: number, path: string) => Promise<void>;
-  /** Open Settings (Control Agent, API keys). */
+  /** Open Settings (Lead, API keys). */
   onSettings?: () => void;
 }
 
@@ -127,7 +127,7 @@ export function FeaturesView({ source, hosts, workspaces, now, onOpenWorkspace, 
         <main className="pane empty">
           <div className="drag-strip" data-tauri-drag-region />
           <h1 className="empty-title">Describe a feature</h1>
-          <p className="muted">Say what you want built. A Control Agent plans it, drives a coding agent in a workspace and verifies the result.</p>
+          <p className="muted">Say what you want built. The Lead plans it, directs a coding agent in a workspace and verifies the result.</p>
           <div className="empty-actions">
             <button className="btn primary" onClick={() => setCreating(true)}>
               New feature
@@ -392,7 +392,7 @@ function StatusBanner({ f, onApprovals, act }: { f: Feature; onApprovals: () => 
   return null;
 }
 
-const ROLE: Record<string, string> = { user: "You", controller: "Control Agent", agent: "Coding agent", system: "Otter" };
+const ROLE: Record<string, string> = { user: "You", controller: "Lead", agent: "Coding agent", system: "Otter" };
 
 function Conversation({ placed, source, now }: { placed: PlacedFeature; source: FeatureSource; now: number }) {
   const [text, setText] = useState("");
@@ -406,7 +406,7 @@ function Conversation({ placed, source, now }: { placed: PlacedFeature; source: 
   );
   const draftText = drafts.map((d) => d.text).join("");
   const activity = live?.activity ?? [];
-  // The developer spoke last: the Control Agent's answer is on its way.
+  // The developer spoke last: the Lead's answer is on its way.
   const last = messages[messages.length - 1];
   const replying = drafts.some((d) => d.role === "controller");
   const awaitingReply =
@@ -469,16 +469,16 @@ function Conversation({ placed, source, now }: { placed: PlacedFeature; source: 
             )}
           </div>
         )}
-        {awaitingReply && <p className="muted small replying">Control Agent is replying…</p>}
+        {awaitingReply && <p className="muted small replying">The Lead is replying…</p>}
         <div ref={end} />
       </div>
       <form className="composer" onSubmit={submit}>
         <textarea
-          aria-label="Message to the Control Agent"
+          aria-label="Message to the Lead"
           placeholder={
             placed.feature.status === "review" || placed.feature.status === "done"
               ? "Happy with it? Or say what to change…"
-              : "Tell the Control Agent what you want…"
+              : "Tell the Lead what you want…"
           }
           value={text}
           rows={2}
@@ -505,7 +505,7 @@ function Plan({ f }: { f: Feature }) {
       <p className="plan-request">{f.request || <span className="muted">—</span>}</p>
       <h2 className="sub-title">Requirements</h2>
       {f.requirements.length === 0 ? (
-        <p className="muted small">None yet: the Control Agent writes them while planning.</p>
+        <p className="muted small">None yet: the Lead writes them while planning.</p>
       ) : (
         <ul className="plain-list">
           {f.requirements.map((r) => (

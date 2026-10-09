@@ -715,7 +715,7 @@ impl FeatureEvent {
             },
             FeatureEvent::MessageAdded { role, .. } => match role {
                 MessageRole::User => "You sent a message".into(),
-                MessageRole::Controller => "The Control Agent replied".into(),
+                MessageRole::Controller => "The Lead replied".into(),
                 MessageRole::Agent => "The coding agent reported".into(),
                 MessageRole::System => "Otter noted something".into(),
             },

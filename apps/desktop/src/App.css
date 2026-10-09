@@ -573,3 +573,6 @@ code, .mono { font-family: var(--mono); }
 .combo-name { font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .combo-id { font-size: 11.5px; font-family: var(--mono); color: var(--faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .combo-list li.combo-more { cursor: default; color: var(--faint); font-size: 12px; }
+.settings-intro { margin: 0; line-height: 1.5; }
+.settings-intro strong { color: var(--text); font-weight: 600; }
+.settings-host { font-family: var(--mono); font-size: 13px; }

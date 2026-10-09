@@ -221,7 +221,7 @@ export default function App() {
           badges={{ features: featureNeeds, workspaces: placed.filter((p) => p.ws.activity === "needs_you").length }}
           settings={[
             { label: `Theme: ${themeChoice === "system" ? "match system" : themeChoice}`, onSelect: cycleTheme },
-            { label: "Control Agent and API keys…", onSelect: () => setOpen({ kind: "settings" }) },
+            { label: "Lead: model and API keys…", onSelect: () => setOpen({ kind: "settings" }) },
             { label: "Add a host…", onSelect: () => setOpen({ kind: "add" }) },
             {
               label: cli?.version ? "Update command line tools…" : "Install command line tools…",

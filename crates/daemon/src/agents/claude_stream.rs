@@ -331,7 +331,7 @@ pub async fn structured_reading(
         child.wait_with_output(),
     )
     .await
-    .map_err(|_| anyhow!("the Control Agent took too long to answer"))??;
+    .map_err(|_| anyhow!("the Lead took too long to answer"))??;
     let v: Value = serde_json::from_slice(&out.stdout)
         .with_context(|| format!("reading claude's answer (exit {})", out.status))?;
     if v["is_error"] == true {
@@ -420,7 +420,7 @@ pub async fn stream_text(
     };
     tokio::time::timeout(std::time::Duration::from_secs(300), read)
         .await
-        .map_err(|_| anyhow!("the Control Agent took too long to answer"))??;
+        .map_err(|_| anyhow!("the Lead took too long to answer"))??;
     let _ = child.wait().await;
     Ok(text)
 }
