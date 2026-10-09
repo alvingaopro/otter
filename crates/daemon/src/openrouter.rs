@@ -132,8 +132,129 @@ pub async fn structured(
     parse(&v)
 }
 
+/// Plain text from a model, streamed (server-sent events): `say` gets each
+/// piece as it's written; the whole text is returned (D-051). The key goes
+/// to curl on stdin, never on a command line.
+pub async fn stream_text(
+    env: &EnvMap,
+    key: &str,
+    model: Option<&str>,
+    prompt: &str,
+    say: &(dyn Fn(&str) + Send + Sync),
+) -> Result<String> {
+    use tokio::io::AsyncBufReadExt;
+    let curl = which("curl", env).ok_or_else(|| anyhow!("curl is not installed"))?;
+    let body = json!({
+        "model": model.unwrap_or(DEFAULT_MODEL),
+        "messages": [{"role": "user", "content": prompt}],
+        "stream": true,
+    });
+    let mut file = tempfile::Builder::new().prefix("otter-or").tempfile()?;
+    file.write_all(body.to_string().as_bytes())?;
+    let config = format!(
+        "header = \"Authorization: Bearer {key}\"\nheader = \"Content-Type: application/json\"\nheader = \"X-Title: Otter\"\n"
+    );
+    let mut cmd = tokio::process::Command::new(&curl);
+    cmd.args([
+        "-sS",
+        "-N",
+        "--max-time",
+        "300",
+        "--config",
+        "-",
+        "--data-binary",
+    ])
+    .arg(format!("@{}", file.path().display()))
+    .arg(URL)
+    .env_clear()
+    .envs(env)
+    .stdin(std::process::Stdio::piped())
+    .stdout(std::process::Stdio::piped())
+    .stderr(std::process::Stdio::piped())
+    .kill_on_drop(true);
+    let mut child = crate::env::spawn_tokio(&mut cmd)
+        .await
+        .context("starting curl")?;
+    let mut stdin = child.stdin.take().expect("piped");
+    stdin.write_all(config.as_bytes()).await?;
+    drop(stdin);
+    let mut lines = tokio::io::BufReader::new(child.stdout.take().expect("piped")).lines();
+    let mut text = String::new();
+    let mut other = String::new();
+    while let Some(line) = lines.next_line().await? {
+        match sse_piece(&line) {
+            Sse::Piece(t) => {
+                text.push_str(&t);
+                say(&t);
+            }
+            Sse::Done => break,
+            Sse::Error(e) => bail!("OpenRouter: {e}"),
+            Sse::Other => other.push_str(&line),
+        }
+    }
+    let out = child.wait_with_output().await?;
+    if text.is_empty() {
+        // Not a stream: an error answered as plain JSON, or curl failed.
+        if let Ok(v) = serde_json::from_str::<Value>(&other) {
+            parse(&v)?;
+        }
+        if !out.status.success() {
+            bail!(
+                "reaching OpenRouter: {}",
+                String::from_utf8_lossy(&out.stderr).trim()
+            );
+        }
+        bail!("OpenRouter gave no answer");
+    }
+    Ok(text)
+}
+
+#[derive(Debug, PartialEq)]
+enum Sse {
+    Piece(String),
+    Done,
+    Error(String),
+    Other,
+}
+
+/// One line of OpenRouter's event stream.
+fn sse_piece(line: &str) -> Sse {
+    let Some(data) = line.strip_prefix("data:").map(str::trim) else {
+        return Sse::Other; // Comments (`: OPENROUTER PROCESSING`), blank lines.
+    };
+    if data == "[DONE]" {
+        return Sse::Done;
+    }
+    let Ok(v) = serde_json::from_str::<Value>(data) else {
+        return Sse::Other;
+    };
+    if let Some(e) = v.get("error") {
+        return Sse::Error(e["message"].as_str().unwrap_or("request failed").to_owned());
+    }
+    match v["choices"][0]["delta"]["content"].as_str() {
+        Some(t) if !t.is_empty() => Sse::Piece(t.to_owned()),
+        _ => Sse::Other,
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn event_stream_lines() {
+        use super::{Sse, sse_piece};
+        assert_eq!(
+            sse_piece(r#"data: {"choices":[{"delta":{"content":"Hel"}}]}"#),
+            Sse::Piece("Hel".into())
+        );
+        assert_eq!(sse_piece("data: [DONE]"), Sse::Done);
+        assert_eq!(sse_piece(": OPENROUTER PROCESSING"), Sse::Other);
+        assert_eq!(sse_piece(""), Sse::Other);
+        assert_eq!(
+            sse_piece(r#"data: {"error":{"message":"No auth credentials found"}}"#),
+            Sse::Error("No auth credentials found".into())
+        );
+    }
+
     use super::*;
     use std::os::unix::fs::PermissionsExt;
 

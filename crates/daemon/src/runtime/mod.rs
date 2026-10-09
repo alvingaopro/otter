@@ -93,8 +93,12 @@ pub enum RuntimeEvent {
     Session {
         id: String,
     },
-    /// Something the agent said.
+    /// Something the agent said (a whole message).
     Text {
+        text: String,
+    },
+    /// A piece of what the agent is saying right now (before its `Text`).
+    TextDelta {
         text: String,
     },
     /// A tool ran (or is about to, if allowed without asking).

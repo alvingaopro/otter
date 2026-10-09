@@ -195,6 +195,9 @@ impl Daemon {
         let mut queued: Vec<String> = Vec::new();
         // What the agent said this turn (already in the conversation).
         let mut said: Vec<String> = Vec::new();
+        // What it is saying right now, streamed (D-051).
+        let mut draft = Draft::new(format!("{run}-0"));
+        let mut blocks = 0u32;
         let mut last_text: Option<String> = None;
         loop {
             tokio::select! {
@@ -205,8 +208,19 @@ impl Daemon {
                             self.update_run(&feature, &run, |r| r.provider_session_id = Some(id)).await;
                         }
                         // Streamed: what the agent says shows up as it says it.
+                        RuntimeEvent::TextDelta { text } => {
+                            if let Some(so_far) = draft.push(&text) {
+                                self.stream(&feature, &draft.id, MessageRole::Agent, so_far, false);
+                            }
+                        }
                         RuntimeEvent::Text { text } => {
                             self.agent_said(&feature, &run, text.clone()).await;
+                            // Kept now: the streamed draft is done.
+                            if draft.started() {
+                                self.stream(&feature, &draft.id, MessageRole::Agent, text.clone(), true);
+                            }
+                            blocks += 1;
+                            draft = Draft::new(format!("{run}-{blocks}"));
                             said.push(text.trim().to_owned());
                             last_text = Some(text);
                         }
@@ -556,6 +570,25 @@ impl Daemon {
         }
     }
 
+    /// Text being written right now, to the app (transient, D-051).
+    pub(crate) fn stream(
+        &self,
+        feature: &FeatureId,
+        stream_id: &str,
+        role: MessageRole,
+        text: String,
+        done: bool,
+    ) {
+        self.events
+            .emit_transient(otter_protocol::Event::FeatureStream {
+                feature_id: feature.clone(),
+                stream_id: stream_id.to_owned(),
+                role,
+                text,
+                done,
+            });
+    }
+
     /// Note what the agent just did on its run (kept short: the last lines).
     async fn run_activity(&self, feature: &FeatureId, run: &RunId, line: String) {
         const KEEP: usize = 30;
@@ -716,4 +749,62 @@ fn activity_line(tool: &str, call: &crate::runtime::ToolCall) -> String {
         ToolCall::Read | ToolCall::Other { .. } => tool.to_owned(),
     };
     crate::agents::excerpt(&line, 200)
+}
+
+/// A message being written, sent at most every [`Draft::EVERY`].
+pub(crate) struct Draft {
+    pub id: String,
+    text: String,
+    sent: Option<std::time::Instant>,
+}
+
+impl Draft {
+    const EVERY: std::time::Duration = std::time::Duration::from_millis(100);
+
+    pub fn new(id: String) -> Draft {
+        Draft {
+            id,
+            text: String::new(),
+            sent: None,
+        }
+    }
+
+    /// Add a piece; the text so far when it's time to send it.
+    pub fn push(&mut self, piece: &str) -> Option<String> {
+        self.text.push_str(piece);
+        let due = self.sent.is_none_or(|t| t.elapsed() >= Self::EVERY);
+        due.then(|| {
+            self.sent = Some(std::time::Instant::now());
+            self.text.clone()
+        })
+    }
+
+    /// Something was sent.
+    pub fn started(&self) -> bool {
+        self.sent.is_some()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_draft_sends_the_text_so_far_at_most_every_100ms() {
+        let mut d = Draft::new("r-0".into());
+        assert!(!d.started());
+        assert_eq!(
+            d.push("Hel").as_deref(),
+            Some("Hel"),
+            "the first piece goes out"
+        );
+        assert_eq!(d.push("lo"), None, "then not before 100 ms");
+        std::thread::sleep(Draft::EVERY);
+        assert_eq!(
+            d.push("!").as_deref(),
+            Some("Hello!"),
+            "the whole text so far"
+        );
+        assert!(d.started());
+    }
 }

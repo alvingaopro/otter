@@ -172,6 +172,16 @@ export interface WorkspaceChoice {
   name: string;
 }
 
+/** A message being written right now (`FeatureStream`, D-051). */
+export interface Draft {
+  stream_id: string;
+  role: MessageRole;
+  /** The text so far. */
+  text: string;
+  /** Written: the message itself is on its way with the next reload. */
+  done: boolean;
+}
+
 /** One entry of a feature's own append-only history (`feature.events`). */
 export interface FeatureEventRecord {
   seq: number;

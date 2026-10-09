@@ -1432,3 +1432,33 @@ developer checks the result and either is satisfied, adjusts, or stops.
   to the Control Agent. *Take over* / *Hand back* (D-044) are removed, from
   the app and the protocol. (Interactive agent sessions in workspaces are
   untouched, and `SessionSpec.resume` stays.)
+
+## D-051 — Streaming text: transient events (2026-10-09)
+
+The developer should watch the coding agent and the Control Agent write,
+not wait for whole messages.
+
+- **Where text comes from.** The coding agent runs with
+  `--include-partial-messages`; Claude Code then sends `stream_event`
+  `content_block_delta` / `text_delta` pieces before each whole assistant
+  message (observed on 2.1.295). The Control Agent's reply is now plain
+  text, streamed — OpenRouter's chat completions with `"stream": true`
+  (server-sent events), or `claude -p --output-format stream-json
+  --include-partial-messages` — ending in an `INTENT: …` line, the model's
+  own judgment of what the developer asked (D-049), which is never shown.
+  (Plans, decisions and judgments keep the structured, schema-checked
+  calls.)
+- **Transient events.** `FeatureStream {feature_id, stream_id, role, text,
+  done}` carries the text so far, at most every 100 ms. It is sent to live
+  subscribers only: never written to `events.jsonl`, never replayed, and
+  stamped with the latest logged `seq` so it never moves a client's cursor
+  (D-016, D-037 unchanged). A client that misses some loses nothing: the
+  next one carries the whole text, and the finished message is stored in the
+  feature as before (`done` says so). A lagging subscriber simply skips
+  transient events.
+- The app shows a message being written with a cursor, keeps the finished
+  one until the feature reloads with it, and doesn't re-snapshot the
+  workspaces for feature events.
+- An exception to "events carry ids, not content" (design §19): stream
+  text is conversation the developer is shown anyway, it is never
+  persisted in the log, and it carries no secrets the feature doesn't.

@@ -70,6 +70,8 @@ pub fn argv(spec: &RunSpec) -> Vec<String> {
         // project's settings come with the repository (D-044).
         "--setting-sources",
         "",
+        // Text as it is written, for streaming it to the developer (D-051).
+        "--include-partial-messages",
     ]
     .into_iter()
     .map(String::from)
@@ -344,6 +346,85 @@ pub async fn structured_reading(
     }
 }
 
+/// Plain text from Claude, streamed: `claude -p --output-format stream-json
+/// --include-partial-messages`, no tools and no settings files. `say` gets
+/// each piece as it's written; the whole text is returned (D-051).
+pub async fn stream_text(
+    env: &crate::env::EnvMap,
+    cwd: &std::path::Path,
+    prompt: &str,
+    model: Option<&str>,
+    say: &(dyn Fn(&str) + Send + Sync),
+) -> Result<String> {
+    let program = which("claude", env).ok_or_else(|| anyhow!("claude is not on PATH"))?;
+    let mut cmd = tokio::process::Command::new(&program);
+    cmd.args([
+        "-p",
+        "--output-format",
+        "stream-json",
+        "--verbose",
+        "--include-partial-messages",
+        "--tools",
+        "",
+        "--setting-sources",
+        "",
+    ]);
+    if let Some(model) = model {
+        cmd.args(["--model", model]);
+    }
+    cmd.current_dir(cwd)
+        .env_clear()
+        .envs(env)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .kill_on_drop(true);
+    let mut child = crate::env::spawn_tokio(&mut cmd)
+        .await
+        .with_context(|| format!("starting {}", program.display()))?;
+    let mut stdin = child.stdin.take().expect("piped");
+    stdin.write_all(prompt.as_bytes()).await?;
+    drop(stdin);
+    let mut lines = BufReader::new(child.stdout.take().expect("piped")).lines();
+    let mut text = String::new();
+    let read = async {
+        while let Some(line) = lines.next_line().await? {
+            let Ok(v) = serde_json::from_str::<Value>(&line) else {
+                continue;
+            };
+            match v["type"].as_str() {
+                Some("stream_event") if v["event"]["delta"]["type"] == "text_delta" => {
+                    if let Some(t) = v["event"]["delta"]["text"].as_str() {
+                        text.push_str(t);
+                        say(t);
+                    }
+                }
+                Some("result") => {
+                    if v["is_error"] == true {
+                        anyhow::bail!(
+                            "claude failed: {}",
+                            v["result"].as_str().unwrap_or("no details")
+                        );
+                    }
+                    // The final text, in case pieces went missing.
+                    if let Some(r) = v["result"].as_str().filter(|r| r.len() > text.len()) {
+                        say(&r[text.len().min(r.len())..]);
+                        text = r.to_owned();
+                    }
+                    return Ok(());
+                }
+                _ => {}
+            }
+        }
+        Ok(())
+    };
+    tokio::time::timeout(std::time::Duration::from_secs(300), read)
+        .await
+        .map_err(|_| anyhow!("the Control Agent took too long to answer"))??;
+    let _ = child.wait().await;
+    Ok(text)
+}
+
 /// The `control_response` body for a decision.
 pub fn response_for(tool: &str, input: &Value, reply: &DecisionReply) -> Value {
     match reply {
@@ -451,6 +532,20 @@ fn parse(v: &Value, shared: &Mutex<Shared>) -> Vec<RuntimeEvent> {
                 }
             }
         }
+        // Text as it is written (`--include-partial-messages`): the main
+        // turn's text deltas only.
+        Some("stream_event")
+            if v["parent_tool_use_id"].is_null()
+                && v["event"]["type"] == "content_block_delta"
+                && v["event"]["delta"]["type"] == "text_delta" =>
+        {
+            if let Some(t) = v["event"]["delta"]["text"]
+                .as_str()
+                .filter(|t| !t.is_empty())
+            {
+                out.push(RuntimeEvent::TextDelta { text: t.to_owned() });
+            }
+        }
         Some("control_request") if v["request"]["subtype"] == "can_use_tool" => {
             let Some(request_id) = v["request_id"].as_str() else {
                 return out;
@@ -515,6 +610,7 @@ mod tests {
         assert!(has(["--input-format", "stream-json"]));
         assert!(has(["--resume", "abc"]));
         assert!(has(["--setting-sources", ""]));
+        assert!(a.iter().any(|x| x == "--include-partial-messages"));
         // The prompt goes over stdin, never on the command line.
         assert!(!a.iter().any(|x| x.contains("do it")));
     }
@@ -555,6 +651,19 @@ mod tests {
         ));
         // Unknown messages are ignored.
         assert!(parse(&json!({"type":"rate_limit_event"}), &s).is_empty());
+        // Text as it's written (observed on 2.1.295 with --include-partial-messages).
+        let delta = json!({"type":"stream_event","parent_tool_use_id":null,"event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hello there"}}});
+        assert_eq!(
+            parse(&delta, &s),
+            vec![RuntimeEvent::TextDelta {
+                text: "hello there".into()
+            }]
+        );
+        let sub = json!({"type":"stream_event","parent_tool_use_id":"toolu_9","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"x"}}});
+        assert!(
+            parse(&sub, &s).is_empty(),
+            "a subagent's text isn't the main turn"
+        );
     }
 
     #[test]
@@ -764,6 +873,19 @@ mod process_tests {
                 call: ToolCall::Command {
                     line: "make test".into()
                 }
+            }
+        );
+        // Written in pieces, then whole.
+        assert_eq!(
+            next(&mut h).await,
+            RuntimeEvent::TextDelta {
+                text: "Did ".into()
+            }
+        );
+        assert_eq!(
+            next(&mut h).await,
+            RuntimeEvent::TextDelta {
+                text: "the work.".into()
             }
         );
         assert_eq!(

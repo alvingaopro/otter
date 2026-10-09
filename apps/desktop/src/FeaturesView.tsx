@@ -400,11 +400,21 @@ function Conversation({ placed, source, now }: { placed: PlacedFeature; source: 
   const end = useRef<HTMLDivElement>(null);
   const messages = placed.feature.messages;
   const live = placed.feature.runs.find((r) => ["starting", "running", "waiting"].includes(r.state));
+  // Being written right now (D-051); a written one shows until its message loads.
+  const drafts = (source.drafts?.(placed.key) ?? []).filter(
+    (d) => !(d.done && messages.some((m) => m.role === d.role && m.text.trim() === d.text.trim())),
+  );
+  const draftText = drafts.map((d) => d.text).join("");
   const activity = live?.activity ?? [];
   // The developer spoke last: the Control Agent's answer is on its way.
   const last = messages[messages.length - 1];
-  const awaitingReply = last?.role === "user" && messages.length > 1 && !["done", "cancelled"].includes(placed.feature.status);
-  useEffect(() => end.current?.scrollIntoView?.({ block: "end" }), [messages.length, activity.length, awaitingReply]);
+  const replying = drafts.some((d) => d.role === "controller");
+  const awaitingReply =
+    !replying && last?.role === "user" && messages.length > 1 && !["done", "cancelled"].includes(placed.feature.status);
+  useEffect(
+    () => end.current?.scrollIntoView?.({ block: "end" }),
+    [messages.length, activity.length, awaitingReply, draftText.length],
+  );
 
   async function submit(e: FormEvent) {
     e.preventDefault();
@@ -430,6 +440,18 @@ function Conversation({ placed, source, now }: { placed: PlacedFeature; source: 
               <span className="message-at">{ago(m.at, now)}</span>
             </div>
             <div className="message-text">{m.text}</div>
+          </div>
+        ))}
+        {drafts.map((d) => (
+          <div key={d.stream_id} className={`message ${d.role} streaming`}>
+            <div className="message-head">
+              <span className="message-role">{ROLE[d.role] ?? d.role}</span>
+              <span className="message-at">{d.done ? "now" : "writing…"}</span>
+            </div>
+            <div className="message-text">
+              {d.text}
+              {!d.done && <span className="cursor" aria-hidden="true" />}
+            </div>
           </div>
         ))}
         {live && (

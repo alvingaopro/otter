@@ -116,6 +116,7 @@ async fn subscribe(
     mut w: OwnedWriteHalf,
 ) -> Result<()> {
     let (head, mut live) = daemon.events.subscribe();
+    let mut transient = daemon.events.subscribe_transient();
     let _browser = params
         .browser
         .then(|| crate::daemon::BrowserSubscriber::new(&daemon));
@@ -171,6 +172,13 @@ async fn subscribe(
                     };
                     send_after(&mut w, &mut sent, missed).await?;
                 }
+                Err(RecvError::Closed) => return Ok(()),
+            },
+            // Transient (D-051): as they come, outside the `seq` order; a
+            // lagging subscriber just misses some.
+            ev = transient.recv() => match ev {
+                Ok(event) => write_json(&mut w, &ServerMessage::Event { event }).await?,
+                Err(RecvError::Lagged(_)) => {}
                 Err(RecvError::Closed) => return Ok(()),
             },
             // Anything the client sends is ignored; EOF means it went away.

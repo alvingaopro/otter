@@ -102,7 +102,7 @@ pub trait Brain: Send + Sync {
     /// Answer the developer's message (D-049): what's going on, and whether
     /// they asked to go on or to stop — a model's judgment. Without a model:
     /// the status only; acting on the message is left to the buttons.
-    async fn reply(&self, cx: &Context<'_>, _message: &str) -> Result<Reply> {
+    async fn reply(&self, cx: &Context<'_>, _message: &str, _say: &Say<'_>) -> Result<Reply> {
         Ok(Reply {
             text: format!(
                 "{} (No model is set for the Control Agent on this host, so I can't act on messages: use the buttons, or choose a model in Settings.)",
@@ -112,6 +112,9 @@ pub trait Brain: Send + Sync {
         })
     }
 }
+
+/// Where a reply's text goes as it is written: each piece, in order.
+pub type Say<'a> = dyn Fn(&str) + Send + Sync + 'a;
 
 /// What the developer's message asks the feature to do.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -659,7 +662,7 @@ impl Brain for Model {
         )))
     }
 
-    async fn reply(&self, cx: &Context<'_>, message: &str) -> Result<Reply> {
+    async fn reply(&self, cx: &Context<'_>, message: &str, say: &Say<'_>) -> Result<Reply> {
         let f = cx.feature;
         let recent: Vec<String> = f
             .messages
@@ -679,44 +682,128 @@ impl Brain for Model {
             "You are the Control Agent running a software feature for the developer. Reply to their \
              latest message directly and briefly (2-5 sentences), in the language they wrote in. \
              Say what is happening and what happens next; if they give instructions, say how you'll \
-             act on them (the coding agent receives their message with its next turn). Don't invent \
-             progress.\n{brief}\nStatus: {status}\nTasks:\n{tasks}\nRecent conversation:\n{recent}\n\n\
-             Their message: {message}\n\nintent: \"revise\" if they change, add to or correct what \
-             should be built (new requirements, a different approach, feedback on the result); \
-             \"continue\" if they just ask to go on, resume, start or retry; \"pause\" if they ask to \
-             stop or wait for now; \"finish\" if they're satisfied and want it wrapped up; else \"none\" \
-             (questions, chat).",
+             act on them. Don't invent progress.\n{brief}\nStatus: {status}\nTasks:\n{tasks}\n\
+             Recent conversation:\n{recent}\n\nTheir message: {message}\n\n\
+             Write your reply as plain text. Then, on a last line of its own, write `INTENT: <x>` where \
+             <x> is: revise if they change, add to or correct what should be built (new requirements, \
+             a different approach, feedback on the result); continue if they just ask to go on, resume, \
+             start or retry; pause if they ask to stop or wait for now; finish if they're satisfied and \
+             want it wrapped up; else none (questions, chat).",
             brief = brief(f),
             status = status_text(f),
             tasks = tasks.join("\n"),
             recent = recent.join("\n"),
         );
-        let schema = json!({
-            "type": "object",
-            "properties": {
-                "reply": {"type": "string"},
-                "intent": {"enum": ["none", "continue", "pause", "revise", "finish"]}
-            },
-            "required": ["reply", "intent"]
-        });
-        let v = self.ask(cx, &prompt, &schema, None).await?;
-        Ok(Reply {
-            text: v["reply"].as_str().unwrap_or_default().trim().to_owned(),
-            intent: match v["intent"].as_str() {
-                Some("continue") => Intent::Continue,
-                Some("pause") => Intent::Pause,
-                Some("revise") => Intent::Revise,
-                Some("finish") => Intent::Finish,
-                _ => Intent::None,
-            },
-        })
+        // The developer sees the reply as it's written, without the intent line.
+        let written = std::sync::Mutex::new(String::new());
+        let shown = std::sync::Mutex::new(0usize);
+        let on_piece = |piece: &str| {
+            let mut text = written.lock().unwrap();
+            text.push_str(piece);
+            let visible = visible_reply(&text);
+            let mut shown = shown.lock().unwrap();
+            if visible.len() > *shown {
+                say(&visible[*shown..]);
+                *shown = visible.len();
+            }
+        };
+        let full = match self.backend {
+            Backend::ClaudeCode => {
+                crate::agents::claude_stream::stream_text(
+                    cx.env,
+                    cx.root,
+                    &prompt,
+                    self.model.as_deref(),
+                    &on_piece,
+                )
+                .await?
+            }
+            Backend::OpenRouter => {
+                let key = self.key.as_deref().ok_or_else(|| {
+                    anyhow::anyhow!("no OpenRouter API key: set one in Settings on this host")
+                })?;
+                crate::openrouter::stream_text(
+                    cx.env,
+                    key,
+                    self.model.as_deref(),
+                    &prompt,
+                    &on_piece,
+                )
+                .await?
+            }
+        };
+        let (text, intent) = split_intent(&full);
+        Ok(Reply { text, intent })
     }
+}
+
+/// A reply without its `INTENT:` line — also while it is still being written
+/// (a last line that may be turning into one is held back).
+pub fn visible_reply(text: &str) -> String {
+    let lines: Vec<&str> = text.split('\n').collect();
+    let n = lines.len();
+    let kept: Vec<&str> = lines
+        .iter()
+        .enumerate()
+        .filter(|(i, l)| {
+            let t = l.trim().to_uppercase();
+            let partial_last = *i == n - 1 && !t.is_empty() && "INTENT:".starts_with(&t);
+            !t.starts_with("INTENT:") && !partial_last
+        })
+        .map(|(_, l)| *l)
+        .collect();
+    let joined = kept.join("\n");
+    // Don't show a trailing blank line that may precede the intent.
+    joined.trim_end().to_owned()
+}
+
+/// The reply and the intent its last `INTENT:` line names (none if absent).
+pub fn split_intent(text: &str) -> (String, Intent) {
+    let intent = text
+        .lines()
+        .rev()
+        .find_map(|l| {
+            let t = l.trim();
+            t.to_uppercase().starts_with("INTENT:").then(|| {
+                t["INTENT:".len()..]
+                    .trim()
+                    .trim_matches(['`', '.', '*'])
+                    .to_lowercase()
+            })
+        })
+        .map(|w| match w.as_str() {
+            "continue" => Intent::Continue,
+            "pause" => Intent::Pause,
+            "revise" => Intent::Revise,
+            "finish" => Intent::Finish,
+            _ => Intent::None,
+        })
+        .unwrap_or(Intent::None);
+    (visible_reply(text).trim().to_owned(), intent)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use otter_core::feature::{Criterion, Evidence, EvidenceKind};
+
+    #[test]
+    fn the_intent_line_is_read_and_never_shown() {
+        let (text, intent) = split_intent("On it: I'll add JSON export.\n\nINTENT: revise");
+        assert_eq!(text, "On it: I'll add JSON export.");
+        assert_eq!(intent, Intent::Revise);
+        assert_eq!(
+            split_intent("Sure.\nintent: `continue`").1,
+            Intent::Continue
+        );
+        assert_eq!(split_intent("Just chatting.").1, Intent::None);
+        // While it's being written, a line that may become the intent is held back.
+        assert_eq!(visible_reply("Done soon.\nINT"), "Done soon.");
+        assert_eq!(
+            visible_reply("Done soon.\nIn the meantime"),
+            "Done soon.\nIn the meantime"
+        );
+    }
 
     #[test]
     fn the_status_says_where_things_stand() {

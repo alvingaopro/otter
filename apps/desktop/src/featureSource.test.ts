@@ -56,6 +56,24 @@ describe("daemonSource", () => {
     expect(seen.length).toBeGreaterThan(0);
   });
 
+  it("shows text being written until its message has loaded", async () => {
+    const s = daemonSource();
+    s.setHosts!(["mac"]);
+    await flush();
+    const stream = (text: string, done: boolean) =>
+      handlers.get("host-event")!({
+        payload: { host: "mac", record: { type: "FeatureStream", feature_id: "ft_a", stream_id: "reply-1", role: "controller", text, done } },
+      });
+    stream("Hel", false);
+    expect(s.drafts!("mac/ft_a")).toEqual([{ stream_id: "reply-1", role: "controller", text: "Hel", done: false }]);
+    stream("Hello there.", true);
+    expect(s.drafts!("mac/ft_a")[0]).toMatchObject({ text: "Hello there.", done: true });
+    // The feature reloads (its message is in it now): the draft goes.
+    handlers.get("host-event")!({ payload: { host: "mac", record: { type: "FeatureChanged" } } });
+    await flush();
+    expect(s.drafts!("mac/ft_a")).toEqual([]);
+  });
+
   it("sends each action with its own command id", async () => {
     const s = daemonSource();
     s.setHosts!(["mac"]);

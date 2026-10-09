@@ -168,9 +168,18 @@ impl Daemon {
             .map(|m| m.text.as_str())
             .collect::<Vec<_>>()
             .join("\n");
+        let stream_id = format!("reply-{}", last.id);
         let reply = match self.feature_workspace(f).await {
             Ok((root, env)) => {
                 let brain = brain::select(&env, &self.brain_choice());
+                // Streamed to the app as it's written (D-051).
+                let draft = std::sync::Mutex::new(crate::runs::Draft::new(stream_id.clone()));
+                let say = |piece: &str| {
+                    let mut d = draft.lock().unwrap();
+                    if let Some(so_far) = d.push(piece) {
+                        self.stream(&f.id, &d.id, MessageRole::Controller, so_far, false);
+                    }
+                };
                 brain
                     .reply(
                         &Context {
@@ -179,6 +188,7 @@ impl Daemon {
                             env: &env,
                         },
                         &text,
+                        &say,
                     )
                     .await
             }
@@ -282,6 +292,13 @@ impl Daemon {
             Ok(changes)
         })?;
         self.feature_changed(&applied);
+        self.stream(
+            &f.id,
+            &stream_id,
+            MessageRole::Controller,
+            reply_text.clone(),
+            true,
+        );
         if stop {
             self.stop_runs(&f.id, RunState::Cancelled, "Paused").await;
         }

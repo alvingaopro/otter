@@ -3,7 +3,7 @@
 //! Events carry identifiers, names, kinds and exit codes only — never commands,
 //! environment variables or other potentially secret data (design §19).
 
-use otter_core::feature::FeatureStatus;
+use otter_core::feature::{FeatureStatus, MessageRole};
 use otter_core::{
     AgentState, AttentionId, AttentionKind, ExecutionId, FeatureId, SessionId, SessionKind,
     Timestamp, WorkspaceId,
@@ -138,6 +138,19 @@ pub enum Event {
         history_seq: u64,
         status: FeatureStatus,
     },
+    /// A message being written right now (D-051): the text so far, sent as
+    /// it grows. **Transient**: not in the log, not replayed, and its `seq`
+    /// is the latest logged one (it doesn't advance a cursor). `done`: the
+    /// message is complete and in the feature (read it there).
+    FeatureStream {
+        feature_id: FeatureId,
+        /// Identifies this message while it streams.
+        stream_id: String,
+        role: MessageRole,
+        text: String,
+        #[serde(default)]
+        done: bool,
+    },
     /// A kind this build doesn't know (from a newer daemon, or an older log
     /// line). New kinds are a compatible protocol change; clients ignore them.
     #[serde(other)]
@@ -170,13 +183,17 @@ impl Event {
             Event::AttentionResolved { .. } => "AttentionResolved",
             Event::BrowserOpenRequested { .. } => "BrowserOpenRequested",
             Event::FeatureChanged { .. } => "FeatureChanged",
+            Event::FeatureStream { .. } => "FeatureStream",
             Event::Unknown => "Unknown",
         }
     }
 
     pub fn workspace_id(&self) -> Option<&WorkspaceId> {
         match self {
-            Event::DaemonStarted { .. } | Event::FeatureChanged { .. } | Event::Unknown => None,
+            Event::DaemonStarted { .. }
+            | Event::FeatureChanged { .. }
+            | Event::FeatureStream { .. }
+            | Event::Unknown => None,
             Event::WorkspaceCreated { workspace_id, .. }
             | Event::WorkspaceDeleted { workspace_id, .. }
             | Event::WorkspaceReady { workspace_id }

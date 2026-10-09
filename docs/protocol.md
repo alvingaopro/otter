@@ -227,6 +227,14 @@ cursor (above) tells a reconnecting client which features changed while it
 was away; it then reads `feature.events {after: <last seq it saw>}`. The
 history is the feature's own: it isn't rotated with the host's log.
 
+**Text being written** (D-051): `FeatureStream {feature_id, stream_id, role,
+text, done}` carries a message's text so far while the coding agent or the
+Control Agent writes it, at most every 100 ms. It is **transient**: sent to
+live `events.subscribe` streams only, never logged or replayed, stamped with
+the latest logged `seq` (so it doesn't advance a cursor and may repeat one),
+and outside the `seq` order. A client may drop any of them; with `done` the
+message is complete and stored in the feature.
+
 An addition (no protocol bump): daemons before it answer `invalid_request`.
 
 ## Files and image paste
