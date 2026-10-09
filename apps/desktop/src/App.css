@@ -152,7 +152,7 @@ code, .mono { font-family: var(--mono); }
 
 .sidebar-top { display: flex; align-items: center; gap: 4px; padding: 0 10px 0 16px; }
 /* macOS: leave room for the traffic lights (the Activity Bar takes 48px of it). */
-.mac .sidebar-top { padding-left: 36px; }
+.mac .sidebar-top { padding-left: 48px; }
 .sidebar-top .icon-btn { width: 30px; height: 30px; border-radius: 7px; }
 .brand { display: flex; align-items: center; gap: 10px; padding: 14px 16px 8px 20px; }
 .brand-name { font-weight: 600; font-size: 15px; letter-spacing: -0.1px; }
