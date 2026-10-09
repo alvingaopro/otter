@@ -428,6 +428,19 @@ impl Connection {
         self.call(Request::Shutdown).await
     }
 
+    /// The host's settings (secrets only as set or not).
+    pub async fn settings_get(&mut self) -> Result<otter_protocol::host::Settings> {
+        self.call(Request::SettingsGet).await
+    }
+
+    /// Change settings; a secret goes to the host and is never read back.
+    pub async fn settings_set(
+        &mut self,
+        u: otter_protocol::host::SettingsUpdate,
+    ) -> Result<otter_protocol::host::Settings> {
+        self.call(Request::SettingsSet(u)).await
+    }
+
     pub async fn feature_list(&mut self) -> Result<Vec<otter_core::feature::Feature>> {
         self.call(Request::FeatureList).await
     }

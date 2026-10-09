@@ -16,6 +16,7 @@ import { HostPage } from "./HostPage";
 import { CliDialog } from "./CliDialog";
 import { WorkspacePane } from "./WorkspacePane";
 import { NewWorkspaceDialog } from "./NewWorkspaceDialog";
+import { SettingsDialog } from "./SettingsDialog";
 import { useTheme } from "./theme";
 import { defaultSession, groups, headline, movePin, pinnedOf, placeAll, stalePins, togglePin } from "./model";
 import type { MenuItem } from "./Menu";
@@ -27,7 +28,7 @@ const JUMP_WINDOW_MS = 2 * 60 * 1000;
 /** On macOS the header doubles as the title bar (overlay style, see tauri.conf.json). */
 const IS_MAC = navigator.userAgent.includes("Mac");
 
-type Open = { kind: "add" } | { kind: "cli" } | { kind: "new" } | null;
+type Open = { kind: "add" } | { kind: "cli" } | { kind: "new" } | { kind: "settings" } | null;
 
 interface Jump {
   key: string;
@@ -220,6 +221,7 @@ export default function App() {
           badges={{ features: featureNeeds, workspaces: placed.filter((p) => p.ws.activity === "needs_you").length }}
           settings={[
             { label: `Theme: ${themeChoice === "system" ? "match system" : themeChoice}`, onSelect: cycleTheme },
+            { label: "Control Agent and API keys…", onSelect: () => setOpen({ kind: "settings" }) },
             { label: "Add a host…", onSelect: () => setOpen({ kind: "add" }) },
             {
               label: cli?.version ? "Update command line tools…" : "Install command line tools…",
@@ -231,6 +233,7 @@ export default function App() {
           <FeaturesView
             source={featureSource}
             hosts={connectedHosts}
+            onSettings={() => setOpen({ kind: "settings" })}
             workspaces={Object.fromEntries(
               (payload?.hosts ?? []).map((h) => [
                 h.name,
@@ -280,6 +283,7 @@ export default function App() {
           onAddHost={() => setOpen({ kind: "add" })}
           onHost={setHostPage}
           onNew={() => setOpen({ kind: "new" })}
+          onSettings={() => setOpen({ kind: "settings" })}
           themeChoice={themeChoice}
           onTheme={cycleTheme}
           cliAction={
@@ -354,6 +358,9 @@ export default function App() {
         </div>
       </div>
       {open?.kind === "add" && <AddHostDialog version={version} onClose={() => setOpen(null)} />}
+      {open?.kind === "settings" && (
+        <SettingsDialog hosts={connectedHosts} defaultHost={current?.host.name} onClose={() => setOpen(null)} />
+      )}
       {open?.kind === "cli" && (
         <CliDialog
           version={version}

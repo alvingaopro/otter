@@ -5,6 +5,7 @@ import { ago, groups, headline, pinnedOf, workspaceGlyph } from "./model";
 import type { ThemeChoice } from "./theme";
 import type { HostView, Placed } from "./types";
 import otterIcon from "./assets/otter.png";
+import { SettingsButton } from "./SettingsDialog";
 
 interface Props {
   placed: Placed[];
@@ -19,6 +20,8 @@ interface Props {
   /** The host whose page is open. */
   hostPage?: string;
   onNew: () => void;
+  /** Open Settings (Control Agent, API keys). */
+  onSettings: () => void;
   themeChoice: ThemeChoice;
   onTheme: () => void;
   /** Set when the command-line tools are missing or another version. */
@@ -169,6 +172,7 @@ export function Sidebar(props: Props) {
     <nav className={drag ? "sidebar reordering" : "sidebar"} aria-label="Workspaces">
       <div className="sidebar-top" data-tauri-drag-region>
         <span className="spacer" data-tauri-drag-region />
+        <SettingsButton onClick={props.onSettings} />
         <ThemeButton choice={props.themeChoice} onClick={props.onTheme} />
         <button className="icon-btn" aria-label="New workspace" title="New workspace (⌘N)" onClick={props.onNew}>
           <svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true">

@@ -1352,3 +1352,28 @@ checked. In review the controller (`review_step`, `delivery.rs`):
   verified → publish approved → pushed and PR opened → CI fails → fixed →
   CI green → gates → report → accepted; a flaky failure is rerun; declining
   keeps it local. Not run against real GitHub here.
+
+## D-048 — Host settings: the Control Agent's model and API keys (2026-10-09)
+
+Choosing the Control Agent's model and giving it an API key shouldn't
+require editing a host's shell profile and restarting `otterd`. Each host
+keeps **settings** that a client sets:
+
+- `state/settings.json`: the controller (`claude`, `openrouter`, `rules`,
+  `off`; absent = automatic) and the model.
+- `state/secrets.json` (0600): API keys, by known name only (for now
+  `OPENROUTER_API_KEY`). **Write-only over the protocol**: `settings.get`
+  says whether each key is set, never its value; `settings.set` sets or
+  clears one (`null`). Never logged, never in `events.jsonl`, never on a
+  command line (OpenRouter gets it through curl's config on stdin).
+- Precedence: an explicit `OTTER_CONTROLLER` / `OTTER_CONTROLLER_MODEL` in
+  otterd's environment wins (operators, tests — `settings.get` reports
+  it); then the settings; a key in the environment is used when none is
+  set here. A broken settings file leaves the daemon on defaults.
+- `off`: the controller doesn't step features at all; they stay where they
+  are until the developer acts. (Tests of the feature state machine use it.)
+- In the app: a gear in the sidebar's title bar (Workspaces and Features)
+  and *Control Agent and API keys…* in the Activity Bar's Settings menu open
+  a dialog per connected host: the controller, the model, and each key as a
+  password field showing only "set" / "not set", with Clear. Settings
+  belong to a host because its daemon is what uses them.

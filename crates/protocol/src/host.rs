@@ -1,5 +1,5 @@
-//! Host-level views: resource usage (`host.metrics`) and listening ports
-//! (`host.ports`). Plain measurements; nothing here is persisted.
+//! Host-level views: resource usage (`host.metrics`), listening ports
+//! (`host.ports`), and the host's settings (`settings.get` / `settings.set`).
 
 use otter_core::Timestamp;
 use serde::{Deserialize, Serialize};
@@ -106,4 +106,40 @@ pub struct TrendPoint {
 pub struct HistoryQuery {
     /// `1h`, `24h`, `7d` or `30d`.
     pub range: String,
+}
+
+/// A host's settings as a client sees them (`settings.get`, D-048): secrets
+/// only say whether they are set.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+pub struct Settings {
+    /// `claude`, `openrouter`, `rules` or `off`; absent: automatic.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub controller: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    /// `OTTER_CONTROLLER` in otterd's environment, which overrides the
+    /// setting.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub controller_from_env: Option<String>,
+    pub secrets: Vec<SecretState>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct SecretState {
+    pub name: String,
+    /// What it is used for.
+    pub purpose: String,
+    pub set: bool,
+}
+
+/// `settings.set`: fields left out stay as they are. `controller` or
+/// `model` `""` resets to automatic / the default; a secret `null` clears it.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+pub struct SettingsUpdate {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub controller: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub secrets: std::collections::BTreeMap<String, Option<String>>,
 }

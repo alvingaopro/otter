@@ -2572,7 +2572,8 @@ async fn features_persist_dedupe_commands_and_replay_after_a_restart() {
     use otter_core::feature::{FeatureAction, FeatureStatus, MessageRole};
     use otter_protocol::feature::FeatureCreate;
 
-    let host = TestHost::new();
+    // The state machine on its own: no Control Agent stepping it.
+    let mut host = TestHost::with_env(&[("OTTER_CONTROLLER", "off".into())]).await;
     create(&host, "fw", Some(vec![])).await;
     let mut conn = host.conn().await;
     let created = FeatureCreate {
@@ -2616,7 +2617,7 @@ async fn features_persist_dedupe_commands_and_replay_after_a_restart() {
         .feature_act("cmd-start", id, FeatureAction::Start)
         .await
         .unwrap();
-    host.stop_daemon().await;
+    host.restart().await;
 
     // Everything is still there after the restart...
     let mut conn = host.conn().await;
@@ -3665,4 +3666,74 @@ async fn declining_to_publish_keeps_delivery_local() {
         .await
         .unwrap();
     assert_eq!(f.status, FeatureStatus::Done);
+}
+
+#[tokio::test]
+async fn settings_take_keys_write_only_and_keep_them() {
+    use otter_protocol::host::SettingsUpdate;
+    use std::os::unix::fs::PermissionsExt;
+    let mut host = TestHost::with_env(&[("OTTER_CONTROLLER", "off".into())]).await;
+    let mut conn = host.conn().await;
+    let s = conn.settings_get().await.unwrap();
+    assert_eq!(s.controller_from_env.as_deref(), Some("off"));
+    assert!(
+        s.secrets
+            .iter()
+            .any(|x| x.name == "OPENROUTER_API_KEY" && !x.set)
+    );
+
+    let s = conn
+        .settings_set(SettingsUpdate {
+            controller: Some("openrouter".into()),
+            model: Some("anthropic/some-model".into()),
+            secrets: [(
+                "OPENROUTER_API_KEY".to_owned(),
+                Some("sk-or-test-123".to_owned()),
+            )]
+            .into(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(s.controller.as_deref(), Some("openrouter"));
+    assert!(
+        s.secrets
+            .iter()
+            .any(|x| x.name == "OPENROUTER_API_KEY" && x.set)
+    );
+    // The value never comes back, nor lands in the event log.
+    let json = serde_json::to_string(&conn.settings_get().await.unwrap()).unwrap();
+    assert!(!json.contains("sk-or-test-123"));
+    let events = std::fs::read_to_string(host.home().join("state/events.jsonl")).unwrap();
+    assert!(!events.contains("sk-or-test-123"));
+    let secrets = host.home().join("state/secrets.json");
+    assert_eq!(
+        std::fs::metadata(&secrets).unwrap().permissions().mode() & 0o777,
+        0o600
+    );
+    // Unknown names are refused.
+    let err = conn
+        .settings_set(SettingsUpdate {
+            secrets: [("AWS_SECRET_ACCESS_KEY".to_owned(), Some("x".to_owned()))].into(),
+            ..Default::default()
+        })
+        .await
+        .unwrap_err();
+    assert!(format!("{err:#}").contains("unknown secret"), "{err:#}");
+    drop(conn);
+
+    // Kept across a restart; cleared with null.
+    host.restart().await;
+    let mut conn = host.conn().await;
+    let s = conn.settings_get().await.unwrap();
+    assert_eq!(s.model.as_deref(), Some("anthropic/some-model"));
+    assert!(s.secrets[0].set);
+    let s = conn
+        .settings_set(SettingsUpdate {
+            secrets: [("OPENROUTER_API_KEY".to_owned(), None)].into(),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert!(!s.secrets[0].set);
+    assert!(!std::fs::read_to_string(&secrets).unwrap().contains("sk-or"));
 }

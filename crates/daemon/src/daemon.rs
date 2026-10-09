@@ -42,6 +42,8 @@ pub struct Daemon {
     pub(crate) runs: crate::runs::Runs,
     /// The Control Agent's working memory (controller.rs).
     pub(crate) controller: std::sync::Mutex<crate::controller::ControllerState>,
+    /// Host settings and API keys (settings.rs, D-048).
+    pub(crate) settings: std::sync::RwLock<crate::settings::HostSettings>,
     pub backend: Arc<dyn ExecutionBackend>,
     pub events: EventLog,
     pub git: GitManager,
@@ -76,6 +78,11 @@ impl Daemon {
         shell: String,
     ) -> Self {
         let metrics = crate::metrics::Sampler::start(paths.state_dir.join("metrics"));
+        // A broken settings file mustn't keep the daemon down.
+        let settings = crate::settings::HostSettings::load(&paths.state_dir).unwrap_or_else(|e| {
+            tracing::warn!("settings: {e:#}; using defaults");
+            crate::settings::HostSettings::empty(&paths.state_dir)
+        });
         if let Err(e) = crate::files::install_shim(&paths) {
             tracing::warn!("installing the wl-paste stand-in: {e:#}");
         }
@@ -89,6 +96,7 @@ impl Daemon {
             feature_wake: tokio::sync::Notify::new(),
             runs: Default::default(),
             controller: Default::default(),
+            settings: std::sync::RwLock::new(settings),
             backend,
             events,
             shell,
@@ -179,6 +187,8 @@ impl Daemon {
                     workspaces: store.state.workspaces.clone(),
                 })
             }
+            Request::SettingsGet => json(self.settings_get()),
+            Request::SettingsSet(u) => json(self.settings_set(u)?),
             Request::FeatureList => json(self.feature_list().await),
             Request::FeatureGet(r) => json(self.feature_get(&r.feature).await?),
             Request::FeatureCreate(p) => json(self.feature_create(p).await?),

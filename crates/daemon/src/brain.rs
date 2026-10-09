@@ -103,27 +103,38 @@ pub trait Brain: Send + Sync {
     }
 }
 
-/// The brain `OTTER_CONTROLLER` names (default: Claude Code when installed,
-/// else OpenRouter when a key is set, else rules).
-pub fn select(env: &EnvMap) -> Box<dyn Brain> {
-    let choice = std::env::var("OTTER_CONTROLLER").unwrap_or_default();
-    let claude = || {
+/// What the brain is chosen from: the host's settings (D-048), with an
+/// explicit environment winning.
+#[derive(Clone, Debug, Default)]
+pub struct Choice {
+    /// `claude`, `openrouter`, `rules`, `yes`, `off`; `None`: automatic.
+    pub controller: Option<String>,
+    pub model: Option<String>,
+    /// From settings, else otterd's environment.
+    pub openrouter_key: Option<String>,
+}
+
+/// The brain chosen (automatic: Claude Code when installed, else OpenRouter
+/// when a key is set, else rules).
+pub fn select(env: &EnvMap, choice: &Choice) -> Box<dyn Brain> {
+    let key = choice
+        .openrouter_key
+        .clone()
+        .or_else(|| crate::openrouter::key(env));
+    let model = |backend| {
         Box::new(Model {
-            backend: Backend::ClaudeCode,
+            backend,
+            model: choice.model.clone(),
+            key: key.clone(),
         })
     };
-    let openrouter = || {
-        Box::new(Model {
-            backend: Backend::OpenRouter,
-        })
-    };
-    match choice.as_str() {
-        "rules" => Box::new(Rules),
+    match choice.controller.as_deref().unwrap_or_default() {
+        "rules" | "off" => Box::new(Rules),
         "yes" => Box::new(YesMan),
-        "claude" => claude(),
-        "openrouter" => openrouter(),
-        _ if crate::env::which("claude", env).is_some() => claude(),
-        _ if crate::openrouter::key(env).is_some() => openrouter(),
+        "claude" => model(Backend::ClaudeCode),
+        "openrouter" => model(Backend::OpenRouter),
+        _ if crate::env::which("claude", env).is_some() => model(Backend::ClaudeCode),
+        _ if key.is_some() => model(Backend::OpenRouter),
         _ => Box::new(Rules),
     }
 }
@@ -274,6 +285,10 @@ pub enum Backend {
 /// A model deciding where judgment is needed.
 pub struct Model {
     pub backend: Backend,
+    /// The model to ask (`None`: the backend's default).
+    pub model: Option<String>,
+    /// OpenRouter's key.
+    pub key: Option<String>,
 }
 
 impl Model {
@@ -297,11 +312,23 @@ impl Model {
                     &prompt,
                     schema,
                     image.and_then(|p| p.parent()),
+                    self.model.as_deref(),
                 )
                 .await
             }
             Backend::OpenRouter => {
-                crate::openrouter::structured(cx.env, prompt, schema, image).await
+                let key = self.key.as_deref().ok_or_else(|| {
+                    anyhow::anyhow!("no OpenRouter API key: set one in Settings on this host")
+                })?;
+                crate::openrouter::structured(
+                    cx.env,
+                    key,
+                    self.model.as_deref(),
+                    prompt,
+                    schema,
+                    image,
+                )
+                .await
             }
         }
     }

@@ -9,6 +9,7 @@ mod files;
 mod forwards;
 mod hosts;
 mod pins;
+mod settings;
 mod tray;
 mod view;
 
@@ -82,6 +83,8 @@ pub fn run() {
             features::feature_act,
             features::feature_events,
             features::feature_artifact,
+            settings::settings_get,
+            settings::settings_set,
             pins::pins_get,
             pins::pins_set,
             hosts::workspace_create,

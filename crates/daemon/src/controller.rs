@@ -89,6 +89,10 @@ impl Daemon {
                 _ = tokio::time::sleep(tick()) => {}
                 _ = shutdown.changed() => return,
             }
+            // Off: features stay where they are until the developer acts.
+            if self.brain_choice().controller.as_deref() == Some("off") {
+                continue;
+            }
             let ids: Vec<FeatureId> = self
                 .features
                 .lock()
@@ -134,6 +138,16 @@ impl Daemon {
             FeatureStatus::Review => self.review_step(&f).await,
             FeatureStatus::Blocked => self.decide_open(&f).await,
             _ => Ok(()),
+        }
+    }
+
+    /// How the Control Agent thinks on this host (settings + environment).
+    pub(crate) fn brain_choice(&self) -> brain::Choice {
+        let s = self.settings.read().unwrap();
+        brain::Choice {
+            controller: s.controller(),
+            model: s.model(),
+            openrouter_key: s.secret("OPENROUTER_API_KEY"),
         }
     }
 
@@ -228,7 +242,7 @@ impl Daemon {
             return Ok(());
         }
         let (root, env) = self.feature_workspace(f).await?;
-        let brain = brain::select(&env);
+        let brain = brain::select(&env, &self.brain_choice());
         let plan = brain
             .plan(&Context {
                 feature: f,
@@ -368,7 +382,7 @@ impl Daemon {
             return Ok(());
         }
         let (root, env) = self.feature_workspace(f).await?;
-        let brain = brain::select(&env);
+        let brain = brain::select(&env, &self.brain_choice());
         for d in open {
             let verdict = brain
                 .decide(
@@ -608,7 +622,7 @@ impl Daemon {
             }
         }
         let f = self.feature_get(f.id.as_str()).await?;
-        let brain = brain::select(&env);
+        let brain = brain::select(&env, &self.brain_choice());
         let judgement = brain
             .judge(&Context {
                 feature: &f,
@@ -831,7 +845,7 @@ impl Daemon {
             return Ok(Some(evidence));
         };
         let artifacts = self.artifacts_dir(&f.id);
-        let brain = brain::select(env);
+        let brain = brain::select(env, &self.brain_choice());
         for check in runnable {
             let (p, c, r, e, a) = (
                 program.clone(),

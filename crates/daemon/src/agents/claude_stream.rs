@@ -284,8 +284,7 @@ impl Drop for ClaudeRun {
 /// One structured answer from Claude, for the Control Agent (D-045):
 /// `claude -p --output-format json --json-schema <schema> --tools ""`, the
 /// prompt on stdin, the answer in the result's `structured_output`. No tools
-/// and no settings files: it only thinks. `OTTER_CONTROLLER_MODEL` picks the
-/// model (default: Claude Code's). With `read`, it may Read files there
+/// and no settings files: it only thinks. `model`: default Claude Code's. With `read`, it may Read files there
 /// (and nothing else): for looking at screenshots.
 pub async fn structured_reading(
     env: &crate::env::EnvMap,
@@ -293,6 +292,7 @@ pub async fn structured_reading(
     prompt: &str,
     schema: &Value,
     read: Option<&std::path::Path>,
+    model: Option<&str>,
 ) -> Result<Value> {
     let program = which("claude", env).ok_or_else(|| anyhow!("claude is not on PATH"))?;
     let mut cmd = tokio::process::Command::new(&program);
@@ -306,8 +306,8 @@ pub async fn structured_reading(
         }
     }
     cmd.args(["--json-schema", &schema.to_string()]);
-    if let Ok(model) = std::env::var("OTTER_CONTROLLER_MODEL") {
-        cmd.args(["--model", &model]);
+    if let Some(model) = model {
+        cmd.args(["--model", model]);
     }
     let mut child = cmd
         .current_dir(cwd)

@@ -155,6 +155,15 @@ pub enum Request {
     #[serde(rename = "state.snapshot")]
     StateSnapshot,
 
+    /// The host's settings; secrets only as set or not. Result:
+    /// [`host::Settings`].
+    #[serde(rename = "settings.get")]
+    SettingsGet,
+    /// Change settings or set/clear a secret (write-only). Result:
+    /// [`host::Settings`].
+    #[serde(rename = "settings.set")]
+    SettingsSet(host::SettingsUpdate),
+
     /// Every feature on this host, newest first. Result:
     /// `Vec<`[`otter_core::feature::Feature`]`>`.
     #[serde(rename = "feature.list")]
@@ -217,6 +226,8 @@ impl Request {
             Request::EventsList(_) => "events.list",
             Request::EventsSubscribe(_) => "events.subscribe",
             Request::StateSnapshot => "state.snapshot",
+            Request::SettingsGet => "settings.get",
+            Request::SettingsSet(_) => "settings.set",
             Request::FeatureList => "feature.list",
             Request::FeatureGet(_) => "feature.get",
             Request::FeatureCreate(_) => "feature.create",

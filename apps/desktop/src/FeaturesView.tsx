@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { Dialog } from "./Dialog";
 import { Glyph } from "./Glyph";
+import { SettingsButton } from "./SettingsDialog";
 import { ago } from "./model";
 import type { FeatureSource } from "./featureSource";
 import {
@@ -32,10 +33,12 @@ interface Props {
   onOpenWorkspace: (host: string, workspaceId: string, sessionId?: string) => void;
   /** Open a preview port of a host in the browser (forwarding it if remote). */
   onOpenPreview: (host: string, port: number, path: string) => Promise<void>;
+  /** Open Settings (Control Agent, API keys). */
+  onSettings?: () => void;
 }
 
 /** The Features view (D-041, D-042): product work, independent of the Workspace view. */
-export function FeaturesView({ source, hosts, workspaces, now, onOpenWorkspace, onOpenPreview }: Props) {
+export function FeaturesView({ source, hosts, workspaces, now, onOpenWorkspace, onOpenPreview, onSettings }: Props) {
   const [list, setList] = useState<PlacedFeature[]>(() => source.list());
   const [filter, setFilter] = useState<FeatureFilter>("all");
   const [selected, setSelected] = useState<string | undefined>();
@@ -56,6 +59,7 @@ export function FeaturesView({ source, hosts, workspaces, now, onOpenWorkspace, 
         <div className="sidebar-top" data-tauri-drag-region>
           <span className="brand-name">Features</span>
           <span className="spacer" />
+          {onSettings && <SettingsButton onClick={onSettings} />}
           <button className="icon-btn" aria-label="New feature" title="New feature" onClick={() => setCreating(true)}>
             <svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true">
               <path d="M7 2v10M2 7h10" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />

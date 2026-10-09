@@ -549,3 +549,7 @@ code, .mono { font-family: var(--mono); }
 .evidence-shot { max-width: 100%; margin-top: 6px; border-radius: 6px; border: 1px solid var(--line-strong); }
 .evidence-detail { white-space: pre-wrap; }
 .report { white-space: pre-wrap; font-family: var(--mono); font-size: 12px; padding: 10px 12px; border-radius: 8px; background: var(--bg); border: 1px solid var(--line); user-select: text; }
+.key-row { display: flex; gap: 8px; margin-top: 6px; }
+.key-row input { flex: 1; height: 32px; padding: 0 10px; border-radius: 7px; border: 1px solid var(--line-strong); background: var(--bg); color: var(--text); font: inherit; font-family: var(--mono); font-size: 13px; }
+.key-state { margin-left: 6px; font-size: 11px; padding: 1px 6px; border-radius: 5px; background: var(--raised); color: var(--muted); }
+.key-state.set { color: var(--done); }

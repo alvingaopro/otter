@@ -26,6 +26,7 @@ mod runs;
 mod runtime;
 mod server;
 mod sessions;
+mod settings;
 mod store;
 mod workspaces;
 

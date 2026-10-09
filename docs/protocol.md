@@ -179,6 +179,19 @@ All additions (no protocol bump): daemons before them answer
 
 An addition (no protocol bump): daemons before it answer `invalid_request`.
 
+## Host settings
+
+The Control Agent's model and API keys on this host (D-048).
+
+- `settings.get` → `{controller?, model?, controller_from_env?, secrets:
+  [{name, purpose, set}]}`. A secret's value is never returned.
+- `settings.set {controller?, model?, secrets?: {NAME: value | null}}` →
+  the same view. Fields left out stay as they are; `""` resets the
+  controller to automatic and the model to the default; `null` clears a
+  secret. Unknown secret names and controllers fail with `invalid_request`.
+
+An addition (no protocol bump): daemons before it answer `invalid_request`.
+
 ## Features
 
 Product work owned by the daemon (D-043); see `otter_core::feature`.

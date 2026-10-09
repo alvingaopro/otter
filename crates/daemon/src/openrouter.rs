@@ -1,12 +1,12 @@
 //! OpenRouter as the Control Agent's model (D-045): one structured answer
 //! per call, through the chat completions API.
 //!
-//! The key is `OPENROUTER_API_KEY` in otterd's environment (the login
-//! environment, e.g. exported in the shell profile). It never goes on a
+//! The key is set in the host's Settings (D-048), or `OPENROUTER_API_KEY` in
+//! otterd's environment. It never goes on a
 //! command line, into an event, or into a feature: requests go through
 //! `curl` with the key in its config on stdin and the body in a private
-//! temporary file. `OTTER_CONTROLLER_MODEL` picks the model (default
-//! `openrouter/auto`).
+//! temporary file. The model comes from Settings or `OTTER_CONTROLLER_MODEL`
+//! (default `openrouter/auto`).
 
 use std::io::Write;
 use std::path::Path;
@@ -28,13 +28,6 @@ pub fn key(env: &EnvMap) -> Option<String> {
         .or_else(|| std::env::var("OPENROUTER_API_KEY").ok())
         .map(|k| k.trim().to_owned())
         .filter(|k| !k.is_empty())
-}
-
-pub fn model() -> String {
-    std::env::var("OTTER_CONTROLLER_MODEL")
-        .ok()
-        .filter(|m| !m.is_empty())
-        .unwrap_or_else(|| DEFAULT_MODEL.into())
 }
 
 /// The request: the prompt (plus an image, for a visual review), asking for
@@ -90,17 +83,23 @@ pub fn parse(response: &Value) -> Result<Value> {
 /// One structured answer. `image`: a PNG to look at.
 pub async fn structured(
     env: &EnvMap,
+    key: &str,
+    model: Option<&str>,
     prompt: &str,
     schema: &Value,
     image: Option<&Path>,
 ) -> Result<Value> {
-    let key = key(env).ok_or_else(|| anyhow!("OPENROUTER_API_KEY is not set for otterd"))?;
     let curl = which("curl", env).ok_or_else(|| anyhow!("curl is not installed"))?;
     let png = match image {
         Some(p) => Some(std::fs::read(p).with_context(|| format!("reading {}", p.display()))?),
         None => None,
     };
-    let body = request_body(&model(), prompt, schema, png.as_deref());
+    let body = request_body(
+        model.unwrap_or(DEFAULT_MODEL),
+        prompt,
+        schema,
+        png.as_deref(),
+    );
     // The body in a private file; the key only in curl's config, on stdin.
     let mut file = tempfile::Builder::new().prefix("otter-or").tempfile()?;
     file.write_all(body.to_string().as_bytes())?;
@@ -197,9 +196,16 @@ mod tests {
             format!("{}:/usr/bin:/bin", dir.path().display()),
         );
         env.insert("OPENROUTER_API_KEY".into(), "sk-or-secret".into());
-        let v = structured(&env, "Is it ok?", &json!({"type": "object"}), None)
-            .await
-            .unwrap();
+        let v = structured(
+            &env,
+            "sk-or-secret",
+            None,
+            "Is it ok?",
+            &json!({"type": "object"}),
+            None,
+        )
+        .await
+        .unwrap();
         assert_eq!(v, json!({"ok": true}));
         let seen = std::fs::read_to_string(&log).unwrap();
         let args = seen.lines().next().unwrap();
@@ -223,7 +229,8 @@ mod tests {
             "required": ["sum"],
             "additionalProperties": false
         });
-        let v = structured(&env, "What is 2 + 3?", &schema, None)
+        let key = key(&env).expect("OPENROUTER_API_KEY");
+        let v = structured(&env, &key, None, "What is 2 + 3?", &schema, None)
             .await
             .unwrap();
         assert_eq!(v["sum"], 5, "{v}");
