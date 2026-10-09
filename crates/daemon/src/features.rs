@@ -137,6 +137,27 @@ impl FeatureStore {
             .map(|d| &d.feature)
     }
 
+    /// Remove a feature and everything kept for it (history, artifacts).
+    /// Its directory is renamed away first, so a crash halfway leaves no
+    /// half-feature behind (`load` skips what has no `feature.json`).
+    pub fn remove(&mut self, id: &FeatureId) -> Result<Option<Feature>> {
+        let Some(doc) = self.docs.remove(id) else {
+            return Ok(None);
+        };
+        let dir = self.dir.join(id.as_str());
+        let gone = self.dir.join(format!(".deleted-{}", id.as_str()));
+        match std::fs::rename(&dir, &gone) {
+            Ok(()) => std::fs::remove_dir_all(&gone)
+                .with_context(|| format!("removing {}", gone.display()))?,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => {
+                self.docs.insert(id.clone(), doc);
+                return Err(e).with_context(|| format!("removing {}", dir.display()));
+            }
+        }
+        Ok(Some(doc.feature))
+    }
+
     /// Add a new feature.
     pub fn insert(
         &mut self,
@@ -814,6 +835,30 @@ impl Daemon {
         features
             .history(&id, p.after.unwrap_or(0), limit)
             .map_err(|e| RpcError::internal(format!("reading history: {e:#}")))
+    }
+
+    /// Delete a feature that isn't running. A feature being worked on
+    /// (planning, implementing, verifying, or with a run still going) must
+    /// be paused or cancelled first. The workspace it used stays.
+    pub(crate) async fn feature_delete(&self, id: &str) -> RpcResult<()> {
+        let id = FeatureId::from(id);
+        let mut features = self.features.lock().await;
+        let f = features
+            .get(id.as_str())
+            .ok_or_else(|| feature_not_found(id.as_str()))?;
+        if f.status.is_active() || f.live_run().is_some() {
+            return Err(RpcError::conflict(format!(
+                "the feature is {}: pause or cancel it first",
+                f.status.as_str()
+            )));
+        }
+        features
+            .remove(&id)
+            .map_err(|e| RpcError::internal(format!("deleting feature: {e:#}")))?;
+        drop(features);
+        tracing::info!(feature = %id, "feature deleted");
+        self.events.emit(Event::FeatureDeleted { feature_id: id });
+        Ok(())
     }
 
     /// Tell subscribers (and the controller) that a feature changed.

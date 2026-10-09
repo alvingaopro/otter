@@ -217,6 +217,10 @@ Product work owned by the daemon (D-043); see `otter_core::feature`.
   approve, answer?}`, `set_workspace {workspace}`, `preview`. An
   action the lifecycle doesn't allow fails with `conflict`, and so does
   `accept` while a gate (D-047) is open, unless `override_gates`.
+- `feature.delete {feature}` → `null`: removes a feature with its history
+  and artifacts; the workspace it used stays. A feature being worked on
+  (planning, implementing, verifying, or with a run going) fails with
+  `conflict`: pause or cancel it first. Emits `FeatureDeleted {feature_id}`.
 - `feature.artifact {feature, name}` → a file the feature's checks produced
   (a screenshot), named as evidence refers to it (`artifact:<name>`):
   `{data (base64), size, eof: true}`, at most 8 MiB.

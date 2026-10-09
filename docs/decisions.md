@@ -1510,3 +1510,16 @@ talk to reads simpler.) Code, protocol and configuration keep their names
 on the wire changes. Settings explains what Otter does, that it runs on
 each host with that host's model and keys, and what each choice means;
 the one way into Settings is the gear at the bottom of the Activity Bar.
+
+## D-054 — Features can be deleted (2026-10-09)
+
+Finished, cancelled and abandoned features piled up with no way out.
+`feature.delete` removes one for good — its document, history and artifacts
+under `state/features/<id>/` (renamed away, then removed, so a crash leaves
+no half-feature) — and emits `FeatureDeleted`. Only a feature that isn't
+being worked on: planning, implementing or verifying, or a run still going,
+is refused until it is paused or cancelled, so nothing is pulled out from
+under the controller or a coding agent. The workspace is never touched: it
+is a separate resource with its own lifecycle (archive, delete). The app
+asks first and says what goes and what stays. (No archive for features yet:
+the filters already hide finished ones; add it if dogfooding asks.)

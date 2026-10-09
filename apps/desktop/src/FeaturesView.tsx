@@ -177,6 +177,7 @@ function FeaturePane({
 }) {
   const f = placed.feature;
   const wsName = workspaces.find((w) => w.id === f.workspace_id)?.name;
+  const [deleting, setDeleting] = useState(false);
   const pending = pendingDecisions(f);
   const [tab, setTab] = useState<Tab>(pending.length > 0 ? "approvals" : "plan");
   const [error, setError] = useState<string | null>(null);
@@ -230,7 +231,20 @@ function FeaturePane({
           </button>
         )}
         <FeatureActions f={f} act={act} />
+        {deletable(f) && (
+          <button className="btn outline" title="Delete this feature" onClick={() => setDeleting(true)}>
+            Delete
+          </button>
+        )}
       </header>
+      {deleting && (
+        <DeleteFeatureDialog
+          placed={placed}
+          workspace={wsName ?? f.workspace_id}
+          onDelete={() => source.remove(placed.key)}
+          onClose={() => setDeleting(false)}
+        />
+      )}
       {source.preview && (
         <p className="notice" role="note">
           Preview with sample data: nothing here runs.
@@ -289,6 +303,62 @@ function FeaturePane({
         </section>
       </div>
     </main>
+  );
+}
+
+/** Not being worked on: nothing is planning, implementing, verifying or running. */
+export function deletable(f: Feature): boolean {
+  return (
+    !["planning", "implementing", "verifying"].includes(f.status) &&
+    !f.runs.some((r) => ["starting", "running", "waiting"].includes(r.state))
+  );
+}
+
+function DeleteFeatureDialog({
+  placed,
+  workspace,
+  onDelete,
+  onClose,
+}: {
+  placed: PlacedFeature;
+  workspace?: string;
+  onDelete: () => Promise<void>;
+  onClose: () => void;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  return (
+    <Dialog title="Delete feature" onClose={onClose}>
+      <p>
+        Delete <strong>{placed.feature.title}</strong> from {placed.host}? Its conversation, plan, history and
+        screenshots are removed for good.
+      </p>
+      {workspace && <p className="muted small">The workspace {workspace} and its files stay as they are.</p>}
+      {error && <p className="error-text small">{error}</p>}
+      <div className="form-actions">
+        <span className="spacer" />
+        <button type="button" className="btn outline" onClick={onClose}>
+          Cancel
+        </button>
+        <button
+          type="button"
+          className="btn danger"
+          disabled={busy}
+          onClick={async () => {
+            setBusy(true);
+            try {
+              await onDelete();
+              onClose();
+            } catch (e) {
+              setError(String(e));
+              setBusy(false);
+            }
+          }}
+        >
+          Delete
+        </button>
+      </div>
+    </Dialog>
   );
 }
 
