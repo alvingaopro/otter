@@ -187,3 +187,42 @@ pub fn which(program: &str, env: &EnvMap) -> Option<std::path::PathBuf> {
                 .unwrap_or(false)
         })
 }
+
+/// How often to retry a spawn whose executable is busy.
+const BUSY_RETRIES: u32 = 10;
+
+fn busy(e: &std::io::Error) -> bool {
+    e.raw_os_error() == Some(libc::ETXTBSY)
+}
+
+/// Spawn, retrying while the executable is "busy" (ETXTBSY): a file just
+/// written (an agent's script, a test's fake) can briefly stay open for
+/// writing in a child another thread is forking.
+pub fn spawn_std(cmd: &mut std::process::Command) -> std::io::Result<std::process::Child> {
+    let mut attempt = 0;
+    loop {
+        match cmd.spawn() {
+            Err(e) if busy(&e) && attempt < BUSY_RETRIES => {
+                attempt += 1;
+                std::thread::sleep(std::time::Duration::from_millis(20 * u64::from(attempt)));
+            }
+            r => return r,
+        }
+    }
+}
+
+/// [`spawn_std`] for tokio.
+pub async fn spawn_tokio(
+    cmd: &mut tokio::process::Command,
+) -> std::io::Result<tokio::process::Child> {
+    let mut attempt = 0;
+    loop {
+        match cmd.spawn() {
+            Err(e) if busy(&e) && attempt < BUSY_RETRIES => {
+                attempt += 1;
+                tokio::time::sleep(std::time::Duration::from_millis(20 * u64::from(attempt))).await;
+            }
+            r => return r,
+        }
+    }
+}

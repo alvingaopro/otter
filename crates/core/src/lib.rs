@@ -3,10 +3,14 @@
 //! These types are shared verbatim (via serde) by the host daemon (`otterd`),
 //! the control-plane CLI (`otter`) and the future desktop app.
 
+pub mod feature;
 pub mod ids;
 pub mod model;
 
-pub use ids::{AttentionId, ExecutionId, SessionId, WorkspaceId};
+pub use ids::{
+    AttentionId, DecisionId, EvidenceId, ExecutionId, FeatureId, MessageId, RunId, SessionId,
+    TaskId, WorkspaceId,
+};
 pub use model::*;
 
 /// Validate a user-chosen workspace or session name.

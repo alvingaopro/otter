@@ -1077,3 +1077,303 @@ row and an inset terminal card before any output. Flattened:
   - Reordering uses pointer events, not HTML5 drag-and-drop, which the
     webview's file drop (Files panel) takes over.
 - Not done: pins in `otter ls`, which could read the same file.
+
+## D-041 — An Activity Bar: Features and Workspaces are separate views (2026-10-09)
+
+The app grows a product-oriented surface (Features: what should be built)
+next to the engineering one (Workspaces: where work runs). A VS Code-style
+**Activity Bar** at the far left picks the view; Features is first (the
+primary entry), Workspaces second, Settings (theme, add a host, command-line
+tools) at the bottom.
+
+- **Switching views never stops anything.** Every view stays mounted and the
+  ones behind are only hidden (`hidden`), so a terminal keeps its xterm
+  state and its attach; nothing in a view may detach, stop or restart on
+  hide. A hidden terminal has no size, so it doesn't refit (it would shrink
+  the session for every other viewer).
+- Keyboard: the bar is a vertical tab list (arrows, Home/End, roving
+  focus); ⌘1 / ⌘2 switch from anywhere. A notification, a tray pick or a new
+  workspace brings the Workspaces view to the front.
+- The view in front is remembered per Mac in the webview's storage, like the
+  theme: a view preference, not runtime state (invariant 11).
+- The workspace sidebar narrows on small windows.
+- UI tests (`npm test`, vitest in a simulated DOM with Tauri mocked) cover
+  navigation, accessibility roles and that switching never unmounts a
+  terminal; they run in CI.
+
+## D-042 — Features: a product surface with its own contract (2026-10-09)
+
+A **Feature** is a piece of product work — what should be built — as
+opposed to a Workspace, which is where work runs. The Features view (D-041)
+lists features with status filters (all, needs you, active, done, failed)
+and a create action; a feature shows its conversation with the Control
+Agent, a progress line (draft → planning → implementing → verifying →
+review → done), and detail tabs: plan (request, requirements, acceptance
+criteria, budget), tasks, approvals, evidence (tests, browser checks, CI,
+pull requests) and its timeline.
+
+- **The UI contract is typed first** (`apps/desktop/src/features.ts`), as
+  the daemon will send it (snake_case, mirroring `otter_core`), and the view
+  reads only through a `FeatureSource`. The first source is an in-memory
+  mock with sample features in every state; the view says "Preview" while
+  it is in use, and its replies say that nothing acts on them.
+- **Linked by id, not embedded:** a task names the workspace and session it
+  runs in; "Open session" brings that up in the Workspaces view. A
+  workspace doesn't know about features.
+- Needs-you for features: a pending decision, a blocked feature, or one
+  ready for review. The Activity Bar shows a dot on Features for these.
+
+## D-043 — Features are durable daemon state, with commands and history (2026-10-09)
+
+Features (D-042) must outlive the desktop app — work goes on while the
+laptop sleeps — so **each host's `otterd` owns its features**, and a feature
+works in that host's workspaces. The app only reads and sends commands.
+
+- **Kept apart from workspaces:** `state/features/<id>/feature.json` (the
+  feature, rewritten atomically) and `history.jsonl` (append-only), under
+  their own lock. A feature links to a workspace, task sessions and runs by
+  id; `state.json` never mentions features and no workspace code knows them
+  (invariants 5, 11 unchanged).
+- **Messages, commands and events are different things.** Messages are the
+  conversation (in the feature). Commands are what a client asks
+  (`feature.create/send/act`), each with a client-chosen `command_id`.
+  Events are what happened: the feature's history, one record per change
+  with a per-feature `seq`, a timestamp, a schema version `v` and the
+  correlation id of the command, decision or run behind it.
+- **Applied once.** A change runs on a copy; the document is then saved
+  with the command id in it (the last 256 per feature) before the history is
+  appended. A repeated `command_id` returns the feature unchanged, so
+  retrying after a lost reply is safe; a failed command isn't remembered. A
+  crash between the save and the append loses history lines, never state
+  (logged on load).
+- **Replay:** every change emits `FeatureChanged {feature_id, history_seq,
+  status}` on the host's event log, so the existing cursor replay
+  (D-016/D-037) tells a reconnecting client what changed; the feature's own
+  history (`feature.events {after}`) fills in the details. It is not rotated
+  with the host log: a feature's history is bounded by the feature.
+- **Schema versions:** `feature.json` has `schema`; loading migrates older
+  documents (schema 1 is the first) and leaves a newer one on disk,
+  untouched, for the otterd that wrote it.
+- **The lifecycle** is a deterministic table (`FeatureStatus::can_become`):
+  draft → planning → implementing → verifying → review → done; verifying and
+  review may send work back to implementing; blocked, paused and failed are
+  side exits that come back where the work left off (`resume_status`);
+  cancelled and done are final. The developer's actions are applied by the
+  daemon, not by a model.
+- The desktop's Features view now reads from every connected host
+  (`daemonSource`); an older `otterd` simply shows no features.
+
+## D-044 — Managed agent runs: structured events, policy-checked approvals (2026-10-09)
+
+Features need a coding agent the daemon can drive and observe without
+reading a terminal. A **managed run** is a separate mode next to the
+interactive agent sessions (which stay as they are).
+
+- **Contract** (`runtime/mod.rs`): `AgentRuntime::start` (fresh, or resuming
+  the agent's own conversation id) → a `RunHandle` with `send_input`,
+  `next_event` (the event stream: session id, text, tool use, a decision
+  needed, turn ended, exited), `decide`, `cancel`, `inspect`. Adapters map
+  their tools to generic kinds (`ToolCall`: read, edit, command, fetch,
+  question, plan approval, other).
+- **Claude Code adapter** (`agents/claude_stream.rs`): `claude -p` with
+  stream-json in and out, `--permission-mode default
+  --permission-prompt-tool stdio --setting-sources ""`. Permission prompts,
+  `AskUserQuestion` and plan approval come to Otter as `can_use_tool`
+  control requests and are answered with allow / deny / an answer. The
+  control messages are the Agent SDK's protocol, not a documented CLI
+  contract: **observed on Claude Code 2.1.295** by probing the real CLI
+  (allow, deny, a question answered, interrupt, `session_id` in `init` and
+  `result`), and covered by a fake that plays the same protocol
+  (`tests/fake_claude_stream.sh`). Without `--permission-prompt-tool stdio` a
+  prompt is denied on the spot.
+- **No settings files for managed runs** (`--setting-sources ""`): an allow
+  rule in the user's or the project's settings would let a tool run before
+  Otter's policy saw it, and a project's settings come with the repository.
+  Claude Code's own read-only auto-allow (`echo`, `ls`) still applies.
+- **Policy decides first** (`runtime/policy.rs`, deterministic): low risk
+  inside the workspace runs (reads, edits under the root, build and test
+  commands) and is recorded as decided by policy; medium risk (installs,
+  fetches, unknown commands, questions, plans) is a decision the Control
+  Agent may take; high risk — destructive, credentials, production or
+  publishing, root, anything outside the workspace — is `user_only`, blocks
+  the feature, and only the developer can allow it. `policy::resolve` is the
+  single gate: a model's "allow" of a `user_only` request is refused, and a
+  denial can't be turned around by anyone. Single words in the lists
+  (`token`, `secret`, `prod`, `deploy`) match whole words only, so
+  `cargo test tokenizer` or a search for "reproduce" stays routine.
+- **Every decision is a `DecisionRequest`** in the feature (kind, risk,
+  who decided, rationale), so the audit trail includes what policy allowed.
+  A request's summary can contain a command line the agent proposed: it is
+  kept in `feature.json` (0600), never in `events.jsonl`.
+- **Lifetime — a deliberate deviation from invariant 4.** A managed run's
+  protocol is its stdin/stdout, so it is a child of `otterd` and ends with
+  it, unlike an interactive session in tmux. Its *conversation* survives:
+  the run keeps the agent's session id, a new daemon marks interrupted runs
+  (`recover_runs`) and the controller resumes them with `--resume`. Nothing
+  else changes for sessions.
+- **Handing over:** *Take over* stops the managed run (recorded as handed
+  off) and opens the same conversation in an interactive agent session in
+  the workspace (`SessionSpec.resume`); the feature pauses. *Hand back* is
+  refused while that session still runs, so only one process ever drives a
+  conversation; then the controller continues it. The session is created
+  before the command is recorded, so a failed takeover can be retried.
+
+## D-045 — The Control Agent: a deterministic engine that consults a model (2026-10-09)
+
+A feature moves from request to review without the developer, but a model
+decides only where judgment is needed. The engine (`controller.rs`) runs in
+`otterd` — so it works with every client closed — woken by feature changes
+and by a tick (default 5 s, `OTTER_CONTROLLER_TICK_MS`) that enforces time
+limits.
+
+- **Lifecycle** (D-043): planning → implementing → verifying → review,
+  with blocked, paused, failed and cancelled to the side. One feature, one
+  run at a time; features step concurrently, each never twice at once.
+- **The brain** (`brain.rs`, `OTTER_CONTROLLER`) does three things: write
+  the plan (requirements, checkable acceptance criteria, tasks with
+  dependencies, one check command), decide what policy leaves open, and
+  judge the criteria from the evidence. `claude` (default when Claude Code
+  is installed) asks `claude -p --json-schema … --tools "" --setting-sources
+  ""` — structured output, no tools, the developer's own Claude Code
+  sign-in, nothing new to configure or store (`OTTER_CONTROLLER_MODEL` picks
+  a model). `openrouter` uses any model on OpenRouter (`OTTER_CONTROLLER_MODEL`,
+  default `openrouter/auto`) with `OPENROUTER_API_KEY` from otterd's
+  environment — the key goes to `curl` in its config on stdin, never on a
+  command line, in events or in a feature; it is the default when the key is
+  set and Claude Code isn't installed. `rules` uses no model: one task, every open decision goes to the
+  developer, criteria are met when the check passes. `yes` (tests only)
+  approves everything, to show that policy still stops it.
+- **Code, not the model, enforces:**
+  - what may run: the check command goes through policy like any agent
+    command (routine checks run; anything else becomes a decision); the
+    brain's approvals go through `policy::resolve`, so a `user_only` request
+    stays with the developer whatever the model says (it is recorded that
+    the Control Agent wanted to allow it);
+  - the budget: attempts (default 6 runs) and minutes of active work
+    (default 120) per feature, at most 3 attempts per task, a per-run
+    timeout (`OTTER_RUN_TIMEOUT_MS`, 30 min), and loop detection (the same
+    failure 3 runs in a row since the work last started);
+  - a failed check can't be judged away: if the latest deterministic check
+    failed, no criterion counts as met.
+- **Recovery:** the feature document is the checkpoint. A run cut off by a
+  restart, a pause or a takeover resumes its conversation (`--resume`,
+  "continue where you left off", plus new messages from the developer)
+  without costing an attempt; a failed run starts over with the error in
+  its prompt. Failing keeps the plan; *Retry* starts again from it with a
+  fresh budget.
+- **The developer can always step in:** pause, cancel, take over and hand
+  back, decide any open decision, choose the workspace, accept or send back
+  in review. Developer messages reach the coding agent with its next run
+  (not mid-turn, in this version).
+- **Audit:** the plan, every decision (with who decided and why), the
+  rationale lines, evidence and the history.
+- A feature needs a workspace on its host; without one it blocks with
+  "Choose a workspace" (the app's New feature dialog offers them).
+- Not yet: several runs in parallel, a model reply in the conversation, a
+  plan approval step.
+
+## D-046 — Browser verification: a real browser next to the work (2026-10-09)
+
+The Control Agent checks a UI itself rather than trusting the coding
+agent's account of it.
+
+- **Checks are the project's**, in `.otter/browser-checks.json`: a preview
+  command with `{port}` (also in `PORT`) and a ready path, then steps — go
+  to, click, fill, expect text, expect visible, screenshot, wait. Declared,
+  reviewable, deterministic; the model doesn't invent them.
+- **Where:** on the host, next to the preview, so a remote workspace is
+  verified without any tunnel. The browser is a headless Chrome/Chromium
+  (`OTTER_BROWSER`, else found on PATH or in /Applications) driven over the
+  DevTools protocol on `--remote-debugging-pipe` (fds 3 and 4): no
+  debugging port to expose, no new dependency.
+- **The preview** starts in its own process group on a free port, is
+  polled until it answers, and is taken down (the whole group) after the
+  check. Its command goes through policy like any other: a project file the
+  coding agent can edit must not be a way around it. Not routine →
+  a decision (asked once; approvals are remembered per command).
+- **Isolation:** a throwaway profile per check (removed after), a fresh
+  browser context, an environment with only `PATH` and a throwaway `HOME`
+  (no workspace secrets), requests to anything but the preview's origin
+  blocked (`Fetch`), downloads denied. `OTTER_BROWSER_NO_SANDBOX` (CI only)
+  where Chrome's sandbox can't start.
+- **Evidence:** per check, each step ✓/✗ with the reason, console errors
+  and uncaught exceptions, failed and 4xx/5xx requests (a favicon aside),
+  blocked requests, and screenshots kept with the feature
+  (`state/features/<id>/artifacts/`, served by name with `feature.artifact`).
+  A failed step, a console error or a failed request fails the check, and a
+  failed check fails verification (the work goes back to implementing).
+- **A model's look is supplementary:** the `claude` brain reviews the last
+  screenshot (`claude -p` allowed to Read only the artifacts directory) and
+  that evidence is marked uncertain; deterministic results outrank it.
+- **The developer's preview:** *Preview* starts the same command as a
+  service session in the workspace on a free port (one at a time; it shows
+  in the Workspaces view and survives client disconnects). The app opens it
+  by forwarding that one port from the host (the existing port mappings) —
+  a scoped tunnel — or directly on this Mac.
+- Not yet: checks proposed by the Control Agent, visual regression
+  baselines, network mocking.
+
+## D-047 — Delivery: a pull request, CI, and gates before done (2026-10-09)
+
+A verified feature isn't done until it has been delivered and independently
+checked. In review the controller (`review_step`, `delivery.rs`):
+
+- **Publishes, with permission.** In a Git workspace with an `origin` and
+  `gh` on the host, it asks to run `git push origin <branch>` and open a
+  pull request — a `user_only` decision (high risk to policy), asked once
+  per feature; later pushes of the same branch (after fixes) reuse it. A
+  denial keeps delivery local (the PR and CI gates no longer apply). The PR
+  description lists the criteria and the checks; bodies go over stdin.
+- **GitHub through the host's `gh`**: its sign-in and scope; Otter stores
+  no token and puts none on a command line. Calls: `pr view/create/edit`,
+  `pr checks --json`, `run view --log-failed`, `run rerun --failed`,
+  `pr comment`. Another forge would implement the same few calls.
+- **Follows CI** (every `OTTER_CI_POLL_MS`, 15 s; not within
+  `OTTER_CI_SETTLE_MS`, 60 s, of a push, when what `gh` reports is still the
+  previous commit's): a failure goes back to
+  implementing as a "Fix what CI found" task with the failed log; a failure
+  that reads like the infrastructure (a runner lost, a network error, a full
+  disk) is rerun instead, at most twice per pushed commit. Budgets and loop
+  detection (D-045) bound the round trips.
+- **Gates** (deterministic, recomputed each step): requirements met (every
+  criterion), local tests (the latest check), browser evidence (if the
+  project declares checks), the pull request, CI (pending until checks
+  report when the repository has workflows), and the developer's
+  acceptance. *Accept* is refused until every other gate passed or doesn't
+  apply; *Accept anyway* is the developer's explicit override and goes into
+  the rationale and the report.
+- **The report** (once every gate but acceptance is clear): changed files,
+  criteria, gates, evidence (model judgments marked), decisions and who made
+  them, and the unresolved risks. Kept on the feature and posted on the PR.
+- **Never automatically:** merging and deploying. Otter has no merge or
+  deploy call, and the coding agent's policy treats `gh pr merge`, deploys
+  and publishing as the developer's.
+- Tested end to end with a real Git remote and a fake `gh`: request →
+  verified → publish approved → pushed and PR opened → CI fails → fixed →
+  CI green → gates → report → accepted; a flaky failure is rerun; declining
+  keeps it local. Not run against real GitHub here.
+
+## D-048 — Host settings: the Control Agent's model and API keys (2026-10-09)
+
+Choosing the Control Agent's model and giving it an API key shouldn't
+require editing a host's shell profile and restarting `otterd`. Each host
+keeps **settings** that a client sets:
+
+- `state/settings.json`: the controller (`claude`, `openrouter`, `rules`,
+  `off`; absent = automatic) and the model.
+- `state/secrets.json` (0600): API keys, by known name only (for now
+  `OPENROUTER_API_KEY`). **Write-only over the protocol**: `settings.get`
+  says whether each key is set, never its value; `settings.set` sets or
+  clears one (`null`). Never logged, never in `events.jsonl`, never on a
+  command line (OpenRouter gets it through curl's config on stdin).
+- Precedence: an explicit `OTTER_CONTROLLER` / `OTTER_CONTROLLER_MODEL` in
+  otterd's environment wins (operators, tests — `settings.get` reports
+  it); then the settings; a key in the environment is used when none is
+  set here. A broken settings file leaves the daemon on defaults.
+- `off`: the controller doesn't step features at all; they stay where they
+  are until the developer acts. (Tests of the feature state machine use it.)
+- In the app: a gear in the sidebar's title bar (Workspaces and Features)
+  and *Control Agent and API keys…* in the Activity Bar's Settings menu open
+  a dialog per connected host: the controller, the model, and each key as a
+  password field showing only "set" / "not set", with Clear. Settings
+  belong to a host because its daemon is what uses them.

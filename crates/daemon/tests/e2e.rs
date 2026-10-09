@@ -21,6 +21,8 @@ struct TestHost {
     transport: Transport,
     /// A daemon started directly by the test (see `with_env`).
     daemon: Option<std::process::Child>,
+    /// The variables it was started with, to start it again.
+    vars: Vec<(String, String)>,
 }
 
 impl TestHost {
@@ -35,6 +37,7 @@ impl TestHost {
             dir,
             transport,
             daemon: None,
+            vars: Vec::new(),
         }
     }
 
@@ -42,24 +45,43 @@ impl TestHost {
     /// login-shell environment it captures inherits).
     async fn with_env(vars: &[(&str, String)]) -> Self {
         let mut host = Self::new();
+        host.vars = vars
+            .iter()
+            .map(|(k, v)| ((*k).to_owned(), v.clone()))
+            .collect();
+        host.spawn_daemon().await;
+        host
+    }
+
+    async fn spawn_daemon(&mut self) {
+        let _ = std::fs::remove_file(self.home().join("run/workd.sock"));
         let daemon = Command::new(env!("CARGO_BIN_EXE_otterd"))
             .arg("--home")
-            .arg(host.home())
+            .arg(self.home())
             .arg("serve")
-            .envs(vars.iter().map(|(k, v)| (*k, v.as_str())))
+            .envs(self.vars.iter().map(|(k, v)| (k.as_str(), v.as_str())))
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
             .spawn()
             .unwrap();
-        host.daemon = Some(daemon);
-        let socket = host.home().join("run/workd.sock");
+        self.daemon = Some(daemon);
+        let socket = self.home().join("run/workd.sock");
         eventually("daemon listening", || {
             let ok = socket.exists();
             async move { ok.then_some(()) }
         })
         .await;
-        host
+    }
+
+    /// Stop a daemon started by `with_env` and start it again with the same
+    /// variables (a dialed restart wouldn't have them).
+    async fn restart(&mut self) {
+        self.conn().await.shutdown().await.unwrap();
+        if let Some(mut d) = self.daemon.take() {
+            let _ = d.wait();
+        }
+        self.spawn_daemon().await;
     }
 
     fn home(&self) -> &Path {
@@ -143,6 +165,7 @@ fn spec(kind: SessionKind, name: &str, command: &str) -> SessionSpec {
         command: Some(command.into()),
         provider: None,
         prompt: None,
+        resume: None,
     }
 }
 
@@ -344,6 +367,7 @@ async fn service_without_command_is_rejected() {
                 command: None,
                 provider: None,
                 prompt: None,
+                resume: None,
             },
         })
         .await
@@ -1424,6 +1448,8 @@ exec sleep 600
 struct FakeCodex {
     host: TestHost,
     log: std::path::PathBuf,
+    /// The fake `gh`'s pull requests and CI (fake_gh.sh).
+    gh: std::path::PathBuf,
     _scratch: tempfile::TempDir,
 }
 
@@ -1462,6 +1488,8 @@ fn tmux_dir() -> String {
 /// `nohooks` ignores the settings (hooks disabled) and stops at a prompt.
 const FAKE_CLAUDE: &str = r#"#!/bin/sh
 if [ "$1" = --version ]; then echo "2.0.0-fake (Claude Code)"; exit 0; fi
+# Managed runs (`claude -p`, stream-json): fake_claude_stream.sh.
+if [ "$1" = -p ]; then exec sh "$FAKE_CLAUDE_STREAM" "$@"; fi
 hook_cmd=
 if [ "$1" = --settings ]; then
   hook_cmd=$(sed -n 's/^ *"command": "\(.*\)",$/\1/p' "$2" | head -n 1)
@@ -1519,6 +1547,12 @@ exec sleep 600
 "#;
 
 async fn fake_codex_host(mode: &str) -> FakeCodex {
+    fake_agent_host(mode, "rules").await
+}
+
+/// A host with fake agents, and the given Control Agent brain for features
+/// (`rules` or `yes`; never a real model in tests).
+async fn fake_agent_host(mode: &str, controller: &str) -> FakeCodex {
     let scratch = tempfile::Builder::new().prefix("wdc").tempdir().unwrap();
     let bin = scratch.path().join("bin");
     std::fs::create_dir_all(&bin).unwrap();
@@ -1529,6 +1563,13 @@ async fn fake_codex_host(mode: &str) -> FakeCodex {
     let claude = bin.join("claude");
     std::fs::write(&claude, FAKE_CLAUDE).unwrap();
     std::fs::set_permissions(&claude, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let stream = scratch.path().join("fake_claude_stream.sh");
+    std::fs::write(&stream, include_str!("fake_claude_stream.sh")).unwrap();
+    let gh = bin.join("gh");
+    std::fs::write(&gh, include_str!("fake_gh.sh")).unwrap();
+    std::fs::set_permissions(&gh, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let gh_dir = scratch.path().join("gh");
+    std::fs::create_dir_all(&gh_dir).unwrap();
     let home = scratch.path().join("home");
     std::fs::create_dir_all(&home).unwrap();
     let log = scratch.path().join("codex-args.log");
@@ -1548,12 +1589,24 @@ async fn fake_codex_host(mode: &str) -> FakeCodex {
         ),
         ("FAKE_CODEX_LOG", p(&log)),
         ("FAKE_CODEX_MODE", mode.into()),
+        ("FAKE_CLAUDE_STREAM", p(&stream)),
+        ("FAKE_GH_DIR", p(&gh_dir)),
+        ("OTTER_CI_POLL_MS", "0".into()),
+        ("OTTER_CI_SETTLE_MS", "0".into()),
+        // Features: the deterministic controller (no model calls in tests).
+        ("OTTER_CONTROLLER", controller.into()),
+        ("OTTER_CONTROLLER_TICK_MS", "200".into()),
+        // A Nix dev shell's SDK paths make macOS's /usr/bin/make look for a
+        // make that isn't there (features check their work with `make test`).
+        ("DEVELOPER_DIR", String::new()),
+        ("SDKROOT", String::new()),
         ("OTTER_AGENT_QUIET_SECS", "2".into()),
     ])
     .await;
     FakeCodex {
         host,
         log,
+        gh: gh_dir,
         _scratch: scratch,
     }
 }
@@ -2508,4 +2561,1179 @@ async fn brief_is_set_at_creation_and_edited_later() {
         .await
         .unwrap_err();
     assert!(err.to_string().contains("no workspace"), "{err}");
+}
+
+// ---------------------------------------------------------------------------
+// Features (D-043)
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn features_persist_dedupe_commands_and_replay_after_a_restart() {
+    use otter_core::feature::{FeatureAction, FeatureStatus, MessageRole};
+    use otter_protocol::feature::FeatureCreate;
+
+    // The state machine on its own: no Control Agent stepping it.
+    let mut host = TestHost::with_env(&[("OTTER_CONTROLLER", "off".into())]).await;
+    create(&host, "fw", Some(vec![])).await;
+    let mut conn = host.conn().await;
+    let created = FeatureCreate {
+        command_id: "cmd-create-1".into(),
+        title: "Export CSV".into(),
+        request: "Export the timeline as CSV".into(),
+        workspace: Some("fw".into()),
+    };
+    let f = conn.feature_create(created.clone()).await.unwrap();
+    assert_eq!(f.status, FeatureStatus::Draft);
+    assert!(f.workspace_id.is_some());
+    // The same create again (a retry after a lost reply) is the same feature.
+    let again = conn.feature_create(created).await.unwrap();
+    assert_eq!(again.id, f.id);
+    assert_eq!(conn.feature_list().await.unwrap().len(), 1);
+
+    // A message delivered twice is added once.
+    let id = f.id.as_str();
+    conn.feature_send("cmd-msg-1", id, "Include session names")
+        .await
+        .unwrap();
+    let f = conn
+        .feature_send("cmd-msg-1", id, "Include session names")
+        .await
+        .unwrap();
+    let user: Vec<_> = f
+        .messages
+        .iter()
+        .filter(|m| m.role == MessageRole::User)
+        .collect();
+    assert_eq!(user.len(), 2, "request + one message");
+
+    // A client following the feature remembers where it was.
+    let seen = f.history_seq;
+    let snapshot = conn.snapshot().await.unwrap();
+    drop(conn);
+
+    // While it's away: the feature starts, and the daemon restarts.
+    host.conn()
+        .await
+        .feature_act("cmd-start", id, FeatureAction::Start)
+        .await
+        .unwrap();
+    host.restart().await;
+
+    // Everything is still there after the restart...
+    let mut conn = host.conn().await;
+    let f = conn.feature_get(id).await.unwrap();
+    assert_eq!(f.status, FeatureStatus::Planning);
+    assert_eq!(f.messages.len(), 2);
+    // ...the host's event stream says the feature changed...
+    let mut stream = host
+        .conn()
+        .await
+        .subscribe(Some(snapshot.cursor()))
+        .await
+        .unwrap();
+    let head = stream.seq;
+    let missed = events_through(&mut stream, head).await;
+    assert!(missed.iter().any(|r| matches!(
+        &r.event,
+        Event::FeatureChanged { feature_id, status: FeatureStatus::Planning, .. } if feature_id == &f.id
+    )));
+    // ...and the feature's own history replays exactly what was missed, in order.
+    let replay = conn.feature_events(id, Some(seen)).await.unwrap();
+    let seqs: Vec<u64> = replay.iter().map(|r| r.seq).collect();
+    assert_eq!(seqs, (seen + 1..=f.history_seq).collect::<Vec<_>>());
+    assert!(
+        replay
+            .iter()
+            .all(|r| r.correlation_id.as_deref() == Some("cmd-start"))
+    );
+    assert!(replay.iter().any(|r| r.text.starts_with("Planning")));
+
+    // The repeated start is harmless; an impossible action is refused.
+    let f2 = conn
+        .feature_act("cmd-start", id, FeatureAction::Start)
+        .await
+        .unwrap();
+    assert_eq!(f2.history_seq, f.history_seq);
+    let err = conn
+        .feature_act(
+            "cmd-accept",
+            id,
+            FeatureAction::Accept {
+                override_gates: false,
+            },
+        )
+        .await
+        .unwrap_err();
+    assert!(format!("{err:#}").contains("review"), "{err:#}");
+
+    // Features are kept apart from workspace state.
+    let state = std::fs::read_to_string(host.home().join("state/state.json")).unwrap();
+    assert!(!state.contains(id));
+}
+
+// ---------------------------------------------------------------------------
+// The Control Agent driving managed runs (D-044, D-045), with the fake
+// `claude -p` (tests/fake_claude_stream.sh) and the deterministic brains.
+// ---------------------------------------------------------------------------
+
+/// A project with a `make test` check, a feature on it asking for
+/// `request`, started. Returns the feature id.
+async fn started_feature(host: &TestHost, request: &str) -> String {
+    use otter_core::feature::FeatureAction;
+    let dir = host.home().join("proj");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("Makefile"), "test:\n\t@echo all good\n").unwrap();
+    let mut conn = host.conn().await;
+    conn.workspace_create(WorkspaceCreate {
+        name: "proj".into(),
+        source: SourceSpec::Directory {
+            path: dir.to_string_lossy().into_owned(),
+        },
+        sessions: Some(vec![]),
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+    let f = conn
+        .feature_create(otter_protocol::feature::FeatureCreate {
+            command_id: "create".into(),
+            title: "CSV export".into(),
+            request: request.into(),
+            workspace: Some("proj".into()),
+        })
+        .await
+        .unwrap();
+    conn.feature_act("start", f.id.as_str(), FeatureAction::Start)
+        .await
+        .unwrap();
+    f.id.to_string()
+}
+
+async fn wait_feature(
+    host: &TestHost,
+    id: &str,
+    what: &str,
+    pred: impl Fn(&otter_core::feature::Feature) -> bool,
+) -> otter_core::feature::Feature {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+    loop {
+        let f = host.conn().await.feature_get(id).await.unwrap();
+        if pred(&f) {
+            return f;
+        }
+        if tokio::time::Instant::now() > deadline {
+            let history = host.conn().await.feature_events(id, None).await.unwrap();
+            let lines: Vec<&str> = history.iter().map(|r| r.text.as_str()).collect();
+            panic!(
+                "timed out waiting for: {what}\nstatus: {:?} ({:?})\nhistory: {lines:#?}\nrationale: {:?}\nruns: {:?}\nevidence: {:?}",
+                f.status,
+                f.status_reason,
+                f.rationale,
+                f.runs,
+                f.evidence.last()
+            );
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
+#[tokio::test]
+async fn a_feature_goes_from_request_to_review_with_evidence() {
+    use otter_core::feature::{EvidenceKind, FeatureAction, FeatureStatus, MessageRole, RunState};
+    let fake = fake_agent_host("ok", "rules").await;
+    let id = started_feature(&fake.host, "Export the timeline as CSV").await;
+    let f = wait_feature(&fake.host, &id, "review, with the report", |f| {
+        f.status == FeatureStatus::Review && f.report.is_some()
+    })
+    .await;
+    // Not a Git workspace: no pull request or CI to wait for.
+    use otter_core::feature::GateStatus;
+    let gate = |name: &str| f.gates.iter().find(|g| g.name == name).unwrap().status;
+    assert_eq!(gate("Pull request"), GateStatus::NotApplicable);
+    assert_eq!(gate("Local tests"), GateStatus::Passed);
+    assert!(f.report.as_deref().unwrap().contains("## Unresolved risks"));
+    // Planned, ran, reported, checked.
+    assert_eq!(f.tasks.len(), 1);
+    assert_eq!(f.verify_command.as_deref(), Some("make test"));
+    assert!(
+        f.verify_approved,
+        "make test is routine: no one had to approve it"
+    );
+    assert_eq!(f.runs.len(), 1);
+    assert_eq!(f.runs[0].state, RunState::Completed);
+    assert!(
+        f.runs[0]
+            .provider_session_id
+            .as_deref()
+            .unwrap()
+            .starts_with("fake-session-")
+    );
+    assert!(
+        f.messages
+            .iter()
+            .any(|m| m.role == MessageRole::Agent && m.text.starts_with("done in"))
+    );
+    assert!(
+        f.messages
+            .iter()
+            .any(|m| m.role == MessageRole::Controller && m.text.starts_with("Plan:"))
+    );
+    let check = f
+        .evidence
+        .iter()
+        .find(|e| e.kind == EvidenceKind::Test)
+        .unwrap();
+    assert_eq!(check.ok, Some(true));
+    assert!(check.detail.as_deref().unwrap().contains("all good"));
+    assert!(f.acceptance.iter().all(|c| c.met == Some(true)));
+    assert_eq!(f.budget.iterations_used, 1);
+    // The history tells the story in order.
+    let kinds: Vec<String> = fake
+        .host
+        .conn()
+        .await
+        .feature_events(&id, None)
+        .await
+        .unwrap()
+        .iter()
+        .map(|r| {
+            serde_json::to_value(&r.event).unwrap()["type"]
+                .as_str()
+                .unwrap()
+                .to_owned()
+        })
+        .collect();
+    let pos = |k: &str| {
+        kinds
+            .iter()
+            .position(|x| x == k)
+            .unwrap_or_else(|| panic!("{k} in {kinds:?}"))
+    };
+    assert!(pos("PlanSet") < pos("RunStarted"));
+    assert!(pos("RunStarted") < pos("EvidenceAdded"));
+    // Done only when the developer accepts.
+    let f = fake
+        .host
+        .conn()
+        .await
+        .feature_act(
+            "accept",
+            &id,
+            FeatureAction::Accept {
+                override_gates: false,
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(f.status, FeatureStatus::Done);
+}
+
+#[tokio::test]
+async fn an_approval_is_answered_and_the_run_continues() {
+    use otter_core::feature::{Decider, DecisionStatus, FeatureAction, FeatureStatus, Risk};
+    let fake = fake_agent_host("ok", "rules").await;
+    let id = started_feature(&fake.host, "Add a dependency ASK_INSTALL").await;
+    // The rules brain doesn't decide: it's the developer's.
+    let f = wait_feature(&fake.host, &id, "blocked on a decision", |f| {
+        f.status == FeatureStatus::Blocked && f.pending_decisions().next().is_some()
+    })
+    .await;
+    let d = f.pending_decisions().next().unwrap().clone();
+    assert_eq!(d.summary, "Run `npm install left-pad`");
+    assert_eq!(d.risk, Risk::Medium);
+    assert!(!d.user_only);
+    fake.host
+        .conn()
+        .await
+        .feature_act(
+            "approve",
+            &id,
+            FeatureAction::Decide {
+                decision_id: d.id.clone(),
+                approve: true,
+                answer: None,
+            },
+        )
+        .await
+        .unwrap();
+    let f = wait_feature(&fake.host, &id, "review after the approval", |f| {
+        f.status == FeatureStatus::Review
+    })
+    .await;
+    let d = f.decisions.iter().find(|x| x.id == d.id).unwrap();
+    assert_eq!(d.status, DecisionStatus::Approved);
+    assert_eq!(d.decided_by, Some(Decider::User));
+    assert_eq!(f.runs[0].summary.as_deref(), Some("allowed and done"));
+}
+
+#[tokio::test]
+async fn a_model_cannot_approve_what_only_the_developer_may() {
+    use otter_core::feature::{Decider, DecisionStatus, FeatureAction, FeatureStatus, Risk};
+    // A brain that approves everything it is asked.
+    let fake = fake_agent_host("ok", "yes").await;
+    let id = started_feature(&fake.host, "Clean up ASK_RM").await;
+    let f = wait_feature(&fake.host, &id, "blocked on the developer", |f| {
+        f.status == FeatureStatus::Blocked
+            && f.rationale
+                .iter()
+                .any(|r| r.contains("only the developer may approve"))
+    })
+    .await;
+    let d = f.pending_decisions().next().expect("still pending").clone();
+    assert_eq!(d.summary, "Run `rm -rf build`");
+    assert!(d.user_only);
+    assert_eq!(d.risk, Risk::High);
+    // Some time later, still not approved by anyone but the developer.
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    let f = fake.host.conn().await.feature_get(&id).await.unwrap();
+    assert_eq!(
+        f.decisions.iter().find(|x| x.id == d.id).unwrap().status,
+        DecisionStatus::Pending
+    );
+    // The developer says no; nobody can turn that around.
+    fake.host
+        .conn()
+        .await
+        .feature_act(
+            "deny",
+            &id,
+            FeatureAction::Decide {
+                decision_id: d.id.clone(),
+                approve: false,
+                answer: None,
+            },
+        )
+        .await
+        .unwrap();
+    let f = wait_feature(&fake.host, &id, "the denial reaches the agent", |f| {
+        f.runs
+            .first()
+            .is_some_and(|r| r.summary.as_deref() == Some("denied, so I stopped"))
+    })
+    .await;
+    let d = f.decisions.iter().find(|x| x.id == d.id).unwrap();
+    assert_eq!(
+        (d.status, d.decided_by),
+        (DecisionStatus::Denied, Some(Decider::User))
+    );
+}
+
+#[tokio::test]
+async fn the_control_agent_decides_what_policy_leaves_open() {
+    use otter_core::feature::{Decider, DecisionStatus, FeatureStatus};
+    let fake = fake_agent_host("ok", "yes").await;
+    let id = started_feature(&fake.host, "Add a dependency ASK_INSTALL").await;
+    let f = wait_feature(&fake.host, &id, "review", |f| {
+        f.status == FeatureStatus::Review
+    })
+    .await;
+    let d = &f.decisions[0];
+    assert_eq!(
+        (d.status, d.decided_by),
+        (DecisionStatus::Approved, Some(Decider::Controller))
+    );
+    assert_eq!(d.rationale.as_deref(), Some("yes"));
+}
+
+#[tokio::test]
+async fn runs_survive_a_restart_stop_on_cancel_and_hand_over_to_the_developer() {
+    use otter_core::feature::{FeatureAction, FeatureStatus, RunState};
+    let mut fake = fake_agent_host("ok", "rules").await;
+    let id = started_feature(&fake.host, "A long job HANG").await;
+    let f = wait_feature(&fake.host, &id, "a run with a conversation", |f| {
+        f.runs
+            .first()
+            .is_some_and(|r| r.provider_session_id.is_some() && r.state == RunState::Running)
+    })
+    .await;
+    let conv = f.runs[0].provider_session_id.clone().unwrap();
+
+    // The daemon restarts: the run ends with it, and its conversation resumes.
+    fake.host.restart().await;
+    let f = wait_feature(&fake.host, &id, "the run resumed", |f| {
+        f.runs.len() == 2 && f.runs[1].state == RunState::Running
+    })
+    .await;
+    assert_eq!(f.runs[0].state, RunState::Cancelled);
+    assert_eq!(
+        f.runs[1].provider_session_id.as_deref(),
+        Some(conv.as_str())
+    );
+    assert_eq!(
+        f.budget.iterations_used, 1,
+        "resuming isn't another attempt"
+    );
+    let args = std::fs::read_to_string(&fake.log).unwrap();
+    assert!(args.contains(&format!("--resume {conv}")), "{args}");
+
+    // The developer takes over: the managed run stops, the conversation
+    // opens in an interactive session.
+    let mut conn = fake.host.conn().await;
+    let f = conn
+        .feature_act("take", &id, FeatureAction::TakeOver)
+        .await
+        .unwrap();
+    assert_eq!(f.status, FeatureStatus::Paused);
+    assert_eq!(f.runs[1].state, RunState::HandedOff);
+    let sid = f.tasks[0].session_id.clone().expect("a takeover session");
+    let ws = conn.workspace_get("proj").await.unwrap();
+    let s = ws.session(sid.as_str()).unwrap();
+    assert_eq!(
+        s.agent.as_ref().unwrap().provider_session_id.as_deref(),
+        Some(conv.as_str())
+    );
+    eventually("the interactive agent resumes the conversation", || async {
+        std::fs::read_to_string(&fake.log)
+            .unwrap()
+            .contains(&format!("claude --resume {conv}"))
+            .then_some(())
+    })
+    .await;
+    // Retrying the takeover is harmless.
+    let again = conn
+        .feature_act("take", &id, FeatureAction::TakeOver)
+        .await
+        .unwrap();
+    let extra = conn.feature_events(&id, Some(f.history_seq)).await.unwrap();
+    assert!(
+        extra.is_empty(),
+        "the retry changed nothing: {:?}",
+        extra.iter().map(|r| &r.text).collect::<Vec<_>>()
+    );
+    assert_eq!(again.history_seq, f.history_seq);
+
+    // Handing back while the developer's agent still runs is refused...
+    let err = conn
+        .feature_act("back-1", &id, FeatureAction::HandBack)
+        .await
+        .unwrap_err();
+    assert!(format!("{err:#}").contains("quit the agent"), "{err:#}");
+    // ...and works once it has stopped: the managed run picks it up again.
+    conn.session_stop("proj", sid.as_str()).await.unwrap();
+    conn.feature_act("back-2", &id, FeatureAction::HandBack)
+        .await
+        .unwrap();
+    let f = wait_feature(&fake.host, &id, "managed again", |f| {
+        f.runs.len() == 3 && f.runs[2].state == RunState::Running
+    })
+    .await;
+    assert_eq!(
+        f.runs[2].provider_session_id.as_deref(),
+        Some(conv.as_str())
+    );
+
+    // Cancel stops it for good.
+    let f = conn
+        .feature_act("cancel", &id, FeatureAction::Cancel)
+        .await
+        .unwrap();
+    assert_eq!(f.status, FeatureStatus::Cancelled);
+    assert_eq!(f.runs[2].state, RunState::Cancelled);
+}
+
+#[tokio::test]
+async fn repeated_failures_stop_at_the_limit_and_the_plan_survives() {
+    use otter_core::feature::{FeatureAction, FeatureEvent, FeatureStatus, RunState};
+    let fake = fake_agent_host("ok", "rules").await;
+    let id = started_feature(&fake.host, "This will FAIL").await;
+    let f = wait_feature(&fake.host, &id, "failed", |f| {
+        f.status == FeatureStatus::Failed
+    })
+    .await;
+    assert_eq!(f.runs.len(), 3);
+    assert!(f.runs.iter().all(|r| r.state == RunState::Failed));
+    assert!(
+        f.status_reason
+            .as_deref()
+            .unwrap()
+            .contains("same failure 3 times"),
+        "{:?}",
+        f.status_reason
+    );
+    let history = fake
+        .host
+        .conn()
+        .await
+        .feature_events(&id, None)
+        .await
+        .unwrap();
+    assert!(
+        history
+            .iter()
+            .any(|r| matches!(&r.event, FeatureEvent::LimitReached { limit } if limit == "loop"))
+    );
+    // The plan is kept: retrying starts from it with a fresh budget.
+    let tasks = f.tasks.clone();
+    let f = fake
+        .host
+        .conn()
+        .await
+        .feature_act("retry", &id, FeatureAction::Retry)
+        .await
+        .unwrap();
+    assert_eq!(f.status, FeatureStatus::Implementing);
+    assert_eq!(
+        f.tasks.iter().map(|t| &t.id).collect::<Vec<_>>(),
+        tasks.iter().map(|t| &t.id).collect::<Vec<_>>()
+    );
+    assert_eq!(f.budget.iterations_used, 0);
+    // The earlier failures don't count against the retry: three new ones do.
+    let f = wait_feature(&fake.host, &id, "failed again", |f| {
+        f.status == FeatureStatus::Failed && f.runs.len() == 6
+    })
+    .await;
+    assert_eq!(f.budget.iterations_used, 3);
+}
+
+// ---------------------------------------------------------------------------
+// Browser verification and previews (D-046). Skipped without a Chrome or
+// Chromium and python3 on this machine.
+// ---------------------------------------------------------------------------
+
+fn browser_available() -> bool {
+    let ok = std::env::var("OTTER_BROWSER").is_ok()
+        || [
+            "chromium",
+            "chromium-browser",
+            "google-chrome",
+            "google-chrome-stable",
+        ]
+        .iter()
+        .any(|b| {
+            Command::new("sh")
+                .args(["-c", &format!("command -v {b}")])
+                .output()
+                .is_ok_and(|o| o.status.success())
+        })
+        || Path::new("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome").exists();
+    let python = Command::new("python3")
+        .arg("--version")
+        .output()
+        .is_ok_and(|o| o.status.success());
+    if !(ok && python) {
+        eprintln!("skipping: needs Chrome/Chromium and python3");
+    }
+    ok && python
+}
+
+const PREVIEW: &str = "python3 -m http.server {port} --bind 127.0.0.1";
+
+/// A web project: a greeter page, `make test`, and a browser check that
+/// expects `expect` after greeting Ada.
+async fn web_feature(host: &TestHost, expect: &str) -> String {
+    use otter_core::feature::FeatureAction;
+    let dir = host.home().join("web");
+    std::fs::create_dir_all(dir.join(".otter")).unwrap();
+    std::fs::write(dir.join("Makefile"), "test:\n\t@echo all good\n").unwrap();
+    std::fs::write(
+        dir.join("index.html"),
+        r#"<!doctype html><html><body><h1>Greeter</h1><input id="name"><button id="go">Greet</button><p id="out"></p>
+<script>document.getElementById('go').onclick = () => { document.getElementById('out').textContent = 'Hello, ' + document.getElementById('name').value; };</script>
+</body></html>"#,
+    )
+    .unwrap();
+    let checks = serde_json::json!({"checks": [{
+        "name": "greets",
+        "preview": {"command": PREVIEW},
+        "steps": [
+            {"do": "goto", "path": "/"},
+            {"do": "fill", "selector": "#name", "value": "Ada"},
+            {"do": "click", "selector": "#go"},
+            {"do": "expect_text", "selector": "#out", "text": expect},
+            {"do": "screenshot", "name": "greeted"}
+        ]
+    }]});
+    std::fs::write(dir.join(".otter/browser-checks.json"), checks.to_string()).unwrap();
+    let mut conn = host.conn().await;
+    conn.workspace_create(WorkspaceCreate {
+        name: "web".into(),
+        source: SourceSpec::Directory {
+            path: dir.to_string_lossy().into_owned(),
+        },
+        sessions: Some(vec![]),
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+    let f = conn
+        .feature_create(otter_protocol::feature::FeatureCreate {
+            command_id: "create".into(),
+            title: "Greeter".into(),
+            request: "Greet people by name".into(),
+            workspace: Some("web".into()),
+        })
+        .await
+        .unwrap();
+    conn.feature_act("start", f.id.as_str(), FeatureAction::Start)
+        .await
+        .unwrap();
+    f.id.to_string()
+}
+
+/// Approve the pending decision about running the preview command.
+async fn allow_preview(host: &TestHost, id: &str) {
+    use otter_core::feature::{FeatureAction, Risk};
+    let f = wait_feature(host, id, "asked to allow the preview", |f| {
+        f.pending_decisions().any(|d| d.summary.contains(PREVIEW))
+    })
+    .await;
+    let d = f
+        .pending_decisions()
+        .find(|d| d.summary.contains(PREVIEW))
+        .unwrap();
+    assert_eq!(
+        d.risk,
+        Risk::Medium,
+        "an unknown command: the developer or the Control Agent decides"
+    );
+    host.conn()
+        .await
+        .feature_act(
+            &format!("allow-{}", d.id),
+            id,
+            FeatureAction::Decide {
+                decision_id: d.id.clone(),
+                approve: true,
+                answer: None,
+            },
+        )
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn a_browser_check_verifies_the_ui_with_evidence() {
+    use otter_core::feature::{EvidenceKind, FeatureStatus};
+    if !browser_available() {
+        return;
+    }
+    let fake = fake_agent_host("ok", "rules").await;
+    let id = web_feature(&fake.host, "Hello, Ada").await;
+    allow_preview(&fake.host, &id).await;
+    let f = wait_feature(&fake.host, &id, "review", |f| {
+        f.status == FeatureStatus::Review
+    })
+    .await;
+    let browser = f
+        .evidence
+        .iter()
+        .find(|e| e.kind == EvidenceKind::Browser)
+        .expect("browser evidence");
+    assert_eq!(browser.ok, Some(true), "{:?}", browser.detail);
+    assert!(
+        browser
+            .detail
+            .as_deref()
+            .unwrap()
+            .contains("✓ expect “Hello, Ada” in #out")
+    );
+    assert!(browser.detail.as_deref().unwrap().contains("✓ click #go"));
+    // The screenshot is kept with the feature and served by name.
+    let shot = f
+        .evidence
+        .iter()
+        .find(|e| e.kind == EvidenceKind::Screenshot)
+        .and_then(|e| e.uri.clone())
+        .expect("a screenshot");
+    let file = fake
+        .host
+        .conn()
+        .await
+        .feature_artifact(&id, &shot)
+        .await
+        .unwrap();
+    assert!(file.size > 100);
+    assert!(file.data.starts_with("iVBORw0KGgo"), "a PNG");
+    // Names only: no wandering outside the artifacts.
+    assert!(
+        fake.host
+            .conn()
+            .await
+            .feature_artifact(&id, "../feature.json")
+            .await
+            .is_err()
+    );
+    // Approved once, remembered.
+    assert!(f.allowed_commands.iter().any(|c| c == PREVIEW));
+}
+
+#[tokio::test]
+async fn a_broken_ui_fails_verification() {
+    use otter_core::feature::{EvidenceKind, FeatureStatus};
+    if !browser_available() {
+        return;
+    }
+    let fake = fake_agent_host("ok", "rules").await;
+    // The page says "Hello, Ada"; the check wants something else.
+    let id = web_feature(&fake.host, "Goodbye, Ada").await;
+    allow_preview(&fake.host, &id).await;
+    let f = wait_feature(
+        &fake.host,
+        &id,
+        "verification failed and work resumed",
+        |f| {
+            f.evidence
+                .iter()
+                .any(|e| e.kind == EvidenceKind::Browser && e.ok == Some(false))
+                && f.tasks
+                    .iter()
+                    .any(|t| t.title == "Fix what verification found")
+        },
+    )
+    .await;
+    assert_ne!(f.status, FeatureStatus::Review);
+    assert_ne!(f.status, FeatureStatus::Done);
+    let failed = f
+        .evidence
+        .iter()
+        .find(|e| e.kind == EvidenceKind::Browser && e.ok == Some(false))
+        .unwrap();
+    assert!(
+        failed
+            .detail
+            .as_deref()
+            .unwrap()
+            .contains("✗ expect “Goodbye, Ada” in #out"),
+        "{:?}",
+        failed.detail
+    );
+    // The make check passed, but the criteria aren't met.
+    assert!(f.acceptance.iter().any(|c| c.met == Some(false)));
+}
+
+#[tokio::test]
+async fn a_preview_runs_as_a_session_on_one_port() {
+    use otter_core::feature::{FeatureAction, FeatureStatus};
+    if !browser_available() {
+        return;
+    }
+    let fake = fake_agent_host("ok", "rules").await;
+    let id = web_feature(&fake.host, "Hello, Ada").await;
+    let mut conn = fake.host.conn().await;
+    // Not allowed yet: asking for it creates the decision.
+    wait_feature(&fake.host, &id, "verification asks", |f| {
+        f.pending_decisions().next().is_some()
+    })
+    .await;
+    let err = conn
+        .feature_act("pv-1", &id, FeatureAction::Preview)
+        .await
+        .unwrap_err();
+    assert!(format!("{err:#}").contains("allow"), "{err:#}");
+    allow_preview(&fake.host, &id).await;
+    wait_feature(&fake.host, &id, "review", |f| {
+        f.status == FeatureStatus::Review
+    })
+    .await;
+
+    let f = conn
+        .feature_act("pv-2", &id, FeatureAction::Preview)
+        .await
+        .unwrap();
+    let link = f.preview.clone().expect("a preview");
+    let ws = conn.workspace_get("web").await.unwrap();
+    let s = ws.session(link.session_id.as_str()).unwrap();
+    assert_eq!(s.kind, SessionKind::Service);
+    assert_eq!(s.name, format!("preview-{}", link.port));
+    // It serves the app on that one port (what a client forwards).
+    let page = eventually("the preview answers", || async {
+        let out = Command::new("curl")
+            .args([
+                "-s",
+                &format!("http://127.0.0.1:{}{}", link.port, link.path),
+            ])
+            .output()
+            .ok()?;
+        let body = String::from_utf8_lossy(&out.stdout).into_owned();
+        body.contains("Greeter").then_some(body)
+    })
+    .await;
+    assert!(page.contains("<h1>Greeter</h1>"));
+    // Previewing again replaces it.
+    let f = conn
+        .feature_act("pv-3", &id, FeatureAction::Preview)
+        .await
+        .unwrap();
+    let again = f.preview.unwrap();
+    assert_ne!(again.session_id, link.session_id);
+    let ws = conn.workspace_get("web").await.unwrap();
+    assert!(ws.session(link.session_id.as_str()).is_none());
+}
+
+// ---------------------------------------------------------------------------
+// Delivery (D-047): a pull request, CI and the gates, with a fake `gh` and a
+// real Git remote.
+// ---------------------------------------------------------------------------
+
+/// A Git workspace (a worktree on `feature/csv`) whose origin is a real
+/// repository with CI configured, and a feature on it, started.
+async fn git_feature(fake: &FakeCodex) -> (String, std::path::PathBuf) {
+    use otter_core::feature::FeatureAction;
+    let src = fake.host.home().join("origin");
+    std::fs::create_dir_all(src.join(".github/workflows")).unwrap();
+    git(&src, &["init", "-q", "-b", "main"]);
+    std::fs::write(src.join("Makefile"), "test:\n\t@echo all good\n").unwrap();
+    std::fs::write(src.join(".github/workflows/ci.yml"), "on: push\n").unwrap();
+    git(&src, &["add", "-A"]);
+    git(&src, &["commit", "-q", "-m", "init"]);
+    let mut conn = fake.host.conn().await;
+    conn.workspace_create(git_ws("csv", &src, Some("feature/csv"), vec![]))
+        .await
+        .unwrap();
+    eventually("workspace ready", || async {
+        let ws = fake.host.conn().await.workspace_get("csv").await.unwrap();
+        (ws.state == WorkspaceState::Ready).then_some(())
+    })
+    .await;
+    let f = conn
+        .feature_create(otter_protocol::feature::FeatureCreate {
+            command_id: "create".into(),
+            title: "CSV export".into(),
+            request: "Export the timeline as CSV".into(),
+            workspace: Some("csv".into()),
+        })
+        .await
+        .unwrap();
+    conn.feature_act("start", f.id.as_str(), FeatureAction::Start)
+        .await
+        .unwrap();
+    (f.id.to_string(), src)
+}
+
+/// The developer allows publishing (pushing the branch and opening the PR).
+async fn allow_publish(host: &TestHost, id: &str) {
+    use otter_core::feature::{FeatureAction, FeatureStatus, Risk};
+    let f = wait_feature(host, id, "asked to publish", |f| {
+        f.status == FeatureStatus::Review
+            && f.pending_decisions()
+                .any(|d| d.summary.contains("git push"))
+    })
+    .await;
+    let d = f
+        .pending_decisions()
+        .find(|d| d.summary.contains("git push"))
+        .unwrap();
+    assert!(d.user_only, "publishing is the developer's call");
+    assert_eq!(d.risk, Risk::High);
+    assert_eq!(
+        d.summary,
+        "Run `git push origin feature/csv` and open a pull request"
+    );
+    host.conn()
+        .await
+        .feature_act(
+            "publish",
+            id,
+            FeatureAction::Decide {
+                decision_id: d.id.clone(),
+                approve: true,
+                answer: None,
+            },
+        )
+        .await
+        .unwrap();
+}
+
+fn write_checks(dir: &Path, file: &str, checks: serde_json::Value) {
+    std::fs::write(dir.join(file), checks.to_string()).unwrap();
+}
+
+#[tokio::test]
+async fn a_feature_ships_as_a_pull_request_once_ci_is_green() {
+    use otter_core::feature::{EvidenceKind, FeatureAction, FeatureStatus, GateStatus};
+    let fake = fake_agent_host("ok", "rules").await;
+    let (id, origin) = git_feature(&fake).await;
+    allow_publish(&fake.host, &id).await;
+
+    // Pushed for real, PR opened through gh; CI hasn't reported yet.
+    let f = wait_feature(&fake.host, &id, "published", |f| {
+        f.delivery.as_ref().is_some_and(|d| d.pr_url.is_some())
+    })
+    .await;
+    assert!(git(&origin, &["branch", "--list", "feature/csv"]).contains("feature/csv"));
+    let body = std::fs::read_to_string(fake.gh.join("body")).unwrap();
+    assert!(body.contains("Export the timeline as CSV") && body.contains("Otter doesn't merge"));
+    assert!(
+        f.evidence
+            .iter()
+            .any(|e| e.kind == EvidenceKind::PullRequest
+                && e.uri.as_deref() == Some("https://github.com/o/r/pull/7"))
+    );
+    let f = wait_feature(&fake.host, &id, "CI pending", |f| {
+        f.gates
+            .iter()
+            .any(|g| g.name == "CI" && g.status == GateStatus::Pending)
+    })
+    .await;
+    assert!(f.report.is_none());
+    // Not done while a gate waits.
+    let err = fake
+        .host
+        .conn()
+        .await
+        .feature_act(
+            "early",
+            &id,
+            FeatureAction::Accept {
+                override_gates: false,
+            },
+        )
+        .await
+        .unwrap_err();
+    assert!(format!("{err:#}").contains("gates not met"), "{err:#}");
+
+    // CI fails on the code: back to work, with the log.
+    // (No "FAIL" in it: that word makes the fake agent fail.)
+    std::fs::write(
+        fake.gh.join("log"),
+        "test csv::escapes ... broken\nassertion failed: left == right\n",
+    )
+    .unwrap();
+    write_checks(
+        &fake.gh,
+        "checks.json",
+        serde_json::json!([
+            {"name": "test", "bucket": "fail", "link": "https://github.com/o/r/actions/runs/99/job/1", "description": "Process completed with exit code 101"},
+            {"name": "lint", "bucket": "pass", "link": "", "description": ""}
+        ]),
+    );
+    let f = wait_feature(&fake.host, &id, "remediation after failed CI", |f| {
+        f.tasks.iter().any(|t| t.title == "Fix what CI found")
+    })
+    .await;
+    let fix = f
+        .tasks
+        .iter()
+        .find(|t| t.title == "Fix what CI found")
+        .unwrap();
+    assert!(
+        fix.detail.as_deref().unwrap().contains("assertion failed"),
+        "{:?}",
+        fix.detail
+    );
+    assert!(
+        f.evidence
+            .iter()
+            .any(|e| e.kind == EvidenceKind::Ci && e.ok == Some(false))
+    );
+
+    // The fix lands and CI goes green: every gate passes, the report is written and posted.
+    write_checks(
+        &fake.gh,
+        "checks.json",
+        serde_json::json!([
+            {"name": "test", "bucket": "pass", "link": "", "description": ""},
+            {"name": "lint", "bucket": "pass", "link": "", "description": ""}
+        ]),
+    );
+    let f = wait_feature(&fake.host, &id, "ready to accept", |f| {
+        f.status == FeatureStatus::Review && f.report.is_some()
+    })
+    .await;
+    assert!(
+        f.gates
+            .iter()
+            .filter(|g| g.name != "Your acceptance")
+            .all(|g| g.status.clear()),
+        "{:?}",
+        f.gates
+    );
+    let report = f.report.clone().unwrap();
+    assert!(report.contains("Pull request: https://github.com/o/r/pull/7"));
+    eventually("the report on the PR", || async {
+        std::fs::read_to_string(fake.gh.join("comment"))
+            .ok()
+            .filter(|c| c.contains("## Gates"))
+    })
+    .await;
+    let f = fake
+        .host
+        .conn()
+        .await
+        .feature_act(
+            "accept",
+            &id,
+            FeatureAction::Accept {
+                override_gates: false,
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(f.status, FeatureStatus::Done);
+    // Never merged, never anything gh wasn't meant to do; no token on a command line.
+    let calls = std::fs::read_to_string(fake.gh.join("calls.log")).unwrap();
+    assert!(!calls.contains("merge"), "{calls}");
+    assert!(!calls.to_lowercase().contains("token"), "{calls}");
+}
+
+#[tokio::test]
+async fn flaky_ci_is_rerun_not_blamed_on_the_code() {
+    use otter_core::feature::FeatureStatus;
+    let fake = fake_agent_host("ok", "rules").await;
+    let (id, _) = git_feature(&fake).await;
+    // The runner dies; a rerun passes.
+    write_checks(
+        &fake.gh,
+        "checks.json",
+        serde_json::json!([
+            {"name": "test", "bucket": "fail", "link": "https://github.com/o/r/actions/runs/5/job/9", "description": "The runner has received a shutdown signal."}
+        ]),
+    );
+    write_checks(
+        &fake.gh,
+        "after-rerun.json",
+        serde_json::json!([
+            {"name": "test", "bucket": "pass", "link": "", "description": ""}
+        ]),
+    );
+    allow_publish(&fake.host, &id).await;
+    let f = wait_feature(&fake.host, &id, "green after a rerun", |f| {
+        f.report.is_some()
+    })
+    .await;
+    assert_eq!(f.status, FeatureStatus::Review);
+    assert!(
+        !f.tasks.iter().any(|t| t.title == "Fix what CI found"),
+        "no remediation for a flake"
+    );
+    assert_eq!(f.delivery.as_ref().unwrap().reruns, 1);
+    assert_eq!(
+        std::fs::read_to_string(fake.gh.join("reruns"))
+            .unwrap()
+            .trim(),
+        "5"
+    );
+}
+
+#[tokio::test]
+async fn declining_to_publish_keeps_delivery_local() {
+    use otter_core::feature::{FeatureAction, FeatureStatus, GateStatus};
+    let fake = fake_agent_host("ok", "rules").await;
+    let (id, origin) = git_feature(&fake).await;
+    let f = wait_feature(&fake.host, &id, "asked to publish", |f| {
+        f.pending_decisions()
+            .any(|d| d.summary.contains("git push"))
+    })
+    .await;
+    let d = f
+        .pending_decisions()
+        .find(|d| d.summary.contains("git push"))
+        .unwrap()
+        .clone();
+    fake.host
+        .conn()
+        .await
+        .feature_act(
+            "no",
+            &id,
+            FeatureAction::Decide {
+                decision_id: d.id,
+                approve: false,
+                answer: None,
+            },
+        )
+        .await
+        .unwrap();
+    let f = wait_feature(&fake.host, &id, "report without a PR", |f| {
+        f.report.is_some()
+    })
+    .await;
+    assert!(f.delivery.as_ref().unwrap().declined);
+    let gate = |n: &str| f.gates.iter().find(|g| g.name == n).unwrap().status;
+    assert_eq!(gate("Pull request"), GateStatus::NotApplicable);
+    assert_eq!(gate("CI"), GateStatus::NotApplicable);
+    assert!(
+        !git(&origin, &["branch", "--list", "feature/csv"]).contains("feature/csv"),
+        "nothing pushed"
+    );
+    assert!(
+        !fake.gh.join("calls.log").exists()
+            || !std::fs::read_to_string(fake.gh.join("calls.log"))
+                .unwrap()
+                .contains("pr create")
+    );
+    let f = fake
+        .host
+        .conn()
+        .await
+        .feature_act(
+            "accept",
+            &id,
+            FeatureAction::Accept {
+                override_gates: false,
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(f.status, FeatureStatus::Done);
+}
+
+#[tokio::test]
+async fn settings_take_keys_write_only_and_keep_them() {
+    use otter_protocol::host::SettingsUpdate;
+    use std::os::unix::fs::PermissionsExt;
+    let mut host = TestHost::with_env(&[("OTTER_CONTROLLER", "off".into())]).await;
+    let mut conn = host.conn().await;
+    let s = conn.settings_get().await.unwrap();
+    assert_eq!(s.controller_from_env.as_deref(), Some("off"));
+    assert!(
+        s.secrets
+            .iter()
+            .any(|x| x.name == "OPENROUTER_API_KEY" && !x.set)
+    );
+
+    let s = conn
+        .settings_set(SettingsUpdate {
+            controller: Some("openrouter".into()),
+            model: Some("anthropic/some-model".into()),
+            secrets: [(
+                "OPENROUTER_API_KEY".to_owned(),
+                Some("sk-or-test-123".to_owned()),
+            )]
+            .into(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(s.controller.as_deref(), Some("openrouter"));
+    assert!(
+        s.secrets
+            .iter()
+            .any(|x| x.name == "OPENROUTER_API_KEY" && x.set)
+    );
+    // The value never comes back, nor lands in the event log.
+    let json = serde_json::to_string(&conn.settings_get().await.unwrap()).unwrap();
+    assert!(!json.contains("sk-or-test-123"));
+    let events = std::fs::read_to_string(host.home().join("state/events.jsonl")).unwrap();
+    assert!(!events.contains("sk-or-test-123"));
+    let secrets = host.home().join("state/secrets.json");
+    assert_eq!(
+        std::fs::metadata(&secrets).unwrap().permissions().mode() & 0o777,
+        0o600
+    );
+    // Unknown names are refused.
+    let err = conn
+        .settings_set(SettingsUpdate {
+            secrets: [("AWS_SECRET_ACCESS_KEY".to_owned(), Some("x".to_owned()))].into(),
+            ..Default::default()
+        })
+        .await
+        .unwrap_err();
+    assert!(format!("{err:#}").contains("unknown secret"), "{err:#}");
+    drop(conn);
+
+    // Kept across a restart; cleared with null.
+    host.restart().await;
+    let mut conn = host.conn().await;
+    let s = conn.settings_get().await.unwrap();
+    assert_eq!(s.model.as_deref(), Some("anthropic/some-model"));
+    assert!(s.secrets[0].set);
+    let s = conn
+        .settings_set(SettingsUpdate {
+            secrets: [("OPENROUTER_API_KEY".to_owned(), None)].into(),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert!(!s.secrets[0].set);
+    assert!(!std::fs::read_to_string(&secrets).unwrap().contains("sk-or"));
 }

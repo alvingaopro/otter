@@ -84,6 +84,36 @@ id_type!(
     AttentionId,
     "att_"
 );
+id_type!(
+    /// Identifies a [`crate::feature::Feature`] — a piece of product work.
+    FeatureId,
+    "ft_"
+);
+id_type!(
+    /// Identifies a [`crate::feature::Task`] within a feature's plan.
+    TaskId,
+    "tk_"
+);
+id_type!(
+    /// Identifies a [`crate::feature::Run`] — one agent run working on a task.
+    RunId,
+    "run_"
+);
+id_type!(
+    /// Identifies a [`crate::feature::Message`] in a feature's conversation.
+    MessageId,
+    "msg_"
+);
+id_type!(
+    /// Identifies a [`crate::feature::DecisionRequest`].
+    DecisionId,
+    "dec_"
+);
+id_type!(
+    /// Identifies a piece of [`crate::feature::Evidence`].
+    EvidenceId,
+    "ev_"
+);
 
 #[cfg(test)]
 mod tests {

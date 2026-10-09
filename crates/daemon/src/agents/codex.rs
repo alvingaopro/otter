@@ -78,15 +78,16 @@ fn supports_no_daemon(codex: &Path, env: &EnvMap) -> bool {
 }
 
 fn probe_no_daemon(codex: &Path, env: &EnvMap) -> Option<bool> {
-    let mut child = std::process::Command::new(codex)
-        .args(["--no-daemon", "--version"])
-        .env_clear()
-        .envs(env)
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .ok()?;
+    let mut child = crate::env::spawn_std(
+        std::process::Command::new(codex)
+            .args(["--no-daemon", "--version"])
+            .env_clear()
+            .envs(env)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null()),
+    )
+    .ok()?;
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
     loop {
         if let Some(status) = child.try_wait().ok()? {

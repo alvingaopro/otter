@@ -24,6 +24,7 @@ use crate::backend::ExecutionBackend;
 use crate::env::{EnvMap, ResolvedEnv, which};
 use crate::environment::EnvironmentManager;
 use crate::events::EventLog;
+use crate::features::FeatureStore;
 use crate::git::GitManager;
 use crate::paths::Paths;
 use crate::store::Store;
@@ -33,6 +34,16 @@ pub type RpcResult<T> = Result<T, RpcError>;
 pub struct Daemon {
     pub paths: Paths,
     pub store: Mutex<Store>,
+    /// Features (D-043): kept apart from workspace state, with their own lock.
+    pub features: Mutex<FeatureStore>,
+    /// Woken whenever a feature changes, for the controller.
+    pub(crate) feature_wake: tokio::sync::Notify,
+    /// Managed agent runs in progress (runs.rs).
+    pub(crate) runs: crate::runs::Runs,
+    /// The Control Agent's working memory (controller.rs).
+    pub(crate) controller: std::sync::Mutex<crate::controller::ControllerState>,
+    /// Host settings and API keys (settings.rs, D-048).
+    pub(crate) settings: std::sync::RwLock<crate::settings::HostSettings>,
     pub backend: Arc<dyn ExecutionBackend>,
     pub events: EventLog,
     pub git: GitManager,
@@ -60,12 +71,18 @@ impl Daemon {
     pub fn new(
         paths: Paths,
         store: Store,
+        features: FeatureStore,
         backend: Arc<dyn ExecutionBackend>,
         events: EventLog,
         env: ResolvedEnv,
         shell: String,
     ) -> Self {
         let metrics = crate::metrics::Sampler::start(paths.state_dir.join("metrics"));
+        // A broken settings file mustn't keep the daemon down.
+        let settings = crate::settings::HostSettings::load(&paths.state_dir).unwrap_or_else(|e| {
+            tracing::warn!("settings: {e:#}; using defaults");
+            crate::settings::HostSettings::empty(&paths.state_dir)
+        });
         if let Err(e) = crate::files::install_shim(&paths) {
             tracing::warn!("installing the wl-paste stand-in: {e:#}");
         }
@@ -75,6 +92,11 @@ impl Daemon {
             env_source: env.source,
             paths,
             store: Mutex::new(store),
+            features: Mutex::new(features),
+            feature_wake: tokio::sync::Notify::new(),
+            runs: Default::default(),
+            controller: Default::default(),
+            settings: std::sync::RwLock::new(settings),
             backend,
             events,
             shell,
@@ -165,6 +187,15 @@ impl Daemon {
                     workspaces: store.state.workspaces.clone(),
                 })
             }
+            Request::SettingsGet => json(self.settings_get()),
+            Request::SettingsSet(u) => json(self.settings_set(u)?),
+            Request::FeatureList => json(self.feature_list().await),
+            Request::FeatureGet(r) => json(self.feature_get(&r.feature).await?),
+            Request::FeatureCreate(p) => json(self.feature_create(p).await?),
+            Request::FeatureSend(p) => json(self.feature_send(p).await?),
+            Request::FeatureAct(p) => json(self.clone().feature_act(p).await?),
+            Request::FeatureEvents(p) => json(self.feature_events(&p).await?),
+            Request::FeatureArtifact(p) => json(self.feature_artifact(&p).await?),
             Request::Shutdown | Request::SessionAttach(_) | Request::EventsSubscribe(_) => {
                 Err(RpcError::invalid(format!(
                     "{} must be handled by the connection",

@@ -4,10 +4,12 @@
 //! port mappings (`forwards`) and the menu bar item (`tray`).
 
 mod attach;
+mod features;
 mod files;
 mod forwards;
 mod hosts;
 mod pins;
+mod settings;
 mod tray;
 mod view;
 
@@ -75,6 +77,14 @@ pub fn run() {
             forwards::forward_add,
             forwards::forward_remove,
             forwards::forward_pin,
+            features::features_list,
+            features::feature_create,
+            features::feature_send,
+            features::feature_act,
+            features::feature_events,
+            features::feature_artifact,
+            settings::settings_get,
+            settings::settings_set,
             pins::pins_get,
             pins::pins_set,
             hosts::workspace_create,

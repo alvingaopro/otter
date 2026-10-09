@@ -428,6 +428,97 @@ impl Connection {
         self.call(Request::Shutdown).await
     }
 
+    /// The host's settings (secrets only as set or not).
+    pub async fn settings_get(&mut self) -> Result<otter_protocol::host::Settings> {
+        self.call(Request::SettingsGet).await
+    }
+
+    /// Change settings; a secret goes to the host and is never read back.
+    pub async fn settings_set(
+        &mut self,
+        u: otter_protocol::host::SettingsUpdate,
+    ) -> Result<otter_protocol::host::Settings> {
+        self.call(Request::SettingsSet(u)).await
+    }
+
+    pub async fn feature_list(&mut self) -> Result<Vec<otter_core::feature::Feature>> {
+        self.call(Request::FeatureList).await
+    }
+
+    pub async fn feature_get(&mut self, feature: &str) -> Result<otter_core::feature::Feature> {
+        self.call(Request::FeatureGet(otter_protocol::feature::FeatureRef {
+            feature: feature.to_owned(),
+        }))
+        .await
+    }
+
+    pub async fn feature_create(
+        &mut self,
+        p: otter_protocol::feature::FeatureCreate,
+    ) -> Result<otter_core::feature::Feature> {
+        self.call(Request::FeatureCreate(p)).await
+    }
+
+    /// A message from the developer; `command_id` makes a retry harmless.
+    pub async fn feature_send(
+        &mut self,
+        command_id: &str,
+        feature: &str,
+        text: &str,
+    ) -> Result<otter_core::feature::Feature> {
+        self.call(Request::FeatureSend(otter_protocol::feature::FeatureSend {
+            command_id: command_id.to_owned(),
+            feature: feature.to_owned(),
+            text: text.to_owned(),
+        }))
+        .await
+    }
+
+    pub async fn feature_act(
+        &mut self,
+        command_id: &str,
+        feature: &str,
+        action: otter_core::feature::FeatureAction,
+    ) -> Result<otter_core::feature::Feature> {
+        self.call(Request::FeatureAct(otter_protocol::feature::FeatureAct {
+            command_id: command_id.to_owned(),
+            feature: feature.to_owned(),
+            action,
+        }))
+        .await
+    }
+
+    /// A file a feature's checks produced (a screenshot), whole, base64.
+    pub async fn feature_artifact(
+        &mut self,
+        feature: &str,
+        name: &str,
+    ) -> Result<otter_protocol::fs::FileChunk> {
+        self.call(Request::FeatureArtifact(
+            otter_protocol::feature::FeatureArtifact {
+                feature: feature.to_owned(),
+                name: name.to_owned(),
+            },
+        ))
+        .await
+    }
+
+    /// A feature's history with `seq > after`, oldest first.
+    pub async fn feature_events(
+        &mut self,
+        feature: &str,
+        after: Option<u64>,
+    ) -> Result<Vec<otter_core::feature::FeatureEventRecord>> {
+        self.call(Request::FeatureEvents(
+            otter_protocol::feature::FeatureEvents {
+                feature: feature.to_owned(),
+                after,
+                limit: None,
+            },
+        ))
+        .await
+    }
+
     pub async fn workspace_create(&mut self, p: WorkspaceCreate) -> Result<Workspace> {
         self.call(Request::WorkspaceCreate(p)).await
     }

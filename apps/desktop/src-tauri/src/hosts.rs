@@ -364,7 +364,7 @@ pub fn hosts_get(app: AppHandle) -> HostsPayload {
     app.state::<Hosts>().payload()
 }
 
-async fn rpc(app: &AppHandle, host: &str) -> Result<Connection, String> {
+pub(crate) async fn rpc(app: &AppHandle, host: &str) -> Result<Connection, String> {
     let transport = app.state::<Hosts>().transport(host)?;
     Connection::connect(&transport)
         .await

@@ -41,6 +41,13 @@ Inside the daemon (`crates/daemon/src`):
 - `sessions.rs` — sessions/executions, launching
 - `reconcile.rs` — process exits + agent observation, every 500 ms
 - `attention.rs` — what needs the developer (raise/resolve rules)
+- `features.rs` — features (D-043): their own store under `state/features/`,
+  idempotent commands, per-feature history
+- `controller.rs` + `brain.rs` — the Control Agent (D-045): the deterministic
+  engine that steps features, and the model calls it makes (`OTTER_CONTROLLER`)
+- `runs.rs` + `runtime/` — managed agent runs (D-044): the runtime contract,
+  the approval `policy`, and the bridge from a run to its feature;
+  `agents/claude_stream.rs` is Claude Code's managed mode
 - `agents/` — agent providers behind `AgentProvider` (`detect`, `launch_argv`, `observe`);
   `codex.rs` holds everything Codex-specific, `claude.rs` everything Claude Code-specific,
   and `mod.rs` the shared quiet-turn heuristic (`settle`)

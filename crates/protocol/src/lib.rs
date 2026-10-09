@@ -17,6 +17,7 @@
 //! Wire format, cursor semantics and compatibility rules: `docs/protocol.md`.
 
 pub mod events;
+pub mod feature;
 pub mod frame;
 pub mod fs;
 pub mod host;
@@ -153,6 +154,42 @@ pub enum Request {
     /// [`StateSnapshot`].
     #[serde(rename = "state.snapshot")]
     StateSnapshot,
+
+    /// The host's settings; secrets only as set or not. Result:
+    /// [`host::Settings`].
+    #[serde(rename = "settings.get")]
+    SettingsGet,
+    /// Change settings or set/clear a secret (write-only). Result:
+    /// [`host::Settings`].
+    #[serde(rename = "settings.set")]
+    SettingsSet(host::SettingsUpdate),
+
+    /// Every feature on this host, newest first. Result:
+    /// `Vec<`[`otter_core::feature::Feature`]`>`.
+    #[serde(rename = "feature.list")]
+    FeatureList,
+    /// Result: [`otter_core::feature::Feature`].
+    #[serde(rename = "feature.get")]
+    FeatureGet(feature::FeatureRef),
+    /// Create a draft feature. Result: [`otter_core::feature::Feature`].
+    #[serde(rename = "feature.create")]
+    FeatureCreate(feature::FeatureCreate),
+    /// Add the developer's message to the conversation. Result:
+    /// [`otter_core::feature::Feature`].
+    #[serde(rename = "feature.send")]
+    FeatureSend(feature::FeatureSend),
+    /// Start, pause, resume, cancel, retry, decide, accept or send back.
+    /// Result: [`otter_core::feature::Feature`].
+    #[serde(rename = "feature.act")]
+    FeatureAct(feature::FeatureAct),
+    /// A feature's own history after a cursor, oldest first. Result:
+    /// `Vec<`[`otter_core::feature::FeatureEventRecord`]`>`.
+    #[serde(rename = "feature.events")]
+    FeatureEvents(feature::FeatureEvents),
+    /// A screenshot (or other file) a feature's checks produced. Result:
+    /// [`fs::FileChunk`] with the whole file (at most 8 MiB).
+    #[serde(rename = "feature.artifact")]
+    FeatureArtifact(feature::FeatureArtifact),
 }
 
 impl Request {
@@ -189,6 +226,15 @@ impl Request {
             Request::EventsList(_) => "events.list",
             Request::EventsSubscribe(_) => "events.subscribe",
             Request::StateSnapshot => "state.snapshot",
+            Request::SettingsGet => "settings.get",
+            Request::SettingsSet(_) => "settings.set",
+            Request::FeatureList => "feature.list",
+            Request::FeatureGet(_) => "feature.get",
+            Request::FeatureCreate(_) => "feature.create",
+            Request::FeatureSend(_) => "feature.send",
+            Request::FeatureAct(_) => "feature.act",
+            Request::FeatureEvents(_) => "feature.events",
+            Request::FeatureArtifact(_) => "feature.artifact",
         }
     }
 }
@@ -557,6 +603,7 @@ mod tests {
                     command: Some("npm run dev".into()),
                     provider: None,
                     prompt: None,
+                    resume: None,
                 },
             }),
         };

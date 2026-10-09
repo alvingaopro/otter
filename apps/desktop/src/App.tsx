@@ -4,12 +4,19 @@ import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { getVersion } from "@tauri-apps/api/app";
 import { isPermissionGranted, requestPermission, sendNotification } from "@tauri-apps/plugin-notification";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import { Sidebar } from "./Sidebar";
+import { ActivityBar } from "./ActivityBar";
+import { FeaturesView } from "./FeaturesView";
+import { daemonSource } from "./featureSource";
+import { needsYou as featureNeedsYou } from "./features";
+import { saveView, storedView, viewForShortcut, type View } from "./nav";
 import { AddHostDialog } from "./AddHostDialog";
 import { HostPage } from "./HostPage";
 import { CliDialog } from "./CliDialog";
 import { WorkspacePane } from "./WorkspacePane";
 import { NewWorkspaceDialog } from "./NewWorkspaceDialog";
+import { SettingsDialog } from "./SettingsDialog";
 import { useTheme } from "./theme";
 import { defaultSession, groups, headline, movePin, pinnedOf, placeAll, stalePins, togglePin } from "./model";
 import type { MenuItem } from "./Menu";
@@ -21,7 +28,7 @@ const JUMP_WINDOW_MS = 2 * 60 * 1000;
 /** On macOS the header doubles as the title bar (overlay style, see tauri.conf.json). */
 const IS_MAC = navigator.userAgent.includes("Mac");
 
-type Open = { kind: "add" } | { kind: "cli" } | { kind: "new" } | null;
+type Open = { kind: "add" } | { kind: "cli" } | { kind: "new" } | { kind: "settings" } | null;
 
 interface Jump {
   key: string;
@@ -32,6 +39,12 @@ interface Jump {
 export default function App() {
   const [payload, setPayload] = useState<HostsPayload | null>(null);
   const [selected, setSelected] = useState<string | undefined>();
+  /** The view in front (D-041); the others stay mounted, so nothing they run is lost. */
+  const [view, setViewState] = useState<View>(storedView);
+  const setView = (v: View) => {
+    setViewState(v);
+    saveView(v);
+  };
   const [sessions, setSessions] = useState<Record<string, string>>({});
   const [now, setNow] = useState(Date.now());
   const [version, setVersion] = useState<string | undefined>();
@@ -43,12 +56,21 @@ export default function App() {
   /** Pinned workspace keys, top first, from `pins.toml` (D-040). */
   const [pins, setPinsState] = useState<string[]>([]);
   const { choice: themeChoice, resolved: theme, cycle: cycleTheme } = useTheme();
+  /** Features, from each connected host's otterd (D-043). */
+  const [featureSource] = useState(() => daemonSource());
+  const [featureNeeds, setFeatureNeeds] = useState(() => featureSource.list().filter((p) => featureNeedsYou(p.feature)).length);
+  useEffect(
+    () => featureSource.subscribe((list) => setFeatureNeeds(list.filter((p) => featureNeedsYou(p.feature)).length)),
+    [featureSource],
+  );
   /** A workspace just created here: select it once it shows up. */
   const wanted = useRef<string | null>(null);
 
   const focused = useRef(document.hasFocus());
   const selectedRef = useRef(selected);
   selectedRef.current = selected;
+  const viewRef = useRef(view);
+  viewRef.current = view;
   /** Attention ids already seen per host; the first snapshot is the baseline. */
   const seen = useRef(new Map<string, Set<string>>());
   const jump = useRef<Jump | null>(null);
@@ -62,11 +84,18 @@ export default function App() {
     const unjump = listen<string>("jump", (e) => {
       setSelected(e.payload);
       setHostPage(null);
+      setView("workspaces");
     });
     void invoke<{ version?: string }>("cli_status").then(setCli);
     void invoke<string[]>("pins_get").then(setPinsState).catch(() => {});
     // ⌘N: new workspace (capture phase, so the terminal doesn't swallow it).
     const onKey = (e: KeyboardEvent) => {
+      const v = viewForShortcut(e);
+      if (v) {
+        e.preventDefault();
+        setView(v);
+        return;
+      }
       if (e.metaKey && !e.shiftKey && !e.altKey && e.key.toLowerCase() === "n") {
         e.preventDefault();
         setOpen({ kind: "new" });
@@ -84,6 +113,7 @@ export default function App() {
       const j = jump.current;
       if (isFocused && j && Date.now() - j.at < JUMP_WINDOW_MS) {
         setSelected(j.key);
+        setView("workspaces");
         if (j.session) setSessions((m) => ({ ...m, [j.key]: j.session! }));
       }
       if (isFocused) jump.current = null;
@@ -100,6 +130,9 @@ export default function App() {
   }, []);
 
   const placed = useMemo(() => (payload ? placeAll(payload) : []), [payload]);
+  const connectedHosts = (payload?.hosts ?? []).filter((h) => h.status === "connected").map((h) => h.name);
+  const connectedKey = connectedHosts.join("\n");
+  useEffect(() => featureSource.setHosts?.(connectedKey ? connectedKey.split("\n") : []), [featureSource, connectedKey]);
 
   const setPins = (next: string[]) => {
     setPinsState(next);
@@ -144,7 +177,7 @@ export default function App() {
         if (known.has(a.id)) continue;
         known.add(a.id);
         const key = `${host.name}/${ws.id}`;
-        if (focused.current && selectedRef.current === key) continue;
+        if (focused.current && viewRef.current === "workspaces" && selectedRef.current === key) continue;
         jump.current = { key, session: a.sessionId, at: Date.now() };
         sendNotification({
           title: a.needsYou ? `${ws.name} needs you` : `${ws.name}: something failed`,
@@ -182,6 +215,60 @@ export default function App() {
   return (
     <div className={IS_MAC ? "app mac" : "app"}>
       <div className="body">
+        <ActivityBar
+          view={view}
+          onView={setView}
+          badges={{ features: featureNeeds, workspaces: placed.filter((p) => p.ws.activity === "needs_you").length }}
+          settings={[
+            { label: `Theme: ${themeChoice === "system" ? "match system" : themeChoice}`, onSelect: cycleTheme },
+            { label: "Control Agent and API keys…", onSelect: () => setOpen({ kind: "settings" }) },
+            { label: "Add a host…", onSelect: () => setOpen({ kind: "add" }) },
+            {
+              label: cli?.version ? "Update command line tools…" : "Install command line tools…",
+              onSelect: () => setOpen({ kind: "cli" }),
+            },
+          ]}
+        />
+        <div className="view" id="view-features" role="tabpanel" aria-labelledby="view-tab-features" hidden={view !== "features"}>
+          <FeaturesView
+            source={featureSource}
+            hosts={connectedHosts}
+            onSettings={() => setOpen({ kind: "settings" })}
+            workspaces={Object.fromEntries(
+              (payload?.hosts ?? []).map((h) => [
+                h.name,
+                h.workspaces.filter((w) => w.state !== "archived").map((w) => ({ id: w.id, name: w.name })),
+              ]),
+            )}
+            now={now}
+            onOpenWorkspace={(host, workspace, session) => {
+              const key = `${host}/${workspace}`;
+              wanted.current = key;
+              setSelected(key);
+              setHostPage(null);
+              if (session) setSessions((m) => ({ ...m, [key]: session }));
+              setView("workspaces");
+            }}
+            onOpenPreview={async (host, port, path) => {
+              // A remote host's preview: forward just that port (D-046).
+              const local = payload?.hosts.find((h) => h.name === host)?.describe === "this Mac";
+              if (!local) {
+                await invoke("forward_add", {
+                  host,
+                  direction: "to_local",
+                  listenPort: port,
+                  targetHost: null,
+                  targetPort: port,
+                  pinned: false,
+                }).catch((e) => {
+                  if (!String(e).includes("already")) throw e;
+                });
+              }
+              await openUrl(`http://127.0.0.1:${port}${path}`);
+            }}
+          />
+        </div>
+        <div className="view" id="view-workspaces" role="tabpanel" aria-labelledby="view-tab-workspaces" hidden={view !== "workspaces"}>
         <Sidebar
           placed={placed}
           hosts={payload?.hosts ?? []}
@@ -196,6 +283,7 @@ export default function App() {
           onAddHost={() => setOpen({ kind: "add" })}
           onHost={setHostPage}
           onNew={() => setOpen({ kind: "new" })}
+          onSettings={() => setOpen({ kind: "settings" })}
           themeChoice={themeChoice}
           onTheme={cycleTheme}
           cliAction={
@@ -267,8 +355,12 @@ export default function App() {
             </div>
           </main>
         )}
+        </div>
       </div>
       {open?.kind === "add" && <AddHostDialog version={version} onClose={() => setOpen(null)} />}
+      {open?.kind === "settings" && (
+        <SettingsDialog hosts={connectedHosts} defaultHost={current?.host.name} onClose={() => setOpen(null)} />
+      )}
       {open?.kind === "cli" && (
         <CliDialog
           version={version}
@@ -287,6 +379,7 @@ export default function App() {
             const key = `${host}/${id}`;
             wanted.current = key;
             setSelected(key);
+            setView("workspaces");
             setOpen(null);
           }}
         />

@@ -3,9 +3,10 @@
 //! Events carry identifiers, names, kinds and exit codes only — never commands,
 //! environment variables or other potentially secret data (design §19).
 
+use otter_core::feature::FeatureStatus;
 use otter_core::{
-    AgentState, AttentionId, AttentionKind, ExecutionId, SessionId, SessionKind, Timestamp,
-    WorkspaceId,
+    AgentState, AttentionId, AttentionKind, ExecutionId, FeatureId, SessionId, SessionKind,
+    Timestamp, WorkspaceId,
 };
 use serde::{Deserialize, Serialize};
 
@@ -130,6 +131,13 @@ pub enum Event {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         workspace_id: Option<WorkspaceId>,
     },
+    /// A feature changed: its history grew to `history_seq`. What happened
+    /// is in the feature's own history (`feature.events`).
+    FeatureChanged {
+        feature_id: FeatureId,
+        history_seq: u64,
+        status: FeatureStatus,
+    },
     /// A kind this build doesn't know (from a newer daemon, or an older log
     /// line). New kinds are a compatible protocol change; clients ignore them.
     #[serde(other)]
@@ -161,13 +169,14 @@ impl Event {
             Event::AttentionCreated { .. } => "AttentionCreated",
             Event::AttentionResolved { .. } => "AttentionResolved",
             Event::BrowserOpenRequested { .. } => "BrowserOpenRequested",
+            Event::FeatureChanged { .. } => "FeatureChanged",
             Event::Unknown => "Unknown",
         }
     }
 
     pub fn workspace_id(&self) -> Option<&WorkspaceId> {
         match self {
-            Event::DaemonStarted { .. } | Event::Unknown => None,
+            Event::DaemonStarted { .. } | Event::FeatureChanged { .. } | Event::Unknown => None,
             Event::WorkspaceCreated { workspace_id, .. }
             | Event::WorkspaceDeleted { workspace_id, .. }
             | Event::WorkspaceReady { workspace_id }

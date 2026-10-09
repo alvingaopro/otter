@@ -45,6 +45,10 @@ record it in [`decisions.md`](decisions.md) first.
   the daemon but not managed processes, and a new daemon adopts them
   (`reconcile`).
 - Test: `daemon_restart_adopts_running_sessions_and_records_changes`.
+- Exception (D-044): a feature's *managed* agent run talks to `otterd` over
+  its stdin/stdout, so it ends when the daemon does. Its conversation
+  doesn't: the run's agent session id is kept, a new daemon marks the run
+  interrupted (`recover_runs`) and the controller resumes it.
 
 ### 5. Agent-provider details do not leak into generic Workspace logic.
 

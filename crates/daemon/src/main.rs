@@ -4,20 +4,29 @@ mod agents;
 mod attach;
 mod attention;
 mod backend;
+mod brain;
+mod browser;
+mod controller;
 mod daemon;
+mod delivery;
 mod dial;
 mod env;
 mod environment;
 mod events;
+mod features;
 mod files;
 mod git;
 mod history;
 mod login;
 mod metrics;
+mod openrouter;
 mod paths;
 mod reconcile;
+mod runs;
+mod runtime;
 mod server;
 mod sessions;
+mod settings;
 mod store;
 mod workspaces;
 
@@ -156,9 +165,11 @@ async fn serve(paths: Paths) -> Result<()> {
     }
     let store = Store::load(&paths.state_file)?;
     let events = EventLog::open_with(&paths.events_file, events::Limits::from_env())?;
+    let features = features::FeatureStore::load(&paths.features_dir)?;
     let daemon = Arc::new(Daemon::new(
         paths.clone(),
         store,
+        features,
         backend,
         events,
         resolved,
@@ -171,6 +182,10 @@ async fn serve(paths: Paths) -> Result<()> {
         tracing::warn!("initial reconcile failed: {e:#}");
     }
     daemon.resume_workspaces().await;
+    // Managed runs ended with the old daemon; their conversations resume.
+    daemon.recover_runs().await;
+    // The Control Agent steps features from here on (D-045).
+    tokio::spawn(daemon.clone().run_controller());
 
     // We hold the lock, so any socket file left behind is stale.
     let _ = std::fs::remove_file(&paths.socket);
