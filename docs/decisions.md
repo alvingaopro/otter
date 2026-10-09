@@ -1236,7 +1236,11 @@ limits.
   is installed) asks `claude -p --json-schema … --tools "" --setting-sources
   ""` — structured output, no tools, the developer's own Claude Code
   sign-in, nothing new to configure or store (`OTTER_CONTROLLER_MODEL` picks
-  a model). `rules` uses no model: one task, every open decision goes to the
+  a model). `openrouter` uses any model on OpenRouter (`OTTER_CONTROLLER_MODEL`,
+  default `openrouter/auto`) with `OPENROUTER_API_KEY` from otterd's
+  environment — the key goes to `curl` in its config on stdin, never on a
+  command line, in events or in a feature; it is the default when the key is
+  set and Claude Code isn't installed. `rules` uses no model: one task, every open decision goes to the
   developer, criteria are met when the check passes. `yes` (tests only)
   approves everything, to show that policy still stops it.
 - **Code, not the model, enforces:**

@@ -19,6 +19,7 @@ mod git;
 mod history;
 mod login;
 mod metrics;
+mod openrouter;
 mod paths;
 mod reconcile;
 mod runs;

@@ -285,18 +285,8 @@ impl Drop for ClaudeRun {
 /// `claude -p --output-format json --json-schema <schema> --tools ""`, the
 /// prompt on stdin, the answer in the result's `structured_output`. No tools
 /// and no settings files: it only thinks. `OTTER_CONTROLLER_MODEL` picks the
-/// model (default: Claude Code's).
-pub async fn structured(
-    env: &crate::env::EnvMap,
-    cwd: &std::path::Path,
-    prompt: &str,
-    schema: &Value,
-) -> Result<Value> {
-    structured_reading(env, cwd, prompt, schema, None).await
-}
-
-/// [`structured`], allowed to read files in `read` (and nothing else): for
-/// looking at screenshots.
+/// model (default: Claude Code's). With `read`, it may Read files there
+/// (and nothing else): for looking at screenshots.
 pub async fn structured_reading(
     env: &crate::env::EnvMap,
     cwd: &std::path::Path,

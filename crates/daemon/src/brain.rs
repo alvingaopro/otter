@@ -4,10 +4,13 @@
 //! controller's deterministic code.
 //!
 //! `OTTER_CONTROLLER` picks the brain: `claude` (the default when Claude Code
-//! is installed: `claude -p` with structured output, no tools), `rules` (no
-//! model: one task, every open decision goes to the developer, criteria are
-//! met when the check passes), or `yes` (tests only: approves everything it
-//! is asked — to show that policy still stops it).
+//! is installed: `claude -p` with structured output, no tools), `openrouter`
+//! (any model on OpenRouter, with `OPENROUTER_API_KEY` in otterd's
+//! environment; the default when that is set and Claude Code isn't
+//! installed), `rules` (no model: one task, every open decision goes to the
+//! developer, criteria are met when the check passes), or `yes` (tests
+//! only: approves everything it is asked — to show that policy still stops
+//! it). `OTTER_CONTROLLER_MODEL` picks the model for either.
 
 use std::path::Path;
 
@@ -100,14 +103,27 @@ pub trait Brain: Send + Sync {
     }
 }
 
-/// The brain `OTTER_CONTROLLER` names (default: Claude when installed).
+/// The brain `OTTER_CONTROLLER` names (default: Claude Code when installed,
+/// else OpenRouter when a key is set, else rules).
 pub fn select(env: &EnvMap) -> Box<dyn Brain> {
     let choice = std::env::var("OTTER_CONTROLLER").unwrap_or_default();
+    let claude = || {
+        Box::new(Model {
+            backend: Backend::ClaudeCode,
+        })
+    };
+    let openrouter = || {
+        Box::new(Model {
+            backend: Backend::OpenRouter,
+        })
+    };
     match choice.as_str() {
         "rules" => Box::new(Rules),
         "yes" => Box::new(YesMan),
-        "claude" => Box::new(Claude),
-        _ if crate::env::which("claude", env).is_some() => Box::new(Claude),
+        "claude" => claude(),
+        "openrouter" => openrouter(),
+        _ if crate::env::which("claude", env).is_some() => claude(),
+        _ if crate::openrouter::key(env).is_some() => openrouter(),
         _ => Box::new(Rules),
     }
 }
@@ -245,8 +261,51 @@ impl Brain for YesMan {
     }
 }
 
-/// Claude, through `claude -p` with a JSON schema and no tools.
-pub struct Claude;
+/// Where a model brain's answers come from.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Backend {
+    /// `claude -p` with a JSON schema and no tools (the developer's Claude
+    /// Code sign-in).
+    ClaudeCode,
+    /// OpenRouter's chat completions (`OPENROUTER_API_KEY`).
+    OpenRouter,
+}
+
+/// A model deciding where judgment is needed.
+pub struct Model {
+    pub backend: Backend,
+}
+
+impl Model {
+    /// One JSON answer fitting `schema`; `image`: a screenshot to look at.
+    async fn ask(
+        &self,
+        cx: &Context<'_>,
+        prompt: &str,
+        schema: &serde_json::Value,
+        image: Option<&Path>,
+    ) -> Result<serde_json::Value> {
+        match self.backend {
+            Backend::ClaudeCode => {
+                let prompt = match image {
+                    Some(p) => format!("Read the screenshot {} first.\n{prompt}", p.display()),
+                    None => prompt.to_owned(),
+                };
+                crate::agents::claude_stream::structured_reading(
+                    cx.env,
+                    cx.root,
+                    &prompt,
+                    schema,
+                    image.and_then(|p| p.parent()),
+                )
+                .await
+            }
+            Backend::OpenRouter => {
+                crate::openrouter::structured(cx.env, prompt, schema, image).await
+            }
+        }
+    }
+}
 
 fn brief(f: &Feature) -> String {
     let mut s = format!("Feature: {}\nRequest:\n{}\n", f.title, f.request);
@@ -266,9 +325,12 @@ fn brief(f: &Feature) -> String {
 }
 
 #[async_trait]
-impl Brain for Claude {
+impl Brain for Model {
     fn name(&self) -> &'static str {
-        "claude"
+        match self.backend {
+            Backend::ClaudeCode => "claude",
+            Backend::OpenRouter => "openrouter",
+        }
     }
 
     async fn plan(&self, cx: &Context<'_>) -> Result<Plan> {
@@ -300,7 +362,7 @@ impl Brain for Claude {
             },
             "required": ["requirements", "criteria", "tasks", "verify_command", "rationale"]
         });
-        let v = crate::agents::claude_stream::structured(cx.env, cx.root, &prompt, &schema).await?;
+        let v = self.ask(cx, &prompt, &schema, None).await?;
         let plan: Plan = serde_json::from_value(v)?;
         if plan.tasks.is_empty() {
             bail!("the plan has no tasks");
@@ -334,7 +396,7 @@ impl Brain for Claude {
             },
             "required": ["choice", "rationale"]
         });
-        let v = crate::agents::claude_stream::structured(cx.env, cx.root, &prompt, &schema).await?;
+        let v = self.ask(cx, &prompt, &schema, None).await?;
         let rationale = v["rationale"].as_str().unwrap_or_default().to_owned();
         Ok(match v["choice"].as_str() {
             Some("allow") => Verdict::Allow { rationale },
@@ -387,7 +449,7 @@ impl Brain for Claude {
             },
             "required": ["criteria", "remediation"]
         });
-        let v = crate::agents::claude_stream::structured(cx.env, cx.root, &prompt, &schema).await?;
+        let v = self.ask(cx, &prompt, &schema, None).await?;
         let mut j: Judgement = serde_json::from_value(v)?;
         // Only deterministic checks can overrule; a visual review can't.
         // A failed deterministic check can't be judged away.
@@ -411,10 +473,9 @@ impl Brain for Claude {
         screenshot: &Path,
     ) -> Result<Option<(bool, String)>> {
         let prompt = format!(
-            "Read the screenshot {path} (from the browser check “{check}”) and judge whether the UI \
+            "Look at the screenshot (from the browser check “{check}”) and judge whether the UI \
              looks right for this feature: nothing broken, overlapping or obviously wrong.\n{brief}\n\
              looks_right: your judgment; notes: one or two sentences.",
-            path = screenshot.display(),
             brief = brief(cx.feature),
         );
         let schema = json!({
@@ -422,15 +483,7 @@ impl Brain for Claude {
             "properties": {"looks_right": {"type": "boolean"}, "notes": {"type": "string"}},
             "required": ["looks_right", "notes"]
         });
-        let dir = screenshot.parent().unwrap_or(cx.root);
-        let v = crate::agents::claude_stream::structured_reading(
-            cx.env,
-            cx.root,
-            &prompt,
-            &schema,
-            Some(dir),
-        )
-        .await?;
+        let v = self.ask(cx, &prompt, &schema, Some(screenshot)).await?;
         Ok(Some((
             v["looks_right"].as_bool().unwrap_or(false),
             v["notes"].as_str().unwrap_or_default().to_owned(),
