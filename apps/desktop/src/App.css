@@ -561,3 +561,15 @@ code, .mono { font-family: var(--mono); }
 .status-detail { min-width: 0; font-size: 12.5px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .message .cursor { display: inline-block; width: 7px; height: 1em; margin-left: 2px; vertical-align: -2px; background: var(--muted); animation: blink 1s steps(2, start) infinite; }
 @keyframes blink { to { visibility: hidden; } }
+.combo { position: relative; flex: 1; min-width: 0; }
+.combo input { width: 100%; }
+.combo-list {
+  position: absolute; z-index: 20; left: 0; right: 0; top: calc(100% + 4px); max-height: 260px; overflow-y: auto;
+  margin: 0; padding: 4px; list-style: none; border-radius: 8px; border: 1px solid var(--line-strong);
+  background: var(--raised); box-shadow: 0 6px 20px var(--shadow);
+}
+.combo-list li { display: flex; flex-direction: column; gap: 1px; padding: 6px 8px; border-radius: 6px; cursor: pointer; }
+.combo-list li.active { background: var(--selected); }
+.combo-name { font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.combo-id { font-size: 11.5px; font-family: var(--mono); color: var(--faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.combo-list li.combo-more { cursor: default; color: var(--faint); font-size: 12px; }

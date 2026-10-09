@@ -1,4 +1,4 @@
-import { useEffect, useState, type FormEvent } from "react";
+import { useEffect, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { Dialog } from "./Dialog";
 
@@ -206,14 +206,13 @@ export function SettingsDialog({ hosts, defaultHost, onClose }: { hosts: string[
             )}
             {mainKey && keyField(mainKey)}
             {info?.models && (
-              <label className="field">
+              <div className="field">
                 <span>Model{!controller && info ? ` for ${info.label}` : ""}</span>
                 <div className="key-row">
-                  <input
+                  <ModelPicker
                     value={model}
-                    onChange={(e) => setModel(e.target.value)}
-                    list="settings-models"
-                    aria-label="Model"
+                    onChange={setModel}
+                    models={models?.state === "ready" ? models.list : []}
                     placeholder={
                       info.default_model
                         ? `Default: ${info.default_model}`
@@ -221,8 +220,6 @@ export function SettingsDialog({ hosts, defaultHost, onClose }: { hosts: string[
                           ? "Default: Claude Code's"
                           : "Choose a model"
                     }
-                    spellCheck={false}
-                    autoComplete="off"
                   />
                   {listsModels && (
                     <button type="button" className="btn outline" disabled={models?.state === "loading"} onClick={() => setReload((n) => n + 1)}>
@@ -230,14 +227,6 @@ export function SettingsDialog({ hosts, defaultHost, onClose }: { hosts: string[
                     </button>
                   )}
                 </div>
-                <datalist id="settings-models">
-                  {models?.state === "ready" &&
-                    models.list.map((m) => (
-                      <option key={m.id} value={m.id}>
-                        {m.name ?? m.id}
-                      </option>
-                    ))}
-                </datalist>
                 <span className="muted small" aria-live="polite">
                   {models?.state === "loading" && "Loading models…"}
                   {models?.state === "ready" &&
@@ -245,7 +234,7 @@ export function SettingsDialog({ hosts, defaultHost, onClose }: { hosts: string[
                   {models?.state === "error" && `Couldn't list models: ${models.error}`}
                   {!models && !listsModels && "Any model name the provider accepts."}
                 </span>
-              </label>
+              </div>
             )}
             {needsModel && <p className="notice small">{info?.label} has no default model: choose one.</p>}
             {otherKeys.length > 0 && (
@@ -271,6 +260,120 @@ export function SettingsDialog({ hosts, defaultHost, onClose }: { hosts: string[
         </div>
       </form>
     </Dialog>
+  );
+}
+
+/** At most this many matches are shown; typing narrows them. */
+const SHOWN = 60;
+
+/** Models matching every word typed, in id or name. */
+export function matchModels(models: ModelInfo[], query: string): ModelInfo[] {
+  const words = query.toLowerCase().split(/\s+/).filter(Boolean);
+  if (words.length === 0) return models;
+  return models.filter((m) => {
+    const hay = `${m.id} ${m.name ?? ""}`.toLowerCase();
+    return words.every((w) => hay.includes(w));
+  });
+}
+
+/**
+ * A model field with its own suggestion list: the web view's `<datalist>`
+ * doesn't show one on macOS. Any text is still a valid value.
+ */
+function ModelPicker({
+  value,
+  onChange,
+  models,
+  placeholder,
+}: {
+  value: string;
+  onChange: (v: string) => void;
+  models: ModelInfo[];
+  placeholder: string;
+}) {
+  const [open, setOpen] = useState(false);
+  const [active, setActive] = useState(0);
+  const list = useRef<HTMLUListElement>(null);
+  // Showing the chosen model's whole list until the text is edited.
+  const [query, setQuery] = useState<string | null>(null);
+  const matches = matchModels(models, query ?? "");
+  const shown = matches.slice(0, SHOWN);
+
+  useEffect(() => {
+    list.current?.children[active]?.scrollIntoView?.({ block: "nearest" });
+  }, [active]);
+
+  function pick(m: ModelInfo) {
+    onChange(m.id);
+    setQuery(null);
+    setOpen(false);
+  }
+
+  function key(e: KeyboardEvent<HTMLInputElement>) {
+    if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+      e.preventDefault();
+      if (!open) return setOpen(true);
+      const n = shown.length;
+      if (n) setActive((a) => (a + (e.key === "ArrowDown" ? 1 : n - 1)) % n);
+    } else if (e.key === "Enter" && open && shown[active]) {
+      e.preventDefault();
+      pick(shown[active]);
+    } else if (e.key === "Escape" && open) {
+      e.preventDefault();
+      e.stopPropagation();
+      setOpen(false);
+    }
+  }
+
+  return (
+    <div className="combo">
+      <input
+        value={value}
+        onChange={(e) => {
+          onChange(e.target.value);
+          setQuery(e.target.value);
+          setActive(0);
+          setOpen(true);
+        }}
+        onFocus={() => setOpen(true)}
+        onBlur={() => setOpen(false)}
+        onKeyDown={key}
+        aria-label="Model"
+        role="combobox"
+        aria-expanded={open && shown.length > 0}
+        aria-controls="model-options"
+        aria-autocomplete="list"
+        placeholder={placeholder}
+        spellCheck={false}
+        autoComplete="off"
+      />
+      {open && shown.length > 0 && (
+        <ul className="combo-list" id="model-options" role="listbox" ref={list}>
+          {shown.map((m, i) => (
+            <li
+              key={m.id}
+              role="option"
+              aria-selected={i === active}
+              className={i === active ? "active" : undefined}
+              // Before the input's blur closes the list.
+              onMouseDown={(e) => {
+                e.preventDefault();
+                pick(m);
+              }}
+              onMouseEnter={() => setActive(i)}
+            >
+              <span className="combo-name">{m.name ?? m.id}</span>
+              {m.name && <span className="combo-id">{m.id}</span>}
+            </li>
+          ))}
+          {matches.length > SHOWN && (
+            <li className="combo-more" aria-disabled="true">
+              {matches.length - SHOWN} more: keep typing to narrow
+            </li>
+          )}
+        </ul>
+      )}
+    </div>
   );
 }
 

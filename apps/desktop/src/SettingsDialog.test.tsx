@@ -103,13 +103,20 @@ describe("Settings", () => {
   it("offers the provider's models, and asks for one where there's no default", async () => {
     // Automatic, now OpenRouter: its models are listed for the model field.
     expect(calls).toContainEqual({ cmd: "settings_models", args: { host: "mac", controller: "openrouter" } });
-    const options = [...dialog().querySelectorAll<HTMLOptionElement>("datalist option")].map((o) => o.value);
-    expect(options).toEqual(["anthropic/claude-opus-5.5", "openai/gpt-x"]);
     expect(dialog().textContent).toContain("2 models");
     const input = () => dialog().querySelector<HTMLInputElement>('input[aria-label="Model"]')!;
+    const options = () => [...dialog().querySelectorAll<HTMLLIElement>('[role="option"]')];
     expect(input().placeholder).toContain("openrouter/auto");
-    type(input(), "openai/gpt-x");
+    // Focus opens the list; typing narrows it, by id or name, every word.
+    await act(async () => input().focus());
+    expect(options()).toHaveLength(2);
+    type(input(), "gpt");
     await flush();
+    expect(options().map((o) => o.textContent)).toEqual(["OpenAI: GPT Xopenai/gpt-x"]);
+    // Picked with the keyboard.
+    await act(async () => input().dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true })));
+    expect(input().value).toBe("openai/gpt-x");
+    expect(options()).toHaveLength(0);
     expect(dialog().textContent).toContain("OpenAI: GPT X");
 
     // OpenAI: no default, no key yet — the listing says why, Save waits for a model.
