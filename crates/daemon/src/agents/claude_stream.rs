@@ -292,19 +292,30 @@ pub async fn structured(
     prompt: &str,
     schema: &Value,
 ) -> Result<Value> {
+    structured_reading(env, cwd, prompt, schema, None).await
+}
+
+/// [`structured`], allowed to read files in `read` (and nothing else): for
+/// looking at screenshots.
+pub async fn structured_reading(
+    env: &crate::env::EnvMap,
+    cwd: &std::path::Path,
+    prompt: &str,
+    schema: &Value,
+    read: Option<&std::path::Path>,
+) -> Result<Value> {
     let program = which("claude", env).ok_or_else(|| anyhow!("claude is not on PATH"))?;
     let mut cmd = tokio::process::Command::new(&program);
-    cmd.args([
-        "-p",
-        "--output-format",
-        "json",
-        "--tools",
-        "",
-        "--setting-sources",
-        "",
-        "--json-schema",
-        &schema.to_string(),
-    ]);
+    cmd.args(["-p", "--output-format", "json", "--setting-sources", ""]);
+    match read {
+        Some(dir) => {
+            cmd.args(["--tools", "Read", "--add-dir"]).arg(dir);
+        }
+        None => {
+            cmd.args(["--tools", ""]);
+        }
+    }
+    cmd.args(["--json-schema", &schema.to_string()]);
     if let Ok(model) = std::env::var("OTTER_CONTROLLER_MODEL") {
         cmd.args(["--model", &model]);
     }

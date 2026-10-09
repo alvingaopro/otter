@@ -5,6 +5,7 @@ mod attach;
 mod attention;
 mod backend;
 mod brain;
+mod browser;
 mod controller;
 mod daemon;
 mod dial;

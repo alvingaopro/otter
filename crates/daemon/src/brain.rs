@@ -88,6 +88,16 @@ pub trait Brain: Send + Sync {
     async fn plan(&self, cx: &Context<'_>) -> Result<Plan>;
     async fn decide(&self, cx: &Context<'_>, d: &DecisionRequest) -> Result<Verdict>;
     async fn judge(&self, cx: &Context<'_>) -> Result<Judgement>;
+    /// Look at a screenshot of `check` and say whether the feature looks
+    /// right: supplementary, uncertain evidence. `None`: no opinion.
+    async fn review(
+        &self,
+        _cx: &Context<'_>,
+        _check: &str,
+        _screenshot: &Path,
+    ) -> Result<Option<(bool, String)>> {
+        Ok(None)
+    }
 }
 
 /// The brain `OTTER_CONTROLLER` names (default: Claude when installed).
@@ -379,6 +389,7 @@ impl Brain for Claude {
         });
         let v = crate::agents::claude_stream::structured(cx.env, cx.root, &prompt, &schema).await?;
         let mut j: Judgement = serde_json::from_value(v)?;
+        // Only deterministic checks can overrule; a visual review can't.
         // A failed deterministic check can't be judged away.
         let last_check = f
             .evidence
@@ -391,6 +402,39 @@ impl Brain for Claude {
             }
         }
         Ok(j)
+    }
+
+    async fn review(
+        &self,
+        cx: &Context<'_>,
+        check: &str,
+        screenshot: &Path,
+    ) -> Result<Option<(bool, String)>> {
+        let prompt = format!(
+            "Read the screenshot {path} (from the browser check “{check}”) and judge whether the UI \
+             looks right for this feature: nothing broken, overlapping or obviously wrong.\n{brief}\n\
+             looks_right: your judgment; notes: one or two sentences.",
+            path = screenshot.display(),
+            brief = brief(cx.feature),
+        );
+        let schema = json!({
+            "type": "object",
+            "properties": {"looks_right": {"type": "boolean"}, "notes": {"type": "string"}},
+            "required": ["looks_right", "notes"]
+        });
+        let dir = screenshot.parent().unwrap_or(cx.root);
+        let v = crate::agents::claude_stream::structured_reading(
+            cx.env,
+            cx.root,
+            &prompt,
+            &schema,
+            Some(dir),
+        )
+        .await?;
+        Ok(Some((
+            v["looks_right"].as_bool().unwrap_or(false),
+            v["notes"].as_str().unwrap_or_default().to_owned(),
+        )))
     }
 }
 

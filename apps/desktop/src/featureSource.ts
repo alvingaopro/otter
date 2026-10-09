@@ -20,6 +20,8 @@ export interface FeatureSource {
   act(key: string, action: FeatureAction): Promise<void>;
   /** The feature's own history, oldest first. */
   history(key: string): Promise<FeatureEventRecord[]>;
+  /** A screenshot the feature's checks produced (`artifact:<name>`), as a data URL. */
+  artifact(key: string, name: string): Promise<string>;
 }
 
 let counter = 0;
@@ -198,6 +200,7 @@ export function mockSource(host = "preview", now = Date.now()): FeatureSource {
         hand_back: "implementing",
         set_workspace: "planning",
       };
+      if (action.action === "preview") return;
       if (action.action === "decide") {
         update(key, (f) => ({
           ...f,
@@ -218,6 +221,9 @@ export function mockSource(host = "preview", now = Date.now()): FeatureSource {
     },
     async history(key) {
       return histories.get(key) ?? [];
+    },
+    async artifact() {
+      return "";
     },
   };
 }
@@ -303,6 +309,11 @@ export function daemonSource(): FeatureSource {
     async history(key) {
       const { host, feature } = splitKey(key);
       return invoke<FeatureEventRecord[]>("feature_events", { host, feature, after: null });
+    },
+    async artifact(key, name) {
+      const { host, feature } = splitKey(key);
+      const data = await invoke<string>("feature_artifact", { host, feature, name });
+      return `data:image/png;base64,${data}`;
     },
   };
 }

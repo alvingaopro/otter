@@ -39,6 +39,9 @@ jobs:
       - run: cargo test --locked
         env:
           OTTER_E2E_REQUIRE_SSH: "1"
+          # Browser checks (D-046) use the runner's Chrome; its sandbox can't
+          # start where unprivileged user namespaces are restricted.
+          OTTER_BROWSER_NO_SANDBOX: "1"
       # Show the SSH test's own output in the log.
       - run: cargo test --locked -p otter --test e2e ssh_host_normal_flow -- --nocapture
         env:

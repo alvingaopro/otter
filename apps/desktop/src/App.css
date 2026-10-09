@@ -546,3 +546,5 @@ code, .mono { font-family: var(--mono); }
 .risk.medium { color: var(--needs-text); }
 .feature-timeline li { display: grid; grid-template-columns: 44px 1fr; gap: 8px; }
 .evidence-item a { color: var(--working-text); }
+.evidence-shot { max-width: 100%; margin-top: 6px; border-radius: 6px; border: 1px solid var(--line-strong); }
+.evidence-detail { white-space: pre-wrap; }

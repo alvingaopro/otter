@@ -61,6 +61,7 @@ async function render(s: FeatureSource) {
         workspaces={{ mac: [{ id: "ws_demo", name: "demo" }] }}
         now={Date.now()}
         onOpenWorkspace={onOpenWorkspace}
+        onOpenPreview={async () => {}}
       />,
     ),
   );
@@ -127,7 +128,8 @@ describe("Features view", () => {
     await act(async () => q('[aria-label="New feature"]')!.click());
     const dialog = document.querySelector('[role="dialog"]')!;
     type(dialog.querySelector("input")!, "In a workspace");
-    const select = [...dialog.querySelectorAll("select")].at(-1)!;
+    const selects = dialog.querySelectorAll("select");
+    const select = selects[selects.length - 1];
     select.value = "ws_demo";
     await act(async () => select.dispatchEvent(new Event("change", { bubbles: true })));
     await act(async () => byText("button", "Create draft")!.click());

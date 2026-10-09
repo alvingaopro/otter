@@ -506,6 +506,8 @@ pub fn apply_action(
                 changes.push(to(f, next, None)?);
             }
         }
+        // The preview's session is started by `feature_act`.
+        FeatureAction::Preview => {}
         FeatureAction::HandBack => {
             if f.status != FeatureStatus::Paused {
                 return Err(RpcError::conflict(
@@ -643,6 +645,12 @@ impl Daemon {
         if p.action == FeatureAction::HandBack {
             self.check_handed_back(&id).await?;
         }
+        if p.action == FeatureAction::Preview {
+            if let Some(f) = self.features.lock().await.applied(&p.command_id) {
+                return Ok(f.clone());
+            }
+            self.start_preview(&id).await?;
+        }
         // Taking over opens a session first and records the command only
         // once that worked, so a failed attempt can be retried as is.
         if p.action == FeatureAction::TakeOver {
@@ -699,6 +707,107 @@ impl Daemon {
             _ => return Ok(applied.feature),
         }
         self.feature_get(id.as_str()).await
+    }
+
+    /// Start (or restart) the app's preview for the developer: the first
+    /// browser check's preview command, as a service session on a free
+    /// port. A client reaches it by forwarding that one port (D-046).
+    async fn start_preview(self: &std::sync::Arc<Self>, id: &FeatureId) -> RpcResult<()> {
+        use otter_core::{SessionKind, SessionSpec};
+        let f = self.feature_get(id.as_str()).await?;
+        let (root, _) = self.feature_workspace(&f).await?;
+        let check = crate::browser::load_checks(&root)
+            .map_err(|e| RpcError::invalid(format!("{e:#}")))?
+            .into_iter()
+            .next()
+            .ok_or_else(|| {
+                RpcError::conflict(format!(
+                    "the project declares no preview ({})",
+                    crate::browser::CHECKS_FILE
+                ))
+            })?;
+        match self
+            .allowance(&f, &check.preview.command, "to preview the app", &root)
+            .await?
+        {
+            crate::controller::Allowance::Allowed => {}
+            crate::controller::Allowance::Pending => {
+                return Err(RpcError::conflict(format!(
+                    "allow `{}` first (see Approvals), then preview again",
+                    check.preview.command
+                )));
+            }
+            crate::controller::Allowance::Denied(why) => {
+                return Err(RpcError::conflict(format!(
+                    "the preview isn't allowed: {why}"
+                )));
+            }
+        }
+        let ws = f
+            .workspace_id
+            .clone()
+            .expect("checked by feature_workspace");
+        // One preview at a time: replace the last one.
+        if let Some(old) = &f.preview {
+            let _ = self
+                .session_delete(&otter_protocol::SessionRef {
+                    workspace: ws.to_string(),
+                    session: old.session_id.to_string(),
+                })
+                .await;
+        }
+        let port = crate::browser::free_port()
+            .map_err(|e| RpcError::internal(format!("no free port: {e:#}")))?;
+        let session = self
+            .session_create(otter_protocol::SessionCreate {
+                workspace: ws.to_string(),
+                spec: SessionSpec {
+                    name: Some(format!("preview-{port}")),
+                    kind: SessionKind::Service,
+                    command: Some(check.preview.command.replace("{port}", &port.to_string())),
+                    provider: None,
+                    prompt: None,
+                    resume: None,
+                },
+            })
+            .await?;
+        let link = otter_core::feature::PreviewLink {
+            session_id: session.id,
+            port,
+            path: check.preview.ready_path.clone(),
+        };
+        let applied = self.features.lock().await.apply(id, None, move |f, _| {
+            f.preview = Some(link);
+            Ok(vec![])
+        })?;
+        self.feature_changed(&applied);
+        Ok(())
+    }
+
+    /// A file a feature's checks produced, by name, from its artifacts.
+    pub(crate) async fn feature_artifact(
+        &self,
+        p: &otter_protocol::feature::FeatureArtifact,
+    ) -> RpcResult<otter_protocol::fs::FileChunk> {
+        use base64::Engine;
+        const MAX: u64 = 8 << 20;
+        let f = self.feature_get(&p.feature).await?;
+        let name = p.name.trim_start_matches("artifact:");
+        if name.is_empty() || name.contains('/') || name.contains("..") {
+            return Err(RpcError::invalid("not an artifact name"));
+        }
+        let path = self.artifacts_dir(&f.id).join(name);
+        let meta = std::fs::metadata(&path)
+            .map_err(|_| RpcError::not_found(format!("no artifact `{name}`")))?;
+        if meta.len() > MAX {
+            return Err(RpcError::invalid("the artifact is too large"));
+        }
+        let bytes = std::fs::read(&path).map_err(|e| RpcError::internal(e.to_string()))?;
+        Ok(otter_protocol::fs::FileChunk {
+            data: base64::engine::general_purpose::STANDARD.encode(&bytes),
+            size: meta.len(),
+            eof: true,
+        })
     }
 
     /// Before handing back: the developer's session must be over, so only

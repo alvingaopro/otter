@@ -3054,3 +3054,278 @@ async fn repeated_failures_stop_at_the_limit_and_the_plan_survives() {
     .await;
     assert_eq!(f.budget.iterations_used, 3);
 }
+
+// ---------------------------------------------------------------------------
+// Browser verification and previews (D-046). Skipped without a Chrome or
+// Chromium and python3 on this machine.
+// ---------------------------------------------------------------------------
+
+fn browser_available() -> bool {
+    let ok = std::env::var("OTTER_BROWSER").is_ok()
+        || [
+            "chromium",
+            "chromium-browser",
+            "google-chrome",
+            "google-chrome-stable",
+        ]
+        .iter()
+        .any(|b| {
+            Command::new("sh")
+                .args(["-c", &format!("command -v {b}")])
+                .output()
+                .is_ok_and(|o| o.status.success())
+        })
+        || Path::new("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome").exists();
+    let python = Command::new("python3")
+        .arg("--version")
+        .output()
+        .is_ok_and(|o| o.status.success());
+    if !(ok && python) {
+        eprintln!("skipping: needs Chrome/Chromium and python3");
+    }
+    ok && python
+}
+
+const PREVIEW: &str = "python3 -m http.server {port} --bind 127.0.0.1";
+
+/// A web project: a greeter page, `make test`, and a browser check that
+/// expects `expect` after greeting Ada.
+async fn web_feature(host: &TestHost, expect: &str) -> String {
+    use otter_core::feature::FeatureAction;
+    let dir = host.home().join("web");
+    std::fs::create_dir_all(dir.join(".otter")).unwrap();
+    std::fs::write(dir.join("Makefile"), "test:\n\t@echo all good\n").unwrap();
+    std::fs::write(
+        dir.join("index.html"),
+        r#"<!doctype html><html><body><h1>Greeter</h1><input id="name"><button id="go">Greet</button><p id="out"></p>
+<script>document.getElementById('go').onclick = () => { document.getElementById('out').textContent = 'Hello, ' + document.getElementById('name').value; };</script>
+</body></html>"#,
+    )
+    .unwrap();
+    let checks = serde_json::json!({"checks": [{
+        "name": "greets",
+        "preview": {"command": PREVIEW},
+        "steps": [
+            {"do": "goto", "path": "/"},
+            {"do": "fill", "selector": "#name", "value": "Ada"},
+            {"do": "click", "selector": "#go"},
+            {"do": "expect_text", "selector": "#out", "text": expect},
+            {"do": "screenshot", "name": "greeted"}
+        ]
+    }]});
+    std::fs::write(dir.join(".otter/browser-checks.json"), checks.to_string()).unwrap();
+    let mut conn = host.conn().await;
+    conn.workspace_create(WorkspaceCreate {
+        name: "web".into(),
+        source: SourceSpec::Directory {
+            path: dir.to_string_lossy().into_owned(),
+        },
+        sessions: Some(vec![]),
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+    let f = conn
+        .feature_create(otter_protocol::feature::FeatureCreate {
+            command_id: "create".into(),
+            title: "Greeter".into(),
+            request: "Greet people by name".into(),
+            workspace: Some("web".into()),
+        })
+        .await
+        .unwrap();
+    conn.feature_act("start", f.id.as_str(), FeatureAction::Start)
+        .await
+        .unwrap();
+    f.id.to_string()
+}
+
+/// Approve the pending decision about running the preview command.
+async fn allow_preview(host: &TestHost, id: &str) {
+    use otter_core::feature::{FeatureAction, Risk};
+    let f = wait_feature(host, id, "asked to allow the preview", |f| {
+        f.pending_decisions().any(|d| d.summary.contains(PREVIEW))
+    })
+    .await;
+    let d = f
+        .pending_decisions()
+        .find(|d| d.summary.contains(PREVIEW))
+        .unwrap();
+    assert_eq!(
+        d.risk,
+        Risk::Medium,
+        "an unknown command: the developer or the Control Agent decides"
+    );
+    host.conn()
+        .await
+        .feature_act(
+            &format!("allow-{}", d.id),
+            id,
+            FeatureAction::Decide {
+                decision_id: d.id.clone(),
+                approve: true,
+                answer: None,
+            },
+        )
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn a_browser_check_verifies_the_ui_with_evidence() {
+    use otter_core::feature::{EvidenceKind, FeatureStatus};
+    if !browser_available() {
+        return;
+    }
+    let fake = fake_agent_host("ok", "rules").await;
+    let id = web_feature(&fake.host, "Hello, Ada").await;
+    allow_preview(&fake.host, &id).await;
+    let f = wait_feature(&fake.host, &id, "review", |f| {
+        f.status == FeatureStatus::Review
+    })
+    .await;
+    let browser = f
+        .evidence
+        .iter()
+        .find(|e| e.kind == EvidenceKind::Browser)
+        .expect("browser evidence");
+    assert_eq!(browser.ok, Some(true), "{:?}", browser.detail);
+    assert!(
+        browser
+            .detail
+            .as_deref()
+            .unwrap()
+            .contains("✓ expect “Hello, Ada” in #out")
+    );
+    assert!(browser.detail.as_deref().unwrap().contains("✓ click #go"));
+    // The screenshot is kept with the feature and served by name.
+    let shot = f
+        .evidence
+        .iter()
+        .find(|e| e.kind == EvidenceKind::Screenshot)
+        .and_then(|e| e.uri.clone())
+        .expect("a screenshot");
+    let file = fake
+        .host
+        .conn()
+        .await
+        .feature_artifact(&id, &shot)
+        .await
+        .unwrap();
+    assert!(file.size > 100);
+    assert!(file.data.starts_with("iVBORw0KGgo"), "a PNG");
+    // Names only: no wandering outside the artifacts.
+    assert!(
+        fake.host
+            .conn()
+            .await
+            .feature_artifact(&id, "../feature.json")
+            .await
+            .is_err()
+    );
+    // Approved once, remembered.
+    assert!(f.allowed_commands.iter().any(|c| c == PREVIEW));
+}
+
+#[tokio::test]
+async fn a_broken_ui_fails_verification() {
+    use otter_core::feature::{EvidenceKind, FeatureStatus};
+    if !browser_available() {
+        return;
+    }
+    let fake = fake_agent_host("ok", "rules").await;
+    // The page says "Hello, Ada"; the check wants something else.
+    let id = web_feature(&fake.host, "Goodbye, Ada").await;
+    allow_preview(&fake.host, &id).await;
+    let f = wait_feature(
+        &fake.host,
+        &id,
+        "verification failed and work resumed",
+        |f| {
+            f.evidence
+                .iter()
+                .any(|e| e.kind == EvidenceKind::Browser && e.ok == Some(false))
+                && f.tasks
+                    .iter()
+                    .any(|t| t.title == "Fix what verification found")
+        },
+    )
+    .await;
+    assert_ne!(f.status, FeatureStatus::Review);
+    assert_ne!(f.status, FeatureStatus::Done);
+    let failed = f
+        .evidence
+        .iter()
+        .find(|e| e.kind == EvidenceKind::Browser && e.ok == Some(false))
+        .unwrap();
+    assert!(
+        failed
+            .detail
+            .as_deref()
+            .unwrap()
+            .contains("✗ expect “Goodbye, Ada” in #out"),
+        "{:?}",
+        failed.detail
+    );
+    // The make check passed, but the criteria aren't met.
+    assert!(f.acceptance.iter().any(|c| c.met == Some(false)));
+}
+
+#[tokio::test]
+async fn a_preview_runs_as_a_session_on_one_port() {
+    use otter_core::feature::{FeatureAction, FeatureStatus};
+    if !browser_available() {
+        return;
+    }
+    let fake = fake_agent_host("ok", "rules").await;
+    let id = web_feature(&fake.host, "Hello, Ada").await;
+    let mut conn = fake.host.conn().await;
+    // Not allowed yet: asking for it creates the decision.
+    wait_feature(&fake.host, &id, "verification asks", |f| {
+        f.pending_decisions().next().is_some()
+    })
+    .await;
+    let err = conn
+        .feature_act("pv-1", &id, FeatureAction::Preview)
+        .await
+        .unwrap_err();
+    assert!(format!("{err:#}").contains("allow"), "{err:#}");
+    allow_preview(&fake.host, &id).await;
+    wait_feature(&fake.host, &id, "review", |f| {
+        f.status == FeatureStatus::Review
+    })
+    .await;
+
+    let f = conn
+        .feature_act("pv-2", &id, FeatureAction::Preview)
+        .await
+        .unwrap();
+    let link = f.preview.clone().expect("a preview");
+    let ws = conn.workspace_get("web").await.unwrap();
+    let s = ws.session(link.session_id.as_str()).unwrap();
+    assert_eq!(s.kind, SessionKind::Service);
+    assert_eq!(s.name, format!("preview-{}", link.port));
+    // It serves the app on that one port (what a client forwards).
+    let page = eventually("the preview answers", || async {
+        let out = Command::new("curl")
+            .args([
+                "-s",
+                &format!("http://127.0.0.1:{}{}", link.port, link.path),
+            ])
+            .output()
+            .ok()?;
+        let body = String::from_utf8_lossy(&out.stdout).into_owned();
+        body.contains("Greeter").then_some(body)
+    })
+    .await;
+    assert!(page.contains("<h1>Greeter</h1>"));
+    // Previewing again replaces it.
+    let f = conn
+        .feature_act("pv-3", &id, FeatureAction::Preview)
+        .await
+        .unwrap();
+    let again = f.preview.unwrap();
+    assert_ne!(again.session_id, link.session_id);
+    let ws = conn.workspace_get("web").await.unwrap();
+    assert!(ws.session(link.session_id.as_str()).is_none());
+}

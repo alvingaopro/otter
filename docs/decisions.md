@@ -1265,3 +1265,44 @@ limits.
   "Choose a workspace" (the app's New feature dialog offers them).
 - Not yet: several runs in parallel, a model reply in the conversation, a
   plan approval step.
+
+## D-046 — Browser verification: a real browser next to the work (2026-10-09)
+
+The Control Agent checks a UI itself rather than trusting the coding
+agent's account of it.
+
+- **Checks are the project's**, in `.otter/browser-checks.json`: a preview
+  command with `{port}` (also in `PORT`) and a ready path, then steps — go
+  to, click, fill, expect text, expect visible, screenshot, wait. Declared,
+  reviewable, deterministic; the model doesn't invent them.
+- **Where:** on the host, next to the preview, so a remote workspace is
+  verified without any tunnel. The browser is a headless Chrome/Chromium
+  (`OTTER_BROWSER`, else found on PATH or in /Applications) driven over the
+  DevTools protocol on `--remote-debugging-pipe` (fds 3 and 4): no
+  debugging port to expose, no new dependency.
+- **The preview** starts in its own process group on a free port, is
+  polled until it answers, and is taken down (the whole group) after the
+  check. Its command goes through policy like any other: a project file the
+  coding agent can edit must not be a way around it. Not routine →
+  a decision (asked once; approvals are remembered per command).
+- **Isolation:** a throwaway profile per check (removed after), a fresh
+  browser context, an environment with only `PATH` and a throwaway `HOME`
+  (no workspace secrets), requests to anything but the preview's origin
+  blocked (`Fetch`), downloads denied. `OTTER_BROWSER_NO_SANDBOX` (CI only)
+  where Chrome's sandbox can't start.
+- **Evidence:** per check, each step ✓/✗ with the reason, console errors
+  and uncaught exceptions, failed and 4xx/5xx requests (a favicon aside),
+  blocked requests, and screenshots kept with the feature
+  (`state/features/<id>/artifacts/`, served by name with `feature.artifact`).
+  A failed step, a console error or a failed request fails the check, and a
+  failed check fails verification (the work goes back to implementing).
+- **A model's look is supplementary:** the `claude` brain reviews the last
+  screenshot (`claude -p` allowed to Read only the artifacts directory) and
+  that evidence is marked uncertain; deterministic results outrank it.
+- **The developer's preview:** *Preview* starts the same command as a
+  service session in the workspace on a free port (one at a time; it shows
+  in the Workspaces view and survives client disconnects). The app opens it
+  by forwarding that one port from the host (the existing port mappings) —
+  a scoped tunnel — or directly on this Mac.
+- Not yet: checks proposed by the Control Agent, visual regression
+  baselines, network mocking.

@@ -30,10 +30,12 @@ interface Props {
   now: number;
   /** Show a workspace (and session) in the Workspaces view. */
   onOpenWorkspace: (host: string, workspaceId: string, sessionId?: string) => void;
+  /** Open a preview port of a host in the browser (forwarding it if remote). */
+  onOpenPreview: (host: string, port: number, path: string) => Promise<void>;
 }
 
 /** The Features view (D-041, D-042): product work, independent of the Workspace view. */
-export function FeaturesView({ source, hosts, workspaces, now, onOpenWorkspace }: Props) {
+export function FeaturesView({ source, hosts, workspaces, now, onOpenWorkspace, onOpenPreview }: Props) {
   const [list, setList] = useState<PlacedFeature[]>(() => source.list());
   const [filter, setFilter] = useState<FeatureFilter>("all");
   const [selected, setSelected] = useState<string | undefined>();
@@ -116,6 +118,7 @@ export function FeaturesView({ source, hosts, workspaces, now, onOpenWorkspace }
           now={now}
           workspaces={workspaces[current.host] ?? []}
           onOpenWorkspace={onOpenWorkspace}
+          onOpenPreview={onOpenPreview}
         />
       ) : (
         <main className="pane empty">
@@ -163,12 +166,14 @@ function FeaturePane({
   now,
   workspaces,
   onOpenWorkspace,
+  onOpenPreview,
 }: {
   placed: PlacedFeature;
   source: FeatureSource;
   now: number;
   workspaces: WorkspaceChoice[];
   onOpenWorkspace: Props["onOpenWorkspace"];
+  onOpenPreview: Props["onOpenPreview"];
 }) {
   const f = placed.feature;
   const wsName = workspaces.find((w) => w.id === f.workspace_id)?.name;
@@ -204,6 +209,24 @@ function FeaturePane({
           )}
         </span>
         <span className="spacer" />
+        {f.workspace_id && !["done", "cancelled"].includes(f.status) && (
+          <button
+            className="btn"
+            title={f.preview ? `Port ${f.preview.port} on ${placed.host}` : "Start the app's preview in its workspace"}
+            onClick={async () => {
+              setError(null);
+              try {
+                if (!f.preview) await source.act(placed.key, { action: "preview" });
+                const p = source.list().find((x) => x.key === placed.key)?.feature.preview ?? f.preview;
+                if (p) await onOpenPreview(placed.host, p.port, p.path);
+              } catch (e) {
+                setError(String(e));
+              }
+            }}
+          >
+            {f.preview ? "Open preview" : "Preview"}
+          </button>
+        )}
         <FeatureActions f={f} act={act} />
       </header>
       {source.preview && (
@@ -258,7 +281,7 @@ function FeaturePane({
             {tab === "plan" && <Plan f={f} />}
             {tab === "tasks" && <Tasks placed={placed} onOpenWorkspace={onOpenWorkspace} />}
             {tab === "approvals" && <Approvals f={f} act={act} now={now} />}
-            {tab === "evidence" && <EvidenceList f={f} now={now} />}
+            {tab === "evidence" && <EvidenceList f={f} now={now} shot={(name) => source.artifact(placed.key, name)} />}
             {tab === "timeline" && <Timeline placed={placed} source={source} now={now} />}
           </div>
         </section>
@@ -604,7 +627,7 @@ function Decision({ d, act, now }: { d: DecisionRequest; act: (a: FeatureAction)
   );
 }
 
-function EvidenceList({ f, now }: { f: Feature; now: number }) {
+function EvidenceList({ f, now, shot }: { f: Feature; now: number; shot: (name: string) => Promise<string> }) {
   if (f.evidence.length === 0) return <p className="muted small">No evidence yet: tests, browser checks and CI results land here.</p>;
   return (
     <ul className="plain-list evidence">
@@ -625,12 +648,28 @@ function EvidenceList({ f, now }: { f: Feature; now: number }) {
               {e.kind.replace("_", " ")}
               {e.uncertain && " · judgment, not a check"} · {ago(e.at, now)}
             </span>
-            {e.detail && <span className="muted small">{e.detail}</span>}
+            {e.detail && <span className="muted small evidence-detail">{e.detail}</span>}
+            {e.kind === "screenshot" && e.uri?.startsWith("artifact:") && <Shot load={() => shot(e.uri!)} alt={e.title} />}
           </span>
         </li>
       ))}
     </ul>
   );
+}
+
+/** A screenshot, fetched from the host when shown. */
+function Shot({ load, alt }: { load: () => Promise<string>; alt: string }) {
+  const [src, setSrc] = useState<string | null>(null);
+  useEffect(() => {
+    let live = true;
+    load()
+      .then((s) => live && s && setSrc(s))
+      .catch(() => {});
+    return () => {
+      live = false;
+    };
+  }, []);
+  return src ? <img className="evidence-shot" src={src} alt={alt} /> : null;
 }
 
 function Timeline({ placed, source, now }: { placed: PlacedFeature; source: FeatureSource; now: number }) {

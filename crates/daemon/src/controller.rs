@@ -580,7 +580,11 @@ impl Daemon {
         if let (Some(cmd), true) = (&f.verify_command, f.verify_approved) {
             evidence.push(run_check(cmd, &root, &env).await);
         }
-        evidence.extend(self.extra_checks(f, &root, &env).await);
+        match self.browser_checks(f, &root, &env).await? {
+            Some(more) => evidence.extend(more),
+            // A preview command waits for someone to allow it.
+            None => return Ok(()),
+        }
         if !evidence.is_empty() {
             let ev = evidence.clone();
             if !self
@@ -690,19 +694,244 @@ impl Daemon {
         Ok(())
     }
 
-    /// Checks beyond the command: browser verification (D-046) lands here.
-    async fn extra_checks(
+    /// Whether `cmd` may run for this feature: policy, or someone approved
+    /// it (asked once, as a decision).
+    pub(crate) async fn allowance(
         &self,
-        _f: &Feature,
-        _root: &std::path::Path,
-        _env: &EnvMap,
-    ) -> Vec<Evidence> {
-        Vec::new()
+        f: &Feature,
+        cmd: &str,
+        purpose: &str,
+        root: &std::path::Path,
+    ) -> RpcResult<Allowance> {
+        let (risk, user_only, why) =
+            match policy::classify(&ToolCall::Command { line: cmd.into() }, root) {
+                Verdict::Allow => return Ok(Allowance::Allowed),
+                Verdict::Deny { why } => return Ok(Allowance::Denied(why)),
+                Verdict::Ask {
+                    risk,
+                    user_only,
+                    why,
+                    ..
+                } => (risk, user_only, why),
+            };
+        if f.allowed_commands.iter().any(|c| c == cmd) {
+            return Ok(Allowance::Allowed);
+        }
+        let summary = format!("Run `{cmd}` {purpose}");
+        let decided = f
+            .decisions
+            .iter()
+            .rev()
+            .find(|d| d.summary == summary)
+            .map(|d| d.status);
+        let (cmd, sum) = (cmd.to_owned(), summary.clone());
+        let allowance = match decided {
+            Some(DecisionStatus::Approved | DecisionStatus::Answered) => {
+                let applied = self.features.lock().await.apply(&f.id, None, |f, _| {
+                    if !f.allowed_commands.contains(&cmd) {
+                        f.allowed_commands.push(cmd.clone());
+                    }
+                    Ok(vec![])
+                })?;
+                self.feature_changed(&applied);
+                Allowance::Allowed
+            }
+            Some(DecisionStatus::Pending) => Allowance::Pending,
+            Some(_) => Allowance::Denied("not allowed".into()),
+            None => {
+                let applied = self
+                    .features
+                    .lock()
+                    .await
+                    .apply(&f.id, None, move |f, now| {
+                        let id = DecisionId::generate();
+                        f.decisions.push(DecisionRequest {
+                            id: id.clone(),
+                            task_id: None,
+                            run_id: None,
+                            kind: DecisionKind::ToolPermission,
+                            risk,
+                            summary: sum,
+                            detail: Some(why),
+                            options: vec![],
+                            status: DecisionStatus::Pending,
+                            decided_by: None,
+                            answer: None,
+                            rationale: None,
+                            created_at: now,
+                            decided_at: None,
+                            user_only,
+                        });
+                        Ok(vec![Change::new(FeatureEvent::DecisionRequested {
+                            decision_id: id,
+                            kind: DecisionKind::ToolPermission,
+                            risk,
+                        })])
+                    })?;
+                self.feature_changed(&applied);
+                Allowance::Pending
+            }
+        };
+        Ok(allowance)
+    }
+
+    /// Where a feature's checks keep their files (screenshots).
+    pub(crate) fn artifacts_dir(&self, id: &FeatureId) -> PathBuf {
+        self.paths.features_dir.join(id.as_str()).join("artifacts")
+    }
+
+    /// The project's browser checks (D-046), run in a real headless browser.
+    /// `None` while a preview command waits to be allowed.
+    async fn browser_checks(
+        &self,
+        f: &Feature,
+        root: &std::path::Path,
+        env: &EnvMap,
+    ) -> RpcResult<Option<Vec<Evidence>>> {
+        let checks = match crate::browser::load_checks(root) {
+            Ok(c) => c,
+            Err(e) => {
+                return Ok(Some(vec![browser_evidence(
+                    "Browser checks",
+                    Some(false),
+                    format!("{e:#}"),
+                    None,
+                )]));
+            }
+        };
+        if checks.is_empty() {
+            return Ok(Some(Vec::new()));
+        }
+        let mut runnable = Vec::new();
+        let mut evidence = Vec::new();
+        for c in checks {
+            match self
+                .allowance(f, &c.preview.command, "to preview the app", root)
+                .await?
+            {
+                Allowance::Allowed => runnable.push(c),
+                Allowance::Pending => return Ok(None),
+                Allowance::Denied(why) => evidence.push(browser_evidence(
+                    &format!("Browser: {}", c.name),
+                    Some(false),
+                    format!("The preview `{}` wasn't allowed: {why}", c.preview.command),
+                    None,
+                )),
+            }
+        }
+        let Some(program) = crate::browser::find_browser(env) else {
+            evidence.push(browser_evidence(
+                "Browser checks",
+                Some(false),
+                "No Chrome or Chromium on this host (install one, or set OTTER_BROWSER).".into(),
+                None,
+            ));
+            return Ok(Some(evidence));
+        };
+        let artifacts = self.artifacts_dir(&f.id);
+        let brain = brain::select(env);
+        for check in runnable {
+            let (p, c, r, e, a) = (
+                program.clone(),
+                check.clone(),
+                root.to_path_buf(),
+                env.clone(),
+                artifacts.clone(),
+            );
+            let out =
+                tokio::task::spawn_blocking(move || crate::browser::run_check(&p, &c, &r, &e, &a))
+                    .await
+                    .map_err(|e| RpcError::internal(e.to_string()))?;
+            let last = out.screenshots.last().cloned();
+            evidence.push(browser_evidence(
+                &format!(
+                    "Browser: {} ({})",
+                    check.name,
+                    if out.ok { "passed" } else { "failed" }
+                ),
+                Some(out.ok),
+                out.report(),
+                last.as_deref(),
+            ));
+            for shot in &out.screenshots {
+                let mut e = browser_evidence(
+                    &format!("Screenshot: {}", file_name(shot)),
+                    None,
+                    String::new(),
+                    Some(shot),
+                );
+                e.kind = EvidenceKind::Screenshot;
+                evidence.push(e);
+            }
+            // A model's look at the result: supplementary, and labelled so.
+            if let Some(shot) = &last
+                && let Ok(Some((looks_right, notes))) = brain
+                    .review(
+                        &Context {
+                            feature: f,
+                            root,
+                            env,
+                        },
+                        &check.name,
+                        shot,
+                    )
+                    .await
+            {
+                evidence.push(Evidence {
+                    id: EvidenceId::generate(),
+                    task_id: None,
+                    criterion_id: None,
+                    kind: EvidenceKind::Review,
+                    title: format!("Visual review (model): {}", check.name),
+                    ok: Some(looks_right),
+                    uri: Some(format!("artifact:{}", file_name(shot))),
+                    detail: Some(notes),
+                    uncertain: true,
+                    at: Utc::now(),
+                });
+            }
+        }
+        Ok(Some(evidence))
     }
 
     /// Delivery gates (D-047) land here; the developer accepts.
     async fn review_step(self: &Arc<Self>, _f: &Feature) -> RpcResult<()> {
         Ok(())
+    }
+}
+
+/// Whether a command may run (see [`Daemon::allowance`]).
+pub(crate) enum Allowance {
+    Allowed,
+    Pending,
+    Denied(String),
+}
+
+fn file_name(p: &std::path::Path) -> String {
+    p.file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default()
+}
+
+/// Evidence from a browser check; screenshots are referred to by name
+/// (`artifact:<name>`, served by `feature.artifact`).
+fn browser_evidence(
+    title: &str,
+    ok: Option<bool>,
+    detail: String,
+    shot: Option<&std::path::Path>,
+) -> Evidence {
+    Evidence {
+        id: EvidenceId::generate(),
+        task_id: None,
+        criterion_id: None,
+        kind: EvidenceKind::Browser,
+        title: title.to_owned(),
+        ok,
+        uri: shot.map(|s| format!("artifact:{}", file_name(s))),
+        detail: Some(detail).filter(|d| !d.is_empty()),
+        uncertain: false,
+        at: Utc::now(),
     }
 }
 

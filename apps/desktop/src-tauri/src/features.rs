@@ -69,6 +69,22 @@ pub async fn feature_act(
         .map_err(|e| e.to_string())
 }
 
+/// A screenshot (or other file) a feature's checks produced, base64.
+#[tauri::command]
+pub async fn feature_artifact(
+    app: AppHandle,
+    host: String,
+    feature: String,
+    name: String,
+) -> Result<String, String> {
+    rpc(&app, &host)
+        .await?
+        .feature_artifact(&feature, &name)
+        .await
+        .map(|f| f.data)
+        .map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 pub async fn feature_events(
     app: AppHandle,

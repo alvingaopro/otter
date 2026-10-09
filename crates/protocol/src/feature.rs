@@ -46,6 +46,14 @@ pub struct FeatureAct {
     pub action: FeatureAction,
 }
 
+/// A file the feature's checks produced (a screenshot), by name.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct FeatureArtifact {
+    pub feature: String,
+    /// The file's name in the feature's artifacts (no directories).
+    pub name: String,
+}
+
 /// A feature's history after a cursor.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct FeatureEvents {

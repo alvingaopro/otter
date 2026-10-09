@@ -384,6 +384,12 @@ pub struct Feature {
     /// Why the Control Agent did what it did, newest last (short lines).
     #[serde(default)]
     pub rationale: Vec<String>,
+    /// Commands someone approved for this feature's checks (previews).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub allowed_commands: Vec<String>,
+    /// The developer's preview of the app, if running (D-046).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preview: Option<PreviewLink>,
     pub created_at: Timestamp,
     pub updated_at: Timestamp,
     /// The last entry of this feature's history.
@@ -418,6 +424,8 @@ impl Feature {
             verify_approved: false,
             verify_decision: None,
             rationale: Vec::new(),
+            allowed_commands: Vec::new(),
+            preview: None,
             created_at: now,
             updated_at: now,
             history_seq: 0,
@@ -510,6 +518,19 @@ pub enum FeatureAction {
     SetWorkspace {
         workspace: String,
     },
+    /// Start (or restart) the app's preview for the developer to look at.
+    Preview,
+}
+
+/// A preview of the app running in the feature's workspace (D-046): a
+/// service session listening on `port` on the host. A client reaches it by
+/// forwarding that one port.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct PreviewLink {
+    pub session_id: SessionId,
+    pub port: u16,
+    /// The path to open (e.g. `/`).
+    pub path: String,
 }
 
 impl FeatureAction {
@@ -526,6 +547,7 @@ impl FeatureAction {
             FeatureAction::TakeOver => "take_over",
             FeatureAction::HandBack => "hand_back",
             FeatureAction::SetWorkspace { .. } => "set_workspace",
+            FeatureAction::Preview => "preview",
         }
     }
 }

@@ -134,6 +134,8 @@ export interface Feature {
   verify_command?: string;
   /** Why the Control Agent did what it did, newest last. */
   rationale?: string[];
+  /** The app's preview for the developer, if running: a port on the host. */
+  preview?: { session_id: string; port: number; path: string };
 }
 
 /** A workspace a feature can work in. */
@@ -174,7 +176,8 @@ export type FeatureAction =
   | { action: "request_changes"; note?: string }
   | { action: "take_over" }
   | { action: "hand_back" }
-  | { action: "set_workspace"; workspace: string };
+  | { action: "set_workspace"; workspace: string }
+  | { action: "preview" };
 
 // --- Wording and grouping (no runtime state) ---
 

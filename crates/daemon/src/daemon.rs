@@ -185,6 +185,7 @@ impl Daemon {
             Request::FeatureSend(p) => json(self.feature_send(p).await?),
             Request::FeatureAct(p) => json(self.clone().feature_act(p).await?),
             Request::FeatureEvents(p) => json(self.feature_events(&p).await?),
+            Request::FeatureArtifact(p) => json(self.feature_artifact(&p).await?),
             Request::Shutdown | Request::SessionAttach(_) | Request::EventsSubscribe(_) => {
                 Err(RpcError::invalid(format!(
                     "{} must be handled by the connection",

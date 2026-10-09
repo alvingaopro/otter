@@ -4,6 +4,7 @@ import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { getVersion } from "@tauri-apps/api/app";
 import { isPermissionGranted, requestPermission, sendNotification } from "@tauri-apps/plugin-notification";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import { Sidebar } from "./Sidebar";
 import { ActivityBar } from "./ActivityBar";
 import { FeaturesView } from "./FeaturesView";
@@ -244,6 +245,23 @@ export default function App() {
               setHostPage(null);
               if (session) setSessions((m) => ({ ...m, [key]: session }));
               setView("workspaces");
+            }}
+            onOpenPreview={async (host, port, path) => {
+              // A remote host's preview: forward just that port (D-046).
+              const local = payload?.hosts.find((h) => h.name === host)?.describe === "this Mac";
+              if (!local) {
+                await invoke("forward_add", {
+                  host,
+                  direction: "to_local",
+                  listenPort: port,
+                  targetHost: null,
+                  targetPort: port,
+                  pinned: false,
+                }).catch((e) => {
+                  if (!String(e).includes("already")) throw e;
+                });
+              }
+              await openUrl(`http://127.0.0.1:${port}${path}`);
             }}
           />
         </div>

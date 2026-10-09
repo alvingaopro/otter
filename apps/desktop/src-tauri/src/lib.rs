@@ -81,6 +81,7 @@ pub fn run() {
             features::feature_send,
             features::feature_act,
             features::feature_events,
+            features::feature_artifact,
             pins::pins_get,
             pins::pins_set,
             hosts::workspace_create,

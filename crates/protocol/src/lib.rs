@@ -177,6 +177,10 @@ pub enum Request {
     /// `Vec<`[`otter_core::feature::FeatureEventRecord`]`>`.
     #[serde(rename = "feature.events")]
     FeatureEvents(feature::FeatureEvents),
+    /// A screenshot (or other file) a feature's checks produced. Result:
+    /// [`fs::FileChunk`] with the whole file (at most 8 MiB).
+    #[serde(rename = "feature.artifact")]
+    FeatureArtifact(feature::FeatureArtifact),
 }
 
 impl Request {
@@ -219,6 +223,7 @@ impl Request {
             Request::FeatureSend(_) => "feature.send",
             Request::FeatureAct(_) => "feature.act",
             Request::FeatureEvents(_) => "feature.events",
+            Request::FeatureArtifact(_) => "feature.artifact",
         }
     }
 }

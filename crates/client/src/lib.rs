@@ -475,6 +475,21 @@ impl Connection {
         .await
     }
 
+    /// A file a feature's checks produced (a screenshot), whole, base64.
+    pub async fn feature_artifact(
+        &mut self,
+        feature: &str,
+        name: &str,
+    ) -> Result<otter_protocol::fs::FileChunk> {
+        self.call(Request::FeatureArtifact(
+            otter_protocol::feature::FeatureArtifact {
+                feature: feature.to_owned(),
+                name: name.to_owned(),
+            },
+        ))
+        .await
+    }
+
     /// A feature's history with `seq > after`, oldest first.
     pub async fn feature_events(
         &mut self,
