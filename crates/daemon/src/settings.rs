@@ -3,7 +3,7 @@
 //!
 //! ```text
 //! state/settings.json   { "controller": "openrouter", "model": "…" }
-//! state/secrets.json    { "OPENROUTER_API_KEY": "…" }   (0600)
+//! state/secrets.json    { "OPENROUTER_API_KEY": "…", … }   (0600)
 //! ```
 //!
 //! Secrets are write-only over the protocol: a client can set or clear one
@@ -20,18 +20,55 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use otter_protocol::RpcError;
-use otter_protocol::host::{SecretState, Settings, SettingsUpdate};
+use otter_protocol::host::{ControllerInfo, ModelInfo, SecretState, Settings, SettingsUpdate};
 use serde::{Deserialize, Serialize};
 
 use crate::daemon::{Daemon, RpcResult};
 
-/// The secrets a client may set, and what they're for.
-pub const SECRETS: &[(&str, &str)] = &[(
-    "OPENROUTER_API_KEY",
-    "OpenRouter, for the Control Agent (controller `openrouter`)",
-)];
-/// Controller choices (`None`: automatic).
-pub const CONTROLLERS: &[&str] = &["claude", "openrouter", "rules", "off"];
+use crate::providers::PROVIDERS;
+
+/// The secrets a client may set (each provider's key), and what they're for.
+fn secret_names() -> impl Iterator<Item = (&'static str, String)> {
+    PROVIDERS.iter().map(|p| {
+        (
+            p.key,
+            format!("{}, for the Control Agent (controller `{}`)", p.label, p.id),
+        )
+    })
+}
+
+/// Controller choices (`None`: automatic), in the order they're offered.
+pub fn controllers() -> Vec<ControllerInfo> {
+    let fixed = |id: &str, label: &str, models: bool| ControllerInfo {
+        id: id.into(),
+        label: label.into(),
+        secret: None,
+        models,
+        default_model: None,
+    };
+    let mut c: Vec<ControllerInfo> = PROVIDERS
+        .iter()
+        .map(|p| ControllerInfo {
+            id: p.id.into(),
+            label: p.label.into(),
+            secret: Some(p.key.into()),
+            models: true,
+            default_model: p.default_model.map(String::from),
+        })
+        .collect();
+    c.push(fixed(
+        "claude",
+        "Claude Code (its own sign-in on the host)",
+        true,
+    ));
+    c.push(fixed(
+        "rules",
+        "No model: every decision goes to you",
+        false,
+    ));
+    c.push(fixed("off", "Off: features don't run on their own", false));
+    c
+}
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq)]
 struct Stored {
@@ -118,14 +155,15 @@ impl HostSettings {
             controller_from_env: std::env::var("OTTER_CONTROLLER")
                 .ok()
                 .filter(|c| !c.is_empty()),
-            secrets: SECRETS
-                .iter()
+            secrets: secret_names()
                 .map(|(name, purpose)| SecretState {
-                    name: (*name).into(),
-                    purpose: (*purpose).into(),
+                    name: name.into(),
+                    purpose,
                     set: self.secret(name).is_some(),
                 })
                 .collect(),
+            controllers: controllers(),
+            active: None,
         }
     }
 
@@ -133,10 +171,12 @@ impl HostSettings {
         let mut stored = self.stored.clone();
         if let Some(c) = u.controller {
             let c = c.trim().to_owned();
-            if !c.is_empty() && !CONTROLLERS.contains(&c.as_str()) {
+            let known = controllers();
+            if !c.is_empty() && !known.iter().any(|k| k.id == c) {
+                let ids: Vec<&str> = known.iter().map(|k| k.id.as_str()).collect();
                 return Err(format!(
                     "unknown controller `{c}` ({} or automatic)",
-                    CONTROLLERS.join(", ")
+                    ids.join(", ")
                 ));
             }
             stored.controller = Some(c).filter(|c| !c.is_empty());
@@ -150,7 +190,7 @@ impl HostSettings {
         }
         let mut secrets = self.secrets.clone();
         for (name, value) in u.secrets {
-            if !SECRETS.iter().any(|(n, _)| *n == name) {
+            if !secret_names().any(|(n, _)| n == name) {
                 return Err(format!("unknown secret `{name}`"));
             }
             match value.map(|v| v.trim().to_owned()).filter(|v| !v.is_empty()) {
@@ -185,7 +225,36 @@ impl HostSettings {
 
 impl Daemon {
     pub(crate) fn settings_get(&self) -> Settings {
-        self.settings.read().unwrap().view()
+        let mut view = self.settings.read().unwrap().view();
+        let brain = crate::brain::select(self.environments.base(), &self.brain_choice());
+        view.active = Some(brain.name().to_owned());
+        view
+    }
+
+    /// The models a controller offers: its provider's list, asked with the
+    /// key set here (or in otterd's environment).
+    pub(crate) async fn settings_models(&self, controller: &str) -> RpcResult<Vec<ModelInfo>> {
+        if controller == "claude" {
+            return Ok(crate::providers::CLAUDE_CODE_MODELS
+                .iter()
+                .map(|(id, name)| ModelInfo {
+                    id: (*id).into(),
+                    name: Some((*name).into()),
+                })
+                .collect());
+        }
+        let p = crate::providers::get(controller)
+            .ok_or_else(|| RpcError::invalid(format!("`{controller}` has no models to list")))?;
+        let env = self.environments.base().clone();
+        let key = self
+            .settings
+            .read()
+            .unwrap()
+            .secret(p.key)
+            .or_else(|| p.env_key(&env));
+        p.models(&env, key.as_deref())
+            .await
+            .map_err(|e| RpcError::conflict(format!("{e:#}")))
     }
 
     pub(crate) fn settings_set(&self, u: SettingsUpdate) -> RpcResult<Settings> {
@@ -220,6 +289,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let mut s = HostSettings::load(dir.path()).unwrap();
         assert!(!s.view().secrets[0].set);
+        assert_eq!(view_names(&s)[0], "OPENROUTER_API_KEY");
         s.update(update(Some("openrouter"), Some(Some("sk-or-abc"))))
             .unwrap();
         let view = s.view();
@@ -239,6 +309,29 @@ mod tests {
         s.update(update(Some(""), Some(None))).unwrap();
         assert!(s.secret("OPENROUTER_API_KEY").is_none());
         assert_eq!(s.view().controller, None);
+    }
+
+    fn view_names(s: &HostSettings) -> Vec<String> {
+        s.view().secrets.into_iter().map(|x| x.name).collect()
+    }
+
+    #[test]
+    fn every_provider_is_a_choice_with_its_key() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut s = HostSettings::load(dir.path()).unwrap();
+        let names = view_names(&s);
+        for p in PROVIDERS {
+            assert!(names.iter().any(|n| n == p.key), "{}", p.key);
+            s.update(update(Some(p.id), None)).unwrap();
+        }
+        let mut u = update(Some("anthropic"), None);
+        u.secrets
+            .insert("ANTHROPIC_API_KEY".into(), Some("sk-ant-x".into()));
+        s.update(u).unwrap();
+        assert_eq!(s.secret("ANTHROPIC_API_KEY").as_deref(), Some("sk-ant-x"));
+        let c = controllers();
+        assert!(c.iter().any(|c| c.id == "claude" && c.models));
+        assert!(c.iter().any(|c| c.id == "off" && !c.models));
     }
 
     #[test]

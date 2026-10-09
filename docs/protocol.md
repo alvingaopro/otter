@@ -189,6 +189,15 @@ The Control Agent's model and API keys on this host (D-048).
   the same view. Fields left out stay as they are; `""` resets the
   controller to automatic and the model to the default; `null` clears a
   secret. Unknown secret names and controllers fail with `invalid_request`.
+- The view also lists `controllers: [{id, label, secret?, models,
+  default_model?}]` — every model provider (with the secret holding its
+  key), `claude`, `rules` and `off` — and `active`, the controller in use
+  now (what automatic chose). Both are absent from daemons before D-052.
+- `settings.models {controller}` → `[{id, name?}]`: the models that
+  controller offers, as its provider lists them, asked by the host with the
+  key set there (OpenRouter's list needs none); `claude` answers Claude
+  Code's model names. No key, or the provider unreachable: `conflict`;
+  a controller without models: `invalid_argument`.
 
 An addition (no protocol bump): daemons before it answer `invalid_request`.
 

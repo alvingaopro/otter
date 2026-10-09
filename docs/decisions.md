@@ -1462,3 +1462,36 @@ not wait for whole messages.
 - An exception to "events carry ids, not content" (design §19): stream
   text is conversation the developer is shown anyway, it is never
   persisted in the log, and it carries no secrets the feature doesn't.
+
+## D-052 — Model providers for the Control Agent, and their model lists (2026-10-09)
+
+The developer chooses the Control Agent's model from what a provider
+actually offers, and isn't tied to OpenRouter.
+
+- **Providers.** OpenRouter, Anthropic, OpenAI, Google Gemini, DeepSeek,
+  xAI, Mistral and Groq, in one table (`providers.rs`): an id (the
+  controller's name), the key's name (the secret, and the environment
+  variable), a base URL, and how it's spoken to. All but Anthropic take
+  OpenAI's chat completions (Gemini through its OpenAI-compatible
+  endpoint); Anthropic takes its Messages API (`x-api-key`,
+  `anthropic-version`, `output_config.format` with every object closed).
+  Providers without JSON-schema output (DeepSeek, Groq) are asked for a
+  JSON object, the schema in the prompt; answers are read leniently as
+  before. Streaming reads either kind of server-sent events. Keys still go
+  to curl on stdin, never on a command line (D-045, D-048).
+- **Automatic** is the first provider, in table order (OpenRouter first, as
+  before), with a key in Settings or otterd's environment; else Claude Code;
+  else rules. `settings.get` says which (`active`).
+- **Models are listed by the host**, not the app: `settings.models` asks the
+  provider's `/models` with the host's key — the key never leaves the host,
+  and the list is what that key may use. Non-chat models (embeddings,
+  speech, images) are left out. Claude Code's list is its model names. The
+  app offers the list as suggestions on a free-text field: any name the
+  provider accepts still works, and a provider that can't be reached
+  doesn't stop anyone from typing one.
+- **Defaults.** Only where a name is stable: `openrouter/auto`,
+  `claude-opus-5-5`, `deepseek-chat`, `mistral-large-latest`. Elsewhere a
+  model must be chosen; the app says so, and the brain fails with "choose a
+  model … in Settings" rather than guess one.
+- One `model` setting, for the controller chosen: switching provider in the
+  app clears it.

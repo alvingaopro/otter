@@ -188,6 +188,7 @@ impl Daemon {
                 })
             }
             Request::SettingsGet => json(self.settings_get()),
+            Request::SettingsModels(q) => json(self.settings_models(&q.controller).await?),
             Request::SettingsSet(u) => json(self.settings_set(u)?),
             Request::FeatureList => json(self.feature_list().await),
             Request::FeatureGet(r) => json(self.feature_get(&r.feature).await?),

@@ -2,31 +2,51 @@ import { useEffect, useState, type FormEvent } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { Dialog } from "./Dialog";
 
+/** Mirrors `otter_protocol::host::ControllerInfo` (D-052). */
+export interface ControllerInfo {
+  id: string;
+  label: string;
+  /** The secret holding its API key. */
+  secret?: string;
+  /** Whether it asks a model, so there are models to choose from. */
+  models: boolean;
+  /** Used when no model is chosen; absent: one must be chosen. */
+  default_model?: string;
+}
+
 /** Mirrors `otter_protocol::host::Settings` (D-048). */
 export interface HostSettings {
   controller?: string;
   model?: string;
   controller_from_env?: string;
   secrets: { name: string; purpose: string; set: boolean }[];
+  /** Absent from an otterd older than D-052. */
+  controllers?: ControllerInfo[];
+  /** What runs now: what "automatic" chose, or the environment's. */
+  active?: string;
 }
 
-const CONTROLLERS: [string, string][] = [
-  ["", "Automatic (OpenRouter if a key is set, else Claude Code)"],
-  ["claude", "Claude Code (its own sign-in on the host)"],
-  ["openrouter", "OpenRouter (API key below)"],
-  ["rules", "No model: every decision goes to you"],
-  ["off", "Off: features don't run on their own"],
+/** Mirrors `otter_protocol::host::ModelInfo`. */
+export interface ModelInfo {
+  id: string;
+  name?: string;
+}
+
+/** For an otterd that doesn't list its controllers. */
+const OLD_CONTROLLERS: ControllerInfo[] = [
+  { id: "openrouter", label: "OpenRouter", secret: "OPENROUTER_API_KEY", models: true, default_model: "openrouter/auto" },
+  { id: "claude", label: "Claude Code (its own sign-in on the host)", models: true },
+  { id: "rules", label: "No model: every decision goes to you", models: false },
+  { id: "off", label: "Off: features don't run on their own", models: false },
 ];
 
-const MODEL_HINT: Record<string, string> = {
-  claude: "e.g. sonnet or opus (blank: Claude Code's default)",
-  openrouter: "e.g. anthropic/claude-sonnet-4.5 (blank: openrouter/auto)",
-};
+type Models = { state: "loading" } | { state: "ready"; list: ModelInfo[] } | { state: "error"; error: string };
 
 /**
  * Settings of one host's Control Agent: which model thinks, and API keys.
  * Keys are sent to that host's otterd and kept there (0600); this app never
- * reads them back, it only knows whether one is set.
+ * reads them back, it only knows whether one is set. The models offered are
+ * what the provider lists, asked by the host with its key.
  */
 export function SettingsDialog({ hosts, defaultHost, onClose }: { hosts: string[]; defaultHost?: string; onClose: () => void }) {
   const [host, setHost] = useState(hosts.includes(defaultHost ?? "") ? defaultHost! : hosts[0]);
@@ -34,6 +54,8 @@ export function SettingsDialog({ hosts, defaultHost, onClose }: { hosts: string[
   const [controller, setController] = useState("");
   const [model, setModel] = useState("");
   const [keys, setKeys] = useState<Record<string, string>>({});
+  const [models, setModels] = useState<Models | null>(null);
+  const [reload, setReload] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -57,6 +79,28 @@ export function SettingsDialog({ hosts, defaultHost, onClose }: { hosts: string[
     };
   }, [host]);
 
+  const controllers = settings?.controllers?.length ? settings.controllers : OLD_CONTROLLERS;
+  // The one the model and key below are for: the choice, else what automatic uses.
+  const effective = controller || settings?.active || "";
+  const info = controllers.find((c) => c.id === effective);
+  const keySet = !!settings?.secrets.find((s) => s.name === info?.secret)?.set;
+  const listsModels = !!info?.models && !!settings?.controllers?.length;
+
+  useEffect(() => {
+    if (!host || !listsModels) {
+      setModels(null);
+      return;
+    }
+    let live = true;
+    setModels({ state: "loading" });
+    invoke<ModelInfo[]>("settings_models", { host, controller: effective })
+      .then((list) => live && setModels({ state: "ready", list }))
+      .catch((e) => live && setModels({ state: "error", error: String(e) }));
+    return () => {
+      live = false;
+    };
+  }, [host, effective, listsModels, keySet, reload]);
+
   async function save(update: { controller?: string; model?: string; secrets?: Record<string, string | null> }) {
     setBusy(true);
     setError(null);
@@ -73,6 +117,15 @@ export function SettingsDialog({ hosts, defaultHost, onClose }: { hosts: string[
     }
   }
 
+  function choose(id: string) {
+    setController(id);
+    // A model belongs to its provider: keep the saved one only for its own.
+    setModel(id === (settings?.controller ?? "") ? (settings?.model ?? "") : "");
+    setSaved(false);
+  }
+
+  const needsModel = !!info?.models && !info.default_model && info.id !== "claude" && !model.trim();
+
   function submit(e: FormEvent) {
     e.preventDefault();
     const secrets: Record<string, string> = {};
@@ -87,6 +140,35 @@ export function SettingsDialog({ hosts, defaultHost, onClose }: { hosts: string[
       </Dialog>
     );
   }
+
+  const label = (id: string) => controllers.find((c) => c.id === id)?.label ?? id;
+  const keyField = (s: HostSettings["secrets"][number]) => (
+    <fieldset key={s.name} className="field">
+      <legend>
+        {s.name} <span className={s.set ? "key-state set" : "key-state"}>{s.set ? "set" : "not set"}</span>
+      </legend>
+      <span className="muted small">{s.purpose}. Kept on {host}; it can't be read back.</span>
+      <div className="key-row">
+        <input
+          type="password"
+          autoComplete="off"
+          spellCheck={false}
+          aria-label={s.name}
+          placeholder={s.set ? "Replace the key…" : "Paste the key"}
+          value={keys[s.name] ?? ""}
+          onChange={(e) => setKeys((k) => ({ ...k, [s.name]: e.target.value }))}
+        />
+        {s.set && (
+          <button type="button" className="btn outline" disabled={busy} onClick={() => void save({ secrets: { [s.name]: null } })}>
+            Clear
+          </button>
+        )}
+      </div>
+    </fieldset>
+  );
+  const mainKey = settings?.secrets.find((s) => s.name === info?.secret);
+  const otherKeys = settings?.secrets.filter((s) => s !== mainKey) ?? [];
+  const chosen = models?.state === "ready" ? models.list.find((m) => m.id === model.trim()) : undefined;
 
   return (
     <Dialog title="Settings" onClose={onClose}>
@@ -106,10 +188,13 @@ export function SettingsDialog({ hosts, defaultHost, onClose }: { hosts: string[
           <>
             <label className="field">
               <span>Control Agent</span>
-              <select value={controller} onChange={(e) => setController(e.target.value)} aria-label="Control Agent">
-                {CONTROLLERS.map(([id, label]) => (
-                  <option key={id} value={id}>
-                    {label}
+              <select value={controller} onChange={(e) => choose(e.target.value)} aria-label="Control Agent">
+                <option value="">
+                  Automatic{settings.active ? ` (now: ${label(settings.active)})` : " (the first provider with a key, else Claude Code)"}
+                </option>
+                {controllers.map((c) => (
+                  <option key={c.id} value={c.id}>
+                    {c.label}
                   </option>
                 ))}
               </select>
@@ -119,41 +204,58 @@ export function SettingsDialog({ hosts, defaultHost, onClose }: { hosts: string[
                 otterd on {host} runs with OTTER_CONTROLLER={settings.controller_from_env}, which overrides this.
               </p>
             )}
-            {(controller === "claude" || controller === "openrouter" || controller === "") && (
+            {mainKey && keyField(mainKey)}
+            {info?.models && (
               <label className="field">
-                <span>Model</span>
-                <input
-                  value={model}
-                  onChange={(e) => setModel(e.target.value)}
-                  placeholder={MODEL_HINT[controller] ?? "blank: the default"}
-                  spellCheck={false}
-                />
-              </label>
-            )}
-            {settings.secrets.map((s) => (
-              <fieldset key={s.name} className="field">
-                <legend>
-                  {s.name} <span className={s.set ? "key-state set" : "key-state"}>{s.set ? "set" : "not set"}</span>
-                </legend>
-                <span className="muted small">{s.purpose}. Kept on {host}; it can't be read back.</span>
+                <span>Model{!controller && info ? ` for ${info.label}` : ""}</span>
                 <div className="key-row">
                   <input
-                    type="password"
-                    autoComplete="off"
+                    value={model}
+                    onChange={(e) => setModel(e.target.value)}
+                    list="settings-models"
+                    aria-label="Model"
+                    placeholder={
+                      info.default_model
+                        ? `Default: ${info.default_model}`
+                        : info.id === "claude"
+                          ? "Default: Claude Code's"
+                          : "Choose a model"
+                    }
                     spellCheck={false}
-                    aria-label={s.name}
-                    placeholder={s.set ? "Replace the key…" : "Paste the key"}
-                    value={keys[s.name] ?? ""}
-                    onChange={(e) => setKeys((k) => ({ ...k, [s.name]: e.target.value }))}
+                    autoComplete="off"
                   />
-                  {s.set && (
-                    <button type="button" className="btn outline" disabled={busy} onClick={() => void save({ secrets: { [s.name]: null } })}>
-                      Clear
+                  {listsModels && (
+                    <button type="button" className="btn outline" disabled={models?.state === "loading"} onClick={() => setReload((n) => n + 1)}>
+                      Refresh
                     </button>
                   )}
                 </div>
-              </fieldset>
-            ))}
+                <datalist id="settings-models">
+                  {models?.state === "ready" &&
+                    models.list.map((m) => (
+                      <option key={m.id} value={m.id}>
+                        {m.name ?? m.id}
+                      </option>
+                    ))}
+                </datalist>
+                <span className="muted small" aria-live="polite">
+                  {models?.state === "loading" && "Loading models…"}
+                  {models?.state === "ready" &&
+                    (chosen?.name ? chosen.name : `${models.list.length} models: type to search, or enter any model name.`)}
+                  {models?.state === "error" && `Couldn't list models: ${models.error}`}
+                  {!models && !listsModels && "Any model name the provider accepts."}
+                </span>
+              </label>
+            )}
+            {needsModel && <p className="notice small">{info?.label} has no default model: choose one.</p>}
+            {otherKeys.length > 0 && (
+              <details className="field">
+                <summary className="muted small">
+                  Other API keys ({otherKeys.filter((s) => s.set).length} set)
+                </summary>
+                {otherKeys.map(keyField)}
+              </details>
+            )}
           </>
         )}
         {error && <p className="error-text small">{error}</p>}
@@ -163,7 +265,7 @@ export function SettingsDialog({ hosts, defaultHost, onClose }: { hosts: string[
           <button type="button" className="btn outline" onClick={onClose}>
             Close
           </button>
-          <button type="submit" className="btn primary" disabled={!settings || busy}>
+          <button type="submit" className="btn primary" disabled={!settings || busy || (needsModel && !!controller)}>
             Save
           </button>
         </div>

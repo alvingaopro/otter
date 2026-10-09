@@ -3764,6 +3764,23 @@ async fn settings_take_keys_write_only_and_keep_them() {
         .unwrap();
     assert!(!s.secrets[0].set);
     assert!(!std::fs::read_to_string(&secrets).unwrap().contains("sk-or"));
+
+    // Every provider is a choice; models are listed per controller (D-052).
+    for id in [
+        "openrouter",
+        "anthropic",
+        "openai",
+        "gemini",
+        "claude",
+        "off",
+    ] {
+        assert!(s.controllers.iter().any(|c| c.id == id), "{id}");
+    }
+    let models = conn.settings_models("claude").await.unwrap();
+    assert!(models.iter().any(|m| m.id == "sonnet"));
+    let err = conn.settings_models("openai").await.unwrap_err();
+    assert!(format!("{err:#}").contains("set the OpenAI key"), "{err:#}");
+    assert!(conn.settings_models("off").await.is_err());
 }
 
 #[tokio::test]

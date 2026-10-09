@@ -3,12 +3,14 @@
 //! Everything else (lifecycle, limits, retries, what may run) is the
 //! controller's deterministic code.
 //!
-//! `OTTER_CONTROLLER` (or Settings) picks the brain: `openrouter` (any model
-//! on OpenRouter; the default when a key is set), `claude` (`claude -p` with
-//! structured output, no tools; the default otherwise, when installed), `rules` (no model: one task, every open decision goes to the
-//! developer, criteria are met when the check passes), or `yes` (tests
-//! only: approves everything it is asked — to show that policy still stops
-//! it). `OTTER_CONTROLLER_MODEL` picks the model for either.
+//! `OTTER_CONTROLLER` (or Settings) picks the brain: a model provider
+//! (`openrouter`, `anthropic`, `openai`, … — see `providers.rs`; by default
+//! the first one with a key), `claude` (`claude -p` with structured output,
+//! no tools; the default otherwise, when installed), `rules` (no model: one
+//! task, every open decision goes to the developer, criteria are met when
+//! the check passes), or `yes` (tests only: approves everything it is asked
+//! — to show that policy still stops it). `OTTER_CONTROLLER_MODEL` picks the
+//! model for any of them.
 
 use std::path::Path;
 
@@ -19,6 +21,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use crate::env::EnvMap;
+use crate::providers::Provider;
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct PlannedTask {
@@ -206,36 +209,48 @@ pub fn status_text(f: &Feature) -> String {
 /// explicit environment winning.
 #[derive(Clone, Debug, Default)]
 pub struct Choice {
-    /// `claude`, `openrouter`, `rules`, `yes`, `off`; `None`: automatic.
+    /// `claude`, a provider's id, `rules`, `yes`, `off`; `None`: automatic.
     pub controller: Option<String>,
     pub model: Option<String>,
-    /// From settings, else otterd's environment.
-    pub openrouter_key: Option<String>,
+    /// Providers' keys set in Settings, by name (otterd's environment is
+    /// looked at too).
+    pub keys: std::collections::BTreeMap<String, String>,
 }
 
-/// The brain chosen (automatic: OpenRouter when a key is set — the Control
+impl Choice {
+    fn key(&self, p: &Provider, env: &EnvMap) -> Option<String> {
+        self.keys.get(p.key).cloned().or_else(|| p.env_key(env))
+    }
+}
+
+/// The brain chosen (automatic: the first provider with a key — the Control
 /// Agent's own model, apart from the coding agent's — else Claude Code when
 /// installed, else rules).
 pub fn select(env: &EnvMap, choice: &Choice) -> Box<dyn Brain> {
-    let key = choice
-        .openrouter_key
-        .clone()
-        .or_else(|| crate::openrouter::key(env));
     let model = |backend| {
+        let key = match backend {
+            Backend::Api(p) => choice.key(p, env),
+            Backend::ClaudeCode => None,
+        };
         Box::new(Model {
             backend,
             model: choice.model.clone(),
-            key: key.clone(),
+            key,
         })
     };
     match choice.controller.as_deref().unwrap_or_default() {
         "rules" | "off" => Box::new(Rules),
         "yes" => Box::new(YesMan),
         "claude" => model(Backend::ClaudeCode),
-        "openrouter" => model(Backend::OpenRouter),
-        _ if key.is_some() => model(Backend::OpenRouter),
-        _ if crate::env::which("claude", env).is_some() => model(Backend::ClaudeCode),
-        _ => Box::new(Rules),
+        id => match crate::providers::get(id).or_else(|| {
+            crate::providers::PROVIDERS
+                .iter()
+                .find(|p| choice.key(p, env).is_some())
+        }) {
+            Some(p) => model(Backend::Api(p)),
+            None if crate::env::which("claude", env).is_some() => model(Backend::ClaudeCode),
+            None => Box::new(Rules),
+        },
     }
 }
 
@@ -400,13 +415,13 @@ impl Brain for YesMan {
 }
 
 /// Where a model brain's answers come from.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug)]
 pub enum Backend {
     /// `claude -p` with a JSON schema and no tools (the developer's Claude
     /// Code sign-in).
     ClaudeCode,
-    /// OpenRouter's chat completions (`OPENROUTER_API_KEY`).
-    OpenRouter,
+    /// A provider's API, with its key.
+    Api(&'static Provider),
 }
 
 /// A model deciding where judgment is needed.
@@ -414,8 +429,16 @@ pub struct Model {
     pub backend: Backend,
     /// The model to ask (`None`: the backend's default).
     pub model: Option<String>,
-    /// OpenRouter's key.
+    /// The provider's key.
     pub key: Option<String>,
+}
+
+impl Model {
+    fn key(&self, p: &Provider) -> Result<&str> {
+        self.key.as_deref().ok_or_else(|| {
+            anyhow::anyhow!("no {} API key: set one in Settings on this host", p.label)
+        })
+    }
 }
 
 impl Model {
@@ -443,13 +466,10 @@ impl Model {
                 )
                 .await
             }
-            Backend::OpenRouter => {
-                let key = self.key.as_deref().ok_or_else(|| {
-                    anyhow::anyhow!("no OpenRouter API key: set one in Settings on this host")
-                })?;
-                crate::openrouter::structured(
+            Backend::Api(p) => {
+                p.structured(
                     cx.env,
-                    key,
+                    self.key(p)?,
                     self.model.as_deref(),
                     prompt,
                     schema,
@@ -483,7 +503,7 @@ impl Brain for Model {
     fn name(&self) -> &'static str {
         match self.backend {
             Backend::ClaudeCode => "claude",
-            Backend::OpenRouter => "openrouter",
+            Backend::Api(p) => p.id,
         }
     }
 
@@ -718,13 +738,10 @@ impl Brain for Model {
                 )
                 .await?
             }
-            Backend::OpenRouter => {
-                let key = self.key.as_deref().ok_or_else(|| {
-                    anyhow::anyhow!("no OpenRouter API key: set one in Settings on this host")
-                })?;
-                crate::openrouter::stream_text(
+            Backend::Api(p) => {
+                p.stream_text(
                     cx.env,
-                    key,
+                    self.key(p)?,
                     self.model.as_deref(),
                     &prompt,
                     &on_piece,

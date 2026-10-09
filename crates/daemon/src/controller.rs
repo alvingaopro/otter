@@ -328,7 +328,10 @@ impl Daemon {
         brain::Choice {
             controller: s.controller(),
             model: s.model(),
-            openrouter_key: s.secret("OPENROUTER_API_KEY"),
+            keys: crate::providers::PROVIDERS
+                .iter()
+                .filter_map(|p| Some((p.key.to_owned(), s.secret(p.key)?)))
+                .collect(),
         }
     }
 
