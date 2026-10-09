@@ -158,7 +158,7 @@ function rowSummary(f: Feature): string {
   return STATUS_LABEL[f.status];
 }
 
-type Tab = "plan" | "tasks" | "approvals" | "evidence" | "timeline";
+type Tab = "plan" | "tasks" | "approvals" | "evidence" | "delivery" | "timeline";
 
 function FeaturePane({
   placed,
@@ -191,6 +191,7 @@ function FeaturePane({
     { id: "tasks", label: "Tasks", count: f.tasks.length },
     { id: "approvals", label: "Approvals", count: pending.length },
     { id: "evidence", label: "Evidence", count: f.evidence.length },
+    { id: "delivery", label: "Delivery" },
     { id: "timeline", label: "Timeline" },
   ];
 
@@ -282,6 +283,7 @@ function FeaturePane({
             {tab === "tasks" && <Tasks placed={placed} onOpenWorkspace={onOpenWorkspace} />}
             {tab === "approvals" && <Approvals f={f} act={act} now={now} />}
             {tab === "evidence" && <EvidenceList f={f} now={now} shot={(name) => source.artifact(placed.key, name)} />}
+            {tab === "delivery" && <DeliveryPanel f={f} />}
             {tab === "timeline" && <Timeline placed={placed} source={source} now={now} />}
           </div>
         </section>
@@ -340,9 +342,19 @@ function FeatureActions({ f, act }: { f: Feature; act: (a: FeatureAction) => voi
           <button className="btn" onClick={() => act({ action: "request_changes" })}>
             Request changes
           </button>
-          <button className="btn primary" onClick={() => act({ action: "accept" })}>
-            Accept
-          </button>
+          {gatesClear(f) ? (
+            <button className="btn primary" onClick={() => act({ action: "accept" })}>
+              Accept
+            </button>
+          ) : (
+            <button
+              className="btn outline"
+              title="Some gates haven't passed; accepting anyway is recorded in the report"
+              onClick={() => act({ action: "accept", override_gates: true })}
+            >
+              Accept anyway
+            </button>
+          )}
         </>
       )}
       {!["done", "cancelled"].includes(f.status) && (
@@ -654,6 +666,68 @@ function EvidenceList({ f, now, shot }: { f: Feature; now: number; shot: (name: 
         </li>
       ))}
     </ul>
+  );
+}
+
+/** Every gate but the developer's own acceptance passed (or doesn't apply). */
+function gatesClear(f: Feature): boolean {
+  const gates = f.gates ?? [];
+  return gates.length > 0 && gates.filter((g) => g.name !== "Your acceptance").every((g) => g.status === "passed" || g.status === "not_applicable");
+}
+
+const GATE_GLYPH = { passed: "done", failed: "failed", pending: "working", not_applicable: "idle" } as const;
+
+/** The gates, the pull request and its CI, and the final report (D-047). */
+function DeliveryPanel({ f }: { f: Feature }) {
+  const gates = f.gates ?? [];
+  const d = f.delivery;
+  return (
+    <div className="plan">
+      <h2 className="sub-title">Gates</h2>
+      {gates.length === 0 ? (
+        <p className="muted small">Checked once the work is verified.</p>
+      ) : (
+        <ul className="plain-list criteria">
+          {gates.map((g) => (
+            <li key={g.name}>
+              <Glyph kind={GATE_GLYPH[g.status]} />
+              <span>{g.name}</span>
+              <span className="muted small">{g.status === "not_applicable" ? "n/a" : g.status}{g.detail ? ` · ${g.detail}` : ""}</span>
+            </li>
+          ))}
+        </ul>
+      )}
+      {d && (
+        <>
+          <h2 className="sub-title">Pull request</h2>
+          {d.declined ? (
+            <p className="small muted">You chose not to publish; the change stays on {d.branch}.</p>
+          ) : d.pr_url ? (
+            <p className="small">
+              <a href={d.pr_url} target="_blank" rel="noreferrer">
+                {d.pr_url}
+              </a>{" "}
+              <span className="muted">· {d.branch}</span>
+            </p>
+          ) : (
+            <p className="small muted">Waiting to publish {d.branch}.</p>
+          )}
+          {d.ci.length > 0 && (
+            <ul className="plain-list small">
+              {d.ci.map((c) => (
+                <li key={c.name}>
+                  <Glyph kind={c.state === "pass" || c.state === "skipping" ? "done" : c.state === "pending" ? "working" : "failed"} /> {c.name}{" "}
+                  <span className="muted">{c.state}</span>
+                </li>
+              ))}
+            </ul>
+          )}
+          {d.reruns > 0 && <p className="small muted">Reran flaky CI {d.reruns}×.</p>}
+        </>
+      )}
+      <h2 className="sub-title">Report</h2>
+      {f.report ? <pre className="report">{f.report}</pre> : <p className="muted small">Written when every gate has passed.</p>}
+    </div>
   );
 }
 

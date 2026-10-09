@@ -3,7 +3,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { FeaturesView } from "./FeaturesView";
 import { mockSource, sampleFeatures, type FeatureSource } from "./featureSource";
-import { matches, needsYou, sortFeatures, stageIndex, type PlacedFeature } from "./features";
+import { matches, needsYou, sortFeatures, stageIndex, type Feature, type PlacedFeature } from "./features";
 
 describe("feature contract helpers", () => {
   const [active, blocked, failed, done, draft] = sampleFeatures(Date.parse("2026-10-09T12:00:00Z"));
@@ -162,6 +162,39 @@ describe("Features view", () => {
     expect(byText("button", "Cancel")).toBeUndefined();
     await act(async () => byText('[role="tab"]', "Evidence")!.click());
     expect(host.querySelector(".evidence-item a")?.getAttribute("href")).toContain("/pull/31");
+  });
+
+  it("shows the gates and only offers a plain Accept when they pass", async () => {
+    const base = mockSource("mac");
+    const [done] = sampleFeatures().filter((f) => f.status === "done");
+    const review: Feature = {
+      ...done,
+      status: "review",
+      gates: [
+        { name: "Requirements met", status: "passed" },
+        { name: "CI", status: "pending", detail: "running" },
+        { name: "Your acceptance", status: "pending" },
+      ],
+      delivery: { branch: "feature/x", pr_url: "https://github.com/o/r/pull/7", pr_number: 7, ci: [{ name: "test", state: "pending" }], reruns: 0, declined: false },
+      report: undefined,
+    };
+    let list: PlacedFeature[] = [{ host: "mac", feature: review, key: "mac/" + review.id }];
+    const acts: unknown[] = [];
+    const s: FeatureSource = { ...base, list: () => list, subscribe: () => () => {}, act: async (_k, a) => void acts.push(a) };
+    await render(s);
+    expect(byText("button", "Accept anyway")).toBeTruthy();
+    await act(async () => byText('[role="tab"]', "Delivery")!.click());
+    expect(host.textContent).toContain("https://github.com/o/r/pull/7");
+    expect(host.textContent).toContain("running");
+    await act(async () => byText("button", "Accept anyway")!.click());
+    expect(acts).toEqual([{ action: "accept", override_gates: true }]);
+
+    list = [{ ...list[0], feature: { ...review, gates: review.gates!.map((g) => ({ ...g, status: g.name === "Your acceptance" ? g.status : "passed" })) } }];
+    act(() => root.unmount());
+    root = createRoot(host);
+    await render(s);
+    expect(byText("button", "Accept anyway")).toBeUndefined();
+    expect([...host.querySelectorAll("button")].some((b) => b.textContent === "Accept")).toBe(true);
   });
 
   it("links a task to its workspace and session", async () => {

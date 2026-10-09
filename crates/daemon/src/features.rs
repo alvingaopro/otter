@@ -477,11 +477,38 @@ pub fn apply_action(
                 changes.push(to(f, next, None)?);
             }
         }
-        FeatureAction::Accept => {
+        FeatureAction::Accept { override_gates } => {
             if f.status != FeatureStatus::Review {
                 return Err(RpcError::conflict(
                     "only a feature in review can be accepted",
                 ));
+            }
+            // Done needs its gates (D-047); the developer may override, on record.
+            if f.gates.is_empty() && !override_gates {
+                return Err(RpcError::conflict(
+                    "the gates haven't been checked yet; try again in a moment",
+                ));
+            }
+            let open: Vec<String> = f
+                .gates
+                .iter()
+                .filter(|g| !g.status.clear() && g.name != crate::delivery::ACCEPTANCE_GATE)
+                .map(|g| format!("{} ({:?})", g.name, g.status).to_lowercase())
+                .collect();
+            if !open.is_empty() {
+                if !override_gates {
+                    return Err(RpcError::conflict(format!(
+                        "gates not met: {}",
+                        open.join(", ")
+                    )));
+                }
+                f.rationale
+                    .push(format!("Accepted by you despite: {}", open.join(", ")));
+            }
+            for g in &mut f.gates {
+                if g.name == crate::delivery::ACCEPTANCE_GATE {
+                    g.status = otter_core::feature::GateStatus::Passed;
+                }
             }
             changes.push(to(f, FeatureStatus::Done, Some("Accepted by you".into()))?);
         }
@@ -949,7 +976,14 @@ mod tests {
         let f = new_feature(&mut s, "c1");
         let err = s
             .apply(&f.id, Some("c2"), |f, now| {
-                apply_action(f, &FeatureAction::Accept, "c2", now)
+                apply_action(
+                    f,
+                    &FeatureAction::Accept {
+                        override_gates: false,
+                    },
+                    "c2",
+                    now,
+                )
             })
             .err()
             .unwrap();

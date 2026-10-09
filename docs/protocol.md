@@ -189,10 +189,11 @@ Product work owned by the daemon (D-043); see `otter_core::feature`.
 - `feature.send {command_id, feature, text}` → the feature, with the
   developer's message added.
 - `feature.act {command_id, feature, action, …}` → the feature. `action`:
-  `start`, `pause`, `resume`, `cancel`, `retry`, `accept`,
+  `start`, `pause`, `resume`, `cancel`, `retry`, `accept {override_gates?}`,
   `request_changes {note?}`, `decide {decision_id, approve, answer?}`,
   `take_over`, `hand_back`, `set_workspace {workspace}`, `preview`. An
-  action the lifecycle doesn't allow fails with `conflict`.
+  action the lifecycle doesn't allow fails with `conflict`, and so does
+  `accept` while a gate (D-047) is open, unless `override_gates`.
 - `feature.artifact {feature, name}` → a file the feature's checks produced
   (a screenshot), named as evidence refers to it (`artifact:<name>`):
   `{data (base64), size, eof: true}`, at most 8 MiB.

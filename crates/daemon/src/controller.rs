@@ -75,6 +75,8 @@ pub(crate) struct ControllerState {
     inflight: HashSet<FeatureId>,
     /// Decisions the brain has already been asked about.
     asked: HashSet<DecisionId>,
+    /// When each feature's CI was last read.
+    ci_polled: std::collections::HashMap<FeatureId, std::time::Instant>,
 }
 
 impl Daemon {
@@ -894,10 +896,357 @@ impl Daemon {
         Ok(Some(evidence))
     }
 
-    /// Delivery gates (D-047) land here; the developer accepts.
-    async fn review_step(self: &Arc<Self>, _f: &Feature) -> RpcResult<()> {
+    /// Review (D-047): publish the change (once the developer allows it),
+    /// follow CI, keep the gates current, write the report. The developer
+    /// accepts; Otter never merges or deploys.
+    async fn review_step(self: &Arc<Self>, f: &Feature) -> RpcResult<()> {
+        use crate::delivery::{self, Git, GitHub};
+        if f.pending_decisions().any(|d| !d.user_only) {
+            return self.decide_open(f).await;
+        }
+        let (root, env) = self.feature_workspace(f).await?;
+        let git = Git {
+            root: &root,
+            env: &env,
+        };
+        let branch = git.publishable_branch().await;
+        let gh = GitHub::find(&root, &env);
+        let cx = delivery::GateContext {
+            publishable: branch.is_some() && gh.is_some(),
+            has_ci: root.join(".github/workflows").is_dir(),
+            browser_checks: crate::browser::load_checks(&root).is_ok_and(|c| !c.is_empty()),
+        };
+        let mut d = f.delivery.clone();
+        let mut evidence = Vec::new();
+        let mut remediation: Option<String> = None;
+        let mut notes: Vec<String> = Vec::new();
+        if let (Some(branch), Some(gh)) = (&branch, &gh)
+            && !d.as_ref().is_some_and(|d| d.declined)
+        {
+            let head = git.head().await.ok();
+            let published = d.as_ref().is_some_and(|d| d.pr_url.is_some());
+            if !published || d.as_ref().and_then(|d| d.head.clone()) != head {
+                // Pushing is an external action: the developer allows it once.
+                let cmd = format!("git push origin {branch}");
+                match self
+                    .allowance(f, &cmd, "and open a pull request", &root)
+                    .await?
+                {
+                    Allowance::Pending => {}
+                    Allowance::Denied(_) => {
+                        d = Some(otter_core::feature::Delivery {
+                            branch: branch.clone(),
+                            base: None,
+                            head,
+                            pr_url: None,
+                            pr_number: None,
+                            ci: vec![],
+                            reruns: 0,
+                            declined: true,
+                        });
+                        notes.push("You chose not to publish: delivery stays local.".into());
+                    }
+                    Allowance::Allowed => {
+                        let base = self.workspace_base(f).await;
+                        git.push(branch)
+                            .await
+                            .map_err(|e| RpcError::internal(format!("pushing {branch}: {e:#}")))?;
+                        let body = pr_body(f);
+                        let (number, url) = gh
+                            .publish(branch, base.as_deref(), &f.title, &body)
+                            .await
+                            .map_err(|e| {
+                                RpcError::internal(format!("opening the pull request: {e:#}"))
+                            })?;
+                        let first = !published;
+                        d = Some(otter_core::feature::Delivery {
+                            branch: branch.clone(),
+                            base: base.clone(),
+                            head,
+                            pr_url: Some(url.clone()),
+                            pr_number: Some(number),
+                            ci: vec![],
+                            reruns: 0,
+                            declined: false,
+                        });
+                        if first {
+                            let mut e = evidence_item(
+                                EvidenceKind::PullRequest,
+                                &format!("Pull request #{number}"),
+                                None,
+                            );
+                            e.uri = Some(url);
+                            evidence.push(e);
+                        }
+                        if let Some(stat) = git
+                            .diffstat(base.as_deref().map(|b| format!("origin/{b}")).as_deref())
+                            .await
+                        {
+                            evidence.push(evidence_item(
+                                EvidenceKind::Diff,
+                                &format!("Changes on {branch}"),
+                                Some(stat),
+                            ));
+                        }
+                        notes.push(format!(
+                            "Pushed {branch}{}.",
+                            if first {
+                                " and opened the pull request"
+                            } else {
+                                " again"
+                            }
+                        ));
+                    }
+                }
+            }
+            // CI, at most every so often.
+            if let Some(dl) = d.as_mut()
+                && let Some(n) = dl.pr_number
+                && self.ci_due(&f.id)
+            {
+                match gh.checks(n).await {
+                    Ok(ci) => dl.ci = ci,
+                    Err(e) => tracing::warn!(feature = %f.id, "reading CI: {e:#}"),
+                }
+                let failed: Vec<_> = dl
+                    .ci
+                    .iter()
+                    .filter(|c| matches!(c.state.as_str(), "fail" | "cancel"))
+                    .cloned()
+                    .collect();
+                if !failed.is_empty() {
+                    let mut text = String::new();
+                    for c in &failed {
+                        text.push_str(&format!(
+                            "{}: {}\n",
+                            c.name,
+                            c.description.clone().unwrap_or_default()
+                        ));
+                        if let Some(log) = gh.failed_log(c).await {
+                            text.push_str(&log);
+                            text.push('\n');
+                        }
+                    }
+                    if delivery::looks_flaky(&text) && dl.reruns < delivery::MAX_RERUNS {
+                        for c in &failed {
+                            if let Err(e) = gh.rerun(c).await {
+                                tracing::warn!("rerunning {}: {e:#}", c.name);
+                            }
+                        }
+                        dl.reruns += 1;
+                        for c in dl
+                            .ci
+                            .iter_mut()
+                            .filter(|c| c.state == "fail" || c.state == "cancel")
+                        {
+                            c.state = "pending".into();
+                        }
+                        notes.push(format!(
+                            "CI failed in a way that looks like the infrastructure; rerunning ({} of {}).",
+                            dl.reruns,
+                            delivery::MAX_RERUNS
+                        ));
+                    } else {
+                        let names: Vec<&str> = failed.iter().map(|c| c.name.as_str()).collect();
+                        remediation = Some(format!(
+                            "CI failed ({}):\n{}",
+                            names.join(", "),
+                            text.trim()
+                        ));
+                        let mut e = evidence_item(
+                            EvidenceKind::Ci,
+                            &format!("CI failed: {}", names.join(", ")),
+                            Some(text),
+                        );
+                        e.ok = Some(false);
+                        e.uri = failed[0].url.clone();
+                        evidence.push(e);
+                    }
+                } else if !dl.ci.is_empty()
+                    && dl
+                        .ci
+                        .iter()
+                        .all(|c| matches!(c.state.as_str(), "pass" | "skipping"))
+                    && !f.evidence.iter().any(|e| {
+                        e.kind == EvidenceKind::Ci
+                            && e.ok == Some(true)
+                            && e.detail.as_deref() == dl.head.as_deref()
+                    })
+                {
+                    let mut e = evidence_item(
+                        EvidenceKind::Ci,
+                        &format!("CI passed ({} checks)", dl.ci.len()),
+                        dl.head.clone(),
+                    );
+                    e.ok = Some(true);
+                    e.uri = dl.pr_url.clone();
+                    evidence.push(e);
+                }
+            }
+        }
+        // Gates, the report, or back to work: written only when something changed.
+        let mut next = f.clone();
+        next.delivery = d.clone();
+        next.evidence.extend(evidence.iter().cloned());
+        let gates = delivery::gates(&next, &cx);
+        let ready = remediation.is_none() && delivery::ready_for_acceptance(&gates);
+        let diffstat = evidence
+            .iter()
+            .find(|e| e.kind == EvidenceKind::Diff)
+            .and_then(|e| e.detail.clone())
+            .or_else(|| {
+                f.evidence
+                    .iter()
+                    .rev()
+                    .find(|e| e.kind == EvidenceKind::Diff)
+                    .and_then(|e| e.detail.clone())
+            });
+        let write_report = ready && f.report.is_none();
+        if d == f.delivery
+            && evidence.is_empty()
+            && gates == f.gates
+            && remediation.is_none()
+            && !write_report
+            && notes.is_empty()
+        {
+            return Ok(());
+        }
+        let mut posted = None;
+        self.controller_apply(&f.id, FeatureStatus::Review, |f, now| {
+            let mut changes = Vec::new();
+            f.delivery = d.clone();
+            for e in evidence.clone() {
+                changes.push(Change::new(FeatureEvent::EvidenceAdded {
+                    evidence_id: e.id.clone(),
+                    kind: e.kind,
+                    ok: e.ok,
+                }));
+                f.evidence.push(e);
+            }
+            for n in &notes {
+                f.rationale.push(n.clone());
+                let (m, c) = message(MessageRole::Controller, n.clone(), None);
+                f.messages.push(m);
+                changes.push(c);
+            }
+            f.gates = gates.clone();
+            if let Some(fix) = &remediation {
+                let id = TaskId::generate();
+                f.tasks.push(Task {
+                    id: id.clone(),
+                    title: "Fix what CI found".into(),
+                    detail: Some(fix.clone()),
+                    status: TaskStatus::Pending,
+                    depends_on: vec![],
+                    workspace_id: f.workspace_id.clone(),
+                    session_id: None,
+                    attempts: 0,
+                    last_error: None,
+                });
+                f.report = None;
+                f.rationale.push("CI failed: back to implementing.".into());
+                changes.push(Change::new(FeatureEvent::TaskChanged { task_id: id, status: TaskStatus::Pending }));
+                changes.push(Change::new(
+                    f.transition(FeatureStatus::Implementing, Some("CI failed".into()), now)
+                        .map_err(RpcError::conflict)?,
+                ));
+                return Ok(changes);
+            }
+            if write_report {
+                let r = delivery::report(f, diffstat.as_deref());
+                posted = Some(r.clone());
+                f.report = Some(r);
+                let (m, c) = message(
+                    MessageRole::Controller,
+                    "Every gate has passed; the report is ready. Accept when you're happy with it — I won't merge or deploy.".into(),
+                    None,
+                );
+                f.messages.push(m);
+                changes.push(c);
+            }
+            Ok(changes)
+        })
+        .await?;
+        // The report goes on the pull request too (it's already public).
+        if let (Some(r), Some(gh), Some(n)) = (posted, gh, d.as_ref().and_then(|d| d.pr_number))
+            && let Err(e) = gh.comment(n, &r).await
+        {
+            tracing::warn!("posting the report: {e:#}");
+        }
         Ok(())
     }
+
+    /// The branch a Git workspace was made from, as the PR's base (`main`).
+    async fn workspace_base(&self, f: &Feature) -> Option<String> {
+        let ws = f.workspace_id.as_ref()?;
+        let store = self.store.lock().await;
+        let w = store.workspace(ws.as_str())?;
+        match &w.source {
+            otter_core::WorkspaceSource::Git(g) => g
+                .base
+                .as_deref()
+                .map(|b| b.trim_start_matches("origin/").to_owned()),
+            _ => None,
+        }
+    }
+
+    /// Whether it's time to look at CI again (`OTTER_CI_POLL_MS`, 15 s).
+    fn ci_due(&self, id: &FeatureId) -> bool {
+        let every = env_ms("OTTER_CI_POLL_MS", 15_000);
+        let mut st = self.controller.lock().unwrap();
+        let now = std::time::Instant::now();
+        match st.ci_polled.get(id) {
+            Some(t) if now.duration_since(*t) < every => false,
+            _ => {
+                st.ci_polled.insert(id.clone(), now);
+                true
+            }
+        }
+    }
+}
+
+fn evidence_item(kind: EvidenceKind, title: &str, detail: Option<String>) -> Evidence {
+    Evidence {
+        id: EvidenceId::generate(),
+        task_id: None,
+        criterion_id: None,
+        kind,
+        title: title.to_owned(),
+        ok: None,
+        uri: None,
+        detail,
+        uncertain: false,
+        at: Utc::now(),
+    }
+}
+
+/// The pull request's description.
+fn pr_body(f: &Feature) -> String {
+    let mut b = format!("{}\n\n### Acceptance criteria\n", f.request);
+    for c in &f.acceptance {
+        b.push_str(&format!(
+            "- [{}] {}\n",
+            if c.met == Some(true) { "x" } else { " " },
+            c.text
+        ));
+    }
+    let checks: Vec<String> = f
+        .evidence
+        .iter()
+        .filter(|e| e.ok.is_some())
+        .map(|e| {
+            format!(
+                "- {} {}",
+                if e.ok == Some(true) { "✓" } else { "✗" },
+                e.title
+            )
+        })
+        .collect();
+    if !checks.is_empty() {
+        b.push_str(&format!("\n### Checked\n{}\n", checks.join("\n")));
+    }
+    b.push_str("\n_Opened by Otter's Control Agent; publishing was approved by the developer. Otter doesn't merge._\n");
+    b
 }
 
 /// Whether a command may run (see [`Daemon::allowance`]).

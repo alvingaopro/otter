@@ -136,6 +136,31 @@ export interface Feature {
   rationale?: string[];
   /** The app's preview for the developer, if running: a port on the host. */
   preview?: { session_id: string; port: number; path: string };
+  /** What must hold before done, as last evaluated. */
+  gates?: Gate[];
+  /** The change as published. */
+  delivery?: Delivery;
+  /** The final report (Markdown). */
+  report?: string;
+}
+
+export type GateStatus = "passed" | "failed" | "pending" | "not_applicable";
+
+export interface Gate {
+  name: string;
+  status: GateStatus;
+  detail?: string;
+}
+
+export interface Delivery {
+  branch: string;
+  base?: string;
+  head?: string;
+  pr_url?: string;
+  pr_number?: number;
+  ci: { name: string; state: string; url?: string; description?: string }[];
+  reruns: number;
+  declined: boolean;
 }
 
 /** A workspace a feature can work in. */
@@ -172,7 +197,7 @@ export type FeatureAction =
   | { action: "cancel" }
   | { action: "retry" }
   | { action: "decide"; decision_id: string; approve: boolean; answer?: string }
-  | { action: "accept" }
+  | { action: "accept"; override_gates?: boolean }
   | { action: "request_changes"; note?: string }
   | { action: "take_over" }
   | { action: "hand_back" }

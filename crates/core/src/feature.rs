@@ -390,6 +390,15 @@ pub struct Feature {
     /// The developer's preview of the app, if running (D-046).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub preview: Option<PreviewLink>,
+    /// What must hold before the feature is done (D-047), as last evaluated.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub gates: Vec<Gate>,
+    /// The change as published: branch, pull request, CI (D-047).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delivery: Option<Delivery>,
+    /// The final report: what changed, decisions, evidence, risks, the PR.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub report: Option<String>,
     pub created_at: Timestamp,
     pub updated_at: Timestamp,
     /// The last entry of this feature's history.
@@ -426,6 +435,9 @@ impl Feature {
             rationale: Vec::new(),
             allowed_commands: Vec::new(),
             preview: None,
+            gates: Vec::new(),
+            delivery: None,
+            report: None,
             created_at: now,
             updated_at: now,
             history_seq: 0,
@@ -502,8 +514,12 @@ pub enum FeatureAction {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         answer: Option<String>,
     },
-    /// The developer signs off a feature in review.
-    Accept,
+    /// The developer signs off a feature in review. Refused while a gate
+    /// fails or waits, unless `override_gates` (recorded).
+    Accept {
+        #[serde(default)]
+        override_gates: bool,
+    },
     /// The developer sends a feature in review back with changes.
     RequestChanges {
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -520,6 +536,68 @@ pub enum FeatureAction {
     },
     /// Start (or restart) the app's preview for the developer to look at.
     Preview,
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum GateStatus {
+    Passed,
+    Failed,
+    /// Not decided yet (CI running, waiting for approval, …).
+    Pending,
+    /// Doesn't apply to this feature (no browser checks, no CI, …).
+    NotApplicable,
+}
+
+impl GateStatus {
+    /// Doesn't stand in the way of done.
+    pub fn clear(self) -> bool {
+        matches!(self, GateStatus::Passed | GateStatus::NotApplicable)
+    }
+}
+
+/// One condition for completion (D-047).
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct Gate {
+    pub name: String,
+    pub status: GateStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+}
+
+/// One CI check on the pull request.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct CiCheck {
+    pub name: String,
+    /// `pass`, `fail`, `pending`, `skipping` or `cancel`.
+    pub state: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+}
+
+/// Where the change was published.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct Delivery {
+    pub branch: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base: Option<String>,
+    /// The commit last pushed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub head: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pr_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pr_number: Option<u64>,
+    #[serde(default)]
+    pub ci: Vec<CiCheck>,
+    /// Reruns of failed CI judged flaky, for the current head.
+    #[serde(default)]
+    pub reruns: u32,
+    /// The developer declined publishing: delivery stays local.
+    #[serde(default)]
+    pub declined: bool,
 }
 
 /// A preview of the app running in the feature's workspace (D-046): a
@@ -542,7 +620,7 @@ impl FeatureAction {
             FeatureAction::Cancel => "cancel",
             FeatureAction::Retry => "retry",
             FeatureAction::Decide { .. } => "decide",
-            FeatureAction::Accept => "accept",
+            FeatureAction::Accept { .. } => "accept",
             FeatureAction::RequestChanges { .. } => "request_changes",
             FeatureAction::TakeOver => "take_over",
             FeatureAction::HandBack => "hand_back",

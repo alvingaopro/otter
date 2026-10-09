@@ -1306,3 +1306,41 @@ agent's account of it.
   a scoped tunnel — or directly on this Mac.
 - Not yet: checks proposed by the Control Agent, visual regression
   baselines, network mocking.
+
+## D-047 — Delivery: a pull request, CI, and gates before done (2026-10-09)
+
+A verified feature isn't done until it has been delivered and independently
+checked. In review the controller (`review_step`, `delivery.rs`):
+
+- **Publishes, with permission.** In a Git workspace with an `origin` and
+  `gh` on the host, it asks to run `git push origin <branch>` and open a
+  pull request — a `user_only` decision (high risk to policy), asked once
+  per feature; later pushes of the same branch (after fixes) reuse it. A
+  denial keeps delivery local (the PR and CI gates no longer apply). The PR
+  description lists the criteria and the checks; bodies go over stdin.
+- **GitHub through the host's `gh`**: its sign-in and scope; Otter stores
+  no token and puts none on a command line. Calls: `pr view/create/edit`,
+  `pr checks --json`, `run view --log-failed`, `run rerun --failed`,
+  `pr comment`. Another forge would implement the same few calls.
+- **Follows CI** (every `OTTER_CI_POLL_MS`, 15 s): a failure goes back to
+  implementing as a "Fix what CI found" task with the failed log; a failure
+  that reads like the infrastructure (a runner lost, a network error, a full
+  disk) is rerun instead, at most twice per pushed commit. Budgets and loop
+  detection (D-045) bound the round trips.
+- **Gates** (deterministic, recomputed each step): requirements met (every
+  criterion), local tests (the latest check), browser evidence (if the
+  project declares checks), the pull request, CI (pending until checks
+  report when the repository has workflows), and the developer's
+  acceptance. *Accept* is refused until every other gate passed or doesn't
+  apply; *Accept anyway* is the developer's explicit override and goes into
+  the rationale and the report.
+- **The report** (once every gate but acceptance is clear): changed files,
+  criteria, gates, evidence (model judgments marked), decisions and who made
+  them, and the unresolved risks. Kept on the feature and posted on the PR.
+- **Never automatically:** merging and deploying. Otter has no merge or
+  deploy call, and the coding agent's policy treats `gh pr merge`, deploys
+  and publishing as the developer's.
+- Tested end to end with a real Git remote and a fake `gh`: request →
+  verified → publish approved → pushed and PR opened → CI fails → fixed →
+  CI green → gates → report → accepted; a flaky failure is rerun; declining
+  keeps it local. Not run against real GitHub here.

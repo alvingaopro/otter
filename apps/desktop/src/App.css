@@ -548,3 +548,4 @@ code, .mono { font-family: var(--mono); }
 .evidence-item a { color: var(--working-text); }
 .evidence-shot { max-width: 100%; margin-top: 6px; border-radius: 6px; border: 1px solid var(--line-strong); }
 .evidence-detail { white-space: pre-wrap; }
+.report { white-space: pre-wrap; font-family: var(--mono); font-size: 12px; padding: 10px 12px; border-radius: 8px; background: var(--bg); border: 1px solid var(--line); user-select: text; }

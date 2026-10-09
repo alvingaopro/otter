@@ -1448,6 +1448,8 @@ exec sleep 600
 struct FakeCodex {
     host: TestHost,
     log: std::path::PathBuf,
+    /// The fake `gh`'s pull requests and CI (fake_gh.sh).
+    gh: std::path::PathBuf,
     _scratch: tempfile::TempDir,
 }
 
@@ -1563,6 +1565,11 @@ async fn fake_agent_host(mode: &str, controller: &str) -> FakeCodex {
     std::fs::set_permissions(&claude, std::fs::Permissions::from_mode(0o755)).unwrap();
     let stream = scratch.path().join("fake_claude_stream.sh");
     std::fs::write(&stream, include_str!("fake_claude_stream.sh")).unwrap();
+    let gh = bin.join("gh");
+    std::fs::write(&gh, include_str!("fake_gh.sh")).unwrap();
+    std::fs::set_permissions(&gh, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let gh_dir = scratch.path().join("gh");
+    std::fs::create_dir_all(&gh_dir).unwrap();
     let home = scratch.path().join("home");
     std::fs::create_dir_all(&home).unwrap();
     let log = scratch.path().join("codex-args.log");
@@ -1583,6 +1590,8 @@ async fn fake_agent_host(mode: &str, controller: &str) -> FakeCodex {
         ("FAKE_CODEX_LOG", p(&log)),
         ("FAKE_CODEX_MODE", mode.into()),
         ("FAKE_CLAUDE_STREAM", p(&stream)),
+        ("FAKE_GH_DIR", p(&gh_dir)),
+        ("OTTER_CI_POLL_MS", "0".into()),
         // Features: the deterministic controller (no model calls in tests).
         ("OTTER_CONTROLLER", controller.into()),
         ("OTTER_CONTROLLER_TICK_MS", "200".into()),
@@ -1596,6 +1605,7 @@ async fn fake_agent_host(mode: &str, controller: &str) -> FakeCodex {
     FakeCodex {
         host,
         log,
+        gh: gh_dir,
         _scratch: scratch,
     }
 }
@@ -2643,7 +2653,13 @@ async fn features_persist_dedupe_commands_and_replay_after_a_restart() {
         .unwrap();
     assert_eq!(f2.history_seq, f.history_seq);
     let err = conn
-        .feature_act("cmd-accept", id, FeatureAction::Accept)
+        .feature_act(
+            "cmd-accept",
+            id,
+            FeatureAction::Accept {
+                override_gates: false,
+            },
+        )
         .await
         .unwrap_err();
     assert!(format!("{err:#}").contains("review"), "{err:#}");
@@ -2724,10 +2740,16 @@ async fn a_feature_goes_from_request_to_review_with_evidence() {
     use otter_core::feature::{EvidenceKind, FeatureAction, FeatureStatus, MessageRole, RunState};
     let fake = fake_agent_host("ok", "rules").await;
     let id = started_feature(&fake.host, "Export the timeline as CSV").await;
-    let f = wait_feature(&fake.host, &id, "review", |f| {
-        f.status == FeatureStatus::Review
+    let f = wait_feature(&fake.host, &id, "review, with the report", |f| {
+        f.status == FeatureStatus::Review && f.report.is_some()
     })
     .await;
+    // Not a Git workspace: no pull request or CI to wait for.
+    use otter_core::feature::GateStatus;
+    let gate = |name: &str| f.gates.iter().find(|g| g.name == name).unwrap().status;
+    assert_eq!(gate("Pull request"), GateStatus::NotApplicable);
+    assert_eq!(gate("Local tests"), GateStatus::Passed);
+    assert!(f.report.as_deref().unwrap().contains("## Unresolved risks"));
     // Planned, ran, reported, checked.
     assert_eq!(f.tasks.len(), 1);
     assert_eq!(f.verify_command.as_deref(), Some("make test"));
@@ -2792,7 +2814,13 @@ async fn a_feature_goes_from_request_to_review_with_evidence() {
         .host
         .conn()
         .await
-        .feature_act("accept", &id, FeatureAction::Accept)
+        .feature_act(
+            "accept",
+            &id,
+            FeatureAction::Accept {
+                override_gates: false,
+            },
+        )
         .await
         .unwrap();
     assert_eq!(f.status, FeatureStatus::Done);
@@ -3328,4 +3356,312 @@ async fn a_preview_runs_as_a_session_on_one_port() {
     assert_ne!(again.session_id, link.session_id);
     let ws = conn.workspace_get("web").await.unwrap();
     assert!(ws.session(link.session_id.as_str()).is_none());
+}
+
+// ---------------------------------------------------------------------------
+// Delivery (D-047): a pull request, CI and the gates, with a fake `gh` and a
+// real Git remote.
+// ---------------------------------------------------------------------------
+
+/// A Git workspace (a worktree on `feature/csv`) whose origin is a real
+/// repository with CI configured, and a feature on it, started.
+async fn git_feature(fake: &FakeCodex) -> (String, std::path::PathBuf) {
+    use otter_core::feature::FeatureAction;
+    let src = fake.host.home().join("origin");
+    std::fs::create_dir_all(src.join(".github/workflows")).unwrap();
+    git(&src, &["init", "-q", "-b", "main"]);
+    std::fs::write(src.join("Makefile"), "test:\n\t@echo all good\n").unwrap();
+    std::fs::write(src.join(".github/workflows/ci.yml"), "on: push\n").unwrap();
+    git(&src, &["add", "-A"]);
+    git(&src, &["commit", "-q", "-m", "init"]);
+    let mut conn = fake.host.conn().await;
+    conn.workspace_create(git_ws("csv", &src, Some("feature/csv"), vec![]))
+        .await
+        .unwrap();
+    eventually("workspace ready", || async {
+        let ws = fake.host.conn().await.workspace_get("csv").await.unwrap();
+        (ws.state == WorkspaceState::Ready).then_some(())
+    })
+    .await;
+    let f = conn
+        .feature_create(otter_protocol::feature::FeatureCreate {
+            command_id: "create".into(),
+            title: "CSV export".into(),
+            request: "Export the timeline as CSV".into(),
+            workspace: Some("csv".into()),
+        })
+        .await
+        .unwrap();
+    conn.feature_act("start", f.id.as_str(), FeatureAction::Start)
+        .await
+        .unwrap();
+    (f.id.to_string(), src)
+}
+
+/// The developer allows publishing (pushing the branch and opening the PR).
+async fn allow_publish(host: &TestHost, id: &str) {
+    use otter_core::feature::{FeatureAction, FeatureStatus, Risk};
+    let f = wait_feature(host, id, "asked to publish", |f| {
+        f.status == FeatureStatus::Review
+            && f.pending_decisions()
+                .any(|d| d.summary.contains("git push"))
+    })
+    .await;
+    let d = f
+        .pending_decisions()
+        .find(|d| d.summary.contains("git push"))
+        .unwrap();
+    assert!(d.user_only, "publishing is the developer's call");
+    assert_eq!(d.risk, Risk::High);
+    assert_eq!(
+        d.summary,
+        "Run `git push origin feature/csv` and open a pull request"
+    );
+    host.conn()
+        .await
+        .feature_act(
+            "publish",
+            id,
+            FeatureAction::Decide {
+                decision_id: d.id.clone(),
+                approve: true,
+                answer: None,
+            },
+        )
+        .await
+        .unwrap();
+}
+
+fn write_checks(dir: &Path, file: &str, checks: serde_json::Value) {
+    std::fs::write(dir.join(file), checks.to_string()).unwrap();
+}
+
+#[tokio::test]
+async fn a_feature_ships_as_a_pull_request_once_ci_is_green() {
+    use otter_core::feature::{EvidenceKind, FeatureAction, FeatureStatus, GateStatus};
+    let fake = fake_agent_host("ok", "rules").await;
+    let (id, origin) = git_feature(&fake).await;
+    allow_publish(&fake.host, &id).await;
+
+    // Pushed for real, PR opened through gh; CI hasn't reported yet.
+    let f = wait_feature(&fake.host, &id, "published", |f| {
+        f.delivery.as_ref().is_some_and(|d| d.pr_url.is_some())
+    })
+    .await;
+    assert!(git(&origin, &["branch", "--list", "feature/csv"]).contains("feature/csv"));
+    let body = std::fs::read_to_string(fake.gh.join("body")).unwrap();
+    assert!(body.contains("Export the timeline as CSV") && body.contains("Otter doesn't merge"));
+    assert!(
+        f.evidence
+            .iter()
+            .any(|e| e.kind == EvidenceKind::PullRequest
+                && e.uri.as_deref() == Some("https://github.com/o/r/pull/7"))
+    );
+    let f = wait_feature(&fake.host, &id, "CI pending", |f| {
+        f.gates
+            .iter()
+            .any(|g| g.name == "CI" && g.status == GateStatus::Pending)
+    })
+    .await;
+    assert!(f.report.is_none());
+    // Not done while a gate waits.
+    let err = fake
+        .host
+        .conn()
+        .await
+        .feature_act(
+            "early",
+            &id,
+            FeatureAction::Accept {
+                override_gates: false,
+            },
+        )
+        .await
+        .unwrap_err();
+    assert!(format!("{err:#}").contains("gates not met"), "{err:#}");
+
+    // CI fails on the code: back to work, with the log.
+    // (No "FAIL" in it: that word makes the fake agent fail.)
+    std::fs::write(
+        fake.gh.join("log"),
+        "test csv::escapes ... broken\nassertion failed: left == right\n",
+    )
+    .unwrap();
+    write_checks(
+        &fake.gh,
+        "checks.json",
+        serde_json::json!([
+            {"name": "test", "bucket": "fail", "link": "https://github.com/o/r/actions/runs/99/job/1", "description": "Process completed with exit code 101"},
+            {"name": "lint", "bucket": "pass", "link": "", "description": ""}
+        ]),
+    );
+    let f = wait_feature(&fake.host, &id, "remediation after failed CI", |f| {
+        f.tasks.iter().any(|t| t.title == "Fix what CI found")
+    })
+    .await;
+    let fix = f
+        .tasks
+        .iter()
+        .find(|t| t.title == "Fix what CI found")
+        .unwrap();
+    assert!(
+        fix.detail.as_deref().unwrap().contains("assertion failed"),
+        "{:?}",
+        fix.detail
+    );
+    assert!(
+        f.evidence
+            .iter()
+            .any(|e| e.kind == EvidenceKind::Ci && e.ok == Some(false))
+    );
+
+    // The fix lands and CI goes green: every gate passes, the report is written and posted.
+    write_checks(
+        &fake.gh,
+        "checks.json",
+        serde_json::json!([
+            {"name": "test", "bucket": "pass", "link": "", "description": ""},
+            {"name": "lint", "bucket": "pass", "link": "", "description": ""}
+        ]),
+    );
+    let f = wait_feature(&fake.host, &id, "ready to accept", |f| {
+        f.status == FeatureStatus::Review && f.report.is_some()
+    })
+    .await;
+    assert!(
+        f.gates
+            .iter()
+            .filter(|g| g.name != "Your acceptance")
+            .all(|g| g.status.clear()),
+        "{:?}",
+        f.gates
+    );
+    let report = f.report.clone().unwrap();
+    assert!(report.contains("Pull request: https://github.com/o/r/pull/7"));
+    eventually("the report on the PR", || async {
+        std::fs::read_to_string(fake.gh.join("comment"))
+            .ok()
+            .filter(|c| c.contains("## Gates"))
+    })
+    .await;
+    let f = fake
+        .host
+        .conn()
+        .await
+        .feature_act(
+            "accept",
+            &id,
+            FeatureAction::Accept {
+                override_gates: false,
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(f.status, FeatureStatus::Done);
+    // Never merged, never anything gh wasn't meant to do; no token on a command line.
+    let calls = std::fs::read_to_string(fake.gh.join("calls.log")).unwrap();
+    assert!(!calls.contains("merge"), "{calls}");
+    assert!(!calls.to_lowercase().contains("token"), "{calls}");
+}
+
+#[tokio::test]
+async fn flaky_ci_is_rerun_not_blamed_on_the_code() {
+    use otter_core::feature::FeatureStatus;
+    let fake = fake_agent_host("ok", "rules").await;
+    let (id, _) = git_feature(&fake).await;
+    // The runner dies; a rerun passes.
+    write_checks(
+        &fake.gh,
+        "checks.json",
+        serde_json::json!([
+            {"name": "test", "bucket": "fail", "link": "https://github.com/o/r/actions/runs/5/job/9", "description": "The runner has received a shutdown signal."}
+        ]),
+    );
+    write_checks(
+        &fake.gh,
+        "after-rerun.json",
+        serde_json::json!([
+            {"name": "test", "bucket": "pass", "link": "", "description": ""}
+        ]),
+    );
+    allow_publish(&fake.host, &id).await;
+    let f = wait_feature(&fake.host, &id, "green after a rerun", |f| {
+        f.report.is_some()
+    })
+    .await;
+    assert_eq!(f.status, FeatureStatus::Review);
+    assert!(
+        !f.tasks.iter().any(|t| t.title == "Fix what CI found"),
+        "no remediation for a flake"
+    );
+    assert_eq!(f.delivery.as_ref().unwrap().reruns, 1);
+    assert_eq!(
+        std::fs::read_to_string(fake.gh.join("reruns"))
+            .unwrap()
+            .trim(),
+        "5"
+    );
+}
+
+#[tokio::test]
+async fn declining_to_publish_keeps_delivery_local() {
+    use otter_core::feature::{FeatureAction, FeatureStatus, GateStatus};
+    let fake = fake_agent_host("ok", "rules").await;
+    let (id, origin) = git_feature(&fake).await;
+    let f = wait_feature(&fake.host, &id, "asked to publish", |f| {
+        f.pending_decisions()
+            .any(|d| d.summary.contains("git push"))
+    })
+    .await;
+    let d = f
+        .pending_decisions()
+        .find(|d| d.summary.contains("git push"))
+        .unwrap()
+        .clone();
+    fake.host
+        .conn()
+        .await
+        .feature_act(
+            "no",
+            &id,
+            FeatureAction::Decide {
+                decision_id: d.id,
+                approve: false,
+                answer: None,
+            },
+        )
+        .await
+        .unwrap();
+    let f = wait_feature(&fake.host, &id, "report without a PR", |f| {
+        f.report.is_some()
+    })
+    .await;
+    assert!(f.delivery.as_ref().unwrap().declined);
+    let gate = |n: &str| f.gates.iter().find(|g| g.name == n).unwrap().status;
+    assert_eq!(gate("Pull request"), GateStatus::NotApplicable);
+    assert_eq!(gate("CI"), GateStatus::NotApplicable);
+    assert!(
+        !git(&origin, &["branch", "--list", "feature/csv"]).contains("feature/csv"),
+        "nothing pushed"
+    );
+    assert!(
+        !fake.gh.join("calls.log").exists()
+            || !std::fs::read_to_string(fake.gh.join("calls.log"))
+                .unwrap()
+                .contains("pr create")
+    );
+    let f = fake
+        .host
+        .conn()
+        .await
+        .feature_act(
+            "accept",
+            &id,
+            FeatureAction::Accept {
+                override_gates: false,
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(f.status, FeatureStatus::Done);
 }
