@@ -7,6 +7,8 @@ import { isPermissionGranted, requestPermission, sendNotification } from "@tauri
 import { Sidebar } from "./Sidebar";
 import { ActivityBar } from "./ActivityBar";
 import { FeaturesView } from "./FeaturesView";
+import { mockSource } from "./featureSource";
+import { needsYou as featureNeedsYou } from "./features";
 import { saveView, storedView, viewForShortcut, type View } from "./nav";
 import { AddHostDialog } from "./AddHostDialog";
 import { HostPage } from "./HostPage";
@@ -52,6 +54,13 @@ export default function App() {
   /** Pinned workspace keys, top first, from `pins.toml` (D-040). */
   const [pins, setPinsState] = useState<string[]>([]);
   const { choice: themeChoice, resolved: theme, cycle: cycleTheme } = useTheme();
+  /** Where features come from (D-042): sample data until a host serves them. */
+  const [featureSource] = useState(() => mockSource());
+  const [featureNeeds, setFeatureNeeds] = useState(() => featureSource.list().filter((p) => featureNeedsYou(p.feature)).length);
+  useEffect(
+    () => featureSource.subscribe((list) => setFeatureNeeds(list.filter((p) => featureNeedsYou(p.feature)).length)),
+    [featureSource],
+  );
   /** A workspace just created here: select it once it shows up. */
   const wanted = useRef<string | null>(null);
 
@@ -204,7 +213,7 @@ export default function App() {
         <ActivityBar
           view={view}
           onView={setView}
-          badges={{ workspaces: placed.filter((p) => p.ws.activity === "needs_you").length }}
+          badges={{ features: featureNeeds, workspaces: placed.filter((p) => p.ws.activity === "needs_you").length }}
           settings={[
             { label: `Theme: ${themeChoice === "system" ? "match system" : themeChoice}`, onSelect: cycleTheme },
             { label: "Add a host…", onSelect: () => setOpen({ kind: "add" }) },
@@ -215,7 +224,19 @@ export default function App() {
           ]}
         />
         <div className="view" id="view-features" role="tabpanel" aria-labelledby="view-tab-features" hidden={view !== "features"}>
-          <FeaturesView />
+          <FeaturesView
+            source={featureSource}
+            hosts={(payload?.hosts ?? []).filter((h) => h.status === "connected").map((h) => h.name)}
+            now={now}
+            onOpenWorkspace={(host, workspace, session) => {
+              const key = `${host}/${workspace}`;
+              wanted.current = key;
+              setSelected(key);
+              setHostPage(null);
+              if (session) setSessions((m) => ({ ...m, [key]: session }));
+              setView("workspaces");
+            }}
+          />
         </div>
         <div className="view" id="view-workspaces" role="tabpanel" aria-labelledby="view-tab-workspaces" hidden={view !== "workspaces"}>
         <Sidebar

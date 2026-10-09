@@ -101,7 +101,8 @@ describe("Activity Bar navigation", () => {
 
   it("is an accessible tab list with Features first and selected", () => {
     const tabs = [...host.querySelectorAll('.activity-bar [role="tab"]')];
-    expect(tabs.map((t) => t.getAttribute("aria-label"))).toEqual(["Features", "Workspaces"]);
+    // Labels carry a "N need you" count when there is one.
+    expect(tabs.map((t) => t.getAttribute("aria-label")?.split(",")[0])).toEqual(["Features", "Workspaces"]);
     expect(tab("features").getAttribute("aria-selected")).toBe("true");
     expect(tab("features").tabIndex).toBe(0);
     expect(tab("workspaces").tabIndex).toBe(-1);
@@ -126,6 +127,20 @@ describe("Activity Bar navigation", () => {
     expect(terminal.mounts).toBe(1);
     expect(terminal.unmounts).toBe(0);
     expect(localStorage.getItem("otter.view")).toBe("workspaces");
+  });
+
+  it("never asks a host to change anything when switching views", async () => {
+    const { invoke } = await import("@tauri-apps/api/core");
+    const calls = vi.mocked(invoke);
+    calls.mockClear();
+    for (let i = 0; i < 3; i++) {
+      await act(async () => tab("workspaces").click());
+      await act(async () => tab("features").click());
+    }
+    const changing = calls.mock.calls
+      .map(([cmd]) => cmd)
+      .filter((cmd) => /stop|delete|restart|close|resolve|create|archive|set|input|resize/.test(cmd));
+    expect(changing).toEqual([]);
   });
 
   it("supports the keyboard: arrows in the bar and ⌘1/⌘2 anywhere", async () => {

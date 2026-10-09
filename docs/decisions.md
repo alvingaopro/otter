@@ -1100,3 +1100,25 @@ tools) at the bottom.
 - UI tests (`npm test`, vitest in a simulated DOM with Tauri mocked) cover
   navigation, accessibility roles and that switching never unmounts a
   terminal; they run in CI.
+
+## D-042 — Features: a product surface with its own contract (2026-10-09)
+
+A **Feature** is a piece of product work — what should be built — as
+opposed to a Workspace, which is where work runs. The Features view (D-041)
+lists features with status filters (all, needs you, active, done, failed)
+and a create action; a feature shows its conversation with the Control
+Agent, a progress line (draft → planning → implementing → verifying →
+review → done), and detail tabs: plan (request, requirements, acceptance
+criteria, budget), tasks, approvals, evidence (tests, browser checks, CI,
+pull requests) and its timeline.
+
+- **The UI contract is typed first** (`apps/desktop/src/features.ts`), as
+  the daemon will send it (snake_case, mirroring `otter_core`), and the view
+  reads only through a `FeatureSource`. The first source is an in-memory
+  mock with sample features in every state; the view says "Preview" while
+  it is in use, and its replies say that nothing acts on them.
+- **Linked by id, not embedded:** a task names the workspace and session it
+  runs in; "Open session" brings that up in the Workspaces view. A
+  workspace doesn't know about features.
+- Needs-you for features: a pending decision, a blocked feature, or one
+  ready for review. The Activity Bar shows a dot on Features for these.
