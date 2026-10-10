@@ -16,7 +16,8 @@
 use serde::{Deserialize, Serialize};
 
 use crate::ids::{
-    DecisionId, EvidenceId, FeatureId, MessageId, RunId, SessionId, TaskId, WorkspaceId,
+    ConversationId, DecisionId, EvidenceId, FeatureId, MessageId, RunId, SessionId, TaskId, TurnId,
+    WorkspaceId,
 };
 use crate::model::Timestamp;
 
@@ -258,6 +259,12 @@ pub struct Run {
     /// What the agent did lately (tools it used), newest last, a line each.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub activity: Vec<String>,
+    /// The runtime conversation this run served (D-055), and the turn it
+    /// started with. Absent on runs from before conversations.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub conversation_id: Option<ConversationId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub turn_id: Option<TurnId>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]

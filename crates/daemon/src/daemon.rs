@@ -198,6 +198,13 @@ impl Daemon {
             Request::FeatureEvents(p) => json(self.feature_events(&p).await?),
             Request::FeatureArtifact(p) => json(self.feature_artifact(&p).await?),
             Request::FeatureDelete(r) => json(self.feature_delete(&r.feature).await?),
+            // Contracts first (D-055); served once runs go through conversations.
+            Request::RuntimeCapabilities
+            | Request::ConversationList(_)
+            | Request::ConversationGet(_) => Err(RpcError::unsupported(format!(
+                "{} isn't served by this otterd yet",
+                req.method()
+            ))),
             Request::Shutdown | Request::SessionAttach(_) | Request::EventsSubscribe(_) => {
                 Err(RpcError::invalid(format!(
                     "{} must be handled by the connection",

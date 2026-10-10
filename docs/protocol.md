@@ -201,6 +201,25 @@ The Control Agent's model and API keys on this host (D-048).
 
 An addition (no protocol bump): daemons before it answer `invalid_request`.
 
+## Runtime conversations
+
+The coding agent's side of a feature's work (D-055): conversations, their
+turns, messages, tool calls and interactions. See
+`otter_core::conversation`.
+
+- `runtime.capabilities` → `{provider, backend, available, notes?,
+  tested_version?, structured_ready, features: {send_turn, resume,
+  interrupt_turn, permission_requests, questions, tool_results, streaming,
+  attachments, usage}}`: what the host's managed runtime can do. Missing
+  features are reported, never simulated.
+- `conversation.list {feature?}` → conversations, newest first;
+  `conversation.get {conversation}` → one. Each is the conversation with
+  `resumable` in place of the provider's own session id, which stays on
+  the host.
+
+Read-only: coding work is sent by Otter, not by clients. Daemons that don't
+serve these yet answer `unsupported`; older daemons `invalid_request`.
+
 ## Features
 
 Product work owned by the daemon (D-043); see `otter_core::feature`.
