@@ -149,6 +149,8 @@ impl Daemon {
                     summary: None,
                     provider_session_id: resume,
                     activity: vec![],
+                    conversation_id: None,
+                    turn_id: None,
                 });
                 changes.push(
                     Change::new(FeatureEvent::RunStarted {

@@ -114,6 +114,28 @@ id_type!(
     EvidenceId,
     "ev_"
 );
+id_type!(
+    /// Identifies a [`crate::conversation::Conversation`] — a coding agent's
+    /// durable context (D-055).
+    ConversationId,
+    "conv_"
+);
+id_type!(
+    /// Identifies a [`crate::conversation::Turn`] — one accepted input and
+    /// the work that followed.
+    TurnId,
+    "turn_"
+);
+id_type!(
+    /// Identifies a [`crate::conversation::ToolRecord`] — one tool call.
+    ToolCallId,
+    "tool_"
+);
+id_type!(
+    /// Identifies a [`crate::conversation::Block`] of a message.
+    BlockId,
+    "blk_"
+);
 
 #[cfg(test)]
 mod tests {

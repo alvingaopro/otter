@@ -16,6 +16,7 @@
 //!
 //! Wire format, cursor semantics and compatibility rules: `docs/protocol.md`.
 
+pub mod conversation;
 pub mod events;
 pub mod feature;
 pub mod frame;
@@ -198,6 +199,19 @@ pub enum Request {
     /// (its workspace stays). Result: `null`.
     #[serde(rename = "feature.delete")]
     FeatureDelete(feature::FeatureRef),
+
+    /// What the managed coding runtime on this host is and can do (D-055).
+    /// Result: [`conversation::RuntimeCapabilities`].
+    #[serde(rename = "runtime.capabilities")]
+    RuntimeCapabilities,
+    /// Runtime conversations, newest first. Result:
+    /// `Vec<`[`conversation::ConversationView`]`>`.
+    #[serde(rename = "conversation.list")]
+    ConversationList(conversation::ConversationQuery),
+    /// One conversation: its turns, messages, tools and interactions.
+    /// Result: [`conversation::ConversationView`].
+    #[serde(rename = "conversation.get")]
+    ConversationGet(conversation::ConversationRef),
 }
 
 impl Request {
@@ -245,6 +259,9 @@ impl Request {
             Request::FeatureEvents(_) => "feature.events",
             Request::FeatureArtifact(_) => "feature.artifact",
             Request::FeatureDelete(_) => "feature.delete",
+            Request::RuntimeCapabilities => "runtime.capabilities",
+            Request::ConversationList(_) => "conversation.list",
+            Request::ConversationGet(_) => "conversation.get",
         }
     }
 }

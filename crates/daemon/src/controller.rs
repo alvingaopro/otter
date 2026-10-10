@@ -1684,6 +1684,8 @@ mod tests {
                 summary: Some((*s).into()),
                 provider_session_id: None,
                 activity: vec![],
+                conversation_id: None,
+                turn_id: None,
             });
         }
         f

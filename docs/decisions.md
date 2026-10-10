@@ -1523,3 +1523,42 @@ under the controller or a coding agent. The workspace is never touched: it
 is a separate resource with its own lifecycle (archive, delete). The app
 asks first and says what goes and what stays. (No archive for features yet:
 the filters already hide finished ones; add it if dogfooding asks.)
+
+## D-055 — Runtime conversations: the coding agent's work gets its own identity (2026-10-09)
+
+The structured Claude runtime plan (milestone 1) starts here. Today a
+managed run is feature-owned and its events lose identity: streamed text
+has no message or block id, tool calls have no id and no result, a turn
+ends with a boolean, queued messages are joined into one, and cancel both
+interrupts and kills. That is enough for one happy path, not for
+reconnecting, redirecting or answering exactly the question asked.
+
+- **A conversation** (`ConversationId`, `conv_`) is one coding-agent
+  context in one workspace — Claude's native session behind an opaque
+  binding that stays on the host (clients see `resumable`). It is made of
+  **turns** (`TurnId`): one accepted input each, delivered one at a time,
+  never merged; served by **runs** (`RunId`): one live process each, a
+  restart is a new run and a new `generation` of the same conversation.
+  What the agent says is **messages** of **blocks** (`BlockId`) whose ids
+  are shared by the streamed and the finished text, so the finished text
+  replaces the stream instead of being added again. What it does is **tool
+  records** (`ToolCallId`) whose result is reported or explicitly
+  `result_unavailable` — never assumed successful. What it asks is
+  **interactions** (reusing `DecisionId`) that keep every question of a
+  form with its options and take an answer per question.
+- **Kept apart:** a turn `completed` (the provider finished it) is not a
+  feature `done` (the controller accepts it, from evidence); an input
+  accepted (a receipt) is not an input delivered (`queued → sending →
+  delivered`, `unknown` when lost in between — never resent on its own).
+- **The rules are pure** (`otter_core::conversation`): same command id and
+  payload returns the original receipt, a different payload conflicts; a
+  late event, interrupt or answer for an older generation, turn or
+  interaction is `stale` and changes nothing; a conversation has at most
+  one live run. Receipts say `durable: false` until the journal (M3).
+- Features link to conversations (`Run.conversation_id`, `Run.turn_id`);
+  the feature stays the owner of goals, tasks, gates and acceptance.
+- Read-only protocol first: `runtime.capabilities`, `conversation.list`,
+  `conversation.get`. Commands for clients come with durable receipts.
+  The runtime contract, the actor and the feature bridge follow in the
+  next steps; the legacy CLI adapter stays (`backend: legacy_cli`), and
+  capabilities don't call the structured runtime ready.

@@ -3,13 +3,14 @@
 //! These types are shared verbatim (via serde) by the host daemon (`otterd`),
 //! the control-plane CLI (`otter`) and the future desktop app.
 
+pub mod conversation;
 pub mod feature;
 pub mod ids;
 pub mod model;
 
 pub use ids::{
-    AttentionId, DecisionId, EvidenceId, ExecutionId, FeatureId, MessageId, RunId, SessionId,
-    TaskId, WorkspaceId,
+    AttentionId, BlockId, ConversationId, DecisionId, EvidenceId, ExecutionId, FeatureId,
+    MessageId, RunId, SessionId, TaskId, ToolCallId, TurnId, WorkspaceId,
 };
 pub use model::*;
 
