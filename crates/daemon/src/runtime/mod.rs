@@ -87,6 +87,8 @@ pub enum ToolCall {
     },
     /// Asks to leave planning and start on a plan.
     PlanApproval { plan: String },
+    /// Starts another agent (a subagent) on part of the work.
+    Delegate { description: String },
     /// Anything else (e.g. an MCP tool), by name.
     Other { name: String },
 }
@@ -101,6 +103,7 @@ impl ToolCall {
             ToolCall::Fetch { .. } => E::Fetch,
             ToolCall::Question { .. } => E::Question,
             ToolCall::PlanApproval { .. } => E::Plan,
+            ToolCall::Delegate { .. } => E::Delegate,
             ToolCall::Other { .. } => E::Other,
         }
     }

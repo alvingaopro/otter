@@ -1047,6 +1047,7 @@ fn activity_line(tool: &str, call: &crate::runtime::ToolCall) -> String {
         ToolCall::Fetch { url } => format!("↗ {url}"),
         ToolCall::Question { question, .. } => format!("? {question}"),
         ToolCall::PlanApproval { .. } => "plan proposed".into(),
+        ToolCall::Delegate { description } => format!("subagent: {description}"),
         ToolCall::Read | ToolCall::Other { .. } => tool.to_owned(),
     };
     crate::agents::excerpt(&line, 200)

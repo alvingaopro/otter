@@ -734,6 +734,7 @@ fn tool_summary(tool: &str, call: &ToolCall) -> String {
         ToolCall::Fetch { url } => url.clone(),
         ToolCall::Question { question, .. } => question.clone(),
         ToolCall::PlanApproval { .. } => "plan".into(),
+        ToolCall::Delegate { description } => description.clone(),
         ToolCall::Read | ToolCall::Other { .. } => tool.to_owned(),
     }
 }

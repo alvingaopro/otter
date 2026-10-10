@@ -13,7 +13,16 @@
 //! - **the Control Agent decides** — the agent's questions, plans, and tools
 //!   policy doesn't know (an MCP tool).
 //! - **never** — a few commands no one may allow (`rm -rf /`, piping a
-//!   download into a shell, …).
+//!   download into a shell, …) — and, for now, starting a subagent (D-059).
+//!
+//! A command line is read piece by piece (D-059): split at `;`, `&&`, `||`,
+//! `|`, `&` and newlines, with `$(…)` and backticks read as commands too; a
+//! `cd` moves where later relative paths point; a write to a file outside
+//! the workspace — by `>`/`>>` or by `cp`, `mv`, `tee`, `touch`, `mkdir`,
+//! `ln`, `chmod`, `chown`, `install`, `dd of=` — asks the developer. The most
+//! severe piece decides. This is a lexical reading for usability, not a
+//! sandbox: quotes, variables and what a script does inside are not
+//! understood, and a determined command can hide what it does.
 //!
 //! A denial — by policy or by the developer — is final for that request: no
 //! model decision can turn it into an allow ([`resolve`]).
@@ -64,7 +73,6 @@ const DESTRUCTIVE: &[&str] = &[
     "-delete",
     "mkfs",
     "dd if=",
-    "> /dev/",
     // Git history and uncommitted work.
     "git clean",
     "git reset --hard",
@@ -162,9 +170,191 @@ fn mentions_any(haystack: &str, needles: &[&str]) -> Option<String> {
         .map(|n| n.trim().to_owned())
 }
 
-/// Classify a command line: allowed unless it deletes, destroys, touches
-/// credentials, pushes or publishes, or runs as root.
-fn classify_command(line: &str) -> Verdict {
+/// How severe a verdict is, to pick the most severe of several.
+fn severity(v: &Verdict) -> u8 {
+    match v {
+        Verdict::Allow => 0,
+        Verdict::Ask {
+            user_only: false, ..
+        } => 1,
+        Verdict::Ask {
+            user_only: true, ..
+        } => 2,
+        Verdict::Deny { .. } => 3,
+    }
+}
+
+fn worst(a: Verdict, b: Verdict) -> Verdict {
+    if severity(&b) > severity(&a) { b } else { a }
+}
+
+/// A command line's pieces: split at `;`, `&&`, `||`, `|`, `&` and
+/// newlines; what `$(…)` and backticks run is a piece of its own too.
+/// Lexical: quotes aren't understood.
+fn pieces(line: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut inner = String::new();
+    let mut outer = String::new();
+    // Pull out `$(…)` and `` `…` `` first (one level deep; nested ones are
+    // read by recursing on what was pulled out).
+    let chars: Vec<char> = line.chars().collect();
+    let mut i = 0;
+    while i < chars.len() {
+        if chars[i] == '$' && chars.get(i + 1) == Some(&'(') {
+            let mut depth = 1;
+            let mut j = i + 2;
+            while j < chars.len() && depth > 0 {
+                match chars[j] {
+                    '(' => depth += 1,
+                    ')' => depth -= 1,
+                    _ => {}
+                }
+                if depth > 0 {
+                    inner.push(chars[j]);
+                }
+                j += 1;
+            }
+            out.extend(pieces(&inner));
+            inner.clear();
+            outer.push_str(" __sub__ ");
+            i = j;
+        } else if chars[i] == '`' {
+            let mut j = i + 1;
+            while j < chars.len() && chars[j] != '`' {
+                inner.push(chars[j]);
+                j += 1;
+            }
+            out.extend(pieces(&inner));
+            inner.clear();
+            outer.push_str(" __sub__ ");
+            i = j + 1;
+        } else {
+            outer.push(chars[i]);
+            i += 1;
+        }
+    }
+    // `2>&1` and `>&2` are redirections, not `&`.
+    let outer = outer.replace(">&", ">\u{1}");
+    for piece in outer.split([';', '|', '&', '\n']) {
+        let piece = piece.replace('\u{1}', "&");
+        let piece = piece.trim();
+        if !piece.is_empty() {
+            out.push(piece.to_owned());
+        }
+    }
+    out
+}
+
+/// Files a redirection target may be without writing a file.
+const STREAMS: &[&str] = &["/dev/null", "/dev/stdout", "/dev/stderr", "/dev/tty", "-"];
+
+/// Where a path written by a command points, from `cwd` (`~` is home).
+fn target(cwd: &Path, path: &str) -> Option<std::path::PathBuf> {
+    let path = path.trim_matches(|c| c == '"' || c == '\'');
+    if path.is_empty() || path.contains('$') || path.starts_with('&') {
+        // A variable or a descriptor: can't tell, or not a file.
+        return None;
+    }
+    if let Some(rest) = path.strip_prefix('~') {
+        let home = std::env::var("HOME").ok()?;
+        return Some(Path::new(&home).join(rest.trim_start_matches('/')));
+    }
+    Some(cwd.join(path))
+}
+
+/// What one piece of a command line writes outside the workspace, if it
+/// does (`cwd`: where it runs).
+fn writes_outside(piece: &str, cwd: &Path, root: &Path) -> Option<String> {
+    let words: Vec<&str> = piece.split_whitespace().collect();
+    let mut targets: Vec<String> = Vec::new();
+    // Redirections: `> f`, `>> f`, `>f`, `2> f`, `&> f`.
+    let mut i = 0;
+    while i < words.len() {
+        let w = words[i];
+        if let Some(pos) = w.find('>') {
+            let after = w[pos..].trim_start_matches('>');
+            let t = if after.is_empty() {
+                words.get(i + 1).copied().unwrap_or("")
+            } else {
+                after
+            };
+            if !t.starts_with('&') && !STREAMS.contains(&t) {
+                targets.push(t.to_owned());
+            }
+        }
+        i += 1;
+    }
+    // Commands that write the paths they're given.
+    let args: Vec<&str> = words
+        .iter()
+        .copied()
+        .skip_while(|w| w.contains('=') && !w.starts_with('-'))
+        .collect();
+    if let Some((cmd, rest)) = args.split_first() {
+        let operands: Vec<&str> = rest
+            .iter()
+            .copied()
+            .take_while(|w| !w.contains('>'))
+            .filter(|w| !w.starts_with('-'))
+            .collect();
+        match *cmd {
+            // The last operand is where it goes.
+            "cp" | "mv" | "ln" | "install" | "rsync" => {
+                targets.extend(operands.last().map(|t| (*t).to_owned()))
+            }
+            "tee" | "touch" | "mkdir" | "truncate" => {
+                targets.extend(operands.iter().map(|t| (*t).to_owned()))
+            }
+            // The first operand is the mode or owner.
+            "chmod" | "chown" | "chgrp" => {
+                targets.extend(operands.iter().skip(1).map(|t| (*t).to_owned()))
+            }
+            "dd" => targets.extend(
+                rest.iter()
+                    .filter_map(|w| w.strip_prefix("of="))
+                    .map(String::from),
+            ),
+            _ => {}
+        }
+    }
+    targets.into_iter().find(|t| {
+        target(cwd, t).is_some_and(|p| {
+            // /dev devices other than the streams are writes, and outside.
+            !inside(root, &p.to_string_lossy())
+        })
+    })
+}
+
+/// Classify a command line: allowed unless a piece of it deletes,
+/// destroys, touches credentials, pushes or publishes, runs as root, or
+/// writes outside the workspace.
+fn classify_command(line: &str, root: &Path) -> Verdict {
+    let mut verdict = classify_words(line);
+    if severity(&verdict) == 3 {
+        return verdict;
+    }
+    let mut cwd = root.to_path_buf();
+    for piece in pieces(line) {
+        verdict = worst(verdict, classify_words(&piece));
+        let words: Vec<&str> = piece.split_whitespace().collect();
+        if let ["cd", dir] = words.as_slice()
+            && let Some(p) = target(&cwd, dir)
+        {
+            cwd = p;
+            continue;
+        }
+        if let Some(t) = writes_outside(&piece, &cwd, root) {
+            verdict = worst(
+                verdict,
+                ask_user(format!("writes outside the workspace ({t})")),
+            );
+        }
+    }
+    verdict
+}
+
+/// The word lists, over a whole line or one piece of it.
+fn classify_words(line: &str) -> Verdict {
     let lower = line.to_lowercase();
     // `rm -rf /tmp/x` is not `rm -rf /`: only a bare root, home or a pipe
     // into a shell counts.
@@ -257,8 +447,7 @@ fn inside(root: &Path, path: &str) -> bool {
     } else {
         root.join(p)
     };
-    let root = root.canonicalize().unwrap_or_else(|_| normalize(root));
-    real_path(&joined).starts_with(&root)
+    real_path(&joined).starts_with(real_path(root))
 }
 
 /// What policy says about a tool call in a workspace rooted at `root`.
@@ -281,7 +470,12 @@ pub fn classify(call: &ToolCall, root: &Path) -> Verdict {
                 Verdict::Allow
             }
         }
-        ToolCall::Command { line } => classify_command(line),
+        ToolCall::Command { line } => classify_command(line, root),
+        // Not yet: a subagent's tools, lineage and policy aren't handled
+        // (D-059). The sdk backend doesn't offer it at all.
+        ToolCall::Delegate { .. } => Verdict::Deny {
+            why: "subagents are off for now: do the work in this conversation".into(),
+        },
         // Reading the web (docs, references) changes nothing here.
         ToolCall::Fetch { .. } => Verdict::Allow,
         ToolCall::Question { .. } => Verdict::Ask {
@@ -397,6 +591,73 @@ mod tests {
                 ..
             }
         )
+    }
+
+    #[test]
+    fn every_piece_of_a_command_line_is_read() {
+        let user = |v: Verdict| {
+            matches!(
+                v,
+                Verdict::Ask {
+                    user_only: true,
+                    ..
+                }
+            )
+        };
+        // Chained, piped, in a subshell or backticks: the risky piece counts.
+        for line in [
+            "cat x; rm -rf build",
+            "make && rm -rf dist",
+            "true || rm -rf dist",
+            "echo $(rm -rf build)",
+            "echo `rm -rf build`",
+            "ls | xargs rm",
+        ] {
+            assert!(user(cmd(line)), "{line}: {:?}", cmd(line));
+        }
+        // Writes outside the workspace ask; inside, or to a stream, don't.
+        for line in [
+            "echo x > ~/.zshrc",
+            "echo x >> ../elsewhere.log",
+            "echo x>/etc/hosts",
+            "make 2> /tmp/err.log",
+            "cp build/app /usr/local/bin/app",
+            "mv out.txt ../out.txt",
+            "tee /tmp/copy.txt < in.txt",
+            "touch ~/flag",
+            "ln -s target /etc/link",
+            "chmod 600 ~/.ssh/config",
+            "dd if=a.img of=/dev/disk2",
+            "cd /etc && touch hosts.bak",
+            "cd .. && echo x > y",
+            "cat a > /dev/sda",
+        ] {
+            assert!(user(cmd(line)), "{line}: {:?}", cmd(line));
+        }
+        for line in [
+            "npm test 2>&1 | tail -9",
+            "cargo build 2>/dev/null",
+            "make >/dev/null 2>&1",
+            "echo done >&2",
+            "node gen.js > out/report.txt",
+            "cp /tmp/fixture.json tests/fixture.json",
+            "mkdir -p build/out && touch build/out/.keep",
+            "FOO=1 BAR=2 cp a.txt b.txt",
+            "cd src && echo x > generated.rs",
+            "echo $HOME > $OUT",
+        ] {
+            assert_eq!(cmd(line), Verdict::Allow, "{line}");
+        }
+        // A subagent: not for now.
+        assert!(matches!(
+            classify(
+                &ToolCall::Delegate {
+                    description: "explore".into()
+                },
+                Path::new("/w")
+            ),
+            Verdict::Deny { .. }
+        ));
     }
 
     #[test]
