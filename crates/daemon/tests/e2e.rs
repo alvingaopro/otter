@@ -4420,3 +4420,96 @@ async fn live_sdk_restart() {
             .collect::<Vec<_>>()
     );
 }
+
+#[tokio::test]
+async fn interrupting_stops_the_turn_and_waits_and_redirecting_goes_next() {
+    use otter_core::conversation::TurnOutcome;
+    use otter_core::feature::{FeatureAction, FeatureStatus, RunState};
+    let fake = fake_agent_host("ok", "rules").await;
+    let mut conn = fake.host.conn().await;
+
+    // Interrupt: the turn stops, the feature waits for the developer.
+    let id = started_feature_named(&fake.host, "A long job HANG one").await;
+    wait_feature(&fake.host, &id, "working", |f| {
+        f.live_run()
+            .is_some_and(|r| r.provider_session_id.is_some())
+    })
+    .await;
+    conn.feature_act("interrupt-1", &id, FeatureAction::Interrupt)
+        .await
+        .unwrap();
+    let f = wait_feature(&fake.host, &id, "the run over", |f| f.live_run().is_none()).await;
+    assert_eq!(f.status, FeatureStatus::Paused);
+    assert_eq!(
+        f.runs[0].state,
+        RunState::Cancelled,
+        "interrupted isn't failed"
+    );
+    let cid = f.runs[0].conversation_id.clone().unwrap();
+    let c = conn
+        .conversation_get(cid.as_str())
+        .await
+        .unwrap()
+        .conversation;
+    assert_eq!(c.turns[0].outcome, Some(TurnOutcome::Interrupted));
+    // Nothing is running now: interrupting again is refused.
+    assert!(
+        conn.feature_act("interrupt-2", &id, FeatureAction::Interrupt)
+            .await
+            .is_err()
+    );
+    // Resumed: the same conversation carries on.
+    conn.feature_act("resume-1", &id, FeatureAction::Resume)
+        .await
+        .unwrap();
+    let f = wait_feature(&fake.host, &id, "resumed", |f| f.runs.len() == 2).await;
+    assert_eq!(f.runs[1].conversation_id.as_ref(), Some(&cid));
+    conn.feature_act("cancel-1", &id, FeatureAction::Cancel)
+        .await
+        .unwrap();
+
+    // Redirect: the turn stops and the new direction goes next, same run.
+    let id = started_feature_named(&fake.host, "A long job HANG two").await;
+    wait_feature(&fake.host, &id, "working", |f| {
+        f.live_run()
+            .is_some_and(|r| r.provider_session_id.is_some())
+    })
+    .await;
+    conn.feature_act(
+        "redirect-1",
+        &id,
+        FeatureAction::Redirect {
+            text: "Do the other thing".into(),
+        },
+    )
+    .await
+    .unwrap();
+    let f = wait_feature(&fake.host, &id, "review", |f| {
+        f.status == FeatureStatus::Review
+    })
+    .await;
+    assert_eq!(f.runs.len(), 1, "the same run went on");
+    assert_eq!(f.runs[0].state, RunState::Completed);
+    assert!(f.messages.iter().any(|m| m.text == "Do the other thing"));
+    let c = conn
+        .conversation_get(f.runs[0].conversation_id.as_ref().unwrap().as_str())
+        .await
+        .unwrap()
+        .conversation;
+    assert_eq!(c.turns[0].outcome, Some(TurnOutcome::Interrupted));
+    assert!(c.turns[1].redirect);
+    assert!(c.turns[1].text().contains("Do the other thing"));
+    assert_eq!(c.turns[1].outcome, Some(TurnOutcome::Completed));
+    // Nothing running: a redirect is refused (send a message instead).
+    let err = conn
+        .feature_act(
+            "redirect-2",
+            &id,
+            FeatureAction::Redirect {
+                text: "again".into(),
+            },
+        )
+        .await
+        .unwrap_err();
+    assert!(format!("{err:#}").contains("send a message"), "{err:#}");
+}

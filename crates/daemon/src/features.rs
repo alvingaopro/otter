@@ -560,6 +560,37 @@ pub fn apply_action(
         }
         // The preview's session is started by `feature_act`.
         FeatureAction::Preview => {}
+        FeatureAction::Interrupt => {
+            if f.live_run().is_none() {
+                return Err(RpcError::conflict(
+                    "the coding agent isn't working on anything",
+                ));
+            }
+            changes.push(to(
+                f,
+                FeatureStatus::Paused,
+                Some("Interrupted by you: say what to do next".into()),
+            )?);
+        }
+        FeatureAction::Redirect { text } => {
+            let text = text.trim();
+            if text.is_empty() {
+                return Err(RpcError::invalid("say what to do instead"));
+            }
+            check_text("redirect", text, MAX_TEXT)?;
+            if f.live_run().is_none() {
+                return Err(RpcError::conflict(
+                    "the coding agent isn't working on anything: send a message instead",
+                ));
+            }
+            let (m, c) = message(
+                MessageRole::User,
+                text.to_owned(),
+                Some(command_id.to_owned()),
+            );
+            f.messages.push(m);
+            changes.push(c);
+        }
         FeatureAction::RequestChanges { note } => {
             if let Some(note) = note.as_ref().filter(|n| !n.trim().is_empty()) {
                 check_text("note", note, MAX_TEXT)?;
@@ -729,8 +760,14 @@ impl Daemon {
                 )
                 .await
             }
-            FeatureAction::Pause => self.stop_runs(&id, RunState::Cancelled, "Paused").await,
-            FeatureAction::Cancel => self.stop_runs(&id, RunState::Cancelled, "Cancelled").await,
+            // The coding agent's turn is interrupted and the run ends; its
+            // conversation is held (pause) or closed (cancel) (D-059).
+            FeatureAction::Pause => self.hold_runs(&id, false, "Paused").await,
+            FeatureAction::Cancel => self.hold_runs(&id, true, "Cancelled").await,
+            FeatureAction::Interrupt => self.interrupt_runs(&id).await,
+            FeatureAction::Redirect { text } => {
+                self.redirect_runs(&id, &p.command_id, text.trim()).await
+            }
             // The plan is about to change: the task in progress may not be in it.
             FeatureAction::RequestChanges { .. } => {
                 self.stop_runs(&id, RunState::Cancelled, "The goal changed")

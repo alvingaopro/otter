@@ -243,6 +243,9 @@ pub struct Turn {
     pub ended_at: Option<Timestamp>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub usage: Option<Usage>,
+    /// Asked for with [`Command::Redirect`]: delivered before other queued turns.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub redirect: bool,
 }
 
 impl Turn {
@@ -516,7 +519,22 @@ pub enum Command {
         input: Vec<InputBlock>,
     },
     /// Stop this turn (only this one).
-    Interrupt { turn_id: TurnId },
+    Interrupt {
+        turn_id: TurnId,
+    },
+    /// New guidance that can't wait: the current turn is interrupted and
+    /// this one goes next, before anything else queued.
+    Redirect {
+        initiator: Initiator,
+        input: Vec<InputBlock>,
+    },
+    /// A barrier: what runs is interrupted and nothing more is delivered
+    /// until [`Command::Resume`]. Queued turns stay queued.
+    Pause,
+    Resume,
+    /// No more turns: what runs is interrupted, what is queued is
+    /// cancelled.
+    Cancel,
     /// Answer this interaction, asked in this generation.
     Resolve {
         interaction_id: DecisionId,
@@ -626,7 +644,19 @@ impl Conversation {
         if self.lifecycle != Lifecycle::Open || self.active_turn().is_some() {
             return None;
         }
-        self.turns.iter().find(|t| t.state == TurnState::Queued)
+        let queued = || self.turns.iter().filter(|t| t.state == TurnState::Queued);
+        queued().find(|t| t.redirect).or_else(|| queued().next())
+    }
+
+    /// Ask the turn in progress, if any, to stop.
+    fn interrupt_active(&mut self) {
+        if let Some(t) = self
+            .turns
+            .iter_mut()
+            .find(|t| matches!(t.state, TurnState::Running | TurnState::Waiting))
+        {
+            t.state = TurnState::Interrupting;
+        }
     }
 
     fn touch(&mut self, now: Timestamp) {
@@ -675,12 +705,21 @@ impl Conversation {
             durable: true,
         };
         match command {
-            Command::SendTurn { initiator, input } => {
+            Command::SendTurn { .. } | Command::Redirect { .. } => {
+                let redirect = matches!(command, Command::Redirect { .. });
+                let (Command::SendTurn { initiator, input }
+                | Command::Redirect { initiator, input }) = command
+                else {
+                    unreachable!()
+                };
                 if self.lifecycle == Lifecycle::Closed {
                     return Err(Rejection::Invalid("the conversation is closed".into()));
                 }
                 if input.is_empty() {
                     return Err(Rejection::Invalid("the turn has no input".into()));
+                }
+                if redirect {
+                    self.interrupt_active();
                 }
                 let id = new_turn.unwrap_or_else(TurnId::generate);
                 self.turns.push(Turn {
@@ -699,8 +738,27 @@ impl Conversation {
                     started_at: None,
                     ended_at: None,
                     usage: None,
+                    redirect,
                 });
                 receipt.turn_id = Some(id);
+            }
+            Command::Pause => {
+                if self.lifecycle == Lifecycle::Closed {
+                    return Err(Rejection::Invalid("the conversation is closed".into()));
+                }
+                self.lifecycle = Lifecycle::Paused;
+                self.interrupt_active();
+            }
+            Command::Resume => {
+                if self.lifecycle == Lifecycle::Closed {
+                    return Err(Rejection::Invalid("the conversation is closed".into()));
+                }
+                self.lifecycle = Lifecycle::Open;
+            }
+            Command::Cancel => {
+                self.lifecycle = Lifecycle::Closed;
+                self.interrupt_active();
+                self.cancel_queued("cancelled", now);
             }
             Command::Interrupt { turn_id } => {
                 let turn = self
@@ -1484,6 +1542,50 @@ mod tests {
         let t = c.turn(&t2).unwrap();
         assert_eq!(t.outcome, Some(TurnOutcome::Cancelled));
         assert_eq!(t.delivery, Delivery::Queued, "never sent");
+    }
+
+    #[test]
+    fn redirect_goes_first_pause_holds_and_cancel_ends() {
+        let mut c = conv();
+        let t1 = turn_of(&send(&mut c, "cmd_1", "work").unwrap());
+        let t2 = turn_of(&send(&mut c, "cmd_2", "later").unwrap());
+        let g = c.claim(RunId::from("run_a"), now()).unwrap();
+        c.sending(&t1, g, now()).unwrap();
+        let r = c
+            .accept(
+                "cmd_3",
+                "now",
+                Command::Redirect {
+                    initiator: Initiator::User,
+                    input: text("do this instead"),
+                },
+                now(),
+            )
+            .unwrap();
+        let t3 = turn_of(&r);
+        assert_eq!(c.turn(&t1).unwrap().state, TurnState::Interrupting);
+        c.finished(&t1, g, TurnOutcome::Interrupted, None, None, now())
+            .unwrap();
+        assert_eq!(c.next_queued().unwrap().id, t3, "the redirect goes first");
+
+        // Paused: nothing is delivered; what is queued stays queued.
+        c.accept("cmd_4", "p", Command::Pause, now()).unwrap();
+        assert!(c.next_queued().is_none());
+        assert_eq!(c.turn(&t2).unwrap().state, TurnState::Queued);
+        c.accept("cmd_5", "r", Command::Resume, now()).unwrap();
+        assert_eq!(c.next_queued().unwrap().id, t3);
+
+        // Cancelled: what is queued is cancelled; no new turns.
+        c.accept("cmd_6", "c", Command::Cancel, now()).unwrap();
+        assert_eq!(c.turn(&t2).unwrap().outcome, Some(TurnOutcome::Cancelled));
+        assert!(matches!(
+            send(&mut c, "cmd_7", "more"),
+            Err(Rejection::Invalid(_))
+        ));
+        assert!(matches!(
+            c.accept("cmd_8", "r", Command::Resume, now()),
+            Err(Rejection::Invalid(_))
+        ));
     }
 
     fn questions() -> InteractionKind {

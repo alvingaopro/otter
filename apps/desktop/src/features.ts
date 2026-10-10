@@ -213,7 +213,9 @@ export type FeatureAction =
   | { action: "accept"; override_gates?: boolean }
   | { action: "request_changes"; note?: string }
   | { action: "set_workspace"; workspace: string }
-  | { action: "preview" };
+  | { action: "preview" }
+  | { action: "interrupt" }
+  | { action: "redirect"; text: string };
 
 // --- Wording and grouping (no runtime state) ---
 

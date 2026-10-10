@@ -1759,3 +1759,29 @@ They are a `Delegate` call now, which policy denies until a subagent's
 tools, lineage and policy are handled. The sdk backend doesn't offer them
 at all (`disallowedTools`); the legacy backend only hears about the tool
 calls Claude Code asks permission for, which its capabilities now say.
+
+**Controls go through the conversation.** Pause, cancel, interrupt and
+redirect are commands on the coding agent's conversation, applied by its
+actor in order and journaled (D-058):
+
+- **Interrupt** stops the current turn only; the run doesn't go on by
+  itself. As a feature action it also pauses the feature, so nothing
+  restarts until the developer says so; the conversation stays open.
+- **Redirect** is guidance that can't wait: the current turn is
+  interrupted and the redirect turn goes next — before anything else
+  queued — in the same run. A retried redirect (same command id) is applied
+  once. As a feature action it is the developer's message, recorded in the
+  feature too; without a run to redirect, it is refused (send a message).
+- **Pause** is a barrier: the turn is interrupted, nothing more is
+  delivered until the conversation is resumed, and the run ends. **Cancel**
+  closes the conversation: queued turns are cancelled, no new ones. Both
+  end the feature's run as cancelled ("Paused", "Cancelled"), as before.
+- An interrupt must settle within 10 s (`OTTER_INTERRUPT_DEADLINE_MS`);
+  otherwise the run is stopped and what its turn did is unknown. A turn that
+  completes as the interrupt arrives stays completed; a late interrupt of it
+  is stale.
+- A turn that ends interrupted or cancelled ends its run as cancelled,
+  not failed: no attempt is spent, and the task can pick up again.
+- Pausing doesn't keep queued turns yet (they end with the run, as before):
+  keeping them needs the controller to know which messages a turn already
+  carries — the next step.

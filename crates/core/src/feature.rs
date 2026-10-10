@@ -554,6 +554,14 @@ pub enum FeatureAction {
     },
     /// Start (or restart) the app's preview for the developer to look at.
     Preview,
+    /// Stop what the coding agent is doing now (its current turn only) and
+    /// wait: the feature pauses (D-059).
+    Interrupt,
+    /// Guidance that can't wait: the coding agent's current turn stops and
+    /// this goes next, in the same run (D-059).
+    Redirect {
+        text: String,
+    },
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -646,6 +654,8 @@ impl FeatureAction {
             FeatureAction::RequestChanges { .. } => "request_changes",
             FeatureAction::SetWorkspace { .. } => "set_workspace",
             FeatureAction::Preview => "preview",
+            FeatureAction::Interrupt => "interrupt",
+            FeatureAction::Redirect { .. } => "redirect",
         }
     }
 }
