@@ -20,7 +20,7 @@ use std::sync::Arc;
 
 use chrono::Utc;
 use otter_core::conversation::{
-    Command, Conversation, Initiator, InputBlock, NativeBinding, TurnOutcome,
+    Applied, Command, Conversation, Initiator, InputBlock, NativeBinding, Op, TurnOutcome,
 };
 use otter_core::feature::{
     Decider, DecisionKind, DecisionRequest, DecisionStatus, Feature, FeatureEvent, FeatureStatus,
@@ -139,34 +139,50 @@ impl Daemon {
         })?;
         // The turn, then the run takes the conversation (a new generation).
         let run_id = RunId::generate();
-        let claimed = self
+        let missing = || RpcError::internal("the conversation went missing");
+        let current = self
             .conversations
-            .update(&conversation_id, |c| {
-                let accepted = c
-                    .accept(
-                        &format!("{run_id}:start"),
-                        &prompt,
-                        Command::SendTurn {
-                            initiator: Initiator::Controller,
-                            input: vec![InputBlock::Text {
-                                text: prompt.clone(),
-                            }],
-                        },
-                        now,
-                    )
-                    .map_err(|e| RpcError::conflict(e.to_string()))?;
-                let generation = c
-                    .claim(run_id.clone(), now)
-                    .map_err(|e| RpcError::conflict(e.to_string()))?;
-                Ok::<_, RpcError>((
-                    accepted.receipt().turn_id.clone().expect("a turn"),
-                    generation,
-                    c.binding.as_ref().map(|b| b.session_id.clone()),
-                    c.model.clone(),
-                ))
-            })
-            .ok_or_else(|| RpcError::internal("the conversation went missing"))??;
-        let (turn_id, generation, native, model) = claimed;
+            .get(conversation_id.as_str())
+            .ok_or_else(missing)?;
+        if let Some(other) = &current.active_run {
+            return Err(RpcError::conflict(format!(
+                "run `{other}` is still serving this conversation"
+            )));
+        }
+        let turn_id = otter_core::TurnId::generate();
+        self.conversations
+            .apply(
+                &conversation_id,
+                Op::Accept {
+                    command_id: format!("{run_id}:start"),
+                    fingerprint: prompt.clone(),
+                    command: Command::SendTurn {
+                        initiator: Initiator::Controller,
+                        input: vec![InputBlock::Text {
+                            text: prompt.clone(),
+                        }],
+                    },
+                    turn_id: Some(turn_id.clone()),
+                    at: now,
+                },
+            )
+            .ok_or_else(missing)?
+            .map_err(|e| RpcError::conflict(e.to_string()))?;
+        let generation = match self.conversations.apply(
+            &conversation_id,
+            Op::Claim {
+                run: run_id.clone(),
+                at: now,
+            },
+        ) {
+            Some(Ok(Applied::Claimed(g))) => g,
+            Some(Err(e)) => return Err(RpcError::conflict(e.to_string())),
+            _ => return Err(missing()),
+        };
+        let (native, model) = (
+            current.binding.as_ref().map(|b| b.session_id.clone()),
+            current.model.clone(),
+        );
         tracing::info!(runtime = rt.id(), feature = %feature_id, conversation = %conversation_id, generation, resume = native.is_some(), "starting a managed run");
         let root = PathBuf::from(&ws.root);
         let handle = match rt
@@ -185,10 +201,12 @@ impl Daemon {
         {
             Ok(h) => h,
             Err(e) => {
-                self.conversations.update(&conversation_id, |c| {
-                    c.run_ended(generation, TurnOutcome::Failed, Utc::now());
-                    c.cancel_queued("not delivered: the agent didn't start", Utc::now());
-                });
+                self.end_conversation_run(
+                    &conversation_id,
+                    generation,
+                    TurnOutcome::Failed,
+                    "not delivered: the agent didn't start",
+                );
                 return Err(RpcError::internal(format!("starting the agent: {e:#}")));
             }
         };
@@ -244,10 +262,12 @@ impl Daemon {
                 // The feature changed under us: don't leave the agent running.
                 let mut handle = handle;
                 let _ = handle.stop().await;
-                self.conversations.update(&conversation_id, |c| {
-                    c.run_ended(generation, TurnOutcome::Cancelled, Utc::now());
-                    c.cancel_queued("not delivered: the run didn't start", Utc::now());
-                });
+                self.end_conversation_run(
+                    &conversation_id,
+                    generation,
+                    TurnOutcome::Cancelled,
+                    "not delivered: the run didn't start",
+                );
                 return Err(e);
             }
         };
@@ -284,6 +304,32 @@ impl Daemon {
             daemon.feature_wake.notify_one();
         });
         Ok(run_id)
+    }
+
+    /// A run that never got going: its generation ends, its turns too.
+    fn end_conversation_run(
+        &self,
+        conversation: &ConversationId,
+        generation: u64,
+        outcome: TurnOutcome,
+        why: &str,
+    ) {
+        let at = Utc::now();
+        self.conversations.apply(
+            conversation,
+            Op::RunEnded {
+                generation,
+                outcome,
+                at,
+            },
+        );
+        self.conversations.apply(
+            conversation,
+            Op::CancelQueued {
+                reason: why.into(),
+                at,
+            },
+        );
     }
 
     /// Follow one run's actor until the run ends, keeping the feature in step.
@@ -774,19 +820,21 @@ impl Daemon {
             .collect();
         let input = format!("From the developer:\n{text}");
         for (conversation, tx) in live {
-            let queued = self.conversations.update(&conversation, |c| {
-                c.accept(
-                    command_id,
-                    &input,
-                    Command::SendTurn {
+            let queued = self.conversations.apply(
+                &conversation,
+                Op::Accept {
+                    command_id: command_id.into(),
+                    fingerprint: input.clone(),
+                    command: Command::SendTurn {
                         initiator: Initiator::User,
                         input: vec![InputBlock::Text {
                             text: input.clone(),
                         }],
                     },
-                    Utc::now(),
-                )
-            });
+                    turn_id: Some(otter_core::TurnId::generate()),
+                    at: Utc::now(),
+                },
+            );
             match queued {
                 Some(Ok(_)) => {
                     let _ = tx.send(ActorCmd::Wake).await;
