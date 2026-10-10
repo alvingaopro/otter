@@ -217,8 +217,11 @@ turns, messages, tool calls and interactions. See
   `resumable` in place of the provider's own session id, which stays on
   the host.
 
-Read-only: coding work is sent by Otter, not by clients. Daemons that don't
-serve these yet answer `unsupported`; older daemons `invalid_request`.
+- Event `ConversationChanged {conversation_id, revision, feature_id?}`
+  after each change: ids only; read the content with `conversation.get`.
+
+Read-only: coding work is sent by Otter, not by clients. Older daemons
+answer `invalid_request` (or `unsupported`).
 
 ## Features
 

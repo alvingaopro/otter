@@ -182,6 +182,19 @@ async fn serve(paths: Paths) -> Result<()> {
         tracing::warn!("initial reconcile failed: {e:#}");
     }
     daemon.resume_workspaces().await;
+    // Conversations tell clients they changed (ids only, D-055).
+    let weak = Arc::downgrade(&daemon);
+    daemon
+        .conversations
+        .on_change(Box::new(move |id, revision, feature| {
+            if let Some(d) = weak.upgrade() {
+                d.events.emit(otter_protocol::Event::ConversationChanged {
+                    conversation_id: id.clone(),
+                    revision,
+                    feature_id: feature.cloned(),
+                });
+            }
+        }));
     // Managed runs ended with the old daemon; their conversations resume.
     daemon.recover_runs().await;
     // The Control Agent steps features from here on (D-045).

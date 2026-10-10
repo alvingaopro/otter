@@ -1,5 +1,7 @@
-//! Claude Code as a managed runtime (D-044): `claude -p` speaking
-//! stream-json on stdin/stdout, with permission prompts sent to us.
+//! Claude Code as a managed runtime (D-044, D-055): `claude -p` speaking
+//! stream-json on stdin/stdout, with permission prompts sent to us. This is
+//! the `legacy_cli` backend: it stays selectable while the SDK worker takes
+//! over (the structured runtime plan, milestone 2).
 //!
 //! Observed on Claude Code 2.1.295 (probed, not from documentation alone):
 //!
@@ -12,9 +14,13 @@
 //!   `control_response`. `system/init` then carries `session_id` and a
 //!   `capabilities` list.
 //! - **Turns:** we write `{"type":"user","message":{"role":"user","content":
-//!   …}}`; it streams `assistant` messages (text, `tool_use`), `user`
-//!   messages (tool results) and ends the turn with `result` (`subtype`,
-//!   `is_error`, `session_id`, `total_cost_usd`, `result` text).
+//!   …}}`; it streams `assistant` messages (text, `tool_use` with an `id`),
+//!   `user` messages (`tool_result` blocks: `tool_use_id`, `is_error`,
+//!   `content`) and ends the turn with `result` (`subtype`, `is_error`,
+//!   `session_id`, `total_cost_usd` — for the session so far — and `result`
+//!   text). With `--include-partial-messages`, `stream_event`s come first:
+//!   `message_start` (the message `id`) and `content_block_delta` (`index`,
+//!   `text_delta`).
 //! - **Decisions:** a tool that needs permission (commands Claude Code
 //!   doesn't consider read-only, edits, `AskUserQuestion`, …) arrives as
 //!   `control_request` `can_use_tool` {`tool_name`, `input`, `tool_use_id`};
@@ -35,6 +41,10 @@ use std::sync::{Arc, Mutex};
 
 use anyhow::{Context, Result, anyhow};
 use async_trait::async_trait;
+use otter_core::conversation::{
+    ErrorCategory, Question, QuestionOption, TurnOutcome, Usage, UsageScope,
+};
+use otter_protocol::conversation::{RuntimeCapabilities, RuntimeFeatures};
 use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin};
@@ -43,16 +53,19 @@ use tokio::sync::mpsc;
 use crate::env::which;
 use crate::runtime::{
     AgentRuntime, DecisionAsk, DecisionReply, RunHandle, RunInfo, RunSpec, RuntimeEvent, ToolCall,
+    TurnSpec,
 };
 
 /// The Claude Code version this protocol was observed on.
 pub const OBSERVED_VERSION: &str = "2.1.295";
 const SUMMARY_LEN: usize = 200;
+/// A tool's output, as kept in the conversation.
+const OUTPUT_LEN: usize = 2000;
 
 pub struct ClaudeRuntime;
 
 /// The command line for a run. Nothing secret goes here: the environment is
-/// passed to the process directly.
+/// passed to the process directly, and prompts go over stdin.
 pub fn argv(spec: &RunSpec) -> Vec<String> {
     let mut argv: Vec<String> = [
         "-p",
@@ -80,6 +93,14 @@ pub fn argv(spec: &RunSpec) -> Vec<String> {
         argv.push("--resume".into());
         argv.push(id.clone());
     }
+    if let Some(model) = &spec.model {
+        argv.push("--model".into());
+        argv.push(model.clone());
+    }
+    if let Some(n) = spec.limits.max_turns {
+        argv.push("--max-turns".into());
+        argv.push(n.to_string());
+    }
     if let Some(extra) = &spec.instructions {
         argv.push("--append-system-prompt".into());
         argv.push(extra.clone());
@@ -93,10 +114,45 @@ impl AgentRuntime for ClaudeRuntime {
         "claude"
     }
 
+    fn capabilities(&self, env: &crate::env::EnvMap) -> RuntimeCapabilities {
+        let available = which("claude", env).is_some();
+        let mut notes = vec![format!(
+            "Drives Claude Code's stream-json mode, observed on {OBSERVED_VERSION}: not a documented interface."
+        )];
+        if !available {
+            notes.insert(
+                0,
+                "Claude Code (`claude`) isn't on this host's PATH.".into(),
+            );
+        }
+        RuntimeCapabilities {
+            provider: "claude".into(),
+            backend: "legacy_cli".into(),
+            available,
+            notes,
+            tested_version: Some(OBSERVED_VERSION.into()),
+            structured_ready: false,
+            features: RuntimeFeatures {
+                send_turn: true,
+                resume: true,
+                interrupt_turn: true,
+                permission_requests: true,
+                questions: true,
+                tool_results: true,
+                streaming: true,
+                attachments: false,
+                usage: true,
+            },
+        }
+    }
+
     async fn start(&self, spec: RunSpec) -> Result<Box<dyn RunHandle>> {
         let program = which("claude", &spec.env).ok_or_else(|| anyhow!("claude is not on PATH"))?;
         tracing::debug!(
             observed_on = OBSERVED_VERSION,
+            conversation = %spec.conversation_id,
+            run = %spec.run_id,
+            generation = spec.generation,
             "starting claude -p (stream-json)"
         );
         let mut child = crate::env::spawn_tokio(
@@ -121,7 +177,7 @@ impl AgentRuntime for ClaudeRuntime {
                 pid,
                 ..Default::default()
             },
-            asks: HashMap::new(),
+            ..Default::default()
         }));
         let (tx, rx) = mpsc::channel(256);
         let reader_shared = shared.clone();
@@ -161,17 +217,35 @@ impl AgentRuntime for ClaudeRuntime {
                 "request": {"subtype": "initialize", "hooks": null},
             }))
             .await?;
-        if !spec.prompt.trim().is_empty() {
-            handle.send_input(&spec.prompt).await?;
-        }
         Ok(Box::new(handle))
     }
 }
 
+/// What the reader knows, shared with the handle.
+#[derive(Default)]
 struct Shared {
     info: RunInfo,
     /// Open decisions: request id → (tool name, its input).
     asks: HashMap<String, (String, Value)>,
+    /// A turn was sent and the provider hasn't answered it yet.
+    awaiting_delivery: bool,
+    /// We asked the current turn to stop.
+    interrupting: bool,
+    /// The message being streamed (`message_start`), if it said its id.
+    message: Option<String>,
+    /// A text block streamed but not yet whole: (message, block).
+    open: Option<(String, u32)>,
+    /// Next block number per message, for blocks that weren't streamed.
+    blocks: HashMap<String, u32>,
+    /// For messages and tool calls without a provider id.
+    synthetic: u64,
+}
+
+impl Shared {
+    fn synthetic(&mut self, prefix: &str) -> String {
+        self.synthetic += 1;
+        format!("{prefix}{}", self.synthetic)
+    }
 }
 
 struct ClaudeRun {
@@ -204,13 +278,18 @@ impl ClaudeRun {
 
 #[async_trait]
 impl RunHandle for ClaudeRun {
-    async fn send_input(&mut self, text: &str) -> Result<()> {
-        self.shared.lock().unwrap().info.turns += 1;
+    async fn send_turn(&mut self, turn: &TurnSpec) -> Result<()> {
+        {
+            let mut s = self.shared.lock().unwrap();
+            s.info.turns += 1;
+            s.awaiting_delivery = true;
+            s.interrupting = false;
+        }
         self.write(&json!({
             "type": "user",
             "session_id": "",
             "parent_tool_use_id": null,
-            "message": {"role": "user", "content": text},
+            "message": {"role": "user", "content": turn.text},
         }))
         .await
     }
@@ -252,12 +331,16 @@ impl RunHandle for ClaudeRun {
         .await
     }
 
-    async fn cancel(&mut self) -> Result<()> {
+    async fn interrupt(&mut self) -> Result<()> {
+        self.shared.lock().unwrap().interrupting = true;
+        let id = self.request_id();
+        self.write(&json!({"type": "control_request", "request_id": id, "request": {"subtype": "interrupt"}}))
+            .await
+    }
+
+    async fn stop(&mut self) -> Result<()> {
         if self.stdin.is_some() {
-            let id = self.request_id();
-            let _ = self
-                .write(&json!({"type": "control_request", "request_id": id, "request": {"subtype": "interrupt"}}))
-                .await;
+            let _ = self.interrupt().await;
         }
         // Closing input ends `claude -p`; give it a moment, then make sure.
         self.stdin = None;
@@ -486,6 +569,42 @@ pub fn tool_call(name: &str, input: &Value) -> ToolCall {
     }
 }
 
+/// Every question of an `AskUserQuestion` form, as asked. Its questions
+/// have no ids: a question's id is its text (which is also how Claude Code
+/// takes the answers back).
+pub fn questions(input: &Value) -> Vec<Question> {
+    input["questions"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .enumerate()
+        .map(|(i, q)| {
+            let prompt = q["question"].as_str().unwrap_or_default().to_owned();
+            Question {
+                id: if prompt.is_empty() {
+                    format!("q{}", i + 1)
+                } else {
+                    prompt.clone()
+                },
+                header: q["header"].as_str().map(String::from),
+                prompt,
+                options: q["options"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|o| {
+                        Some(QuestionOption {
+                            label: o["label"].as_str()?.to_owned(),
+                            description: o["description"].as_str().map(String::from),
+                        })
+                    })
+                    .collect(),
+                multi_select: q["multiSelect"].as_bool().unwrap_or(false),
+            }
+        })
+        .collect()
+}
+
 fn summarize(call: &ToolCall, tool: &str) -> String {
     let text = match call {
         ToolCall::Read => format!("{tool}: read"),
@@ -499,51 +618,160 @@ fn summarize(call: &ToolCall, tool: &str) -> String {
     super::excerpt(&text, SUMMARY_LEN)
 }
 
-/// Turn one stdout line into events, remembering open decisions.
+/// A tool result's text: a string, or text blocks.
+fn result_text(content: &Value) -> String {
+    match content {
+        Value::String(s) => s.clone(),
+        Value::Array(parts) => parts
+            .iter()
+            .filter_map(|p| p["text"].as_str())
+            .collect::<Vec<_>>()
+            .join("\n"),
+        _ => String::new(),
+    }
+}
+
+/// How a `result` ends the turn.
+fn outcome(v: &Value, interrupting: bool) -> (TurnOutcome, Option<ErrorCategory>) {
+    let ok = v["is_error"] != true && v["subtype"] == "success";
+    if ok {
+        return (TurnOutcome::Completed, None);
+    }
+    match v["subtype"].as_str() {
+        Some("error_during_execution") if interrupting => (TurnOutcome::Interrupted, None),
+        Some(s) if s.starts_with("error_max_") => (TurnOutcome::LimitReached, None),
+        _ => {
+            let text = v["result"].as_str().unwrap_or_default().to_lowercase();
+            let category = if text.contains("rate limit") {
+                Some(ErrorCategory::RateLimited)
+            } else if text.contains("login") || text.contains("api key") || text.contains("auth") {
+                Some(ErrorCategory::AuthRequired)
+            } else if text.contains("no conversation found") {
+                Some(ErrorCategory::ResumeUnavailable)
+            } else {
+                None
+            };
+            (TurnOutcome::Failed, category)
+        }
+    }
+}
+
+/// Turn one stdout line into events, remembering open decisions and which
+/// message and block the text belongs to.
 fn parse(v: &Value, shared: &Mutex<Shared>) -> Vec<RuntimeEvent> {
     let mut out = Vec::new();
+    let mut s = shared.lock().unwrap();
+    // Anything the provider says after a turn was sent means it has it.
+    let answering = matches!(
+        v["type"].as_str(),
+        Some("assistant" | "user" | "stream_event" | "result" | "control_request")
+    );
+    if answering && s.awaiting_delivery {
+        s.awaiting_delivery = false;
+        out.push(RuntimeEvent::TurnDelivered);
+    }
+    // A subagent's traffic isn't the main turn (lineage comes with the SDK).
+    let main = v["parent_tool_use_id"].is_null();
     match v["type"].as_str() {
         Some("system") if v["subtype"] == "init" => {
             if let Some(id) = v["session_id"].as_str() {
-                shared.lock().unwrap().info.session_id = Some(id.to_owned());
+                s.info.session_id = Some(id.to_owned());
                 out.push(RuntimeEvent::Session { id: id.to_owned() });
             }
         }
-        Some("assistant") => {
-            // Subagent traffic isn't the main turn.
-            if !v["parent_tool_use_id"].is_null() {
-                return out;
+        Some("stream_event") if main => {
+            let ev = &v["event"];
+            match ev["type"].as_str() {
+                Some("message_start") => {
+                    s.message = ev["message"]["id"].as_str().map(String::from);
+                }
+                Some("content_block_delta") if ev["delta"]["type"] == "text_delta" => {
+                    if let Some(t) = ev["delta"]["text"].as_str().filter(|t| !t.is_empty()) {
+                        let message = match s.message.clone() {
+                            Some(m) => m,
+                            None => {
+                                let m = s.synthetic("msg-");
+                                s.message = Some(m.clone());
+                                m
+                            }
+                        };
+                        let block = ev["index"].as_u64().unwrap_or(0) as u32;
+                        s.open = Some((message.clone(), block));
+                        out.push(RuntimeEvent::TextDelta {
+                            message,
+                            block,
+                            text: t.to_owned(),
+                        });
+                    }
+                }
+                _ => {}
             }
+        }
+        Some("assistant") if main => {
+            let id = v["message"]["id"].as_str().map(String::from);
             for block in v["message"]["content"].as_array().into_iter().flatten() {
                 match block["type"].as_str() {
                     Some("text") => {
-                        if let Some(t) = block["text"].as_str().filter(|t| !t.trim().is_empty()) {
-                            out.push(RuntimeEvent::Text { text: t.to_owned() });
-                        }
+                        let Some(t) = block["text"].as_str().filter(|t| !t.trim().is_empty())
+                        else {
+                            continue;
+                        };
+                        // The block that was being streamed, if it's this message's.
+                        let streamed = s
+                            .open
+                            .take_if(|(m, _)| id.as_ref().is_none_or(|id| id == m));
+                        let (message, block) = match streamed {
+                            Some(key) => key,
+                            None => {
+                                let message = match id.clone() {
+                                    Some(m) => m,
+                                    None => s.synthetic("msg-"),
+                                };
+                                let n = s.blocks.entry(message.clone()).or_insert(0);
+                                let block = 1000 + *n;
+                                *n += 1;
+                                (message, block)
+                            }
+                        };
+                        // The next stream starts a new message.
+                        s.message = None;
+                        out.push(RuntimeEvent::Text {
+                            message,
+                            block,
+                            text: t.to_owned(),
+                        });
                     }
                     Some("tool_use") => {
                         let name = block["name"].as_str().unwrap_or_default();
-                        out.push(RuntimeEvent::Tool {
+                        let call = match block["id"].as_str() {
+                            Some(id) => id.to_owned(),
+                            None => s.synthetic("tool-"),
+                        };
+                        out.push(RuntimeEvent::ToolStarted {
+                            call,
+                            parent: None,
                             tool: name.to_owned(),
-                            call: tool_call(name, &block["input"]),
+                            input: tool_call(name, &block["input"]),
                         });
                     }
                     _ => {}
                 }
             }
         }
-        // Text as it is written (`--include-partial-messages`): the main
-        // turn's text deltas only.
-        Some("stream_event")
-            if v["parent_tool_use_id"].is_null()
-                && v["event"]["type"] == "content_block_delta"
-                && v["event"]["delta"]["type"] == "text_delta" =>
-        {
-            if let Some(t) = v["event"]["delta"]["text"]
-                .as_str()
-                .filter(|t| !t.is_empty())
-            {
-                out.push(RuntimeEvent::TextDelta { text: t.to_owned() });
+        // Tool results come back as the user's side of the conversation.
+        Some("user") if main => {
+            for block in v["message"]["content"].as_array().into_iter().flatten() {
+                if block["type"] != "tool_result" {
+                    continue;
+                }
+                let Some(call) = block["tool_use_id"].as_str() else {
+                    continue;
+                };
+                out.push(RuntimeEvent::ToolFinished {
+                    call: call.to_owned(),
+                    ok: block["is_error"] != true,
+                    output: super::excerpt(&result_text(&block["content"]), OUTPUT_LEN),
+                });
             }
         }
         Some("control_request") if v["request"]["subtype"] == "can_use_tool" => {
@@ -557,26 +785,42 @@ fn parse(v: &Value, shared: &Mutex<Shared>) -> Vec<RuntimeEvent> {
             let input = v["request"]["input"].clone();
             let call = tool_call(&tool, &input);
             let summary = summarize(&call, &tool);
-            shared
-                .lock()
-                .unwrap()
-                .asks
-                .insert(request_id.to_owned(), (tool.clone(), input));
+            let questions = if tool == "AskUserQuestion" {
+                questions(&input)
+            } else {
+                vec![]
+            };
+            let input_hash = crate::runtime::input_hash(&input);
+            s.asks.insert(request_id.to_owned(), (tool.clone(), input));
             out.push(RuntimeEvent::DecisionNeeded(DecisionAsk {
                 request_id: request_id.to_owned(),
                 tool,
                 call,
                 summary,
+                tool_use_id: v["request"]["tool_use_id"].as_str().map(String::from),
+                input_hash,
+                questions,
             }));
         }
         Some("result") => {
             if let Some(id) = v["session_id"].as_str() {
-                shared.lock().unwrap().info.session_id = Some(id.to_owned());
+                s.info.session_id = Some(id.to_owned());
             }
-            out.push(RuntimeEvent::TurnEnded {
-                ok: v["is_error"] != true && v["subtype"] == "success",
+            let (outcome, error) = outcome(v, s.interrupting);
+            s.interrupting = false;
+            s.open = None;
+            s.message = None;
+            out.push(RuntimeEvent::TurnFinished {
+                outcome,
                 summary: v["result"].as_str().map(|r| super::excerpt(r, 2000)),
-                cost_usd: v["total_cost_usd"].as_f64(),
+                error,
+                // Claude Code reports the session's cost so far, not the turn's.
+                usage: v["total_cost_usd"].as_f64().map(|c| Usage {
+                    scope: UsageScope::SessionCumulative,
+                    input_tokens: v["usage"]["input_tokens"].as_u64(),
+                    output_tokens: v["usage"]["output_tokens"].as_u64(),
+                    cost_usd: Some(c),
+                }),
             });
         }
         _ => {}
@@ -589,30 +833,46 @@ mod tests {
     use super::*;
 
     fn shared() -> Mutex<Shared> {
-        Mutex::new(Shared {
-            info: RunInfo::default(),
-            asks: HashMap::new(),
-        })
+        Mutex::new(Shared::default())
+    }
+
+    fn spec() -> RunSpec {
+        RunSpec {
+            conversation_id: "conv_1".into(),
+            run_id: "run_1".into(),
+            generation: 1,
+            cwd: "/w".into(),
+            env: Default::default(),
+            resume: Some("abc".into()),
+            instructions: None,
+            model: Some("sonnet".into()),
+            limits: crate::runtime::RunLimits {
+                max_turns: Some(30),
+                max_budget_usd: None,
+            },
+        }
     }
 
     #[test]
     fn launch_routes_prompts_to_us_and_resumes_by_id() {
-        let spec = RunSpec {
-            cwd: "/w".into(),
-            env: Default::default(),
-            prompt: "do it".into(),
-            resume: Some("abc".into()),
-            instructions: None,
-        };
-        let a = argv(&spec);
+        let a = argv(&spec());
         let has = |pair: [&str; 2]| a.windows(2).any(|w| w[0] == pair[0] && w[1] == pair[1]);
         assert!(has(["--permission-prompt-tool", "stdio"]));
         assert!(has(["--input-format", "stream-json"]));
         assert!(has(["--resume", "abc"]));
         assert!(has(["--setting-sources", ""]));
+        assert!(has(["--model", "sonnet"]));
+        assert!(has(["--max-turns", "30"]));
         assert!(a.iter().any(|x| x == "--include-partial-messages"));
-        // The prompt goes over stdin, never on the command line.
-        assert!(!a.iter().any(|x| x.contains("do it")));
+    }
+
+    #[test]
+    fn capabilities_say_what_this_backend_is() {
+        let caps = ClaudeRuntime.capabilities(&Default::default());
+        assert_eq!(caps.backend, "legacy_cli");
+        assert_eq!(caps.tested_version.as_deref(), Some(OBSERVED_VERSION));
+        assert!(!caps.structured_ready);
+        assert!(caps.features.tool_results && !caps.features.attachments);
     }
 
     #[test]
@@ -627,42 +887,132 @@ mod tests {
         let ask = json!({"type":"control_request","request_id":"r1","request":{"subtype":"can_use_tool","tool_name":"Bash","input":{"command":"touch x"},"tool_use_id":"toolu_1"}});
         let ev = parse(&ask, &s);
         assert!(matches!(&ev[0], RuntimeEvent::DecisionNeeded(d)
-            if d.request_id == "r1" && d.call == ToolCall::Command { line: "touch x".into() } && d.summary == "Run `touch x`"));
+            if d.request_id == "r1" && d.call == ToolCall::Command { line: "touch x".into() }
+                && d.summary == "Run `touch x`" && d.tool_use_id.as_deref() == Some("toolu_1")
+                && d.input_hash == crate::runtime::input_hash(&json!({"command":"touch x"}))));
         assert!(s.lock().unwrap().asks.contains_key("r1"));
 
-        let q = json!({"type":"control_request","request_id":"r2","request":{"subtype":"can_use_tool","tool_name":"AskUserQuestion","input":{"questions":[{"question":"Pick one","header":"Colour","options":[{"label":"red"},{"label":"blue"}],"multiSelect":false}]}}});
+        // Every question of a form, with its options, header and multi-select.
+        let q = json!({"type":"control_request","request_id":"r2","request":{"subtype":"can_use_tool","tool_name":"AskUserQuestion","input":{"questions":[
+            {"question":"Pick one","header":"Colour","options":[{"label":"red","description":"warm"},{"label":"blue"}],"multiSelect":false},
+            {"question":"Which sizes?","options":[{"label":"S"},{"label":"M"}],"multiSelect":true}]}}});
         let ev = parse(&q, &s);
-        assert!(matches!(&ev[0], RuntimeEvent::DecisionNeeded(d)
-            if d.call == ToolCall::Question { question: "Pick one".into(), options: vec!["red".into(), "blue".into()] }));
+        let RuntimeEvent::DecisionNeeded(d) = &ev[0] else {
+            panic!("a question")
+        };
+        assert_eq!(d.questions.len(), 2);
+        assert_eq!(d.questions[0].header.as_deref(), Some("Colour"));
+        assert_eq!(
+            d.questions[0].options[0].description.as_deref(),
+            Some("warm")
+        );
+        assert!(d.questions[1].multi_select);
+        assert_eq!(d.questions[1].id, "Which sizes?");
 
         let done = json!({"type":"result","subtype":"success","is_error":false,"session_id":"s-1","total_cost_usd":0.003,"result":"blue"});
         assert_eq!(
             parse(&done, &s),
-            vec![RuntimeEvent::TurnEnded {
-                ok: true,
+            vec![RuntimeEvent::TurnFinished {
+                outcome: TurnOutcome::Completed,
                 summary: Some("blue".into()),
-                cost_usd: Some(0.003)
+                error: None,
+                usage: Some(Usage {
+                    scope: UsageScope::SessionCumulative,
+                    input_tokens: None,
+                    output_tokens: None,
+                    cost_usd: Some(0.003),
+                }),
             }]
         );
-        let interrupted = json!({"type":"result","subtype":"error_during_execution","is_error":true,"session_id":"s-1"});
+        let failed = json!({"type":"result","subtype":"error_during_execution","is_error":true,"session_id":"s-1"});
         assert!(matches!(
-            parse(&interrupted, &s)[0],
-            RuntimeEvent::TurnEnded { ok: false, .. }
+            parse(&failed, &s)[0],
+            RuntimeEvent::TurnFinished {
+                outcome: TurnOutcome::Failed,
+                ..
+            }
+        ));
+        s.lock().unwrap().interrupting = true;
+        assert!(matches!(
+            parse(&failed, &s)[0],
+            RuntimeEvent::TurnFinished {
+                outcome: TurnOutcome::Interrupted,
+                ..
+            }
+        ));
+        let limit = json!({"type":"result","subtype":"error_max_turns","is_error":true});
+        assert!(matches!(
+            parse(&limit, &s)[0],
+            RuntimeEvent::TurnFinished {
+                outcome: TurnOutcome::LimitReached,
+                ..
+            }
         ));
         // Unknown messages are ignored.
         assert!(parse(&json!({"type":"rate_limit_event"}), &s).is_empty());
-        // Text as it's written (observed on 2.1.295 with --include-partial-messages).
-        let delta = json!({"type":"stream_event","parent_tool_use_id":null,"event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hello there"}}});
-        assert_eq!(
-            parse(&delta, &s),
-            vec![RuntimeEvent::TextDelta {
-                text: "hello there".into()
-            }]
-        );
         let sub = json!({"type":"stream_event","parent_tool_use_id":"toolu_9","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"x"}}});
         assert!(
             parse(&sub, &s).is_empty(),
             "a subagent's text isn't the main turn"
+        );
+    }
+
+    #[test]
+    fn streamed_and_whole_text_share_one_message_and_block() {
+        let s = shared();
+        s.lock().unwrap().awaiting_delivery = true;
+        let start = json!({"type":"stream_event","parent_tool_use_id":null,"event":{"type":"message_start","message":{"id":"msg_A"}}});
+        assert_eq!(parse(&start, &s), vec![RuntimeEvent::TurnDelivered]);
+        let delta = |t: &str| json!({"type":"stream_event","parent_tool_use_id":null,"event":{"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":t}}});
+        assert_eq!(
+            parse(&delta("Hel"), &s),
+            vec![RuntimeEvent::TextDelta {
+                message: "msg_A".into(),
+                block: 1,
+                text: "Hel".into()
+            }]
+        );
+        parse(&delta("lo"), &s);
+        let whole = json!({"type":"assistant","parent_tool_use_id":null,"message":{"id":"msg_A","role":"assistant","content":[{"type":"text","text":"Hello"}]}});
+        assert_eq!(
+            parse(&whole, &s),
+            vec![RuntimeEvent::Text {
+                message: "msg_A".into(),
+                block: 1,
+                text: "Hello".into()
+            }]
+        );
+        // Without ids (older output): a key of its own, still one per block.
+        let bare = json!({"type":"assistant","parent_tool_use_id":null,"message":{"role":"assistant","content":[{"type":"text","text":"x"}]}});
+        let RuntimeEvent::Text { message, .. } = &parse(&bare, &s)[0] else {
+            panic!("text")
+        };
+        assert!(message.starts_with("msg-"));
+    }
+
+    #[test]
+    fn tool_calls_keep_their_ids_and_results() {
+        let s = shared();
+        let call = json!({"type":"assistant","parent_tool_use_id":null,"message":{"id":"msg_B","content":[{"type":"tool_use","id":"toolu_7","name":"Bash","input":{"command":"make test"}}]}});
+        assert_eq!(
+            parse(&call, &s),
+            vec![RuntimeEvent::ToolStarted {
+                call: "toolu_7".into(),
+                parent: None,
+                tool: "Bash".into(),
+                input: ToolCall::Command {
+                    line: "make test".into()
+                }
+            }]
+        );
+        let result = json!({"type":"user","parent_tool_use_id":null,"message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_7","is_error":true,"content":[{"type":"text","text":"1 failed"}]}]}});
+        assert_eq!(
+            parse(&result, &s),
+            vec![RuntimeEvent::ToolFinished {
+                call: "toolu_7".into(),
+                ok: false,
+                output: "1 failed".into()
+            }]
         );
     }
 
@@ -739,13 +1089,24 @@ mod process_tests {
             "PATH".into(),
             format!("{}:/usr/bin:/bin", dir.path().display()),
         );
-        let handle = ClaudeRuntime
+        let mut handle = ClaudeRuntime
             .start(RunSpec {
+                conversation_id: "conv_1".into(),
+                run_id: "run_1".into(),
+                generation: 1,
                 cwd: dir.path().to_path_buf(),
                 env,
-                prompt: prompt.into(),
                 resume: resume.map(String::from),
                 instructions: Some("be brief".into()),
+                model: None,
+                limits: Default::default(),
+            })
+            .await
+            .unwrap();
+        handle
+            .send_turn(&TurnSpec {
+                turn_id: "turn_1".into(),
+                text: prompt.into(),
             })
             .await
             .unwrap();
@@ -753,10 +1114,15 @@ mod process_tests {
     }
 
     async fn next(h: &mut Box<dyn RunHandle>) -> RuntimeEvent {
-        tokio::time::timeout(std::time::Duration::from_secs(10), h.next_event())
-            .await
-            .expect("an event in time")
-            .expect("an event")
+        loop {
+            let ev = tokio::time::timeout(std::time::Duration::from_secs(10), h.next_event())
+                .await
+                .expect("an event in time")
+                .expect("an event");
+            if ev != RuntimeEvent::TurnDelivered {
+                return ev;
+            }
+        }
     }
 
     #[tokio::test]
@@ -784,14 +1150,8 @@ mod process_tests {
         )
         .await
         .unwrap();
-        assert_eq!(
-            next(&mut h).await,
-            RuntimeEvent::TurnEnded {
-                ok: true,
-                summary: Some("denied, so I stopped".into()),
-                cost_usd: Some(0.01)
-            }
-        );
+        assert!(matches!(next(&mut h).await,
+            RuntimeEvent::TurnFinished { outcome: TurnOutcome::Completed, summary: Some(s), .. } if s == "denied, so I stopped"));
         assert!(h.inspect().pending.is_empty());
         // A decision can't be answered twice.
         assert!(
@@ -816,44 +1176,45 @@ mod process_tests {
         )
         .await
         .unwrap();
-        assert_eq!(
-            next(&mut h).await,
-            RuntimeEvent::Text {
-                text: "Going with that.".into()
-            }
-        );
+        assert!(matches!(next(&mut h).await,
+            RuntimeEvent::Text { text, .. } if text == "Going with that."));
         assert!(matches!(
             next(&mut h).await,
-            RuntimeEvent::TurnEnded { ok: true, .. }
+            RuntimeEvent::TurnFinished {
+                outcome: TurnOutcome::Completed,
+                ..
+            }
         ));
     }
 
     #[tokio::test]
-    async fn cancel_interrupts_and_ends_the_process() {
+    async fn interrupt_settles_the_turn_and_stop_ends_the_process() {
         let (_dir, mut h) = start("HANG", None).await;
         next(&mut h).await;
-        assert_eq!(
+        assert!(matches!(next(&mut h).await,
+            RuntimeEvent::Text { text, .. } if text == "working on it"));
+        h.interrupt().await.unwrap();
+        assert!(matches!(
             next(&mut h).await,
-            RuntimeEvent::Text {
-                text: "working on it".into()
+            RuntimeEvent::TurnFinished {
+                outcome: TurnOutcome::Interrupted,
+                ..
             }
-        );
-        h.cancel().await.unwrap();
+        ));
+        // The process is still there for another turn.
+        assert!(!h.inspect().exited);
+        h.stop().await.unwrap();
         assert!(h.inspect().exited);
-        // The interrupted turn ends, then the output closes.
-        let mut saw_end = false;
+        let mut exited = false;
         while let Ok(Some(ev)) =
             tokio::time::timeout(std::time::Duration::from_secs(5), h.next_event()).await
         {
-            if let RuntimeEvent::TurnEnded { ok, .. } = ev {
-                assert!(!ok);
-                saw_end = true;
-            }
             if let RuntimeEvent::Exited { .. } = ev {
+                exited = true;
                 break;
             }
         }
-        assert!(saw_end);
+        assert!(exited);
     }
 
     #[tokio::test]
@@ -865,37 +1226,21 @@ mod process_tests {
                 id: "conv-42".into()
             }
         );
-        // It ran something, said something, and finished.
-        assert_eq!(
-            next(&mut h).await,
-            RuntimeEvent::Tool {
-                tool: "Bash".into(),
-                call: ToolCall::Command {
-                    line: "make test".into()
-                }
-            }
-        );
-        // Written in pieces, then whole.
-        assert_eq!(
-            next(&mut h).await,
-            RuntimeEvent::TextDelta {
-                text: "Did ".into()
-            }
-        );
-        assert_eq!(
-            next(&mut h).await,
-            RuntimeEvent::TextDelta {
-                text: "the work.".into()
-            }
-        );
-        assert_eq!(
-            next(&mut h).await,
-            RuntimeEvent::Text {
-                text: "Did the work.".into()
-            }
-        );
+        // It ran something (and said how it went), said something, and finished.
         assert!(matches!(next(&mut h).await,
-            RuntimeEvent::TurnEnded { ok: true, summary: Some(s), .. } if s == "done in conv-42"));
+            RuntimeEvent::ToolStarted { call, tool, input: ToolCall::Command { line }, .. }
+                if call == "toolu_mt" && tool == "Bash" && line == "make test"));
+        assert!(matches!(next(&mut h).await,
+            RuntimeEvent::ToolFinished { call, ok: true, output } if call == "toolu_mt" && output == "ok"));
+        // Written in pieces, then whole — one message, one block.
+        assert!(matches!(next(&mut h).await,
+            RuntimeEvent::TextDelta { message, block: 0, text } if message == "msg_fake" && text == "Did "));
+        assert!(matches!(next(&mut h).await,
+            RuntimeEvent::TextDelta { text, .. } if text == "the work."));
+        assert!(matches!(next(&mut h).await,
+            RuntimeEvent::Text { message, block: 0, text } if message == "msg_fake" && text == "Did the work."));
+        assert!(matches!(next(&mut h).await,
+            RuntimeEvent::TurnFinished { outcome: TurnOutcome::Completed, summary: Some(s), .. } if s == "done in conv-42"));
         assert_eq!(h.inspect().session_id.as_deref(), Some("conv-42"));
     }
 }

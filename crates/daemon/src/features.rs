@@ -662,7 +662,7 @@ impl Daemon {
         // A coding agent at work hears it with its next turn; the Control
         // Agent answers (controller.rs).
         if !applied.duplicate {
-            self.tell_runs(&id, &said).await;
+            self.tell_runs(&id, &cmd, &said).await;
         }
         Ok(applied.feature)
     }
@@ -706,8 +706,14 @@ impl Daemon {
                 approve,
                 answer,
             } => {
-                self.forward_decision(&id, decision_id, *approve, answer.clone())
-                    .await
+                self.forward_decision(
+                    &id,
+                    decision_id,
+                    *approve,
+                    answer.clone(),
+                    otter_core::feature::Decider::User,
+                )
+                .await
             }
             FeatureAction::Pause => self.stop_runs(&id, RunState::Cancelled, "Paused").await,
             FeatureAction::Cancel => self.stop_runs(&id, RunState::Cancelled, "Cancelled").await,
@@ -856,6 +862,7 @@ impl Daemon {
             .remove(&id)
             .map_err(|e| RpcError::internal(format!("deleting feature: {e:#}")))?;
         drop(features);
+        self.conversations.remove_for_feature(&id);
         tracing::info!(feature = %id, "feature deleted");
         self.events.emit(Event::FeatureDeleted { feature_id: id });
         Ok(())

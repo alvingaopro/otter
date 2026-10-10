@@ -1,63 +1,63 @@
-//! Managed runs (D-044): one coding-agent run working on one feature task,
-//! bridged to the feature — progress becomes history, permission requests
-//! become [`DecisionRequest`]s decided by policy, the Control Agent or the
-//! developer.
+//! Managed runs (D-044, D-055): one coding-agent run working on one feature
+//! task, bridged to the feature — progress becomes history, permission
+//! requests become [`DecisionRequest`]s decided by policy, the Control Agent
+//! or the developer.
+//!
+//! A run serves a runtime conversation (`runtime::conversations`): the
+//! [`Actor`] owns the agent and the conversation's state; the bridge here
+//! listens to it and is the only thing that touches the feature. The task's
+//! conversation continues across runs (a resumed run is a new run, a new
+//! generation, of the same conversation); a fresh attempt starts a new one.
 //!
 //! A run is a child of `otterd` (its stdin/stdout are the protocol), so
 //! unlike a tmux session it ends when the daemon does. Its conversation
-//! doesn't: the run keeps the agent's session id, and a new daemon marks the
-//! run interrupted ([`Daemon::recover_runs`]) so the controller resumes it
-//! with that id.
-//!
+//! doesn't: it keeps the agent's session id, and a new daemon marks the run
+//! interrupted ([`Daemon::recover_runs`]) so the controller resumes it.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
 use chrono::Utc;
+use otter_core::conversation::{
+    Command, Conversation, Initiator, InputBlock, NativeBinding, TurnOutcome,
+};
 use otter_core::feature::{
     Decider, DecisionKind, DecisionRequest, DecisionStatus, Feature, FeatureEvent, FeatureStatus,
     MessageRole, Risk, Run, RunState, TaskStatus,
 };
-use otter_core::{DecisionId, FeatureId, RunId, TaskId};
+use otter_core::{ConversationId, DecisionId, FeatureId, RunId, TaskId};
 use otter_protocol::RpcError;
 use tokio::sync::{mpsc, oneshot};
 
 use crate::daemon::{Daemon, RpcResult, workspace_not_found};
 use crate::features::{Change, message};
+use crate::runtime::actor::{Actor, ActorCmd, ActorEvent};
 use crate::runtime::policy::{self, Proposal, Verdict};
-use crate::runtime::{DecisionReply, RunHandle, RunSpec, RuntimeEvent, runtime};
+use crate::runtime::{DecisionReply, RunLimits, RunSpec, runtime};
 
 /// The runtime features use (the only one with a managed mode so far).
 pub const DEFAULT_RUNTIME: &str = "claude";
+/// How it is driven (D-055): Claude Code's stream-json, until the SDK worker.
+pub const DEFAULT_BACKEND: &str = "legacy_cli";
 
 /// A run in progress, as the rest of the daemon reaches it.
 pub(crate) struct LiveRun {
     pub feature: FeatureId,
-    tx: mpsc::Sender<RunCmd>,
-}
-
-enum RunCmd {
-    Decide {
-        decision: DecisionId,
-        reply: DecisionReply,
-    },
-    /// The developer's message: the agent's next turn, once this one ends.
-    Input(String),
-    /// End the run; `state` is how it is recorded.
-    Stop {
-        state: RunState,
-        reason: String,
-        done: oneshot::Sender<()>,
-    },
+    pub conversation: ConversationId,
+    /// The run's actor.
+    tx: mpsc::Sender<ActorCmd>,
+    /// How the run is recorded when it is stopped, and why.
+    stopping: Arc<std::sync::Mutex<Option<(RunState, String)>>>,
 }
 
 /// Live runs by id.
 pub(crate) type Runs = std::sync::Mutex<HashMap<RunId, LiveRun>>;
 
 impl Daemon {
-    /// Start a run of `task`: fresh, or continuing `resume` (the agent's own
-    /// conversation id). `counts` charges an attempt to the budget.
+    /// Start a run of `task`: fresh (a new conversation), or continuing
+    /// `resume` (the agent's own conversation id) in the task's
+    /// conversation. `counts` charges an attempt to the budget.
     pub(crate) async fn start_run(
         self: &Arc<Self>,
         feature_id: &FeatureId,
@@ -104,22 +104,93 @@ impl Daemon {
         env.insert("OTTER_FEATURE_ID".into(), feature_id.to_string());
         let rt = runtime(DEFAULT_RUNTIME)
             .ok_or_else(|| RpcError::unsupported("no managed agent runtime"))?;
-        tracing::info!(runtime = rt.id(), feature = %feature_id, resume = resume.is_some(), "starting a managed run");
+
+        // The conversation: the task's own when continuing it, else a new one.
+        // A run from before conversations brings its session id (a trusted
+        // link: it is the run's own record), never a guess.
+        let now = Utc::now();
+        let continued = resume.as_ref().and_then(|sid| {
+            feature
+                .runs
+                .iter()
+                .rev()
+                .find(|r| &r.task_id == task_id && r.provider_session_id.as_ref() == Some(sid))
+                .and_then(|r| r.conversation_id.clone())
+                .and_then(|id| self.conversations.get(id.as_str()))
+        });
+        let conversation_id = match continued {
+            Some(c) => c.id,
+            None => {
+                let mut c = Conversation::new(DEFAULT_RUNTIME, DEFAULT_BACKEND, ws.id.clone(), now);
+                c.feature_id = Some(feature_id.clone());
+                c.task_id = Some(task_id.clone());
+                c.binding = resume
+                    .clone()
+                    .map(|session_id| NativeBinding { session_id });
+                let id = c.id.clone();
+                self.conversations.insert(c);
+                id
+            }
+        };
+        // The turn, then the run takes the conversation (a new generation).
+        let run_id = RunId::generate();
+        let claimed = self
+            .conversations
+            .update(&conversation_id, |c| {
+                let accepted = c
+                    .accept(
+                        &format!("{run_id}:start"),
+                        &prompt,
+                        Command::SendTurn {
+                            initiator: Initiator::Controller,
+                            input: vec![InputBlock::Text {
+                                text: prompt.clone(),
+                            }],
+                        },
+                        now,
+                    )
+                    .map_err(|e| RpcError::conflict(e.to_string()))?;
+                let generation = c
+                    .claim(run_id.clone(), now)
+                    .map_err(|e| RpcError::conflict(e.to_string()))?;
+                Ok::<_, RpcError>((
+                    accepted.receipt().turn_id.clone().expect("a turn"),
+                    generation,
+                    c.binding.as_ref().map(|b| b.session_id.clone()),
+                    c.model.clone(),
+                ))
+            })
+            .ok_or_else(|| RpcError::internal("the conversation went missing"))??;
+        let (turn_id, generation, native, model) = claimed;
+        tracing::info!(runtime = rt.id(), feature = %feature_id, conversation = %conversation_id, generation, resume = native.is_some(), "starting a managed run");
         let root = PathBuf::from(&ws.root);
-        let handle = rt
+        let handle = match rt
             .start(RunSpec {
+                conversation_id: conversation_id.clone(),
+                run_id: run_id.clone(),
+                generation,
                 cwd: root.clone(),
                 env,
-                prompt,
-                resume: resume.clone(),
+                resume: native.clone(),
                 instructions: Some(INSTRUCTIONS.into()),
+                model,
+                limits: RunLimits::default(),
             })
             .await
-            .map_err(|e| RpcError::internal(format!("starting the agent: {e:#}")))?;
+        {
+            Ok(h) => h,
+            Err(e) => {
+                self.conversations.update(&conversation_id, |c| {
+                    c.run_ended(generation, TurnOutcome::Failed, Utc::now());
+                    c.cancel_queued("not delivered: the agent didn't start", Utc::now());
+                });
+                return Err(RpcError::internal(format!("starting the agent: {e:#}")));
+            }
+        };
 
-        let run_id = RunId::generate();
         let rid = run_id.clone();
         let tid = task_id.clone();
+        let (cid, turn) = (conversation_id.clone(), turn_id.clone());
         let applied = self
             .features
             .lock()
@@ -147,10 +218,10 @@ impl Daemon {
                     started_at: now,
                     ended_at: None,
                     summary: None,
-                    provider_session_id: resume,
+                    provider_session_id: native,
                     activity: vec![],
-                    conversation_id: None,
-                    turn_id: None,
+                    conversation_id: Some(cid),
+                    turn_id: Some(turn),
                 });
                 changes.push(
                     Change::new(FeatureEvent::RunStarted {
@@ -161,143 +232,182 @@ impl Daemon {
                     .because(rid.as_str()),
                 );
                 Ok(changes)
-            })?;
+            });
+        let applied = match applied {
+            Ok(a) => a,
+            Err(e) => {
+                // The feature changed under us: don't leave the agent running.
+                let mut handle = handle;
+                let _ = handle.stop().await;
+                self.conversations.update(&conversation_id, |c| {
+                    c.run_ended(generation, TurnOutcome::Cancelled, Utc::now());
+                    c.cancel_queued("not delivered: the run didn't start", Utc::now());
+                });
+                return Err(e);
+            }
+        };
         self.feature_changed(&applied);
 
-        let (tx, rx) = mpsc::channel(32);
+        let (tx, mailbox) = mpsc::channel(32);
+        let (out, events) = mpsc::channel(256);
+        let stopping = Arc::new(std::sync::Mutex::new(None));
         self.runs.lock().unwrap().insert(
             run_id.clone(),
             LiveRun {
                 feature: feature_id.clone(),
-                tx,
+                conversation: conversation_id.clone(),
+                tx: tx.clone(),
+                stopping: stopping.clone(),
             },
         );
+        let actor = Actor::new(
+            conversation_id,
+            run_id.clone(),
+            generation,
+            self.conversations.clone(),
+            handle,
+            out,
+        );
+        tokio::spawn(actor.run(mailbox));
         let daemon = self.clone();
         let (fid, rid) = (feature_id.clone(), run_id.clone());
         tokio::spawn(async move {
-            daemon.pump(fid, rid.clone(), root, handle, rx).await;
+            daemon
+                .bridge(fid, rid.clone(), root, events, tx, stopping)
+                .await;
             daemon.runs.lock().unwrap().remove(&rid);
             daemon.feature_wake.notify_one();
         });
         Ok(run_id)
     }
 
-    /// Follow one run until it ends.
-    async fn pump(
+    /// Follow one run's actor until the run ends, keeping the feature in step.
+    async fn bridge(
         self: &Arc<Self>,
         feature: FeatureId,
         run: RunId,
         root: PathBuf,
-        mut handle: Box<dyn RunHandle>,
-        mut rx: mpsc::Receiver<RunCmd>,
+        mut events: mpsc::Receiver<ActorEvent>,
+        actor: mpsc::Sender<ActorCmd>,
+        stopping: Arc<std::sync::Mutex<Option<(RunState, String)>>>,
     ) {
-        // Our decision ids → the runtime's request ids.
-        let mut asks: HashMap<DecisionId, String> = HashMap::new();
-        // The developer's messages that arrived during this turn.
-        let mut queued: Vec<String> = Vec::new();
         // What the agent said this turn (already in the conversation).
         let mut said: Vec<String> = Vec::new();
-        // What it is saying right now, streamed (D-051).
-        let mut draft = Draft::new(format!("{run}-0"));
-        let mut blocks = 0u32;
+        // What it is saying right now, streamed (D-051), by block.
+        let mut draft: Option<Draft> = None;
         let mut last_text: Option<String> = None;
-        loop {
-            tokio::select! {
-                ev = handle.next_event() => {
-                    let Some(ev) = ev else { break };
-                    match ev {
-                        RuntimeEvent::Session { id } => {
-                            self.update_run(&feature, &run, |r| r.provider_session_id = Some(id)).await;
-                        }
-                        // Streamed: what the agent says shows up as it says it.
-                        RuntimeEvent::TextDelta { text } => {
-                            if let Some(so_far) = draft.push(&text) {
-                                self.stream(&feature, &draft.id, MessageRole::Agent, so_far, false);
-                            }
-                        }
-                        RuntimeEvent::Text { text } => {
-                            self.agent_said(&feature, &run, text.clone()).await;
-                            // Kept now: the streamed draft is done.
-                            if draft.started() {
-                                self.stream(&feature, &draft.id, MessageRole::Agent, text.clone(), true);
-                            }
-                            blocks += 1;
-                            draft = Draft::new(format!("{run}-{blocks}"));
-                            said.push(text.trim().to_owned());
-                            last_text = Some(text);
-                        }
-                        RuntimeEvent::Tool { tool, call } => {
-                            self.run_activity(&feature, &run, activity_line(&tool, &call)).await;
-                        }
-                        RuntimeEvent::DecisionNeeded(ask) => {
-                            let verdict = policy::classify(&ask.call, &root);
-                            match self.record_ask(&feature, &run, &ask, &verdict).await {
-                                Some(id) => {
-                                    asks.insert(id, ask.request_id);
-                                }
-                                None => {
-                                    let reply = match verdict {
-                                        Verdict::Deny { why } => DecisionReply::Deny { message: why },
-                                        _ => DecisionReply::Allow,
-                                    };
-                                    let _ = handle.decide(&ask.request_id, reply).await;
-                                }
-                            }
-                        }
-                        RuntimeEvent::TurnEnded { ok, summary, .. } => {
-                            tracing::debug!(turns = handle.inspect().turns, ok, "run finished its turn");
-                            let summary = summary.or(last_text.take());
-                            // The turn's result repeats what was streamed: say it once.
-                            let announce = summary
-                                .as_deref()
-                                .is_some_and(|s| !said.iter().any(|x| x == s.trim()));
-                            said.clear();
-                            // The developer wrote meanwhile: the conversation goes on.
-                            if ok && !queued.is_empty() {
-                                let text = format!("From the developer:\n{}", queued.join("\n"));
-                                queued.clear();
-                                if announce && let Some(s) = summary.clone().filter(|s| !s.trim().is_empty()) {
-                                    self.agent_said(&feature, &run, s).await;
-                                }
-                                if handle.send_input(&text).await.is_ok() {
-                                    continue;
-                                }
-                            }
-                            let _ = handle.cancel().await;
-                            let state = if ok { RunState::Completed } else { RunState::Failed };
-                            self.finish_run(&feature, &run, state, summary, announce).await;
-                            return;
-                        }
-                        RuntimeEvent::Exited { error, .. } => {
-                            let why = error.unwrap_or_else(|| "the agent exited before finishing".into());
-                            self.finish_run(&feature, &run, RunState::Failed, Some(why), true).await;
-                            return;
-                        }
+        // How the run ends once its last turn is over.
+        let mut ending: Option<(RunState, Option<String>, bool)> = None;
+        while let Some(ev) = events.recv().await {
+            match ev {
+                ActorEvent::Bound { session_id } => {
+                    self.update_run(&feature, &run, |r| r.provider_session_id = Some(session_id))
+                        .await;
+                }
+                ActorEvent::TurnStarted { .. } => {}
+                // Streamed: what the agent says shows up as it says it.
+                ActorEvent::TextDelta { block, piece, .. } => {
+                    let d = match &mut draft {
+                        Some(d) if d.id == block.as_str() => d,
+                        _ => draft.insert(Draft::new(block.to_string())),
+                    };
+                    if let Some(so_far) = d.push(&piece) {
+                        self.stream(&feature, &d.id, MessageRole::Agent, so_far, false);
                     }
                 }
-                cmd = rx.recv() => {
-                    match cmd {
-                        Some(RunCmd::Decide { decision, reply }) => {
-                            if let Some(req) = asks.remove(&decision) {
-                                let _ = handle.decide(&req, reply).await;
-                                self.update_run(&feature, &run, |r| r.state = RunState::Running).await;
-                            }
-                        }
-                        Some(RunCmd::Input(text)) => queued.push(text),
-                        Some(RunCmd::Stop { state, reason, done }) => {
-                            let _ = handle.cancel().await;
-                            self.finish_run(&feature, &run, state, Some(reason), true).await;
-                            let _ = done.send(());
-                            return;
-                        }
-                        None => {
-                            let _ = handle.cancel().await;
-                            return;
-                        }
+                ActorEvent::Text { block, text, .. } => {
+                    self.agent_said(&feature, &run, text.clone()).await;
+                    // Kept now: the streamed draft is done.
+                    if let Some(d) = draft.take_if(|d| d.id == block.as_str())
+                        && d.started()
+                    {
+                        self.stream(&feature, &d.id, MessageRole::Agent, text.clone(), true);
                     }
+                    said.push(text.trim().to_owned());
+                    last_text = Some(text);
+                }
+                ActorEvent::ToolStarted { record, call } => {
+                    self.run_activity(&feature, &run, activity_line(&record.name, &call))
+                        .await;
+                }
+                ActorEvent::Ask { interaction, ask } => {
+                    let verdict = policy::classify(&ask.call, &root);
+                    let waiting = self
+                        .record_ask(&feature, &run, &interaction, &ask, &verdict)
+                        .await;
+                    if !waiting {
+                        let reply = match verdict {
+                            Verdict::Deny { why } => DecisionReply::Deny { message: why },
+                            _ => DecisionReply::Allow,
+                        };
+                        let _ = actor
+                            .send(ActorCmd::Decide {
+                                interaction,
+                                reply,
+                                by: Decider::Policy,
+                            })
+                            .await;
+                    }
+                }
+                ActorEvent::TurnFinished {
+                    outcome,
+                    summary,
+                    next,
+                    ..
+                } => {
+                    tracing::debug!(?outcome, "run finished its turn");
+                    let summary = summary.or(last_text.take());
+                    // The turn's result repeats what was streamed: say it once.
+                    let announce = summary
+                        .as_deref()
+                        .is_some_and(|s| !said.iter().any(|x| x == s.trim()));
+                    said.clear();
+                    if next.is_some() {
+                        // The developer wrote meanwhile: the conversation goes on.
+                        if announce && let Some(s) = summary.filter(|s| !s.trim().is_empty()) {
+                            self.agent_said(&feature, &run, s).await;
+                        }
+                    } else {
+                        let state = if outcome == TurnOutcome::Completed {
+                            RunState::Completed
+                        } else {
+                            RunState::Failed
+                        };
+                        ending = Some((state, summary, announce));
+                    }
+                }
+                ActorEvent::Ended { error, stopped, .. } => {
+                    if let Some(done) = stopped {
+                        let (state, reason) = stopping
+                            .lock()
+                            .unwrap()
+                            .take()
+                            .unwrap_or((RunState::Cancelled, "Stopped".into()));
+                        self.finish_run(&feature, &run, state, Some(reason), true)
+                            .await;
+                        let _ = done.send(());
+                    } else if let Some((state, summary, announce)) = ending.take() {
+                        self.finish_run(&feature, &run, state, summary, announce)
+                            .await;
+                    } else {
+                        let why =
+                            error.unwrap_or_else(|| "the agent exited before finishing".into());
+                        self.finish_run(&feature, &run, RunState::Failed, Some(why), true)
+                            .await;
+                    }
+                    return;
                 }
             }
         }
+        // The actor went away without a word.
+        self.finish_run(
+            &feature,
+            &run,
+            RunState::Failed,
+            Some("the run ended unexpectedly".into()),
+            true,
+        )
+        .await;
     }
 
     async fn update_run(&self, feature: &FeatureId, run: &RunId, f: impl FnOnce(&mut Run)) {
@@ -320,16 +430,17 @@ impl Daemon {
         }
     }
 
-    /// Record a permission request. Returns the decision id when someone
-    /// has to decide; `None` when policy decided (the request is recorded
-    /// as decided, for the audit trail).
+    /// Record a permission request under the interaction's id. True when
+    /// someone has to decide; false when policy decided (the request is
+    /// recorded as decided, for the audit trail).
     async fn record_ask(
         &self,
         feature: &FeatureId,
         run: &RunId,
+        interaction: &DecisionId,
         ask: &crate::runtime::DecisionAsk,
         verdict: &Verdict,
-    ) -> Option<DecisionId> {
+    ) -> bool {
         let now = Utc::now();
         let (kind, risk, user_only, why, status) = match verdict {
             Verdict::Allow => (
@@ -359,8 +470,7 @@ impl Daemon {
                 DecisionStatus::Pending,
             ),
         };
-        let id = DecisionId::generate();
-        let did = id.clone();
+        let did = interaction.clone();
         let options = match &ask.call {
             crate::runtime::ToolCall::Question { options, .. } => options.clone(),
             _ => vec![],
@@ -426,11 +536,11 @@ impl Daemon {
         match applied {
             Ok(a) => {
                 self.feature_changed(&a);
-                (status == DecisionStatus::Pending).then_some(id)
+                status == DecisionStatus::Pending
             }
             Err(e) => {
                 tracing::warn!("recording a decision: {e:?}");
-                None
+                false
             }
         }
     }
@@ -555,7 +665,7 @@ impl Daemon {
                 Ok(changes)
             })?;
         self.feature_changed(&applied);
-        self.forward_decision(feature_id, decision_id, allow, answer)
+        self.forward_decision(feature_id, decision_id, allow, answer, by)
             .await;
         Ok(applied.feature)
     }
@@ -607,18 +717,40 @@ impl Daemon {
         }
     }
 
-    /// Hand the developer's message to a run in progress (its next turn).
-    pub(crate) async fn tell_runs(&self, feature_id: &FeatureId, text: &str) {
-        let senders: Vec<_> = self
+    /// Hand the developer's message to a run in progress: a turn of its
+    /// own, delivered after the current one (never merged with another).
+    /// `command_id` is the message's own, so a repeat is queued once.
+    pub(crate) async fn tell_runs(&self, feature_id: &FeatureId, command_id: &str, text: &str) {
+        let live: Vec<_> = self
             .runs
             .lock()
             .unwrap()
             .values()
             .filter(|r| &r.feature == feature_id)
-            .map(|r| r.tx.clone())
+            .map(|r| (r.conversation.clone(), r.tx.clone()))
             .collect();
-        for tx in senders {
-            let _ = tx.send(RunCmd::Input(text.to_owned())).await;
+        let input = format!("From the developer:\n{text}");
+        for (conversation, tx) in live {
+            let queued = self.conversations.update(&conversation, |c| {
+                c.accept(
+                    command_id,
+                    &input,
+                    Command::SendTurn {
+                        initiator: Initiator::User,
+                        input: vec![InputBlock::Text {
+                            text: input.clone(),
+                        }],
+                    },
+                    Utc::now(),
+                )
+            });
+            match queued {
+                Some(Ok(_)) => {
+                    let _ = tx.send(ActorCmd::Wake).await;
+                }
+                Some(Err(e)) => tracing::debug!(%conversation, "queueing the message: {e}"),
+                None => {}
+            }
         }
     }
 
@@ -629,6 +761,7 @@ impl Daemon {
         decision_id: &DecisionId,
         allow: bool,
         answer: Option<String>,
+        by: Decider,
     ) {
         let reply = match (answer, allow) {
             (Some(text), _) => DecisionReply::Answer { text },
@@ -647,15 +780,17 @@ impl Daemon {
             .collect();
         for tx in senders {
             let _ = tx
-                .send(RunCmd::Decide {
-                    decision: decision_id.clone(),
+                .send(ActorCmd::Decide {
+                    interaction: decision_id.clone(),
                     reply: reply.clone(),
+                    by,
                 })
                 .await;
         }
     }
 
-    /// Stop every run of a feature and wait until each has ended.
+    /// Stop every run of a feature and wait until each has ended. What it
+    /// was doing ends interrupted (or, for a run out of time, at its limit).
     pub(crate) async fn stop_runs(&self, feature_id: &FeatureId, state: RunState, reason: &str) {
         let senders: Vec<_> = self
             .runs
@@ -663,19 +798,17 @@ impl Daemon {
             .unwrap()
             .values()
             .filter(|r| &r.feature == feature_id)
-            .map(|r| r.tx.clone())
+            .map(|r| (r.tx.clone(), r.stopping.clone()))
             .collect();
-        for tx in senders {
+        let outcome = if state == RunState::Failed {
+            TurnOutcome::LimitReached
+        } else {
+            TurnOutcome::Interrupted
+        };
+        for (tx, stopping) in senders {
+            *stopping.lock().unwrap() = Some((state, reason.to_owned()));
             let (done, wait) = oneshot::channel();
-            if tx
-                .send(RunCmd::Stop {
-                    state,
-                    reason: reason.to_owned(),
-                    done,
-                })
-                .await
-                .is_ok()
-            {
+            if tx.send(ActorCmd::Stop { outcome, done }).await.is_ok() {
                 let _ = tokio::time::timeout(std::time::Duration::from_secs(15), wait).await;
             }
         }

@@ -456,6 +456,38 @@ impl Connection {
         self.call(Request::FeatureList).await
     }
 
+    /// What the managed coding runtime on the host is and can do.
+    pub async fn runtime_capabilities(
+        &mut self,
+    ) -> Result<otter_protocol::conversation::RuntimeCapabilities> {
+        self.call(Request::RuntimeCapabilities).await
+    }
+
+    /// Runtime conversations, newest first (a feature's, if given).
+    pub async fn conversation_list(
+        &mut self,
+        feature: Option<&str>,
+    ) -> Result<Vec<otter_protocol::conversation::ConversationView>> {
+        self.call(Request::ConversationList(
+            otter_protocol::conversation::ConversationQuery {
+                feature: feature.map(String::from),
+            },
+        ))
+        .await
+    }
+
+    pub async fn conversation_get(
+        &mut self,
+        conversation: &str,
+    ) -> Result<otter_protocol::conversation::ConversationView> {
+        self.call(Request::ConversationGet(
+            otter_protocol::conversation::ConversationRef {
+                conversation: conversation.to_owned(),
+            },
+        ))
+        .await
+    }
+
     /// Delete a feature that isn't running (its workspace stays).
     pub async fn feature_delete(&mut self, feature: &str) -> Result<()> {
         let _: serde_json::Value = self
