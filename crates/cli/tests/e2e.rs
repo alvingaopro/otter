@@ -77,6 +77,8 @@ impl Cli {
         Command::new(env!("CARGO_BIN_EXE_otter"))
             .args(args)
             .env("OTTER_CONFIG_DIR", self.config.path())
+            // Daemons started here inherit it: no model is ever asked.
+            .env("OTTER_CONTROLLER", "off")
             // Not a terminal: no prompts, no colors.
             .stdin(Stdio::null())
             .output()
@@ -426,6 +428,69 @@ fn same_name_on_two_hosts_needs_the_host() {
 
     let err = cli.fails(&["logs", "c:demo"]);
     assert!(err.contains("no host `c`; registered: a, b"), "{err}");
+}
+
+#[test]
+fn features_and_the_coding_runtime_from_the_terminal() {
+    let home = Home::new();
+    let cli = Cli::new();
+    cli.add_local_host("here", &home);
+
+    let out = cli.ok(&[
+        "feature",
+        "new",
+        "Export: timeline as CSV",
+        "--request",
+        "Add a CSV export",
+    ]);
+    assert!(out.contains("a draft; `otter feature start ft_"), "{out}");
+    let ls = cli.ok(&["feature", "ls"]);
+    assert!(
+        ls.contains("Export: timeline as CSV") && ls.contains("draft"),
+        "{ls}"
+    );
+    let all: serde_json::Value =
+        serde_json::from_str(&cli.ok(&["feature", "ls", "--json"])).unwrap();
+    assert_eq!(all[0]["host"], "here");
+    let id = all[0]["id"].as_str().unwrap().to_owned();
+
+    // By id, by host and title start (a title's own colon is no host), any case.
+    let out = cli.ok(&["feature", "message", "here:export", "Use commas"]);
+    assert!(out.contains("Otter has your message"), "{out}");
+    let show = cli.ok(&["feature", "show", &id]);
+    assert!(
+        show.contains("status: draft") && show.contains("Use commas"),
+        "{show}"
+    );
+    let err = cli.fails(&["feature", "show", "Nothing like it"]);
+    assert!(err.contains("no feature `Nothing like it`"), "{err}");
+    let err = cli.fails(&["feature", "decide", "export", "dec_x"]);
+    assert!(err.contains("has no decision `dec_x`"), "{err}");
+
+    let status = cli.ok(&["runtime", "status"]);
+    assert!(status.starts_with("here: claude via "), "{status}");
+    let caps: serde_json::Value =
+        serde_json::from_str(&cli.ok(&["runtime", "status", "--json"])).unwrap();
+    assert!(
+        caps["here"]["features"]["interrupt_turn"].is_boolean(),
+        "{caps}"
+    );
+    assert!(
+        cli.ok(&["conversation", "ls"])
+            .contains("no conversations yet")
+    );
+    let err = cli.fails(&["conv", "show", "conv_nope"]);
+    assert!(err.contains("no conversation `conv_nope`"), "{err}");
+
+    assert!(
+        cli.ok(&["feature", "start", "export"])
+            .contains(": planning")
+    );
+    assert!(cli.ok(&["feature", "pause", "export"]).contains(": paused"));
+    assert!(
+        cli.ok(&["feature", "cancel", "export"])
+            .contains(": cancelled")
+    );
 }
 
 #[test]

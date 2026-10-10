@@ -5,6 +5,7 @@
 
 mod attach;
 mod dashboard;
+mod features;
 mod output;
 mod target;
 
@@ -47,6 +48,16 @@ enum Command {
     /// Manage sessions.
     #[command(subcommand)]
     Session(SessionCommand),
+    /// Features: work Otter plans, has coded, checks, and brings to you.
+    #[command(subcommand)]
+    Feature(features::FeatureCommand),
+    /// The coding agent's conversations: what it was asked, did and said.
+    #[command(subcommand, visible_alias = "conv")]
+    Conversation(features::ConversationCommand),
+    /// The coding runtime on each host: what runs the coding agent, and what
+    /// it can do.
+    #[command(subcommand)]
+    Runtime(RuntimeCommand),
 
     /// What needs you, what's working, what's done — across all hosts.
     #[command(visible_alias = "list")]
@@ -299,6 +310,15 @@ struct WorkspaceCreateArgs {
 }
 
 #[derive(Subcommand)]
+enum RuntimeCommand {
+    /// Whether the coding agent can run, how, and what it supports.
+    Status {
+        #[arg(long)]
+        host: Option<String>,
+    },
+}
+
+#[derive(Subcommand)]
 enum SessionCommand {
     /// Start a new session in a workspace.
     #[command(visible_alias = "start")]
@@ -350,6 +370,11 @@ async fn run(cli: Cli) -> Result<()> {
         Command::Host(cmd) => host_command(&mut config, cmd, json).await,
         Command::Workspace(cmd) => workspace_command(&config, cmd, json).await,
         Command::Session(cmd) => session_command(&config, cmd, json).await,
+        Command::Feature(cmd) => features::feature_command(&config, cmd, json).await,
+        Command::Conversation(cmd) => features::conversation_command(&config, cmd, json).await,
+        Command::Runtime(RuntimeCommand::Status { host }) => {
+            features::runtime_status(&config, host, json).await
+        }
         Command::Ls {
             watch,
             table,
