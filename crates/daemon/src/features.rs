@@ -689,7 +689,6 @@ impl Daemon {
         check_text("message", &text, MAX_TEXT)?;
         let cmd = p.command_id.clone();
         let id = FeatureId::from(p.feature.as_str());
-        let said = text.clone();
         let applied = self.features.lock().await.apply(&id, Some(&cmd), |f, _| {
             if f.status.is_terminal() {
                 return Err(RpcError::conflict(format!(
@@ -702,11 +701,8 @@ impl Daemon {
             Ok(vec![c])
         })?;
         self.feature_changed(&applied);
-        // A coding agent at work hears it with its next turn; the Control
-        // Agent answers (controller.rs).
-        if !applied.duplicate {
-            self.tell_runs(&id, &cmd, &said).await;
-        }
+        // Otter reads it first and decides what reaches the coding agent
+        // (controller.rs, D-059).
         Ok(applied.feature)
     }
 
@@ -766,7 +762,17 @@ impl Daemon {
             FeatureAction::Cancel => self.hold_runs(&id, true, "Cancelled").await,
             FeatureAction::Interrupt => self.interrupt_runs(&id).await,
             FeatureAction::Redirect { text } => {
-                self.redirect_runs(&id, &p.command_id, text.trim()).await
+                // The turn carries the message's own id, as guidance would
+                // (D-059): passed on once, whichever way it goes.
+                let message = applied
+                    .feature
+                    .messages
+                    .iter()
+                    .rev()
+                    .find(|m| m.correlation_id.as_deref() == Some(p.command_id.as_str()))
+                    .map(|m| m.id.to_string())
+                    .unwrap_or_else(|| p.command_id.clone());
+                self.redirect_runs(&id, &message, text.trim()).await
             }
             // The plan is about to change: the task in progress may not be in it.
             FeatureAction::RequestChanges { .. } => {

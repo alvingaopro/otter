@@ -1782,6 +1782,33 @@ actor in order and journaled (D-058):
   is stale.
 - A turn that ends interrupted or cancelled ends its run as cancelled,
   not failed: no attempt is spent, and the task can pick up again.
-- Pausing doesn't keep queued turns yet (they end with the run, as before):
-  keeping them needs the controller to know which messages a turn already
-  carries — the next step.
+
+**Otter decides what reaches the coding agent.** Every developer message
+used to be forwarded to a running agent before Otter had read it — a
+question about status became an instruction. Now Otter's reply judges it
+(D-049's intent line, two more intents): `guide` — instructions for the
+current work — is queued as a turn of its own, with the message's id as
+its command id; `redirect` — it can't wait — interrupts the current turn
+and goes next; a question or chat (`none`) is answered and not passed on;
+`revise`, `continue`, `pause`, `finish` act on the feature as before.
+Without a model, a message is guidance, as it always was.
+
+**Queued guidance waits, and arrives once.** This supersedes D-058's queue
+rule (queued turns ended at a restart, "carried into the continuation"):
+
+- A turn carries its message's id. The controller's continuation prompt
+  leaves out the messages a turn of the conversation already carries —
+  queued, sent or delivered — and so does its guidance (a redirect's own
+  message, answered afterwards, isn't queued again). That is what makes
+  keeping the queue safe.
+- So queued turns now wait for the next run: across a pause (the
+  conversation is held, the run ends, resuming resumes the conversation
+  first), across an interrupt, and across an otterd restart. They are
+  cancelled only when the run failed or hit a limit, when it was stopped
+  for good (a changed goal — the replan restates the task — or a
+  timeout), or when the conversation is cancelled.
+- Live-checked (`live_sdk_controls`, real Claude through the SDK worker):
+  paused mid-tool, resumed as generation 2 of the same native session,
+  redirected mid-tool; the redirect ran next in the same run, once, and the
+  feature reached review.
+- Capabilities now say `pause` and `redirect`.

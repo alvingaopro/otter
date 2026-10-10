@@ -400,22 +400,15 @@ impl Conversations {
             return;
         }
         let at = Utc::now();
-        for op in [
-            Op::RunEnded {
-                generation: c.generation,
-                outcome: TurnOutcome::OutcomeUnknown,
-                at,
-            },
-            // The controller's continuation restates the developer's
-            // messages (D-058): queued turns are carried by it, so they end.
-            Op::CancelQueued {
-                reason: "carried into the continuation after otterd restarted".into(),
-                at,
-            },
-        ] {
-            if let Some(Err(e)) = self.commit(id, op, true) {
-                tracing::warn!(conversation = %id, "recovering: {e}");
-            }
+        // Queued turns stay queued: the next run delivers them, once (the
+        // controller's continuation doesn't restate them, D-059).
+        let op = Op::RunEnded {
+            generation: c.generation,
+            outcome: TurnOutcome::OutcomeUnknown,
+            at,
+        };
+        if let Some(Err(e)) = self.commit(id, op, true) {
+            tracing::warn!(conversation = %id, "recovering: {e}");
         }
     }
 
@@ -720,13 +713,13 @@ mod tests {
         let t = c.turn(&sent).unwrap();
         assert_eq!(t.delivery, Delivery::Unknown, "never resent on its own");
         assert_eq!(t.outcome, Some(TurnOutcome::OutcomeUnknown));
+        // Queued turns wait for the next run, to be delivered once (D-059).
         let q = c.turn(&queued).unwrap();
-        assert_eq!(q.state, TurnState::Finished);
-        assert_eq!(q.outcome, Some(TurnOutcome::Cancelled));
-        assert!(q.reason.as_deref().unwrap().contains("continuation"));
+        assert_eq!(q.state, TurnState::Queued);
+        assert_eq!(c.next_queued().unwrap().id, queued);
         // The recovery itself is journaled: a second crash keeps it.
         let recs = journal(dir.path(), &id);
-        assert_eq!(recs.iter().filter(|r| r.recovery).count(), 2);
+        assert_eq!(recs.iter().filter(|r| r.recovery).count(), 1);
         drop(again);
         let third = Conversations::load(dir.path()).unwrap();
         let c3 = third.get(id.as_str()).unwrap();

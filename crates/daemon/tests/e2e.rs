@@ -4500,6 +4500,14 @@ async fn interrupting_stops_the_turn_and_waits_and_redirecting_goes_next() {
     assert!(c.turns[1].redirect);
     assert!(c.turns[1].text().contains("Do the other thing"));
     assert_eq!(c.turns[1].outcome, Some(TurnOutcome::Completed));
+    assert_eq!(
+        c.turns
+            .iter()
+            .filter(|t| t.text().contains("Do the other thing"))
+            .count(),
+        1,
+        "passed on once, not again as guidance"
+    );
     // Nothing running: a redirect is refused (send a message instead).
     let err = conn
         .feature_act(
@@ -4512,4 +4520,280 @@ async fn interrupting_stops_the_turn_and_waits_and_redirecting_goes_next() {
         .await
         .unwrap_err();
     assert!(format!("{err:#}").contains("send a message"), "{err:#}");
+}
+
+#[tokio::test]
+async fn guidance_reaches_the_agent_once_across_a_pause_and_a_restart() {
+    use otter_core::conversation::{Delivery, Lifecycle, TurnState};
+    use otter_core::feature::{FeatureAction, RunState};
+    let mut fake = fake_agent_host("ok", "rules").await;
+    let id = started_feature_named(&fake.host, "A long job HANG three").await;
+    wait_feature(&fake.host, &id, "working", |f| {
+        f.live_run()
+            .is_some_and(|r| r.provider_session_id.is_some())
+    })
+    .await;
+    let mut conn = fake.host.conn().await;
+    conn.feature_send("msg-tabs", &id, "Use tabs, not spaces")
+        .await
+        .unwrap();
+    let f = conn.feature_get(&id).await.unwrap();
+    let cid = f.runs[0].conversation_id.clone().unwrap();
+    let carrying = |c: &otter_core::conversation::Conversation| {
+        c.turns
+            .iter()
+            .filter(|t| t.text().contains("Use tabs"))
+            .cloned()
+            .collect::<Vec<_>>()
+    };
+    // Otter passes it on as guidance: a turn of its own, queued.
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        let c = conn
+            .conversation_get(cid.as_str())
+            .await
+            .unwrap()
+            .conversation;
+        if !carrying(&c).is_empty() {
+            break;
+        }
+        assert!(std::time::Instant::now() < deadline, "never queued");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+
+    // Paused: the run ends; the guidance waits.
+    conn.feature_act("pause-g", &id, FeatureAction::Pause)
+        .await
+        .unwrap();
+    let f = wait_feature(&fake.host, &id, "paused", |f| f.live_run().is_none()).await;
+    assert_eq!(f.runs[0].state, RunState::Cancelled);
+    let c = conn
+        .conversation_get(cid.as_str())
+        .await
+        .unwrap()
+        .conversation;
+    assert_eq!(c.lifecycle, Lifecycle::Paused);
+    assert_eq!(carrying(&c)[0].state, TurnState::Queued);
+    drop(conn);
+
+    // otterd restarts while it waits; then the developer resumes.
+    fake.host.restart().await;
+    let mut conn = fake.host.conn().await;
+    conn.feature_act("resume-g", &id, FeatureAction::Resume)
+        .await
+        .unwrap();
+    wait_feature(&fake.host, &id, "resumed", |f| {
+        f.runs.len() == 2 && f.runs[1].state == RunState::Running
+    })
+    .await;
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    let c = loop {
+        let c = conn
+            .conversation_get(cid.as_str())
+            .await
+            .unwrap()
+            .conversation;
+        if carrying(&c)[0].delivery != Delivery::Queued {
+            break c;
+        }
+        assert!(std::time::Instant::now() < deadline, "never delivered");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    };
+    // Delivered by the turn that carried it — once; the continuation the
+    // controller sent doesn't say it again.
+    assert_eq!(
+        carrying(&c).len(),
+        1,
+        "{:#?}",
+        c.turns.iter().map(|t| t.text()).collect::<Vec<_>>()
+    );
+    let continuation = c.turns.last().unwrap();
+    assert!(continuation.text().starts_with("Continue the task"));
+    assert!(!continuation.text().contains("Use tabs"));
+}
+
+/// Real Claude, through the SDK worker: pause mid-tool, resume, redirect
+/// mid-tool (D-059). Uses this host's Claude sign-in; run by hand:
+/// `OTTER_CLAUDE_WORKER=$PWD/packages/claude-runtime cargo test -p otterd
+/// --test e2e live_sdk_controls -- --ignored --nocapture`.
+#[tokio::test]
+#[ignore = "calls Claude; needs the built worker and a signed-in Claude Code"]
+async fn live_sdk_controls() {
+    use otter_core::conversation::{Lifecycle, TurnOutcome};
+    use otter_core::feature::{FeatureAction, FeatureStatus, RunState};
+    use otter_protocol::host::{CodingSettings, SettingsUpdate};
+    let worker = std::env::var("OTTER_CLAUDE_WORKER").expect("OTTER_CLAUDE_WORKER");
+    let node = String::from_utf8(
+        Command::new("sh")
+            .args(["-c", "command -v node"])
+            .output()
+            .unwrap()
+            .stdout,
+    )
+    .unwrap()
+    .trim()
+    .to_owned();
+    let host = TestHost::with_env(&[
+        ("OTTER_CODING_BACKEND", "sdk".into()),
+        ("OTTER_CLAUDE_WORKER", worker),
+        ("OTTER_NODE", node),
+        ("OTTER_CONTROLLER", "rules".into()),
+        ("OTTER_CONTROLLER_TICK_MS", "200".into()),
+        ("DEVELOPER_DIR", String::new()),
+        ("SDKROOT", String::new()),
+    ])
+    .await;
+    let mut conn = host.conn().await;
+    conn.settings_set(SettingsUpdate {
+        coding: Some(CodingSettings {
+            backend: None,
+            model: Some("haiku".into()),
+        }),
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+    let ws = "livectl";
+    let id = started_in(
+        &host,
+        ws,
+        "Work only in the current working directory. Use the Bash tool to run exactly `sleep 30 && echo slept > slept.txt`, then create ./done.txt containing the word ok. Nothing else.",
+    )
+    .await;
+
+    // 1. Pause mid-tool: the turn is interrupted, the run ends, the
+    //    conversation is held.
+    let c = live_sleeping(&host, &id, 0).await;
+    let tools_before = c.tools.len();
+    conn.feature_act("live-pause", &id, FeatureAction::Pause)
+        .await
+        .unwrap();
+    let f = wait_feature(&host, &id, "paused", |f| f.live_run().is_none()).await;
+    assert_eq!(f.runs[0].state, RunState::Cancelled);
+    let session = f.runs[0].provider_session_id.clone().expect("bound");
+    let c = conn
+        .conversation_get(c.id.as_str())
+        .await
+        .unwrap()
+        .conversation;
+    assert_eq!(c.lifecycle, Lifecycle::Paused);
+    assert_eq!(c.turns[0].outcome, Some(TurnOutcome::Interrupted));
+    eprintln!("live: paused mid-tool; turn 1 interrupted");
+
+    // 2. Resume: a new run of the same native session.
+    conn.feature_act("live-resume", &id, FeatureAction::Resume)
+        .await
+        .unwrap();
+    let c2 = live_sleeping(&host, &id, tools_before).await;
+    let f = conn.feature_get(&id).await.unwrap();
+    assert_eq!(f.runs.len(), 2);
+    assert_eq!(
+        f.runs[1].provider_session_id.as_deref(),
+        Some(session.as_str())
+    );
+    assert_eq!(c2.generation, 2);
+    eprintln!("live: resumed as generation 2 of session {session}; sleeping again");
+
+    // 3. Redirect mid-tool: the turn stops, the redirect goes next, same run.
+    conn.feature_act(
+        "live-redirect",
+        &id,
+        FeatureAction::Redirect {
+            text: "Stop waiting. Skip the sleep; instead create ./redirected.txt containing yes, then create ./done.txt containing ok, and finish.".into(),
+        },
+    )
+    .await
+    .unwrap();
+    let deadline = std::time::Instant::now() + Duration::from_secs(300);
+    let f = loop {
+        let f = conn.feature_get(&id).await.unwrap();
+        if matches!(
+            f.status,
+            FeatureStatus::Review | FeatureStatus::Failed | FeatureStatus::Blocked
+        ) {
+            break f;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "timed out: {:?}",
+            f.status
+        );
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    };
+    assert_eq!(f.status, FeatureStatus::Review, "{:?}", f.status_reason);
+    assert_eq!(f.runs.len(), 2, "the redirect ran in the same run");
+    assert_eq!(f.runs[1].state, RunState::Completed);
+    assert!(host.home().join(ws).join("redirected.txt").exists());
+    let c = conn
+        .conversation_get(c2.id.as_str())
+        .await
+        .unwrap()
+        .conversation;
+    let redirect = c
+        .turns
+        .iter()
+        .find(|t| t.redirect)
+        .expect("a redirect turn");
+    assert_eq!(redirect.outcome, Some(TurnOutcome::Completed));
+    assert_eq!(redirect.generation, Some(2));
+    eprintln!(
+        "live: done; turns {:?}",
+        c.turns
+            .iter()
+            .map(|t| (t.generation, t.outcome, t.redirect))
+            .collect::<Vec<_>>()
+    );
+}
+
+/// The live checks' conversation, once a `sleep` tool (after the first
+/// `after` tools) is running.
+async fn live_sleeping(
+    host: &TestHost,
+    id: &str,
+    after: usize,
+) -> otter_core::conversation::Conversation {
+    use otter_core::conversation::ToolStatus;
+    let mut conn = host.conn().await;
+    let deadline = std::time::Instant::now() + Duration::from_secs(180);
+    loop {
+        let list = conn.conversation_list(Some(id)).await.unwrap();
+        if let Some(c) = list.first()
+            && c.conversation
+                .tools
+                .iter()
+                .skip(after)
+                .any(|t| t.status == ToolStatus::Running && t.summary.contains("sleep"))
+        {
+            return c.conversation.clone();
+        }
+        if std::time::Instant::now() > deadline {
+            let f = conn.feature_get(id).await.unwrap();
+            let c = list.first().map(|c| &c.conversation);
+            panic!(
+                "no sleep running; feature {:?} {:?}; runs {:?}; turns {:?}; tools {:?}",
+                f.status,
+                f.status_reason,
+                f.runs
+                    .iter()
+                    .map(|r| (r.state, r.summary.clone()))
+                    .collect::<Vec<_>>(),
+                c.map(|c| c
+                    .turns
+                    .iter()
+                    .map(|t| (
+                        t.generation,
+                        t.state,
+                        t.outcome,
+                        t.text().chars().take(60).collect::<String>()
+                    ))
+                    .collect::<Vec<_>>()),
+                c.map(|c| c
+                    .tools
+                    .iter()
+                    .map(|t| (t.name.clone(), t.status, t.summary.clone()))
+                    .collect::<Vec<_>>()),
+            );
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
 }

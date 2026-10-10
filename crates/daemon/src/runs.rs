@@ -151,6 +151,21 @@ impl Daemon {
                 "run `{other}` is still serving this conversation"
             )));
         }
+        if current.lifecycle == otter_core::conversation::Lifecycle::Paused {
+            self.conversations
+                .apply(
+                    &conversation_id,
+                    Op::Accept {
+                        command_id: format!("{run_id}:resume"),
+                        fingerprint: "resume".into(),
+                        command: Command::Resume,
+                        turn_id: None,
+                        at: now,
+                    },
+                )
+                .ok_or_else(missing)?
+                .map_err(|e| RpcError::conflict(e.to_string()))?;
+        }
         let turn_id = otter_core::TurnId::generate();
         self.conversations
             .apply(
