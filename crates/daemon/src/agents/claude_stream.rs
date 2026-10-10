@@ -145,6 +145,8 @@ impl AgentRuntime for ClaudeRuntime {
                 streaming: true,
                 attachments: false,
                 usage: true,
+                pause: true,
+                redirect: true,
             },
         }
     }

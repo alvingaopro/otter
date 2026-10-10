@@ -106,12 +106,14 @@ pub trait Brain: Send + Sync {
     /// they asked to go on or to stop — a model's judgment. Without a model:
     /// the status only; acting on the message is left to the buttons.
     async fn reply(&self, cx: &Context<'_>, _message: &str, _say: &Say<'_>) -> Result<Reply> {
+        // Without a model a message can't be told apart: it goes to the
+        // coding agent as guidance, as it always has.
         Ok(Reply {
             text: format!(
                 "{} (No model is set for Otter on this host, so I can't act on messages: use the buttons, or choose a model in Settings.)",
                 status_text(cx.feature)
             ),
-            intent: Intent::None,
+            intent: Intent::Guide,
         })
     }
 }
@@ -122,8 +124,13 @@ pub type Say<'a> = dyn Fn(&str) + Send + Sync + 'a;
 /// What the developer's message asks the feature to do.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Intent {
-    /// Just talking (or instructions for the coding agent).
+    /// Just talking: a question, chat. Answered by Otter, not forwarded.
     None,
+    /// Instructions for the coding agent's work (the goal unchanged): its
+    /// next turn, after the current one.
+    Guide,
+    /// Instructions that can't wait: the current turn stops, this goes next.
+    Redirect,
     /// Go on: resume, unblock, start, or retry.
     Continue,
     Pause,
@@ -705,10 +712,13 @@ impl Brain for Model {
              act on them. Don't invent progress.\n{brief}\nStatus: {status}\nTasks:\n{tasks}\n\
              Recent conversation:\n{recent}\n\nTheir message: {message}\n\n\
              Write your reply as plain text. Then, on a last line of its own, write `INTENT: <x>` where \
-             <x> is: revise if they change, add to or correct what should be built (new requirements, \
-             a different approach, feedback on the result); continue if they just ask to go on, resume, \
-             start or retry; pause if they ask to stop or wait for now; finish if they're satisfied and \
-             want it wrapped up; else none (questions, chat).",
+             <x> is: guide if they tell the coding agent how to do the current work (an instruction, a \
+             correction, a detail) without changing what should be built — it gets it with its next turn; \
+             redirect if that can't wait: they want it to stop what it is doing now and do this instead; \
+             revise if they change, add to or correct what should be built (new requirements, a different \
+             approach, feedback on the result); continue if they just ask to go on, resume, start or \
+             retry; pause if they ask to stop or wait for now; finish if they're satisfied and want it \
+             wrapped up; else none (questions, chat — answered by you, not passed on).",
             brief = brief(f),
             status = status_text(f),
             tasks = tasks.join("\n"),
@@ -789,6 +799,8 @@ pub fn split_intent(text: &str) -> (String, Intent) {
             })
         })
         .map(|w| match w.as_str() {
+            "guide" => Intent::Guide,
+            "redirect" => Intent::Redirect,
             "continue" => Intent::Continue,
             "pause" => Intent::Pause,
             "revise" => Intent::Revise,
@@ -814,6 +826,11 @@ mod tests {
             Intent::Continue
         );
         assert_eq!(split_intent("Just chatting.").1, Intent::None);
+        assert_eq!(split_intent("Will do.\nINTENT: guide").1, Intent::Guide);
+        assert_eq!(
+            split_intent("Stopping that.\nINTENT: redirect").1,
+            Intent::Redirect
+        );
         // While it's being written, a line that may become the intent is held back.
         assert_eq!(visible_reply("Done soon.\nINT"), "Done soon.");
         assert_eq!(

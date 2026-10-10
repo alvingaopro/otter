@@ -161,6 +161,8 @@ pub struct Actor {
     redirecting: bool,
     /// Asked to pause or cancel: when the turn settles, end as this.
     holding: Option<(TurnOutcome, oneshot::Sender<()>)>,
+    /// Stopped for good (a changed goal, a timeout): queued turns go too.
+    stopping: bool,
     /// An interrupt that must settle by then, and how long it may take.
     interrupt_by: Option<tokio::time::Instant>,
     interrupt_after: std::time::Duration,
@@ -213,6 +215,7 @@ impl Actor {
             storage: None,
             redirecting: false,
             holding: None,
+            stopping: false,
             interrupt_by: None,
             interrupt_after: interrupt_deadline(),
         }
@@ -752,6 +755,7 @@ impl Actor {
                 }
             }
             ActorCmd::Stop { outcome, done } => {
+                self.stopping = true;
                 return self.stop(outcome, Some(done)).await;
             }
         }
@@ -796,10 +800,18 @@ impl Actor {
             outcome,
             at: now,
         });
-        self.apply(Op::CancelQueued {
-            reason: "not delivered: the run ended first".into(),
-            at: now,
-        });
+        // Queued turns wait for the next run — unless this one failed or
+        // was stopped for good (D-059).
+        if matches!(
+            outcome,
+            TurnOutcome::Failed | TurnOutcome::LimitReached | TurnOutcome::Cancelled
+        ) || self.stopping
+        {
+            self.apply(Op::CancelQueued {
+                reason: "not delivered: the run ended first".into(),
+                at: now,
+            });
+        }
         self.emit(ActorEvent::Ended {
             outcome,
             error,
@@ -1184,7 +1196,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn an_interrupted_turn_ends_the_run_and_unsent_turns_are_cancelled() {
+    async fn an_interrupted_turn_ends_the_run_and_unsent_turns_wait_for_the_next() {
         let s = setup(&["HANG", "later"]);
         let (fake, sent, _) = Fake::new();
         let (tx, mut rx, _task) = spawn(&s, "run_a", fake);
@@ -1215,9 +1227,11 @@ mod tests {
             c.turn(&turn).unwrap().outcome,
             Some(TurnOutcome::Interrupted)
         );
+        // Queued turns wait for the next run (D-059).
         let later = &c.turns[1];
-        assert_eq!(later.outcome, Some(TurnOutcome::Cancelled));
+        assert_eq!(later.state, TurnState::Queued);
         assert_eq!(later.delivery, Delivery::Queued);
+        assert!(c.next_queued().is_some());
         // The tool it started never reported: not a success.
         assert_eq!(c.tools[0].status, ToolStatus::ResultUnavailable);
     }

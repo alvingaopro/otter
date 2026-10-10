@@ -295,6 +295,22 @@ impl Daemon {
             reply_text.clone(),
             true,
         );
+        // What reaches the coding agent (D-059): guidance as turns of their
+        // own (each message's id is its command id, so it is queued once);
+        // a redirect stops the current turn first; a question or chat
+        // doesn't go at all.
+        match routing(intent) {
+            Routing::Queue => {
+                let carried = self.carried(f);
+                for m in open.iter().filter(|m| !carried.contains(m.id.as_str())) {
+                    self.tell_runs(&f.id, m.id.as_str(), &m.text).await;
+                }
+            }
+            Routing::Redirect => {
+                self.redirect_runs(&f.id, last.id.as_str(), &text).await;
+            }
+            Routing::Nothing => {}
+        }
         if stop {
             self.hold_runs(&f.id, false, "Paused").await;
         }
@@ -744,7 +760,14 @@ impl Daemon {
             return Ok(());
         }
         let prompt = if resume.is_some() {
-            continue_prompt(f, last.map(|r| r.started_at))
+            // Messages a turn of the task's conversation already carries
+            // (queued, sent or delivered) aren't restated.
+            let carried = last
+                .and_then(|r| r.conversation_id.as_ref())
+                .and_then(|c| self.conversations.get(c.as_str()))
+                .map(|c| carried_by(&c))
+                .unwrap_or_default();
+            continue_prompt(f, last.map(|r| r.started_at), &carried)
         } else {
             task_prompt(f, &task)
         };
@@ -1544,12 +1567,63 @@ fn repeating_failure(f: &Feature) -> Option<String> {
     same.then(|| first.summary.clone().unwrap_or_default())
 }
 
-fn developer_notes(f: &Feature, since: Option<chrono::DateTime<Utc>>) -> String {
+/// The messages (by id) a conversation's turns carry: queued, sent or
+/// delivered — they reach the agent that way, once.
+fn carried_by(c: &otter_core::conversation::Conversation) -> std::collections::HashSet<String> {
+    c.turns
+        .iter()
+        .filter(|t| {
+            t.state == otter_core::conversation::TurnState::Queued
+                || t.delivery != otter_core::conversation::Delivery::Queued
+        })
+        .filter_map(|t| t.command_id.clone())
+        .collect()
+}
+
+impl Daemon {
+    /// The messages the feature's live runs' conversations already carry.
+    fn carried(&self, f: &Feature) -> std::collections::HashSet<String> {
+        f.runs
+            .iter()
+            .filter(|r| !r.state.is_over())
+            .filter_map(|r| r.conversation_id.as_ref())
+            .filter_map(|c| self.conversations.get(c.as_str()))
+            .flat_map(|c| carried_by(&c))
+            .collect()
+    }
+}
+
+/// What a developer's message turns into for the coding agent.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum Routing {
+    Nothing,
+    Queue,
+    Redirect,
+}
+
+pub(crate) fn routing(intent: crate::brain::Intent) -> Routing {
+    use crate::brain::Intent;
+    match intent {
+        Intent::Guide => Routing::Queue,
+        Intent::Redirect => Routing::Redirect,
+        _ => Routing::Nothing,
+    }
+}
+
+/// The developer's messages since `since`, leaving out those a turn of the
+/// conversation already carries (`carried`: queued, sent or delivered) —
+/// they reach the agent that way, once (D-059).
+fn developer_notes(
+    f: &Feature,
+    since: Option<chrono::DateTime<Utc>>,
+    carried: &std::collections::HashSet<String>,
+) -> String {
     let notes: Vec<String> = f
         .messages
         .iter()
         .skip(1) // The request itself.
         .filter(|m| m.role == MessageRole::User && since.is_none_or(|s| m.at > s))
+        .filter(|m| !carried.contains(m.id.as_str()))
         .map(|m| format!("- {}", m.text))
         .collect();
     if notes.is_empty() {
@@ -1598,7 +1672,7 @@ pub fn task_prompt(f: &Feature, task: &Task) -> String {
     if let Some(e) = &task.last_error {
         p.push_str(&format!("\nThe previous attempt failed: {e}\n"));
     }
-    p.push_str(&developer_notes(f, None));
+    p.push_str(&developer_notes(f, None, &Default::default()));
     if let Some(cmd) = &f.verify_command {
         p.push_str(&format!(
             "\nThe work is checked with `{cmd}`; run it before you finish.\n"
@@ -1608,10 +1682,14 @@ pub fn task_prompt(f: &Feature, task: &Task) -> String {
 }
 
 /// What a resumed run is told: carry on, plus anything new from the developer.
-fn continue_prompt(f: &Feature, since: Option<chrono::DateTime<Utc>>) -> String {
+fn continue_prompt(
+    f: &Feature,
+    since: Option<chrono::DateTime<Utc>>,
+    carried: &std::collections::HashSet<String>,
+) -> String {
     format!(
         "Continue the task where you left off.{}",
-        developer_notes(f, since)
+        developer_notes(f, since, carried)
     )
 }
 
@@ -1667,6 +1745,23 @@ async fn run_check(cmd: &str, root: &std::path::Path, env: &EnvMap) -> Evidence 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_guidance_reaches_the_coding_agent() {
+        use crate::brain::Intent;
+        assert_eq!(routing(Intent::Guide), Routing::Queue);
+        assert_eq!(routing(Intent::Redirect), Routing::Redirect);
+        // A question, or a message about the feature itself, is Otter's.
+        for i in [
+            Intent::None,
+            Intent::Continue,
+            Intent::Pause,
+            Intent::Revise,
+            Intent::Finish,
+        ] {
+            assert_eq!(routing(i), Routing::Nothing, "{i:?}");
+        }
+    }
     use otter_core::RunId;
     use otter_core::feature::Run;
 

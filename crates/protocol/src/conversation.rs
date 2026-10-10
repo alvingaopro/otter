@@ -44,6 +44,11 @@ pub struct RuntimeFeatures {
     pub streaming: bool,
     pub attachments: bool,
     pub usage: bool,
+    /// Pause (a barrier) and redirect (stop, then this) (D-059).
+    #[serde(default)]
+    pub pause: bool,
+    #[serde(default)]
+    pub redirect: bool,
 }
 
 /// `conversation.get`.
