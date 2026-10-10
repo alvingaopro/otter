@@ -46,15 +46,38 @@ pub enum ActorCmd {
         check_id: String,
         decision: CheckDecision,
     },
-    /// Stop this turn (only this one). Sent by the run controls (interrupt,
-    /// redirect) that come with milestone 4; handled and tested here.
-    #[allow(dead_code)]
+    /// Stop this turn (only this one); the run doesn't go on by itself.
     Interrupt { turn: TurnId },
+    /// Guidance that can't wait: the current turn is interrupted and this
+    /// goes next, in the same run (D-059).
+    Redirect {
+        command_id: String,
+        initiator: otter_core::conversation::Initiator,
+        text: String,
+    },
+    /// Pause (a barrier: nothing more is delivered) or cancel (nothing more
+    /// at all): what runs is interrupted, then the run ends.
+    Hold {
+        command_id: String,
+        cancel: bool,
+        done: oneshot::Sender<()>,
+    },
     /// End the run. What it was doing ends as `outcome`.
     Stop {
         outcome: TurnOutcome,
         done: oneshot::Sender<()>,
     },
+}
+
+/// How long an interrupt may take to settle before the run is stopped
+/// (`OTTER_INTERRUPT_DEADLINE_MS`, default 10 s).
+fn interrupt_deadline() -> std::time::Duration {
+    std::time::Duration::from_millis(
+        std::env::var("OTTER_INTERRUPT_DEADLINE_MS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(10_000),
+    )
 }
 
 /// What happened, with Otter's ids. Listeners use what they need (the
@@ -134,6 +157,13 @@ pub struct Actor {
     drafts: HashMap<BlockId, Checkpoint>,
     /// The journal couldn't be written: the run must stop (D-058).
     storage: Option<String>,
+    /// An interrupt was asked for a redirect: when it settles, go on.
+    redirecting: bool,
+    /// Asked to pause or cancel: when the turn settles, end as this.
+    holding: Option<(TurnOutcome, oneshot::Sender<()>)>,
+    /// An interrupt that must settle by then, and how long it may take.
+    interrupt_by: Option<tokio::time::Instant>,
+    interrupt_after: std::time::Duration,
 }
 
 /// Text being written, journaled now and then so a crash keeps most of it.
@@ -181,7 +211,18 @@ impl Actor {
             current: None,
             drafts: HashMap::new(),
             storage: None,
+            redirecting: false,
+            holding: None,
+            interrupt_by: None,
+            interrupt_after: interrupt_deadline(),
         }
+    }
+
+    /// How long an interrupt may take to settle (tests).
+    #[cfg(test)]
+    pub fn interrupt_after(mut self, d: std::time::Duration) -> Actor {
+        self.interrupt_after = d;
+        self
     }
 
     /// Drive the run until it ends.
@@ -204,6 +245,7 @@ impl Actor {
             return;
         }
         loop {
+            let deadline = self.interrupt_by;
             let flow = tokio::select! {
                 ev = self.handle.next_event() => match ev {
                     Some(ev) => self.on_event(ev).await,
@@ -214,6 +256,15 @@ impl Actor {
                     // Nobody can reach the run any more: end it.
                     None => self.stop(TurnOutcome::Interrupted, None).await,
                 },
+                // An interrupt that didn't settle in time: stop the run; what
+                // its turn did is unknown.
+                _ = tokio::time::sleep_until(deadline.unwrap_or_else(tokio::time::Instant::now)), if deadline.is_some() => {
+                    let why = format!(
+                        "it didn't stop within {} ms of being interrupted",
+                        self.interrupt_after.as_millis()
+                    );
+                    self.lost(&why).await
+                }
             };
             if let Flow::End = flow {
                 return;
@@ -245,6 +296,16 @@ impl Actor {
 
     async fn emit(&self, ev: ActorEvent) {
         let _ = self.out.send(ev).await;
+    }
+
+    /// Ask the provider to stop the current turn, by a deadline.
+    async fn interrupt_current(&mut self) {
+        if self.current.is_some() {
+            let _ = self.handle.interrupt().await;
+            let after = self.interrupt_after;
+            self.interrupt_by
+                .get_or_insert_with(|| tokio::time::Instant::now() + after);
+        }
     }
 
     /// Send the next queued turn, if one is due.
@@ -528,7 +589,14 @@ impl Actor {
                     at: now,
                 });
                 self.asks.clear();
-                let next = if outcome == TurnOutcome::Completed {
+                self.interrupt_by = None;
+                let go_on = match outcome {
+                    TurnOutcome::Completed => self.holding.is_none(),
+                    TurnOutcome::Interrupted => self.redirecting && self.holding.is_none(),
+                    _ => false,
+                };
+                self.redirecting = false;
+                let next = if go_on {
                     if let Flow::End = self.deliver_next().await {
                         return Flow::End;
                     }
@@ -544,10 +612,13 @@ impl Actor {
                 })
                 .await;
                 if next.is_none() {
-                    // Idle (or stopped short): the run is done. Its context
-                    // stays resumable.
+                    // Idle, held, or stopped short: the run is done. Its
+                    // context stays resumable.
                     let _ = self.handle.stop().await;
-                    self.end(outcome, None, None).await;
+                    match self.holding.take() {
+                        Some((held, done)) => self.end(held, None, Some(done)).await,
+                        None => self.end(outcome, None, None).await,
+                    }
                     return Flow::End;
                 }
             }
@@ -621,7 +692,63 @@ impl Actor {
                     at: now,
                 });
                 if matches!(accepted, Some(Ok(_))) && self.current.as_ref() == Some(&turn) {
-                    let _ = self.handle.interrupt().await;
+                    self.interrupt_current().await;
+                }
+            }
+            ActorCmd::Redirect {
+                command_id,
+                initiator,
+                text,
+            } => {
+                let accepted = self.apply(Op::Accept {
+                    command_id,
+                    fingerprint: text.clone(),
+                    command: Command::Redirect {
+                        initiator,
+                        input: vec![otter_core::conversation::InputBlock::Text { text }],
+                    },
+                    turn_id: Some(TurnId::generate()),
+                    at: now,
+                });
+                // A repeat changes nothing.
+                if matches!(
+                    accepted,
+                    Some(Ok(Applied::Accepted(
+                        otter_core::conversation::Accepted::New(_)
+                    )))
+                ) {
+                    if self.current.is_some() {
+                        self.redirecting = true;
+                        self.interrupt_current().await;
+                    } else {
+                        return self.deliver_next().await;
+                    }
+                }
+            }
+            ActorCmd::Hold {
+                command_id,
+                cancel,
+                done,
+            } => {
+                let (command, outcome) = if cancel {
+                    (Command::Cancel, TurnOutcome::Cancelled)
+                } else {
+                    (Command::Pause, TurnOutcome::Interrupted)
+                };
+                self.apply(Op::Accept {
+                    command_id,
+                    fingerprint: format!("{command:?}"),
+                    command,
+                    turn_id: None,
+                    at: now,
+                });
+                if self.current.is_some() {
+                    // Ends when the turn settles (or by the deadline).
+                    self.holding = Some((outcome, done));
+                    self.redirecting = false;
+                    self.interrupt_current().await;
+                } else {
+                    return self.stop(outcome, Some(done)).await;
                 }
             }
             ActorCmd::Stop { outcome, done } => {
@@ -648,7 +775,8 @@ impl Actor {
             });
         }
         let _ = self.handle.stop().await;
-        self.end(TurnOutcome::OutcomeUnknown, Some(why.into()), None)
+        let done = self.holding.take().map(|(_, d)| d);
+        self.end(TurnOutcome::OutcomeUnknown, Some(why.into()), done)
             .await;
         Flow::End
     }
@@ -758,6 +886,9 @@ mod tests {
         tx: mpsc::Sender<RuntimeEvent>,
         sent: Arc<Mutex<Vec<String>>>,
         decided: Arc<Mutex<Vec<(String, DecisionReply)>>>,
+        /// The turn being worked on (`STUCK` ignores interrupts; `RACE`
+        /// finishes as the interrupt arrives).
+        last: String,
     }
 
     impl Fake {
@@ -771,6 +902,7 @@ mod tests {
                     tx,
                     sent: sent.clone(),
                     decided: decided.clone(),
+                    last: String::new(),
                 },
                 sent,
                 decided,
@@ -794,6 +926,7 @@ mod tests {
     impl RunHandle for Fake {
         async fn send_turn(&mut self, turn: &TurnSpec) -> anyhow::Result<()> {
             self.sent.lock().unwrap().push(turn.text.clone());
+            self.last = turn.text.clone();
             self.say(RuntimeEvent::TurnDelivered);
             let text = |t: &str| RuntimeEvent::Text {
                 message: format!("m-{}", turn.text),
@@ -819,7 +952,7 @@ mod tests {
                         multi_select: false,
                     }],
                 })),
-                t if t.starts_with("HANG") => {
+                t if t.starts_with("HANG") || t.starts_with("STUCK") || t.starts_with("RACE") => {
                     self.say(RuntimeEvent::TextDelta {
                         message: "m-h".into(),
                         block: 0,
@@ -858,8 +991,16 @@ mod tests {
             Ok(())
         }
         async fn interrupt(&mut self) -> anyhow::Result<()> {
+            if self.last.starts_with("STUCK") {
+                return Ok(());
+            }
+            let outcome = if self.last.starts_with("RACE") {
+                TurnOutcome::Completed
+            } else {
+                TurnOutcome::Interrupted
+            };
             self.say(RuntimeEvent::TurnFinished {
-                outcome: TurnOutcome::Interrupted,
+                outcome,
                 summary: None,
                 error: None,
                 usage: None,
@@ -1079,6 +1220,184 @@ mod tests {
         assert_eq!(later.delivery, Delivery::Queued);
         // The tool it started never reported: not a success.
         assert_eq!(c.tools[0].status, ToolStatus::ResultUnavailable);
+    }
+
+    async fn started(rx: &mut mpsc::Receiver<ActorEvent>) -> TurnId {
+        loop {
+            if let Some(ActorEvent::TurnStarted { turn }) = rx.recv().await {
+                return turn;
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn a_redirect_stops_the_turn_and_goes_next_in_the_same_run() {
+        let s = setup(&["HANG", "later"]);
+        let (fake, sent, _) = Fake::new();
+        let (tx, mut rx, _task) = spawn(&s, "run_a", fake);
+        started(&mut rx).await;
+        let redirect = || ActorCmd::Redirect {
+            command_id: "redirect-1".into(),
+            initiator: otter_core::conversation::Initiator::User,
+            text: "go this way".into(),
+        };
+        tx.send(redirect()).await.unwrap();
+        // Sent twice (a retry): applied once.
+        tx.send(redirect()).await.unwrap();
+        let seen = until_ended(&mut rx).await;
+        assert!(seen.iter().any(|e| matches!(
+            e,
+            ActorEvent::TurnFinished {
+                outcome: TurnOutcome::Interrupted,
+                next: Some(_),
+                ..
+            }
+        )));
+        assert_eq!(
+            *sent.lock().unwrap(),
+            vec!["HANG", "go this way", "later"],
+            "the redirect before what was queued"
+        );
+        let c = s.convs.get(s.id.as_str()).unwrap();
+        assert_eq!(c.turns.len(), 3, "one redirect turn");
+        assert!(
+            c.turns
+                .iter()
+                .all(|t| t.run_id == Some(RunId::from("run_a")))
+        );
+        assert!(c.turns[2].redirect);
+    }
+
+    #[tokio::test]
+    async fn pausing_while_a_question_waits_expires_it_and_holds_the_rest() {
+        let s = setup(&["ASK", "later"]);
+        let (fake, _, decided) = Fake::new();
+        let (tx, mut rx, _task) = spawn(&s, "run_a", fake);
+        while !matches!(rx.recv().await, Some(ActorEvent::Ask { .. })) {}
+        let (done, wait) = oneshot::channel();
+        tx.send(ActorCmd::Hold {
+            command_id: "pause-1".into(),
+            cancel: false,
+            done,
+        })
+        .await
+        .unwrap();
+        let seen = until_ended(&mut rx).await;
+        assert!(matches!(
+            seen.last(),
+            Some(ActorEvent::Ended {
+                outcome: TurnOutcome::Interrupted,
+                stopped: Some(_),
+                ..
+            })
+        ));
+        drop(seen);
+        let _ = wait.await;
+        assert!(decided.lock().unwrap().is_empty(), "never answered");
+        let c = s.convs.get(s.id.as_str()).unwrap();
+        assert_eq!(c.lifecycle, otter_core::conversation::Lifecycle::Paused);
+        assert_eq!(c.interactions[0].status, InteractionStatus::Expired);
+        assert_eq!(c.turns[0].outcome, Some(TurnOutcome::Interrupted));
+    }
+
+    #[tokio::test]
+    async fn a_turn_that_finishes_as_it_is_interrupted_stays_completed() {
+        let s = setup(&["RACE"]);
+        let (fake, _, _) = Fake::new();
+        let (tx, mut rx, _task) = spawn(&s, "run_a", fake);
+        let turn = started(&mut rx).await;
+        tx.send(ActorCmd::Interrupt { turn: turn.clone() })
+            .await
+            .unwrap();
+        until_ended(&mut rx).await;
+        let c = s.convs.get(s.id.as_str()).unwrap();
+        assert_eq!(c.turn(&turn).unwrap().outcome, Some(TurnOutcome::Completed));
+        // A late interrupt of it: stale, nothing changes.
+        let late = s.convs.apply(
+            &s.id,
+            Op::Accept {
+                command_id: "late".into(),
+                fingerprint: "i".into(),
+                command: Command::Interrupt { turn_id: turn },
+                turn_id: None,
+                at: Utc::now(),
+            },
+        );
+        assert!(matches!(late, Some(Err(Rejection::Stale(_)))));
+    }
+
+    #[tokio::test]
+    async fn an_interrupt_that_never_settles_ends_the_run_by_the_deadline() {
+        let s = setup(&["STUCK"]);
+        let (fake, _, _) = Fake::new();
+        let g = s
+            .convs
+            .apply(
+                &s.id,
+                Op::Claim {
+                    run: RunId::from("run_a"),
+                    at: Utc::now(),
+                },
+            )
+            .unwrap()
+            .map(|a| match a {
+                Applied::Claimed(g) => g,
+                _ => unreachable!(),
+            })
+            .unwrap();
+        let (tx, mailbox) = mpsc::channel(8);
+        let (out, mut rx) = mpsc::channel(64);
+        let actor = Actor::new(
+            s.id.clone(),
+            RunId::from("run_a"),
+            g,
+            s.convs.clone(),
+            Box::new(fake),
+            out,
+        )
+        .interrupt_after(std::time::Duration::from_millis(300));
+        tokio::spawn(actor.run(mailbox));
+        let turn = started(&mut rx).await;
+        let asked = std::time::Instant::now();
+        tx.send(ActorCmd::Interrupt { turn: turn.clone() })
+            .await
+            .unwrap();
+        let seen = until_ended(&mut rx).await;
+        assert!(asked.elapsed() >= std::time::Duration::from_millis(300));
+        assert!(seen.iter().any(|e| matches!(e,
+            ActorEvent::Ended { outcome: TurnOutcome::OutcomeUnknown, error: Some(why), .. } if why.contains("didn't stop"))));
+        let c = s.convs.get(s.id.as_str()).unwrap();
+        assert_eq!(
+            c.turn(&turn).unwrap().outcome,
+            Some(TurnOutcome::OutcomeUnknown)
+        );
+    }
+
+    #[tokio::test]
+    async fn cancelling_closes_the_conversation() {
+        let s = setup(&["HANG", "later"]);
+        let (fake, _, _) = Fake::new();
+        let (tx, mut rx, _task) = spawn(&s, "run_a", fake);
+        started(&mut rx).await;
+        let (done, _wait) = oneshot::channel();
+        tx.send(ActorCmd::Hold {
+            command_id: "cancel-1".into(),
+            cancel: true,
+            done,
+        })
+        .await
+        .unwrap();
+        let seen = until_ended(&mut rx).await;
+        assert!(matches!(
+            seen.last(),
+            Some(ActorEvent::Ended {
+                outcome: TurnOutcome::Cancelled,
+                ..
+            })
+        ));
+        let c = s.convs.get(s.id.as_str()).unwrap();
+        assert_eq!(c.lifecycle, otter_core::conversation::Lifecycle::Closed);
+        assert_eq!(c.turns[1].outcome, Some(TurnOutcome::Cancelled));
     }
 
     #[tokio::test]

@@ -296,7 +296,7 @@ impl Daemon {
             true,
         );
         if stop {
-            self.stop_runs(&f.id, RunState::Cancelled, "Paused").await;
+            self.hold_runs(&f.id, false, "Paused").await;
         }
         Ok(())
     }

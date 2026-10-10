@@ -247,7 +247,10 @@ Product work owned by the daemon (D-043); see `otter_core::feature`.
   `start`, `pause`, `resume`, `cancel`, `retry`, `accept {override_gates?}`,
   `request_changes {note?}` (the goal changed: plan again from where the
   work stands — any state but cancelled, D-050), `decide {decision_id,
-  approve, answer?}`, `set_workspace {workspace}`, `preview`. An
+  approve, answer?, answers?}` (`answers`: per question, for a form),
+  `set_workspace {workspace}`, `preview`, `interrupt` (stop the coding
+  agent's current turn and pause, D-059), `redirect {text}` (the current
+  turn stops and this goes next; refused when nothing is running). An
   action the lifecycle doesn't allow fails with `conflict`, and so does
   `accept` while a gate (D-047) is open, unless `override_gates`.
 - `feature.delete {feature}` → `null`: removes a feature with its history

@@ -459,10 +459,14 @@ impl Daemon {
                             self.agent_said(&feature, &run, s).await;
                         }
                     } else {
-                        let state = if outcome == TurnOutcome::Completed {
-                            RunState::Completed
-                        } else {
-                            RunState::Failed
+                        // Interrupted or cancelled isn't failed: the task
+                        // can pick up again (D-059).
+                        let state = match outcome {
+                            TurnOutcome::Completed => RunState::Completed,
+                            TurnOutcome::Interrupted | TurnOutcome::Cancelled => {
+                                RunState::Cancelled
+                            }
+                            _ => RunState::Failed,
                         };
                         ending = Some((state, summary, announce));
                     }
@@ -892,6 +896,80 @@ impl Daemon {
                     interaction: decision_id.clone(),
                     reply: reply.clone(),
                     by,
+                })
+                .await;
+        }
+    }
+
+    /// Pause (or cancel) every run of a feature: its turn is interrupted,
+    /// then the run ends, recorded as cancelled with `reason`; its
+    /// conversation is held (or closed). Waits until each has ended.
+    pub(crate) async fn hold_runs(&self, feature_id: &FeatureId, cancel: bool, reason: &str) {
+        let live: Vec<_> = self
+            .runs
+            .lock()
+            .unwrap()
+            .values()
+            .filter(|r| &r.feature == feature_id)
+            .map(|r| (r.tx.clone(), r.stopping.clone()))
+            .collect();
+        for (tx, stopping) in live {
+            *stopping.lock().unwrap() = Some((RunState::Cancelled, reason.to_owned()));
+            let (done, wait) = oneshot::channel();
+            let command_id = format!("hold-{}", RunId::generate());
+            if tx
+                .send(ActorCmd::Hold {
+                    command_id,
+                    cancel,
+                    done,
+                })
+                .await
+                .is_ok()
+            {
+                let _ = tokio::time::timeout(std::time::Duration::from_secs(20), wait).await;
+            }
+        }
+    }
+
+    /// Stop what the coding agent is doing now (its current turn only).
+    pub(crate) async fn interrupt_runs(&self, feature_id: &FeatureId) {
+        let live: Vec<_> = self
+            .runs
+            .lock()
+            .unwrap()
+            .values()
+            .filter(|r| &r.feature == feature_id)
+            .map(|r| (r.tx.clone(), r.conversation.clone()))
+            .collect();
+        for (tx, conversation) in live {
+            let turn = self
+                .conversations
+                .get(conversation.as_str())
+                .and_then(|c| c.active_turn().map(|t| t.id.clone()));
+            if let Some(turn) = turn {
+                let _ = tx.send(ActorCmd::Interrupt { turn }).await;
+            }
+        }
+    }
+
+    /// Guidance that can't wait: the current turn stops and this goes next.
+    pub(crate) async fn redirect_runs(&self, feature_id: &FeatureId, command_id: &str, text: &str) {
+        let live: Vec<_> = self
+            .runs
+            .lock()
+            .unwrap()
+            .values()
+            .filter(|r| &r.feature == feature_id)
+            .map(|r| r.tx.clone())
+            .collect();
+        for tx in live {
+            let _ = tx
+                .send(ActorCmd::Redirect {
+                    command_id: command_id.to_owned(),
+                    initiator: Initiator::User,
+                    text: format!(
+                        "From the developer — a change of direction, before anything else:\n{text}"
+                    ),
                 })
                 .await;
         }
