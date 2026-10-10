@@ -4,6 +4,7 @@
 
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import type { CodingConversation, RuntimeCapabilities } from "./conversation";
 import type { Draft, Feature, FeatureAction, FeatureEventRecord, MessageRole, PlacedFeature } from "./features";
 
 export interface FeatureSource {
@@ -26,6 +27,90 @@ export interface FeatureSource {
   drafts?(key: string): Draft[];
   /** Delete a feature that isn't running; its workspace stays. */
   remove(key: string): Promise<void>;
+  /** The coding agent's conversations for a feature, newest first (D-055). */
+  conversations?(key: string): Promise<CodingConversation[]>;
+  /** Called when one of the feature's conversations changes. Returns an unsubscribe. */
+  watchConversations?(key: string, onChange: () => void): () => void;
+  /** What the host's coding runtime can do (`null`: an otterd that doesn't say). */
+  capabilities?(host: string): Promise<RuntimeCapabilities | null>;
+}
+
+/** The coding agent's work on the sample features. */
+export function sampleConversations(features: Feature[], now = Date.now()): Record<string, CodingConversation[]> {
+  const out: Record<string, CodingConversation[]> = {};
+  const active = features.find((f) => f.status === "implementing");
+  if (active) {
+    out[active.id] = [
+      {
+        id: "conv_mock1",
+        provider: "claude",
+        backend: "sdk",
+        lifecycle: "open",
+        generation: 1,
+        active_run: "run_1",
+        turns: [
+          {
+            id: "turn_1",
+            initiator: "controller",
+            input: [{ type: "text", text: "Wire the Export button into the Timeline panel." }],
+            delivery: "delivered",
+            state: "running",
+            run_id: "run_1",
+            generation: 1,
+            queued_at: iso(6, now),
+            started_at: iso(6, now),
+          },
+          {
+            id: "turn_2",
+            command_id: "m4",
+            initiator: "user",
+            input: [{ type: "text", text: "From the developer:\nUse the existing download icon." }],
+            delivery: "queued",
+            state: "queued",
+            queued_at: iso(1, now),
+          },
+        ],
+        messages: [
+          {
+            id: "msg_a",
+            turn_id: "turn_1",
+            role: "agent",
+            blocks: [{ id: "blk_a", type: "text", text: "Adding the button next to the filter." }],
+            lifecycle: "completed",
+            at: iso(5, now),
+          },
+        ],
+        tools: [
+          {
+            id: "tool_1",
+            turn_id: "turn_1",
+            run_id: "run_1",
+            name: "Bash",
+            effect: "command",
+            summary: "cargo test timeline::csv",
+            status: "succeeded",
+            started_at: iso(5, now),
+            finished_at: iso(5, now),
+            result: { summary: "test result: ok. 4 passed" },
+          },
+          {
+            id: "tool_2",
+            turn_id: "turn_1",
+            run_id: "run_1",
+            name: "Edit",
+            effect: "edit",
+            summary: "src/TimelinePanel.tsx",
+            status: "running",
+            started_at: iso(1, now),
+          },
+        ],
+        interactions: [],
+        resumable: true,
+        updated_at: iso(1, now),
+      },
+    ];
+  }
+  return out;
 }
 
 let counter = 0;
@@ -130,6 +215,7 @@ export function sampleFeatures(now = Date.now()): Feature[] {
 /** An in-memory source with sample data and canned replies. Nothing it does runs anything. */
 export function mockSource(host = "preview", now = Date.now()): FeatureSource {
   let list: PlacedFeature[] = sampleFeatures(now).map((feature) => ({ host, feature, key: `${host}/${feature.id}` }));
+  const conversations = sampleConversations(list.map((p) => p.feature), now);
   const histories = new Map<string, FeatureEventRecord[]>();
   const listeners = new Set<(l: PlacedFeature[]) => void>();
   const stamp = () => new Date().toISOString();
@@ -194,6 +280,31 @@ export function mockSource(host = "preview", now = Date.now()): FeatureSource {
     async remove(key) {
       list = list.filter((p) => p.key !== key);
       listeners.forEach((l) => l(list));
+    },
+    async conversations(key) {
+      const f = list.find((p) => p.key === key);
+      return f ? (conversations[f.feature.id] ?? []) : [];
+    },
+    async capabilities() {
+      return {
+        provider: "claude",
+        backend: "sdk",
+        available: true,
+        structured_ready: false,
+        features: {
+          send_turn: true,
+          resume: true,
+          interrupt_turn: true,
+          permission_requests: true,
+          questions: true,
+          tool_results: true,
+          streaming: true,
+          attachments: false,
+          usage: true,
+          pause: true,
+          redirect: true,
+        },
+      };
     },
     async act(key, action) {
       const next: Partial<Record<FeatureAction["action"], Feature["status"]>> = {
@@ -287,9 +398,15 @@ export function daemonSource(): FeatureSource {
     rebuild();
   };
 
+  // Who wants to hear that a feature's conversations changed.
+  const conversationWatchers = new Map<string, Set<() => void>>();
   void listen<{ host: string; record: { type: string } }>("host-event", (e) => {
     const { host, record } = e.payload;
     if (!hosts.includes(host)) return;
+    if (record.type === "ConversationChanged") {
+      const feature = (record as { feature_id?: string }).feature_id;
+      if (feature) conversationWatchers.get(`${host}/${feature}`)?.forEach((w) => w());
+    }
     if (record.type === "FeatureChanged") void load(host);
     if (record.type === "FeatureDeleted") {
       drafts.delete(`${host}/${(record as { feature_id?: string }).feature_id}`);
@@ -355,6 +472,30 @@ export function daemonSource(): FeatureSource {
     },
     drafts(key) {
       return [...(drafts.get(key)?.values() ?? [])];
+    },
+    async conversations(key) {
+      const { host, feature } = splitKey(key);
+      try {
+        return await invoke<CodingConversation[]>("conversations", { host, feature });
+      } catch {
+        // An otterd from before conversations.
+        return [];
+      }
+    },
+    watchConversations(key, onChange) {
+      const set = conversationWatchers.get(key) ?? new Set();
+      set.add(onChange);
+      conversationWatchers.set(key, set);
+      return () => {
+        set.delete(onChange);
+      };
+    },
+    async capabilities(host) {
+      try {
+        return await invoke<RuntimeCapabilities>("runtime_capabilities", { host });
+      } catch {
+        return null;
+      }
     },
   };
 }

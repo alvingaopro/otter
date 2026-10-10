@@ -3,7 +3,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const calls = vi.hoisted(() => [] as { cmd: string; args: Record<string, unknown> }[]);
-const state = vi.hoisted(() => ({ set: false, controller: undefined as string | undefined, modern: false }));
+const state = vi.hoisted(() => ({ set: false, controller: undefined as string | undefined, modern: false, backend: undefined as string | undefined }));
 
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: vi.fn(async (cmd: string, args: Record<string, unknown>) => {
@@ -15,9 +15,16 @@ vi.mock("@tauri-apps/api/core", () => ({
         { id: "openai/gpt-x", name: "OpenAI: GPT X" },
       ];
     }
+    if (cmd === "runtime_capabilities") {
+      return state.backend === "sdk"
+        ? { backend: "sdk", available: false, notes: ["Node.js wasn't found."], features: {} }
+        : { backend: "legacy_cli", available: true, features: {} };
+    }
     if (cmd === "settings_set") {
       const u = args.update as { controller?: string; secrets?: Record<string, string | null> };
       if (u.controller !== undefined) state.controller = u.controller || undefined;
+      const coding = (args.update as { coding?: { backend?: string } }).coding;
+      if (coding?.backend && state.backend) state.backend = coding.backend;
       if (u.secrets && "OPENROUTER_API_KEY" in u.secrets) state.set = u.secrets.OPENROUTER_API_KEY !== null;
     }
     return {
@@ -26,6 +33,7 @@ vi.mock("@tauri-apps/api/core", () => ({
         { name: "OPENROUTER_API_KEY", purpose: "Lets Otter use OpenRouter", set: state.set },
         ...(state.modern ? [{ name: "OPENAI_API_KEY", purpose: "Lets Otter use OpenAI", set: false }] : []),
       ],
+      ...(state.backend ? { coding: { backend: state.backend } } : {}),
       ...(state.modern
         ? {
             active: "openrouter",
@@ -59,6 +67,7 @@ describe("Settings", () => {
     state.set = false;
     state.controller = undefined;
     state.modern = expect.getState().currentTestName?.includes("models") ?? false;
+    state.backend = expect.getState().currentTestName?.includes("coding agent") ? "legacy_cli" : undefined;
     host = document.createElement("div");
     document.body.appendChild(host);
     root = createRoot(host);
@@ -138,5 +147,26 @@ describe("Settings", () => {
     await flush();
     const set = calls.find((c) => c.cmd === "settings_set")!;
     expect((set.args.update as { secrets: object }).secrets).toEqual({});
+  });
+
+  it("sets how the coding agent runs, and says whether it can here", async () => {
+    expect(calls).toContainEqual({ cmd: "runtime_capabilities", args: { host: "mac" } });
+    expect(dialog().textContent).toContain("Ready on this host.");
+    const select = dialog().querySelector<HTMLSelectElement>('select[aria-label="Coding agent runs through"]')!;
+    expect(select.value).toBe("legacy_cli");
+    select.value = "sdk";
+    await act(async () => select.dispatchEvent(new Event("change", { bubbles: true })));
+    type(dialog().querySelector<HTMLInputElement>('input[aria-label="Coding model"]')!, "sonnet");
+    await act(async () => button("Save").click());
+    await flush();
+    const set = calls.find((c) => c.cmd === "settings_set")!;
+    expect((set.args.update as { coding: object }).coding).toEqual({ backend: "sdk", model: "sonnet" });
+    // Rechecked after the save: the SDK worker isn't ready, and why.
+    expect(dialog().textContent).toContain("Not ready on this host. Node.js wasn't found.");
+  });
+
+  it("shows nothing about coding for an older host", async () => {
+    expect(dialog().querySelector('select[aria-label="Coding agent runs through"]')).toBeNull();
+    expect(calls.some((c) => c.cmd === "runtime_capabilities")).toBe(false);
   });
 });

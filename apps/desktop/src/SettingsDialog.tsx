@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { Dialog } from "./Dialog";
+import type { RuntimeCapabilities } from "./conversation";
 
 /** Mirrors `otter_protocol::host::ControllerInfo` (D-052). */
 export interface ControllerInfo {
@@ -24,7 +25,15 @@ export interface HostSettings {
   controllers?: ControllerInfo[];
   /** What runs now: what "automatic" chose, or the environment's. */
   active?: string;
+  /** How the coding agent runs (D-057); without a backend from older daemons. */
+  coding?: { backend?: string; model?: string };
 }
+
+/** How the coding agent can run on a host (D-057). */
+const BACKENDS: [string, string][] = [
+  ["legacy_cli", "Claude Code's own stream (the long-standing way)"],
+  ["sdk", "Claude Agent SDK worker (structured; needs Node and the worker)"],
+];
 
 /** Mirrors `otter_protocol::host::ModelInfo`. */
 export interface ModelInfo {
@@ -59,6 +68,10 @@ export function SettingsDialog({ hosts, defaultHost, onClose }: { hosts: string[
   const [error, setError] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
   const [busy, setBusy] = useState(false);
+  // The coding agent's own settings, apart from Otter's (D-057).
+  const [backend, setBackend] = useState("");
+  const [codingModel, setCodingModel] = useState("");
+  const [caps, setCaps] = useState<RuntimeCapabilities | null>(null);
 
   useEffect(() => {
     if (!host) return;
@@ -72,12 +85,26 @@ export function SettingsDialog({ hosts, defaultHost, onClose }: { hosts: string[
         setSettings(s);
         setController(s.controller ?? "");
         setModel(s.model ?? "");
+        setBackend(s.coding?.backend ?? "");
+        setCodingModel(s.coding?.model ?? "");
       })
       .catch((e) => live && setError(`${e} (an otterd older than this app has no settings)`));
     return () => {
       live = false;
     };
   }, [host]);
+
+  // Whether the coding agent can run here, as the host says (after a save too).
+  useEffect(() => {
+    if (!host || !settings?.coding?.backend) return;
+    let live = true;
+    invoke<RuntimeCapabilities>("runtime_capabilities", { host })
+      .then((c) => live && setCaps(c))
+      .catch(() => live && setCaps(null));
+    return () => {
+      live = false;
+    };
+  }, [host, settings]);
 
   const controllers = settings?.controllers?.length ? settings.controllers : OLD_CONTROLLERS;
   // The one the model and key below are for: the choice, else what automatic uses.
@@ -101,7 +128,12 @@ export function SettingsDialog({ hosts, defaultHost, onClose }: { hosts: string[
     };
   }, [host, effective, listsModels, keySet, reload]);
 
-  async function save(update: { controller?: string; model?: string; secrets?: Record<string, string | null> }) {
+  async function save(update: {
+    controller?: string;
+    model?: string;
+    secrets?: Record<string, string | null>;
+    coding?: { backend?: string; model?: string };
+  }) {
     setBusy(true);
     setError(null);
     setSaved(false);
@@ -130,7 +162,12 @@ export function SettingsDialog({ hosts, defaultHost, onClose }: { hosts: string[
     e.preventDefault();
     const secrets: Record<string, string> = {};
     for (const [name, value] of Object.entries(keys)) if (value.trim()) secrets[name] = value.trim();
-    void save({ controller, model, secrets });
+    void save({
+      controller,
+      model,
+      secrets,
+      ...(settings?.coding?.backend ? { coding: { backend, model: codingModel } } : {}),
+    });
   }
 
   if (hosts.length === 0) {
@@ -251,6 +288,42 @@ export function SettingsDialog({ hosts, defaultHost, onClose }: { hosts: string[
               </div>
             )}
             {needsModel && <p className="notice small">{info?.label} has no default model: choose one.</p>}
+            {settings.coding?.backend && (
+              <fieldset className="field coding">
+                <legend>Coding agent</legend>
+                <span className="muted small">
+                  Claude does the coding on {host}; Otter (above) plans, decides and checks. This is how Claude runs and
+                  which model it codes with — separate from Otter's own model. Changes apply to work that starts after.
+                </span>
+                <label className="field">
+                  <span>Runs through</span>
+                  <select aria-label="Coding agent runs through" value={backend} onChange={(e) => setBackend(e.target.value)}>
+                    {BACKENDS.map(([id, label]) => (
+                      <option key={id} value={id}>
+                        {label}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label className="field">
+                  <span>Model</span>
+                  <input
+                    aria-label="Coding model"
+                    value={codingModel}
+                    onChange={(e) => setCodingModel(e.target.value)}
+                    placeholder="Default: Claude Code's (e.g. opus, sonnet, claude-sonnet-5-5)"
+                    spellCheck={false}
+                    autoComplete="off"
+                  />
+                </label>
+                {caps && caps.backend === settings.coding.backend && (
+                  <p className={caps.available ? "muted small" : "notice small"} role="status">
+                    {caps.available ? "Ready on this host." : "Not ready on this host."}{" "}
+                    {(caps.notes ?? []).join(" ")}
+                  </p>
+                )}
+              </fieldset>
+            )}
             {otherKeys.length > 0 && (
               <details className="field">
                 <summary className="muted small">

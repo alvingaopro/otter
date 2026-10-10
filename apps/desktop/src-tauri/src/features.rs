@@ -108,3 +108,30 @@ pub async fn feature_events(
         .await
         .map_err(|e| e.to_string())
 }
+
+/// The coding agent's conversations for a feature, newest first (D-055).
+#[tauri::command]
+pub async fn conversations(
+    app: AppHandle,
+    host: String,
+    feature: String,
+) -> Result<Vec<otter_protocol::conversation::ConversationView>, String> {
+    rpc(&app, &host)
+        .await?
+        .conversation_list(Some(&feature))
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// What the host's coding runtime can do.
+#[tauri::command]
+pub async fn runtime_capabilities(
+    app: AppHandle,
+    host: String,
+) -> Result<otter_protocol::conversation::RuntimeCapabilities, String> {
+    rpc(&app, &host)
+        .await?
+        .runtime_capabilities()
+        .await
+        .map_err(|e| e.to_string())
+}

@@ -209,7 +209,7 @@ export type FeatureAction =
   | { action: "resume" }
   | { action: "cancel" }
   | { action: "retry" }
-  | { action: "decide"; decision_id: string; approve: boolean; answer?: string }
+  | { action: "decide"; decision_id: string; approve: boolean; answer?: string; answers?: Record<string, string> }
   | { action: "accept"; override_gates?: boolean }
   | { action: "request_changes"; note?: string }
   | { action: "set_workspace"; workspace: string }
