@@ -119,6 +119,14 @@ otter attach <[host:]ws[/session]>
 otter logs <ws/session> [-n LINES]
 otter send <ws/session> <text> [--no-enter]
 otter events [-n N] [-f]
+otter feature new <title> [--request R] [--workspace WS] [--host H]
+otter feature ls | show <[host:]feature> | start <feature>
+otter feature message <feature> <text>              # to Otter; it passes on what the coding agent needs
+otter feature redirect <feature> <text>             # stop the agent's current work; this goes next
+otter feature interrupt|pause|resume|cancel <feature>
+otter feature decide <feature> <decision> [--deny | --answer A | --answer-for "Q=A" …]
+otter conversation ls [--feature F] | show <[host:]conv> | history <conv> [--after CURSOR]
+otter runtime status [--host H]                     # how the coding agent runs, and what it can do
 ```
 
 Add `--json` to any command for machine-readable output.
