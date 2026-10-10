@@ -4,7 +4,7 @@ import { test } from "node:test";
 import type { Options, Query, SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
 
 import { Pending } from "./interactions.js";
-import { Frames, worker } from "./main.js";
+import { Frames, bundledClaude, check, worker } from "./main.js";
 import { MAX_FRAME, PROTOCOL_VERSION, parseCommand } from "./protocol.js";
 import { DISALLOWED_TOOLS, Session } from "./sdk.js";
 
@@ -169,4 +169,15 @@ test("one turn at a time, and a shutdown denies what is still waiting", async ()
     },
   );
   assert.equal((denied as { behavior: string }).behavior, "deny");
+});
+
+test("--check says what this worker is without starting anything", () => {
+  const c = check();
+  assert.equal(c.protocol_version, 1);
+  assert.match(c.sdk_version, /^\d+\.\d+\.\d+$/);
+  assert.equal(c.node_supported, Number(process.versions.node.split(".")[0]) >= 20);
+  // Claude Code is an optional per-platform package (CI leaves it out);
+  // there's never one for a platform the SDK doesn't ship.
+  assert.equal(typeof c.claude_code, "boolean");
+  assert.equal(bundledClaude("aix", "ppc64"), null);
 });

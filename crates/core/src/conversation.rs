@@ -88,6 +88,10 @@ pub struct Conversation {
     pub model: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub config_fingerprint: Option<String>,
+    /// What the latest run ran on (worker, SDK and Node versions), when the
+    /// runtime says (D-060).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime_version: Option<String>,
     /// The process serving the latest generation, as started: what a
     /// daemon that restarts makes sure didn't outlive its run.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -609,6 +613,7 @@ impl Conversation {
             binding: None,
             model: None,
             config_fingerprint: None,
+            runtime_version: None,
             process: None,
             created_at: now,
             updated_at: now,
@@ -1179,6 +1184,10 @@ pub enum Op {
     },
     Claim {
         run: RunId,
+        /// What the run runs on (e.g. the worker, SDK and Node versions), as
+        /// the runtime describes itself: kept per generation in the journal.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        runtime: Option<String>,
         at: Timestamp,
     },
     Sending {
@@ -1296,7 +1305,13 @@ impl Conversation {
                 turn_id,
                 at,
             )?),
-            Op::Claim { run, at } => Applied::Claimed(self.claim(run, at)?),
+            Op::Claim { run, runtime, at } => {
+                let g = self.claim(run, at)?;
+                if runtime.is_some() {
+                    self.runtime_version = runtime;
+                }
+                Applied::Claimed(g)
+            }
             Op::Sending {
                 turn,
                 generation,
@@ -1788,6 +1803,7 @@ mod tests {
             },
             Op::Claim {
                 run: RunId::from("run_a"),
+                runtime: None,
                 at,
             },
             Op::Sending {

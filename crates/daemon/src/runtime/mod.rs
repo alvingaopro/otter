@@ -232,6 +232,10 @@ pub trait AgentRuntime: Send + Sync {
     fn id(&self) -> &'static str;
     /// What it is and can do on this host.
     fn capabilities(&self, env: &EnvMap) -> RuntimeCapabilities;
+    /// What a run started now runs on (versions), for the record.
+    fn version(&self, _env: &EnvMap) -> Option<String> {
+        None
+    }
     /// Start a run (resuming `spec.resume` if set). No turn yet.
     async fn start(&self, spec: RunSpec) -> Result<Box<dyn RunHandle>>;
 }

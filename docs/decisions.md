@@ -1812,3 +1812,50 @@ rule (queued turns ended at a restart, "carried into the continuation"):
   redirected mid-tool; the redirect ran next in the same run, once, and the
   feature reached review.
 - Capabilities now say `pause` and `redirect`.
+
+## D-060 — The Claude worker ships with each release; Node is the host's (2026-10-10)
+
+Milestone 6 of the structured runtime plan, first step: a host gets the
+`sdk` backend (D-057) from `otter host install`, like `otterd` itself.
+
+- **Node is the host's.** The worker needs Node.js 20 or newer (`engines`;
+  the SDK asks for 18, it's tested on 22). Otter doesn't ship or download a
+  Node: where there is none, or an older one, the runtime says so and the
+  `sdk` backend isn't available; terminal sessions and `legacy_cli` are
+  unaffected. Revisit if hosts commonly lack Node — distributing a runtime
+  needs its licensing and platforms checked first.
+- **One worker per platform.** The SDK carries Claude Code as a native
+  binary per platform (about 200 MB), so each release has
+  `otter-claude-runtime-<version>-<platform>.tar.gz` beside the binaries:
+  the compiled worker, its locked production dependencies, and the
+  Claude Code for that platform only — the glibc build on Linux (musl
+  hosts aren't supported). About 100 MB compressed. Its `.sha256` is
+  published with it.
+- **Installed by release, next to otterd.** `otter host install` downloads
+  it, checks the SHA-256, unpacks it into a staging directory, asks it
+  `--check` when Node is on PATH, and only then renames it to
+  `~/.local/lib/otter/claude-runtime/<version>`. A directory per release:
+  an upgrade never replaces files a running worker uses. The release
+  before stays; older ones are removed. Already installed: nothing is
+  downloaded. Any failure is a note, never a failed install. Nothing is
+  fetched when a run starts, so starting works offline (Claude itself
+  still needs the network).
+- **otterd uses its own release's worker:** `OTTER_CLAUDE_WORKER`, else
+  `../lib/otter/claude-runtime/<its version>/dist/main.js` (then the
+  unversioned development layouts).
+- **`main.js --check`** prints `{protocol_version, worker_version,
+  sdk_version, node_version, node_supported, claude_code}` and exits
+  non-zero if it can't run here; it starts nothing and reads no
+  credentials. `runtime.capabilities` is `available` only when Node, the
+  worker and its check all pass, and its notes say which didn't (an old
+  Node, another protocol, no Claude Code for this platform). Sign-in isn't
+  checked ahead: a missing one fails the first run as `auth_required`.
+- **Each run says what it ran on.** A run's `Claim` records the worker,
+  SDK and Node versions (`runtime`); a conversation shows the latest as
+  `runtime_version`, and its journal keeps each generation's.
+- **Still opt-in.** The default backend stays `legacy_cli`: `sdk` is chosen
+  per host in Settings (or `OTTER_CODING_BACKEND`). It becomes the default
+  for fresh managed runs only after dogfooding (plan stages: development
+  flag → explicitly enabled host → dogfood → default). Switching never
+  moves a running conversation: one keeps the backend it began with.
+

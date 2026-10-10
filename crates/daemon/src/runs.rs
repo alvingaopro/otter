@@ -189,6 +189,7 @@ impl Daemon {
             &conversation_id,
             Op::Claim {
                 run: run_id.clone(),
+                runtime: rt.version(&env),
                 at: now,
             },
         ) {
@@ -1206,6 +1207,7 @@ mod tests {
             send("one", &a),
             Op::Claim {
                 run: run.clone(),
+                runtime: None,
                 at,
             },
             Op::Sending {

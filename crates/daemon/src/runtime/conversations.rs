@@ -672,6 +672,7 @@ mod tests {
             accept("cmd_2", "b", &b),
             Op::Claim {
                 run: RunId::from("run_1"),
+                runtime: None,
                 at,
             },
             Op::Sending {

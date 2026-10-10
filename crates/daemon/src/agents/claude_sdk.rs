@@ -16,10 +16,13 @@
 //! - Frames are bounded ([`MAX_FRAME`]); stderr is drained and kept short
 //!   for diagnostics; the process is killed if it doesn't leave when asked.
 //!
-//! Where things are: the worker's entry point is `OTTER_CLAUDE_WORKER` (its
-//! `main.js`, or the package directory), else next to `otterd`
-//! (`../lib/otter/claude-runtime/dist/main.js`); Node is `OTTER_NODE`, else
-//! `node` on the login PATH.
+//! Where things are (D-060): the worker's entry point is
+//! `OTTER_CLAUDE_WORKER` (its `main.js`, or the package directory), else the
+//! one `otter host install` put next to `otterd` for this release
+//! (`../lib/otter/claude-runtime/<version>/dist/main.js`; a directory per
+//! release, so an upgrade never replaces what a live run uses). Node is
+//! `OTTER_NODE`, else `node` on the login PATH. Whether they work together
+//! is the worker's own `--check` ([`worker_check`]).
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -81,8 +84,12 @@ pub fn worker_entry(env: &EnvMap) -> Option<PathBuf> {
         None => {
             let exe = std::env::current_exe().ok()?;
             let dir = exe.parent()?;
+            let installed = dir.join("../lib/otter/claude-runtime");
             vec![
-                dir.join("../lib/otter/claude-runtime/dist/main.js"),
+                installed
+                    .join(env!("CARGO_PKG_VERSION"))
+                    .join("dist/main.js"),
+                installed.join("dist/main.js"),
                 dir.join("claude-runtime/dist/main.js"),
             ]
         }
@@ -101,6 +108,116 @@ pub fn node(env: &EnvMap) -> Option<PathBuf> {
     }
 }
 
+/// The oldest Node the worker supports (`engines` in its package.json).
+pub const MIN_NODE: u32 = 20;
+
+/// What `main.js --check` says: the worker, its SDK, and whether this Node
+/// and this platform can run it. Reads no credentials, starts nothing.
+#[derive(Clone, Debug, serde::Deserialize, PartialEq, Eq)]
+pub struct WorkerCheck {
+    pub protocol_version: u64,
+    pub worker_version: String,
+    pub sdk_version: String,
+    pub node_version: String,
+    pub node_supported: bool,
+    /// The SDK's Claude Code for this platform is installed.
+    pub claude_code: bool,
+}
+
+impl WorkerCheck {
+    /// Why this worker can't run here, in a sentence each.
+    pub fn problems(&self) -> Vec<String> {
+        let mut out = vec![];
+        if !self.node_supported {
+            out.push(format!(
+                "Node.js {} is too old for the Claude worker; it needs {MIN_NODE} or newer.",
+                self.node_version
+            ));
+        }
+        if self.protocol_version != PROTOCOL_VERSION {
+            out.push(format!(
+                "The installed Claude worker speaks protocol {}; this otterd speaks {PROTOCOL_VERSION}. Reinstall with `otter host install`.",
+                self.protocol_version
+            ));
+        }
+        if !self.claude_code {
+            out.push(format!(
+                "The Claude worker has no Claude Code for this platform ({}/{}).",
+                std::env::consts::OS,
+                std::env::consts::ARCH
+            ));
+        }
+        out
+    }
+
+    pub fn describe(&self) -> String {
+        format!(
+            "worker {} · claude-agent-sdk {} · node {}",
+            self.worker_version, self.sdk_version, self.node_version
+        )
+    }
+}
+
+/// Run the worker's `--check` (remembered while the worker file is
+/// unchanged): `Err` says why it couldn't be asked.
+pub fn worker_check(
+    node: &std::path::Path,
+    worker: &std::path::Path,
+    env: &EnvMap,
+) -> Result<WorkerCheck, String> {
+    use std::sync::OnceLock;
+    type Key = (PathBuf, PathBuf, Option<std::time::SystemTime>);
+    static SEEN: OnceLock<Mutex<HashMap<Key, Result<WorkerCheck, String>>>> = OnceLock::new();
+    let modified = std::fs::metadata(worker).and_then(|m| m.modified()).ok();
+    let key = (node.to_owned(), worker.to_owned(), modified);
+    let seen = SEEN.get_or_init(Default::default);
+    if let Some(r) = seen.lock().unwrap().get(&key) {
+        return r.clone();
+    }
+    let result = run_check(node, worker, env);
+    seen.lock().unwrap().insert(key, result.clone());
+    result
+}
+
+fn run_check(
+    node: &std::path::Path,
+    worker: &std::path::Path,
+    env: &EnvMap,
+) -> Result<WorkerCheck, String> {
+    let mut child = std::process::Command::new(node)
+        .arg(worker)
+        .arg("--check")
+        .env_clear()
+        .envs(env)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|e| format!("couldn't run {}: {e}", node.display()))?;
+    let deadline = std::time::Instant::now() + Duration::from_secs(15);
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => break,
+            Ok(None) if std::time::Instant::now() < deadline => {
+                std::thread::sleep(Duration::from_millis(20))
+            }
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err("the Claude worker didn't answer `--check`".into());
+            }
+        }
+    }
+    let mut out = String::new();
+    std::io::Read::read_to_string(&mut child.stdout.take().expect("piped"), &mut out)
+        .map_err(|e| e.to_string())?;
+    let line = out.lines().next().unwrap_or("");
+    serde_json::from_str(line).map_err(|_| {
+        "the Claude worker didn't say what it is (`--check`): it may be older than this otterd"
+            .to_owned()
+    })
+}
+
 pub struct ClaudeSdkRuntime;
 
 #[async_trait]
@@ -114,21 +231,40 @@ impl AgentRuntime for ClaudeSdkRuntime {
         let worker = worker_entry(env);
         let mut notes = vec![];
         if node.is_none() {
-            notes.push("Node.js isn't on this host's PATH (the Claude worker needs it).".into());
+            notes.push(format!(
+                "Node.js isn't on this host's PATH; the Claude worker needs Node.js {MIN_NODE} or newer."
+            ));
         }
         if worker.is_none() {
             notes.push(
-                "The Claude worker isn't installed next to otterd (set OTTER_CLAUDE_WORKER for a development build)."
+                "The Claude worker isn't installed next to otterd: `otter host install` installs it (or set OTTER_CLAUDE_WORKER for a development build)."
                     .into(),
             );
         }
+        let mut ready = node.is_some() && worker.is_some();
+        let mut sdk = SDK_VERSION.to_owned();
+        if let (Some(node), Some(worker)) = (&node, &worker) {
+            match worker_check(node, worker, env) {
+                Ok(check) => {
+                    let problems = check.problems();
+                    ready = problems.is_empty();
+                    notes.extend(problems);
+                    sdk = check.sdk_version.clone();
+                    notes.push(format!("Runs {}.", check.describe()));
+                }
+                Err(e) => {
+                    ready = false;
+                    notes.push(format!("The Claude worker couldn't be checked: {e}."));
+                }
+            }
+        }
         notes.push(format!(
-            "Claude Agent SDK {SDK_VERSION} with its bundled Claude Code {BUNDLED_CLAUDE_CODE}; signs in as Claude Code does on this host."
+            "Claude Agent SDK {sdk} runs the Claude Code it bundles ({BUNDLED_CLAUDE_CODE} when built); it signs in as Claude Code does on this host."
         ));
         RuntimeCapabilities {
             provider: "claude".into(),
             backend: "sdk".into(),
-            available: node.is_some() && worker.is_some(),
+            available: ready,
             notes,
             tested_version: Some(format!("claude-agent-sdk {SDK_VERSION}")),
             structured_ready: false,
@@ -146,6 +282,11 @@ impl AgentRuntime for ClaudeSdkRuntime {
                 redirect: true,
             },
         }
+    }
+
+    fn version(&self, env: &EnvMap) -> Option<String> {
+        let (node, worker) = (node(env)?, worker_entry(env)?);
+        worker_check(&node, &worker, env).ok().map(|c| c.describe())
     }
 
     async fn start(&self, spec: RunSpec) -> Result<Box<dyn RunHandle>> {
@@ -990,6 +1131,59 @@ mod tests {
             (true, true, true),
             "session, policy check, tool result"
         );
+    }
+
+    #[test]
+    fn a_check_says_what_stands_in_the_way() {
+        let ok = WorkerCheck {
+            protocol_version: PROTOCOL_VERSION,
+            worker_version: "0.1.0".into(),
+            sdk_version: SDK_VERSION.into(),
+            node_version: "22.1.0".into(),
+            node_supported: true,
+            claude_code: true,
+        };
+        assert!(ok.problems().is_empty());
+        assert_eq!(
+            ok.describe(),
+            format!("worker 0.1.0 · claude-agent-sdk {SDK_VERSION} · node 22.1.0")
+        );
+        let bad = WorkerCheck {
+            protocol_version: 0,
+            node_version: "18.2.0".into(),
+            node_supported: false,
+            claude_code: false,
+            ..ok
+        };
+        let p = bad.problems().join(" ");
+        assert!(p.contains("Node.js 18.2.0 is too old"), "{p}");
+        assert!(p.contains("speaks protocol 0"), "{p}");
+        assert!(p.contains("no Claude Code for this platform"), "{p}");
+    }
+
+    #[test]
+    fn a_worker_that_cant_say_what_it_is_isnt_ready() {
+        let dir = tempfile::tempdir().unwrap();
+        let worker = dir.path().join("main.js");
+        std::fs::write(&worker, "echo not json\n").unwrap();
+        let env = EnvMap::from([
+            ("PATH".to_owned(), "/usr/bin:/bin".to_owned()),
+            ("OTTER_NODE".to_owned(), "/bin/sh".to_owned()),
+            (
+                "OTTER_CLAUDE_WORKER".to_owned(),
+                worker.display().to_string(),
+            ),
+        ]);
+        let caps = ClaudeSdkRuntime.capabilities(&env);
+        assert!(!caps.available);
+        assert!(
+            caps.notes
+                .iter()
+                .any(|n| n.contains("didn't say what it is")),
+            "{:?}",
+            caps.notes
+        );
+        assert_eq!(ClaudeSdkRuntime.version(&env), None);
     }
 
     #[test]

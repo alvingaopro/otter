@@ -7,6 +7,10 @@
 # appended to FAKE_WORKER_LOG.
 mode="${FAKE_WORKER_MODE:-ok}"
 out() { printf '%s\n' "$1"; }
+if [ "${1:-}" = --check ]; then
+  out '{"protocol_version":1,"worker_version":"0.1.0","sdk_version":"fake","node_version":"0","node_supported":true,"claude_code":true}'
+  exit 0
+fi
 turn=
 while IFS= read -r line; do
   [ -n "$FAKE_WORKER_LOG" ] && printf '%s\n' "$line" >> "$FAKE_WORKER_LOG"

@@ -214,12 +214,14 @@ turns, messages, tool calls and interactions. See
 - `runtime.capabilities` → `{provider, backend, available, notes?,
   tested_version?, structured_ready, features: {send_turn, resume,
   interrupt_turn, permission_requests, questions, tool_results, streaming,
-  attachments, usage}}`: what the host's managed runtime can do. Missing
-  features are reported, never simulated.
+  attachments, usage, pause, redirect}}`: what the host's managed runtime
+  can do. Missing features are reported, never simulated. For `sdk`,
+  `available` needs Node, the installed worker and its `--check` (D-060);
+  `notes` say which is missing.
 - `conversation.list {feature?}` → conversations, newest first;
   `conversation.get {conversation}` → one. Each is the conversation with
   `resumable` in place of the provider's own session id, which stays on
-  the host.
+  the host, and `runtime_version?` — what its latest run ran on (D-060).
 
 - `conversation.history {conversation, after?: {log_id, seq}, limit?}` →
   `{log_id, records, next?}`: the conversation's journal (D-058), one record

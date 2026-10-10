@@ -4203,6 +4203,11 @@ async fn a_feature_runs_through_the_sdk_worker_with_policy_checks_and_a_form() {
         .unwrap()
         .conversation;
     assert_eq!(c.backend, "sdk");
+    // What the run ran on, from the worker's own `--check` (D-060).
+    assert_eq!(
+        c.runtime_version.as_deref(),
+        Some("worker 0.1.0 · claude-agent-sdk fake · node 0")
+    );
     assert_eq!(c.turns[0].outcome, Some(TurnOutcome::Completed));
     assert_eq!(c.tools[0].status, ToolStatus::Succeeded);
     let i = &c.interactions[0];

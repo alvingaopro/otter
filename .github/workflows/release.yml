@@ -124,17 +124,26 @@ jobs:
     strategy:
       matrix:
         # Names match what `otter_client::install` downloads for `uname -sm`.
+        # npm_os/npm_cpu: the platform whose Claude Code the worker carries.
         include:
           - name: linux-x86_64
             os: ubuntu-latest
+            npm_os: linux
+            npm_cpu: x64
           - name: linux-aarch64
             os: ubuntu-24.04-arm
+            npm_os: linux
+            npm_cpu: arm64
           - name: macos-arm64
             os: macos-latest
             target: aarch64-apple-darwin
+            npm_os: darwin
+            npm_cpu: arm64
           - name: macos-x86_64
             os: macos-latest
             target: x86_64-apple-darwin
+            npm_os: darwin
+            npm_cpu: x64
     runs-on: ${{ matrix.os }}
     env:
       VERSION: ${{ needs.version.outputs.version }}
@@ -161,8 +170,40 @@ jobs:
             cp target/release/otterd target/release/otter "$name"/
           fi
           tar -czf "$name.tar.gz" "$name"
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+      # The Claude worker (D-060): its code, its locked dependencies, and the
+      # Claude Code the SDK bundles for this platform only (the glibc build on
+      # Linux). `otter host install` checks it against the .sha256.
+      - name: Claude worker
+        working-directory: packages/claude-runtime
+        run: |
+          name="otter-claude-runtime-${VERSION}-${{ matrix.name }}"
+          npm ci --os=${{ matrix.npm_os }} --cpu=${{ matrix.npm_cpu }}
+          npm run build
+          npm prune --omit=dev --os=${{ matrix.npm_os }} --cpu=${{ matrix.npm_cpu }}
+          keep="claude-agent-sdk-${{ matrix.npm_os }}-${{ matrix.npm_cpu }}"
+          for d in node_modules/@anthropic-ai/claude-agent-sdk-*; do
+            [ "$(basename "$d")" = "$keep" ] || rm -rf "$d"
+          done
+          test -x "node_modules/@anthropic-ai/$keep/claude"
+          rm -f dist/*.test.js dist/*.test.d.ts
+          mkdir -p "$RUNNER_TEMP/$name"
+          cp -R package.json package-lock.json dist node_modules "$RUNNER_TEMP/$name"/
+          # On its own platform, the worker must say it can run.
+          if [ -z "${{ matrix.target }}" ] || [ "${{ matrix.name }}" = macos-arm64 ]; then
+            node "$RUNNER_TEMP/$name/dist/main.js" --check
+          fi
+          tar -czf "$GITHUB_WORKSPACE/$name.tar.gz" -C "$RUNNER_TEMP" "$name"
+          cd "$GITHUB_WORKSPACE"
+          shasum -a 256 "$name.tar.gz" > "$name.tar.gz.sha256"
       - name: Upload
-        run: gh release upload "v$VERSION" "otter-${VERSION}-${{ matrix.name }}.tar.gz" --clobber
+        run: |
+          gh release upload "v$VERSION" --clobber \
+            "otter-${VERSION}-${{ matrix.name }}.tar.gz" \
+            "otter-claude-runtime-${VERSION}-${{ matrix.name }}.tar.gz" \
+            "otter-claude-runtime-${VERSION}-${{ matrix.name }}.tar.gz.sha256"
 
   publish:
     name: Publish release
