@@ -209,8 +209,11 @@ impl Daemon {
             Request::FeatureDelete(r) => json(self.feature_delete(&r.feature).await?),
             // Contracts first (D-055); served once runs go through conversations.
             Request::RuntimeCapabilities => {
-                let rt = crate::runtime::runtime(crate::runs::DEFAULT_RUNTIME)
-                    .ok_or_else(|| RpcError::unsupported("no managed agent runtime"))?;
+                let backend = self.settings.read().unwrap().coding_backend();
+                let rt = crate::runtime::runtime(crate::runs::DEFAULT_RUNTIME, &backend)
+                    .ok_or_else(|| {
+                        RpcError::unsupported(format!("no managed agent runtime for `{backend}`"))
+                    })?;
                 json(rt.capabilities(self.environments.base()))
             }
             Request::ConversationList(q) => json(

@@ -527,9 +527,16 @@ pub fn response_for(tool: &str, input: &Value, reply: &DecisionReply) -> Value {
             updated["answers"] = Value::Object(answers);
             json!({"behavior": "allow", "updatedInput": updated})
         }
+        DecisionReply::Answers { answers } if tool == "AskUserQuestion" => {
+            let mut updated = input.clone();
+            updated["answers"] = json!(answers);
+            json!({"behavior": "allow", "updatedInput": updated})
+        }
         // An answer to anything else (e.g. a plan) means go ahead, with the
         // answer passed on as the reason.
-        DecisionReply::Answer { .. } => json!({"behavior": "allow", "updatedInput": input}),
+        DecisionReply::Answer { .. } | DecisionReply::Answers { .. } => {
+            json!({"behavior": "allow", "updatedInput": input})
+        }
     }
 }
 
@@ -605,7 +612,7 @@ pub fn questions(input: &Value) -> Vec<Question> {
         .collect()
 }
 
-fn summarize(call: &ToolCall, tool: &str) -> String {
+pub fn summarize(call: &ToolCall, tool: &str) -> String {
     let text = match call {
         ToolCall::Read => format!("{tool}: read"),
         ToolCall::Edit { path } => format!("Edit {path}"),

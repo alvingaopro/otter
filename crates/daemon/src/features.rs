@@ -470,7 +470,19 @@ pub fn apply_action(
             decision_id,
             approve,
             answer,
+            answers,
         } => {
+            // A form's answers, as one line for the record.
+            let answer = match answers {
+                Some(a) if !a.is_empty() => Some(
+                    a.iter()
+                        .map(|(q, v)| format!("{q} {v}"))
+                        .collect::<Vec<_>>()
+                        .join("; "),
+                ),
+                _ => answer.clone(),
+            };
+            let answer = &answer;
             let d = f
                 .decision_mut(decision_id)
                 .ok_or_else(|| RpcError::not_found(format!("no decision `{decision_id}`")))?;
@@ -705,12 +717,14 @@ impl Daemon {
                 decision_id,
                 approve,
                 answer,
+                answers,
             } => {
                 self.forward_decision(
                     &id,
                     decision_id,
                     *approve,
                     answer.clone(),
+                    answers.clone(),
                     otter_core::feature::Decider::User,
                 )
                 .await
@@ -1029,6 +1043,7 @@ mod tests {
             decision_id: dec.clone(),
             approve: false,
             answer: None,
+            answers: None,
         };
         let out = s
             .apply(&f.id, Some("c9"), |f, now| {

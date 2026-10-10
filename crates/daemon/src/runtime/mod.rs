@@ -131,10 +131,26 @@ pub enum DecisionReply {
     Deny {
         message: String,
     },
-    /// The answer to a question (the chosen option or free text).
+    /// One answer for the whole form (the chosen option or free text).
     Answer {
         text: String,
     },
+    /// An answer per question, by question id (multi-select: comma-joined).
+    Answers {
+        answers: std::collections::BTreeMap<String, String>,
+    },
+}
+
+/// Otter's policy for one tool call, before it runs ([`RuntimeEvent::ToolCheck`]).
+#[derive(Clone, Debug, PartialEq)]
+pub enum CheckDecision {
+    Allow,
+    Deny {
+        reason: String,
+    },
+    /// Someone has to decide: the runtime asks with a
+    /// [`RuntimeEvent::DecisionNeeded`].
+    Ask,
 }
 
 /// What the runtime observed, in order. Keys are the provider's own
@@ -173,6 +189,15 @@ pub enum RuntimeEvent {
         output: String,
     },
     DecisionNeeded(DecisionAsk),
+    /// Every tool call, before it runs: answer with [`RunHandle::check`].
+    /// (Runtimes with a mandatory pre-tool hook; others only ask through
+    /// [`Self::DecisionNeeded`].)
+    ToolCheck {
+        check_id: String,
+        tool: String,
+        call: ToolCall,
+        tool_use_id: Option<String>,
+    },
     /// The turn settled; the agent waits for input.
     TurnFinished {
         outcome: TurnOutcome,
@@ -217,6 +242,11 @@ pub trait RunHandle: Send + Sync {
     async fn next_event(&mut self) -> Option<RuntimeEvent>;
     /// Answer a decision.
     async fn decide(&mut self, request_id: &str, reply: DecisionReply) -> Result<()>;
+    /// Answer a [`RuntimeEvent::ToolCheck`].
+    async fn check(&mut self, check_id: &str, decision: CheckDecision) -> Result<()> {
+        let _ = (check_id, decision);
+        anyhow::bail!("this runtime doesn't check tool calls")
+    }
     /// Ask the provider to stop the current turn; it settles with
     /// [`TurnOutcome::Interrupted`]. The process stays.
     async fn interrupt(&mut self) -> Result<()>;
@@ -225,12 +255,19 @@ pub trait RunHandle: Send + Sync {
     fn inspect(&self) -> RunInfo;
 }
 
-/// The runtime for an agent id, if it has a managed mode.
-pub fn runtime(id: &str) -> Option<&'static dyn AgentRuntime> {
+/// The managed backends (`claude_stream` is `legacy_cli`, `claude_sdk` is
+/// `sdk`), in the order Settings offers them.
+pub const BACKENDS: &[&str] = &["legacy_cli", "sdk"];
+
+/// The runtime for an agent and backend, if it has a managed mode.
+pub fn runtime(id: &str, backend: &str) -> Option<&'static dyn AgentRuntime> {
     static CLAUDE: crate::agents::claude_stream::ClaudeRuntime =
         crate::agents::claude_stream::ClaudeRuntime;
-    match id {
-        "claude" => Some(&CLAUDE),
+    static CLAUDE_SDK: crate::agents::claude_sdk::ClaudeSdkRuntime =
+        crate::agents::claude_sdk::ClaudeSdkRuntime;
+    match (id, backend) {
+        ("claude", "legacy_cli") => Some(&CLAUDE),
+        ("claude", "sdk") => Some(&CLAUDE_SDK),
         _ => None,
     }
 }

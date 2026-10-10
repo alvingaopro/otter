@@ -1608,3 +1608,46 @@ Milestone 1, second part: managed runs now serve conversations (D-055).
 - Clients read `runtime.capabilities`, `conversation.list`,
   `conversation.get`, and follow `ConversationChanged` (ids only). The
   desktop doesn't use them yet.
+
+## D-057 — The coding agent through the Claude Agent SDK, in a worker (2026-10-10)
+
+Milestone 2 of the structured runtime plan. `legacy_cli` drives Claude
+Code's stream-json control protocol, which is observed, not documented. The
+`sdk` backend drives Claude through the official Claude Agent SDK instead,
+from a small Node worker (`packages/claude-runtime`) that otterd starts per
+run and speaks versioned JSONL with (protocol 1). Rust never copies the
+SDK's internals; the worker never decides policy.
+
+- **Pinned:** `@anthropic-ai/claude-agent-sdk` 0.3.285 (locked) and the
+  Claude Code it bundles, 2.1.285 — never whichever `claude` is on PATH.
+  Node 22. The compatibility record and what was observed live are in the
+  package's README.
+- **Auth:** the host's Claude Code sign-in. Anthropic asks third-party
+  products not to offer claude.ai login for SDK apps without approval; the
+  developer chose it for their own hosts (the alternative is an API key).
+  No credential manager: Otter never sees or stores it.
+- **Handshake:** nothing reaches Claude before the worker's `ready` (protocol
+  checked, SDK initialized), within 90 s (`OTTER_WORKER_INIT_TIMEOUT_MS`).
+  The session id arrives with the first turn.
+- **Policy is mandatory:** a `PreToolUse` hook asks otterd about every tool
+  call (`ToolCheck`); D-049's policy answers allow (routine work, no
+  record), deny (recorded) or ask — and "ask" comes back through
+  `canUseTool` as a decision, answered per request id. A cancelled wait is
+  a denial. Subagents (`Task`, `Agent`) are disallowed for now.
+- **Project instructions:** `settingSources: ["project"]` so CLAUDE.md is
+  read; Otter's hook runs before any project rule (and Claude Code ignores
+  allow-rules of an untrusted workspace).
+- **Questions:** forms keep every question; answers go back per question
+  (`answers` in a feature's `decide`, comma-joined for multi-select). One
+  `answer` for a form still goes to each question — the forms UI comes with
+  the conversation UI.
+- **Settings:** the coding agent's backend and model are their own settings
+  (`coding`), apart from Otter's model; `OTTER_CODING_BACKEND` overrides.
+  The default stays `legacy_cli` until the release work; a conversation
+  keeps the backend it began with.
+- **Bounded and drained:** frames are at most 1 MiB (an oversized one is
+  dropped and reported), stderr is drained and its tail kept for errors,
+  a worker that doesn't leave on shutdown is killed.
+- Interrupts: an aborted result while an interrupt was asked is
+  `interrupted`, whatever its subtype; a turn that completed first stays
+  completed. Live-checked on both hosts (16/16).

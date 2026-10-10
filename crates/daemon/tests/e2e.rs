@@ -1553,6 +1553,15 @@ async fn fake_codex_host(mode: &str) -> FakeCodex {
 /// A host with fake agents, and the given Control Agent brain for features
 /// (`rules` or `yes`; never a real model in tests).
 async fn fake_agent_host(mode: &str, controller: &str) -> FakeCodex {
+    fake_agent_host_with(mode, controller, |_| vec![]).await
+}
+
+/// Like [`fake_agent_host`], with more variables (given the scratch dir).
+async fn fake_agent_host_with(
+    mode: &str,
+    controller: &str,
+    extra: impl FnOnce(&Path) -> Vec<(&'static str, String)>,
+) -> FakeCodex {
     let scratch = tempfile::Builder::new().prefix("wdc").tempdir().unwrap();
     let bin = scratch.path().join("bin");
     std::fs::create_dir_all(&bin).unwrap();
@@ -1574,7 +1583,7 @@ async fn fake_agent_host(mode: &str, controller: &str) -> FakeCodex {
     std::fs::create_dir_all(&home).unwrap();
     let log = scratch.path().join("codex-args.log");
     let p = |x: &Path| x.to_string_lossy().into_owned();
-    let host = TestHost::with_env(&[
+    let vars = vec![
         // An isolated user: no dotfiles that could put the real codex first.
         ("HOME", p(&home)),
         ("SHELL", isolated_shell(scratch.path())),
@@ -1601,8 +1610,10 @@ async fn fake_agent_host(mode: &str, controller: &str) -> FakeCodex {
         ("DEVELOPER_DIR", String::new()),
         ("SDKROOT", String::new()),
         ("OTTER_AGENT_QUIET_SECS", "2".into()),
-    ])
-    .await;
+    ];
+    let more = extra(scratch.path());
+    let vars: Vec<(&str, String)> = vars.into_iter().chain(more).collect();
+    let host = TestHost::with_env(&vars).await;
     FakeCodex {
         host,
         log,
@@ -2902,6 +2913,7 @@ async fn an_approval_is_answered_and_the_run_continues() {
                 decision_id: d.id.clone(),
                 approve: true,
                 answer: Some("blue".into()),
+                answers: None,
             },
         )
         .await
@@ -2979,6 +2991,7 @@ async fn a_model_cannot_approve_what_only_the_developer_may() {
                 decision_id: d.id.clone(),
                 approve: false,
                 answer: None,
+                answers: None,
             },
         )
         .await
@@ -3482,6 +3495,7 @@ async fn allow_publish(host: &TestHost, id: &str) {
                 decision_id: d.id.clone(),
                 approve: true,
                 answer: None,
+                answers: None,
             },
         )
         .await
@@ -3684,6 +3698,7 @@ async fn declining_to_publish_keeps_delivery_local() {
                 decision_id: d.id,
                 approve: false,
                 answer: None,
+                answers: None,
             },
         )
         .await
@@ -3745,6 +3760,7 @@ async fn settings_take_keys_write_only_and_keep_them() {
                 Some("sk-or-test-123".to_owned()),
             )]
             .into(),
+            coding: None,
         })
         .await
         .unwrap();
@@ -3992,6 +4008,7 @@ async fn a_run_takes_the_developers_message_as_a_turn_of_its_own() {
             decision_id: d.id.clone(),
             approve: true,
             answer: Some("blue".into()),
+            answers: None,
         },
     )
     .await
@@ -4034,4 +4051,142 @@ async fn a_run_takes_the_developers_message_as_a_turn_of_its_own() {
     let said: Vec<_> = c.messages.iter().map(|m| (m.text(), m.lifecycle)).collect();
     assert!(said.contains(&("Did the work.".to_owned(), MessageLifecycle::Completed)));
     assert_eq!(said.iter().filter(|(t, _)| t == "Did the work.").count(), 1);
+}
+
+/// A host whose coding agent runs through the SDK worker (D-057) — a fake
+/// one, speaking the worker protocol (`tests/fake_claude_worker.sh`).
+async fn fake_sdk_host() -> (FakeCodex, std::path::PathBuf) {
+    let log = std::sync::Arc::new(std::sync::Mutex::new(std::path::PathBuf::new()));
+    let keep = log.clone();
+    let fake = fake_agent_host_with("ok", "rules", move |scratch| {
+        let worker = scratch.join("worker.sh");
+        std::fs::write(&worker, include_str!("fake_claude_worker.sh")).unwrap();
+        let worker_log = scratch.join("worker.log");
+        *keep.lock().unwrap() = worker_log.clone();
+        vec![
+            ("OTTER_CODING_BACKEND", "sdk".into()),
+            ("OTTER_NODE", "/bin/sh".into()),
+            ("OTTER_CLAUDE_WORKER", worker.to_string_lossy().into_owned()),
+            ("FAKE_WORKER_LOG", worker_log.to_string_lossy().into_owned()),
+        ]
+    })
+    .await;
+    let log = log.lock().unwrap().clone();
+    (fake, log)
+}
+
+#[tokio::test]
+async fn a_feature_runs_through_the_sdk_worker_with_policy_checks_and_a_form() {
+    use otter_core::conversation::{InteractionKind, InteractionResponse, ToolStatus, TurnOutcome};
+    use otter_core::feature::{DecisionStatus, FeatureAction, FeatureStatus};
+    let (fake, worker_log) = fake_sdk_host().await;
+    let mut conn = fake.host.conn().await;
+    let caps = conn.runtime_capabilities().await.unwrap();
+    assert_eq!(caps.backend, "sdk");
+    assert!(caps.available, "{:?}", caps.notes);
+
+    let id = started_feature(&fake.host, "Export it").await;
+    // `make test` passed Otter's policy silently; the form needs the developer.
+    let f = wait_feature(&fake.host, &id, "a question form", |f| {
+        f.pending_decisions().next().is_some()
+    })
+    .await;
+    let d = f.pending_decisions().next().unwrap().clone();
+    assert_eq!(
+        f.decisions.len(),
+        1,
+        "the routine command wasn't a decision"
+    );
+    conn.feature_act(
+        "answer-form",
+        &id,
+        FeatureAction::Decide {
+            decision_id: d.id.clone(),
+            approve: true,
+            answer: None,
+            answers: Some(
+                [("Which format?", "JSON"), ("Which columns?", "name, time")]
+                    .into_iter()
+                    .map(|(q, a)| (q.to_owned(), a.to_owned()))
+                    .collect(),
+            ),
+        },
+    )
+    .await
+    .unwrap();
+    let f = wait_feature(&fake.host, &id, "review", |f| {
+        f.status == FeatureStatus::Review
+    })
+    .await;
+    let d = f.decisions.iter().find(|x| x.id == d.id).unwrap();
+    assert_eq!(d.status, DecisionStatus::Answered);
+    assert_eq!(
+        d.answer.as_deref(),
+        Some("Which columns? name, time; Which format? JSON")
+    );
+
+    // Each question got its own answer, in the SDK's shape.
+    let told = std::fs::read_to_string(&worker_log).unwrap();
+    assert!(
+        told.contains(r#""answers":{"Which columns?":"name, time","Which format?":"JSON"}"#),
+        "{told}"
+    );
+    assert!(
+        told.contains(r#""decision":"allow""#),
+        "policy allowed `make test`"
+    );
+
+    let cid = f.runs[0].conversation_id.clone().unwrap();
+    let c = conn
+        .conversation_get(cid.as_str())
+        .await
+        .unwrap()
+        .conversation;
+    assert_eq!(c.backend, "sdk");
+    assert_eq!(c.turns[0].outcome, Some(TurnOutcome::Completed));
+    assert_eq!(c.tools[0].status, ToolStatus::Succeeded);
+    let i = &c.interactions[0];
+    assert!(
+        matches!(&i.kind, InteractionKind::Questions { questions } if questions.len() == 2 && questions[1].multi_select)
+    );
+    assert!(
+        matches!(&i.response, Some(InteractionResponse::Answers { answers }) if answers["Which format?"].text.as_deref() == Some("JSON"))
+    );
+}
+
+#[tokio::test]
+async fn the_coding_backend_and_model_are_settings_of_their_own() {
+    use otter_protocol::host::{CodingSettings, SettingsUpdate};
+    let host = TestHost::with_env(&[("OTTER_CONTROLLER", "off".into())]).await;
+    let mut conn = host.conn().await;
+    let s = conn.settings_get().await.unwrap();
+    assert_eq!(s.coding.backend.as_deref(), Some("legacy_cli"));
+    let s = conn
+        .settings_set(SettingsUpdate {
+            coding: Some(CodingSettings {
+                backend: Some("sdk".into()),
+                model: Some("claude-sonnet-5-5".into()),
+            }),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert_eq!(s.coding.backend.as_deref(), Some("sdk"));
+    assert_eq!(s.coding.model.as_deref(), Some("claude-sonnet-5-5"));
+    assert_eq!(s.model, None, "Otter's own model is another setting");
+    assert_eq!(conn.runtime_capabilities().await.unwrap().backend, "sdk");
+    let err = conn
+        .settings_set(SettingsUpdate {
+            coding: Some(CodingSettings {
+                backend: Some("tmux".into()),
+                model: None,
+            }),
+            ..Default::default()
+        })
+        .await
+        .unwrap_err();
+    assert!(
+        format!("{err:#}").contains("unknown coding backend"),
+        "{err:#}"
+    );
 }

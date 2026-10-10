@@ -34,12 +34,10 @@ use crate::daemon::{Daemon, RpcResult, workspace_not_found};
 use crate::features::{Change, message};
 use crate::runtime::actor::{Actor, ActorCmd, ActorEvent};
 use crate::runtime::policy::{self, Proposal, Verdict};
-use crate::runtime::{DecisionReply, RunLimits, RunSpec, runtime};
+use crate::runtime::{CheckDecision, DecisionAsk, DecisionReply, RunLimits, RunSpec, runtime};
 
 /// The runtime features use (the only one with a managed mode so far).
 pub const DEFAULT_RUNTIME: &str = "claude";
-/// How it is driven (D-055): Claude Code's stream-json, until the SDK worker.
-pub const DEFAULT_BACKEND: &str = "legacy_cli";
 
 /// A run in progress, as the rest of the daemon reaches it.
 pub(crate) struct LiveRun {
@@ -102,8 +100,10 @@ impl Daemon {
         let mut env = self.env_for_launch(&ws).await?;
         env.insert("OTTER_WORKSPACE_ID".into(), ws.id.to_string());
         env.insert("OTTER_FEATURE_ID".into(), feature_id.to_string());
-        let rt = runtime(DEFAULT_RUNTIME)
-            .ok_or_else(|| RpcError::unsupported("no managed agent runtime"))?;
+        let (backend, coding_model) = {
+            let s = self.settings.read().unwrap();
+            (s.coding_backend(), s.coding_model())
+        };
 
         // The conversation: the task's own when continuing it, else a new one.
         // A run from before conversations brings its session id (a trusted
@@ -118,20 +118,25 @@ impl Daemon {
                 .and_then(|r| r.conversation_id.clone())
                 .and_then(|id| self.conversations.get(id.as_str()))
         });
-        let conversation_id = match continued {
-            Some(c) => c.id,
+        // A conversation keeps the backend it began with (D-057).
+        let (conversation_id, backend) = match continued {
+            Some(c) => (c.id, c.backend),
             None => {
-                let mut c = Conversation::new(DEFAULT_RUNTIME, DEFAULT_BACKEND, ws.id.clone(), now);
+                let mut c = Conversation::new(DEFAULT_RUNTIME, &backend, ws.id.clone(), now);
                 c.feature_id = Some(feature_id.clone());
                 c.task_id = Some(task_id.clone());
                 c.binding = resume
                     .clone()
                     .map(|session_id| NativeBinding { session_id });
+                c.model = coding_model;
                 let id = c.id.clone();
                 self.conversations.insert(c);
-                id
+                (id, backend)
             }
         };
+        let rt = runtime(DEFAULT_RUNTIME, &backend).ok_or_else(|| {
+            RpcError::unsupported(format!("no managed agent runtime for `{backend}`"))
+        })?;
         // The turn, then the run takes the conversation (a new generation).
         let run_id = RunId::generate();
         let claimed = self
@@ -348,6 +353,44 @@ impl Daemon {
                             })
                             .await;
                     }
+                }
+                // Every tool call, before it runs (runtimes with a mandatory
+                // hook): routine work goes on; a denial is recorded; the rest
+                // comes back as a decision.
+                ActorEvent::Check {
+                    check_id,
+                    tool,
+                    call,
+                    ..
+                } => {
+                    let verdict = policy::classify(&call, &root);
+                    let decision = match &verdict {
+                        Verdict::Allow => CheckDecision::Allow,
+                        Verdict::Deny { why } => {
+                            let ask = DecisionAsk {
+                                request_id: check_id.clone(),
+                                summary: crate::agents::claude_stream::summarize(&call, &tool),
+                                tool,
+                                call,
+                                tool_use_id: None,
+                                input_hash: String::new(),
+                                questions: vec![],
+                            };
+                            self.record_ask(
+                                &feature,
+                                &run,
+                                &DecisionId::generate(),
+                                &ask,
+                                &verdict,
+                            )
+                            .await;
+                            CheckDecision::Deny {
+                                reason: why.clone(),
+                            }
+                        }
+                        Verdict::Ask { .. } => CheckDecision::Ask,
+                    };
+                    let _ = actor.send(ActorCmd::Check { check_id, decision }).await;
                 }
                 ActorEvent::TurnFinished {
                     outcome,
@@ -665,7 +708,7 @@ impl Daemon {
                 Ok(changes)
             })?;
         self.feature_changed(&applied);
-        self.forward_decision(feature_id, decision_id, allow, answer, by)
+        self.forward_decision(feature_id, decision_id, allow, answer, None, by)
             .await;
         Ok(applied.feature)
     }
@@ -761,13 +804,17 @@ impl Daemon {
         decision_id: &DecisionId,
         allow: bool,
         answer: Option<String>,
+        answers: Option<std::collections::BTreeMap<String, String>>,
         by: Decider,
     ) {
-        let reply = match (answer, allow) {
-            (Some(text), _) => DecisionReply::Answer { text },
-            (None, true) => DecisionReply::Allow,
-            (None, false) => DecisionReply::Deny {
-                message: "The developer declined this.".into(),
+        let reply = match (answers, answer, allow) {
+            (Some(answers), _, _) if !answers.is_empty() => DecisionReply::Answers { answers },
+            (_, answer, allow) => match (answer, allow) {
+                (Some(text), _) => DecisionReply::Answer { text },
+                (None, true) => DecisionReply::Allow,
+                (None, false) => DecisionReply::Deny {
+                    message: "The developer declined this.".into(),
+                },
             },
         };
         let senders: Vec<_> = self
