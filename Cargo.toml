@@ -5,7 +5,7 @@ members = ["crates/core", "crates/protocol", "crates/client", "crates/daemon", "
 exclude = ["apps/desktop/src-tauri"]
 
 [workspace.package]
-version = "0.6.6"
+version = "0.6.7"
 edition = "2024"
 license = "UNLICENSED"
 publish = false
