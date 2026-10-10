@@ -43,6 +43,13 @@ while read -r line; do
         *ASK_QUESTION*) ask r3 AskUserQuestion '{"questions":[{"question":"Pick one","options":[{"label":"red"},{"label":"blue"}]}]}' ;;
         *FAIL*) result error_during_execution true "it broke" ;;
         *HANG*) text "working on it" ;;
+        # "BG <pidfile>": something left running in the background.
+        *'BG '*)
+          f=$(printf '%s' "$line" | sed 's/.*BG \([^"]*\)".*/\1/')
+          sleep 300 &
+          echo $! > "$f"
+          text "started it"
+          ;;
         *)
           out '{"type":"assistant","parent_tool_use_id":null,"message":{"id":"msg_tool","role":"assistant","content":[{"type":"tool_use","id":"toolu_mt","name":"Bash","input":{"command":"make test"}}]}}'
           out '{"type":"user","parent_tool_use_id":null,"message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_mt","is_error":false,"content":"ok"}]}}'

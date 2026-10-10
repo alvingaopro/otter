@@ -211,16 +211,10 @@ fn ask_user(why: String) -> Verdict {
     }
 }
 
-/// Is `path` inside `root` (lexically, after resolving `..`)?
-fn inside(root: &Path, path: &str) -> bool {
-    let p = Path::new(path);
-    let joined = if p.is_absolute() {
-        p.to_path_buf()
-    } else {
-        root.join(p)
-    };
+/// `..` and `.` resolved, lexically.
+fn normalize(path: &Path) -> std::path::PathBuf {
     let mut out = std::path::PathBuf::new();
-    for c in joined.components() {
+    for c in path.components() {
         match c {
             std::path::Component::ParentDir => {
                 out.pop();
@@ -229,7 +223,42 @@ fn inside(root: &Path, path: &str) -> bool {
             other => out.push(other),
         }
     }
-    out.starts_with(root)
+    out
+}
+
+/// Where `path` really is: its deepest part that exists, with symlinks
+/// resolved, and the rest (not created yet) after it.
+fn real_path(path: &Path) -> std::path::PathBuf {
+    let mut existing = normalize(path);
+    let mut rest = Vec::new();
+    while !existing.exists() {
+        match existing.file_name() {
+            Some(name) => rest.push(name.to_owned()),
+            None => break,
+        }
+        if !existing.pop() {
+            break;
+        }
+    }
+    let mut out = existing.canonicalize().unwrap_or(existing);
+    for name in rest.iter().rev() {
+        out.push(name);
+    }
+    out
+}
+
+/// Is `path` inside `root` — where it really is, symlinks resolved on both
+/// sides? (A workspace reached through a symlink is still the workspace; a
+/// symlink inside it pointing elsewhere isn't.)
+fn inside(root: &Path, path: &str) -> bool {
+    let p = Path::new(path);
+    let joined = if p.is_absolute() {
+        p.to_path_buf()
+    } else {
+        root.join(p)
+    };
+    let root = root.canonicalize().unwrap_or_else(|_| normalize(root));
+    real_path(&joined).starts_with(&root)
 }
 
 /// What policy says about a tool call in a workspace rooted at `root`.
@@ -309,6 +338,49 @@ pub fn resolve(verdict: &Verdict, previously_denied: bool, p: &Proposal) -> Resu
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_workspace_is_where_it_really_is() {
+        let dir = tempfile::tempdir().unwrap();
+        let real = dir.path().join("real");
+        std::fs::create_dir_all(real.join("src")).unwrap();
+        let link = dir.path().join("link");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        let outside = dir.path().join("outside");
+        std::fs::create_dir_all(&outside).unwrap();
+        std::os::unix::fs::symlink(&outside, real.join("escape")).unwrap();
+        let edit = |path: &Path| ToolCall::Edit {
+            path: path.to_string_lossy().into_owned(),
+        };
+        // Reached through a symlink (macOS: /var is /private/var), either way round.
+        for root in [&real, &link] {
+            for path in [
+                real.join("src/new.rs"),
+                link.join("src/new.rs"),
+                real.join("a/b/c.rs"),
+            ] {
+                assert_eq!(
+                    classify(&edit(&path), root),
+                    Verdict::Allow,
+                    "{} in {}",
+                    path.display(),
+                    root.display()
+                );
+            }
+        }
+        // A symlink inside the workspace that leads out of it: outside.
+        let v = classify(&edit(&real.join("escape/x.rs")), &real);
+        assert!(
+            matches!(
+                v,
+                Verdict::Ask {
+                    user_only: true,
+                    ..
+                }
+            ),
+            "{v:?}"
+        );
+    }
 
     fn cmd(line: &str) -> Verdict {
         classify(

@@ -924,6 +924,16 @@ impl Daemon {
 
     /// After a restart: runs the old daemon left behind ended with it.
     pub(crate) async fn recover_runs(&self) {
+        // A run's processes end with it; make sure none outlived the old
+        // daemon (D-058).
+        for c in self.conversations.list(None) {
+            if let Some(p) = &c.process
+                && c.active_run.is_none()
+                && p.generation == c.generation
+            {
+                crate::runtime::end_leftover(p).await;
+            }
+        }
         let ids: Vec<FeatureId> = self
             .features
             .lock()
@@ -933,19 +943,46 @@ impl Daemon {
             .filter(|f| f.live_run().is_some())
             .map(|f| f.id)
             .collect();
+        let conversations = self.conversations.list(None);
         for id in ids {
             let applied = self.features.lock().await.apply(&id, None, |f, now| {
                 let mut changes = Vec::new();
                 let mut tasks = Vec::new();
+                let mut done = Vec::new();
                 for r in f.runs.iter_mut().filter(|r| !r.state.is_over()) {
-                    r.state = RunState::Cancelled;
+                    // The journal may show the run had finished its work
+                    // before the old daemon could tell the feature.
+                    let finished = r
+                        .conversation_id
+                        .as_ref()
+                        .and_then(|c| conversations.iter().find(|x| &x.id == c))
+                        .and_then(|c| finished_run(c, &r.id));
+                    match finished {
+                        Some(summary) => {
+                            r.state = RunState::Completed;
+                            r.summary = summary;
+                            done.push(r.task_id.clone());
+                        }
+                        None => {
+                            r.state = RunState::Cancelled;
+                            r.summary = Some("Interrupted: otterd restarted; resumable".into());
+                            tasks.push(r.task_id.clone());
+                        }
+                    }
                     r.ended_at = Some(now);
-                    r.summary = Some("Interrupted: otterd restarted; resumable".into());
-                    tasks.push(r.task_id.clone());
                     changes.push(Change::new(FeatureEvent::RunChanged {
                         run_id: r.id.clone(),
-                        state: RunState::Cancelled,
+                        state: r.state,
                     }));
+                }
+                for t in done {
+                    if let Some(t) = f.task_mut(&t) {
+                        t.status = TaskStatus::Done;
+                        changes.push(Change::new(FeatureEvent::TaskChanged {
+                            task_id: t.id.clone(),
+                            status: TaskStatus::Done,
+                        }));
+                    }
                 }
                 for d in f.decisions.iter_mut() {
                     if d.status == DecisionStatus::Pending && d.run_id.is_some() {
@@ -973,6 +1010,27 @@ impl Daemon {
             }
         }
     }
+}
+
+/// Whether `run` finished its work, as `c`'s journal shows: its last turn
+/// completed (and none was lost). The summary is what the agent said last.
+fn finished_run(c: &otter_core::conversation::Conversation, run: &RunId) -> Option<Option<String>> {
+    let turns: Vec<_> = c
+        .turns
+        .iter()
+        .filter(|t| t.run_id.as_ref() == Some(run))
+        .collect();
+    let last = turns.last()?;
+    if last.outcome != Some(TurnOutcome::Completed) {
+        return None;
+    }
+    let said = c
+        .messages
+        .iter()
+        .rev()
+        .find(|m| m.turn_id == last.id)
+        .map(|m| m.text());
+    Some(said)
 }
 
 /// Appended to the coding agent's system prompt for managed runs.
@@ -1031,6 +1089,84 @@ impl Draft {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_run_finished_by_the_journal_is_one_whose_last_turn_completed() {
+        use otter_core::conversation::{Command, Op};
+        use otter_core::{BlockId, MessageId, TurnId};
+        let mut c = Conversation::new("claude", "sdk", "ws_1".into(), Utc::now());
+        let run = RunId::from("run_1");
+        let (a, b) = (TurnId::generate(), TurnId::generate());
+        let at = Utc::now();
+        let send = |id: &str, turn: &TurnId| Op::Accept {
+            command_id: id.into(),
+            fingerprint: id.into(),
+            command: Command::SendTurn {
+                initiator: Initiator::Controller,
+                input: vec![InputBlock::Text { text: id.into() }],
+            },
+            turn_id: Some(turn.clone()),
+            at,
+        };
+        for op in [
+            send("one", &a),
+            Op::Claim {
+                run: run.clone(),
+                at,
+            },
+            Op::Sending {
+                turn: a.clone(),
+                generation: 1,
+                at,
+            },
+        ] {
+            c.apply(&op).unwrap();
+        }
+        assert_eq!(finished_run(&c, &run), None, "still working");
+        for op in [
+            Op::WriteBlock {
+                turn: a.clone(),
+                message: MessageId::generate(),
+                block: BlockId::generate(),
+                text: "Done: added the export.".into(),
+                done: true,
+                at,
+            },
+            Op::Finished {
+                turn: a.clone(),
+                generation: 1,
+                outcome: TurnOutcome::Completed,
+                reason: None,
+                error: None,
+                usage: None,
+                at,
+            },
+        ] {
+            c.apply(&op).unwrap();
+        }
+        assert_eq!(
+            finished_run(&c, &run),
+            Some(Some("Done: added the export.".into()))
+        );
+        // A later turn of the run that was lost: not finished.
+        for op in [
+            send("two", &b),
+            Op::Sending {
+                turn: b.clone(),
+                generation: 1,
+                at,
+            },
+            Op::RunEnded {
+                generation: 1,
+                outcome: TurnOutcome::OutcomeUnknown,
+                at,
+            },
+        ] {
+            c.apply(&op).unwrap();
+        }
+        assert_eq!(finished_run(&c, &run), None);
+        assert_eq!(finished_run(&c, &RunId::from("run_other")), None);
+    }
 
     #[test]
     fn a_draft_sends_the_text_so_far_at_most_every_100ms() {

@@ -186,6 +186,20 @@ impl Actor {
 
     /// Drive the run until it ends.
     pub async fn run(mut self, mut mailbox: mpsc::Receiver<ActorCmd>) {
+        // Which process serves this generation, so a later daemon can make
+        // sure it didn't outlive the run.
+        if let Some(pid) = self.handle.inspect().pid
+            && let Some(started) = super::process_started(pid)
+        {
+            self.apply(Op::Process {
+                process: otter_core::conversation::ProcessRef {
+                    generation: self.generation,
+                    pid,
+                    started,
+                },
+                at: Utc::now(),
+            });
+        }
         if let Flow::End = self.deliver_next().await {
             return;
         }

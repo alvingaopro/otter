@@ -272,6 +272,53 @@ pub fn runtime(id: &str, backend: &str) -> Option<&'static dyn AgentRuntime> {
     }
 }
 
+/// End what is left of a run's process group (the run's agent was started
+/// as its leader, `process_group(0)`). Call it only while that leader is an
+/// unreaped child of ours: then the group's id can't belong to anyone else.
+pub fn end_group(leader: u32) {
+    // SAFETY: a plain signal to a process group this daemon created; the
+    // caller guarantees its leader hasn't been reaped.
+    unsafe { libc::killpg(leader as libc::pid_t, libc::SIGKILL) };
+}
+
+/// When process `pid` started (seconds since the epoch), if it is running.
+pub fn process_started(pid: u32) -> Option<u64> {
+    use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System};
+    let mut sys = System::new();
+    let pid = Pid::from_u32(pid);
+    sys.refresh_processes_specifics(
+        ProcessesToUpdate::Some(&[pid]),
+        true,
+        ProcessRefreshKind::nothing(),
+    );
+    sys.process(pid).map(|p| p.start_time())
+}
+
+/// Make sure a run's processes didn't outlive it: if `p` is still running
+/// — the same process, by its start time, not just a reused id — its
+/// process group is asked to stop, then made to. Returns whether it was.
+pub async fn end_leftover(p: &otter_core::conversation::ProcessRef) -> bool {
+    if process_started(p.pid) != Some(p.started) {
+        return false;
+    }
+    let group = p.pid as libc::pid_t;
+    tracing::warn!(
+        pid = p.pid,
+        "a run's process outlived its daemon; stopping it"
+    );
+    // SAFETY: plain signals to a process group the run itself created.
+    unsafe { libc::killpg(group, libc::SIGTERM) };
+    for _ in 0..30 {
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        if process_started(p.pid) != Some(p.started) {
+            return true;
+        }
+    }
+    // SAFETY: as above.
+    unsafe { libc::killpg(group, libc::SIGKILL) };
+    true
+}
+
 /// A short, stable hash of a JSON value (key order doesn't matter), to bind
 /// an answer to the exact input it was given for.
 pub fn input_hash(v: &serde_json::Value) -> String {
@@ -323,5 +370,37 @@ mod tests {
         assert_eq!(input_hash(&a), input_hash(&b));
         assert_ne!(input_hash(&a), input_hash(&c));
         assert!(input_hash(&a).starts_with("fnv1a:"));
+    }
+
+    #[tokio::test]
+    async fn a_leftover_run_process_is_ended_but_a_reused_id_isnt_touched() {
+        use otter_core::conversation::ProcessRef;
+        let mut child = tokio::process::Command::new("sleep")
+            .arg("30")
+            .process_group(0)
+            .kill_on_drop(true)
+            .spawn()
+            .unwrap();
+        let pid = child.id().unwrap();
+        let started = process_started(pid).expect("running");
+        // Another process that once had this id (an older start): left alone.
+        let other = ProcessRef {
+            generation: 1,
+            pid,
+            started: started - 3600,
+        };
+        assert!(!end_leftover(&other).await);
+        assert!(child.try_wait().unwrap().is_none(), "still running");
+        let same = ProcessRef {
+            generation: 1,
+            pid,
+            started,
+        };
+        assert!(end_leftover(&same).await);
+        let status = tokio::time::timeout(std::time::Duration::from_secs(5), child.wait())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(!status.success());
     }
 }

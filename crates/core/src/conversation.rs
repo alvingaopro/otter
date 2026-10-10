@@ -88,6 +88,10 @@ pub struct Conversation {
     pub model: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub config_fingerprint: Option<String>,
+    /// The process serving the latest generation, as started: what a
+    /// daemon that restarts makes sure didn't outlive its run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub process: Option<ProcessRef>,
     pub created_at: Timestamp,
     pub updated_at: Timestamp,
     #[serde(default)]
@@ -105,6 +109,15 @@ pub struct Conversation {
 
 fn schema() -> u32 {
     CONVERSATION_SCHEMA
+}
+
+/// A run's process: its id and when it started (an id alone can be reused).
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProcessRef {
+    pub generation: u64,
+    pub pid: u32,
+    /// Seconds since the epoch, as the system reports the process's start.
+    pub started: u64,
 }
 
 /// Who sent a turn's input.
@@ -578,6 +591,7 @@ impl Conversation {
             binding: None,
             model: None,
             config_fingerprint: None,
+            process: None,
             created_at: now,
             updated_at: now,
             turns: vec![],
@@ -1189,6 +1203,11 @@ pub enum Op {
         id: DecisionId,
         at: Timestamp,
     },
+    /// The live run's process.
+    Process {
+        process: ProcessRef,
+        at: Timestamp,
+    },
 }
 
 /// What applying an [`Op`] gave.
@@ -1310,6 +1329,12 @@ impl Conversation {
             }
             Op::InteractionDelivered { id, generation, at } => {
                 self.interaction_delivered(&id, generation, at)?;
+                Applied::Done
+            }
+            Op::Process { process, at } => {
+                self.check_generation(process.generation)?;
+                self.process = Some(process);
+                self.touch(at);
                 Applied::Done
             }
             Op::InteractionUndelivered { id, at } => {
