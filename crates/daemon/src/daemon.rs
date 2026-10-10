@@ -124,6 +124,11 @@ impl Daemon {
         self.shutdown.send_replace(true);
     }
 
+    /// Whether otterd is on its way out.
+    pub fn shutting_down(&self) -> bool {
+        *self.shutdown.borrow()
+    }
+
     pub fn shutdown_signal(&self) -> watch::Receiver<bool> {
         self.shutdown.subscribe()
     }
@@ -220,16 +225,17 @@ impl Daemon {
                 self.conversations
                     .list(q.feature.as_deref())
                     .iter()
-                    .map(otter_protocol::conversation::ConversationView::of)
+                    .map(|c| self.conversation_view(c))
                     .collect::<Vec<_>>(),
             ),
             Request::ConversationGet(r) => match self.conversations.get(&r.conversation) {
-                Some(c) => json(otter_protocol::conversation::ConversationView::of(&c)),
+                Some(c) => json(self.conversation_view(&c)),
                 None => Err(RpcError::not_found(format!(
                     "no conversation `{}`",
                     r.conversation
                 ))),
             },
+            Request::ConversationHistory(q) => json(self.conversation_history(&q)?),
             Request::Shutdown | Request::SessionAttach(_) | Request::EventsSubscribe(_) => {
                 Err(RpcError::invalid(format!(
                     "{} must be handled by the connection",
@@ -237,6 +243,49 @@ impl Daemon {
                 )))
             }
         }
+    }
+
+    fn conversation_view(
+        &self,
+        c: &otter_core::conversation::Conversation,
+    ) -> otter_protocol::conversation::ConversationView {
+        let mut v = otter_protocol::conversation::ConversationView::of(c);
+        v.read_only = self.conversations.read_only(c.id.as_str());
+        v
+    }
+
+    fn conversation_history(
+        &self,
+        q: &otter_protocol::conversation::HistoryQuery,
+    ) -> RpcResult<otter_protocol::conversation::HistoryPage> {
+        use otter_protocol::conversation::{HistoryCursor, HistoryPage};
+        let limit = q.limit.unwrap_or(100).clamp(1, 500) as usize;
+        let after = q.after.as_ref().map_or(0, |c| c.seq);
+        let (log_id, records) = self
+            .conversations
+            .history(&q.conversation, after, limit, 1 << 20)
+            .ok_or_else(|| RpcError::not_found(format!("no conversation `{}`", q.conversation)))?
+            .map_err(|e| RpcError::internal(format!("reading the journal: {e:#}")))?;
+        if let Some(c) = &q.after
+            && c.log_id != log_id
+        {
+            return Err(RpcError::new(
+                otter_protocol::ErrorCode::CursorExpired,
+                "that cursor is from another journal; start again from the beginning",
+            ));
+        }
+        let next = (records.len() == limit).then(|| HistoryCursor {
+            log_id: log_id.clone(),
+            seq: records.last().map_or(after, |r| r.seq),
+        });
+        Ok(HistoryPage {
+            log_id,
+            records: records
+                .into_iter()
+                .filter_map(|r| serde_json::to_value(r).ok())
+                .collect(),
+            next,
+        })
     }
 
     pub async fn host_status(&self) -> HostStatus {

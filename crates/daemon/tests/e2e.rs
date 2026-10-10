@@ -3047,7 +3047,12 @@ async fn runs_survive_a_restart_and_follow_a_changing_goal() {
         f.runs.len() == 2 && f.runs[1].state == RunState::Running
     })
     .await;
-    assert_eq!(f.runs[0].state, RunState::Cancelled);
+    assert_eq!(
+        f.runs[0].state,
+        RunState::Cancelled,
+        "{:?}",
+        f.runs[0].summary
+    );
     assert_eq!(
         f.runs[1].provider_session_id.as_deref(),
         Some(conv.as_str())
@@ -4051,6 +4056,61 @@ async fn a_run_takes_the_developers_message_as_a_turn_of_its_own() {
     let said: Vec<_> = c.messages.iter().map(|m| (m.text(), m.lifecycle)).collect();
     assert!(said.contains(&("Did the work.".to_owned(), MessageLifecycle::Completed)));
     assert_eq!(said.iter().filter(|(t, _)| t == "Did the work.").count(), 1);
+
+    // Its journal (D-058): every change in order, a page at a time.
+    use otter_protocol::conversation::{HistoryCursor, HistoryQuery};
+    let page = conn
+        .conversation_history(HistoryQuery {
+            conversation: cid.to_string(),
+            after: None,
+            limit: Some(3),
+        })
+        .await
+        .unwrap();
+    assert_eq!(page.records.len(), 3);
+    assert_eq!(page.records[0]["kind"], "create");
+    assert_eq!(page.records[1]["op"]["op"], "accept");
+    let next = page.next.clone().expect("more");
+    let rest = conn
+        .conversation_history(HistoryQuery {
+            conversation: cid.to_string(),
+            after: Some(next),
+            limit: Some(500),
+        })
+        .await
+        .unwrap();
+    assert!(rest.next.is_none());
+    let seqs: Vec<u64> = page
+        .records
+        .iter()
+        .chain(&rest.records)
+        .map(|r| r["seq"].as_u64().unwrap())
+        .collect();
+    assert_eq!(seqs, (1..=seqs.len() as u64).collect::<Vec<_>>(), "no gaps");
+    let err = conn
+        .conversation_history(HistoryQuery {
+            conversation: cid.to_string(),
+            after: Some(HistoryCursor {
+                log_id: "log_other".into(),
+                seq: 1,
+            }),
+            limit: None,
+        })
+        .await
+        .unwrap_err();
+    assert!(format!("{err:#}").contains("another journal"), "{err:#}");
+    // Its records are on disk, this user's only.
+    let journal = fake
+        .host
+        .home()
+        .join("state/conversations")
+        .join(cid.as_str())
+        .join("journal.jsonl");
+    use std::os::unix::fs::PermissionsExt;
+    assert_eq!(
+        std::fs::metadata(&journal).unwrap().permissions().mode() & 0o777,
+        0o600
+    );
 }
 
 /// A host whose coding agent runs through the SDK worker (D-057) — a fake

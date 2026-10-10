@@ -1651,3 +1651,57 @@ SDK's internals; the worker never decides policy.
 - Interrupts: an aborted result while an interrupt was asked is
   `interrupted`, whatever its subtype; a turn that completed first stays
   completed. Live-checked on both hosts (16/16).
+
+## D-058 — Conversations are kept as journals (2026-10-10)
+
+Milestone 3 of the structured runtime plan: a runtime conversation (D-055)
+survives a restart with everything it accepted and everything that
+happened, and says plainly what a crash cut off.
+
+- **Ops.** Every change is an `Op` carrying its own ids and times
+  (`otter_core::conversation`); applying the same ops to the same start
+  gives the same conversation. Nothing changes a conversation any other way.
+- **The journal is the authority.** `state/conversations/<id>/journal.jsonl`
+  holds one record per change (`{log_id, seq, schema, at, recovery?, kind:
+  create | op}`), `manifest.json` its schema and log id, `snapshot.json` a
+  checkpoint every 64 records (written to a temporary file, synced,
+  renamed, the directory synced — and disposable: a broken one is rebuilt
+  from the journal). Files are this user's only.
+- **Commit order:** check the change on a copy → append the record →
+  `File::sync_all` (on macOS, Rust makes that `F_FULLFSYNC`) → apply in
+  memory → tell clients (`ConversationChanged`) → act on it (the runtime is
+  sent a turn only after `Sending` is recorded). A change that can't be
+  recorded didn't happen; the conversation turns read-only (clients see
+  `read_only` with why), and a run that can't record what it does stops
+  rather than going on unrecorded. Fsync blocks the calling thread (a few
+  milliseconds per change); each conversation has its own lock.
+- **Load:** snapshot, then the records after it. A last line cut short by a
+  crash is cut off; anything wrong before it — unreadable, out of order,
+  not applying — opens the conversation read-only, never with records
+  skipped. A conversation from before the journal (a snapshot only) starts
+  its journal with it, keeping the old file as `snapshot.v1.json`; an older
+  otterd can't read a journaled conversation's snapshot and skips it rather
+  than overwrite it.
+- **Recovery is recorded.** A run still live in the journal belonged to the
+  daemon before this one: its end (`outcome_unknown`; a turn sent but never
+  confirmed is `delivery: unknown`, never resent) is journaled as recovery
+  records, so a second crash keeps it. Receipts are durable: a command
+  retried after a restart gets its receipt back, never a second turn.
+- **Queued turns at a restart** end `cancelled` ("carried into the
+  continuation"): the controller's continuation restates every developer
+  message since the run began, so the guidance arrives exactly once that
+  way. Keeping them queued needs the controller to know which messages a
+  turn already carries — that comes with the controls milestone.
+- **Text being written** is checkpointed (a `WriteBlock` that isn't done)
+  every second or 8 KiB; after a crash the last checkpoint shows as an
+  interrupted message, never as a finished one. Live updates stay transient
+  (D-051).
+- `conversation.history {conversation, after?, limit?}` pages through the
+  journal (100 records by default, about 1 MiB at most); a cursor is
+  `{log_id, seq}`, and one from another journal is `cursor_expired`.
+- Found on the way: when otterd itself stops, a run ending with it was
+  recorded as failed (an attempt spent) if the bridge saw it first. It is
+  now left for the next otterd to mark interrupted and resume.
+- Not yet: reconciling a feature from a turn the journal shows completed
+  after a crash, and making sure a run's processes didn't outlive the
+  daemon — next.

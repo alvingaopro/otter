@@ -130,7 +130,9 @@ impl Daemon {
                     .map(|session_id| NativeBinding { session_id });
                 c.model = coding_model;
                 let id = c.id.clone();
-                self.conversations.insert(c);
+                self.conversations.insert(c).map_err(|e| {
+                    RpcError::internal(format!("recording the conversation: {e:#}"))
+                })?;
                 (id, backend)
             }
         };
@@ -466,6 +468,13 @@ impl Daemon {
                     }
                 }
                 ActorEvent::Ended { error, stopped, .. } => {
+                    // otterd itself is going: the run ends with it, which
+                    // isn't the run failing. Left as it is, the next otterd
+                    // marks it interrupted and the controller resumes it.
+                    if stopped.is_none() && self.shutting_down() {
+                        tracing::info!(run = %run, "the run ended with otterd; it resumes after the restart");
+                        return;
+                    }
                     if let Some(done) = stopped {
                         let (state, reason) = stopping
                             .lock()
@@ -488,7 +497,11 @@ impl Daemon {
                 }
             }
         }
-        // The actor went away without a word.
+        // The actor went away without a word — with otterd, when it stops
+        // (see above), or else it is a failure.
+        if self.shutting_down() {
+            return;
+        }
         self.finish_run(
             &feature,
             &run,

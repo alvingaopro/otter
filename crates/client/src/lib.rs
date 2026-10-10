@@ -488,6 +488,14 @@ impl Connection {
         .await
     }
 
+    /// A page of a conversation's journal.
+    pub async fn conversation_history(
+        &mut self,
+        q: otter_protocol::conversation::HistoryQuery,
+    ) -> Result<otter_protocol::conversation::HistoryPage> {
+        self.call(Request::ConversationHistory(q)).await
+    }
+
     /// Delete a feature that isn't running (its workspace stays).
     pub async fn feature_delete(&mut self, feature: &str) -> Result<()> {
         let _: serde_json::Value = self

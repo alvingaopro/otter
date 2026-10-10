@@ -130,6 +130,27 @@ pub struct Actor {
     /// Open interactions → the runtime's request id.
     asks: HashMap<DecisionId, String>,
     current: Option<TurnId>,
+    /// Text being written, by block, and when it was last checkpointed.
+    drafts: HashMap<BlockId, Checkpoint>,
+    /// The journal couldn't be written: the run must stop (D-058).
+    storage: Option<String>,
+}
+
+/// Text being written, journaled now and then so a crash keeps most of it.
+struct Checkpoint {
+    text: String,
+    at: std::time::Instant,
+    len: usize,
+}
+
+impl Checkpoint {
+    /// Every second, or 8 KiB of new text, whichever first.
+    const EVERY: std::time::Duration = std::time::Duration::from_secs(1);
+    const BYTES: usize = 8 * 1024;
+
+    fn due(&self) -> bool {
+        self.at.elapsed() >= Self::EVERY || self.text.len() - self.len >= Self::BYTES
+    }
 }
 
 enum Flow {
@@ -158,6 +179,8 @@ impl Actor {
             tools: HashMap::new(),
             asks: HashMap::new(),
             current: None,
+            drafts: HashMap::new(),
+            storage: None,
         }
     }
 
@@ -181,14 +204,27 @@ impl Actor {
             if let Flow::End = flow {
                 return;
             }
+            // Nothing more can be recorded: stop rather than go on unrecorded.
+            if let Some(why) = self.storage.take() {
+                let _ = self.handle.stop().await;
+                self.emit(ActorEvent::Ended {
+                    outcome: TurnOutcome::OutcomeUnknown,
+                    error: Some(format!("Otter couldn't record the conversation: {why}")),
+                    stopped: None,
+                })
+                .await;
+                return;
+            }
         }
     }
 
     /// Apply a change to the conversation. `None`: it's gone.
-    fn apply(&self, op: Op) -> Option<Result<Applied, Rejection>> {
+    fn apply(&mut self, op: Op) -> Option<Result<Applied, Rejection>> {
         let r = self.convs.apply(&self.conversation, op);
-        if let Some(Err(e)) = &r {
-            tracing::debug!(conversation = %self.conversation, "not applied: {e}");
+        match &r {
+            Some(Err(Rejection::Storage(why))) => self.storage = Some(why.clone()),
+            Some(Err(e)) => tracing::debug!(conversation = %self.conversation, "not applied: {e}"),
+            _ => {}
         }
         r
     }
@@ -276,6 +312,25 @@ impl Actor {
                     return Flow::Go;
                 };
                 let (m, b) = (self.message_id(&message), self.block_id(&message, block));
+                let draft = self.drafts.entry(b.clone()).or_insert_with(|| Checkpoint {
+                    text: String::new(),
+                    at: std::time::Instant::now(),
+                    len: 0,
+                });
+                draft.text.push_str(&text);
+                if draft.due() {
+                    draft.at = std::time::Instant::now();
+                    draft.len = draft.text.len();
+                    let so_far = draft.text.clone();
+                    self.apply(Op::WriteBlock {
+                        turn: turn.clone(),
+                        message: m.clone(),
+                        block: b.clone(),
+                        text: so_far,
+                        done: false,
+                        at: now,
+                    });
+                }
                 self.emit(ActorEvent::TextDelta {
                     turn,
                     message: m,
@@ -293,6 +348,7 @@ impl Actor {
                     return Flow::Go;
                 };
                 let (m, b) = (self.message_id(&message), self.block_id(&message, block));
+                self.drafts.remove(&b);
                 self.apply(Op::WriteBlock {
                     turn: turn.clone(),
                     message: m.clone(),
@@ -814,7 +870,7 @@ mod tests {
         let convs = Arc::new(Conversations::load(dir.path()).unwrap());
         let c = Conversation::new("claude", "fake", "ws_1".into(), Utc::now());
         let id = c.id.clone();
-        convs.insert(c);
+        convs.insert(c).unwrap();
         for (i, t) in turns.iter().enumerate() {
             send(&convs, &id, &format!("cmd_{i}"), t);
         }
@@ -1008,6 +1064,55 @@ mod tests {
         assert_eq!(later.delivery, Delivery::Queued);
         // The tool it started never reported: not a success.
         assert_eq!(c.tools[0].status, ToolStatus::ResultUnavailable);
+    }
+
+    #[tokio::test]
+    async fn long_text_is_checkpointed_while_it_is_written() {
+        let s = setup(&["HANG"]);
+        let (fake, _, _) = Fake::new();
+        let say = fake.tx.clone();
+        let (_tx, mut rx, _task) = spawn(&s, "run_a", fake);
+        while !matches!(rx.recv().await, Some(ActorEvent::TurnStarted { .. })) {}
+        // 9 KiB of new text: over the checkpoint size.
+        say.send(RuntimeEvent::TextDelta {
+            message: "m-h".into(),
+            block: 0,
+            text: "x".repeat(9 * 1024),
+        })
+        .await
+        .unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            let c = s.convs.get(s.id.as_str()).unwrap();
+            if let Some(m) = c.messages.first() {
+                assert_eq!(m.lifecycle, MessageLifecycle::Streaming);
+                assert!(m.text().len() > 9 * 1024, "the text so far");
+                break;
+            }
+            assert!(std::time::Instant::now() < deadline, "no checkpoint");
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    }
+
+    #[tokio::test]
+    async fn a_journal_that_cant_be_written_stops_the_run() {
+        let s = setup(&["HANG"]);
+        let (fake, _, _) = Fake::new();
+        let say = fake.tx.clone();
+        let (_tx, mut rx, _task) = spawn(&s, "run_a", fake);
+        while !matches!(rx.recv().await, Some(ActorEvent::TurnStarted { .. })) {}
+        s.convs
+            .inject(Some(crate::runtime::conversations::Fault::BeforeAppend));
+        say.send(RuntimeEvent::Text {
+            message: "m-h".into(),
+            block: 0,
+            text: "done".into(),
+        })
+        .await
+        .unwrap();
+        let seen = until_ended(&mut rx).await;
+        assert!(seen.iter().any(|e| matches!(e, ActorEvent::Ended { error: Some(e), .. } if e.contains("couldn't record"))));
+        assert!(s.convs.read_only(s.id.as_str()).is_some());
     }
 
     #[tokio::test]
