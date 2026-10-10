@@ -146,6 +146,33 @@ describe("Features view", () => {
     expect(byText("button", "Take over")).toBeUndefined();
   });
 
+  it("shows the coding agent's work and offers interrupt and redirect while it runs", async () => {
+    const base = mockSource("mac");
+    const acts: unknown[] = [];
+    const s: FeatureSource = { ...base, act: async (_key, action) => void acts.push(action) };
+    await render(s);
+    await act(async () => byText("button", "Export workspace timeline as CSV")!.click());
+    await act(async () => byText('[role="tab"]', "Work")!.click());
+    const work = q(".work")!;
+    expect(work.textContent).toContain("Working");
+    expect(work.textContent).toContain("cargo test timeline::csv");
+    expect(work.textContent).toContain("Queued after the current work");
+    // Its runtime can interrupt and redirect: the buttons are there.
+    await act(async () => byText("button", "Interrupt")!.click());
+    expect(acts).toContainEqual({ action: "interrupt" });
+    const composer = q<HTMLTextAreaElement>('textarea[aria-label="Message to Otter"]')!;
+    type(composer, "Use the existing icon");
+    await act(async () => byText("button", "Redirect now")!.click());
+    expect(acts).toContainEqual({ action: "redirect", text: "Use the existing icon" });
+  });
+
+  it("offers neither where nothing runs", async () => {
+    await render(mockSource("mac"));
+    await act(async () => byText(".filter-chip", "Done")!.click());
+    expect(byText("button", "Interrupt")).toBeUndefined();
+    expect(byText("button", "Redirect now")).toBeUndefined();
+  });
+
   it("creates a feature in a chosen workspace", async () => {
     await render(mockSource("mac"));
     await act(async () => q('[aria-label="New feature"]')!.click());

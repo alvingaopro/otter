@@ -3,7 +3,9 @@ import { Dialog } from "./Dialog";
 import { Glyph } from "./Glyph";
 import { ago } from "./model";
 import otterIcon from "./assets/otter.png";
+import type { CodingConversation, Interaction, RuntimeCapabilities } from "./conversation";
 import type { FeatureSource } from "./featureSource";
+import { QuestionForm, Work } from "./Work";
 import {
   FILTERS,
   STATUS_LABEL,
@@ -158,7 +160,7 @@ function rowSummary(f: Feature): string {
   return STATUS_LABEL[f.status];
 }
 
-type Tab = "plan" | "tasks" | "approvals" | "evidence" | "delivery" | "timeline";
+type Tab = "plan" | "work" | "tasks" | "approvals" | "evidence" | "delivery" | "timeline";
 
 function FeaturePane({
   placed,
@@ -181,6 +183,31 @@ function FeaturePane({
   const pending = pendingDecisions(f);
   const [tab, setTab] = useState<Tab>(pending.length > 0 ? "approvals" : "plan");
   const [error, setError] = useState<string | null>(null);
+  // The coding agent's side (D-055…D-059), and what its runtime can do.
+  const [conversations, setConversations] = useState<CodingConversation[]>([]);
+  const [caps, setCaps] = useState<RuntimeCapabilities | null>(null);
+  useEffect(() => {
+    let live = true;
+    const load = () =>
+      void source.conversations?.(placed.key).then((c) => live && setConversations(c));
+    load();
+    const stop = source.watchConversations?.(placed.key, load);
+    return () => {
+      live = false;
+      stop?.();
+    };
+  }, [source, placed.key, f.updated_at]);
+  useEffect(() => {
+    let live = true;
+    void source.capabilities?.(placed.host).then((c) => live && setCaps(c));
+    return () => {
+      live = false;
+    };
+  }, [source, placed.host]);
+  const interactions = useMemo(
+    () => new Map(conversations.flatMap((c) => c.interactions.map((i) => [i.id, i] as const))),
+    [conversations],
+  );
 
   const act = (action: FeatureAction) => {
     setError(null);
@@ -189,6 +216,7 @@ function FeaturePane({
 
   const tabs: { id: Tab; label: string; count?: number }[] = [
     { id: "plan", label: "Plan" },
+    { id: "work", label: "Work" },
     { id: "tasks", label: "Tasks", count: f.tasks.length },
     { id: "approvals", label: "Approvals", count: pending.length },
     { id: "evidence", label: "Evidence", count: f.evidence.length },
@@ -230,7 +258,7 @@ function FeaturePane({
             {f.preview ? "Open preview" : "Preview"}
           </button>
         )}
-        <FeatureActions f={f} act={act} />
+        <FeatureActions f={f} act={act} caps={caps} />
         {deletable(f) && (
           <button className="btn outline" title="Delete this feature" onClick={() => setDeleting(true)}>
             Delete
@@ -274,7 +302,7 @@ function FeaturePane({
       )}
       {error && <p className="notice error-text">{error}</p>}
       <div className="feature-body">
-        <Conversation placed={placed} source={source} now={now} />
+        <Conversation placed={placed} source={source} now={now} caps={caps} onError={setError} />
         <section className="feature-detail" aria-label="Details">
           <div className="detail-tabs" role="tablist" aria-label="Feature details">
             {tabs.map((t) => (
@@ -295,7 +323,8 @@ function FeaturePane({
           <div className="detail-body" role="tabpanel" id={`fpanel-${tab}`} aria-labelledby={`ftab-${tab}`}>
             {tab === "plan" && <Plan f={f} />}
             {tab === "tasks" && <Tasks placed={placed} onOpenWorkspace={onOpenWorkspace} />}
-            {tab === "approvals" && <Approvals f={f} act={act} now={now} />}
+            {tab === "work" && <Work conversations={conversations} now={now} />}
+            {tab === "approvals" && <Approvals f={f} act={act} now={now} interactions={interactions} />}
             {tab === "evidence" && <EvidenceList f={f} now={now} shot={(name) => source.artifact(placed.key, name)} />}
             {tab === "delivery" && <DeliveryPanel f={f} />}
             {tab === "timeline" && <Timeline placed={placed} source={source} now={now} />}
@@ -362,10 +391,28 @@ function DeleteFeatureDialog({
   );
 }
 
-function FeatureActions({ f, act }: { f: Feature; act: (a: FeatureAction) => void }) {
+function FeatureActions({
+  f,
+  act,
+  caps,
+}: {
+  f: Feature;
+  act: (a: FeatureAction) => void;
+  caps?: RuntimeCapabilities | null;
+}) {
   const live = ["planning", "implementing", "verifying", "blocked"].includes(f.status);
+  const running = f.runs.some((r) => ["starting", "running", "waiting"].includes(r.state));
   return (
     <span className="feature-actions">
+      {running && caps?.features.interrupt_turn && (
+        <button
+          className="btn"
+          title="Stop what the coding agent is doing now, and wait for you"
+          onClick={() => act({ action: "interrupt" })}
+        >
+          Interrupt
+        </button>
+      )}
       {f.status === "draft" && (
         <button className="btn primary" onClick={() => act({ action: "start" })}>
           Start
@@ -471,7 +518,19 @@ function Speaker({ role }: { role: string }) {
   );
 }
 
-function Conversation({ placed, source, now }: { placed: PlacedFeature; source: FeatureSource; now: number }) {
+function Conversation({
+  placed,
+  source,
+  now,
+  caps,
+  onError,
+}: {
+  placed: PlacedFeature;
+  source: FeatureSource;
+  now: number;
+  caps?: RuntimeCapabilities | null;
+  onError?: (e: string) => void;
+}) {
   const [text, setText] = useState("");
   const [busy, setBusy] = useState(false);
   const end = useRef<HTMLDivElement>(null);
@@ -567,9 +626,34 @@ function Conversation({ placed, source, now }: { placed: PlacedFeature; source: 
             }
           }}
         />
-        <button className="btn primary" type="submit" disabled={busy || !text.trim()}>
-          Send
-        </button>
+        <span className="composer-actions">
+          <button className="btn primary" type="submit" disabled={busy || !text.trim()}>
+            Send
+          </button>
+          {live && caps?.features.redirect && (
+            <button
+              type="button"
+              className="btn outline"
+              title="Stop what the coding agent is doing and have it do this next"
+              disabled={busy || !text.trim()}
+              onClick={async () => {
+                const t = text.trim();
+                if (!t) return;
+                setBusy(true);
+                try {
+                  await source.act(placed.key, { action: "redirect", text: t });
+                  setText("");
+                } catch (e) {
+                  onError?.(String(e));
+                } finally {
+                  setBusy(false);
+                }
+              }}
+            >
+              Redirect now
+            </button>
+          )}
+        </span>
       </form>
     </section>
   );
@@ -660,20 +744,42 @@ function Tasks({ placed, onOpenWorkspace }: { placed: PlacedFeature; onOpenWorks
   );
 }
 
-function Approvals({ f, act, now }: { f: Feature; act: (a: FeatureAction) => void; now: number }) {
+function Approvals({
+  f,
+  act,
+  now,
+  interactions,
+}: {
+  f: Feature;
+  act: (a: FeatureAction) => void;
+  now: number;
+  interactions?: Map<string, Interaction>;
+}) {
   if (f.decisions.length === 0) return <p className="muted small">Nothing has needed a decision.</p>;
   const sorted = [...f.decisions].sort((a, b) => Number(b.status === "pending") - Number(a.status === "pending"));
   return (
     <ul className="plain-list decisions">
       {sorted.map((d) => (
-        <Decision key={d.id} d={d} act={act} now={now} />
+        <Decision key={d.id} d={d} act={act} now={now} interaction={interactions?.get(d.id)} />
       ))}
     </ul>
   );
 }
 
-function Decision({ d, act, now }: { d: DecisionRequest; act: (a: FeatureAction) => void; now: number }) {
+function Decision({
+  d,
+  act,
+  now,
+  interaction,
+}: {
+  d: DecisionRequest;
+  act: (a: FeatureAction) => void;
+  now: number;
+  interaction?: Interaction;
+}) {
   const [answer, setAnswer] = useState("");
+  // A form of questions, as asked: each answered on its own (D-059).
+  const form = d.status === "pending" && interaction?.type === "questions" && (interaction.questions?.length ?? 0) > 0;
   return (
     <li className={d.status === "pending" ? "decision pending" : "decision"}>
       <div className="decision-head">
@@ -684,7 +790,12 @@ function Decision({ d, act, now }: { d: DecisionRequest; act: (a: FeatureAction)
       </div>
       <div className="decision-summary">{d.summary}</div>
       {d.detail && <div className="muted small">{d.detail}</div>}
-      {d.status === "pending" ? (
+      {form ? (
+        <QuestionForm
+          interaction={interaction!}
+          onAnswer={(answers) => act({ action: "decide", decision_id: d.id, approve: true, answers })}
+        />
+      ) : d.status === "pending" ? (
         d.options.length > 0 || d.kind === "question" ? (
           <div className="decision-actions">
             {d.options.map((o) => (

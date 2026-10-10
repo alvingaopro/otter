@@ -84,6 +84,8 @@ pub fn run() {
             features::feature_events,
             features::feature_artifact,
             features::feature_delete,
+            features::conversations,
+            features::runtime_capabilities,
             settings::settings_get,
             settings::settings_set,
             settings::settings_models,
