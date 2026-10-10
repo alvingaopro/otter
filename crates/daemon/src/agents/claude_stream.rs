@@ -164,6 +164,8 @@ impl AgentRuntime for ClaudeRuntime {
                 .stdin(Stdio::piped())
                 .stdout(Stdio::piped())
                 .stderr(Stdio::null())
+                // A group of its own: what it starts can be found again.
+                .process_group(0)
                 .kill_on_drop(true),
         )
         .await
@@ -171,6 +173,7 @@ impl AgentRuntime for ClaudeRuntime {
         let stdin = child.stdin.take().expect("piped");
         let stdout = child.stdout.take().expect("piped");
         let pid = child.id();
+        let leader = pid;
 
         let shared = Arc::new(Mutex::new(Shared {
             info: RunInfo {
@@ -208,6 +211,8 @@ impl AgentRuntime for ClaudeRuntime {
             shared,
             reader,
             next_request: 0,
+            pid: leader,
+            reaped: false,
         };
         let init = handle.request_id();
         handle
@@ -255,9 +260,29 @@ struct ClaudeRun {
     shared: Arc<Mutex<Shared>>,
     reader: tokio::task::JoinHandle<()>,
     next_request: u64,
+    /// The process group's leader, and whether it has been reaped.
+    pid: Option<u32>,
+    reaped: bool,
 }
 
 impl ClaudeRun {
+    /// The run's process is gone or going (its output closed, or it was
+    /// given its moment): end what it left in its group — before reaping
+    /// it, while the group's id is still ours — then reap it.
+    async fn reap(&mut self) -> Option<std::process::ExitStatus> {
+        if self.reaped {
+            return None;
+        }
+        if let Some(pid) = self.pid {
+            crate::runtime::end_group(pid);
+        }
+        self.reaped = true;
+        tokio::time::timeout(std::time::Duration::from_secs(5), self.child.wait())
+            .await
+            .ok()
+            .and_then(Result::ok)
+    }
+
     fn request_id(&mut self) -> String {
         self.next_request += 1;
         format!("otter_{}", self.next_request)
@@ -297,16 +322,15 @@ impl RunHandle for ClaudeRun {
     async fn next_event(&mut self) -> Option<RuntimeEvent> {
         let ev = self.events.recv().await?;
         if let RuntimeEvent::Exited { .. } = ev {
-            // The process closed its output: collect the exit status.
-            let status =
-                tokio::time::timeout(std::time::Duration::from_secs(5), self.child.wait()).await;
+            // The process closed its output: end its group, collect the status.
+            let status = self.reap().await;
             self.shared.lock().unwrap().info.exited = true;
             return Some(match status {
-                Ok(Ok(s)) => RuntimeEvent::Exited {
+                Some(s) => RuntimeEvent::Exited {
                     code: s.code(),
                     error: (!s.success()).then(|| format!("claude exited with {s}")),
                 },
-                _ => RuntimeEvent::Exited {
+                None => RuntimeEvent::Exited {
                     code: None,
                     error: Some("claude closed its output but didn't exit".into()),
                 },
@@ -342,14 +366,18 @@ impl RunHandle for ClaudeRun {
         if self.stdin.is_some() {
             let _ = self.interrupt().await;
         }
-        // Closing input ends `claude -p`; give it a moment, then make sure.
+        // Closing input ends `claude -p`: give it a moment to close its
+        // output, then end its group (what it left running) and reap it.
         self.stdin = None;
-        if tokio::time::timeout(std::time::Duration::from_secs(5), self.child.wait())
-            .await
-            .is_err()
-        {
-            let _ = self.child.kill().await;
-        }
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while let Some(ev) = self.events.recv().await {
+                if matches!(ev, RuntimeEvent::Exited { .. }) {
+                    break;
+                }
+            }
+        })
+        .await;
+        self.reap().await;
         self.shared.lock().unwrap().info.exited = true;
         Ok(())
     }
@@ -365,6 +393,12 @@ impl RunHandle for ClaudeRun {
 impl Drop for ClaudeRun {
     fn drop(&mut self) {
         self.reader.abort();
+        // Dropped without being stopped (otterd going away): its group too.
+        if !self.reaped
+            && let Some(pid) = self.pid
+        {
+            crate::runtime::end_group(pid);
+        }
     }
 }
 
@@ -1212,16 +1246,41 @@ mod process_tests {
         assert!(!h.inspect().exited);
         h.stop().await.unwrap();
         assert!(h.inspect().exited);
-        let mut exited = false;
-        while let Ok(Some(ev)) =
-            tokio::time::timeout(std::time::Duration::from_secs(5), h.next_event()).await
-        {
-            if let RuntimeEvent::Exited { .. } = ev {
-                exited = true;
-                break;
-            }
+        // Stopping waited for it to leave: nothing more comes.
+        let after = tokio::time::timeout(std::time::Duration::from_secs(5), h.next_event())
+            .await
+            .expect("no hang");
+        assert!(
+            matches!(after, None | Some(RuntimeEvent::Exited { .. })),
+            "{after:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn stopping_a_run_ends_what_it_left_running() {
+        let dir = tempfile::tempdir().unwrap();
+        let pidfile = dir.path().join("bg.pid");
+        let (_d, mut h) = start(&format!("BG {}", pidfile.display()), None).await;
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !pidfile.exists() || std::fs::read_to_string(&pidfile).unwrap().trim().is_empty() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "no background process"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
         }
-        assert!(exited);
+        let bg: u32 = std::fs::read_to_string(&pidfile)
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        assert!(crate::runtime::process_started(bg).is_some(), "running");
+        h.stop().await.unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        assert!(
+            crate::runtime::process_started(bg).is_none(),
+            "ended with the run"
+        );
     }
 
     #[tokio::test]

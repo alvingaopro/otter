@@ -1702,6 +1702,26 @@ happened, and says plainly what a crash cut off.
 - Found on the way: when otterd itself stops, a run ending with it was
   recorded as failed (an attempt spent) if the bridge saw it first. It is
   now left for the next otterd to mark interrupted and resume.
-- Not yet: reconciling a feature from a turn the journal shows completed
-  after a crash, and making sure a run's processes didn't outlive the
-  daemon — next.
+- **Features follow the journal.** At a restart, a feature run whose last
+  turn the journal shows completed (the old daemon died before telling the
+  feature) is recorded completed, with what the agent said last; any other
+  live run is interrupted and resumable, as before.
+- **A run's processes end with it.** Each run starts in a process group of
+  its own (`process_group(0)`); stopping it waits for its agent to close its
+  output, then ends the group — before the leader is reaped, while the
+  group's id can't be anyone else's — so a background process it left (a
+  server, a long `sleep`) doesn't outlive it. Dropping a run (otterd going
+  away) does the same. The journal records each generation's process (pid
+  and start time); a restarted daemon ends a recorded process that is still
+  running — the same one by its start time, never just a reused pid. (A
+  daemon killed outright can still leave what the agent's process had
+  started if that process died first; nothing claims otherwise.)
+- **The workspace is where it really is.** Policy (D-049) compares paths
+  with symlinks resolved on both sides: a workspace reached through a
+  symlink (macOS's `/var` is `/private/var`) is still the workspace, and a
+  symlink inside it pointing elsewhere is not. Found by the live check.
+- **Live-checked** (`live_sdk_restart`, real Claude through the SDK worker,
+  macOS): otterd restarted while a tool ran; the cut-off turn is
+  `outcome_unknown` with `delivery: delivered`; the run resumed as
+  generation 2 of the same conversation and native session; the feature
+  reached review with the work done (turns: unknown, completed).

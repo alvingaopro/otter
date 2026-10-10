@@ -159,6 +159,8 @@ impl AgentRuntime for ClaudeSdkRuntime {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
+            // A group of its own: what it starts can be found again.
+            .process_group(0)
             .kill_on_drop(true);
         let mut child = crate::env::spawn_tokio(&mut cmd)
             .await
@@ -166,9 +168,10 @@ impl AgentRuntime for ClaudeSdkRuntime {
         let stdin = child.stdin.take().expect("piped");
         let stdout = child.stdout.take().expect("piped");
         let stderr = child.stderr.take().expect("piped");
+        let leader = child.id();
         let shared = Arc::new(Mutex::new(Shared {
             info: RunInfo {
-                pid: child.id(),
+                pid: leader,
                 ..Default::default()
             },
             ..Default::default()
@@ -239,6 +242,8 @@ impl AgentRuntime for ClaudeSdkRuntime {
             run_id: spec.run_id.to_string(),
             generation: spec.generation,
             pending: None,
+            pid: leader,
+            reaped: false,
         };
         let payload = json!({
             "conversation_id": spec.conversation_id,
@@ -364,9 +369,29 @@ struct SdkRun {
     generation: u64,
     /// An event read while waiting for something else.
     pending: Option<RuntimeEvent>,
+    /// The process group's leader, and whether it has been reaped.
+    pid: Option<u32>,
+    reaped: bool,
 }
 
 impl SdkRun {
+    /// The run's process is gone or going (its output closed, or it was
+    /// given its moment): end what it left in its group — before reaping
+    /// it, while the group's id is still ours — then reap it.
+    async fn reap(&mut self) -> Option<std::process::ExitStatus> {
+        if self.reaped {
+            return None;
+        }
+        if let Some(pid) = self.pid {
+            crate::runtime::end_group(pid);
+        }
+        self.reaped = true;
+        tokio::time::timeout(std::time::Duration::from_secs(5), self.child.wait())
+            .await
+            .ok()
+            .and_then(Result::ok)
+    }
+
     async fn command(&mut self, kind: &str, payload: Value) -> Result<String> {
         self.next_request += 1;
         let request_id = format!("otter_{}", self.next_request);
@@ -456,11 +481,10 @@ impl RunHandle for SdkRun {
                     });
                 }
                 Msg::End => {
-                    let status =
-                        tokio::time::timeout(Duration::from_secs(5), self.child.wait()).await;
+                    let status = self.reap().await;
                     self.shared.lock().unwrap().info.exited = true;
                     return Some(match status {
-                        Ok(Ok(s)) => RuntimeEvent::Exited {
+                        Some(s) => RuntimeEvent::Exited {
                             code: s.code(),
                             error: (!s.success()).then(|| {
                                 format!(
@@ -523,14 +547,19 @@ impl RunHandle for SdkRun {
         if self.stdin.is_some() {
             let _ = self.command("shutdown", json!({})).await;
         }
-        // The worker ends its SDK session and leaves; give it a moment.
+        // The worker ends its SDK session and leaves: give it a moment to
+        // close its output, then end its group (what it left running) and
+        // reap it.
         self.stdin = None;
-        if tokio::time::timeout(Duration::from_secs(8), self.child.wait())
-            .await
-            .is_err()
-        {
-            let _ = self.child.kill().await;
-        }
+        let _ = tokio::time::timeout(Duration::from_secs(8), async {
+            while let Some(msg) = self.events.recv().await {
+                if matches!(msg, Msg::End) {
+                    break;
+                }
+            }
+        })
+        .await;
+        self.reap().await;
         self.shared.lock().unwrap().info.exited = true;
         Ok(())
     }
@@ -547,6 +576,12 @@ impl Drop for SdkRun {
     fn drop(&mut self) {
         self.reader.abort();
         self.drain.abort();
+        // Dropped without being stopped (otterd going away): its group too.
+        if !self.reaped
+            && let Some(pid) = self.pid
+        {
+            crate::runtime::end_group(pid);
+        }
     }
 }
 

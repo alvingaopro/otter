@@ -4250,3 +4250,173 @@ async fn the_coding_backend_and_model_are_settings_of_their_own() {
         "{err:#}"
     );
 }
+
+/// Real Claude, through the SDK worker, survives an otterd restart in the
+/// middle of a turn (D-058). Uses this host's Claude sign-in; run by hand:
+/// `OTTER_CLAUDE_WORKER=$PWD/packages/claude-runtime cargo test -p otterd
+/// --test e2e live_sdk_restart -- --ignored --nocapture`.
+#[tokio::test]
+#[ignore = "calls Claude; needs the built worker and a signed-in Claude Code"]
+async fn live_sdk_restart() {
+    use otter_core::conversation::{Delivery, ToolStatus, TurnOutcome};
+    use otter_core::feature::{FeatureStatus, RunState};
+    use otter_protocol::host::{CodingSettings, SettingsUpdate};
+    let worker = std::env::var("OTTER_CLAUDE_WORKER").expect("OTTER_CLAUDE_WORKER");
+    let node = String::from_utf8(
+        Command::new("sh")
+            .args(["-c", "command -v node"])
+            .output()
+            .unwrap()
+            .stdout,
+    )
+    .unwrap()
+    .trim()
+    .to_owned();
+    let mut host = TestHost::with_env(&[
+        ("OTTER_CODING_BACKEND", "sdk".into()),
+        ("OTTER_CLAUDE_WORKER", worker),
+        ("OTTER_NODE", node),
+        ("OTTER_CONTROLLER", "rules".into()),
+        ("OTTER_CONTROLLER_TICK_MS", "200".into()),
+        ("DEVELOPER_DIR", String::new()),
+        ("SDKROOT", String::new()),
+    ])
+    .await;
+    host.conn()
+        .await
+        .settings_set(SettingsUpdate {
+            coding: Some(CodingSettings {
+                backend: None,
+                model: Some("haiku".into()),
+            }),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    let ws = "livesdk";
+    let id = started_in(
+        &host,
+        ws,
+        "Work only in the current working directory. Use the Bash tool to run exactly `sleep 20 && echo slept > slept.txt`, then create ./done.txt (in the current working directory) containing the word ok. Nothing else.",
+    )
+    .await;
+    let wait = |what: &'static str, secs: u64| {
+        (what, std::time::Instant::now() + Duration::from_secs(secs))
+    };
+
+    // Mid-turn: the sleep is running.
+    let (what, deadline) = wait("the sleep running", 180);
+    let conv = loop {
+        let list = host
+            .conn()
+            .await
+            .conversation_list(Some(&id))
+            .await
+            .unwrap();
+        if let Some(c) = list.first()
+            && c.conversation
+                .tools
+                .iter()
+                .any(|t| t.status == ToolStatus::Running && t.summary.contains("sleep"))
+        {
+            break c.conversation.clone();
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "timed out waiting for {what}"
+        );
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    };
+    let session = host.conn().await.feature_get(&id).await.unwrap().runs[0]
+        .provider_session_id
+        .clone()
+        .expect("bound");
+    eprintln!(
+        "live: conversation {} running the sleep; restarting otterd",
+        conv.id
+    );
+    assert!(conv.process.is_some(), "the run's process is recorded");
+
+    host.restart().await;
+
+    // The turn that was cut off is unknown, never completed; the run resumes
+    // the same native session as a new generation.
+    let (what, deadline) = wait("the resumed run", 120);
+    let f = loop {
+        let f = host.conn().await.feature_get(&id).await.unwrap();
+        if f.runs.len() >= 2 {
+            break f;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "timed out waiting for {what}"
+        );
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    };
+    assert_eq!(
+        f.runs[0].state,
+        RunState::Cancelled,
+        "{:?}",
+        f.runs[0].summary
+    );
+    assert_eq!(f.runs[1].conversation_id.as_ref(), Some(&conv.id));
+    assert_eq!(
+        f.runs[1].provider_session_id.as_deref(),
+        Some(session.as_str())
+    );
+    let c = host
+        .conn()
+        .await
+        .conversation_get(conv.id.as_str())
+        .await
+        .unwrap();
+    let first = &c.conversation.turns[0];
+    assert_eq!(first.outcome, Some(TurnOutcome::OutcomeUnknown));
+    assert_eq!(first.delivery, Delivery::Delivered);
+    assert!(c.conversation.generation >= 2);
+    eprintln!(
+        "live: turn 1 {:?}/{:?}; resumed as generation {}",
+        first.outcome, first.delivery, c.conversation.generation
+    );
+
+    // And the work gets done.
+    let (what, deadline) = wait("review", 300);
+    let f = loop {
+        let f = host.conn().await.feature_get(&id).await.unwrap();
+        if matches!(
+            f.status,
+            FeatureStatus::Review | FeatureStatus::Failed | FeatureStatus::Blocked
+        ) {
+            break f;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "timed out waiting for {what}: {:?}",
+            f.status
+        );
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    };
+    assert_eq!(
+        f.status,
+        FeatureStatus::Review,
+        "{:?} {:?}",
+        f.status_reason,
+        f.runs.last().and_then(|r| r.summary.clone())
+    );
+    assert!(host.home().join(ws).join("done.txt").exists());
+    let c = host
+        .conn()
+        .await
+        .conversation_get(conv.id.as_str())
+        .await
+        .unwrap();
+    eprintln!(
+        "live: done; {} turns, outcomes {:?}",
+        c.conversation.turns.len(),
+        c.conversation
+            .turns
+            .iter()
+            .map(|t| t.outcome)
+            .collect::<Vec<_>>()
+    );
+}
