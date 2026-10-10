@@ -61,4 +61,10 @@ node probes/live.mjs [model]   # live check against real Claude; uses this host'
 
 To have otterd use a development build: `OTTER_CODING_BACKEND=sdk` (or
 Settings → coding backend `sdk`) and `OTTER_CLAUDE_WORKER=$PWD` in otterd's
-environment. Packaging next to `otterd` comes with the release work.
+environment.
+
+Released hosts get it from `otter host install` (D-060): a per-platform
+`otter-claude-runtime-<version>-<platform>.tar.gz`, checked against its
+`.sha256`, in `~/.local/lib/otter/claude-runtime/<version>`. `node
+dist/main.js --check` says whether it can run here. What has been validated
+live is in [`docs/runtime-validation.md`](../../docs/runtime-validation.md).
