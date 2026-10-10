@@ -1725,3 +1725,37 @@ happened, and says plainly what a crash cut off.
   `outcome_unknown` with `delivery: delivered`; the run resumed as
   generation 2 of the same conversation and native session; the feature
   reached review with the work done (turns: unknown, completed).
+
+## D-059 — Controls, typed interactions and a closer policy (2026-10-10)
+
+Milestone 4 of the structured runtime plan. In three steps; this is the
+first.
+
+**Policy reads every piece of a command line.** D-049's lists matched the
+whole line; a write outside the workspace by redirection or by a plain
+`cp` went unnoticed, and so did a symlink out of the workspace. Now:
+
+- A line is split at `;`, `&&`, `||`, `|`, `&` and newlines; what `$(…)`
+  and backticks run is read as a command too. The most severe piece
+  decides. `2>&1`, `>&2` and writes to `/dev/null`, `/dev/stdout`,
+  `/dev/stderr`, `/dev/tty` are not file writes.
+- A write to a file outside the workspace asks the developer: `>`/`>>`
+  (any descriptor), `cp`/`mv`/`ln`/`install`/`rsync` to an outside
+  destination, `tee`/`touch`/`mkdir`/`truncate`/`chmod`/`chown` of an
+  outside path, `dd of=`. `~` is home; a `cd` earlier in the line moves
+  where later relative paths point. Reading from outside is fine.
+- Paths are compared where they really are: symlinks resolved on both sides
+  (the deepest existing part of a path, then the rest), so a workspace
+  reached through a symlink is the workspace, and a symlink inside it
+  pointing elsewhere is not.
+- This is still a lexical reading for usability, not a sandbox: quotes,
+  variables and what a script does inside aren't understood, and a
+  determined command can hide what it does. A variable target (`> $OUT`)
+  isn't judged. Ordinary work keeps running without asking (`npm test 2>&1
+  | tail -9`, builds, writes inside the workspace).
+
+**Subagents are off for now.** `Task`/`Agent` were classified as reads.
+They are a `Delegate` call now, which policy denies until a subagent's
+tools, lineage and policy are handled. The sdk backend doesn't offer them
+at all (`disallowedTools`); the legacy backend only hears about the tool
+calls Claude Code asks permission for, which its capabilities now say.

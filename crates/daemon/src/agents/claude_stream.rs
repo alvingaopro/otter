@@ -116,9 +116,12 @@ impl AgentRuntime for ClaudeRuntime {
 
     fn capabilities(&self, env: &crate::env::EnvMap) -> RuntimeCapabilities {
         let available = which("claude", env).is_some();
-        let mut notes = vec![format!(
-            "Drives Claude Code's stream-json mode, observed on {OBSERVED_VERSION}: not a documented interface."
-        )];
+        let mut notes = vec![
+            format!(
+                "Drives Claude Code's stream-json mode, observed on {OBSERVED_VERSION}: not a documented interface."
+            ),
+            "Otter's policy sees only the tool calls Claude Code asks permission for; the sdk backend checks every one.".into(),
+        ];
         if !available {
             notes.insert(
                 0,
@@ -578,8 +581,17 @@ pub fn response_for(tool: &str, input: &Value, reply: &DecisionReply) -> Value {
 pub fn tool_call(name: &str, input: &Value) -> ToolCall {
     let s = |k: &str| input[k].as_str().unwrap_or_default().to_owned();
     match name {
-        "Read" | "Glob" | "Grep" | "LS" | "NotebookRead" | "TodoWrite" | "ToolSearch" | "Task"
-        | "Agent" => ToolCall::Read,
+        "Read" | "Glob" | "Grep" | "LS" | "NotebookRead" | "TodoWrite" | "ToolSearch" => {
+            ToolCall::Read
+        }
+        // Starting another agent isn't reading (D-059).
+        "Task" | "Agent" => ToolCall::Delegate {
+            description: if s("description").is_empty() {
+                s("prompt")
+            } else {
+                s("description")
+            },
+        },
         "Edit" | "Write" | "MultiEdit" => ToolCall::Edit {
             path: s("file_path"),
         },
@@ -654,6 +666,7 @@ pub fn summarize(call: &ToolCall, tool: &str) -> String {
         ToolCall::Fetch { url } => format!("Fetch {url}"),
         ToolCall::Question { question, .. } => question.clone(),
         ToolCall::PlanApproval { plan } => format!("Approve the plan: {plan}"),
+        ToolCall::Delegate { description } => format!("Start a subagent: {description}"),
         ToolCall::Other { name } => format!("Use {name}"),
     };
     super::excerpt(&text, SUMMARY_LEN)
@@ -1090,6 +1103,13 @@ mod tests {
     #[test]
     fn tool_calls_map_to_generic_kinds() {
         assert_eq!(tool_call("Grep", &json!({})), ToolCall::Read);
+        // Starting another agent isn't a read (D-059).
+        assert_eq!(
+            tool_call("Task", &json!({"description": "look around"})),
+            ToolCall::Delegate {
+                description: "look around".into()
+            }
+        );
         assert_eq!(
             tool_call("Write", &json!({"file_path":"/w/a.rs"})),
             ToolCall::Edit {
