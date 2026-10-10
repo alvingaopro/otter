@@ -625,6 +625,19 @@ impl Conversation {
         command: Command,
         now: Timestamp,
     ) -> Result<Accepted, Rejection> {
+        self.accept_as(command_id, fingerprint, command, None, now)
+    }
+
+    /// [`Self::accept`], with the new turn's id chosen by the caller (so a
+    /// replayed [`Op::Accept`] gives the same id).
+    fn accept_as(
+        &mut self,
+        command_id: &str,
+        fingerprint: &str,
+        command: Command,
+        new_turn: Option<TurnId>,
+        now: Timestamp,
+    ) -> Result<Accepted, Rejection> {
         if let Some(r) = self.receipts.iter().find(|r| r.command_id == command_id) {
             return if r.fingerprint == fingerprint {
                 Ok(Accepted::Repeat(r.clone()))
@@ -650,7 +663,7 @@ impl Conversation {
                 if input.is_empty() {
                     return Err(Rejection::Invalid("the turn has no input".into()));
                 }
-                let id = TurnId::generate();
+                let id = new_turn.unwrap_or_else(TurnId::generate);
                 self.turns.push(Turn {
                     id: id.clone(),
                     command_id: Some(command_id.into()),
@@ -1072,6 +1085,242 @@ impl Conversation {
     }
 }
 
+/// A change to a conversation, with everything it needs (ids, times) inside:
+/// applying the same ops to the same start gives the same conversation. The
+/// daemon journals these (D-058).
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(tag = "op", rename_all = "snake_case")]
+pub enum Op {
+    Accept {
+        command_id: String,
+        fingerprint: String,
+        command: Command,
+        /// The id a new turn gets.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        turn_id: Option<TurnId>,
+        at: Timestamp,
+    },
+    Claim {
+        run: RunId,
+        at: Timestamp,
+    },
+    Sending {
+        turn: TurnId,
+        generation: u64,
+        at: Timestamp,
+    },
+    Delivered {
+        turn: TurnId,
+        generation: u64,
+        at: Timestamp,
+    },
+    Finished {
+        turn: TurnId,
+        generation: u64,
+        outcome: TurnOutcome,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reason: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        error: Option<ErrorCategory>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        usage: Option<Usage>,
+        at: Timestamp,
+    },
+    /// The run serving `generation` is gone.
+    RunEnded {
+        generation: u64,
+        outcome: TurnOutcome,
+        at: Timestamp,
+    },
+    CancelQueued {
+        reason: String,
+        at: Timestamp,
+    },
+    /// What a turn that was lost died of.
+    TurnError {
+        turn: TurnId,
+        error: ErrorCategory,
+        reason: String,
+        at: Timestamp,
+    },
+    Bind {
+        binding: NativeBinding,
+        at: Timestamp,
+    },
+    WriteBlock {
+        turn: TurnId,
+        message: MessageId,
+        block: BlockId,
+        text: String,
+        done: bool,
+        at: Timestamp,
+    },
+    ToolStarted {
+        record: ToolRecord,
+        at: Timestamp,
+    },
+    ToolFinished {
+        id: ToolCallId,
+        /// `None`: it never reported a result.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        result: Option<(bool, ToolResult)>,
+        at: Timestamp,
+    },
+    CloseTools {
+        turn: TurnId,
+        at: Timestamp,
+    },
+    InteractionRequested {
+        interaction: Interaction,
+        at: Timestamp,
+    },
+    InteractionDelivered {
+        id: DecisionId,
+        generation: u64,
+        at: Timestamp,
+    },
+    /// A response was sent but may not have arrived.
+    InteractionUndelivered {
+        id: DecisionId,
+        at: Timestamp,
+    },
+}
+
+/// What applying an [`Op`] gave.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Applied {
+    Done,
+    Accepted(Accepted),
+    /// The generation a claim got.
+    Claimed(u64),
+    /// How many queued turns were cancelled.
+    Cancelled(usize),
+}
+
+impl Conversation {
+    /// Apply one change. A rejected op changes nothing.
+    pub fn apply(&mut self, op: &Op) -> Result<Applied, Rejection> {
+        Ok(match op.clone() {
+            Op::Accept {
+                command_id,
+                fingerprint,
+                command,
+                turn_id,
+                at,
+            } => Applied::Accepted(self.accept_as(
+                &command_id,
+                &fingerprint,
+                command,
+                turn_id,
+                at,
+            )?),
+            Op::Claim { run, at } => Applied::Claimed(self.claim(run, at)?),
+            Op::Sending {
+                turn,
+                generation,
+                at,
+            } => {
+                self.sending(&turn, generation, at)?;
+                Applied::Done
+            }
+            Op::Delivered {
+                turn,
+                generation,
+                at,
+            } => {
+                self.delivered(&turn, generation, at)?;
+                Applied::Done
+            }
+            Op::Finished {
+                turn,
+                generation,
+                outcome,
+                reason,
+                error,
+                usage,
+                at,
+            } => {
+                self.finished(&turn, generation, outcome, reason, usage, at)?;
+                if let Some(t) = self.turn_mut(&turn) {
+                    t.error = error;
+                }
+                Applied::Done
+            }
+            Op::RunEnded {
+                generation,
+                outcome,
+                at,
+            } => {
+                self.run_ended(generation, outcome, at);
+                Applied::Done
+            }
+            Op::CancelQueued { reason, at } => Applied::Cancelled(self.cancel_queued(&reason, at)),
+            Op::TurnError {
+                turn,
+                error,
+                reason,
+                at,
+            } => {
+                let t = self
+                    .turn_mut(&turn)
+                    .ok_or_else(|| Rejection::NotFound(format!("no turn `{turn}`")))?;
+                t.error = Some(error);
+                t.reason = Some(reason);
+                self.touch(at);
+                Applied::Done
+            }
+            Op::Bind { binding, at } => {
+                if self.binding.as_ref() != Some(&binding) {
+                    self.binding = Some(binding);
+                    self.touch(at);
+                }
+                Applied::Done
+            }
+            Op::WriteBlock {
+                turn,
+                message,
+                block,
+                text,
+                done,
+                at,
+            } => {
+                self.write_block(&turn, &message, &block, &text, done, at);
+                Applied::Done
+            }
+            Op::ToolStarted { record, at } => {
+                self.tool_started(record, at);
+                Applied::Done
+            }
+            Op::ToolFinished { id, result, at } => {
+                self.tool_finished(&id, result, at);
+                Applied::Done
+            }
+            Op::CloseTools { turn, at } => {
+                self.close_tools(&turn, at);
+                Applied::Done
+            }
+            Op::InteractionRequested { interaction, at } => {
+                self.interaction_requested(interaction, at)?;
+                Applied::Done
+            }
+            Op::InteractionDelivered { id, generation, at } => {
+                self.interaction_delivered(&id, generation, at)?;
+                Applied::Done
+            }
+            Op::InteractionUndelivered { id, at } => {
+                let i = self
+                    .interactions
+                    .iter_mut()
+                    .find(|i| i.id == id)
+                    .ok_or_else(|| Rejection::NotFound(format!("no interaction `{id}`")))?;
+                i.status = InteractionStatus::DeliveryUnknown;
+                self.touch(at);
+                Applied::Done
+            }
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1385,6 +1634,86 @@ mod tests {
         assert_eq!(status(&ids.0), ToolStatus::Failed);
         assert_eq!(status(&ids.1), ToolStatus::ResultUnavailable);
         assert_eq!(status(&ids.2), ToolStatus::ResultUnavailable);
+    }
+
+    /// The same ops on the same start give the same conversation, ids and all.
+    #[test]
+    fn ops_replay_to_the_same_conversation() {
+        let start = conv();
+        let t = TurnId::generate();
+        let (m, b) = (MessageId::generate(), BlockId::generate());
+        let at = now();
+        let ops = vec![
+            Op::Accept {
+                command_id: "cmd_1".into(),
+                fingerprint: "a".into(),
+                command: Command::SendTurn {
+                    initiator: Initiator::Controller,
+                    input: text("a"),
+                },
+                turn_id: Some(t.clone()),
+                at,
+            },
+            Op::Claim {
+                run: RunId::from("run_a"),
+                at,
+            },
+            Op::Sending {
+                turn: t.clone(),
+                generation: 1,
+                at,
+            },
+            Op::Bind {
+                binding: NativeBinding {
+                    session_id: "s-1".into(),
+                },
+                at,
+            },
+            Op::Delivered {
+                turn: t.clone(),
+                generation: 1,
+                at,
+            },
+            Op::WriteBlock {
+                turn: t.clone(),
+                message: m,
+                block: b,
+                text: "Done.".into(),
+                done: true,
+                at,
+            },
+            Op::Finished {
+                turn: t.clone(),
+                generation: 1,
+                outcome: TurnOutcome::Completed,
+                reason: None,
+                error: None,
+                usage: None,
+                at,
+            },
+        ];
+        let mut one = start.clone();
+        let mut two = start;
+        for op in &ops {
+            one.apply(op).unwrap();
+            // Through JSON, as a journal would.
+            let back: Op = serde_json::from_str(&serde_json::to_string(op).unwrap()).unwrap();
+            two.apply(&back).unwrap();
+        }
+        assert_eq!(one, two);
+        assert_eq!(one.turns[0].id, t);
+        assert_eq!(one.turns[0].outcome, Some(TurnOutcome::Completed));
+        // A rejected op changes nothing.
+        let before = one.clone();
+        assert!(
+            one.apply(&Op::Sending {
+                turn: t,
+                generation: 9,
+                at,
+            })
+            .is_err()
+        );
+        assert_eq!(one, before);
     }
 
     /// The persisted shapes: every outcome, tool status and interaction kind

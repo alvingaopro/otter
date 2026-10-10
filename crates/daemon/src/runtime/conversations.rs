@@ -19,7 +19,9 @@ use std::sync::Mutex;
 
 use anyhow::{Context, Result};
 use chrono::Utc;
-use otter_core::conversation::{CONVERSATION_SCHEMA, Conversation, TurnOutcome};
+use otter_core::conversation::{
+    Applied, CONVERSATION_SCHEMA, Conversation, Op, Rejection, TurnOutcome,
+};
 use otter_core::{ConversationId, FeatureId};
 
 /// Told about every saved change: (conversation, revision, feature).
@@ -56,9 +58,24 @@ impl Conversations {
                     tracing::warn!(conversation = %c.id, schema = c.schema, "skipping a conversation from a newer otterd");
                 }
                 Ok(mut c) => {
+                    // The run went with the old daemon. Its queued turns are
+                    // carried into the continuation turn the controller sends
+                    // (it restates the developer's messages), so they end here.
                     if c.active_run.is_some() {
-                        c.run_ended(c.generation, TurnOutcome::OutcomeUnknown, now);
-                        c.cancel_queued("not delivered: otterd restarted", now);
+                        for op in [
+                            Op::RunEnded {
+                                generation: c.generation,
+                                outcome: TurnOutcome::OutcomeUnknown,
+                                at: now,
+                            },
+                            Op::CancelQueued {
+                                reason: "carried into the continuation after otterd restarted"
+                                    .into(),
+                                at: now,
+                            },
+                        ] {
+                            let _ = c.apply(&op);
+                        }
                     }
                     map.insert(c.id.clone(), c);
                 }
@@ -127,17 +144,13 @@ impl Conversations {
         out
     }
 
-    /// Change a conversation; saved when its revision moved. `None` if
-    /// there's no such conversation.
-    pub fn update<R>(
-        &self,
-        id: &ConversationId,
-        f: impl FnOnce(&mut Conversation) -> R,
-    ) -> Option<R> {
+    /// Apply a change to a conversation; saved when its revision moved.
+    /// `None` if there's no such conversation; a rejected op changes nothing.
+    pub fn apply(&self, id: &ConversationId, op: Op) -> Option<Result<Applied, Rejection>> {
         let mut map = self.map.lock().unwrap();
         let c = map.get_mut(id)?;
         let before = c.revision;
-        let out = f(c);
+        let out = c.apply(&op);
         let changed = (c.revision != before).then(|| {
             self.save(c);
             (c.revision, c.feature_id.clone())
@@ -211,16 +224,38 @@ mod tests {
             initiator: Initiator::Controller,
             input: vec![InputBlock::Text { text: cmd.into() }],
         };
-        let (sent, queued) = convs
-            .update(&id, |c| {
-                let a = c.accept("cmd_1", "a", send("a"), Utc::now()).unwrap();
-                let b = c.accept("cmd_2", "b", send("b"), Utc::now()).unwrap();
-                let g = c.claim(RunId::from("run_1"), Utc::now()).unwrap();
-                let t = a.receipt().turn_id.clone().unwrap();
-                c.sending(&t, g, Utc::now()).unwrap();
-                (t, b.receipt().turn_id.clone().unwrap())
-            })
-            .unwrap();
+        let (sent, queued) = (
+            otter_core::TurnId::generate(),
+            otter_core::TurnId::generate(),
+        );
+        let at = Utc::now();
+        for op in [
+            Op::Accept {
+                command_id: "cmd_1".into(),
+                fingerprint: "a".into(),
+                command: send("a"),
+                turn_id: Some(sent.clone()),
+                at,
+            },
+            Op::Accept {
+                command_id: "cmd_2".into(),
+                fingerprint: "b".into(),
+                command: send("b"),
+                turn_id: Some(queued.clone()),
+                at,
+            },
+            Op::Claim {
+                run: RunId::from("run_1"),
+                at,
+            },
+            Op::Sending {
+                turn: sent.clone(),
+                generation: 1,
+                at,
+            },
+        ] {
+            convs.apply(&id, op).unwrap().unwrap();
+        }
         assert_eq!(convs.list(Some("ft_1")).len(), 1);
         assert!(convs.list(Some("ft_2")).is_empty());
 

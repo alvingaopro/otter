@@ -18,8 +18,9 @@ use std::sync::Arc;
 
 use chrono::Utc;
 use otter_core::conversation::{
-    Answer, Command, ErrorCategory, Interaction, InteractionKind, InteractionResponse,
-    InteractionStatus, ToolRecord, ToolResult, ToolStatus, TurnOutcome,
+    Answer, Applied, Command, ErrorCategory, Interaction, InteractionKind, InteractionResponse,
+    InteractionStatus, NativeBinding, Op, Rejection, ToolRecord, ToolResult, ToolStatus,
+    TurnOutcome,
 };
 use otter_core::feature::Decider;
 use otter_core::{BlockId, ConversationId, DecisionId, MessageId, RunId, ToolCallId, TurnId};
@@ -183,11 +184,13 @@ impl Actor {
         }
     }
 
-    fn update<R>(
-        &self,
-        f: impl FnOnce(&mut otter_core::conversation::Conversation) -> R,
-    ) -> Option<R> {
-        self.convs.update(&self.conversation, f)
+    /// Apply a change to the conversation. `None`: it's gone.
+    fn apply(&self, op: Op) -> Option<Result<Applied, Rejection>> {
+        let r = self.convs.apply(&self.conversation, op);
+        if let Some(Err(e)) = &r {
+            tracing::debug!(conversation = %self.conversation, "not applied: {e}");
+        }
+        r
     }
 
     async fn emit(&self, ev: ActorEvent) {
@@ -200,18 +203,24 @@ impl Actor {
             return Flow::Go;
         }
         let g = self.generation;
-        let next = self
-            .update(|c| {
-                let t = c.next_queued()?.clone();
-                c.sending(&t.id, g, Utc::now()).ok()?;
-                Some(TurnSpec {
-                    turn_id: t.id.clone(),
-                    text: t.text(),
-                })
-            })
-            .flatten();
-        let Some(turn) = next else {
+        let Some(next) = self
+            .convs
+            .get(self.conversation.as_str())
+            .and_then(|c| c.next_queued().cloned())
+        else {
             return Flow::Go;
+        };
+        let sending = self.apply(Op::Sending {
+            turn: next.id.clone(),
+            generation: g,
+            at: Utc::now(),
+        });
+        if !matches!(sending, Some(Ok(_))) {
+            return Flow::Go;
+        }
+        let turn = TurnSpec {
+            turn_id: next.id.clone(),
+            text: next.text(),
         };
         self.current = Some(turn.turn_id.clone());
         if let Err(e) = self.handle.send_turn(&turn).await {
@@ -241,21 +250,21 @@ impl Actor {
         let now = Utc::now();
         match ev {
             RuntimeEvent::Session { id } => {
-                let binding = otter_core::conversation::NativeBinding {
-                    session_id: id.clone(),
-                };
-                self.update(|c| {
-                    if c.binding.as_ref() != Some(&binding) {
-                        c.binding = Some(binding);
-                        c.revision += 1;
-                        c.updated_at = now;
-                    }
+                self.apply(Op::Bind {
+                    binding: NativeBinding {
+                        session_id: id.clone(),
+                    },
+                    at: now,
                 });
                 self.emit(ActorEvent::Bound { session_id: id }).await;
             }
             RuntimeEvent::TurnDelivered => {
-                if let Some(t) = self.current.clone() {
-                    self.update(|c| c.delivered(&t, g, now));
+                if let Some(turn) = self.current.clone() {
+                    self.apply(Op::Delivered {
+                        turn,
+                        generation: g,
+                        at: now,
+                    });
                 }
             }
             RuntimeEvent::TextDelta {
@@ -284,7 +293,14 @@ impl Actor {
                     return Flow::Go;
                 };
                 let (m, b) = (self.message_id(&message), self.block_id(&message, block));
-                self.update(|c| c.write_block(&turn, &m, &b, &text, true, now));
+                self.apply(Op::WriteBlock {
+                    turn: turn.clone(),
+                    message: m.clone(),
+                    block: b.clone(),
+                    text: text.clone(),
+                    done: true,
+                    at: now,
+                });
                 self.emit(ActorEvent::Text {
                     turn,
                     message: m,
@@ -317,7 +333,10 @@ impl Actor {
                     finished_at: None,
                     result: None,
                 };
-                self.update(|c| c.tool_started(record.clone(), now));
+                self.apply(Op::ToolStarted {
+                    record: record.clone(),
+                    at: now,
+                });
                 self.emit(ActorEvent::ToolStarted {
                     record,
                     call: input,
@@ -331,7 +350,11 @@ impl Actor {
                         summary: output,
                         artifact: None,
                     };
-                    self.update(|c| c.tool_finished(&id, Some((ok, result)), now));
+                    self.apply(Op::ToolFinished {
+                        id,
+                        result: Some((ok, result)),
+                        at: now,
+                    });
                 }
             }
             RuntimeEvent::DecisionNeeded(ask) => {
@@ -382,7 +405,10 @@ impl Actor {
                     requested_at: now,
                     decided_at: None,
                 };
-                self.update(|c| c.interaction_requested(interaction, now));
+                self.apply(Op::InteractionRequested {
+                    interaction,
+                    at: now,
+                });
                 self.asks.insert(id.clone(), ask.request_id.clone());
                 self.emit(ActorEvent::Ask {
                     interaction: id,
@@ -418,12 +444,18 @@ impl Actor {
                 let reason = (outcome != TurnOutcome::Completed)
                     .then(|| summary.clone())
                     .flatten();
-                self.update(|c| {
-                    let _ = c.finished(&turn, g, outcome, reason, usage, now);
-                    c.close_tools(&turn, now);
-                    if let Some(t) = c.turns.iter_mut().find(|t| t.id == turn) {
-                        t.error = error;
-                    }
+                self.apply(Op::Finished {
+                    turn: turn.clone(),
+                    generation: g,
+                    outcome,
+                    reason,
+                    error,
+                    usage,
+                    at: now,
+                });
+                self.apply(Op::CloseTools {
+                    turn: turn.clone(),
+                    at: now,
                 });
                 self.asks.clear();
                 let next = if outcome == TurnOutcome::Completed {
@@ -475,53 +507,48 @@ impl Actor {
                 let Some(request) = self.asks.remove(&interaction) else {
                     return Flow::Go;
                 };
-                let response = self
-                    .update(|c| {
-                        let i = c.interactions.iter().find(|i| i.id == interaction)?;
-                        Some(response_of(&i.kind, &reply))
-                    })
-                    .flatten();
+                let response = self.convs.get(self.conversation.as_str()).and_then(|c| {
+                    let i = c.interactions.iter().find(|i| i.id == interaction)?;
+                    Some(response_of(&i.kind, &reply))
+                });
                 if let Some(response) = response {
                     let fingerprint = format!("{response:?}");
-                    let accepted = self.update(|c| {
-                        c.accept(
-                            &format!("resolve:{interaction}"),
-                            &fingerprint,
-                            Command::Resolve {
-                                interaction_id: interaction.clone(),
-                                generation: g,
-                                response,
-                                by,
-                            },
-                            now,
-                        )
+                    self.apply(Op::Accept {
+                        command_id: format!("resolve:{interaction}"),
+                        fingerprint,
+                        command: Command::Resolve {
+                            interaction_id: interaction.clone(),
+                            generation: g,
+                            response,
+                            by,
+                        },
+                        turn_id: None,
+                        at: now,
                     });
-                    if let Some(Err(e)) = accepted {
-                        tracing::debug!(%interaction, "resolving: {e}");
-                    }
                 }
                 let delivered = self.handle.decide(&request, reply).await;
-                self.update(|c| match delivered {
-                    Ok(()) => {
-                        let _ = c.interaction_delivered(&interaction, g, now);
-                    }
-                    Err(_) => {
-                        if let Some(i) = c.interactions.iter_mut().find(|i| i.id == interaction) {
-                            i.status = InteractionStatus::DeliveryUnknown;
-                        }
-                    }
-                });
+                let op = match delivered {
+                    Ok(()) => Op::InteractionDelivered {
+                        id: interaction,
+                        generation: g,
+                        at: Utc::now(),
+                    },
+                    Err(_) => Op::InteractionUndelivered {
+                        id: interaction,
+                        at: Utc::now(),
+                    },
+                };
+                self.apply(op);
             }
             ActorCmd::Interrupt { turn } => {
-                let accepted = self.update(|c| {
-                    c.accept(
-                        &format!("interrupt:{turn}:{g}"),
-                        "interrupt",
-                        Command::Interrupt {
-                            turn_id: turn.clone(),
-                        },
-                        now,
-                    )
+                let accepted = self.apply(Op::Accept {
+                    command_id: format!("interrupt:{turn}:{g}"),
+                    fingerprint: "interrupt".into(),
+                    command: Command::Interrupt {
+                        turn_id: turn.clone(),
+                    },
+                    turn_id: None,
+                    at: now,
                 });
                 if matches!(accepted, Some(Ok(_))) && self.current.as_ref() == Some(&turn) {
                     let _ = self.handle.interrupt().await;
@@ -542,12 +569,12 @@ impl Actor {
 
     /// The run is gone without settling what it was doing.
     async fn lost(&mut self, why: &str) -> Flow {
-        if let Some(current) = self.current.clone() {
-            self.update(|c| {
-                if let Some(t) = c.turns.iter_mut().find(|t| t.id == current) {
-                    t.error = Some(ErrorCategory::WorkerCrashed);
-                    t.reason = Some(why.into());
-                }
+        if let Some(turn) = self.current.clone() {
+            self.apply(Op::TurnError {
+                turn,
+                error: ErrorCategory::WorkerCrashed,
+                reason: why.into(),
+                at: Utc::now(),
             });
         }
         let _ = self.handle.stop().await;
@@ -563,13 +590,17 @@ impl Actor {
         stopped: Option<oneshot::Sender<()>>,
     ) {
         let (g, now) = (self.generation, Utc::now());
-        let current = self.current.take();
-        self.update(|c| {
-            if let Some(t) = &current {
-                c.close_tools(t, now);
-            }
-            c.run_ended(g, outcome, now);
-            c.cancel_queued("not delivered: the run ended first", now);
+        if let Some(turn) = self.current.take() {
+            self.apply(Op::CloseTools { turn, at: now });
+        }
+        self.apply(Op::RunEnded {
+            generation: g,
+            outcome,
+            at: now,
+        });
+        self.apply(Op::CancelQueued {
+            reason: "not delivered: the run ended first".into(),
+            at: now,
         });
         self.emit(ActorEvent::Ended {
             outcome,
@@ -785,26 +816,32 @@ mod tests {
         let id = c.id.clone();
         convs.insert(c);
         for (i, t) in turns.iter().enumerate() {
-            convs
-                .update(&id, |c| {
-                    c.accept(
-                        &format!("cmd_{i}"),
-                        t,
-                        Command::SendTurn {
-                            initiator: Initiator::Controller,
-                            input: vec![InputBlock::Text { text: (*t).into() }],
-                        },
-                        Utc::now(),
-                    )
-                    .unwrap()
-                })
-                .unwrap();
+            send(&convs, &id, &format!("cmd_{i}"), t);
         }
         Setup {
             _dir: dir,
             convs,
             id,
         }
+    }
+
+    fn send(convs: &Conversations, id: &ConversationId, command: &str, text: &str) {
+        convs
+            .apply(
+                id,
+                Op::Accept {
+                    command_id: command.into(),
+                    fingerprint: text.into(),
+                    command: Command::SendTurn {
+                        initiator: Initiator::Controller,
+                        input: vec![InputBlock::Text { text: text.into() }],
+                    },
+                    turn_id: Some(otter_core::TurnId::generate()),
+                    at: Utc::now(),
+                },
+            )
+            .unwrap()
+            .unwrap();
     }
 
     fn spawn(
@@ -818,7 +855,18 @@ mod tests {
     ) {
         let g = s
             .convs
-            .update(&s.id, |c| c.claim(RunId::from(run), Utc::now()).unwrap())
+            .apply(
+                &s.id,
+                Op::Claim {
+                    run: RunId::from(run),
+                    at: Utc::now(),
+                },
+            )
+            .unwrap()
+            .map(|a| match a {
+                Applied::Claimed(g) => g,
+                _ => unreachable!(),
+            })
             .unwrap();
         let (tx, mailbox) = mpsc::channel(8);
         let (out, events) = mpsc::channel(64);
@@ -879,22 +927,8 @@ mod tests {
 
         // A restart of the conversation: a new run, a new generation.
         let g1 = c.generation;
-        s.convs
-            .update(&s.id, |c| {
-                c.accept(
-                    "cmd_9",
-                    "three",
-                    Command::SendTurn {
-                        initiator: Initiator::Controller,
-                        input: vec![InputBlock::Text {
-                            text: "three".into(),
-                        }],
-                    },
-                    Utc::now(),
-                )
-                .unwrap()
-            })
-            .unwrap();
+        s.convs.get(s.id.as_str()).unwrap();
+        send(&s.convs, &s.id, "cmd_9", "three");
         let (fake, sent, _) = Fake::new();
         let (_tx, mut rx, _task) = spawn(&s, "run_b", fake);
         until_ended(&mut rx).await;
