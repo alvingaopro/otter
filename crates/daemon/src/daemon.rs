@@ -40,6 +40,8 @@ pub struct Daemon {
     pub(crate) feature_wake: tokio::sync::Notify,
     /// Managed agent runs in progress (runs.rs).
     pub(crate) runs: crate::runs::Runs,
+    /// Runtime conversations (D-055): what the coding agents did, turn by turn.
+    pub(crate) conversations: Arc<crate::runtime::conversations::Conversations>,
     /// The Control Agent's working memory (controller.rs).
     pub(crate) controller: std::sync::Mutex<crate::controller::ControllerState>,
     /// Host settings and API keys (settings.rs, D-048).
@@ -83,6 +85,12 @@ impl Daemon {
             tracing::warn!("settings: {e:#}; using defaults");
             crate::settings::HostSettings::empty(&paths.state_dir)
         });
+        let conversations_dir = paths.state_dir.join("conversations");
+        let conversations = crate::runtime::conversations::Conversations::load(&conversations_dir)
+            .unwrap_or_else(|e| {
+                tracing::warn!("conversations: {e:#}; starting with none");
+                crate::runtime::conversations::Conversations::empty(&conversations_dir)
+            });
         if let Err(e) = crate::files::install_shim(&paths) {
             tracing::warn!("installing the wl-paste stand-in: {e:#}");
         }
@@ -95,6 +103,7 @@ impl Daemon {
             features: Mutex::new(features),
             feature_wake: tokio::sync::Notify::new(),
             runs: Default::default(),
+            conversations: Arc::new(conversations),
             controller: Default::default(),
             settings: std::sync::RwLock::new(settings),
             backend,
@@ -199,12 +208,25 @@ impl Daemon {
             Request::FeatureArtifact(p) => json(self.feature_artifact(&p).await?),
             Request::FeatureDelete(r) => json(self.feature_delete(&r.feature).await?),
             // Contracts first (D-055); served once runs go through conversations.
-            Request::RuntimeCapabilities
-            | Request::ConversationList(_)
-            | Request::ConversationGet(_) => Err(RpcError::unsupported(format!(
-                "{} isn't served by this otterd yet",
-                req.method()
-            ))),
+            Request::RuntimeCapabilities => {
+                let rt = crate::runtime::runtime(crate::runs::DEFAULT_RUNTIME)
+                    .ok_or_else(|| RpcError::unsupported("no managed agent runtime"))?;
+                json(rt.capabilities(self.environments.base()))
+            }
+            Request::ConversationList(q) => json(
+                self.conversations
+                    .list(q.feature.as_deref())
+                    .iter()
+                    .map(otter_protocol::conversation::ConversationView::of)
+                    .collect::<Vec<_>>(),
+            ),
+            Request::ConversationGet(r) => match self.conversations.get(&r.conversation) {
+                Some(c) => json(otter_protocol::conversation::ConversationView::of(&c)),
+                None => Err(RpcError::not_found(format!(
+                    "no conversation `{}`",
+                    r.conversation
+                ))),
+            },
             Request::Shutdown | Request::SessionAttach(_) | Request::EventsSubscribe(_) => {
                 Err(RpcError::invalid(format!(
                     "{} must be handled by the connection",

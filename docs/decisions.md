@@ -1562,3 +1562,49 @@ reconnecting, redirecting or answering exactly the question asked.
   The runtime contract, the actor and the feature bridge follow in the
   next steps; the legacy CLI adapter stays (`backend: legacy_cli`), and
   capabilities don't call the structured runtime ready.
+
+## D-056 — Runs go through a conversation actor; turns are never merged (2026-10-09)
+
+Milestone 1, second part: managed runs now serve conversations (D-055).
+
+- **The runtime contract** (`runtime/mod.rs`) carries identities and
+  limits: `RunSpec` has the conversation, run and generation, the coding
+  model and provider limits; `RunHandle` has `send_turn`, `interrupt` (the
+  current turn only — the process stays) and `stop` (end the process),
+  replacing `send_input` and `cancel`, which did both. Events keep the
+  provider's own keys for messages, blocks and tool calls; a turn ends with
+  an outcome (`completed`, `interrupted`, `limit_reached`, `failed`, …) and
+  an error category, not a boolean; usage says its scope (Claude Code's
+  `total_cost_usd` is the session's so far, never summed). Capabilities are
+  reported per runtime and say what is missing.
+- **The actor** (`runtime/actor.rs`) owns a run's handle: it takes commands
+  from a bounded mailbox and events from the runtime, applies both to the
+  conversation with generations checked, and reports with Otter ids. It
+  never touches features. **The bridge** (`runs.rs`) listens and is the
+  only thing that changes the feature, so the feature store's lock is never
+  held while the runtime waits.
+- **One turn at a time, never merged.** A message the developer sends while
+  a run works is its own turn (its command id is the message's), delivered
+  after the current turn completes. Before, queued messages were joined
+  into one prompt. A turn that doesn't complete (interrupted, failed,
+  limits) ends the run, and turns still queued end `cancelled` with why —
+  the controller's next prompt carries the conversation forward.
+- **Identity across runs.** Continuing a task (after a restart or a pause)
+  is a new run, a new generation, of the task's conversation; a fresh
+  attempt is a new conversation. A run from before conversations brings its
+  session id as the binding (its own record — never "the latest session in
+  this directory").
+- **The legacy adapter** maps what Claude Code's stream-json gives: message
+  ids from `message_start`, block indexes from deltas, tool-call ids and
+  results (`tool_result` in `user` messages), the session id. Streamed and
+  whole text share an id, so the finished text replaces the stream. A
+  subagent's traffic is still left out (its lineage comes with the SDK).
+  `Task`/`Agent` stay classified as reads and one answer still goes to
+  every question of a form: both change with the controls milestone.
+- **Not durable yet.** A conversation is a snapshot rewritten after each
+  change; a daemon restart ends its live run (outcome unknown, delivery
+  unknown if it was being sent — never resent) and cancels queued turns.
+  The journal, replay and receipts that survive a restart are milestone 3.
+- Clients read `runtime.capabilities`, `conversation.list`,
+  `conversation.get`, and follow `ConversationChanged` (ids only). The
+  desktop doesn't use them yet.

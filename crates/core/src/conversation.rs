@@ -887,6 +887,27 @@ impl Conversation {
         self.touch(now);
     }
 
+    /// Turns still queued will never be delivered (their run ended): they
+    /// end `cancelled`, with why. Returns how many.
+    pub fn cancel_queued(&mut self, reason: &str, now: Timestamp) -> usize {
+        let mut n = 0;
+        for t in self
+            .turns
+            .iter_mut()
+            .filter(|t| t.state == TurnState::Queued)
+        {
+            t.state = TurnState::Finished;
+            t.outcome = Some(TurnOutcome::Cancelled);
+            t.reason = Some(reason.into());
+            t.ended_at = Some(now);
+            n += 1;
+        }
+        if n > 0 {
+            self.touch(now);
+        }
+        n
+    }
+
     fn expire_interactions(&mut self, which: impl Fn(&Interaction) -> bool, now: Timestamp) {
         for i in self
             .interactions

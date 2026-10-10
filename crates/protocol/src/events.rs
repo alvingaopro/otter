@@ -142,6 +142,14 @@ pub enum Event {
     FeatureDeleted {
         feature_id: FeatureId,
     },
+    /// A runtime conversation changed (D-055): read it with
+    /// `conversation.get`. Ids only, never content.
+    ConversationChanged {
+        conversation_id: otter_core::ConversationId,
+        revision: u64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        feature_id: Option<FeatureId>,
+    },
     /// A message being written right now (D-051): the text so far, sent as
     /// it grows. **Transient**: not in the log, not replayed, and its `seq`
     /// is the latest logged one (it doesn't advance a cursor). `done`: the
@@ -188,6 +196,7 @@ impl Event {
             Event::BrowserOpenRequested { .. } => "BrowserOpenRequested",
             Event::FeatureChanged { .. } => "FeatureChanged",
             Event::FeatureDeleted { .. } => "FeatureDeleted",
+            Event::ConversationChanged { .. } => "ConversationChanged",
             Event::FeatureStream { .. } => "FeatureStream",
             Event::Unknown => "Unknown",
         }
@@ -198,6 +207,7 @@ impl Event {
             Event::DaemonStarted { .. }
             | Event::FeatureChanged { .. }
             | Event::FeatureDeleted { .. }
+            | Event::ConversationChanged { .. }
             | Event::FeatureStream { .. }
             | Event::Unknown => None,
             Event::WorkspaceCreated { workspace_id, .. }

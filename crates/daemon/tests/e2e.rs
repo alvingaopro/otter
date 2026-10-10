@@ -3045,6 +3045,24 @@ async fn runs_survive_a_restart_and_follow_a_changing_goal() {
     );
     let args = std::fs::read_to_string(&fake.log).unwrap();
     assert!(args.contains(&format!("--resume {conv}")), "{args}");
+    // One conversation (D-055): a resumed run is a new run of it, a new
+    // generation; the first run's turn was lost with the daemon.
+    let cid = f.runs[0].conversation_id.clone().expect("linked");
+    assert_eq!(f.runs[1].conversation_id.as_ref(), Some(&cid));
+    let c = fake
+        .host
+        .conn()
+        .await
+        .conversation_get(cid.as_str())
+        .await
+        .unwrap();
+    assert!(c.resumable);
+    assert_eq!(c.conversation.generation, 2);
+    assert_eq!(c.conversation.active_run.as_ref(), Some(&f.runs[1].id));
+    assert_eq!(
+        c.conversation.turns[0].outcome,
+        Some(otter_core::conversation::TurnOutcome::OutcomeUnknown)
+    );
 
     // Paused and resumed: the same conversation carries on.
     let mut conn = fake.host.conn().await;
@@ -3058,6 +3076,14 @@ async fn runs_survive_a_restart_and_follow_a_changing_goal() {
         f.runs.len() == 3 && f.runs[2].state == RunState::Running
     })
     .await;
+    assert_eq!(f.runs[2].conversation_id.as_ref(), Some(&cid));
+    let c = conn.conversation_get(cid.as_str()).await.unwrap();
+    assert_eq!(c.conversation.generation, 3);
+    assert_eq!(
+        c.conversation.turns[1].outcome,
+        Some(otter_core::conversation::TurnOutcome::Interrupted),
+        "paused: the turn was interrupted, not failed"
+    );
     assert_eq!(
         f.runs[2].provider_session_id.as_deref(),
         Some(conv.as_str())
@@ -3935,4 +3961,77 @@ async fn a_feature_that_isnt_running_can_be_deleted() {
     .expect("FeatureDeleted");
     // Twice: there's nothing left to delete.
     assert!(conn.feature_delete(id).await.is_err());
+}
+
+#[tokio::test]
+async fn a_run_takes_the_developers_message_as_a_turn_of_its_own() {
+    use otter_core::conversation::{
+        Delivery, InteractionKind, InteractionStatus, MessageLifecycle, ToolStatus, TurnOutcome,
+    };
+    use otter_core::feature::{FeatureAction, FeatureStatus, RunState};
+    let fake = fake_agent_host("ok", "rules").await;
+    let mut conn = fake.host.conn().await;
+    let caps = conn.runtime_capabilities().await.unwrap();
+    assert_eq!(caps.backend, "legacy_cli");
+    assert!(caps.available && !caps.structured_ready);
+
+    let id = started_feature(&fake.host, "Pick a colour ASK_QUESTION").await;
+    let f = wait_feature(&fake.host, &id, "a question for the developer", |f| {
+        f.pending_decisions().next().is_some()
+    })
+    .await;
+    let d = f.pending_decisions().next().unwrap().clone();
+    // Written while the agent waits: queued as its own turn.
+    conn.feature_send("msg-1", &id, "Use the brand colours")
+        .await
+        .unwrap();
+    conn.feature_act(
+        "answer",
+        &id,
+        FeatureAction::Decide {
+            decision_id: d.id.clone(),
+            approve: true,
+            answer: Some("blue".into()),
+        },
+    )
+    .await
+    .unwrap();
+    let f = wait_feature(&fake.host, &id, "review", |f| {
+        f.status == FeatureStatus::Review
+    })
+    .await;
+    assert_eq!(f.runs.len(), 1, "one run, two turns");
+    assert_eq!(f.runs[0].state, RunState::Completed);
+
+    let cid = f.runs[0].conversation_id.clone().unwrap();
+    let all = conn.conversation_list(Some(&id)).await.unwrap();
+    assert_eq!(all.len(), 1);
+    let c = conn
+        .conversation_get(cid.as_str())
+        .await
+        .unwrap()
+        .conversation;
+    assert_eq!(c.feature_id.as_ref().map(|f| f.as_str()), Some(id.as_str()));
+    assert_eq!(c.turns.len(), 2);
+    assert!(c.turns[1].text().contains("Use the brand colours"));
+    assert!(!c.turns[0].text().contains("brand"), "never merged");
+    for t in &c.turns {
+        assert_eq!(t.outcome, Some(TurnOutcome::Completed));
+        assert_eq!(t.delivery, Delivery::Delivered);
+        assert_eq!(t.run_id.as_ref(), Some(&f.runs[0].id));
+    }
+    // The question kept its form, and the answer went back once.
+    let i = &c.interactions[0];
+    assert_eq!(i.id, d.id, "the feature's decision is the interaction");
+    assert!(
+        matches!(&i.kind, InteractionKind::Questions { questions } if questions[0].prompt == "Pick one")
+    );
+    assert_eq!(i.status, InteractionStatus::Delivered);
+    // The second turn ran a tool and reported its result; its text is whole, once.
+    assert_eq!(c.tools.len(), 1);
+    assert_eq!(c.tools[0].status, ToolStatus::Succeeded);
+    assert_eq!(c.tools[0].result.as_ref().unwrap().summary, "ok");
+    let said: Vec<_> = c.messages.iter().map(|m| (m.text(), m.lifecycle)).collect();
+    assert!(said.contains(&("Did the work.".to_owned(), MessageLifecycle::Completed)));
+    assert_eq!(said.iter().filter(|(t, _)| t == "Did the work.").count(), 1);
 }

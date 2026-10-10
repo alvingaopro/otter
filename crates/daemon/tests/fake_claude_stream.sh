@@ -44,12 +44,14 @@ while read -r line; do
         *FAIL*) result error_during_execution true "it broke" ;;
         *HANG*) text "working on it" ;;
         *)
-          out '{"type":"assistant","parent_tool_use_id":null,"message":{"role":"assistant","content":[{"type":"tool_use","name":"Bash","input":{"command":"make test"}}]}}'
+          out '{"type":"assistant","parent_tool_use_id":null,"message":{"id":"msg_tool","role":"assistant","content":[{"type":"tool_use","id":"toolu_mt","name":"Bash","input":{"command":"make test"}}]}}'
+          out '{"type":"user","parent_tool_use_id":null,"message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_mt","is_error":false,"content":"ok"}]}}'
           # The text as it is written (--include-partial-messages), then whole.
+          out '{"type":"stream_event","parent_tool_use_id":null,"event":{"type":"message_start","message":{"id":"msg_fake"}}}'
           out '{"type":"stream_event","parent_tool_use_id":null,"event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Did "}}}'
           sleep 0.2
           out '{"type":"stream_event","parent_tool_use_id":null,"event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"the work."}}}'
-          text "Did the work."
+          out '{"type":"assistant","parent_tool_use_id":null,"message":{"id":"msg_fake","role":"assistant","content":[{"type":"text","text":"Did the work."}]}}'
           result success false "done in $sid"
           ;;
       esac
