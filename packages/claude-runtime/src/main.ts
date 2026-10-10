@@ -3,9 +3,10 @@
 // diagnostics go to stderr. The first command must be `initialize`; nothing
 // reaches Claude before `ready`.
 
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 
 import { MAX_FRAME, PROTOCOL_VERSION, frame, parseCommand, type Command, type Event } from "./protocol.js";
 import { Session, type QueryFn } from "./sdk.js";
@@ -24,6 +25,47 @@ export function sdkVersion(): string {
     return "unknown";
   }
 }
+
+/**
+ * Whether the Claude Code the SDK runs is here for this platform: the SDK
+ * ships it as a per-platform package (the glibc build first, then musl).
+ */
+export function bundledClaude(platform = process.platform, arch = process.arch): string | null {
+  const require = createRequire(import.meta.url);
+  const names =
+    platform === "linux"
+      ? [`linux-${arch}`, `linux-${arch}-musl`]
+      : [`${platform}-${arch}`];
+  for (const n of names) {
+    try {
+      const pkg = require.resolve(`@anthropic-ai/claude-agent-sdk-${n}/package.json`);
+      return join(dirname(pkg), platform === "win32" ? "claude.exe" : "claude");
+    } catch {
+      // not installed for this platform
+    }
+  }
+  return null;
+}
+
+/**
+ * `main.js --check`: what this worker is, for installing and for otterd's
+ * readiness report. Starts nothing and reads no credentials.
+ */
+export function check() {
+  const claude = bundledClaude();
+  const major = Number(process.versions.node.split(".")[0]);
+  return {
+    protocol_version: PROTOCOL_VERSION,
+    worker_version: WORKER_VERSION,
+    sdk_version: sdkVersion(),
+    node_version: process.versions.node,
+    node_supported: major >= MIN_NODE,
+    claude_code: claude !== null && existsSync(claude),
+  };
+}
+
+/** The oldest Node this worker supports (`engines` in package.json; the SDK asks for 18). */
+export const MIN_NODE = 20;
 
 /** Split a byte stream into frames; a frame over the limit is dropped and reported. */
 export class Frames {
@@ -147,8 +189,22 @@ export function worker(write: (s: string) => void, exit: (code: number) => void,
   };
 }
 
-// Run as a program (not when imported by tests).
-if (process.argv[1] && import.meta.url === new URL(`file://${process.argv[1]}`).href) {
+/** Run as a program, not imported by tests: by real path (`/tmp` may be a symlink). */
+function isMain(): boolean {
+  if (!process.argv[1]) return false;
+  try {
+    return realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url));
+  } catch {
+    return false;
+  }
+}
+
+if (isMain() && process.argv[2] === "--check") {
+  const c = check();
+  const code = c.node_supported && c.claude_code && c.sdk_version !== "unknown" ? 0 : 1;
+  // Exit once it's written: stdout may be a pipe.
+  process.stdout.write(JSON.stringify(c) + "\n", () => process.exit(code));
+} else if (isMain()) {
   const w = worker(
     (s) => process.stdout.write(s),
     (code) => process.exit(code),

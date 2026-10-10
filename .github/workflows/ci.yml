@@ -67,6 +67,13 @@ jobs:
       # Type-checks against the pinned SDK, then the protocol, mapping and
       # worker tests (no network, no credentials).
       - run: npm test
+      # What `otter host install` and otterd ask it (D-060). Without the
+      # optional Claude Code, it must say so and fail.
+      - run: |
+          out=$(node dist/main.js --check) && exit 1
+          echo "$out"
+          echo "$out" | grep -q '"protocol_version":1'
+          echo "$out" | grep -q '"claude_code":false'
 
   desktop:
     name: Desktop app

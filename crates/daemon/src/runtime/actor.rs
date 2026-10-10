@@ -1083,6 +1083,7 @@ mod tests {
                 &s.id,
                 Op::Claim {
                     run: RunId::from(run),
+                    runtime: None,
                     at: Utc::now(),
                 },
             )
@@ -1350,6 +1351,7 @@ mod tests {
                 &s.id,
                 Op::Claim {
                     run: RunId::from("run_a"),
+                    runtime: None,
                     at: Utc::now(),
                 },
             )

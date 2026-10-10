@@ -64,6 +64,9 @@ Download the latest [release](https://github.com/alvingaopro/otter/releases):
   `otter-<version>-<platform>.tar.gz` from the release.
 
 A host needs `ssh` access from your Mac, tmux 3.2 or newer, and curl or wget.
+For Claude's structured (SDK) mode it also needs Node.js 20 or newer; `otter
+host install` puts the matching Claude worker next to `otterd`, and `otter
+runtime status` says whether it's ready.
 
 ## Quick tutorial
 
