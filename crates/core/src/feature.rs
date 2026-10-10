@@ -531,6 +531,10 @@ pub enum FeatureAction {
         approve: bool,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         answer: Option<String>,
+        /// For a question form: an answer per question, by question id
+        /// (multi-select comma-joined). Takes the place of `answer`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        answers: Option<std::collections::BTreeMap<String, String>>,
     },
     /// The developer signs off a feature in review. Refused while a gate
     /// fails or waits, unless `override_gates` (recorded).

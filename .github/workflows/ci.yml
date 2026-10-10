@@ -48,6 +48,26 @@ jobs:
           OTTER_E2E_REQUIRE_SSH: "1"
       - run: python3 scripts/version.py current
 
+  worker:
+    name: Claude worker
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: packages/claude-runtime
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: packages/claude-runtime/package-lock.json
+      # The tests drive a stand-in SDK: the bundled Claude Code (an optional,
+      # per-platform package) isn't needed.
+      - run: npm ci --omit=optional
+      # Type-checks against the pinned SDK, then the protocol, mapping and
+      # worker tests (no network, no credentials).
+      - run: npm test
+
   desktop:
     name: Desktop app
     runs-on: macos-latest

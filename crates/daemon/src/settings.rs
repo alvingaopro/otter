@@ -20,7 +20,9 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use otter_protocol::RpcError;
-use otter_protocol::host::{ControllerInfo, ModelInfo, SecretState, Settings, SettingsUpdate};
+use otter_protocol::host::{
+    CodingSettings, ControllerInfo, ModelInfo, SecretState, Settings, SettingsUpdate,
+};
 use serde::{Deserialize, Serialize};
 
 use crate::daemon::{Daemon, RpcResult};
@@ -76,6 +78,10 @@ struct Stored {
     controller: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    coding_backend: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    coding_model: Option<String>,
 }
 
 #[derive(Debug, Default)]
@@ -142,6 +148,21 @@ impl HostSettings {
             .or_else(|| self.stored.model.clone())
     }
 
+    /// The coding agent's backend: `OTTER_CODING_BACKEND`, else the setting,
+    /// else `legacy_cli`.
+    pub fn coding_backend(&self) -> String {
+        std::env::var("OTTER_CODING_BACKEND")
+            .ok()
+            .filter(|b| !b.is_empty())
+            .or_else(|| self.stored.coding_backend.clone())
+            .unwrap_or_else(|| "legacy_cli".into())
+    }
+
+    /// The coding agent's model (`None`: the provider's default).
+    pub fn coding_model(&self) -> Option<String> {
+        self.stored.coding_model.clone()
+    }
+
     /// A secret set here.
     pub fn secret(&self, name: &str) -> Option<String> {
         self.secrets.get(name).cloned().filter(|s| !s.is_empty())
@@ -164,6 +185,10 @@ impl HostSettings {
                 .collect(),
             controllers: controllers(),
             active: None,
+            coding: CodingSettings {
+                backend: Some(self.coding_backend()),
+                model: self.stored.coding_model.clone(),
+            },
         }
     }
 
@@ -187,6 +212,25 @@ impl HostSettings {
                 return Err("that isn't a model name".into());
             }
             stored.model = Some(m).filter(|m| !m.is_empty());
+        }
+        if let Some(coding) = u.coding {
+            if let Some(b) = coding.backend {
+                let b = b.trim().to_owned();
+                if !b.is_empty() && !crate::runtime::BACKENDS.contains(&b.as_str()) {
+                    return Err(format!(
+                        "unknown coding backend `{b}` ({})",
+                        crate::runtime::BACKENDS.join(", ")
+                    ));
+                }
+                stored.coding_backend = Some(b).filter(|b| !b.is_empty());
+            }
+            if let Some(m) = coding.model {
+                let m = m.trim().to_owned();
+                if m.len() > 200 || m.chars().any(char::is_control) {
+                    return Err("that isn't a model name".into());
+                }
+                stored.coding_model = Some(m).filter(|m| !m.is_empty());
+            }
         }
         let mut secrets = self.secrets.clone();
         for (name, value) in u.secrets {
@@ -281,6 +325,7 @@ mod tests {
             secrets: key
                 .map(|k| BTreeMap::from([("OPENROUTER_API_KEY".to_owned(), k.map(String::from))]))
                 .unwrap_or_default(),
+            coding: None,
         }
     }
 

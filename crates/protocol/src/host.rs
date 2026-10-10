@@ -125,6 +125,9 @@ pub struct Settings {
     /// What the Control Agent can be (D-052). Empty from an older otterd.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub controllers: Vec<ControllerInfo>,
+    /// The coding agent's settings (absent from daemons before D-057).
+    #[serde(default)]
+    pub coding: CodingSettings,
     /// The controller in use now (what "automatic" chose, or the
     /// environment's).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -179,4 +182,21 @@ pub struct SettingsUpdate {
     pub model: Option<String>,
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub secrets: std::collections::BTreeMap<String, Option<String>>,
+    /// The coding agent's settings (D-057); fields left out stay.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub coding: Option<CodingSettings>,
+}
+
+/// How the coding agent runs on this host (D-057) — apart from Otter's own
+/// model above. Applies to new conversations; one keeps what it began with.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CodingSettings {
+    /// `legacy_cli` (Claude Code's stream-json) or `sdk` (the Claude Agent
+    /// SDK worker); absent: `legacy_cli`. In an update, `""` resets.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub backend: Option<String>,
+    /// The Claude model for coding (absent: the provider's default). In an
+    /// update, `""` resets.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
 }

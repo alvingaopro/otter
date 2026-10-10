@@ -193,6 +193,10 @@ The Control Agent's model and API keys on this host (D-048).
   default_model?}]` — every model provider (with the secret holding its
   key), `claude`, `rules` and `off` — and `active`, the controller in use
   now (what automatic chose). Both are absent from daemons before D-052.
+- The view also has `coding: {backend, model?}` — how the coding agent runs
+  (`legacy_cli` or `sdk`, D-057) and its Claude model, apart from Otter's
+  own; `settings.set {coding: {backend?, model?}}` changes them (`""`
+  resets). Absent from older daemons.
 - `settings.models {controller}` → `[{id, name?}]`: the models that
   controller offers, as its provider lists them, asked by the host with the
   key set there (OpenRouter's list needs none); `claude` answers Claude

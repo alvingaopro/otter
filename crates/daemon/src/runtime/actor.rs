@@ -26,7 +26,9 @@ use otter_core::{BlockId, ConversationId, DecisionId, MessageId, RunId, ToolCall
 use tokio::sync::{mpsc, oneshot};
 
 use super::conversations::Conversations;
-use super::{DecisionAsk, DecisionReply, RunHandle, RuntimeEvent, ToolCall, TurnSpec};
+use super::{
+    CheckDecision, DecisionAsk, DecisionReply, RunHandle, RuntimeEvent, ToolCall, TurnSpec,
+};
 
 /// What the actor is asked to do.
 pub enum ActorCmd {
@@ -37,6 +39,11 @@ pub enum ActorCmd {
         interaction: DecisionId,
         reply: DecisionReply,
         by: Decider,
+    },
+    /// Otter's policy for a tool call the runtime checks before running it.
+    Check {
+        check_id: String,
+        decision: CheckDecision,
     },
     /// Stop this turn (only this one). Sent by the run controls (interrupt,
     /// redirect) that come with milestone 4; handled and tested here.
@@ -84,6 +91,13 @@ pub enum ActorEvent {
     Ask {
         interaction: DecisionId,
         ask: DecisionAsk,
+    },
+    /// A tool call is about to run: answer with [`ActorCmd::Check`].
+    Check {
+        check_id: String,
+        tool: String,
+        call: ToolCall,
+        tool_call: Option<ToolCallId>,
     },
     TurnFinished {
         turn: TurnId,
@@ -376,6 +390,21 @@ impl Actor {
                 })
                 .await;
             }
+            RuntimeEvent::ToolCheck {
+                check_id,
+                tool,
+                call,
+                tool_use_id,
+            } => {
+                let tool_call = tool_use_id.and_then(|t| self.tools.get(&t).cloned());
+                self.emit(ActorEvent::Check {
+                    check_id,
+                    tool,
+                    call,
+                    tool_call,
+                })
+                .await;
+            }
             RuntimeEvent::TurnFinished {
                 outcome,
                 summary,
@@ -433,6 +462,11 @@ impl Actor {
         let now = Utc::now();
         match cmd {
             ActorCmd::Wake => return self.deliver_next().await,
+            ActorCmd::Check { check_id, decision } => {
+                if let Err(e) = self.handle.check(&check_id, decision).await {
+                    tracing::warn!(%check_id, "answering a policy check: {e:#}");
+                }
+            }
             ActorCmd::Decide {
                 interaction,
                 reply,
@@ -574,6 +608,20 @@ fn response_of(kind: &InteractionKind, reply: &DecisionReply) -> InteractionResp
                     .collect(),
             }
         }
+        (_, DecisionReply::Answers { answers }) => InteractionResponse::Answers {
+            answers: answers
+                .iter()
+                .map(|(q, a)| {
+                    (
+                        q.clone(),
+                        Answer {
+                            selected: vec![],
+                            text: Some(a.clone()),
+                        },
+                    )
+                })
+                .collect(),
+        },
         _ => InteractionResponse::Allow,
     }
 }

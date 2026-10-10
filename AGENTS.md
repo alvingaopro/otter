@@ -33,6 +33,7 @@ architecture (architecture-lessons §24–§25).
 | `crates/daemon`   | `otterd` — host daemon (managers, tmux backend, attach bridge)        |
 | `crates/cli`      | `otter` — control-plane CLI                                         |
 | `apps/desktop`    | Desktop app (Tauri 2 + React); own cargo workspace, see its README    |
+| `packages/claude-runtime` | The Claude worker otterd runs for the `sdk` backend (Node, the Claude Agent SDK); see its README |
 
 Inside the daemon (`crates/daemon/src`):
 
@@ -46,8 +47,10 @@ Inside the daemon (`crates/daemon/src`):
 - `controller.rs` + `brain.rs` — the Control Agent (D-045): the deterministic
   engine that steps features, and the model calls it makes (`OTTER_CONTROLLER`)
 - `runs.rs` + `runtime/` — managed agent runs (D-044): the runtime contract,
-  the approval `policy`, and the bridge from a run to its feature;
-  `agents/claude_stream.rs` is Claude Code's managed mode
+  the approval `policy`, the conversation `actor` and registry (D-055/D-056),
+  and the bridge from a run to its feature; `agents/claude_stream.rs` is
+  Claude Code's stream-json mode (`legacy_cli`), `agents/claude_sdk.rs` the
+  Claude Agent SDK worker's protocol (`sdk`, D-057)
 - `agents/` — agent providers behind `AgentProvider` (`detect`, `launch_argv`, `observe`);
   `codex.rs` holds everything Codex-specific, `claude.rs` everything Claude Code-specific,
   and `mod.rs` the shared quiet-turn heuristic (`settle`)
