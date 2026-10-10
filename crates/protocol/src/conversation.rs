@@ -66,6 +66,10 @@ pub struct ConversationView {
     #[serde(flatten)]
     pub conversation: Conversation,
     pub resumable: bool,
+    /// Why it accepts no more changes (its journal couldn't be written or
+    /// read, D-058); what was recorded is still here.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub read_only: Option<String>,
 }
 
 impl ConversationView {
@@ -75,8 +79,40 @@ impl ConversationView {
         ConversationView {
             conversation,
             resumable,
+            read_only: None,
         }
     }
+}
+
+/// `conversation.history`: a conversation's journal (D-058), a page at a
+/// time.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct HistoryQuery {
+    pub conversation: String,
+    /// Records after this one; absent: from the start.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub after: Option<HistoryCursor>,
+    /// At most this many (default 100, at most 500); about 1 MiB at most.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit: Option<u32>,
+}
+
+/// A position in a conversation's journal.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct HistoryCursor {
+    pub log_id: String,
+    pub seq: u64,
+}
+
+/// A page of a conversation's journal: each record is one change, in
+/// order (`{log_id, seq, schema, at, recovery?, kind: create | op, …}`).
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct HistoryPage {
+    pub log_id: String,
+    pub records: Vec<serde_json::Value>,
+    /// Where the next page starts, if this one was full.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next: Option<HistoryCursor>,
 }
 
 #[cfg(test)]

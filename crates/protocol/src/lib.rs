@@ -212,6 +212,11 @@ pub enum Request {
     /// Result: [`conversation::ConversationView`].
     #[serde(rename = "conversation.get")]
     ConversationGet(conversation::ConversationRef),
+    /// A conversation's journal, a page at a time (D-058). Result:
+    /// [`conversation::HistoryPage`]; a cursor from another journal is
+    /// [`ErrorCode::CursorExpired`].
+    #[serde(rename = "conversation.history")]
+    ConversationHistory(conversation::HistoryQuery),
 }
 
 impl Request {
@@ -262,6 +267,7 @@ impl Request {
             Request::RuntimeCapabilities => "runtime.capabilities",
             Request::ConversationList(_) => "conversation.list",
             Request::ConversationGet(_) => "conversation.get",
+            Request::ConversationHistory(_) => "conversation.history",
         }
     }
 }

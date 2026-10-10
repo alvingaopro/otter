@@ -221,6 +221,13 @@ turns, messages, tool calls and interactions. See
   `resumable` in place of the provider's own session id, which stays on
   the host.
 
+- `conversation.history {conversation, after?: {log_id, seq}, limit?}` →
+  `{log_id, records, next?}`: the conversation's journal (D-058), one record
+  per change, oldest first; at most `limit` (default 100, at most 500) and
+  about 1 MiB. `next` is where the following page starts. A cursor from
+  another journal fails with `cursor_expired`.
+- A conversation whose journal can't be written or read is `read_only`
+  (with why): its recorded history stays readable.
 - Event `ConversationChanged {conversation_id, revision, feature_id?}`
   after each change: ids only; read the content with `conversation.get`.
 

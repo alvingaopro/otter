@@ -47,8 +47,12 @@ record it in [`decisions.md`](decisions.md) first.
 - Test: `daemon_restart_adopts_running_sessions_and_records_changes`.
 - Exception (D-044): a feature's *managed* agent run talks to `otterd` over
   its stdin/stdout, so it ends when the daemon does. Its conversation
-  doesn't: the run's agent session id is kept, a new daemon marks the run
-  interrupted (`recover_runs`) and the controller resumes it.
+  doesn't: it is journaled (D-058), the run's agent session id is kept, a
+  new daemon records the run's end (outcome unknown, never "completed")
+  and marks it interrupted (`recover_runs`), and the controller resumes it.
+  A daemon stopping is not a run failing.
+- Tests: `runs_survive_a_restart_and_follow_a_changing_goal`,
+  `changes_are_journaled_and_replayed_after_a_crash`.
 
 ### 5. Agent-provider details do not leak into generic Workspace logic.
 

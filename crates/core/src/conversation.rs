@@ -35,7 +35,8 @@ use crate::ids::{
 use crate::model::Timestamp;
 
 /// Version of a persisted [`Conversation`].
-pub const CONVERSATION_SCHEMA: u32 = 1;
+/// 2: kept as a journal of [`Op`]s with snapshots (D-058); 1: snapshots only.
+pub const CONVERSATION_SCHEMA: u32 = 2;
 
 /// The provider's own handle on the conversation (e.g. Claude's session id).
 /// Private to the runtime adapter: clients see whether it is resumable.
@@ -484,8 +485,9 @@ pub struct Receipt {
     pub turn_id: Option<TurnId>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub interaction_id: Option<DecisionId>,
-    /// Kept only in memory so far (no journal yet): a retry after a daemon
-    /// restart isn't recognized.
+    /// Recorded durably before it was acknowledged (D-058): a retry after a
+    /// daemon restart gets this back. False on receipts from before the
+    /// journal.
     #[serde(default)]
     pub durable: bool,
 }
@@ -521,6 +523,8 @@ pub enum Rejection {
     NotFound(String),
     /// Not in this state.
     Invalid(String),
+    /// It couldn't be recorded (the conversation is read-only now).
+    Storage(String),
 }
 
 impl std::fmt::Display for Rejection {
@@ -529,7 +533,8 @@ impl std::fmt::Display for Rejection {
             Rejection::Conflict(m)
             | Rejection::Stale(m)
             | Rejection::NotFound(m)
-            | Rejection::Invalid(m) => f.write_str(m),
+            | Rejection::Invalid(m)
+            | Rejection::Storage(m) => f.write_str(m),
         }
     }
 }
@@ -653,7 +658,7 @@ impl Conversation {
             revision: 0,
             turn_id: None,
             interaction_id: None,
-            durable: false,
+            durable: true,
         };
         match command {
             Command::SendTurn { initiator, input } => {
@@ -1365,7 +1370,7 @@ mod tests {
             send(&mut c, "cmd_1", "something else"),
             Err(Rejection::Conflict(_))
         ));
-        assert!(!a.receipt().durable, "no journal yet");
+        assert!(a.receipt().durable);
     }
 
     #[test]
