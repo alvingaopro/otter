@@ -23,8 +23,9 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use chrono::Utc;
 use otter_core::feature::{
-    Decider, DecisionStatus, FEATURE_EVENT_SCHEMA, FEATURE_SCHEMA, Feature, FeatureAction,
-    FeatureEvent, FeatureEventRecord, FeatureStatus, Message, MessageRole, TaskStatus,
+    Decider, DecisionKind, DecisionStatus, FEATURE_EVENT_SCHEMA, FEATURE_SCHEMA, Feature,
+    FeatureAction, FeatureEvent, FeatureEventRecord, FeatureStatus, Message, MessageRole,
+    TaskStatus,
 };
 use otter_core::{FeatureId, MessageId, Timestamp, WorkspaceId};
 use otter_protocol::feature::{FeatureAct, FeatureCreate, FeatureEvents, FeatureSend};
@@ -518,6 +519,7 @@ pub fn apply_action(
                 .grant
                 .clone()
                 .filter(|_| d.status == DecisionStatus::Approved);
+            let (kind, task, status) = (d.kind, d.task_id.clone(), d.status);
             changes.push(
                 Change::new(FeatureEvent::DecisionResolved {
                     decision_id: decision_id.clone(),
@@ -532,6 +534,27 @@ pub fn apply_action(
                 f.grants.push(g);
             }
             changes.extend(f.resume_waiting_runs(now).into_iter().map(Change::new));
+            // Cut-off work (D-061): either way its task is ready again, and
+            // its next run starts over. Declined, nothing starts until the
+            // developer resumes.
+            if kind == DecisionKind::Recovery {
+                if let Some(t) = task.as_ref().and_then(|t| f.task_mut(t))
+                    && t.status == TaskStatus::Blocked
+                {
+                    t.status = TaskStatus::Pending;
+                    changes.push(
+                        Change::new(FeatureEvent::TaskChanged {
+                            task_id: t.id.clone(),
+                            status: TaskStatus::Pending,
+                        })
+                        .because(command_id),
+                    );
+                }
+                if status == DecisionStatus::Denied && f.status.can_become(FeatureStatus::Paused) {
+                    let why = "Not started over: resume when you're ready";
+                    changes.push(to(f, FeatureStatus::Paused, Some(why.into()))?);
+                }
+            }
             if f.status == FeatureStatus::Blocked && f.pending_decisions().next().is_none() {
                 let next = resume_status(f);
                 changes.push(to(f, next, None)?);

@@ -3455,7 +3455,7 @@ async fn runs_survive_a_restart_and_follow_a_changing_goal() {
     .await;
     assert_eq!(
         f.runs[0].state,
-        RunState::Cancelled,
+        RunState::Interrupted,
         "{:?}",
         f.runs[0].summary
     );
@@ -4167,6 +4167,219 @@ async fn a_message_reaches_the_agent_once_across_turns() {
         !fix.contains("ASK_QUESTION"),
         "the request isn't said again: {fix}"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Runs whose agent process is lost (D-061): what the cut-off step did stays
+// unknown, the conversation resumes, and what Otter can't safely continue
+// waits for the developer.
+// ---------------------------------------------------------------------------
+
+/// How often the fake agent was started fresh, and how often resumed.
+fn agent_starts(log: &Path) -> (usize, usize) {
+    let args = std::fs::read_to_string(log).unwrap_or_default();
+    let starts: Vec<&str> = args
+        .lines()
+        .filter(|l| l.starts_with("claude-stream "))
+        .collect();
+    let resumed = starts.iter().filter(|l| l.contains("--resume")).count();
+    (starts.len() - resumed, resumed)
+}
+
+#[tokio::test]
+async fn a_run_lost_mid_tool_resumes_without_claiming_the_step() {
+    use otter_core::conversation::{ErrorCategory, ToolStatus, TurnOutcome};
+    use otter_core::feature::{FeatureStatus, RunState};
+    let fake = fake_agent_host("ok", "rules").await;
+    let id = started_feature(&fake.host, "Ship the preview DIE_MIDTOOL").await;
+    let f = wait_feature(&fake.host, &id, "resumed and finished", |f| {
+        f.status == FeatureStatus::Review
+    })
+    .await;
+    assert_eq!(f.runs.len(), 2, "{:?}", f.runs);
+    let (lost, resumed) = (&f.runs[0], &f.runs[1]);
+    assert_eq!(lost.state, RunState::Interrupted, "{:?}", lost.summary);
+    assert!(lost.summary.as_deref().unwrap().contains("resumable"));
+    assert_eq!(resumed.state, RunState::Completed);
+    assert_eq!(resumed.provider_session_id, lost.provider_session_id);
+    assert_eq!(resumed.conversation_id, lost.conversation_id);
+    assert_eq!(
+        f.budget.iterations_used, 1,
+        "resuming isn't another attempt"
+    );
+
+    // The cut-off turn isn't a success, and neither is its tool.
+    let cid = lost.conversation_id.clone().unwrap();
+    let c = fake
+        .host
+        .conn()
+        .await
+        .conversation_get(cid.as_str())
+        .await
+        .unwrap()
+        .conversation;
+    assert_eq!(c.turns[0].outcome, Some(TurnOutcome::OutcomeUnknown));
+    assert_eq!(c.turns[0].error, Some(ErrorCategory::WorkerCrashed));
+    let cut = c
+        .tools
+        .iter()
+        .find(|t| t.run_id == lost.id)
+        .expect("its tool");
+    assert_eq!(cut.status, ToolStatus::ResultUnavailable);
+
+    // Never started over: the agent resumed once and was told the step's
+    // result is unknown, to check before repeating it.
+    assert_eq!(agent_starts(&fake.log), (1, 1));
+    let args = std::fs::read_to_string(&fake.log).unwrap();
+    let told = args
+        .lines()
+        .find(|l| l.starts_with("resumed-turn "))
+        .expect("the resumed turn");
+    assert!(told.contains("cut off before it finished"), "{told}");
+    assert!(told.contains("check whether it took effect"), "{told}");
+}
+
+#[tokio::test]
+async fn a_run_that_keeps_getting_lost_waits_for_the_developer() {
+    use otter_core::feature::{
+        Decider, DecisionKind, DecisionStatus, FeatureAction, FeatureStatus, RunState, TaskStatus,
+    };
+    let mut fake = fake_agent_host("ok", "rules").await;
+    let id = started_feature(&fake.host, "Ship the preview DIE_ALWAYS").await;
+    let f = wait_feature(&fake.host, &id, "a recovery decision", |f| {
+        f.pending_decisions().next().is_some()
+    })
+    .await;
+    let states: Vec<RunState> = f.runs.iter().map(|r| r.state).collect();
+    assert_eq!(
+        states,
+        [
+            RunState::Interrupted,
+            RunState::Interrupted,
+            RunState::RecoveryRequired
+        ]
+    );
+    let d = f.pending_decisions().next().unwrap().clone();
+    assert_eq!(d.kind, DecisionKind::Recovery);
+    assert!(d.user_only);
+    assert!(d.detail.as_deref().unwrap().contains("3 runs in a row"));
+    assert_eq!(f.tasks[0].status, TaskStatus::Blocked);
+    let f = wait_feature(&fake.host, &id, "blocked on the developer", |f| {
+        f.status == FeatureStatus::Blocked
+    })
+    .await;
+    assert!(
+        f.status_reason.as_deref().unwrap().contains("Needs you"),
+        "{:?}",
+        f.status_reason
+    );
+
+    // A restart keeps the question open, and starts nothing.
+    fake.host.restart().await;
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    let f = fake.host.conn().await.feature_get(&id).await.unwrap();
+    assert_eq!(f.status, FeatureStatus::Blocked);
+    assert_eq!(f.runs.len(), 3);
+    let still = f.decisions.iter().find(|x| x.id == d.id).unwrap();
+    assert_eq!(
+        still.status,
+        DecisionStatus::Pending,
+        "nobody decided for them"
+    );
+
+    // Declined: nothing starts over until the developer resumes.
+    let act = FeatureAction::Decide {
+        decision_id: d.id.clone(),
+        approve: false,
+        answer: None,
+        answers: None,
+    };
+    let mut conn = fake.host.conn().await;
+    let f = conn
+        .feature_act("no-restart", &id, act.clone())
+        .await
+        .unwrap();
+    assert_eq!(f.status, FeatureStatus::Paused);
+    assert_eq!(f.tasks[0].status, TaskStatus::Pending);
+    let d = f.decisions.iter().find(|x| x.id == d.id).unwrap();
+    assert_eq!(
+        (d.status, d.decided_by),
+        (DecisionStatus::Denied, Some(Decider::User))
+    );
+    // The same command again is the same answer, applied once.
+    let again = conn.feature_act("no-restart", &id, act).await.unwrap();
+    assert_eq!(again.status, FeatureStatus::Paused);
+    tokio::time::sleep(Duration::from_millis(1000)).await;
+    assert_eq!(conn.feature_get(&id).await.unwrap().runs.len(), 3);
+    conn.feature_act("stop", &id, FeatureAction::Cancel)
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn a_run_lost_before_its_conversation_was_kept_starts_over_only_when_allowed() {
+    use otter_core::feature::{DecisionKind, FeatureAction, FeatureStatus, RunState};
+    let fake = fake_agent_host("ok", "rules").await;
+    // The agent dies mid-tool before it says its session id: nothing to resume.
+    let skip = fake.log.parent().unwrap().join("skip-init");
+    std::fs::write(&skip, "").unwrap();
+    let id = started_feature(&fake.host, "Ship the preview DIE_MIDTOOL").await;
+    let f = wait_feature(&fake.host, &id, "a recovery decision", |f| {
+        f.pending_decisions().next().is_some()
+    })
+    .await;
+    assert_eq!(f.runs.len(), 1);
+    assert_eq!(f.runs[0].state, RunState::RecoveryRequired);
+    assert!(f.runs[0].provider_session_id.is_none());
+    let d = f.pending_decisions().next().unwrap().clone();
+    assert_eq!(d.kind, DecisionKind::Recovery);
+    assert!(
+        d.detail
+            .as_deref()
+            .unwrap()
+            .contains("could repeat what it did"),
+        "{:?}",
+        d.detail
+    );
+    assert_eq!(
+        agent_starts(&fake.log),
+        (1, 0),
+        "not started over by itself"
+    );
+
+    // Allowed: a fresh run (an attempt of its own). That one is lost too,
+    // with a conversation this time, so it resumes and finishes.
+    std::fs::remove_file(&skip).unwrap();
+    fake.host
+        .conn()
+        .await
+        .feature_act(
+            "start-over",
+            &id,
+            FeatureAction::Decide {
+                decision_id: d.id.clone(),
+                approve: true,
+                answer: None,
+                answers: None,
+            },
+        )
+        .await
+        .unwrap();
+    let f = wait_feature(&fake.host, &id, "review", |f| {
+        f.status == FeatureStatus::Review
+    })
+    .await;
+    let states: Vec<RunState> = f.runs.iter().map(|r| r.state).collect();
+    assert_eq!(
+        states,
+        [
+            RunState::RecoveryRequired,
+            RunState::Interrupted,
+            RunState::Completed
+        ]
+    );
+    assert_eq!(f.budget.iterations_used, 2);
+    assert_eq!(agent_starts(&fake.log), (2, 1));
 }
 
 // ---------------------------------------------------------------------------

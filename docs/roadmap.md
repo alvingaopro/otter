@@ -55,7 +55,7 @@ reply, so they stand until changed):
 
 | # | State |
 |---|---|
-| M1 | Done on `roadmap-m1` @ `5ebcf4f` (D-061), which isn't published: not on `origin`, not on `main`. M2 was built on `main` without it. |
+| M1 | Done (D-061): explicit run states with legal transitions (`interrupted`, `recovery_required`), a lost agent process resuming instead of failing and starting over, a developer-only `recovery` decision where continuing isn't safe. Built on `roadmap-m1` before M2 and rebased onto it afterwards (a run that needed recovery starts over in a new session, not the feature's). State table, crash matrix, operator guide: `runtime-states.md`; evidence: `runtime-validation.md` (live-Claude runs pending). |
 | M2 | Plan steps 1–8 merged (PRs #53–#60; D-062…D-069; `docs/plans/m2-feature-to-pr.md`). Offline acceptance met; the live-Claude and real-GitHub scenarios are pending (`runtime-validation.md`, M2-1…M2-7). |
 | M3 | Built 2026-10-14 on the requester's instruction, without its spec (`03-agent-manager-ux.md` isn't on this machine) and ahead of the P0 gates, from a scope derived in `docs/plans/m3-agent-manager-ux.md` (D-070): the Inbox and one rule for what a feature needs (PRs #61–#63, D-071…D-073). Live scenario pending (M3-1); to be redone against the spec when it arrives. |
 | M4 | Built 2026-10-14 on the requester's instruction, without its spec, from a scope derived in `docs/plans/m4-observability.md` (D-074): secrets kept out of what Otter keeps (invariant 13), failures that say why and what next, `otter doctor` (PRs #64–#66, D-075…D-077). Live scenarios pending (M4-1); to be redone against the spec when it arrives. |

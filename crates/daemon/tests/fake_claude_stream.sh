@@ -6,8 +6,11 @@
 # (one the Control Agent may decide), ASK_EDIT (a routine edit), ASK_QUESTION,
 # FAIL, HANG (works until interrupted), SLOW (works until interrupted, then
 # finishes once resumed), BGWAIT (waits for background work, then takes it
-# up by itself, as Claude Code does); anything else finishes the turn. Asked to plan the
-# work, it proposes two tasks as JSON (NOPLAN: it answers in prose instead).
+# up by itself, as Claude Code does), DIE_MIDTOOL (the process dies mid-tool; a
+# resumed run finishes, logging what it was told), DIE_ALWAYS (dies every
+# time); anything else finishes the turn. Asked to plan the work, it proposes
+# two tasks as JSON (NOPLAN: it answers in prose instead). A `skip-init` file
+# next to the log keeps the session id back (as if it died before saying it).
 [ -n "$FAKE_CODEX_LOG" ] && echo "claude-stream $*" >> "$FAKE_CODEX_LOG"
 sid="fake-session-$$"
 resumed=
@@ -26,7 +29,15 @@ ask() { out '{"type":"control_request","request_id":"'"$1"'","request":{"subtype
 
 read -r line # initialize
 out '{"type":"control_response","response":{"subtype":"success","request_id":"otter_1","response":{}}}'
-out '{"type":"system","subtype":"init","session_id":"'"$sid"'","capabilities":["interrupt_receipt_v1"]}'
+if [ -n "$FAKE_CODEX_LOG" ] && [ -f "$(dirname "$FAKE_CODEX_LOG")/skip-init" ]; then
+  :
+else
+  out '{"type":"system","subtype":"init","session_id":"'"$sid"'","capabilities":["interrupt_receipt_v1"]}'
+fi
+lose() {
+  out '{"type":"assistant","parent_tool_use_id":null,"message":{"id":"msg_lose","role":"assistant","content":[{"type":"tool_use","id":"toolu_lose","name":"Bash","input":{"command":"make deploy-preview"}}]}}'
+  exit 3
+}
 while read -r line; do
   case "$line" in
     *'"subtype":"interrupt"'*) result error_during_execution true "" ;;
@@ -76,6 +87,12 @@ while read -r line; do
           else
             text "working on it"
           fi
+          ;;
+        *DIE_ALWAYS*) lose ;;
+        *DIE_MIDTOOL*)
+          [ -z "$resumed" ] && lose
+          [ -n "$FAKE_CODEX_LOG" ] && printf 'resumed-turn %s\n' "$line" >> "$FAKE_CODEX_LOG"
+          result success false "picked up after the loss"
           ;;
         *HANG*) text "working on it" ;;
         # BUSY: ran something, and keeps going.

@@ -1860,6 +1860,48 @@ Milestone 6 of the structured runtime plan, first step: a host gets the
   moves a running conversation: one keeps the backend it began with.
 
 
+## D-061 — Run states say what a crash left; unsafe recovery is the developer's (2026-10-13)
+
+Roadmap M1 (runtime reliability). An audit against the milestone found the
+journal (D-058) and controls (D-059) already ordered, idempotent and
+recovered, but the feature's run record blurred what happened: a run ended
+by an otterd restart was `cancelled` (like a pause), and a run whose agent
+process died mid-tool was `failed` — an attempt spent, and the next run
+started the task over from scratch, possibly repeating the cut-off step.
+
+- **Two new run states**, both endings: `interrupted` (ended with its
+  process while its turn was unsettled; resumable) and `recovery_required`
+  (Otter can't safely continue on its own). `RunState::can_become` makes the
+  rest explicit: `starting → running ⇄ waiting`, then one ending, after
+  which a run never changes; the daemon refuses other moves.
+- **A lost agent process isn't a failure.** When the actor ends with
+  `outcome_unknown` (the process died, or the journal couldn't be written),
+  the run is classified like a run cut off by a restart (`runs::unsettled`):
+  resumable with a session id; started again only if nothing had reached
+  the agent; otherwise `recovery_required` — also when the conversation's
+  journal can't be trusted, and the third time in a row a task's run is cut
+  off (no endless resume loop).
+- **The resumed agent is told.** Continuing an `interrupted` run, the
+  prompt says the last run was cut off and the result of what it was doing
+  is unknown: check whether it took effect before doing it again. Otter
+  never resends the turn and never calls the step a success; it can't know
+  more than that.
+- **Recovery is a decision.** `recovery_required` blocks the task and the
+  feature and opens a `recovery` decision ("Start “…” over?"), high risk and
+  the developer's only: the Control Agent escalates it without asking a
+  model, and it survives restarts (it isn't tied to a live run). Approved,
+  the task starts over as a fresh run (an attempt). Declined, the task is
+  pending and the feature paused; resuming starts it over. Using the
+  decision machinery keeps the audit trail, idempotency by `command_id` and
+  every client's existing UI.
+- **Compatibility.** New enum values in an existing field: clients that
+  match on them should treat an unknown run state as over and an unknown
+  decision kind as approve/deny. An older otterd can't parse a feature that
+  has them and skips it, leaving the file untouched (as with a newer
+  schema); no schema bump.
+- The state table, crash matrix and an operator's guide are in
+  `runtime-states.md`.
+
 ## D-062 — Verification can finish (2026-10-14)
 
 M2 step 1 (`docs/plans/m2-feature-to-pr.md`; autonomy audit P0-1, RC-1 and

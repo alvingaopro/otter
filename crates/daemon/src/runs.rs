@@ -585,7 +585,11 @@ impl Daemon {
                         ending = Some((state, summary, announce));
                     }
                 }
-                ActorEvent::Ended { error, stopped, .. } => {
+                ActorEvent::Ended {
+                    outcome,
+                    error,
+                    stopped,
+                } => {
                     // otterd itself is going: the run ends with it, which
                     // isn't the run failing. Left as it is, the next otterd
                     // marks it interrupted and the controller resumes it.
@@ -608,7 +612,14 @@ impl Daemon {
                     } else {
                         let why =
                             error.unwrap_or_else(|| "the agent exited before finishing".into());
-                        self.finish_run(&feature, &run, RunState::Failed, Some(why), true)
+                        // Lost mid-turn: what it was doing is unknown, so it
+                        // isn't a failure to start over from (D-061).
+                        let state = if outcome == TurnOutcome::OutcomeUnknown {
+                            self.unsettled_state(&feature, &run, &why).await
+                        } else {
+                            (RunState::Failed, why)
+                        };
+                        self.finish_run(&feature, &run, state.0, Some(state.1), true)
                             .await;
                     }
                     return;
@@ -636,7 +647,9 @@ impl Daemon {
             if let Some(r) = feat.run_mut(run) {
                 let before = r.state;
                 (f.take().unwrap())(r);
-                if r.state != before {
+                if r.state != before && !before.can_become(r.state) {
+                    r.state = before;
+                } else if r.state != before {
                     return Ok(vec![Change::new(FeatureEvent::RunChanged {
                         run_id: run.clone(),
                         state: r.state,
@@ -761,14 +774,16 @@ impl Daemon {
                 return Ok(changes);
             }
             // Waiting isn't working: the run's clock stops (D-063).
-            if let Some(r) = f.run_mut(run) {
+            if let Some(r) = f.run_mut(run)
+                && r.state.can_become(RunState::Waiting)
+            {
                 r.state = RunState::Waiting;
                 r.stop_clock(now);
+                changes.push(Change::new(FeatureEvent::RunChanged {
+                    run_id: run.clone(),
+                    state: RunState::Waiting,
+                }));
             }
-            changes.push(Change::new(FeatureEvent::RunChanged {
-                run_id: run.clone(),
-                state: RunState::Waiting,
-            }));
             // Only the developer can answer this one: tell them.
             if user_only && f.status.can_become(FeatureStatus::Blocked) {
                 let reason = format!("Needs your approval: {}", ask.summary);
@@ -788,6 +803,31 @@ impl Daemon {
                 false
             }
         }
+    }
+
+    /// How a run lost mid-turn while otterd runs is recorded ([`unsettled`]).
+    async fn unsettled_state(
+        &self,
+        feature: &FeatureId,
+        run: &RunId,
+        why: &str,
+    ) -> (RunState, String) {
+        let Ok(f) = self.feature_get(feature.as_str()).await else {
+            return (RunState::Failed, why.to_owned());
+        };
+        let Some(r) = f.runs.iter().find(|r| &r.id == run) else {
+            return (RunState::Failed, why.to_owned());
+        };
+        let id = r.conversation_id.as_ref().map(|c| c.as_str());
+        let c = id.and_then(|c| self.conversations.get(c));
+        let broken = id.and_then(|c| self.conversations.read_only(c));
+        unsettled(
+            r,
+            c.as_ref(),
+            broken.as_deref(),
+            losses_before(&f, r),
+            &format!("the agent's process was lost ({why})"),
+        )
     }
 
     async fn finish_run(
@@ -847,7 +887,14 @@ impl Daemon {
                 f.messages.push(m);
                 changes.push(c);
             }
-            if let Some(t) = f.task_mut(&task_id) {
+            if state == RunState::RecoveryRequired {
+                changes.extend(require_recovery(
+                    f,
+                    &task_id,
+                    summary.as_deref().unwrap_or_default(),
+                    now,
+                ));
+            } else if let Some(t) = f.task_mut(&task_id) {
                 t.status = match state {
                     RunState::Completed => TaskStatus::Done,
                     RunState::Failed => TaskStatus::Failed,
@@ -1199,24 +1246,49 @@ impl Daemon {
                 let mut changes = Vec::new();
                 let mut tasks = Vec::new();
                 let mut done = Vec::new();
+                let mut stuck = Vec::new();
+                let losses: Vec<(RunId, usize)> = f
+                    .runs
+                    .iter()
+                    .filter(|r| !r.state.is_over())
+                    .map(|r| (r.id.clone(), losses_before(f, r)))
+                    .collect();
                 for r in f.runs.iter_mut().filter(|r| !r.state.is_over()) {
                     // The journal may show the run had finished its work
                     // before the old daemon could tell the feature.
-                    let finished = r
+                    let conversation = r
                         .conversation_id
                         .as_ref()
-                        .and_then(|c| conversations.iter().find(|x| &x.id == c))
-                        .and_then(|c| finished_run(c, &r.id));
-                    match finished {
+                        .and_then(|c| conversations.iter().find(|x| &x.id == c));
+                    match conversation.and_then(|c| finished_run(c, &r.id)) {
                         Some(summary) => {
                             r.state = RunState::Completed;
                             r.summary = summary;
                             done.push(r.task_id.clone());
                         }
                         None => {
-                            r.state = RunState::Cancelled;
-                            r.summary = Some("Interrupted: otterd restarted; resumable".into());
-                            tasks.push(r.task_id.clone());
+                            let broken = r
+                                .conversation_id
+                                .as_ref()
+                                .and_then(|c| self.conversations.read_only(c.as_str()));
+                            let lost = losses
+                                .iter()
+                                .find(|(id, _)| id == &r.id)
+                                .map_or(0, |(_, n)| *n);
+                            let (state, why) = unsettled(
+                                r,
+                                conversation,
+                                broken.as_deref(),
+                                lost,
+                                "otterd restarted",
+                            );
+                            r.state = state;
+                            r.summary = Some(why.clone());
+                            if state == RunState::RecoveryRequired {
+                                stuck.push((r.task_id.clone(), why));
+                            } else {
+                                tasks.push(r.task_id.clone());
+                            }
                         }
                     }
                     r.ended_at = Some(now);
@@ -1245,6 +1317,10 @@ impl Daemon {
                         t.status = TaskStatus::Pending;
                     }
                 }
+                // After the old run's decisions are moot: this one isn't.
+                for (t, why) in stuck {
+                    changes.extend(require_recovery(f, &t, &why, now));
+                }
                 // A block that was about the interrupted run is moot.
                 if f.status == FeatureStatus::Blocked && f.pending_decisions().next().is_none() {
                     let next = crate::features::resume_status(f);
@@ -1260,6 +1336,134 @@ impl Daemon {
             }
         }
     }
+}
+
+/// Runs of a task cut off in a row before Otter stops resuming it on its own.
+const MAX_LOSSES: usize = 3;
+
+/// How a run that ended without settling its turn — otterd restarted, or
+/// the agent's process was lost — is recorded (D-061). Interrupted when its
+/// conversation can carry on (or nothing had reached the agent yet, so
+/// starting over repeats nothing); recovery required when its record can't
+/// be trusted, when it keeps getting cut off, or when the agent had the task
+/// but there is no conversation to resume — starting over then could repeat
+/// what it did, so the developer decides.
+fn unsettled(
+    run: &Run,
+    c: Option<&Conversation>,
+    read_only: Option<&str>,
+    lost_before: usize,
+    why: &str,
+) -> (RunState, String) {
+    let recover = |detail: String| (RunState::RecoveryRequired, detail);
+    if let Some(broken) = read_only {
+        return recover(format!(
+            "{why}, and its conversation's record can't be trusted ({broken})"
+        ));
+    }
+    if lost_before + 1 >= MAX_LOSSES {
+        return recover(format!(
+            "{why}: {} runs in a row were cut off",
+            lost_before + 1
+        ));
+    }
+    if run.provider_session_id.is_some() {
+        return (
+            RunState::Interrupted,
+            format!("Interrupted: {why}; resumable"),
+        );
+    }
+    let reached = c.is_none_or(|c| c.turns.iter().any(|t| t.run_id.as_ref() == Some(&run.id)));
+    if reached {
+        recover(format!(
+            "{why} before the agent's conversation could be kept; starting over could repeat what it did"
+        ))
+    } else {
+        (
+            RunState::Interrupted,
+            format!("Interrupted: {why} before the agent had the task; it starts again"),
+        )
+    }
+}
+
+/// How many runs of `r`'s task, just before it, were cut off in a row.
+fn losses_before(f: &Feature, r: &Run) -> usize {
+    let earlier: Vec<&Run> = f
+        .runs
+        .iter()
+        .take_while(|x| x.id != r.id)
+        .filter(|x| x.task_id == r.task_id)
+        .collect();
+    earlier
+        .iter()
+        .rev()
+        .take_while(|x| x.state == RunState::Interrupted)
+        .count()
+}
+
+/// A run ended [`RunState::RecoveryRequired`]: its task waits for the
+/// developer to say whether it starts over (a [`DecisionKind::Recovery`],
+/// theirs only), and the feature is blocked until then.
+fn require_recovery(
+    f: &mut Feature,
+    task: &TaskId,
+    why: &str,
+    now: chrono::DateTime<Utc>,
+) -> Vec<Change> {
+    let mut changes = Vec::new();
+    let Some(t) = f.task_mut(task) else {
+        return changes;
+    };
+    t.status = TaskStatus::Blocked;
+    t.last_error = Some(why.to_owned());
+    let title = t.title.clone();
+    changes.push(Change::new(FeatureEvent::TaskChanged {
+        task_id: task.clone(),
+        status: TaskStatus::Blocked,
+    }));
+    let open = f.decisions.iter().any(|d| {
+        d.kind == DecisionKind::Recovery
+            && d.status == DecisionStatus::Pending
+            && d.task_id.as_ref() == Some(task)
+    });
+    if !open {
+        let id = DecisionId::generate();
+        f.decisions.push(DecisionRequest {
+            id: id.clone(),
+            task_id: Some(task.clone()),
+            run_id: None,
+            kind: DecisionKind::Recovery,
+            risk: Risk::High,
+            summary: format!("Start “{title}” over?"),
+            detail: Some(format!(
+                "{why}. Look at the workspace first: what the cut-off run did may already be there."
+            )),
+            options: vec![],
+            status: DecisionStatus::Pending,
+            decided_by: None,
+            answer: None,
+            rationale: None,
+            created_at: now,
+            decided_at: None,
+            user_only: true,
+            grant: None,
+        });
+        changes.push(Change::new(FeatureEvent::DecisionRequested {
+            decision_id: id,
+            kind: DecisionKind::Recovery,
+            risk: Risk::High,
+        }));
+    }
+    if f.status.can_become(FeatureStatus::Blocked)
+        && let Ok(e) = f.transition(
+            FeatureStatus::Blocked,
+            Some(format!("Needs you: a run can't safely continue — {why}")),
+            now,
+        )
+    {
+        changes.push(Change::new(e));
+    }
+    changes
 }
 
 /// Whether `run` finished its work, as `c`'s journal shows: its last turn
@@ -1400,6 +1604,74 @@ mod tests {
                 text: "blue".into()
             }
         );
+    }
+
+    #[test]
+    fn a_run_cut_off_is_resumed_only_when_that_is_safe() {
+        use otter_core::conversation::{Command, Op};
+        use otter_core::{TaskId, TurnId};
+        let at = Utc::now();
+        let mut run = Run {
+            id: RunId::from("run_1"),
+            task_id: TaskId::from("t1"),
+            runtime: DEFAULT_RUNTIME.into(),
+            state: RunState::Running,
+            started_at: at,
+            ended_at: None,
+            summary: None,
+            provider_session_id: None,
+            activity: vec![],
+            conversation_id: None,
+            turn_id: None,
+            worked_ms: 0,
+            working_since: None,
+        };
+        let mut c = Conversation::new("claude", "sdk", "ws_1".into(), at);
+        let turn = TurnId::generate();
+        c.apply(&Op::Accept {
+            command_id: "one".into(),
+            fingerprint: "one".into(),
+            command: Command::SendTurn {
+                initiator: Initiator::Controller,
+                input: vec![InputBlock::Text { text: "do".into() }],
+            },
+            turn_id: Some(turn.clone()),
+            at,
+        })
+        .unwrap();
+        c.apply(&Op::Claim {
+            run: run.id.clone(),
+            runtime: None,
+            at,
+        })
+        .unwrap();
+        let state = |run: &Run, c: &Conversation, broken: Option<&str>, lost: usize| {
+            unsettled(run, Some(c), broken, lost, "lost").0
+        };
+        // Nothing reached the agent: starting again repeats nothing.
+        assert_eq!(state(&run, &c, None, 0), RunState::Interrupted);
+        c.apply(&Op::Sending {
+            turn,
+            generation: 1,
+            at,
+        })
+        .unwrap();
+        // It had the task, with no conversation to resume: the developer's call.
+        assert_eq!(state(&run, &c, None, 0), RunState::RecoveryRequired);
+        // A record from before conversations: the same.
+        assert_eq!(
+            unsettled(&run, None, None, 0, "lost").0,
+            RunState::RecoveryRequired
+        );
+        // With one, it resumes — unless it keeps being cut off, or its
+        // record can't be trusted.
+        run.provider_session_id = Some("native-1".into());
+        assert_eq!(state(&run, &c, None, 0), RunState::Interrupted);
+        assert_eq!(state(&run, &c, None, 1), RunState::Interrupted);
+        assert_eq!(state(&run, &c, None, 2), RunState::RecoveryRequired);
+        let (s, why) = unsettled(&run, Some(&c), Some("records jump"), 0, "lost");
+        assert_eq!(s, RunState::RecoveryRequired);
+        assert!(why.contains("can't be trusted (records jump)"), "{why}");
     }
 
     #[test]

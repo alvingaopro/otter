@@ -52,6 +52,25 @@ keys or transcripts are kept here. "Pending" means not yet run, not failed.
 | 9 | Limits | Pending | — |
 | 10 | Git review | Pending | Needs an authorized disposable repository; publishing a PR needs explicit authorization. |
 
+## Roadmap M1 — runtime reliability
+
+The milestone's acceptance scenarios (`roadmap.md`, D-061). Offline evidence
+is the daemon e2e suite with a fake agent speaking Claude Code's protocol
+(`tests/fake_claude_stream.sh`): real otterd, real process deaths, no model.
+The table of states and crashes is `runtime-states.md`.
+
+| Scenario | Offline | Live Claude |
+|---|---|---|
+| Kill the agent's process mid-tool: the recovered state doesn't claim success or repeat the tool call | Passed — `a_run_lost_mid_tool_resumes_without_claiming_the_step`: the turn is `outcome_unknown` (`worker_crashed`), the tool `result_unavailable`, the run `interrupted`; the next run resumed the same native session (no fresh start, no attempt spent) and was told to check before repeating. `a_run_lost_before_its_conversation_was_kept_starts_over_only_when_allowed`: with nothing to resume, nothing restarted until the developer approved. | Pending |
+| Kill otterd before/after an approval decision is persisted: neither lost nor applied twice | Passed — decisions are applied by `feature.act` with a `command_id` (a retry returns the result, `a_run_that_keeps_getting_lost_waits_for_the_developer` repeats one); a decision of a run that died with otterd is cancelled, not carried over (`recover_runs`); a `recovery` decision survives a restart and nobody decides it for the developer (same test). Not run: `SIGKILL` between the feature store's write and its rename. | Pending |
+| Disconnect SSH/desktop during a run: the run continues; reconnecting shows ordered history | Passed — `client_disconnect_does_not_affect_session`, `event_replay_resumes_after_disconnect_and_daemon_restart`, conversation history paging (D-058), CLI `events_follow_resyncs_when_the_hosts_log_starts_over`. | Pending (plan M6 #6) |
+| Resume after a restart: conversation identity and cursor stay stable | Passed — `runs_survive_a_restart_and_follow_a_changing_goal` (same conversation, generation 2, same native session, run `interrupted`), `changes_are_journaled_and_replayed_after_a_crash`. Live: `live_sdk_restart` (graceful stop, 2026-10-10). | Partial (no `SIGKILL` yet) |
+
+Release gate for this change: `cargo fmt --all -- --check`, `cargo clippy
+--all-targets` and `cargo test` passed on macOS (2026-10-13, and again on
+2026-10-14 after rebasing onto M2–M6); the desktop app's sources typecheck
+(only type changes there).
+
 ## The feature-to-PR workflow (plan M2)
 
 What M2's steps need a live Claude run to show; the offline e2e tests (fake
