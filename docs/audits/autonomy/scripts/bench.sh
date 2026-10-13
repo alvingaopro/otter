@@ -194,6 +194,11 @@ EOF
   echo "$M $task wall_s=$(( $(date +%s) - t0 )) status=$st" | tee "$OUT/$task-$M.wall"
   cp "$H/state/features"/*/history.jsonl "$OUT/$task-$M-history.jsonl" 2>/dev/null || true
   otter host shutdown bench >/dev/null 2>&1 || true
+  # Keep the run's record (no secrets), then remove the scratch home: Mode C
+  # put a copy of the developer's Control Agent key in it.
+  mkdir -p "$OUT/$task-$M-state"
+  cp -r "$H/state/features" "$H/state/conversations" "$OUT/$task-$M-state/" 2>/dev/null || true
+  rm -rf "$H"
 }
 
 case "${1:-}" in

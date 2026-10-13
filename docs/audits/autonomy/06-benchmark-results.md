@@ -87,7 +87,9 @@ ran in (R-6) and with `OTTER_*` configuration exported; one nested e2e test
 opened GitHub's device-login page in the developer's real Otter app. ‡ B2 ran
 with configuration in `settings.json` and a mocked browser, but the mock's
 `BROWSER` export leaked into nested test daemons and broke the same e2e test
-(diagnosed correctly by the agent; the export was removed before C2). §
+(diagnosed correctly by the agent; the export was removed before C2). B1's
+"pass" covers `model.rs` and the test only: its worktree was removed without
+checking other files for out-of-scope edits (B2's had one). §
 inferred from the code path (one `plan`, one `judge` per verification with
 evidence); Otter doesn't count model calls. "Policy checks" for B/C:
 **unavailable** — on `sdk`, allowed checks leave no record (only tool records).
@@ -179,8 +181,9 @@ $S direct t1 /tmp/wt-t1-A
 $S otter  t1 /tmp/wt-t1-B rules
 $S otter  t1 /tmp/wt-t1-C model     # uses ~/.otter/state settings + key (read-only)
 for m in A B C; do $S verify t1 /tmp/wt-t1-$m; done
-python3 -I docs/audits/autonomy/scripts/feature_metrics.py "$(cat $BENCH_OUT/t1-C.home)/state" <feature id>
-python3 -I docs/audits/autonomy/scripts/run_startup.py "$(cat $BENCH_OUT/t1-C.home)/state"
+python3 -I docs/audits/autonomy/scripts/feature_metrics.py $BENCH_OUT/t1-C-state <feature id>
+python3 -I docs/audits/autonomy/scripts/run_startup.py $BENCH_OUT/t1-C-state
+# (the scratch OTTER_HOME, which held a copy of the controller key, is deleted by bench.sh)
 git worktree remove --force /tmp/wt-t1-A   # etc.
 ```
 
