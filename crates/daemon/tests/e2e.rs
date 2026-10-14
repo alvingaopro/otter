@@ -2836,11 +2836,21 @@ async fn a_feature_goes_from_request_to_review_with_evidence() {
             .iter()
             .any(|m| m.role == MessageRole::Agent && m.text.starts_with("done in"))
     );
-    // Streamed as it happened: what it said, and what it ran.
+    // What it said along the way streamed (and is in its conversation);
+    // the feature keeps its result, once, and what it ran (D-069).
     assert!(
-        f.messages
+        !f.messages
             .iter()
             .any(|m| m.role == MessageRole::Agent && m.text == "Did the work.")
+    );
+    assert_eq!(
+        f.messages
+            .iter()
+            .filter(|m| m.role == MessageRole::Agent)
+            .count(),
+        1,
+        "{:?}",
+        f.messages
     );
     assert_eq!(f.runs[0].activity, ["$ make test"]);
     assert!(
@@ -2973,7 +2983,7 @@ async fn an_approval_is_answered_and_the_run_continues() {
 
 #[tokio::test]
 async fn ordinary_work_runs_without_asking() {
-    use otter_core::feature::{Decider, DecisionStatus, FeatureStatus};
+    use otter_core::feature::FeatureStatus;
     let fake = fake_agent_host("ok", "rules").await;
     // Installing a dependency, then editing a file: no one is asked (D-049).
     for request in ["Add a dependency ASK_INSTALL", "Write a file ASK_EDIT"] {
@@ -2989,11 +2999,20 @@ async fn ordinary_work_runs_without_asking() {
             "{:?}",
             f.rationale
         );
-        let d = &f.decisions[0];
-        assert_eq!(
-            (d.status, d.decided_by),
-            (DecisionStatus::Approved, Some(Decider::Policy)),
-            "{request}"
+        // A tool policy allows is a tool, not a decision (D-069): nothing
+        // in the approvals, nothing "low risk" in the history.
+        assert!(f.decisions.is_empty(), "{request}: {:?}", f.decisions);
+        let history = fake
+            .host
+            .conn()
+            .await
+            .feature_events(&id, None)
+            .await
+            .unwrap();
+        assert!(
+            !history.iter().any(|r| r.text.contains("decision")),
+            "{:?}",
+            history.iter().map(|r| &r.text).collect::<Vec<_>>()
         );
     }
 }
@@ -4733,6 +4752,64 @@ async fn the_control_agent_answers_the_developer() {
     );
 }
 
+/// What the agent does is shown as it happens without rewriting the
+/// feature for every tool: an event, and the feature as read (D-069); the
+/// lines are kept in the feature when the run ends.
+#[tokio::test]
+async fn activity_is_live_without_rewriting_the_feature() {
+    use otter_core::feature::FeatureAction;
+    let fake = fake_agent_host("ok", "rules").await;
+    let mut events = fake.host.conn().await.subscribe(None).await.unwrap();
+    let id = started_feature(&fake.host, "Keep building BUSY").await;
+    let line = tokio::time::timeout(Duration::from_secs(20), async {
+        loop {
+            if let Event::FeatureActivity {
+                feature_id, line, ..
+            } = events.next().await.unwrap().unwrap().event
+            {
+                assert_eq!(feature_id.as_str(), id);
+                return line;
+            }
+        }
+    })
+    .await
+    .expect("the activity event");
+    assert_eq!(line, "$ cargo build");
+    let f = wait_feature(&fake.host, &id, "the activity, read live", |f| {
+        f.live_run()
+            .is_some_and(|r| r.activity == ["$ cargo build"])
+    })
+    .await;
+    // Not in the document while it runs.
+    let doc = std::fs::read_to_string(
+        fake.host
+            .home()
+            .join(format!("state/features/{}/feature.json", f.id)),
+    )
+    .unwrap();
+    assert!(!doc.contains("cargo build"), "{doc}");
+    let log = std::fs::read_to_string(fake.host.home().join("state/events.jsonl")).unwrap();
+    assert!(!log.contains("FeatureActivity"));
+    // What an action returns shows it too (the app keeps that copy).
+    let f = fake
+        .host
+        .conn()
+        .await
+        .feature_send("msg-live", &id, "Keep going")
+        .await
+        .unwrap();
+    assert_eq!(f.live_run().unwrap().activity, ["$ cargo build"]);
+    // Kept once the run ends.
+    fake.host
+        .conn()
+        .await
+        .feature_act("stop", &id, FeatureAction::Pause)
+        .await
+        .unwrap();
+    let f = wait_feature(&fake.host, &id, "the run over", |f| f.live_run().is_none()).await;
+    assert_eq!(f.runs[0].activity, ["$ cargo build"]);
+}
+
 #[tokio::test]
 async fn the_agents_text_streams_as_it_is_written() {
     use otter_core::feature::MessageRole;
@@ -4771,11 +4848,17 @@ async fn the_agents_text_streams_as_it_is_written() {
         "{pieces:?}"
     );
     assert_eq!(done, "Did the work.");
-    // Kept as a message; not kept in the event log.
-    let f = fake.host.conn().await.feature_get(&id).await.unwrap();
-    assert!(f.messages.iter().any(|m| m.text == "Did the work."));
+    // Transient: the feature keeps the turn's result, not what streamed
+    // along the way (D-069), and the event log keeps neither the stream
+    // nor the activity.
+    let f = wait_feature(&fake.host, &id, "its result kept", |f| {
+        f.messages.iter().any(|m| m.text.starts_with("done in"))
+    })
+    .await;
+    assert!(!f.messages.iter().any(|m| m.text == "Did the work."));
     let log = std::fs::read_to_string(fake.host.home().join("state/events.jsonl")).unwrap();
     assert!(!log.contains("FeatureStream"));
+    assert!(!log.contains("FeatureActivity"));
 }
 
 #[tokio::test]

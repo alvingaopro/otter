@@ -74,6 +74,29 @@ describe("daemonSource", () => {
     expect(s.drafts!("mac/ft_a")).toEqual([]);
   });
 
+  it("puts the agent's activity on its live run without reloading", async () => {
+    served.mac = [
+      {
+        id: "ft_a",
+        title: "A",
+        status: "implementing",
+        updated_at: "2026-10-09T00:00:00Z",
+        runs: [{ id: "run_1", task_id: "t", runtime: "claude", state: "running", started_at: "2026-10-09T00:00:00Z" }],
+      },
+    ];
+    const s = daemonSource();
+    s.setHosts!(["mac"]);
+    await flush();
+    const loads = calls.filter((c) => c.cmd === "features_list").length;
+    for (const line of ["$ cargo build", "✎ src/a.rs"]) {
+      handlers.get("host-event")!({
+        payload: { host: "mac", record: { type: "FeatureActivity", feature_id: "ft_a", run_id: "run_1", line } },
+      });
+    }
+    expect(s.list()[0].feature.runs[0].activity).toEqual(["$ cargo build", "✎ src/a.rs"]);
+    expect(calls.filter((c) => c.cmd === "features_list")).toHaveLength(loads);
+  });
+
   it("sends each action with its own command id", async () => {
     const s = daemonSource();
     s.setHosts!(["mac"]);

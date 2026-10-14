@@ -412,6 +412,22 @@ export function daemonSource(): FeatureSource {
       drafts.delete(`${host}/${(record as { feature_id?: string }).feature_id}`);
       void load(host);
     }
+    // What the coding agent just did (D-069): transient, onto its live run.
+    if (record.type === "FeatureActivity") {
+      const r = record as unknown as { feature_id: string; run_id: string; line: string };
+      const features = byHost.get(host) ?? [];
+      const f = features.find((x) => x.id === r.feature_id);
+      const run = f?.runs.find((x) => x.id === r.run_id);
+      if (f && run) {
+        const activity = [...(run.activity ?? []), r.line].slice(-30);
+        const next = { ...f, runs: f.runs.map((x) => (x.id === run.id ? { ...x, activity } : x)) };
+        byHost.set(
+          host,
+          features.map((x) => (x.id === f.id ? next : x)),
+        );
+        rebuild();
+      }
+    }
     if (record.type === "FeatureStream") {
       const r = record as StreamRecord;
       const key = `${host}/${r.feature_id}`;

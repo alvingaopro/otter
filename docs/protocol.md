@@ -284,7 +284,17 @@ Control Agent writes it, at most every 100 ms. It is **transient**: sent to
 live `events.subscribe` streams only, never logged or replayed, stamped with
 the latest logged `seq` (so it doesn't advance a cursor and may repeat one),
 and outside the `seq` order. A client may drop any of them; with `done` the
-message is complete and stored in the feature.
+message is complete. The coding agent's text along the way isn't stored in
+the feature: only each turn's result is (D-069); the rest is in its
+conversation.
+
+**What the agent did** (D-069): `FeatureActivity {feature_id, run_id, line}`
+— one line per tool the coding agent used (`$ cargo test`, `✎ src/a.rs`).
+Transient in the same way. While a run works, `feature.get`/`feature.list`
+show its latest lines in `runs[].activity` (kept in memory, not written to
+the feature for each tool); when the run ends they are stored with it. A
+client adds each line to the run's `activity` (keeping the last 30) rather
+than reloading the feature.
 
 An addition (no protocol bump): daemons before it answer `invalid_request`.
 

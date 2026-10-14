@@ -295,6 +295,7 @@ async fn follow(app: &AppHandle, name: &str, transport: &Transport) -> Result<Ne
                     if matches!(
                         rec.event,
                         otter_protocol::Event::FeatureStream { .. }
+                            | otter_protocol::Event::FeatureActivity { .. }
                             | otter_protocol::Event::FeatureChanged { .. }
                             | otter_protocol::Event::FeatureDeleted { .. }
                             | otter_protocol::Event::ConversationChanged { .. }

@@ -51,6 +51,14 @@ reply, so they stand until changed):
   green. `docs/invariants.md` and `AGENTS.md` apply. Domain types stay
   provider-neutral, and secrets are never logged.
 
+## Status (2026-10-14)
+
+| # | State |
+|---|---|
+| M1 | Done on `roadmap-m1` @ `5ebcf4f` (D-061), which isn't published: not on `origin`, not on `main`. M2 was built on `main` without it. |
+| M2 | Plan steps 1–8 merged (PRs #53–#60; D-062…D-069; `docs/plans/m2-feature-to-pr.md`). Offline acceptance met; the live-Claude and real-GitHub scenarios are pending (`runtime-validation.md`, M2-1…M2-7). |
+| M3–M6 | Not started. Their specs (`03-agent-manager-ux.md` … `06-automation.md`) aren't on this machine, and later milestones don't ship ahead of the P0 gates: M1 to merge, M2's live scenarios to run. |
+
 ## Not in scope
 
 Code signing and notarization, a hosted telemetry backend, and any new

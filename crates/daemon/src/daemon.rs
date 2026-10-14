@@ -204,11 +204,21 @@ impl Daemon {
             Request::SettingsGet => json(self.settings_get()),
             Request::SettingsModels(q) => json(self.settings_models(&q.controller).await?),
             Request::SettingsSet(u) => json(self.settings_set(u)?),
-            Request::FeatureList => json(self.feature_list().await),
-            Request::FeatureGet(r) => json(self.feature_get(&r.feature).await?),
+            Request::FeatureList => json(
+                self.feature_list()
+                    .await
+                    .into_iter()
+                    .map(|f| self.with_live_activity(f))
+                    .collect::<Vec<_>>(),
+            ),
+            Request::FeatureGet(r) => {
+                json(self.with_live_activity(self.feature_get(&r.feature).await?))
+            }
             Request::FeatureCreate(p) => json(self.feature_create(p).await?),
-            Request::FeatureSend(p) => json(self.feature_send(p).await?),
-            Request::FeatureAct(p) => json(self.clone().feature_act(p).await?),
+            Request::FeatureSend(p) => json(self.with_live_activity(self.feature_send(p).await?)),
+            Request::FeatureAct(p) => {
+                json(self.with_live_activity(self.clone().feature_act(p).await?))
+            }
             Request::FeatureEvents(p) => json(self.feature_events(&p).await?),
             Request::FeatureArtifact(p) => json(self.feature_artifact(&p).await?),
             Request::FeatureDelete(r) => json(self.feature_delete(&r.feature).await?),
