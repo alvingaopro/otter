@@ -46,7 +46,7 @@ const OLD_CONTROLLERS: ControllerInfo[] = [
   { id: "openrouter", label: "OpenRouter", secret: "OPENROUTER_API_KEY", models: true, default_model: "openrouter/auto" },
   { id: "claude", label: "Claude Code (its own sign-in on the host)", models: true },
   { id: "rules", label: "No model: every decision goes to you", models: false },
-  { id: "off", label: "Off: features don't run on their own", models: false },
+  { id: "off", label: "Off: tasks don't run on their own", models: false },
 ];
 
 type Models = { state: "loading" } | { state: "ready"; list: ModelInfo[] } | { state: "error"; error: string };
@@ -363,9 +363,9 @@ function explain(id: string, info: ControllerInfo | undefined, automatic: boolea
       : id === "claude"
         ? "Uses Claude Code installed on the host, with its own sign-in there: no key needed."
         : id === "rules"
-          ? "No model: it plans one task, every open decision comes to you, and a passing check counts as done."
+          ? "No model: it plans one step, every open decision comes to you, and a passing check counts as done."
           : id === "off"
-            ? "Features don't move on their own: nothing is planned or run until you change this."
+            ? "Tasks don't move on their own: nothing is planned or run until you change this."
             : "";
   return automatic ? `Automatic picks the first provider with a key, else Claude Code, else fixed rules. ${how}` : how;
 }

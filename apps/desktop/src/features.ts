@@ -344,7 +344,7 @@ export function statusDetail(f: Feature): string | undefined {
   const i = f.tasks.findIndex((t) => t.status === "running");
   if ((f.status === "implementing" || f.status === "verifying") && f.status_reason === undefined) {
     if (f.status === "verifying") return "checking the work";
-    if (i >= 0) return `task ${i + 1} of ${f.tasks.length}: ${f.tasks[i].title}`;
+    if (i >= 0) return `step ${i + 1} of ${f.tasks.length}: ${f.tasks[i].title}`;
   }
   return f.status_reason;
 }

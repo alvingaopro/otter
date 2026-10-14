@@ -533,11 +533,20 @@ code, .mono { font-family: var(--mono); }
 .markdown table { border-collapse: collapse; display: block; overflow-x: auto; }
 .markdown th, .markdown td { border: 1px solid var(--line); padding: 3px 8px; text-align: left; }
 .markdown hr { border: 0; border-top: 1px solid var(--line); margin: 10px 0; }
-.composer { display: flex; gap: 8px; align-items: flex-end; padding: 10px 16px 14px; border-top: 1px solid var(--line); }
+.composer { position: relative; display: flex; gap: 8px; align-items: flex-end; padding: 10px 16px 14px; border-top: 1px solid var(--line); }
 .composer textarea {
   flex: 1; resize: none; padding: 8px 10px; border-radius: 8px; border: 1px solid var(--line-strong);
-  background: var(--bg); color: var(--text); font: inherit; font-size: 13.5px;
+  background: var(--bg); color: var(--text); font: inherit; font-size: 13.5px; line-height: 1.45;
 }
+/* The top edge: drag it to make the message box taller or shorter. */
+.composer-grip { position: absolute; left: 0; right: 0; top: -4px; height: 8px; cursor: row-resize; z-index: 1; }
+.composer-grip::after {
+  content: ""; position: absolute; left: 50%; top: 2px; width: 32px; height: 4px; margin-left: -16px;
+  border-radius: 2px; background: var(--line-strong); opacity: 0; transition: opacity 0.15s;
+}
+.composer-grip:hover::after, .composer-grip:focus-visible::after, body.resizing-row .composer-grip::after { opacity: 1; }
+.composer-grip:focus-visible { outline: none; }
+body.resizing-row { cursor: row-resize; user-select: none; }
 
 .feature-detail { display: flex; flex-direction: column; min-height: 0; }
 .detail-tabs { display: flex; gap: 2px; padding: 8px 12px 0; border-bottom: 1px solid var(--line); flex-wrap: wrap; }

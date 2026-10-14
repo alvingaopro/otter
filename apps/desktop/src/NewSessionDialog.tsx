@@ -10,7 +10,7 @@ const KINDS: [Kind, string, string][] = [
   ["codex", "Codex", "A Codex session; it remembers its conversation across restarts."],
   ["claude", "Claude Code", "A Claude Code session; it remembers its conversation across restarts."],
   ["service", "Service", "A long-running command, like a dev server."],
-  ["task", "Task", "A command that runs to completion, like tests; you’re told if it fails."],
+  ["task", "Command", "A command that runs to completion, like tests; you’re told if it fails."],
 ];
 
 /** Start another session in a workspace. */

@@ -102,7 +102,7 @@ describe("Activity Bar navigation", () => {
   it("is an accessible tab list with the Inbox first and selected", () => {
     const tabs = [...host.querySelectorAll('.activity-bar [role="tab"]')];
     // Labels carry a "N need you" count when there is one.
-    expect(tabs.map((t) => t.getAttribute("aria-label")?.split(",")[0])).toEqual(["Inbox", "Features", "Workspaces"]);
+    expect(tabs.map((t) => t.getAttribute("aria-label")?.split(",")[0])).toEqual(["Inbox", "Tasks", "Workspaces"]);
     expect(tab("inbox").getAttribute("aria-selected")).toBe("true");
     expect(tab("inbox").tabIndex).toBe(0);
     expect(tab("features").tabIndex).toBe(-1);

@@ -2708,3 +2708,21 @@ other one it found, otterd's: the two called each other for ever.
   and the paste never reaches otterd's. On the dogfooding host,
   Portkeeper's stand-ins were removed. `otter attach` doesn't forward
   images (the app does).
+
+## D-088 — The app calls them tasks (2026-10-14)
+
+Dogfooding: what the app called a feature is often a bug fix or just a
+question to answer. The desktop app now says **task** wherever it showed
+"feature": the activity bar and its view, New task, the Inbox tag, the
+empty states, Settings. Only the words the developer reads change: the
+model, the protocol (`feature.*`), `otter feature`, the daemon's own
+messages and these docs keep "feature".
+
+- A task's plan is made of **steps** (the tab, "1/2 steps", "step 2 of
+  2: …"), so the two don't share a name.
+- The session kind `task` (a command run to completion) is shown as
+  **Command** in New session, for the same reason.
+- The message box under a task's conversation starts taller (96 px) and
+  its top edge is a handle: drag it, or ↑/↓ on it, between 56 px and 60%
+  of the window; a double-click goes back to the default. Its height is
+  remembered on this Mac.
