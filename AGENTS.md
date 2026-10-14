@@ -45,7 +45,9 @@ Inside the daemon (`crates/daemon/src`):
 - `features.rs` — features (D-043): their own store under `state/features/`,
   idempotent commands, per-feature history
 - `controller.rs` + `brain.rs` — the Control Agent (D-045): the deterministic
-  engine that steps features, and the model calls it makes (`OTTER_CONTROLLER`)
+  engine that steps features, and the model calls it makes (`OTTER_CONTROLLER`);
+  `work_state.rs` reads the work's diff, status and fingerprint for
+  verification (D-062)
 - `runs.rs` + `runtime/` — managed agent runs (D-044): the runtime contract,
   the approval `policy`, the conversation `actor` and registry (D-055/D-056),
   and the bridge from a run to its feature; `agents/claude_stream.rs` is

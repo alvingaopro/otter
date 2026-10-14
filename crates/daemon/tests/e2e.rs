@@ -2704,10 +2704,45 @@ async fn started_feature_named(host: &TestHost, request: &str) -> String {
 }
 
 async fn started_in(host: &TestHost, ws: &str, request: &str) -> String {
+    started_with(host, ws, request, "test:\n\t@echo all good\n", false).await
+}
+
+/// A project `ws` with this `Makefile` (a Git repository with it committed,
+/// if `git`), a feature on it asking for `request`, started.
+async fn started_with(
+    host: &TestHost,
+    ws: &str,
+    request: &str,
+    makefile: &str,
+    git: bool,
+) -> String {
     use otter_core::feature::FeatureAction;
     let dir = host.home().join(ws);
     std::fs::create_dir_all(&dir).unwrap();
-    std::fs::write(dir.join("Makefile"), "test:\n\t@echo all good\n").unwrap();
+    std::fs::write(dir.join("Makefile"), makefile).unwrap();
+    if git {
+        for args in [
+            &["init", "-q", "-b", "main"][..],
+            &["add", "."],
+            &[
+                "-c",
+                "user.name=t",
+                "-c",
+                "user.email=t@t",
+                "commit",
+                "-qm",
+                "start",
+            ],
+        ] {
+            let ok = Command::new("git")
+                .args(args)
+                .current_dir(&dir)
+                .status()
+                .unwrap()
+                .success();
+            assert!(ok, "git {args:?}");
+        }
+    }
     let mut conn = host.conn().await;
     conn.workspace_create(WorkspaceCreate {
         name: ws.into(),
@@ -3199,6 +3234,166 @@ async fn repeated_failures_stop_at_the_limit_and_the_plan_survives() {
     })
     .await;
     assert_eq!(f.budget.iterations_used, 3);
+}
+
+/// A check that can't run here (a missing command) is the environment's
+/// problem, not the work's (D-062): one verification, one message, blocked on
+/// the developer — no fix task, no more runs — until they fix it.
+#[tokio::test]
+async fn a_check_that_cant_run_blocks_on_the_developer_once() {
+    use otter_core::feature::{
+        DecisionKind, EvidenceKind, FeatureAction, FeatureStatus, MessageRole,
+    };
+    let fake = fake_agent_host("ok", "rules").await;
+    let host = &fake.host;
+    let id = started_with(
+        host,
+        "proj",
+        "Add CSV export",
+        "test:\n\t@not-on-this-path test\n",
+        false,
+    )
+    .await;
+    let f = wait_feature(host, &id, "blocked on the check", |f| {
+        f.status == FeatureStatus::Blocked && f.pending_decisions().next().is_some()
+    })
+    .await;
+    let cant_run = |f: &otter_core::feature::Feature| {
+        f.messages
+            .iter()
+            .filter(|m| m.role == MessageRole::Controller && m.text.contains("can't run here"))
+            .count()
+    };
+    let check_runs = |f: &otter_core::feature::Feature| {
+        f.evidence
+            .iter()
+            .filter(|e| e.kind == EvidenceKind::Test)
+            .count()
+    };
+    assert_eq!(f.runs.len(), 1);
+    assert_eq!(f.budget.iterations_used, 1);
+    assert!(
+        !f.tasks
+            .iter()
+            .any(|t| t.title == "Fix what verification found")
+    );
+    assert_eq!(cant_run(&f), 1);
+    assert_eq!(check_runs(&f), 1);
+    let check = f
+        .evidence
+        .iter()
+        .find(|e| e.kind == EvidenceKind::Test)
+        .unwrap();
+    assert_eq!(check.title, "`make test` can't run here");
+    assert_eq!(check.ok, None);
+    assert!(
+        f.status_reason
+            .as_deref()
+            .unwrap()
+            .contains("not-on-this-path: No such file or directory"),
+        "{:?}",
+        f.status_reason
+    );
+    let d = f.pending_decisions().next().unwrap().clone();
+    assert_eq!(d.kind, DecisionKind::Question);
+    assert!(d.user_only, "the environment is the developer's");
+    assert_eq!(d.options, ["Run it again", "Go on without it"]);
+
+    // It stays that way: nothing retries it behind the developer's back.
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    let f = host.conn().await.feature_get(&id).await.unwrap();
+    assert_eq!(f.status, FeatureStatus::Blocked);
+    assert_eq!((f.runs.len(), cant_run(&f), check_runs(&f)), (1, 1, 1));
+
+    // The developer fixes the environment and runs it again: verified,
+    // without another run of the coding agent.
+    std::fs::write(
+        host.home().join("proj/Makefile"),
+        "test:\n\t@echo all good\n",
+    )
+    .unwrap();
+    host.conn()
+        .await
+        .feature_act(
+            "again",
+            &id,
+            FeatureAction::Decide {
+                decision_id: d.id.clone(),
+                approve: true,
+                answer: Some("Run it again".into()),
+                answers: None,
+            },
+        )
+        .await
+        .unwrap();
+    let f = wait_feature(host, &id, "verified", |f| f.status == FeatureStatus::Review).await;
+    assert_eq!(f.runs.len(), 1);
+    assert!(f.acceptance.iter().all(|c| c.met == Some(true)));
+    let last = f
+        .evidence
+        .iter()
+        .rev()
+        .find(|e| e.kind == EvidenceKind::Test)
+        .unwrap();
+    assert_eq!(last.ok, Some(true));
+}
+
+/// A judge that is never satisfied, a check that passes and a fix that
+/// changes nothing: the second identical verdict on identical work goes to
+/// review, unverified — no third run (D-062).
+#[tokio::test]
+async fn verification_stops_when_a_fix_changes_nothing() {
+    use otter_core::feature::{EvidenceKind, FeatureStatus, GateStatus, MessageRole, Proof};
+    let fake = fake_agent_host("ok", "skeptic").await;
+    let host = &fake.host;
+    let id = started_with(
+        host,
+        "proj",
+        "Add CSV export",
+        "test:\n\t@echo all good\n",
+        true,
+    )
+    .await;
+    let f = wait_feature(host, &id, "in review, gates checked", |f| {
+        f.status == FeatureStatus::Review && !f.gates.is_empty()
+    })
+    .await;
+    assert_eq!(f.runs.len(), 2, "the task, and one fix");
+    assert_eq!(
+        f.tasks
+            .iter()
+            .filter(|t| t.title == "Fix what verification found")
+            .count(),
+        1
+    );
+    assert_eq!(
+        f.status_reason.as_deref(),
+        Some("Not verified: nothing changed after a fix")
+    );
+    assert!(f.messages.iter().any(|m| {
+        m.role == MessageRole::Controller
+            && m.text
+                .starts_with("Not verified, and nothing changed after the last fix")
+    }));
+    // The check decided its own criterion; the judge only the other.
+    let by = |how| f.acceptance.iter().find(|c| c.how == how).unwrap();
+    assert_eq!(by(Proof::Check).met, Some(true));
+    assert_eq!(by(Proof::Diff).met, Some(false));
+    // The judge was shown the work itself.
+    let tree: Vec<_> = f
+        .evidence
+        .iter()
+        .filter(|e| e.kind == EvidenceKind::Diff)
+        .collect();
+    assert_eq!(tree.len(), 2, "one snapshot per verification");
+    assert_eq!(tree[1].title, "Working tree: no changes");
+    assert!(tree[1].detail.as_deref().unwrap().contains("(clean)"));
+    // The developer sees what isn't proven.
+    let gate = f.gates.iter().find(|g| g.name == "Requirements met");
+    assert_eq!(gate.map(|g| g.status), Some(GateStatus::Failed));
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    let f = host.conn().await.feature_get(&id).await.unwrap();
+    assert_eq!((f.status, f.runs.len()), (FeatureStatus::Review, 2));
 }
 
 // ---------------------------------------------------------------------------

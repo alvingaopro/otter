@@ -1859,3 +1859,67 @@ Milestone 6 of the structured runtime plan, first step: a host gets the
   flag → explicitly enabled host → dogfood → default). Switching never
   moves a running conversation: one keeps the backend it began with.
 
+
+## D-062 — Verification can finish (2026-10-14)
+
+M2 step 1 (`docs/plans/m2-feature-to-pr.md`; autonomy audit P0-1, RC-1 and
+RC-4). Correct work used to end *Failed, all 6 attempts are used up*: a
+check that couldn't run was a failing check, every failure a new fix task,
+and the judge saw the check's output and the agent's claims but never the
+work. Principles 3 ("the supervisor verifies with deterministic evidence")
+and 4 ("stop on evidence, not on attempt counts") of the plan, in part:
+
+- **A check that can't run is the environment's problem.** Exit 126/127, or
+  the shell's, `make`'s, `env`'s or npm's own complaint in the output (a
+  command not found, no such file, not executable, a missing npm script),
+  is recorded as evidence with no verdict, titled "`<cmd>` can't run here".
+  `make` reports a missing command as its own exit 2, so the output counts;
+  a test's output that merely mentions a missing file doesn't (narrower
+  than the plan's `No such file or directory` anywhere). No fix task: the
+  feature blocks with that line as the reason, one message, and a
+  developer-only question — "Run it again" or "Go on without it". A
+  blocked feature with nothing pending is picked up again by the
+  controller, so the question is also what keeps it blocked. Going on
+  without the check lasts until the next plan, which proposes a check
+  again.
+- **The judge sees the work.** Each verification reads the workspace's
+  state (`work_state.rs`): in Git, HEAD, `git status`, the stat and a
+  bounded diff since the merge base with the work's base branch (else
+  HEAD) — committed or not — and new files as diffs against nothing,
+  without touching the index (no `git add -N`). It is evidence ("Working
+  tree: …", no verdict); the judge is told the diff and status are
+  deterministic and a check's output proves only what it ran, and sees
+  only the newest snapshot. The snapshot is kept in the feature and read
+  by the brain's model, which may not be the coding agent's: files that
+  may hold secrets by their name (`.env`, `.env.*`, `.netrc`, `.npmrc`,
+  `.pypirc`, `credentials`, SSH keys, `*.pem`, `*.key`, `*.p12`, `*.pfx`,
+  `*.keystore`) are listed as changed but their content is never shown.
+  That's the obvious shapes, not a scanner: a token in an ordinary tracked
+  file is shown like any other change. Outside Git there is no diff to
+  show, only a fingerprint of the files (path, size, modification time;
+  hidden, `node_modules`, `target` and `__pycache__` directories left out).
+- **Typed criteria.** A criterion says what proves it (`how`): `check` —
+  the check command passing, decided in code from its result whenever the
+  check runs — or `diff` — what the change contains, judged by the brain
+  (the default, and what untyped model output and older documents read
+  as). The brain is asked only about the criteria the check doesn't
+  decide, and not at all when there are none. The plan prompt forbids
+  criteria about the conversation or the process. Without a model (`rules`)
+  every criterion still follows the check, as before.
+- **Stop on evidence.** A verification that finds something unmet records
+  a fingerprint of the work (the snapshot's, plus each deterministic
+  result) and the unmet criteria (`Feature.last_verification`, persisted:
+  the feature document is the checkpoint). The same fingerprint and the
+  same unmet criteria after a fix means the fix changed nothing: no new
+  fix task. It goes to **Review**, not Failed, with "Not verified: nothing
+  changed after a fix" and the ✓/✗ list. That trades a little safety for
+  completion: the deterministic check still decides its criteria, the
+  "Requirements met" gate shows what isn't proven, and Done still needs
+  the developer's acceptance (or their override, on record). Planning
+  again clears the mark. The attempt and time budgets and
+  `repeating_failure` stay, as backstops.
+- **Developer-only stays developer-only** (plan principle 6, pulled ahead
+  of step 5 because the question above relies on it): the brain isn't
+  asked about a `user_only` decision at all, so a model can neither
+  approve one (policy already refused that) nor deny one in the
+  developer's name (it could). It goes straight to the developer.

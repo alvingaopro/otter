@@ -614,6 +614,7 @@ pub fn replan(f: &mut Feature, why: &str, now: Timestamp) -> Vec<Change> {
     // The last round's verdict and report are about the old goal.
     f.report = None;
     f.gates.clear();
+    f.last_verification = None;
     if f.status == FeatureStatus::Planning {
         return vec![];
     }

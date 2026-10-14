@@ -8,15 +8,16 @@
 //! the first one with a key), `claude` (`claude -p` with structured output,
 //! no tools; the default otherwise, when installed), `rules` (no model: one
 //! task, every open decision goes to the developer, criteria are met when
-//! the check passes), or `yes` (tests only: approves everything it is asked
-//! — to show that policy still stops it). `OTTER_CONTROLLER_MODEL` picks the
-//! model for any of them.
+//! the check passes), `yes` (tests only: approves everything it is asked
+//! — to show that policy still stops it), or `skeptic` (tests only: never
+//! satisfied — to show that verification still finishes).
+//! `OTTER_CONTROLLER_MODEL` picks the model for any of them.
 
 use std::path::Path;
 
 use anyhow::{Result, bail};
 use async_trait::async_trait;
-use otter_core::feature::{DecisionKind, DecisionRequest, Feature};
+use otter_core::feature::{Criterion, DecisionKind, DecisionRequest, EvidenceKind, Feature, Proof};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
@@ -33,10 +34,51 @@ pub struct PlannedTask {
     pub depends_on: Vec<usize>,
 }
 
+/// An acceptance criterion as planned, and what proves it (D-062).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(from = "CriterionRepr")]
+pub struct PlannedCriterion {
+    pub text: String,
+    pub how: Proof,
+}
+
+/// A plain string reads as a diff-typed criterion.
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum CriterionRepr {
+    Text(String),
+    Typed {
+        text: String,
+        #[serde(default)]
+        how: Proof,
+    },
+}
+
+impl From<CriterionRepr> for PlannedCriterion {
+    fn from(r: CriterionRepr) -> Self {
+        match r {
+            CriterionRepr::Text(text) => PlannedCriterion {
+                text,
+                how: Proof::Diff,
+            },
+            CriterionRepr::Typed { text, how } => PlannedCriterion { text, how },
+        }
+    }
+}
+
+impl PlannedCriterion {
+    fn new(text: impl Into<String>, how: Proof) -> Self {
+        PlannedCriterion {
+            text: text.into(),
+            how,
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Plan {
     pub requirements: Vec<String>,
-    pub criteria: Vec<String>,
+    pub criteria: Vec<PlannedCriterion>,
     pub tasks: Vec<PlannedTask>,
     /// One shell command that checks the work, if the project has one.
     #[serde(default)]
@@ -248,6 +290,7 @@ pub fn select(env: &EnvMap, choice: &Choice) -> Box<dyn Brain> {
     match choice.controller.as_deref().unwrap_or_default() {
         "rules" | "off" => Box::new(Rules),
         "yes" => Box::new(YesMan),
+        "skeptic" => Box::new(Skeptic),
         "claude" => model(Backend::ClaudeCode),
         id => match crate::providers::get(id).or_else(|| {
             crate::providers::PROVIDERS
@@ -295,7 +338,11 @@ fn rules_plan(cx: &Context<'_>) -> Plan {
             .collect();
         return Plan {
             requirements: f.requirements.clone(),
-            criteria: f.acceptance.iter().map(|c| c.text.clone()).collect(),
+            criteria: f
+                .acceptance
+                .iter()
+                .map(|c| PlannedCriterion::new(c.text.clone(), c.how))
+                .collect(),
             tasks: vec![PlannedTask {
                 title: "Apply the developer's changes".into(),
                 detail: notes.join("\n"),
@@ -323,13 +370,22 @@ fn rules_plan(cx: &Context<'_>) -> Plan {
         .map(String::from)
         .collect();
     let verify = detect_verify_command(cx.root);
-    let mut criteria = if bullets.is_empty() {
-        vec![format!("Done: {}", f.title)]
+    let mut criteria: Vec<PlannedCriterion> = if bullets.is_empty() {
+        vec![PlannedCriterion::new(
+            format!("Done: {}", f.title),
+            Proof::Diff,
+        )]
     } else {
         bullets
+            .into_iter()
+            .map(|b| PlannedCriterion::new(b, Proof::Diff))
+            .collect()
     };
     if let Some(cmd) = &verify {
-        criteria.push(format!("`{cmd}` passes"));
+        criteria.push(PlannedCriterion::new(
+            format!("`{cmd}` passes"),
+            Proof::Check,
+        ));
     }
     Plan {
         requirements: vec![request.clone()],
@@ -342,6 +398,12 @@ fn rules_plan(cx: &Context<'_>) -> Plan {
         verify_command: verify,
         rationale: "One task for the whole request (no model configured).".into(),
     }
+}
+
+/// Whether the check's result decides `c` in code (D-062): a check-typed
+/// criterion, when there is a check that runs. Everything else is judged.
+pub fn decided_by_check(f: &Feature, c: &Criterion) -> bool {
+    c.how == Proof::Check && f.verify_command.is_some() && f.verify_approved
 }
 
 /// Criteria are met when the latest check passed, and nothing failed since.
@@ -418,6 +480,41 @@ impl Brain for YesMan {
     }
     async fn judge(&self, cx: &Context<'_>) -> Result<Judgement> {
         Ok(rules_judge(cx))
+    }
+}
+
+/// Never satisfied: every criterion it judges is unmet, whatever the
+/// evidence. Only for tests: verification must still finish.
+pub struct Skeptic;
+
+#[async_trait]
+impl Brain for Skeptic {
+    fn name(&self) -> &'static str {
+        "skeptic"
+    }
+    async fn plan(&self, cx: &Context<'_>) -> Result<Plan> {
+        Ok(rules_plan(cx))
+    }
+    async fn decide(&self, _: &Context<'_>, d: &DecisionRequest) -> Result<Verdict> {
+        Ok(Verdict::Escalate {
+            why: format!("No model decides for you here: {}", d.summary),
+        })
+    }
+    async fn judge(&self, cx: &Context<'_>) -> Result<Judgement> {
+        let f = cx.feature;
+        Ok(Judgement {
+            criteria: f
+                .acceptance
+                .iter()
+                .filter(|c| !decided_by_check(f, c))
+                .map(|c| CriterionJudgement {
+                    id: c.id.clone(),
+                    met: false,
+                    reason: "not convinced".into(),
+                })
+                .collect(),
+            remediation: "Do it properly.".into(),
+        })
     }
 }
 
@@ -539,7 +636,11 @@ impl Brain for Model {
              {brief}\n\
              Write: requirements (short), acceptance criteria that can be checked, and 1-5 tasks in order \
              (depends_on = indexes of earlier tasks). verify_command: one shell command that checks the work \
-             (the project's tests{hint}), or null. rationale: one sentence.{again}",
+             (the project's tests{hint}), or null. For each criterion, how: \"check\" when verify_command \
+             passing proves it (the tests pass), \"diff\" when it is about what the change contains (judged \
+             from the diff of the work). A criterion is a fact about the code or the check's result, never \
+             about the conversation or the process (not \"confirmed with the requester\", not \"no commit \
+             was made\"). rationale: one sentence.{again}",
             root = cx.root.display(),
             brief = brief(cx.feature),
             hint = detected
@@ -551,7 +652,9 @@ impl Brain for Model {
             "type": "object",
             "properties": {
                 "requirements": {"type": "array", "items": {"type": "string"}},
-                "criteria": {"type": "array", "items": {"type": "string"}},
+                "criteria": {"type": "array", "items": {"type": "object", "properties": {
+                    "text": {"type": "string"}, "how": {"enum": ["check", "diff"]}},
+                    "required": ["text", "how"]}},
                 "tasks": {"type": "array", "items": {"type": "object", "properties": {
                     "title": {"type": "string"}, "detail": {"type": "string"},
                     "depends_on": {"type": "array", "items": {"type": "integer"}}},
@@ -610,34 +713,7 @@ impl Brain for Model {
 
     async fn judge(&self, cx: &Context<'_>) -> Result<Judgement> {
         let f = cx.feature;
-        let criteria: Vec<_> = f
-            .acceptance
-            .iter()
-            .map(|c| json!({"id": c.id, "text": c.text}))
-            .collect();
-        let evidence: Vec<_> = f
-            .evidence
-            .iter()
-            .rev()
-            .take(12)
-            .map(|e| json!({"kind": e.kind, "title": e.title, "ok": e.ok, "detail": e.detail, "uncertain": e.uncertain}))
-            .collect();
-        let summaries: Vec<_> = f
-            .runs
-            .iter()
-            .rev()
-            .take(3)
-            .filter_map(|r| r.summary.clone())
-            .collect();
-        let prompt = format!(
-            "You are Otter, the developer's tech lead, verifying a feature. Judge each acceptance criterion strictly from \
-             the evidence (a deterministic check outranks a claim; the coding agent's own summary is a claim, \
-             not evidence). If unsure, it is not met.\n{brief}\nCriteria: {criteria}\nEvidence (newest first): \
-             {evidence}\nAgent summaries: {summaries:?}\nremediation: what to fix next if anything is not met.",
-            brief = brief(f),
-            criteria = serde_json::Value::Array(criteria),
-            evidence = serde_json::Value::Array(evidence),
-        );
+        let prompt = judge_prompt(f);
         let schema = json!({
             "type": "object",
             "properties": {
@@ -764,6 +840,49 @@ impl Brain for Model {
     }
 }
 
+/// What the judge is asked (D-062): the criteria the check doesn't decide,
+/// and the evidence — the work's latest state (its diff) among it.
+pub fn judge_prompt(f: &Feature) -> String {
+    let criteria: Vec<_> = f
+        .acceptance
+        .iter()
+        .filter(|c| !decided_by_check(f, c))
+        .map(|c| json!({"id": c.id, "text": c.text}))
+        .collect();
+    // Only the newest snapshot of the work: older ones are history.
+    let is_tree = |e: &otter_core::feature::Evidence| {
+        e.kind == EvidenceKind::Diff && e.title.starts_with(crate::work_state::TITLE)
+    };
+    let latest_tree = f.evidence.iter().rposition(is_tree);
+    let evidence: Vec<_> = f
+        .evidence
+        .iter()
+        .enumerate()
+        .rev()
+        .filter(|(i, e)| !is_tree(e) || Some(*i) == latest_tree)
+        .take(12)
+        .map(|(_, e)| json!({"kind": e.kind, "title": e.title, "ok": e.ok, "detail": e.detail, "uncertain": e.uncertain}))
+        .collect();
+    let summaries: Vec<_> = f
+        .runs
+        .iter()
+        .rev()
+        .take(3)
+        .filter_map(|r| r.summary.clone())
+        .collect();
+    format!(
+        "You are Otter, the developer's tech lead, verifying a feature. Judge each acceptance criterion strictly from \
+         the evidence. The working tree's status and diff are deterministic evidence of what the change contains; \
+         a check's output proves only what that check ran; a deterministic check outranks a claim; the coding \
+         agent's own summary is a claim, not evidence. If unsure, it is not met.\n{brief}\nCriteria: {criteria}\n\
+         Evidence (newest first): {evidence}\nAgent summaries: {summaries:?}\n\
+         remediation: what to fix next if anything is not met.",
+        brief = brief(f),
+        criteria = serde_json::Value::Array(criteria),
+        evidence = serde_json::Value::Array(evidence),
+    )
+}
+
 /// A reply without its `INTENT:` line — also while it is still being written
 /// (a last line that may be turning into one is held back).
 pub fn visible_reply(text: &str) -> String {
@@ -874,8 +993,86 @@ mod tests {
         assert_eq!(plan.verify_command.as_deref(), Some("make test"));
         assert_eq!(
             plan.criteria,
-            vec!["has a header row", "escapes commas", "`make test` passes"]
+            vec![
+                PlannedCriterion::new("has a header row", Proof::Diff),
+                PlannedCriterion::new("escapes commas", Proof::Diff),
+                PlannedCriterion::new("`make test` passes", Proof::Check),
+            ]
         );
+        // A model's untyped criterion reads as judged from the diff.
+        let c: PlannedCriterion = serde_json::from_value(json!("works")).unwrap();
+        assert_eq!(c.how, Proof::Diff);
+        let c: PlannedCriterion =
+            serde_json::from_value(json!({"text": "tests pass", "how": "check"})).unwrap();
+        assert_eq!(c.how, Proof::Check);
+    }
+
+    /// The judge sees the work itself (D-062): an uncommitted edit's hunk
+    /// and a new file, and only the criteria the check doesn't decide.
+    #[tokio::test]
+    async fn the_judge_sees_the_diff_and_status() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let git = |args: &[&str]| {
+            let ok = std::process::Command::new("git")
+                .args(args)
+                .current_dir(root)
+                .env("GIT_AUTHOR_NAME", "t")
+                .env("GIT_AUTHOR_EMAIL", "t@t")
+                .env("GIT_COMMITTER_NAME", "t")
+                .env("GIT_COMMITTER_EMAIL", "t@t")
+                .status()
+                .unwrap()
+                .success();
+            assert!(ok, "git {args:?}");
+        };
+        git(&["init", "-q", "-b", "main"]);
+        std::fs::write(root.join("export.py"), "def export():\n    pass\n").unwrap();
+        git(&["add", "."]);
+        git(&["commit", "-q", "-m", "start"]);
+        std::fs::write(root.join("export.py"), "def export():\n    return 'a,b'\n").unwrap();
+        std::fs::write(root.join("test_export.py"), "assert True\n").unwrap();
+        let env: EnvMap = std::env::vars().collect();
+        let state = crate::work_state::snapshot(root, &env, Some("main")).await;
+
+        let mut f = feature();
+        f.verify_command = Some("pytest".into());
+        f.verify_approved = true;
+        let criterion = |id: &str, text: &str, how| Criterion {
+            id: id.into(),
+            text: text.into(),
+            met: None,
+            evidence: vec![],
+            how,
+        };
+        f.acceptance = vec![
+            criterion("ac_1", "export returns CSV", Proof::Diff),
+            criterion("ac_2", "`pytest` passes", Proof::Check),
+        ];
+        f.evidence.push(Evidence {
+            id: otter_core::EvidenceId::generate(),
+            task_id: None,
+            criterion_id: None,
+            kind: EvidenceKind::Diff,
+            title: format!("{}: {}", crate::work_state::TITLE, state.summary),
+            ok: None,
+            uri: None,
+            detail: state.report,
+            uncertain: false,
+            at: chrono::Utc::now(),
+        });
+        let p = judge_prompt(&f);
+        assert!(p.contains("+    return 'a,b'"), "{p}");
+        assert!(p.contains("?? test_export.py"), "{p}");
+        assert!(p.contains("deterministic evidence"), "{p}");
+        assert!(p.contains("export returns CSV"), "{p}");
+        assert!(
+            !p.contains("`pytest` passes"),
+            "the check decides that: {p}"
+        );
+        // Without a check that runs, the model judges it too.
+        f.verify_approved = false;
+        assert!(judge_prompt(&f).contains("`pytest` passes"));
     }
 
     #[test]
@@ -886,6 +1083,7 @@ mod tests {
             text: "x".into(),
             met: None,
             evidence: vec![],
+            how: Proof::Diff,
         }];
         let env = EnvMap::new();
         let root = Path::new("/w");

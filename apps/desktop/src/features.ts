@@ -30,6 +30,8 @@ export interface Criterion {
   met?: boolean;
   /** Evidence ids backing the judgment. */
   evidence: string[];
+  /** What proves it (D-062): the check's result, or the diff (judged). */
+  how?: "check" | "diff";
 }
 
 export interface Task {

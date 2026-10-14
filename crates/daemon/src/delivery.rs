@@ -330,7 +330,7 @@ pub fn report(f: &Feature, diffstat: Option<&str>) -> String {
 
 /// Run a program in `cwd` with `env`; stdout, or an error with stderr.
 /// `input` goes to stdin (bodies never go on the command line).
-async fn run(
+pub(crate) async fn run(
     program: &Path,
     args: &[&str],
     cwd: &Path,
@@ -603,6 +603,7 @@ mod tests {
             text: "exports".into(),
             met: Some(true),
             evidence: vec![],
+            how: otter_core::feature::Proof::Diff,
         });
         f.verify_command = Some("make test".into());
         f.evidence.push(Evidence {

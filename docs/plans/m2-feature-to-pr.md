@@ -3,7 +3,9 @@
 **Milestone:** M2 (P0) of [`docs/roadmap.md`](../roadmap.md): *one complete
 feature workflow, plan → implement → test → review → PR → CI → done, with
 durable checkpoints and human control.*
-**Status:** planned, not started. **Branch:** `roadmap-m2` (after M1 merges).
+**Status:** in progress — step 1 done (D-062). **Branch:** `roadmap-m2`,
+started from `main`: M1's runtime changes (`roadmap-m1` @ `5ebcf4f`, which
+the line numbers below refer to) aren't published yet.
 **Inputs:** the M2 spec (scope, acceptance, deliverables, release gate — kept
 verbatim in §8), and the autonomy audit
 [`docs/audits/autonomy/`](../audits/autonomy/README.md) (PR #51), whose
