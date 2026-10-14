@@ -420,6 +420,61 @@ impl Git<'_> {
             .ok()
     }
 
+    /// Changes a commit would take: anything changed or new but files that
+    /// may hold secrets (by name, as `work_state` reads them).
+    pub async fn committable(&self) -> bool {
+        let mut args = vec![
+            "status",
+            "--porcelain=v1",
+            "--untracked-files=all",
+            "--",
+            ".",
+        ];
+        let excluded = crate::work_state::secret_pathspecs();
+        args.extend(excluded.iter().map(String::as_str));
+        self.git(&args).await.is_ok_and(|s| !s.trim().is_empty())
+    }
+
+    /// Commit what the work left uncommitted, as `message` (D-068): the new
+    /// HEAD, and the files left out because they may hold secrets. `None`:
+    /// nothing to commit. Without an identity of the host's own, the commit
+    /// is Otter's.
+    pub async fn commit_work(&self, message: &str) -> Result<Option<(String, Vec<String>)>> {
+        let status = self
+            .git(&["status", "--porcelain=v1", "--untracked-files=all"])
+            .await?;
+        let left_out: Vec<String> = status
+            .lines()
+            .filter_map(|l| l.get(3..))
+            .map(|p| {
+                p.rsplit(" -> ")
+                    .next()
+                    .unwrap_or(p)
+                    .trim_matches('"')
+                    .to_owned()
+            })
+            .filter(|p| crate::work_state::secret_like(p))
+            .collect();
+        if !self.committable().await {
+            return Ok(None);
+        }
+        let mut add = vec!["add", "-A", "--", "."];
+        let excluded = crate::work_state::secret_pathspecs();
+        add.extend(excluded.iter().map(String::as_str));
+        self.git(&add).await?;
+        let identity = self
+            .git(&["config", "user.email"])
+            .await
+            .is_ok_and(|e| !e.is_empty());
+        let mut commit = vec![];
+        if !identity {
+            commit.extend(["-c", "user.name=Otter", "-c", "user.email=otter@localhost"]);
+        }
+        commit.extend(["commit", "-q", "-m", message]);
+        self.git(&commit).await?;
+        Ok(Some((self.head().await?, left_out)))
+    }
+
     pub async fn push(&self, branch: &str) -> Result<()> {
         self.git(&["push", "-u", "origin", &format!("HEAD:refs/heads/{branch}")])
             .await

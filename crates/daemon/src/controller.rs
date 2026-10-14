@@ -94,6 +94,9 @@ fn plan_turn() -> bool {
 
 /// The planning task's title.
 const PLANNING: &str = "Look at the code and plan the work";
+/// The task CI's failure becomes, and what is said when a fix didn't change it.
+const CI_FIX: &str = "Fix what CI found";
+const SAME_CI: &str = "CI failed the same way after the fix";
 /// What Otter asks when a feature starts with nothing to do (D-067).
 const GOAL_QUESTION: &str = "What should this feature do?";
 
@@ -1620,12 +1623,16 @@ impl Daemon {
         let mut evidence = Vec::new();
         let mut remediation: Option<String> = None;
         let mut notes: Vec<String> = Vec::new();
+        // Lines for the record only.
+        let mut rationale: Vec<String> = Vec::new();
         if let (Some(branch), Some(gh)) = (&branch, &gh)
             && !d.as_ref().is_some_and(|d| d.declined)
         {
-            let head = git.head().await.ok();
+            let mut head = git.head().await.ok();
             let published = d.as_ref().is_some_and(|d| d.pr_url.is_some());
-            if !published || d.as_ref().and_then(|d| d.head.clone()) != head {
+            // Work not yet committed is work not yet published (D-068).
+            let unpublished = git.committable().await;
+            if !published || d.as_ref().and_then(|d| d.head.clone()) != head || unpublished {
                 // Pushing is an external action: the developer allows it once.
                 let cmd = format!("git push origin {branch}");
                 match self
@@ -1649,6 +1656,32 @@ impl Daemon {
                     }
                     Allowance::Allowed => {
                         let base = self.workspace_base(f).await;
+                        // What the agent left uncommitted is committed first
+                        // (files that may hold secrets left out, D-068): a
+                        // retry finds a clean tree and only pushes.
+                        let committed = git.commit_work(&f.title).await.map_err(|e| {
+                            RpcError::internal(format!("committing the work: {e:#}"))
+                        })?;
+                        if let Some((sha, left_out)) = &committed {
+                            head = Some(sha.clone());
+                            let short: String = sha.chars().take(10).collect();
+                            evidence.push(evidence_item(
+                                EvidenceKind::Diff,
+                                &format!("Committed {short}"),
+                                Some(sha.clone()),
+                            ));
+                            notes.push(format!(
+                                "Committed the work as {short}{}.",
+                                if left_out.is_empty() {
+                                    String::new()
+                                } else {
+                                    format!(
+                                        ", leaving out what may hold secrets: {}",
+                                        left_out.join(", ")
+                                    )
+                                }
+                            ));
+                        }
                         git.push(branch)
                             .await
                             .map_err(|e| RpcError::internal(format!("pushing {branch}: {e:#}")))?;
@@ -1757,19 +1790,44 @@ impl Daemon {
                         ));
                     } else {
                         let names: Vec<&str> = failed.iter().map(|c| c.name.as_str()).collect();
-                        remediation = Some(format!(
-                            "CI failed ({}):\n{}",
-                            names.join(", "),
-                            text.trim()
-                        ));
-                        let mut e = evidence_item(
-                            EvidenceKind::Ci,
-                            &format!("CI failed: {}", names.join(", ")),
-                            Some(text),
-                        );
-                        e.ok = Some(false);
-                        e.uri = failed[0].url.clone();
-                        evidence.push(e);
+                        let title = format!("CI failed: {}", names.join(", "));
+                        // The same failure as last time, after a fix: another
+                        // fix won't help — the developer's call (D-068).
+                        let last = f
+                            .evidence
+                            .iter()
+                            .rev()
+                            .find(|e| e.kind == EvidenceKind::Ci && e.ok == Some(false));
+                        let same = last.is_some_and(|e| {
+                            e.title == title
+                                && e.detail.as_deref().map(str::trim) == Some(text.trim())
+                        });
+                        let fixed = f
+                            .tasks
+                            .iter()
+                            .any(|t| t.title == CI_FIX && t.status == TaskStatus::Done);
+                        if same {
+                            let marker = format!(
+                                "{SAME_CI} ({})",
+                                last.map(|e| e.id.as_str()).unwrap_or_default()
+                            );
+                            if fixed && !f.rationale.iter().any(|r| r == &marker) {
+                                notes.push(format!(
+                                    "{SAME_CI}, so another attempt won't help: over to you. Look at the CI log, then accept it as it is or tell me what to change."
+                                ));
+                                rationale.push(marker);
+                            }
+                        } else {
+                            remediation = Some(format!(
+                                "CI failed ({}):\n{}",
+                                names.join(", "),
+                                text.trim()
+                            ));
+                            let mut e = evidence_item(EvidenceKind::Ci, &title, Some(text));
+                            e.ok = Some(false);
+                            e.uri = failed[0].url.clone();
+                            evidence.push(e);
+                        }
                     }
                 } else if !dl.ci.is_empty()
                     && dl
@@ -1821,6 +1879,7 @@ impl Daemon {
             && remediation.is_none()
             && !write_report
             && notes.is_empty()
+            && rationale.is_empty()
         {
             return Ok(());
         }
@@ -1842,12 +1901,13 @@ impl Daemon {
                 f.messages.push(m);
                 changes.push(c);
             }
+            f.rationale.extend(rationale.iter().cloned());
             f.gates = gates.clone();
             if let Some(fix) = &remediation {
                 let id = TaskId::generate();
                 f.tasks.push(Task {
                     id: id.clone(),
-                    title: "Fix what CI found".into(),
+                    title: CI_FIX.into(),
                     detail: Some(fix.clone()),
                     status: TaskStatus::Pending,
                     depends_on: vec![],

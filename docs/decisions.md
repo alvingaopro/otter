@@ -2136,3 +2136,38 @@ told the agent to confirm the goal with the developer.
   working, the answer arrives as input). The plan made it optional,
   behind a decision; blocking `AskUserQuestion` stays as it is.
 
+## D-068 — The golden path's checkpoints (2026-10-14)
+
+M2 step 7 (`docs/plans/m2-feature-to-pr.md`; the M2 spec: plan → implement
+→ test → review → PR → CI → done with durable checkpoints, deterministic
+controls, bounded retries). Most of it was there — the feature document is
+the checkpoint (D-045), a push is `HEAD:refs/heads/<branch>`, an open pull
+request for the branch is adopted (`gh pr view`, then `edit`), and since
+D-064 a CI fix is a turn in the feature's session. What wasn't:
+
+- **Nothing committed the agent's work.** Delivery pushed HEAD; work the
+  agent left uncommitted never reached the pull request. Publishing — the
+  action the developer allows — now commits it first (`git add -A`, the
+  feature's title as the message), leaving out files that may hold secrets
+  by name (the same list as D-062's snapshot); the commit's SHA is evidence
+  ("Committed …") and the note names what was left out. Without an
+  identity of the host's own, the commit is Otter's. A tree with work
+  still to commit counts as unpublished, so a fix the agent didn't commit
+  is pushed too. Idempotent by construction: after a crash between commit
+  and push, the tree is clean and the retry only pushes.
+- **The same CI failure after a fix goes to the developer.** CI failing
+  with the same checks and the same log as the last failure, once a "Fix
+  what CI found" turn has run, doesn't start another fix: one message
+  ("CI failed the same way after the fix, so another attempt won't help:
+  over to you"), the feature stays in review with the CI gate failed. The
+  flaky-rerun budget (D-047) stays.
+- **Cancelling says what stays.** Otter removes nothing of the work on
+  cancel: the message names the workspace's files, the branch and an open
+  pull request (to close on the forge if unwanted), and that removing the
+  workspace is the developer's step.
+- **Checkpoints, tested by stopping there.** otterd stopped and started
+  again while the developer is asked to publish, right after the pull
+  request opens, and once the report is written: one run, one pull
+  request (`gh pr create` once), one branch, then done. An open pull
+  request is adopted, not opened twice.
+
