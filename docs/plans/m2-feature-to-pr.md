@@ -4,7 +4,7 @@
 feature workflow, plan → implement → test → review → PR → CI → done, with
 durable checkpoints and human control.*
 **Status:** in progress — step 1 done (D-062, PR #53), step 2 done
-(D-063, PR #54), step 3 done (D-064, PR #55), step 4 done (D-065). **Branch:** `roadmap-m2`, started from `main`: M1's runtime changes
+(D-063, PR #54), step 3 done (D-064, PR #55), step 4 done (D-065, PR #56), step 5 done (D-066). **Branch:** `roadmap-m2`, started from `main`: M1's runtime changes
 (`roadmap-m1` @ `5ebcf4f`, which the line numbers below refer to) aren't
 published yet, so these steps are built without them.
 **Inputs:** the M2 spec (scope, acceptance, deliverables, release gate — kept

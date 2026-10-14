@@ -498,6 +498,11 @@ pub fn apply_action(
             d.answer = answer.clone();
             d.decided_by = Some(Decider::User);
             d.decided_at = Some(now);
+            // Allowed once, allowed for the rest of the feature (D-066).
+            let grant = d
+                .grant
+                .clone()
+                .filter(|_| d.status == DecisionStatus::Approved);
             changes.push(
                 Change::new(FeatureEvent::DecisionResolved {
                     decision_id: decision_id.clone(),
@@ -506,6 +511,11 @@ pub fn apply_action(
                 })
                 .because(command_id),
             );
+            if let Some(g) = grant
+                && !f.grants.contains(&g)
+            {
+                f.grants.push(g);
+            }
             changes.extend(f.resume_waiting_runs(now).into_iter().map(Change::new));
             if f.status == FeatureStatus::Blocked && f.pending_decisions().next().is_none() {
                 let next = resume_status(f);
@@ -749,15 +759,15 @@ impl Daemon {
                 answer,
                 answers,
             } => {
-                self.forward_decision(
-                    &id,
-                    decision_id,
+                let by = otter_core::feature::Decider::User;
+                let reply = crate::runs::decision_reply(
                     *approve,
                     answer.clone(),
                     answers.clone(),
-                    otter_core::feature::Decider::User,
-                )
-                .await
+                    by,
+                    None,
+                );
+                self.forward_decision(&id, decision_id, reply, by).await
             }
             // The coding agent's turn is interrupted and the run ends; its
             // conversation is held (pause) or closed (cancel) (D-059).
@@ -1082,6 +1092,7 @@ mod tests {
                 created_at: now,
                 decided_at: None,
                 user_only: true,
+                grant: None,
             });
             Ok(vec![])
         })

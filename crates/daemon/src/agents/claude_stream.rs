@@ -583,11 +583,55 @@ pub fn response_for(tool: &str, input: &Value, reply: &DecisionReply) -> Value {
 pub fn tool_call(name: &str, input: &Value) -> ToolCall {
     let s = |k: &str| input[k].as_str().unwrap_or_default().to_owned();
     match name {
-        "Read" | "Glob" | "Grep" | "LS" | "NotebookRead" | "TodoWrite" | "ToolSearch" => {
-            ToolCall::Read
-        }
+        "Read" | "Glob" | "Grep" | "LS" | "NotebookRead" | "ToolSearch" => ToolCall::Read,
+        // The agent's own session — its task list, its background work, its
+        // mode, the MCP servers it was given: nothing changes in the
+        // workspace (D-066).
+        "TodoWrite"
+        | "TaskCreate"
+        | "TaskGet"
+        | "TaskUpdate"
+        | "TaskList"
+        | "TaskStop"
+        | "KillShell"
+        | "KillBash"
+        | "BashOutput"
+        | "TaskOutput"
+        | "EnterPlanMode"
+        | "ListMcpResourcesTool"
+        | "ReadMcpResourceTool"
+        | "ReadMcpResourceDirTool"
+        | "RefreshMcpTools"
+        | "ReadNotifications" => ToolCall::Read,
+        // Watching a command's output runs the command.
+        "Monitor" => match input["command"].as_str() {
+            Some(line) => ToolCall::Command { line: line.into() },
+            None => ToolCall::Fetch {
+                url: input["ws"]["url"].as_str().unwrap_or_default().into(),
+            },
+        },
+        // Beyond the run: scheduling, notifying, other worktrees, the host
+        // app's features. Otter is what schedules and tells people.
+        "CronCreate"
+        | "CronDelete"
+        | "CronList"
+        | "ScheduleWakeup"
+        | "RemoteTrigger"
+        | "PushNotification"
+        | "SendFeedback"
+        | "EnterWorktree"
+        | "ExitWorktree"
+        | "Artifact"
+        | "ClaudeDesign"
+        | "Projects"
+        | "ProposeSkills"
+        | "ProposeGoal"
+        | "ShowOnboardingRolePicker"
+        | "ReportFindings" => ToolCall::Outside {
+            name: name.to_owned(),
+        },
         // Starting another agent isn't reading (D-059).
-        "Task" | "Agent" => ToolCall::Delegate {
+        "Task" | "Agent" | "Workflow" => ToolCall::Delegate {
             description: if s("description").is_empty() {
                 s("prompt")
             } else {
@@ -669,7 +713,7 @@ pub fn summarize(call: &ToolCall, tool: &str) -> String {
         ToolCall::Question { question, .. } => question.clone(),
         ToolCall::PlanApproval { plan } => format!("Approve the plan: {plan}"),
         ToolCall::Delegate { description } => format!("Start a subagent: {description}"),
-        ToolCall::Other { name } => format!("Use {name}"),
+        ToolCall::Outside { name } | ToolCall::Other { name } => format!("Use {name}"),
     };
     super::excerpt(&text, SUMMARY_LEN)
 }
@@ -1027,6 +1071,41 @@ mod tests {
         );
     }
 
+    /// Every built-in tool of the pinned SDK has a kind (D-066): none lands
+    /// in `Other`, which costs a model decision each time it's used. The
+    /// worker's tests check the list is the SDK's whole list.
+    #[test]
+    fn every_built_in_tool_of_the_pinned_sdk_is_classified() {
+        let doc: Value = serde_json::from_str(include_str!(
+            "../../../../packages/claude-runtime/tools.json"
+        ))
+        .unwrap();
+        let tools = doc["tools"].as_object().unwrap();
+        assert!(tools.len() > 30);
+        for (input, name) in tools {
+            let Some(name) = name.as_str() else { continue };
+            let call = tool_call(name, &json!({}));
+            assert!(
+                !matches!(call, ToolCall::Other { .. }),
+                "{name} ({input}) isn't classified"
+            );
+        }
+        // MCP tools are the Control Agent's to decide.
+        assert!(matches!(
+            tool_call("mcp__github__create_issue", &json!({})),
+            ToolCall::Other { .. }
+        ));
+        assert_eq!(
+            tool_call(
+                "Monitor",
+                &json!({"command": "tail -f log", "timeout_ms": 1000})
+            ),
+            ToolCall::Command {
+                line: "tail -f log".into()
+            }
+        );
+    }
+
     #[test]
     fn background_work_is_counted_without_the_ambient_kind() {
         let s = Mutex::new(Shared::default());
@@ -1232,7 +1311,7 @@ mod process_tests {
         assert_eq!(
             ask.call,
             ToolCall::Command {
-                line: "rm -rf build".into()
+                line: "rm -rf /opt/shared".into()
             }
         );
         assert_eq!(h.inspect().pending, vec![ask.request_id.clone()]);
@@ -1245,7 +1324,7 @@ mod process_tests {
         .await
         .unwrap();
         assert!(matches!(next(&mut h).await,
-            RuntimeEvent::TurnFinished { outcome: TurnOutcome::Completed, summary: Some(s), .. } if s == "denied, so I stopped"));
+            RuntimeEvent::TurnFinished { outcome: TurnOutcome::Completed, summary: Some(s), .. } if s == "denied (no), so I stopped"));
         assert!(h.inspect().pending.is_empty());
         // A decision can't be answered twice.
         assert!(

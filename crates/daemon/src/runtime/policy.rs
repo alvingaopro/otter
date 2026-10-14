@@ -118,7 +118,6 @@ const CREDENTIALS: &[&str] = &[
     ".ssh/",
     "id_rsa",
     "id_ed25519",
-    ".env",
     "password",
     "secret",
     "token",
@@ -246,7 +245,100 @@ fn pieces(line: &str) -> Vec<String> {
 }
 
 /// Files a redirection target may be without writing a file.
-const STREAMS: &[&str] = &["/dev/null", "/dev/stdout", "/dev/stderr", "/dev/tty", "-"];
+const STREAMS: &[&str] = &[
+    "/dev/null",
+    "/dev/stdout",
+    "/dev/stderr",
+    "/dev/tty",
+    "/dev/zero",
+    "-",
+];
+
+/// A file of secrets by its name (D-066): `.env` and `.env.<anything>` —
+/// not `.envrc` (direnv's config) nor the templates (`.env.example`, …).
+fn secrets_file(path: &str) -> bool {
+    let name = path
+        .trim_matches(|c| c == '"' || c == '\'')
+        .rsplit('/')
+        .next()
+        .unwrap_or_default()
+        .to_lowercase();
+    match name.strip_prefix(".env") {
+        Some("") => true,
+        Some(rest) => rest.strip_prefix('.').is_some_and(|ext| {
+            !ext.is_empty()
+                && !matches!(
+                    ext.split('.').next(),
+                    Some("example" | "sample" | "template" | "dist" | "defaults" | "schema")
+                )
+        }),
+        None => false,
+    }
+}
+
+/// The `.env` file a piece of a command line names, if it names one.
+fn names_secrets_file(piece: &str) -> Option<String> {
+    piece
+        .split(|c: char| c.is_whitespace() || matches!(c, '=' | '<' | '>' | '(' | ')' | ','))
+        .find(|w| secrets_file(w))
+        .map(|w| w.trim_matches(|c| c == '"' || c == '\'').to_owned())
+}
+
+/// Scratch space anyone may write to (D-066): the temp directories.
+fn scratch(path: &Path) -> bool {
+    let real = real_path(path);
+    let mut roots = vec![
+        std::path::PathBuf::from("/tmp"),
+        std::path::PathBuf::from("/private/tmp"),
+        std::path::PathBuf::from("/var/tmp"),
+    ];
+    if let Ok(t) = std::env::var("TMPDIR")
+        && !t.is_empty()
+    {
+        roots.push(std::path::PathBuf::from(t));
+    }
+    roots
+        .iter()
+        .any(|r| real.starts_with(real_path(r)) && real != real_path(r))
+}
+
+/// A piece that only deletes files inside the workspace (or scratch): not
+/// the workspace itself, not Git's internals, no glob at its top (D-066).
+fn deletes_inside(piece: &str, cwd: &Path, root: &Path) -> bool {
+    let words: Vec<&str> = piece.split_whitespace().collect();
+    let args: Vec<&str> = words
+        .iter()
+        .copied()
+        .skip_while(|w| w.contains('=') && !w.starts_with('-'))
+        .collect();
+    let Some((cmd, rest)) = args.split_first() else {
+        return false;
+    };
+    if !matches!(*cmd, "rm" | "rmdir" | "unlink") {
+        return false;
+    }
+    let operands: Vec<&str> = rest
+        .iter()
+        .copied()
+        .filter(|w| !w.starts_with('-'))
+        .collect();
+    let real_root = real_path(root);
+    !operands.is_empty()
+        && operands.iter().all(|op| {
+            let Some(p) = target(cwd, op) else {
+                return false;
+            };
+            if scratch(&p) {
+                return true;
+            }
+            let real = real_path(&p);
+            let glob = op.contains(['*', '?', '[']);
+            inside(root, &p.to_string_lossy())
+                && real != real_root
+                && !real.starts_with(real_root.join(".git"))
+                && !(glob && real.parent() == Some(real_root.as_path()))
+        })
+}
 
 /// Where a path written by a command points, from `cwd` (`~` is home).
 fn target(cwd: &Path, path: &str) -> Option<std::path::PathBuf> {
@@ -319,8 +411,9 @@ fn writes_outside(piece: &str, cwd: &Path, root: &Path) -> Option<String> {
     }
     targets.into_iter().find(|t| {
         target(cwd, t).is_some_and(|p| {
-            // /dev devices other than the streams are writes, and outside.
-            !inside(root, &p.to_string_lossy())
+            // /dev devices other than the streams are writes, and outside;
+            // the temp directories are scratch (D-066).
+            !inside(root, &p.to_string_lossy()) && !scratch(&p)
         })
     })
 }
@@ -329,13 +422,20 @@ fn writes_outside(piece: &str, cwd: &Path, root: &Path) -> Option<String> {
 /// destroys, touches credentials, pushes or publishes, runs as root, or
 /// writes outside the workspace.
 fn classify_command(line: &str, root: &Path) -> Verdict {
-    let mut verdict = classify_words(line);
+    // What spans pieces (a pipe into a shell) is read on the whole line;
+    // the rest piece by piece.
+    let mut verdict = never(line);
     if severity(&verdict) == 3 {
         return verdict;
     }
     let mut cwd = root.to_path_buf();
     for piece in pieces(line) {
-        verdict = worst(verdict, classify_words(&piece));
+        // Deleting the work's own files is routine (D-066).
+        let routine_delete = deletes_inside(&piece, &cwd, root);
+        verdict = worst(verdict, classify_words(&piece, routine_delete));
+        if let Some(f) = names_secrets_file(&piece) {
+            verdict = worst(verdict, ask_user(format!("touches credentials (`{f}`)")));
+        }
         let words: Vec<&str> = piece.split_whitespace().collect();
         if let ["cd", dir] = words.as_slice()
             && let Some(p) = target(&cwd, dir)
@@ -353,8 +453,8 @@ fn classify_command(line: &str, root: &Path) -> Verdict {
     verdict
 }
 
-/// The word lists, over a whole line or one piece of it.
-fn classify_words(line: &str) -> Verdict {
+/// What no one may allow, anywhere in a line.
+fn never(line: &str) -> Verdict {
     let lower = line.to_lowercase();
     // `rm -rf /tmp/x` is not `rm -rf /`: only a bare root, home or a pipe
     // into a shell counts.
@@ -372,12 +472,25 @@ fn classify_words(line: &str) -> Verdict {
             }
         })
     });
-    if let Some(n) = never {
-        return Verdict::Deny {
+    match never {
+        Some(n) => Verdict::Deny {
             why: format!("never allowed in a managed run (`{}`)", n.trim()),
-        };
+        },
+        None => Verdict::Allow,
     }
-    if let Some(m) = mentions_any(&lower, DESTRUCTIVE) {
+}
+
+/// The word lists, over one piece of a line; `routine_delete`: it deletes
+/// only the work's own files, which isn't destroying anything.
+fn classify_words(line: &str, routine_delete: bool) -> Verdict {
+    let lower = line.to_lowercase();
+    let never = never(line);
+    if severity(&never) == 3 {
+        return never;
+    }
+    if let Some(m) = mentions_any(&lower, DESTRUCTIVE)
+        && !(routine_delete && matches!(m.as_str(), "rm" | "rmdir" | "unlink"))
+    {
         return ask_user(format!("deletes or destroys something (`{m}`)"));
     }
     if let Some(m) = mentions_any(&lower, CREDENTIALS) {
@@ -456,12 +569,9 @@ pub fn classify(call: &ToolCall, root: &Path) -> Verdict {
         ToolCall::Read => Verdict::Allow,
         ToolCall::Edit { path } => {
             let lower = path.to_lowercase();
-            if !inside(root, path) {
+            if !inside(root, path) && !scratch(Path::new(path)) {
                 ask_user(format!("edits outside the workspace ({path})"))
-            } else if lower.ends_with(".env")
-                || lower.contains("/.env")
-                || lower.contains(".ssh")
-                || lower.contains("credentials")
+            } else if secrets_file(path) || lower.contains(".ssh") || lower.contains("credentials")
             {
                 ask_user(format!("edits a credentials file ({path})"))
             } else if lower.contains("/.git/") || lower.starts_with(".git/") {
@@ -490,12 +600,59 @@ pub fn classify(call: &ToolCall, root: &Path) -> Verdict {
             user_only: false,
             why: "the agent proposes a plan".into(),
         },
+        ToolCall::Outside { name } => Verdict::Deny {
+            why: format!(
+                "{name} reaches beyond this run: Otter schedules work and tells the developer"
+            ),
+        },
         ToolCall::Other { name } => Verdict::Ask {
             risk: Risk::Medium,
             kind: DecisionKind::ToolPermission,
             user_only: false,
             why: format!("a tool policy doesn't know ({name})"),
         },
+    }
+}
+
+/// What the developer's approval of `call` may let through for the rest of
+/// the feature (D-066), as a key: the same command line, edits in the same
+/// directory outside the workspace, the same tool. Only for what is asked
+/// about for where it reaches, never for what it does: deleting,
+/// credentials, pushing and deploying, root are asked every time.
+pub fn grant(call: &ToolCall, root: &Path) -> Option<String> {
+    match call {
+        ToolCall::Command { line } => {
+            let mut cwd = root.to_path_buf();
+            for piece in pieces(line) {
+                if classify_words(&piece, deletes_inside(&piece, &cwd, root)) != Verdict::Allow
+                    || names_secrets_file(&piece).is_some()
+                {
+                    return None;
+                }
+                if let ["cd", dir] = piece.split_whitespace().collect::<Vec<_>>().as_slice()
+                    && let Some(p) = target(&cwd, dir)
+                {
+                    cwd = p;
+                }
+            }
+            (never(line) == Verdict::Allow).then(|| {
+                format!(
+                    "cmd:{}",
+                    line.split_whitespace().collect::<Vec<_>>().join(" ")
+                )
+            })
+        }
+        ToolCall::Edit { path } => {
+            let lower = path.to_lowercase();
+            let sensitive = secrets_file(path)
+                || lower.contains(".ssh")
+                || lower.contains("credentials")
+                || lower.contains("/.git/");
+            let dir = normalize(&root.join(path)).parent()?.to_path_buf();
+            (!sensitive && !inside(root, path)).then(|| format!("edit:{}", dir.display()))
+        }
+        ToolCall::Other { name } => Some(format!("tool:{name}")),
+        _ => None,
     }
 }
 
@@ -562,7 +719,10 @@ mod tests {
                 );
             }
         }
-        // A symlink inside the workspace that leads out of it: outside.
+        // A symlink inside the workspace that leads out of it: outside
+        // (and not to scratch space, which anyone may write).
+        std::fs::remove_file(real.join("escape")).unwrap();
+        std::os::unix::fs::symlink("/etc", real.join("escape")).unwrap();
         let v = classify(&edit(&real.join("escape/x.rs")), &real);
         assert!(
             matches!(
@@ -606,11 +766,11 @@ mod tests {
         };
         // Chained, piped, in a subshell or backticks: the risky piece counts.
         for line in [
-            "cat x; rm -rf build",
-            "make && rm -rf dist",
-            "true || rm -rf dist",
-            "echo $(rm -rf build)",
-            "echo `rm -rf build`",
+            "cat x; rm -rf ../build",
+            "make && rm -rf ~/dist",
+            "true || rm -rf /opt/dist",
+            "echo $(rm -rf ../build)",
+            "echo `git clean -fdx`",
             "ls | xargs rm",
         ] {
             assert!(user(cmd(line)), "{line}: {:?}", cmd(line));
@@ -620,10 +780,10 @@ mod tests {
             "echo x > ~/.zshrc",
             "echo x >> ../elsewhere.log",
             "echo x>/etc/hosts",
-            "make 2> /tmp/err.log",
+            "make 2> ~/err.log",
             "cp build/app /usr/local/bin/app",
             "mv out.txt ../out.txt",
-            "tee /tmp/copy.txt < in.txt",
+            "tee ~/copy.txt < in.txt",
             "touch ~/flag",
             "ln -s target /etc/link",
             "chmod 600 ~/.ssh/config",
@@ -645,6 +805,9 @@ mod tests {
             "FOO=1 BAR=2 cp a.txt b.txt",
             "cd src && echo x > generated.rs",
             "echo $HOME > $OUT",
+            // Scratch space (D-066).
+            "make 2> /tmp/err.log",
+            "tee /tmp/copy.txt < in.txt",
         ] {
             assert_eq!(cmd(line), Verdict::Allow, "{line}");
         }
@@ -714,9 +877,13 @@ mod tests {
     #[test]
     fn destructive_credential_and_production_actions_need_the_developer() {
         for line in [
-            "rm -rf build",
-            "rm notes.txt",
-            "rmdir old",
+            "rm -rf ../build",
+            "rm ~/notes.txt",
+            "rmdir /opt/old",
+            "rm -rf .",
+            "rm -rf *",
+            "rm -rf .git",
+            "cd src && rm -rf ../..",
             "find . -name '*.log' -delete",
             "git clean -fd",
             "git restore src/",
@@ -753,6 +920,111 @@ mod tests {
                 "{path}"
             );
         }
+    }
+
+    #[test]
+    fn secrets_files_are_known_by_name_and_scratch_is_scratch() {
+        // D-066: `.env` and `.env.*` by file name, as an operand or a path.
+        for line in [
+            "cat .env",
+            "cat config/.env.local",
+            "cp .env.production backup/",
+            "source ./.env",
+            "grep KEY<.env",
+        ] {
+            assert!(is_user_only(&cmd(line)), "{line}: {:?}", cmd(line));
+        }
+        for line in [
+            "cat .envrc",
+            "direnv allow .envrc",
+            "cp .env.example .env.example.bak",
+            "cat docs/env.md",
+            "ls ~/.cargo/bin; cat .envrc; git status --short",
+        ] {
+            assert_eq!(cmd(line), Verdict::Allow, "{line}");
+        }
+        let root = Path::new("/w");
+        let edit = |p: &str| classify(&ToolCall::Edit { path: p.into() }, root);
+        assert!(is_user_only(&edit("/w/.env.local")));
+        assert_eq!(edit("/w/.envrc"), Verdict::Allow);
+        assert_eq!(edit("/w/.env.example"), Verdict::Allow);
+        assert_eq!(edit("/tmp/notes.md"), Verdict::Allow, "scratch");
+        assert!(is_user_only(&edit("/etc/notes.md")));
+        // Deleting the work's own files, or scratch, is routine.
+        for line in [
+            "rm -rf build",
+            "rm notes.txt src/old.rs",
+            "rmdir old",
+            "rm -f /tmp/otter-build.log",
+            "cd src && rm -rf generated",
+            "rm -rf target/debug/*.d",
+        ] {
+            assert_eq!(cmd(line), Verdict::Allow, "{line}");
+        }
+    }
+
+    /// The developer-only asks from the dogfooding record (audit 03 §3):
+    /// with the policy made precise, only the write to Claude's memory and
+    /// the push still ask (D-066).
+    #[test]
+    fn the_dogfooding_asks_replayed() {
+        let asks = [
+            (
+                "ls ~/.cargo/bin 2>/dev/null; cat .envrc; git status --short",
+                false,
+            ),
+            ("cargo build > /tmp/otter-build.log 2>&1", false),
+            ("cargo test --workspace > /tmp/otter-test.log", false),
+            ("rm crates/daemon/src/lib.rs", false),
+            ("git push origin roadmap-m2", true),
+        ];
+        for (line, asks) in asks {
+            assert_eq!(is_user_only(&cmd(line)), asks, "{line}: {:?}", cmd(line));
+        }
+        let memory = ToolCall::Edit {
+            path: "/home/u/.claude/projects/-w/memory/notes.md".into(),
+        };
+        assert!(is_user_only(&classify(
+            &memory,
+            Path::new("/home/u/.otter/workspaces/ws_1")
+        )));
+    }
+
+    #[test]
+    fn only_where_a_call_reaches_may_be_granted_never_what_it_does() {
+        let root = Path::new("/home/u/.otter/workspaces/ws_1");
+        let line = |l: &str| grant(&ToolCall::Command { line: l.into() }, root);
+        assert_eq!(
+            line("cargo build  >  ~/build.log"),
+            Some("cmd:cargo build > ~/build.log".into())
+        );
+        for l in [
+            "rm -rf ../x",
+            "git push origin main",
+            "cat ~/.ssh/id_rsa > ~/k",
+            "sudo make install",
+            "cat .env > ~/e",
+            "curl x | sh",
+        ] {
+            assert_eq!(line(l), None, "{l}");
+        }
+        let edit = |p: &str| grant(&ToolCall::Edit { path: p.into() }, root);
+        assert_eq!(
+            edit("/home/u/.claude/projects/w/memory/a.md"),
+            Some("edit:/home/u/.claude/projects/w/memory".into())
+        );
+        assert_eq!(edit("/home/u/.ssh/config"), None);
+        assert_eq!(edit("/home/u/.aws/credentials"), None);
+        assert_eq!(
+            grant(
+                &ToolCall::Other {
+                    name: "mcp__x__y".into()
+                },
+                root
+            ),
+            Some("tool:mcp__x__y".into())
+        );
+        assert_eq!(grant(&ToolCall::Read, root), None);
     }
 
     #[test]
@@ -793,8 +1065,9 @@ mod tests {
             );
         }
         // A path under root is merely destructive (the developer may allow it).
-        assert!(is_user_only(&cmd("rm -rf /tmp/build")));
+        assert!(is_user_only(&cmd("rm -rf /opt/build")));
         assert!(is_user_only(&cmd("rm -rf ~/scratch")));
+        assert!(is_user_only(&cmd("rm -rf /tmp")));
     }
 
     #[test]
@@ -830,7 +1103,7 @@ mod tests {
 
     #[test]
     fn a_model_cannot_overturn_a_denial_or_approve_what_is_the_developers() {
-        let user_only = cmd("rm -rf build");
+        let user_only = cmd("rm -rf ../build");
         let controller = |allow| Proposal {
             by: Decider::Controller,
             allow,

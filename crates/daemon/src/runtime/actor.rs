@@ -1070,7 +1070,7 @@ fn tool_summary(tool: &str, call: &ToolCall) -> String {
         ToolCall::Question { question, .. } => question.clone(),
         ToolCall::PlanApproval { .. } => "plan".into(),
         ToolCall::Delegate { description } => description.clone(),
-        ToolCall::Read | ToolCall::Other { .. } => tool.to_owned(),
+        ToolCall::Read | ToolCall::Outside { .. } | ToolCall::Other { .. } => tool.to_owned(),
     }
 }
 

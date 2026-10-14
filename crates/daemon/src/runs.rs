@@ -433,8 +433,9 @@ impl Daemon {
                 }
                 ActorEvent::Ask { interaction, ask } => {
                     let verdict = policy::classify(&ask.call, &root);
+                    let grant = policy::grant(&ask.call, &root);
                     let waiting = self
-                        .record_ask(&feature, &run, &interaction, &ask, &verdict)
+                        .record_ask(&feature, &run, &interaction, &ask, &verdict, grant)
                         .await;
                     if !waiting {
                         let reply = match verdict {
@@ -478,11 +479,18 @@ impl Daemon {
                                 &DecisionId::generate(),
                                 &ask,
                                 &verdict,
+                                None,
                             )
                             .await;
                             CheckDecision::Deny {
                                 reason: why.clone(),
                             }
+                        }
+                        // Allowed already in this feature (D-066): goes on.
+                        Verdict::Ask { .. }
+                            if self.granted(&feature, policy::grant(&call, &root)).await =>
+                        {
+                            CheckDecision::Allow
                         }
                         Verdict::Ask { .. } => CheckDecision::Ask,
                     };
@@ -587,6 +595,16 @@ impl Daemon {
     /// Record a permission request under the interaction's id. True when
     /// someone has to decide; false when policy decided (the request is
     /// recorded as decided, for the audit trail).
+    /// Whether the developer allowed `grant` earlier in this feature.
+    async fn granted(&self, feature: &FeatureId, grant: Option<String>) -> bool {
+        let Some(g) = grant else {
+            return false;
+        };
+        self.feature_get(feature.as_str())
+            .await
+            .is_ok_and(|f| f.grants.contains(&g))
+    }
+
     async fn record_ask(
         &self,
         feature: &FeatureId,
@@ -594,6 +612,7 @@ impl Daemon {
         interaction: &DecisionId,
         ask: &crate::runtime::DecisionAsk,
         verdict: &Verdict,
+        grant: Option<String>,
     ) -> bool {
         let now = Utc::now();
         let (kind, risk, user_only, why, status) = match verdict {
@@ -625,6 +644,17 @@ impl Daemon {
             ),
         };
         let did = interaction.clone();
+        // The developer allowed it earlier in this feature (D-066).
+        let (status, why) =
+            if status == DecisionStatus::Pending && self.granted(feature, grant.clone()).await {
+                (
+                    DecisionStatus::Approved,
+                    "you allowed this earlier in this feature".to_owned(),
+                )
+            } else {
+                (status, why)
+            };
+        let grant = grant.filter(|_| status == DecisionStatus::Pending);
         let options = match &ask.call {
             crate::runtime::ToolCall::Question { options, .. } => options.clone(),
             _ => vec![],
@@ -651,6 +681,7 @@ impl Daemon {
                 created_at: now,
                 decided_at: (status != DecisionStatus::Pending).then_some(now),
                 user_only,
+                grant: grant.clone(),
             });
             let mut changes = vec![
                 Change::new(FeatureEvent::DecisionRequested {
@@ -798,6 +829,7 @@ impl Daemon {
         }
         let did = decision_id.clone();
         let ans = answer.clone();
+        let why = rationale.clone();
         let applied = self
             .features
             .lock()
@@ -829,7 +861,8 @@ impl Daemon {
                 Ok(changes)
             })?;
         self.feature_changed(&applied);
-        self.forward_decision(feature_id, decision_id, allow, answer, None, by)
+        let reply = decision_reply(allow, answer, None, by, why);
+        self.forward_decision(feature_id, decision_id, reply, by)
             .await;
         Ok(applied.feature)
     }
@@ -925,21 +958,9 @@ impl Daemon {
         &self,
         feature_id: &FeatureId,
         decision_id: &DecisionId,
-        allow: bool,
-        answer: Option<String>,
-        answers: Option<std::collections::BTreeMap<String, String>>,
+        reply: DecisionReply,
         by: Decider,
     ) {
-        let reply = match (answers, answer, allow) {
-            (Some(answers), _, _) if !answers.is_empty() => DecisionReply::Answers { answers },
-            (_, answer, allow) => match (answer, allow) {
-                (Some(text), _) => DecisionReply::Answer { text },
-                (None, true) => DecisionReply::Allow,
-                (None, false) => DecisionReply::Deny {
-                    message: "The developer declined this.".into(),
-                },
-            },
-        };
         let senders: Vec<_> = self
             .runs
             .lock()
@@ -1174,6 +1195,33 @@ const INSTRUCTIONS: &str = "You are working on a feature, one task per turn, man
 Stay inside the working directory. Run the project's tests before you finish a task. \
 End each turn with a short summary of what you changed and how you checked it.";
 
+/// What a decision tells the agent: allowed, the answer, or who said no
+/// and why, when they said (D-066).
+pub(crate) fn decision_reply(
+    allow: bool,
+    answer: Option<String>,
+    answers: Option<std::collections::BTreeMap<String, String>>,
+    by: Decider,
+    why: Option<String>,
+) -> DecisionReply {
+    let because = why
+        .filter(|w| !w.trim().is_empty())
+        .map(|w| format!(": {}", w.trim()))
+        .unwrap_or_else(|| ".".into());
+    match (answers, answer, allow) {
+        (Some(answers), _, _) if !answers.is_empty() => DecisionReply::Answers { answers },
+        (_, Some(text), _) => DecisionReply::Answer { text },
+        (_, None, true) => DecisionReply::Allow,
+        (_, None, false) => DecisionReply::Deny {
+            message: match by {
+                Decider::User => format!("The developer declined this{because}"),
+                Decider::Controller => format!("Otter declined this{because}"),
+                Decider::Policy => format!("Otter's policy doesn't allow this{because}"),
+            },
+        },
+    }
+}
+
 /// One line for a tool the agent used.
 fn activity_line(tool: &str, call: &crate::runtime::ToolCall) -> String {
     use crate::runtime::ToolCall;
@@ -1184,7 +1232,7 @@ fn activity_line(tool: &str, call: &crate::runtime::ToolCall) -> String {
         ToolCall::Question { question, .. } => format!("? {question}"),
         ToolCall::PlanApproval { .. } => "plan proposed".into(),
         ToolCall::Delegate { description } => format!("subagent: {description}"),
-        ToolCall::Read | ToolCall::Other { .. } => tool.to_owned(),
+        ToolCall::Read | ToolCall::Outside { .. } | ToolCall::Other { .. } => tool.to_owned(),
     };
     crate::agents::excerpt(&line, 200)
 }
@@ -1226,6 +1274,35 @@ impl Draft {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_denial_says_who_said_no() {
+        let deny = |by, why: Option<&str>| match decision_reply(
+            false,
+            None,
+            None,
+            by,
+            why.map(String::from),
+        ) {
+            DecisionReply::Deny { message } => message,
+            other => panic!("{other:?}"),
+        };
+        assert_eq!(deny(Decider::User, None), "The developer declined this.");
+        assert_eq!(
+            deny(Decider::Controller, Some("not needed for the feature")),
+            "Otter declined this: not needed for the feature"
+        );
+        assert_eq!(
+            deny(Decider::Policy, Some(" ")),
+            "Otter's policy doesn't allow this."
+        );
+        assert_eq!(
+            decision_reply(true, Some("blue".into()), None, Decider::User, None),
+            DecisionReply::Answer {
+                text: "blue".into()
+            }
+        );
+    }
 
     #[test]
     fn a_run_finished_by_the_journal_is_one_whose_last_turn_completed() {
