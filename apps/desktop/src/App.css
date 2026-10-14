@@ -621,3 +621,4 @@ fieldset.field.coding legend { font-size: 13px; font-weight: 600; padding: 0 4px
 .problems { display: flex; flex-direction: column; gap: 8px; }
 .problem { padding: 8px 10px; border-radius: 8px; border: 1px solid var(--needs-border); background: var(--needs-bg); }
 .problem-what { font-weight: 600; }
+.inbox-group-actions { display: flex; gap: 8px; align-items: center; padding: 0 10px 6px; }

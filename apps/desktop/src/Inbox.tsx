@@ -43,6 +43,7 @@ export function Inbox({ source, workspaces, now, onOpenFeature, onOpenWorkspace 
                 <span>{g.label}</span>
                 <span className="count">{g.items.length}</span>
               </h2>
+              {g.id === "working" && g.items.some((i) => i.feature) && <PauseAll source={source} items={g.items} />}
               <ul className="plain-list inbox-items">
                 {g.items.map((item) => (
                   <InboxRow
@@ -59,6 +60,35 @@ export function Inbox({ source, workspaces, now, onOpenFeature, onOpenWorkspace 
         )}
       </div>
     </main>
+  );
+}
+
+/** Hold every feature at work at once (D-081): one control for all the agents. */
+function PauseAll({ source, items }: { source: FeatureSource; items: InboxItem[] }) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const pause = async () => {
+    setBusy(true);
+    setError(null);
+    const failed: string[] = [];
+    for (const i of items) {
+      if (!i.feature) continue;
+      await source.act(i.feature.key, { action: "pause" }).catch((e) => failed.push(`${i.title}: ${String(e)}`));
+    }
+    if (failed.length > 0) setError(failed.join("; "));
+    setBusy(false);
+  };
+  return (
+    <div className="inbox-group-actions">
+      <button className="btn outline small-btn" disabled={busy} onClick={() => void pause()} title="Hold every feature at work: what runs is interrupted, nothing new starts">
+        Pause all features
+      </button>
+      {error && (
+        <span className="error-text small" role="alert">
+          {error}
+        </span>
+      )}
+    </div>
   );
 }
 

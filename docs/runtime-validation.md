@@ -81,6 +81,12 @@ agent) cover the mechanics. Re-run with the audit's harness:
 |---|---|---|---|
 | M4-1 | Real failures diagnosed without a terminal and without a secret: Claude Code signed out (auth), a rate limit, a crashing agent, a direnv error printing a token from `.envrc`, a task failing with a reason; `otter doctor` on a host missing tmux | Pending | Offline: `credentials_in_failures_stay_out_of_what_otter_keeps`, `a_failed_process_says_why_without_its_terminal`, `a_host_says_whats_wrong_with_it`, `doctor_says_whats_wrong_and_what_to_do`, the `redact` unit tests (D-075…D-077). |
 
+## Parallel agents (plan M5)
+
+| # | Scenario | Status | Evidence |
+|---|---|---|---|
+| M5-1 | Three features on one real repository with live Claude: two in parallel worktrees, one waiting for the busy workspace and going on by itself; all paused at once and resumed; each PR with only its own work | Pending | Offline: `a_second_feature_waits_for_the_workspace`, `a_waiting_feature_gets_a_worktree_of_its_own`, `pause --all` in the CLI e2e, `Inbox.test.tsx` (D-079…D-081). |
+
 ## Known limits
 
 - A daemon stop ends the managed run. The next run resumes the native

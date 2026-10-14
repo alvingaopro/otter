@@ -243,6 +243,7 @@ export type FeatureAction =
   | { action: "accept"; override_gates?: boolean }
   | { action: "request_changes"; note?: string }
   | { action: "set_workspace"; workspace: string }
+  | { action: "own_workspace" }
   | { action: "preview" }
   | { action: "interrupt" }
   | { action: "redirect"; text: string };

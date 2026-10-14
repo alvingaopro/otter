@@ -495,6 +495,18 @@ fn features_and_the_coding_runtime_from_the_terminal() {
         cli.ok(&["feature", "start", "export"])
             .contains(": planning")
     );
+    // Everything at work, held and let go at once (D-081).
+    let out = cli.ok(&["feature", "pause", "--all"]);
+    assert!(
+        out.contains("here:Export: timeline as CSV: paused"),
+        "{out}"
+    );
+    assert!(
+        cli.ok(&["feature", "pause", "--all"])
+            .contains("nothing is at work")
+    );
+    let out = cli.ok(&["feature", "resume", "--all", "--host", "here"]);
+    assert!(out.contains(": planning"), "{out}");
     assert!(cli.ok(&["feature", "pause", "export"]).contains(": paused"));
     assert!(
         cli.ok(&["feature", "cancel", "export"])

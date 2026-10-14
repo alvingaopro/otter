@@ -63,12 +63,33 @@ pub enum FeatureCommand {
     },
     /// Let the current work finish, then hold.
     Pause {
-        feature: String,
+        /// The feature; or `--all`.
+        #[arg(required_unless_present = "all")]
+        feature: Option<String>,
+        /// Every feature at work, on every host (or `--host`'s): what's
+        /// running is held at once (D-081).
+        #[arg(long, conflicts_with = "feature")]
+        all: bool,
+        #[arg(long, requires = "all")]
+        host: Option<String>,
     },
     Resume {
-        feature: String,
+        /// The feature; or `--all`.
+        #[arg(required_unless_present = "all")]
+        feature: Option<String>,
+        /// Every paused feature, on every host (or `--host`'s).
+        #[arg(long, conflicts_with = "feature")]
+        all: bool,
+        #[arg(long, requires = "all")]
+        host: Option<String>,
     },
     Cancel {
+        feature: String,
+    },
+    /// Give a feature a workspace of its own — a worktree of its Git
+    /// workspace's repository, on a branch for it — when another feature's
+    /// agent is working in the one it has.
+    OwnWorkspace {
         feature: String,
     },
     /// What happened to a feature, oldest first: its history, a line each.
@@ -425,7 +446,14 @@ pub async fn feature_command(config: &Config, cmd: FeatureCommand, json: bool) -
             })
             .await
         }
-        FeatureCommand::Pause { feature } => {
+        FeatureCommand::Pause {
+            all: true, host, ..
+        } => every(config, host.as_deref(), FeatureAction::Pause, json).await,
+        FeatureCommand::Resume {
+            all: true, host, ..
+        } => every(config, host.as_deref(), FeatureAction::Resume, json).await,
+        FeatureCommand::Pause { feature, .. } => {
+            let feature = feature.expect("clap requires it");
             act(config, &feature, FeatureAction::Pause, json, |f| {
                 format!(
                     "{}: {} — what's running finishes, nothing new starts",
@@ -435,7 +463,8 @@ pub async fn feature_command(config: &Config, cmd: FeatureCommand, json: bool) -
             })
             .await
         }
-        FeatureCommand::Resume { feature } => {
+        FeatureCommand::Resume { feature, .. } => {
+            let feature = feature.expect("clap requires it");
             act(config, &feature, FeatureAction::Resume, json, |f| {
                 format!("{}: {}", f.title, word(&f.status))
             })
@@ -444,6 +473,19 @@ pub async fn feature_command(config: &Config, cmd: FeatureCommand, json: bool) -
         FeatureCommand::Cancel { feature } => {
             act(config, &feature, FeatureAction::Cancel, json, |f| {
                 format!("{}: {}", f.title, word(&f.status))
+            })
+            .await
+        }
+        FeatureCommand::OwnWorkspace { feature } => {
+            act(config, &feature, FeatureAction::OwnWorkspace, json, |f| {
+                format!(
+                    "{}: a workspace of its own ({}), being prepared",
+                    f.title,
+                    f.workspace_id
+                        .as_ref()
+                        .map(|w| w.to_string())
+                        .unwrap_or_default()
+                )
             })
             .await
         }
@@ -542,6 +584,71 @@ async fn act(
 ) -> Result<()> {
     let found = find_feature(config, feature).await?;
     act_found(found, action, json, say).await
+}
+
+/// Pause every feature at work, or resume every paused one, on every host
+/// (or one): one control for all the agents at once (D-081).
+async fn every(
+    config: &Config,
+    host: Option<&str>,
+    action: FeatureAction,
+    json: bool,
+) -> Result<()> {
+    use otter_core::feature::FeatureStatus;
+    let pausing = action == FeatureAction::Pause;
+    let (found, failures) = all_features(config, host).await?;
+    let mut done = Vec::new();
+    let mut errors = Vec::new();
+    for (host, mut conn, list) in found {
+        for f in list {
+            let wanted = if pausing {
+                f.status.is_active() || f.status == FeatureStatus::Blocked
+            } else {
+                f.status == FeatureStatus::Paused
+            };
+            if !wanted {
+                continue;
+            }
+            match conn
+                .feature_act(&command_id(), f.id.as_str(), action.clone())
+                .await
+            {
+                Ok(after) => done.push((host.name.clone(), after)),
+                Err(e) => errors.push(format!("{}:{}: {e}", host.name, f.title)),
+            }
+        }
+    }
+    if json {
+        let v: Vec<_> = done
+            .iter()
+            .map(|(h, f)| serde_json::json!({"host": h, "feature": f.id, "status": f.status}))
+            .collect();
+        output::print_json(&v)?;
+    } else if done.is_empty() {
+        println!(
+            "{}",
+            if pausing {
+                "nothing is at work"
+            } else {
+                "nothing is paused"
+            }
+        );
+    } else {
+        for (h, f) in &done {
+            println!("{h}:{}: {}", f.title, word(&f.status));
+        }
+    }
+    for e in failures.iter().chain(&errors) {
+        eprintln!("otter: {e}");
+    }
+    if !errors.is_empty() {
+        bail!(
+            "{} feature(s) couldn't be {}",
+            errors.len(),
+            if pausing { "paused" } else { "resumed" }
+        );
+    }
+    Ok(())
 }
 
 async fn act_found(
