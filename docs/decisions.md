@@ -2726,3 +2726,46 @@ messages and these docs keep "feature".
   its top edge is a handle: drag it, or ↑/↓ on it, between 56 px and 60%
   of the window; a double-click goes back to the default. Its height is
   remembered on this Mac.
+
+## D-089 — Otter answers with tools; authority is the developer's message (2026-10-14)
+
+Plan: [`docs/plans/brain-runtime-v2.md`](plans/brain-runtime-v2.md).
+Dogfooding: asked how a repository's backport tag works (D-084), Otter
+could only route the message — one model call that sorts it into one of
+seven intents (`INTENT:`), with the feature's brief, status and last twelve
+messages, and no way to look at a run's events, its decisions or its
+evidence. D-084 left questions in the middle of a feature "answered by the
+brain, which can't see the code", and D-049 began with "what are you doing"
+getting no answer. The transcripts the plan's M0 asks for are still to be
+recorded; this decision rests on those two.
+
+- **Otter's reply becomes a bounded, tool-using turn**, where `converse`
+  runs now: inside the feature's step, with a hard deadline, and exactly
+  one reply per developer message — on a failure too, or the step would
+  answer again on every wake. Its tools call the controller's in-process
+  functions (`apply_action`, `replan`, `tell_runs`, `redirect_runs`,
+  `hold_runs`, `decide`), never a request; a gateway in otterd validates
+  them, keeps them to the host and redacts what they return (D-075).
+- **Authority is the developer's message.** What Otter does on the
+  developer's word — forward, redirect, start, resume, approve the plan,
+  accept, retry, revise, create — exists only in a turn their message
+  started, and carries its id: today's trust (D-050's "ship it", D-084's
+  "going on approves"), made explicit, not widened. The plan approval stays
+  the one developer-only decision a message can settle. A turn an event
+  started only looks and pauses; unattended work stays with triggers
+  (D-083).
+- **The developer's words reach the agent as written.** Forwarding takes
+  message ids, never text Otter wrote; nothing of Otter's goes through
+  `feature.send` or a `request_changes` note, which would read as theirs.
+- **Code questions are the coding agent's**, as a read-only turn that
+  policy enforces — edits and commands denied, not asked nicely — on the
+  SDK runtime only (its hook sees every tool call); elsewhere Otter says it
+  can't, rather than ask unenforced.
+- **The Claude worker first.** Every other brain — API providers, `claude
+  -p` without the worker, `rules` — keeps today's behaviour until it has
+  tool calling; `otter doctor` says which a host has. It's "Otter" in the
+  app (D-053), "brain" in the code.
+- Not changed: D-088 (no internal rename, `feature.*` stays), host scope,
+  the controller's authority, the stores. Not built: a scheduler, a new
+  store, several tasks run to compare, anything across hosts, a model
+  cancel or delete.
