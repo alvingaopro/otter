@@ -32,7 +32,7 @@ describe("feature contract helpers", () => {
     // Planning, implementing and verifying are all just "Working" (D-050).
     expect([STATUS_LABEL.planning, STATUS_LABEL.implementing, STATUS_LABEL.verifying]).toEqual(["Working", "Working", "Working"]);
     expect(STATUS_LABEL.review).toBe("Ready to check");
-    expect(statusDetail(active)).toBe("task 2 of 2: Wire Export button into Timeline panel");
+    expect(statusDetail(active)).toBe("step 2 of 2: Wire Export button into Timeline panel");
     expect(statusDetail(blocked)).toContain("Waiting for your approval");
     expect(statusDetail(draft)).toBeUndefined();
     expect(failed.status).toBe("failed");
@@ -94,8 +94,8 @@ describe("Features view", () => {
     // Start from nothing.
     const s: FeatureSource = { ...empty, list: () => [], subscribe: () => () => {} };
     await render(s);
-    expect(host.textContent).toContain("Describe a feature");
-    expect(byText("button", "New feature")).toBeTruthy();
+    expect(host.textContent).toContain("Describe a task");
+    expect(byText("button", "New task")).toBeTruthy();
   });
 
   it("lists features with what needs you first and says it is a preview", async () => {
@@ -130,7 +130,7 @@ describe("Features view", () => {
 
   it("creates a draft, converses and starts it", async () => {
     await render(mockSource("mac"));
-    await act(async () => q('[aria-label="New feature"]')!.click());
+    await act(async () => q('[aria-label="New task"]')!.click());
     const dialog = document.querySelector('[role="dialog"]')!;
     type(dialog.querySelector("input")!, "CSV export");
     type(dialog.querySelector("textarea")!, "Export timelines as CSV");
@@ -183,7 +183,7 @@ describe("Features view", () => {
 
   it("creates a feature in a chosen workspace", async () => {
     await render(mockSource("mac"));
-    await act(async () => q('[aria-label="New feature"]')!.click());
+    await act(async () => q('[aria-label="New task"]')!.click());
     const dialog = document.querySelector('[role="dialog"]')!;
     type(dialog.querySelector("input")!, "In a workspace");
     const selects = dialog.querySelectorAll("select");
@@ -260,7 +260,7 @@ describe("Features view", () => {
     await render(mockSource("mac"));
     await act(async () => byText(".filter-chip", "Active")!.click());
     await act(async () => byText('[role="listitem"]', "Export workspace timeline")!.click());
-    await act(async () => byText('[role="tab"]', "Tasks")!.click());
+    await act(async () => byText('[role="tab"]', "Steps")!.click());
     await act(async () => byText("button", "Open session")!.click());
     expect(onOpenWorkspace).toHaveBeenCalledWith("mac", "ws_demo", "ses_demo");
   });

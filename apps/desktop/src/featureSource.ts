@@ -231,7 +231,7 @@ export function mockSource(host = "preview", now = Date.now()): FeatureSource {
   };
 
   for (const p of list) {
-    log(p.key, "FeatureCreated", "Feature created");
+    log(p.key, "FeatureCreated", "Task created");
     if (p.feature.status !== "draft") log(p.key, "StatusChanged", `Status: ${p.feature.status}`);
   }
 
@@ -255,7 +255,7 @@ export function mockSource(host = "preview", now = Date.now()): FeatureSource {
       };
       const placed = { host: h, feature, key: `${h}/${feature.id}` };
       list = [placed, ...list];
-      log(placed.key, "FeatureCreated", "Feature created");
+      log(placed.key, "FeatureCreated", "Task created");
       listeners.forEach((l) => l(list));
       return placed;
     },

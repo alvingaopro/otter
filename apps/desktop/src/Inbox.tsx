@@ -35,7 +35,7 @@ export function Inbox({ source, workspaces, now, onOpenFeature, onOpenWorkspace 
       <div className="inbox-body">
         <h1 className="inbox-title">Inbox</h1>
         {groups.length === 0 ? (
-          <p className="muted">Nothing is going on. Start a feature, or a workspace, and it shows up here.</p>
+          <p className="muted">Nothing is going on. Start a task, or a workspace, and it shows up here.</p>
         ) : (
           groups.map((g) => (
             <section key={g.id} className="group inbox-group" aria-label={g.label}>
@@ -80,7 +80,7 @@ function PauseAll({ source, items }: { source: FeatureSource; items: InboxItem[]
   };
   return (
     <div className="inbox-group-actions">
-      <button className="btn outline small-btn" disabled={busy} onClick={() => void pause()} title="Hold every feature at work: what runs is interrupted, nothing new starts">
+      <button className="btn outline small-btn" disabled={busy} onClick={() => void pause()} title="Hold every task at work: what runs is interrupted, nothing new starts">
         Pause all features
       </button>
       {error && (
@@ -116,7 +116,7 @@ function InboxRow({ item, source, now, onOpen }: { item: InboxItem; source: Feat
           <Glyph kind={glyph} />
         </span>
         <span className="inbox-name">{item.title}</span>
-        <span className="tag">{item.feature ? "Feature" : "Workspace"}</span>
+        <span className="tag">{item.feature ? "Task" : "Workspace"}</span>
         <span className="ws-host">{item.host}</span>
         <span className="spacer" />
         <span className="ws-age" title={item.since}>

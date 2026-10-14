@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { Dialog } from "./Dialog";
 import { Glyph } from "./Glyph";
+import { ComposerGrip, useComposerHeight } from "./composerResize";
 import { Markdown } from "./Markdown";
 import { ago } from "./model";
 import otterIcon from "./assets/otter.png";
@@ -63,17 +64,17 @@ export function FeaturesView({ source, hosts, workspaces, now, focus, onOpenWork
 
   return (
     <>
-      <nav className="sidebar" aria-label="Features">
+      <nav className="sidebar" aria-label="Tasks">
         <div className="sidebar-top" data-tauri-drag-region>
-          <span className="brand-name">Features</span>
+          <span className="brand-name">Tasks</span>
           <span className="spacer" />
-          <button className="icon-btn" aria-label="New feature" title="New feature" onClick={() => setCreating(true)}>
+          <button className="icon-btn" aria-label="New task" title="New task" onClick={() => setCreating(true)}>
             <svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true">
               <path d="M7 2v10M2 7h10" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
             </svg>
           </button>
         </div>
-        <div className="feature-filters" role="group" aria-label="Filter features">
+        <div className="feature-filters" role="group" aria-label="Filter tasks">
           {FILTERS.map((f) => {
             const count = sorted.filter((p) => matches(p.feature, f.id)).length;
             return (
@@ -91,7 +92,7 @@ export function FeaturesView({ source, hosts, workspaces, now, focus, onOpenWork
         </div>
         <div className="sidebar-groups">
           {shown.length === 0 ? (
-            <p className="muted small feature-none">{list.length === 0 ? "No features yet." : "Nothing matches this filter."}</p>
+            <p className="muted small feature-none">{list.length === 0 ? "No tasks yet." : "Nothing matches this filter."}</p>
           ) : (
             <div className="group" role="list">
               {shown.map((p) => (
@@ -134,11 +135,11 @@ export function FeaturesView({ source, hosts, workspaces, now, focus, onOpenWork
       ) : (
         <main className="pane empty">
           <div className="drag-strip" data-tauri-drag-region />
-          <h1 className="empty-title">Describe a feature</h1>
-          <p className="muted">Say what you want built. Otter plans it, directs a coding agent in a workspace and verifies the result.</p>
+          <h1 className="empty-title">Describe a task</h1>
+          <p className="muted">Say what you want: a feature, a fix or an answer. Otter plans it, directs a coding agent in a workspace and verifies the result.</p>
           <div className="empty-actions">
             <button className="btn primary" onClick={() => setCreating(true)}>
-              New feature
+              New task
             </button>
           </div>
         </main>
@@ -165,7 +166,7 @@ function rowSummary(f: Feature): string {
   if (pending > 0) return `${pending} decision${pending > 1 ? "s" : ""} waiting`;
   if (f.status_reason) return f.status_reason;
   const done = f.tasks.filter((t) => t.status === "done").length;
-  if (f.tasks.length > 0) return `${STATUS_LABEL[f.status]} · ${done}/${f.tasks.length} tasks`;
+  if (f.tasks.length > 0) return `${STATUS_LABEL[f.status]} · ${done}/${f.tasks.length} steps`;
   return STATUS_LABEL[f.status];
 }
 
@@ -226,7 +227,7 @@ function FeaturePane({
   const tabs: { id: Tab; label: string; count?: number }[] = [
     { id: "plan", label: "Plan" },
     { id: "work", label: "Work" },
-    { id: "tasks", label: "Tasks", count: f.tasks.length },
+    { id: "tasks", label: "Steps", count: f.tasks.length },
     { id: "approvals", label: "Approvals", count: pending.length },
     { id: "evidence", label: "Evidence", count: f.evidence.length },
     { id: "delivery", label: "Delivery" },
@@ -269,7 +270,7 @@ function FeaturePane({
         )}
         <FeatureActions f={f} act={act} caps={caps} />
         {deletable(f) && (
-          <button className="btn outline" title="Delete this feature" onClick={() => setDeleting(true)}>
+          <button className="btn outline" title="Delete this task" onClick={() => setDeleting(true)}>
             Delete
           </button>
         )}
@@ -290,7 +291,7 @@ function FeaturePane({
       <StatusBanner f={f} onApprovals={() => setTab("approvals")} act={act} />
       {!f.workspace_id && !["done", "cancelled"].includes(f.status) && (
         <div className="banner info" role="group" aria-label="Workspace">
-          <span className="banner-text">Choose the workspace this feature's work happens in.</span>
+          <span className="banner-text">Choose the workspace this task's work happens in.</span>
           <span className="banner-actions">
             <select
               aria-label="Workspace"
@@ -313,7 +314,7 @@ function FeaturePane({
       <div className="feature-body">
         <Conversation placed={placed} source={source} now={now} caps={caps} onError={setError} />
         <section className="feature-detail" aria-label="Details">
-          <div className="detail-tabs" role="tablist" aria-label="Feature details">
+          <div className="detail-tabs" role="tablist" aria-label="Task details">
             {tabs.map((t) => (
               <button
                 key={t.id}
@@ -366,7 +367,7 @@ function DeleteFeatureDialog({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   return (
-    <Dialog title="Delete feature" onClose={onClose}>
+    <Dialog title="Delete task" onClose={onClose}>
       <p>
         Delete <strong>{placed.feature.title}</strong> from {placed.host}? Its conversation, plan, history and
         screenshots are removed for good.
@@ -492,7 +493,7 @@ function StatusBanner({ f, onApprovals, act }: { f: Feature; onApprovals: () => 
       <div className="banner failure" role="status">
         <span className="banner-text">
           <Glyph kind="failed" />
-          <span className="banner-summary">{f.status_reason ?? "The feature failed"}</span>
+          <span className="banner-summary">{f.status_reason ?? "The task failed"}</span>
         </span>
         <span className="banner-actions">
           <button className="btn" onClick={() => act({ action: "retry" })}>
@@ -522,7 +523,7 @@ function StatusBanner({ f, onApprovals, act }: { f: Feature; onApprovals: () => 
         </span>
         {f.status_reason.endsWith("is working there") && f.runs.length === 0 && (
           <span className="banner-actions">
-            <button className="btn" title="A worktree of the same repository, on a branch for this feature" onClick={() => act({ action: "own_workspace" })}>
+            <button className="btn" title="A worktree of the same repository, on a branch for this task" onClick={() => act({ action: "own_workspace" })}>
               Work in its own workspace
             </button>
           </span>
@@ -575,6 +576,7 @@ function Conversation({
 }) {
   const [text, setText] = useState("");
   const [busy, setBusy] = useState(false);
+  const [inputHeight, setInputHeight] = useComposerHeight();
   const end = useRef<HTMLDivElement>(null);
   const messages = placed.feature.messages;
   const live = placed.feature.runs.find((r) => ["starting", "running", "waiting"].includes(r.state));
@@ -650,15 +652,16 @@ function Conversation({
         <div ref={end} />
       </div>
       <form className="composer" onSubmit={submit}>
+        <ComposerGrip height={inputHeight} onResize={setInputHeight} />
         <textarea
           aria-label="Message to Otter"
+          style={{ height: inputHeight }}
           placeholder={
             placed.feature.status === "review" || placed.feature.status === "done"
               ? "Happy with it? Or say what to change…"
               : "Tell Otter what you want…"
           }
           value={text}
-          rows={2}
           onChange={(e) => setText(e.target.value)}
           onKeyDown={(e) => {
             if (e.key === "Enter" && !e.shiftKey) {
@@ -759,7 +762,7 @@ const TASK_GLYPH = { pending: "idle", running: "working", blocked: "needs", done
 
 function Tasks({ placed, onOpenWorkspace }: { placed: PlacedFeature; onOpenWorkspace: Props["onOpenWorkspace"] }) {
   const f = placed.feature;
-  if (f.tasks.length === 0) return <p className="muted small">No tasks yet: the plan comes first.</p>;
+  if (f.tasks.length === 0) return <p className="muted small">No steps yet: the plan comes first.</p>;
   return (
     <ul className="plain-list tasks">
       {f.tasks.map((t) => (
@@ -1048,14 +1051,14 @@ function NewFeatureDialog({
   }
 
   return (
-    <Dialog title="New feature" onClose={onClose}>
+    <Dialog title="New task" onClose={onClose}>
       <form className="form" onSubmit={submit}>
         <label className="field">
           <span>Title</span>
           <input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Export the timeline as CSV" />
         </label>
         <label className="field">
-          <span>What should it do?</span>
+          <span>What do you want?</span>
           <textarea rows={5} value={request} onChange={(e) => setRequest(e.target.value)} placeholder="Describe the outcome, constraints and how you'd check it." />
         </label>
         {hosts.length > 1 && (

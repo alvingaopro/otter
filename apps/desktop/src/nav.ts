@@ -14,7 +14,7 @@ export interface ViewEntry {
 /** Top to bottom: the Inbox is the primary entry (design §26, D-072). */
 export const VIEWS: ViewEntry[] = [
   { id: "inbox", label: "Inbox", digit: "1" },
-  { id: "features", label: "Features", digit: "2" },
+  { id: "features", label: "Tasks", digit: "2" },
   { id: "workspaces", label: "Workspaces", digit: "3" },
 ];
 
