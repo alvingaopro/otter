@@ -75,16 +75,27 @@ pub struct ConversationView {
     /// read, D-058); what was recorded is still here.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub read_only: Option<String>,
+    /// What its turns' errors mean and what to do, by category (D-076):
+    /// `otter-core`'s words, so every client says the same.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub errors: std::collections::BTreeMap<String, otter_core::conversation::Explanation>,
 }
 
 impl ConversationView {
     pub fn of(c: &Conversation) -> ConversationView {
         let mut conversation = c.clone();
         let resumable = conversation.binding.take().is_some();
+        let errors = conversation
+            .turns
+            .iter()
+            .filter_map(|t| t.error)
+            .map(|e| (e.as_str().to_owned(), e.explain()))
+            .collect();
         ConversationView {
             conversation,
             resumable,
             read_only: None,
+            errors,
         }
     }
 }

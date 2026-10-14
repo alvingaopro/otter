@@ -2350,3 +2350,57 @@ and errors in its conversation's journal.
   unclonable repository URL, then searches every answer and every file
   Otter keeps.
 
+## D-076 — Failures say why and what next (2026-10-14)
+
+M4 step 2 (`docs/plans/m4-observability.md`, gaps 2, 3, 4 and 6). Why a
+process ended was only in its tmux pane — released on restart, gone for a
+lost execution; a coding agent's error was a bare category in the CLI; a
+failed workspace's reason was missing from the app; a feature's history
+had no CLI.
+
+- **A process's last lines are kept with it.** When reconciliation finds a
+  session's process dead, it reads the pane's last lines while tmux still
+  holds them and keeps them on the execution (`Execution.tail`: twenty
+  non-empty lines at most, 2,000 characters, redacted). The failure's
+  attention line ends with the last of them ("deploy failed (status 3):
+  error: config/prod.toml not found"); `otter ws show` prints them for a
+  session that didn't exit cleanly, the app under the failure banner. They
+  stay after otterd restarts. A program `internal-exec` couldn't start
+  says so there too ("executing …: No such file or directory"). A process
+  seen dead is taken as ended 300 ms later (the next pass): tmux can mark
+  a pane dead before it has drawn the last lines — the ones that say why
+  (CI caught it keeping the line before the error).
+- **Every error category explains itself**, in `otter-core`
+  (`ErrorCategory::explain`: what happened and what to do — sign in, wait
+  for the rate limit, `otter host install`, …). Conversation views carry
+  the explanations for the errors their turns hit (`errors`, by category),
+  so the CLI and the app say the same; the app shows the next step under
+  the turn.
+- **A failed workspace shows its reason** in the app, above its sessions.
+- **`otter feature history <feature>`** prints a feature's history (`-n`
+  for the last lines, `--json`); `otter feature show` gives a failed
+  task's last error.
+
+## D-077 — `otter doctor`: what's wrong with a host (2026-10-14)
+
+M4 step 3 (`docs/plans/m4-observability.md`, gap 5). What went wrong with
+a host as otterd started — settings it couldn't read, conversations it
+couldn't load, a login environment it couldn't capture, tmux missing — and
+since — reconciliation failing — was a warning in otterd's log, which
+nothing showed and nothing rotated; runtime readiness was a separate
+command; the app's host page showed neither.
+
+- **A host says what's wrong with it:** `HostStatus.problems`, each a line
+  on what's wrong and one on what to do. otterd notes what it meets
+  (settings, conversations, a failing reconciliation — cleared when it
+  passes again) and adds what it sees now: tmux or Git missing, a login
+  environment that fell back to otterd's own, a coding runtime that isn't
+  ready (with its own notes on why), conversations that can't be written
+  any more. `HostStatus.log` says where otterd's log is.
+- **`otter doctor [host]`** prints each host's problems with what to do,
+  counts a host it can't reach as a problem (with how to check it), and
+  exits 1 when there's any (`--json` too). The app's host page lists them
+  under Problems.
+- **otterd's log rotates:** over 10 MiB, it's set aside (`workd.log.1`)
+  as otterd starts.
+

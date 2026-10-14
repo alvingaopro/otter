@@ -266,6 +266,7 @@ impl Daemon {
                     exit_code: None,
                     started_at: Utc::now(),
                     ended_at: None,
+                    tail: None,
                 });
                 trim_history(session);
                 save(store)?;

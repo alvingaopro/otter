@@ -425,12 +425,46 @@ pub struct Execution {
     pub started_at: Timestamp,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ended_at: Option<Timestamp>,
+    /// The last lines it printed, kept when it ended (bounded, without
+    /// credentials, D-076): why it failed, without its terminal.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tail: Option<String>,
 }
 
 impl Execution {
     pub fn is_running(&self) -> bool {
         self.state == ExecutionState::Running
     }
+
+    /// The last line it printed, if it kept any.
+    pub fn last_line(&self) -> Option<&str> {
+        self.tail.as_deref()?.lines().next_back()
+    }
+}
+
+/// Lines of a screen kept as an execution's tail.
+pub const TAIL_LINES: usize = 20;
+const TAIL_CHARS: usize = 2000;
+
+/// What a screen ended with, as kept (D-076): its last non-empty lines,
+/// bounded, without credentials (`redact`). `None`: nothing was printed.
+pub fn tail_of(screen: &str) -> Option<String> {
+    let lines: Vec<&str> = screen
+        .lines()
+        .map(str::trim_end)
+        .filter(|l| !l.trim().is_empty())
+        .collect();
+    let kept = &lines[lines.len().saturating_sub(TAIL_LINES)..];
+    if kept.is_empty() {
+        return None;
+    }
+    let text = crate::redact::redact(&kept.join("\n"));
+    let chars: Vec<char> = text.chars().collect();
+    Some(
+        chars[chars.len().saturating_sub(TAIL_CHARS)..]
+            .iter()
+            .collect(),
+    )
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -651,6 +685,20 @@ pub struct HostStatus {
     /// Agent providers this otterd supports, and whether the host can run them.
     #[serde(default)]
     pub agents: Vec<AgentCapability>,
+    /// What's wrong with this host, each with what to do (D-077): what otterd
+    /// met since it started, and what it sees now. Empty: nothing.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub problems: Vec<Problem>,
+    /// otterd's own log, for what the problems don't say.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub log: Option<String>,
+}
+
+/// Something wrong with a host, and what to do about it (D-077).
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct Problem {
+    pub what: String,
+    pub next: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -689,6 +737,7 @@ mod tests {
             exit_code: code,
             started_at: Utc::now(),
             ended_at: None,
+            tail: None,
         }
     }
 
@@ -765,5 +814,24 @@ mod tests {
         assert_eq!(b.goal.as_deref(), Some("fix it"));
         assert_eq!(b.decisions, vec!["keep v1".to_owned()]);
         assert!(Brief::default().normalized().is_empty());
+    }
+
+    #[test]
+    fn a_tail_keeps_the_last_lines_without_credentials() {
+        let screen = format!(
+            "{}\nusing TOKEN=abc123\nerror: no config\n\n   \n",
+            (1..40)
+                .map(|i| format!("line {i}"))
+                .collect::<Vec<_>>()
+                .join("\n")
+        );
+        let t = tail_of(&screen).unwrap();
+        assert_eq!(t.lines().count(), TAIL_LINES);
+        assert!(t.ends_with("error: no config"), "{t}");
+        assert!(t.contains("TOKEN=***") && !t.contains("abc123"), "{t}");
+        assert_eq!(tail_of("  \n\n"), None);
+        let mut e = exec(ExecutionState::Exited, Some(1));
+        e.tail = Some(t);
+        assert_eq!(e.last_line(), Some("error: no config"));
     }
 }

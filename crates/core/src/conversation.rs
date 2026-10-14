@@ -198,6 +198,82 @@ pub enum ErrorCategory {
     InvalidInput,
 }
 
+/// What an error means and what to do about it, in a line each (D-076).
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct Explanation {
+    pub what: String,
+    pub next: String,
+}
+
+impl ErrorCategory {
+    pub const ALL: [ErrorCategory; 8] = [
+        ErrorCategory::AuthRequired,
+        ErrorCategory::ProviderUnavailable,
+        ErrorCategory::RateLimited,
+        ErrorCategory::ResumeUnavailable,
+        ErrorCategory::ProtocolIncompatible,
+        ErrorCategory::WorkerCrashed,
+        ErrorCategory::StorageFailed,
+        ErrorCategory::InvalidInput,
+    ];
+
+    /// What happened, and what to do next — the one wording, for the CLI
+    /// and the app (D-076).
+    pub fn explain(self) -> Explanation {
+        let (what, next) = match self {
+            ErrorCategory::AuthRequired => (
+                "The coding agent isn't signed in on this host.",
+                "Sign Claude Code in on the host (run `claude` there and log in, or set the API key it uses), then resume.",
+            ),
+            ErrorCategory::ProviderUnavailable => (
+                "Claude's service didn't answer.",
+                "Try again in a few minutes: resume the feature.",
+            ),
+            ErrorCategory::RateLimited => (
+                "Claude's rate limit was reached.",
+                "Wait for the limit to reset, then resume; Otter doesn't retry by itself.",
+            ),
+            ErrorCategory::ResumeUnavailable => (
+                "The agent's earlier session couldn't be found.",
+                "Nothing to do: the next turn starts a new session.",
+            ),
+            ErrorCategory::ProtocolIncompatible => (
+                "This host's Claude worker and otterd don't match.",
+                "Update them together: `otter host install <host>`.",
+            ),
+            ErrorCategory::WorkerCrashed => (
+                "The coding agent stopped unexpectedly.",
+                "Resume to carry on; if it keeps happening, `otter doctor <host>` shows what's wrong.",
+            ),
+            ErrorCategory::StorageFailed => (
+                "Otter couldn't record the conversation (a full or read-only disk).",
+                "Free space or fix permissions under the host's ~/.otter, then resume.",
+            ),
+            ErrorCategory::InvalidInput => (
+                "Claude refused the request (an unknown model, or input it doesn't take).",
+                "Check the coding model in Settings, then resume or change the request.",
+            ),
+        };
+        Explanation {
+            what: what.into(),
+            next: next.into(),
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ErrorCategory::AuthRequired => "auth_required",
+            ErrorCategory::ProviderUnavailable => "provider_unavailable",
+            ErrorCategory::RateLimited => "rate_limited",
+            ErrorCategory::ResumeUnavailable => "resume_unavailable",
+            ErrorCategory::ProtocolIncompatible => "protocol_incompatible",
+            ErrorCategory::WorkerCrashed => "worker_crashed",
+            ErrorCategory::StorageFailed => "storage_failed",
+            ErrorCategory::InvalidInput => "invalid_input",
+        }
+    }
+}
+
 /// What a figure covers: providers report some per turn, some for the
 /// whole session so far. Never add session totals up.
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -1928,5 +2004,17 @@ mod tests {
         assert_eq!(c.schema, CONVERSATION_SCHEMA);
         assert_eq!(c.lifecycle, Lifecycle::Open);
         assert!(c.binding.is_none() && c.turns.is_empty());
+    }
+
+    #[test]
+    fn every_error_says_what_happened_and_what_to_do() {
+        for e in ErrorCategory::ALL {
+            let x = e.explain();
+            assert!(x.what.ends_with('.') && x.next.ends_with('.'), "{e:?}");
+            assert_eq!(
+                serde_json::to_value(e).unwrap(),
+                serde_json::Value::String(e.as_str().into())
+            );
+        }
     }
 }

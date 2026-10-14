@@ -36,6 +36,8 @@ pub struct HostView {
     pub version: Option<String>,
     /// Agent providers otterd supports and whether this host can run them.
     pub agents: Vec<otter_core::AgentCapability>,
+    /// What's wrong with the host, each with what to do (D-077).
+    pub problems: Vec<otter_core::Problem>,
     pub workspaces: Vec<WorkspaceView>,
 }
 
@@ -73,6 +75,9 @@ pub struct SessionView {
     pub exit_code: Option<i32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub launch_error: Option<String>,
+    /// The last lines its process printed, when it ended (D-076).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tail: Option<String>,
     /// The newest open attention item for this session.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub attention: Option<AttentionView>,
@@ -158,6 +163,7 @@ fn session_view(ws: &Workspace, s: &Session) -> SessionView {
         }),
         exit_code: s.current_execution().and_then(|e| e.exit_code),
         launch_error: s.launch_error.clone(),
+        tail: s.current_execution().and_then(|e| e.tail.clone()),
         attention,
     }
 }

@@ -182,6 +182,12 @@ export function WorkspacePane({ placed, session, onSession, now, theme, appVersi
         </div>
       )}
       {ws.state === "preparing" && <div className="notice">{ws.stateMessage ?? "Preparing workspace…"}</div>}
+      {ws.state === "failed" && ws.stateMessage && (
+        // Why, not only that it failed (D-076); "Retry preparation" is in the menu.
+        <div className="notice failure-detail" role="status">
+          <pre className="failure-text">{ws.stateMessage}</pre>
+        </div>
+      )}
       {host.status !== "connected" && (
         <div className="notice">
           {host.name} is {host.status === "incompatible" ? "running an incompatible otterd" : "not reachable"} — showing
@@ -247,6 +253,12 @@ export function WorkspacePane({ placed, session, onSession, now, theme, appVersi
             <span className="banner-summary">{attention.summary}</span>
             <span className="banner-age">{ago(attention.createdAt, now)} ago</span>
           </div>
+          {attention.kind === "failure" && current?.tail && (
+            // What it printed last, kept when it ended (D-076).
+            <pre className="failure-text" aria-label="What it printed last">
+              {current.tail}
+            </pre>
+          )}
           <div className="banner-actions">
             {failed && (
               <button className="btn outline" disabled={busy} onClick={restart}>

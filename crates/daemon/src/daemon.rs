@@ -32,6 +32,15 @@ use crate::store::Store;
 pub type RpcResult<T> = Result<T, RpcError>;
 
 pub struct Daemon {
+    /// Processes seen dead, and since when: their end is taken a moment
+    /// later, once the backend has their last output (D-076).
+    pub(crate) dying: std::sync::Mutex<std::collections::HashMap<String, std::time::Instant>>,
+    /// The first reconciliation is done: what died while otterd was down has
+    /// long settled.
+    pub(crate) reconciled_once: std::sync::atomic::AtomicBool,
+    /// Problems otterd met and keeps until they're gone (D-077), by kind.
+    pub(crate) problems:
+        std::sync::Mutex<std::collections::BTreeMap<&'static str, otter_core::Problem>>,
     pub paths: Paths,
     pub store: Mutex<Store>,
     /// Features (D-043): kept apart from workspace state, with their own lock.
@@ -80,21 +89,45 @@ impl Daemon {
         shell: String,
     ) -> Self {
         let metrics = crate::metrics::Sampler::start(paths.state_dir.join("metrics"));
-        // A broken settings file mustn't keep the daemon down.
+        let mut problems = std::collections::BTreeMap::new();
+        // A broken settings file mustn't keep the daemon down — but it's said (D-077).
         let settings = crate::settings::HostSettings::load(&paths.state_dir).unwrap_or_else(|e| {
             tracing::warn!("settings: {e:#}; using defaults");
+            problems.insert(
+                "settings",
+                otter_core::Problem {
+                    what: format!("Otter's settings on this host couldn't be read ({e:#}); the defaults are in use."),
+                    next: format!(
+                        "Fix or remove {} and restart otterd; setting the model and keys again rewrites it.",
+                        paths.state_dir.join("settings.json").display()
+                    ),
+                },
+            );
             crate::settings::HostSettings::empty(&paths.state_dir)
         });
         let conversations_dir = paths.state_dir.join("conversations");
         let conversations = crate::runtime::conversations::Conversations::load(&conversations_dir)
             .unwrap_or_else(|e| {
                 tracing::warn!("conversations: {e:#}; starting with none");
+                problems.insert(
+                    "conversations",
+                    otter_core::Problem {
+                        what: format!("The coding agent's conversations couldn't be loaded ({e:#})."),
+                        next: format!(
+                            "Check {} (permissions, a full disk), then restart otterd; nothing there was changed.",
+                            conversations_dir.display()
+                        ),
+                    },
+                );
                 crate::runtime::conversations::Conversations::empty(&conversations_dir)
             });
         if let Err(e) = crate::files::install_shim(&paths) {
             tracing::warn!("installing the wl-paste stand-in: {e:#}");
         }
         Daemon {
+            dying: Default::default(),
+            reconciled_once: Default::default(),
+            problems: std::sync::Mutex::new(problems),
             git: GitManager::new(paths.home.join("repos"), &env.vars),
             environments: EnvironmentManager::new(&env.vars),
             env_source: env.source,
@@ -335,9 +368,89 @@ impl Daemon {
             otterd_home: self.paths.home.to_string_lossy().into_owned(),
             shell: self.shell.clone(),
             environment_source: self.env_source.clone(),
+            problems: self.problems_now(&git, &tmux).await,
+            log: Some(self.paths.log_file.to_string_lossy().into_owned()),
             capabilities: vec![git, tmux, nix, direnv],
             agents,
         }
+    }
+
+    /// Note a problem otterd met (D-077); a newer one of the same kind
+    /// replaces it.
+    pub(crate) fn note_problem(&self, kind: &'static str, what: String, next: String) {
+        self.problems
+            .lock()
+            .unwrap()
+            .insert(kind, otter_core::Problem { what, next });
+    }
+
+    /// The problem of that kind is gone.
+    pub(crate) fn clear_problem(&self, kind: &'static str) {
+        self.problems.lock().unwrap().remove(kind);
+    }
+
+    /// Everything wrong with this host now, each with what to do (D-077).
+    async fn problems_now(&self, git: &Capability, tmux: &Capability) -> Vec<otter_core::Problem> {
+        use otter_core::Problem;
+        let mut out: Vec<Problem> = self.problems.lock().unwrap().values().cloned().collect();
+        if !tmux.available {
+            out.push(Problem {
+                what: "tmux isn't installed: sessions can't start.".into(),
+                next: "Install tmux 3.2 or newer on the host, then restart otterd.".into(),
+            });
+        }
+        if !git.available {
+            out.push(Problem {
+                what: "Git isn't installed: Git workspaces can't be made.".into(),
+                next: "Install git on the host.".into(),
+            });
+        }
+        if self.env_source.contains("failed") {
+            out.push(Problem {
+                what: format!(
+                    "The login shell's environment couldn't be captured ({}): tools on its PATH may be missing.",
+                    self.shell
+                ),
+                next: format!(
+                    "Check that `{} -l -c true` works on the host (no prompts, no errors), then restart otterd; its log says why.",
+                    self.shell
+                ),
+            });
+        }
+        let backend = self.settings.read().unwrap().coding_backend();
+        if let Some(rt) = crate::runtime::runtime(crate::runs::DEFAULT_RUNTIME, &backend) {
+            let caps = rt.capabilities(self.environments.base());
+            if !caps.available {
+                out.push(Problem {
+                    what: format!(
+                        "The coding runtime ({backend}) isn't ready: features can't run."
+                    ),
+                    next: if caps.notes.is_empty() {
+                        "`otter runtime status` says why.".into()
+                    } else {
+                        caps.notes.join(" ")
+                    },
+                });
+            }
+        }
+        let read_only: Vec<String> = self
+            .conversations
+            .list(None)
+            .iter()
+            .filter(|c| self.conversations.read_only(c.id.as_str()).is_some())
+            .map(|c| c.id.to_string())
+            .collect();
+        if !read_only.is_empty() {
+            out.push(Problem {
+                what: format!(
+                    "{} conversation(s) can't be written any more: {}.",
+                    read_only.len(),
+                    read_only.join(", ")
+                ),
+                next: "What they recorded is still readable (`otter conversation show`); check the disk under ~/.otter/state/conversations. Their features carry on in new conversations.".into(),
+            });
+        }
+        out
     }
 }
 

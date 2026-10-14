@@ -79,6 +79,12 @@ async fn connect_or_start(paths: &Paths) -> Result<UnixStream> {
 /// it outlives this SSH connection.
 fn spawn_daemon(paths: &Paths) -> Result<()> {
     let exe = std::env::current_exe().context("locating otterd executable")?;
+    // otterd's log doesn't grow for ever (D-077): the last one is kept
+    // aside as it starts.
+    const LOG_MAX: u64 = 10 << 20;
+    if std::fs::metadata(&paths.log_file).is_ok_and(|m| m.len() > LOG_MAX) {
+        let _ = std::fs::rename(&paths.log_file, paths.log_file.with_extension("log.1"));
+    }
     let log = std::fs::OpenOptions::new()
         .create(true)
         .append(true)

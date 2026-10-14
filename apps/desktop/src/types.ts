@@ -31,6 +31,8 @@ export interface SessionView {
   agent?: AgentView;
   exitCode?: number;
   launchError?: string;
+  /** The last lines its process printed, when it ended (D-076). */
+  tail?: string;
   attention?: AttentionView;
 }
 
@@ -69,6 +71,8 @@ export interface HostView {
   version?: string;
   /** Agent providers and whether this host can run them. */
   agents: { provider: string; available: boolean; version?: string; can_resume: boolean }[];
+  /** What's wrong with the host, each with what to do (D-077). */
+  problems?: { what: string; next: string }[];
   workspaces: WorkspaceView[];
 }
 

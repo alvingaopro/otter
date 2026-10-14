@@ -183,6 +183,21 @@ export function HostPage({
         )}
         {output && <pre className="output">{output}</pre>}
 
+        {connected && (host.problems?.length ?? 0) > 0 && (
+          // What's wrong with it, and what to do (D-077) — as `otter doctor` says.
+          <section aria-labelledby="problems">
+            <h2 id="problems" className="section-title">Problems</h2>
+            <ul className="plain-list problems">
+              {host.problems!.map((p) => (
+                <li key={p.what} className="problem">
+                  <div className="problem-what">{p.what}</div>
+                  <div className="muted small">{p.next}</div>
+                </li>
+              ))}
+            </ul>
+          </section>
+        )}
+
         <section aria-labelledby="usage">
           <div className="section-row">
             <h2 id="usage" className="section-title">Usage</h2>
