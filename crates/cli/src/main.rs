@@ -9,6 +9,7 @@ mod doctor;
 mod features;
 mod output;
 mod target;
+mod triggers;
 
 use std::collections::HashMap;
 use std::io::IsTerminal;
@@ -52,6 +53,9 @@ enum Command {
     /// Features: work Otter plans, has coded, checks, and brings to you.
     #[command(subcommand)]
     Feature(features::FeatureCommand),
+    /// Triggers: work that starts by itself, unattended, under a policy set in advance.
+    #[command(subcommand)]
+    Trigger(triggers::TriggerCommand),
     /// The coding agent's conversations: what it was asked, did and said.
     #[command(subcommand, visible_alias = "conv")]
     Conversation(features::ConversationCommand),
@@ -377,6 +381,7 @@ async fn run(cli: Cli) -> Result<()> {
         Command::Workspace(cmd) => workspace_command(&config, cmd, json).await,
         Command::Session(cmd) => session_command(&config, cmd, json).await,
         Command::Feature(cmd) => features::feature_command(&config, cmd, json).await,
+        Command::Trigger(cmd) => triggers::command(&config, cmd, json).await,
         Command::Conversation(cmd) => features::conversation_command(&config, cmd, json).await,
         Command::Runtime(RuntimeCommand::Status { host }) => {
             features::runtime_status(&config, host, json).await

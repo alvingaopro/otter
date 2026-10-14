@@ -87,6 +87,12 @@ agent) cover the mechanics. Re-run with the audit's harness:
 |---|---|---|---|
 | M5-1 | Three features on one real repository with live Claude: two in parallel worktrees, one waiting for the busy workspace and going on by itself; all paused at once and resumed; each PR with only its own work | Pending | Offline: `a_second_feature_waits_for_the_workspace`, `a_waiting_feature_gets_a_worktree_of_its_own`, `pause --all` in the CLI e2e, `Inbox.test.tsx` (D-079…D-081). |
 
+## Unattended work (plan M6)
+
+| # | Scenario | Status | Evidence |
+|---|---|---|---|
+| M6-1 | A daily trigger with live Claude on a real repository, overnight: fires once at its time (and once after otterd was down through it), publishes when allowed, pauses on a decision past its wait limit and waits in the Inbox | Pending | Offline: the four trigger e2e tests and `otter trigger` in the CLI e2e (D-083). |
+
 ## Known limits
 
 - A daemon stop ends the managed run. The next run resumes the native

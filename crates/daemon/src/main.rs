@@ -28,6 +28,7 @@ mod server;
 mod sessions;
 mod settings;
 mod store;
+mod triggers;
 mod work_state;
 mod workspaces;
 
@@ -201,6 +202,7 @@ async fn serve(paths: Paths) -> Result<()> {
     daemon.recover_runs().await;
     // The Control Agent steps features from here on (D-045).
     tokio::spawn(daemon.clone().run_controller());
+    tokio::spawn(daemon.clone().run_triggers());
 
     // We hold the lock, so any socket file left behind is stale.
     let _ = std::fs::remove_file(&paths.socket);

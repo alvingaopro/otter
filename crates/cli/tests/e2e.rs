@@ -763,6 +763,44 @@ fn a_feature_goes_from_the_terminal_to_an_accepted_pull_request() {
     let calls = std::fs::read_to_string(gh.join("calls.log")).unwrap();
     assert_eq!(calls.matches("gh pr create").count(), 1, "{calls}");
     assert!(!calls.contains("merge"), "{calls}");
+
+    // Unattended next time (D-083): a trigger, its policy set here.
+    let out = cli.ok(&[
+        "trigger",
+        "add",
+        "nightly",
+        "--workspace",
+        "csv",
+        "--request",
+        "Refresh the CSV fixtures",
+        "--daily",
+        "02:00",
+        "--publish",
+        "--wait-limit",
+        "2h",
+    ]);
+    assert!(
+        out.contains("trigger nightly on here: daily at 02:00 UTC, next at"),
+        "{out}"
+    );
+    let ls = cli.ok(&["trigger", "ls"]);
+    assert!(
+        ls.contains("nightly") && ls.contains("publishes") && ls.contains("waits 120m for you"),
+        "{ls}"
+    );
+    let err = cli.fails(&[
+        "trigger",
+        "add",
+        "x",
+        "--workspace",
+        "csv",
+        "--request",
+        "r",
+        "--every",
+        "soon",
+    ]);
+    assert!(err.contains("isn't a duration"), "{err}");
+    assert!(cli.ok(&["trigger", "rm", "nightly"]).contains("removed"));
 }
 
 /// `otter doctor` (D-077): each host's problems with what to do, a host it

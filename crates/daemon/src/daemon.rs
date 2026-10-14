@@ -32,6 +32,8 @@ use crate::store::Store;
 pub type RpcResult<T> = Result<T, RpcError>;
 
 pub struct Daemon {
+    /// Triggers (D-083): what starts unattended work.
+    pub(crate) triggers: Mutex<crate::triggers::TriggerStore>,
     /// Workspaces claimed by a run that is starting, and by which feature (D-079).
     pub(crate) starting:
         std::sync::Mutex<std::collections::HashMap<otter_core::WorkspaceId, otter_core::FeatureId>>,
@@ -127,7 +129,22 @@ impl Daemon {
         if let Err(e) = crate::files::install_shim(&paths) {
             tracing::warn!("installing the wl-paste stand-in: {e:#}");
         }
+        let triggers = crate::triggers::TriggerStore::load(&paths.state_dir).unwrap_or_else(|e| {
+            tracing::warn!("triggers: {e:#}; starting with none");
+            problems.insert(
+                "triggers",
+                otter_core::Problem {
+                    what: format!("The triggers on this host couldn't be read ({e:#}): none fire."),
+                    next: format!(
+                        "Fix or remove {} and restart otterd.",
+                        paths.state_dir.join("triggers.json").display()
+                    ),
+                },
+            );
+            crate::triggers::TriggerStore::empty(&paths.state_dir)
+        });
         Daemon {
+            triggers: Mutex::new(triggers),
             starting: Default::default(),
             dying: Default::default(),
             reconciled_once: Default::default(),
@@ -275,6 +292,10 @@ impl Daemon {
             }
             Request::FeatureEvents(p) => json(self.feature_events(&p).await?),
             Request::FeatureArtifact(p) => json(self.feature_artifact(&p).await?),
+            Request::TriggerCreate(p) => json(self.trigger_create(p).await?),
+            Request::TriggerList => json(self.trigger_list().await),
+            Request::TriggerDelete(r) => json(self.trigger_delete(&r.trigger).await?),
+            Request::TriggerRun(r) => json(self.trigger_run(&r.trigger, r.occurrence).await?),
             Request::FeatureDelete(r) => json(self.feature_delete(&r.feature).await?),
             // Contracts first (D-055); served once runs go through conversations.
             Request::RuntimeCapabilities => {

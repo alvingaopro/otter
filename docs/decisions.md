@@ -2475,3 +2475,48 @@ per feature; with several agents at work there was no single control.
 - **The Inbox's WORKING group has "Pause all features"**, the same for
   what the app shows.
 
+## D-082 — M6's scope, derived without its spec (2026-10-14)
+
+As for M3–M5: the spec isn't on this machine and the requester asked to go
+on. M6 (*controlled unattended execution: triggers, policies,
+idempotency*) is read from the outcome, the M2 plan's "no bypass mode for
+unattended work — that's M6, with its own policy", D-066 (what may be
+granted at all) and an audit of the code (`docs/plans/m6-automation.md`):
+feature creation and delivery are already idempotent, budgets bound work,
+publishing can be allowed per feature; nothing starts work by itself,
+nothing sets an unattended policy, and unattended work would wait for
+ever on its first developer-only ask.
+
+## D-083 — Triggers: unattended work under a policy set in advance (2026-10-14)
+
+M6 (`docs/plans/m6-automation.md`).
+
+- **Triggers live on the host** (`state/triggers.json`, 0600): a name, a
+  workspace, the feature to start (title, request), a schedule — every N
+  minutes, daily at HH:MM UTC, or by hand only — and a policy. otterd
+  fires due ones (every 15 s it looks), and `otter trigger run` fires one
+  by hand. `otter trigger add / ls / rm / run`; `trigger.*` requests.
+- **One feature per occurrence.** An occurrence's feature is created and
+  started with command ids made of the trigger and the occurrence (to the
+  millisecond), so firing it again — a retry, a restart, a script that
+  names its occurrence (`--occurrence`) — finds the same feature. Missed
+  occurrences (otterd was down) fire once, the latest; an occurrence whose
+  trigger's last feature is still at work (active or blocked) is skipped,
+  and the trigger's history says why.
+- **The policy is the developer's, given in advance** — never a model's in
+  the moment, never a bypass. Budget caps (attempts, minutes of work) for
+  its features; `publish`: pushing the workspace's branch and opening the
+  pull request (what D-047 otherwise asks for) is allowed, recorded on the
+  feature as an allowed command; a wait limit: a developer-only decision
+  that waits longer pauses the feature — its agent stopped, the decision
+  set aside, "Waited N min for you on “…”: paused, nothing decided" — and
+  the Inbox counts it as waiting on the developer; resuming asks again.
+  Everything else policy asks the developer, it still asks them.
+- **On record:** a triggered feature carries `started_by` (the trigger, the
+  occurrence, the policy as it was).
+- An allowance decision that was set aside (cancelled) is asked again,
+  rather than read as a denial.
+- Not done (for the spec): webhooks or CI events as triggers (a script can
+  `otter trigger run`), cron expressions, cross-host triggers,
+  notifications beyond the app's.
+

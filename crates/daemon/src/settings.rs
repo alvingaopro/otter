@@ -91,7 +91,7 @@ pub struct HostSettings {
     secrets: BTreeMap<String, String>,
 }
 
-fn read_json<T: for<'de> Deserialize<'de> + Default>(path: &Path) -> Result<T> {
+pub(crate) fn read_json<T: for<'de> Deserialize<'de> + Default>(path: &Path) -> Result<T> {
     match std::fs::read(path) {
         Ok(b) => serde_json::from_slice(&b).with_context(|| format!("reading {}", path.display())),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(T::default()),
@@ -100,7 +100,7 @@ fn read_json<T: for<'de> Deserialize<'de> + Default>(path: &Path) -> Result<T> {
 }
 
 /// Write atomically, readable by this user only.
-fn write_private(path: &Path, bytes: &[u8]) -> Result<()> {
+pub(crate) fn write_private(path: &Path, bytes: &[u8]) -> Result<()> {
     let tmp = path.with_extension("tmp");
     let mut f = std::fs::OpenOptions::new()
         .write(true)

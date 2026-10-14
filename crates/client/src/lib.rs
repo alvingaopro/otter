@@ -456,6 +456,37 @@ impl Connection {
         self.call(Request::FeatureList).await
     }
 
+    /// Triggers (D-083).
+    pub async fn trigger_create(
+        &mut self,
+        p: otter_protocol::TriggerCreate,
+    ) -> Result<otter_core::trigger::Trigger> {
+        self.call(Request::TriggerCreate(p)).await
+    }
+
+    pub async fn trigger_list(&mut self) -> Result<Vec<otter_core::trigger::Trigger>> {
+        self.call(Request::TriggerList).await
+    }
+
+    pub async fn trigger_delete(&mut self, trigger: &str) -> Result<()> {
+        self.call(Request::TriggerDelete(otter_protocol::TriggerRef {
+            trigger: trigger.to_owned(),
+        }))
+        .await
+    }
+
+    pub async fn trigger_run(
+        &mut self,
+        trigger: &str,
+        occurrence: Option<otter_core::Timestamp>,
+    ) -> Result<otter_core::trigger::Trigger> {
+        self.call(Request::TriggerRun(otter_protocol::TriggerRun {
+            trigger: trigger.to_owned(),
+            occurrence,
+        }))
+        .await
+    }
+
     /// What the managed coding runtime on the host is and can do.
     pub async fn runtime_capabilities(
         &mut self,

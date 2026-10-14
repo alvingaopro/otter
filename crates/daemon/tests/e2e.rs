@@ -6040,3 +6040,293 @@ async fn live_sleeping(
         tokio::time::sleep(Duration::from_millis(250)).await;
     }
 }
+
+// ---------------------------------------------------------------------------
+// Triggers (D-083): unattended work under a policy set in advance.
+// ---------------------------------------------------------------------------
+
+/// A directory workspace with a passing check, for triggers' features.
+async fn plain_workspace(host: &TestHost, name: &str) {
+    let dir = host.home().join(name);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("Makefile"), "test:\n\t@echo all good\n").unwrap();
+    host.conn()
+        .await
+        .workspace_create(WorkspaceCreate {
+            name: name.into(),
+            source: SourceSpec::Directory {
+                path: dir.to_string_lossy().into_owned(),
+            },
+            sessions: Some(vec![]),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+}
+
+fn trigger(
+    name: &str,
+    workspace: &str,
+    request: &str,
+    policy: otter_core::trigger::Policy,
+) -> otter_protocol::TriggerCreate {
+    otter_protocol::TriggerCreate {
+        name: name.into(),
+        workspace: workspace.into(),
+        title: None,
+        request: request.into(),
+        schedule: otter_core::trigger::Schedule::Manual,
+        policy,
+    }
+}
+
+async fn triggered(
+    host: &TestHost,
+    trigger: &otter_core::TriggerId,
+) -> Vec<otter_core::feature::Feature> {
+    host.conn()
+        .await
+        .feature_list()
+        .await
+        .unwrap()
+        .into_iter()
+        .filter(|f| {
+            f.started_by
+                .as_ref()
+                .is_some_and(|s| &s.trigger_id == trigger)
+        })
+        .collect()
+}
+
+/// One feature per occurrence however often it's fired, its caps applied;
+/// an occurrence whose last feature is still at work is skipped (D-083).
+#[tokio::test]
+async fn a_trigger_starts_one_feature_per_occurrence_and_doesnt_overlap() {
+    use otter_core::feature::FeatureStatus;
+    let fake = fake_agent_host("ok", "rules").await;
+    let host = &fake.host;
+    plain_workspace(host, "tidy").await;
+    let mut conn = host.conn().await;
+    let policy = otter_core::trigger::Policy {
+        max_iterations: Some(2),
+        max_minutes: Some(30),
+        ..Default::default()
+    };
+    let t = conn
+        .trigger_create(trigger("tidy", "tidy", "Tidy up", policy))
+        .await
+        .unwrap();
+    let at = chrono::DateTime::parse_from_rfc3339("2026-10-14T02:00:00Z")
+        .unwrap()
+        .with_timezone(&chrono::Utc);
+    conn.trigger_run("tidy", Some(at)).await.unwrap();
+    let again = conn.trigger_run(t.id.as_str(), Some(at)).await.unwrap();
+    assert_eq!(again.history.len(), 1, "{:?}", again.history);
+    let fs = triggered(host, &t.id).await;
+    assert_eq!(fs.len(), 1, "one feature for one occurrence");
+    let f = &fs[0];
+    let started = f.started_by.as_ref().unwrap();
+    assert_eq!((started.trigger.as_str(), started.occurrence), ("tidy", at));
+    assert_eq!((f.budget.max_iterations, f.budget.max_minutes), (2, 30));
+    assert_eq!(f.request, "Tidy up");
+    let f = wait_feature(host, f.id.as_str(), "worked unattended", |f| {
+        f.status == FeatureStatus::Review
+    })
+    .await;
+    assert!(f.decisions.is_empty());
+
+    // A long one: the next occurrence, while it works, is skipped.
+    let long = conn
+        .trigger_create(trigger(
+            "long",
+            "tidy",
+            "A long job HANG",
+            Default::default(),
+        ))
+        .await
+        .unwrap();
+    conn.trigger_run("long", None).await.unwrap();
+    let first = triggered(host, &long.id).await.remove(0);
+    wait_feature(host, first.id.as_str(), "working", |f| {
+        f.live_run().is_some()
+    })
+    .await;
+    let t = conn.trigger_run("long", None).await.unwrap();
+    let last = t.history.last().unwrap();
+    assert!(last.feature_id.is_none(), "{:#?}", t.history);
+    assert!(
+        last.skipped
+            .as_deref()
+            .unwrap()
+            .contains("is still at work"),
+        "{last:?}"
+    );
+    assert_eq!(triggered(host, &long.id).await.len(), 1);
+    let listed = conn.trigger_list().await.unwrap();
+    assert_eq!(listed.len(), 2);
+    conn.trigger_delete("long").await.unwrap();
+    assert_eq!(conn.trigger_list().await.unwrap().len(), 1);
+}
+
+/// A Git workspace whose origin runs CI, for a trigger's feature to publish.
+async fn git_workspace(fake: &FakeCodex, name: &str) {
+    let src = fake.host.home().join(format!("origin-{name}"));
+    std::fs::create_dir_all(src.join(".github/workflows")).unwrap();
+    git(&src, &["init", "-q", "-b", "main"]);
+    std::fs::write(src.join("Makefile"), "test:\n\t@echo all good\n").unwrap();
+    std::fs::write(src.join(".github/workflows/ci.yml"), "on: push\n").unwrap();
+    git(&src, &["add", "-A"]);
+    git(&src, &["commit", "-q", "-m", "init"]);
+    fake.host
+        .conn()
+        .await
+        .workspace_create(git_ws(name, &src, Some(&format!("feature/{name}")), vec![]))
+        .await
+        .unwrap();
+    eventually("workspace ready", || async {
+        let ws = fake.host.conn().await.workspace_get(name).await.unwrap();
+        (ws.state == WorkspaceState::Ready).then_some(())
+    })
+    .await;
+}
+
+/// Publishing allowed in advance: delivered without asking (D-083).
+#[tokio::test]
+async fn an_unattended_feature_publishes_when_its_trigger_allows_it() {
+    let fake = fake_agent_host("ok", "rules").await;
+    git_workspace(&fake, "nightly").await;
+    let mut conn = fake.host.conn().await;
+    let policy = otter_core::trigger::Policy {
+        publish: true,
+        ..Default::default()
+    };
+    let t = conn
+        .trigger_create(trigger(
+            "nightly",
+            "nightly",
+            "Export the timeline as CSV",
+            policy,
+        ))
+        .await
+        .unwrap();
+    conn.trigger_run("nightly", None).await.unwrap();
+    let id = triggered(&fake.host, &t.id).await.remove(0).id;
+    let f = wait_feature(&fake.host, id.as_str(), "published", |f| {
+        f.delivery.as_ref().is_some_and(|d| d.pr_url.is_some())
+    })
+    .await;
+    assert!(
+        !f.decisions.iter().any(|d| d.summary.contains("git push")),
+        "nobody was asked: {:?}",
+        f.decisions
+    );
+}
+
+/// Not allowed in advance: the publish waits for the developer; past the
+/// trigger's wait limit the feature pauses — nothing decided for them — and
+/// resuming asks again (D-083).
+#[tokio::test]
+async fn an_unattended_feature_pauses_when_it_waits_too_long() {
+    use otter_core::feature::{DecisionStatus, FeatureAction, FeatureStatus, NeedKind};
+    let fake = fake_agent_host("ok", "rules").await;
+    git_workspace(&fake, "weekly").await;
+    let mut conn = fake.host.conn().await;
+    let policy = otter_core::trigger::Policy {
+        wait_limit_secs: Some(1),
+        ..Default::default()
+    };
+    let t = conn
+        .trigger_create(trigger(
+            "weekly",
+            "weekly",
+            "Export the timeline as CSV",
+            policy,
+        ))
+        .await
+        .unwrap();
+    conn.trigger_run("weekly", None).await.unwrap();
+    let id = triggered(&fake.host, &t.id).await.remove(0).id;
+    let f = wait_feature(&fake.host, id.as_str(), "paused, having waited", |f| {
+        f.status == FeatureStatus::Paused
+    })
+    .await;
+    let reason = f.status_reason.clone().unwrap();
+    assert!(
+        reason.starts_with("Waited ") && reason.contains("git push"),
+        "{reason}"
+    );
+    assert_eq!(
+        f.needs().map(|n| n.kind),
+        Some(NeedKind::Blocked),
+        "it waits on you"
+    );
+    assert!(
+        f.decisions
+            .iter()
+            .all(|d| d.status != DecisionStatus::Approved && d.status != DecisionStatus::Denied),
+        "nothing decided for the developer: {:?}",
+        f.decisions
+    );
+    conn.feature_act("resume-weekly", id.as_str(), FeatureAction::Resume)
+        .await
+        .unwrap();
+    wait_feature(&fake.host, id.as_str(), "asked again", |f| {
+        f.pending_decisions()
+            .any(|d| d.summary.contains("git push"))
+    })
+    .await;
+}
+
+/// Occurrences missed while otterd was down fire once — the latest — when
+/// it's back (D-083).
+#[tokio::test]
+async fn missed_occurrences_fire_once_after_a_restart() {
+    let mut fake = fake_agent_host_with("ok", "rules", |_| {
+        vec![("OTTER_TRIGGER_TICK_MS", "200".into())]
+    })
+    .await;
+    plain_workspace(&fake.host, "hourly").await;
+    let ws = fake
+        .host
+        .conn()
+        .await
+        .workspace_get("hourly")
+        .await
+        .unwrap();
+    let now = chrono::Utc::now();
+    let created = now - chrono::Duration::minutes(3) - chrono::Duration::seconds(30);
+    let t = serde_json::json!([{
+        "id": "trg_missed",
+        "name": "every-minute",
+        "workspace_id": ws.id,
+        "title": "Tidy",
+        "request": "Tidy up",
+        "schedule": {"kind": "every", "minutes": 1},
+        "created_at": created,
+        "next_at": created + chrono::Duration::minutes(1),
+        "history": []
+    }]);
+    // Written as a daemon that was down would have left it, read on start.
+    std::fs::write(fake.host.home().join("state/triggers.json"), t.to_string()).unwrap();
+    fake.host.restart().await;
+    let fired = eventually("the missed one fires", || async {
+        let ts = fake.host.conn().await.trigger_list().await.unwrap();
+        (!ts[0].history.is_empty()).then_some(ts)
+    })
+    .await;
+    tokio::time::sleep(Duration::from_millis(800)).await;
+    let ts = fake.host.conn().await.trigger_list().await.unwrap();
+    assert_eq!(
+        ts[0].history.len(),
+        1,
+        "once, not three times: {:?}",
+        ts[0].history
+    );
+    let occurrence = fired[0].history[0].occurrence;
+    assert_eq!(
+        occurrence,
+        created + chrono::Duration::minutes(3),
+        "the latest"
+    );
+    assert!(ts[0].next_at.unwrap() > now);
+}
