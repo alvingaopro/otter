@@ -52,6 +52,20 @@ keys or transcripts are kept here. "Pending" means not yet run, not failed.
 | 9 | Limits | Pending | — |
 | 10 | Git review | Pending | Needs an authorized disposable repository; publishing a PR needs explicit authorization. |
 
+## The feature-to-PR workflow (plan M2)
+
+What M2's steps need a live Claude run to show; the offline e2e tests (fake
+agent) cover the mechanics. Re-run with the audit's harness:
+`docs/audits/autonomy/scripts/bench.sh` (Modes B and C on t1/t2) and
+`feature_metrics.py` on real features.
+
+| # | Scenario | Status | Evidence |
+|---|---|---|---|
+| M2-1 | Benchmark t1/t2, Mode C: reach Review with the independent check passing | Pending | Offline: `verification_stops_when_a_fix_changes_nothing`, `a_check_that_cant_run_blocks_on_the_developer_once` (D-062). |
+| M2-2 | One session per feature (t1/t2 Mode C: 1 session each; real features ≤ 2) | Pending | Offline: a fix resumes the session (`--resume`), the planning turn and tasks share it (D-064). |
+| M2-3 | An approval answered after the run's limit: the approved command completes | Pending | Offline: `waiting_on_an_approval_doesnt_use_up_the_runs_time` (audit E1, D-063). |
+| M2-4 | The planning turn with a real model: a JSON proposal, reviewed by the brain | Pending | Offline: `the_coding_agent_plans_first_in_the_features_conversation`, `a_planning_turn_without_a_plan_falls_back` (D-064). |
+
 ## Known limits
 
 - A daemon stop ends the managed run. The next run resumes the native
