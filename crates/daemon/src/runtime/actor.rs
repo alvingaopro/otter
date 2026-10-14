@@ -139,6 +139,23 @@ pub enum ActorEvent {
     },
 }
 
+/// When the run's agent was last heard from, and how many of its tool calls
+/// are running: what the controller's no-progress watchdog reads (D-063).
+#[derive(Debug)]
+pub struct Pulse {
+    pub at: std::time::Instant,
+    pub tools: usize,
+}
+
+pub type SharedPulse = Arc<std::sync::Mutex<Pulse>>;
+
+pub fn pulse() -> SharedPulse {
+    Arc::new(std::sync::Mutex::new(Pulse {
+        at: std::time::Instant::now(),
+        tools: 0,
+    }))
+}
+
 pub struct Actor {
     pub conversation: ConversationId,
     pub run: RunId,
@@ -166,6 +183,9 @@ pub struct Actor {
     /// An interrupt that must settle by then, and how long it may take.
     interrupt_by: Option<tokio::time::Instant>,
     interrupt_after: std::time::Duration,
+    /// Tool calls started and not yet finished, by the provider's key.
+    running: std::collections::HashSet<String>,
+    pulse: SharedPulse,
 }
 
 /// Text being written, journaled now and then so a crash keeps most of it.
@@ -218,7 +238,22 @@ impl Actor {
             stopping: false,
             interrupt_by: None,
             interrupt_after: interrupt_deadline(),
+            running: std::collections::HashSet::new(),
+            pulse: pulse(),
         }
+    }
+
+    /// Report signs of work to `pulse`.
+    pub fn with_pulse(mut self, pulse: SharedPulse) -> Actor {
+        self.pulse = pulse;
+        self
+    }
+
+    /// The agent did something (or was answered): note it.
+    fn beat(&self) {
+        let mut p = self.pulse.lock().unwrap();
+        p.at = std::time::Instant::now();
+        p.tools = self.running.len();
     }
 
     /// How long an interrupt may take to settle (tests).
@@ -362,6 +397,17 @@ impl Actor {
     async fn on_event(&mut self, ev: RuntimeEvent) -> Flow {
         let g = self.generation;
         let now = Utc::now();
+        match &ev {
+            RuntimeEvent::ToolStarted { call, .. } => {
+                self.running.insert(call.clone());
+            }
+            RuntimeEvent::ToolFinished { call, .. } => {
+                self.running.remove(call);
+            }
+            RuntimeEvent::TurnFinished { .. } => self.running.clear(),
+            _ => {}
+        }
+        self.beat();
         match ev {
             RuntimeEvent::Session { id } => {
                 self.apply(Op::Bind {
@@ -636,6 +682,10 @@ impl Actor {
     async fn on_cmd(&mut self, cmd: ActorCmd) -> Flow {
         let g = self.generation;
         let now = Utc::now();
+        // An answer sets the agent going again: the wait wasn't idleness.
+        if matches!(cmd, ActorCmd::Decide { .. }) {
+            self.beat();
+        }
         match cmd {
             ActorCmd::Wake => return self.deliver_next().await,
             ActorCmd::Check { check_id, decision } => {

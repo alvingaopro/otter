@@ -35,7 +35,9 @@ reply, so they stand until changed):
 - **Before editing:** audit the code against the milestone. Mark tasks that are
   already met with the code and tests that prove it, rather than redoing them.
 - **Git:** one `roadmap-mN` branch per milestone, pushed to `origin`, with a PR
-  to `main`, as with earlier runtime milestones. The requester merges.
+  to `main`, as with earlier runtime milestones. Since 2026-10-14 the
+  requester has asked for each PR to be opened and merged once its checks
+  pass, and for the work to go on without asking: a PR per plan step.
 - **Releases:** none are cut as part of this work.
 - **Validation (release gate):** `cargo fmt --all -- --check`,
   `cargo clippy --all-targets`, `cargo test`, the desktop build when UI changes,

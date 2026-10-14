@@ -66,9 +66,32 @@ fn tick() -> Duration {
     env_ms("OTTER_CONTROLLER_TICK_MS", 5_000)
 }
 
-/// How long one run may take.
+/// How long the agent may work in one run (time waiting on a decision
+/// doesn't count, D-063); then its turn is cut off and resumed.
 fn run_timeout() -> chrono::Duration {
     chrono::Duration::from_std(env_ms("OTTER_RUN_TIMEOUT_MS", 30 * 60 * 1000)).unwrap()
+}
+
+/// How long a run may go without a sign of work, while none of its tools
+/// runs, before its turn is cut off and resumed (D-063).
+fn idle_timeout() -> Duration {
+    env_ms("OTTER_RUN_IDLE_MS", 10 * 60 * 1000)
+}
+
+/// Wall time that passes beyond the monotonic clock by more than this, the
+/// host was asleep: not work (D-063).
+const SLEEP_GAP: Duration = Duration::from_secs(30);
+
+/// How a run cut off by a limit is summarized (and recognized on resume).
+const OUT_OF_TIME: &str = "Out of time";
+const NO_PROGRESS: &str = "No progress";
+
+/// A duration for people: seconds while short, then minutes.
+fn span(d: Duration) -> String {
+    match d.as_secs() {
+        s if s < 120 => format!("{s} s"),
+        s => format!("{} min", s / 60),
+    }
 }
 
 /// How long the check command may take.
@@ -92,11 +115,21 @@ impl Daemon {
     /// Run the controller until the daemon stops.
     pub(crate) async fn run_controller(self: Arc<Self>) {
         let mut shutdown = self.shutdown_signal();
+        let mut clocks = (std::time::Instant::now(), Utc::now());
         loop {
             tokio::select! {
                 _ = self.feature_wake.notified() => {}
                 _ = tokio::time::sleep(tick()) => {}
                 _ = shutdown.changed() => return,
+            }
+            // The monotonic clock stands still while the host sleeps; the
+            // wall clock doesn't.
+            let now = (std::time::Instant::now(), Utc::now());
+            let wall = (now.1 - clocks.1).to_std().unwrap_or_default();
+            let gap = wall.saturating_sub(now.0 - clocks.0);
+            clocks = now;
+            if gap > SLEEP_GAP {
+                self.skip_sleep(gap).await;
             }
             // Off: features stay where they are until the developer acts.
             if self.brain_choice().controller.as_deref() == Some("off") {
@@ -681,33 +714,81 @@ impl Daemon {
         }
     }
 
+    /// The host slept for `gap`: the runs working then didn't work.
+    async fn skip_sleep(&self, gap: Duration) {
+        let Ok(gap) = chrono::Duration::from_std(gap) else {
+            return;
+        };
+        tracing::info!(
+            secs = gap.num_seconds(),
+            "the host slept; not counted as work"
+        );
+        let ids: Vec<FeatureId> = self
+            .features
+            .lock()
+            .await
+            .list()
+            .into_iter()
+            .filter(|f| f.live_run().is_some_and(|r| r.working_since.is_some()))
+            .map(|f| f.id)
+            .collect();
+        for id in ids {
+            let applied = self.features.lock().await.apply(&id, None, |f, now| {
+                for r in f.runs.iter_mut().filter(|r| !r.state.is_over()) {
+                    r.skip(gap, now);
+                }
+                Ok(vec![])
+            });
+            if let Ok(a) = applied {
+                self.feature_changed(&a);
+            }
+        }
+    }
+
     async fn implement_step(self: &Arc<Self>, f: &Feature) -> RpcResult<()> {
         let now = Utc::now();
         if let Some(run) = f.live_run() {
-            if run.started_at + run_timeout() < now {
-                let mins = run_timeout().num_minutes().max(1);
-                self.stop_runs(
-                    &f.id,
-                    RunState::Failed,
-                    &format!("Timed out after {mins} min"),
-                )
-                .await;
+            // Out of time, or silent too long: the turn is cut off, and the
+            // run resumes its conversation with a word on why (D-063). Time
+            // waiting on a decision isn't work, and a running tool isn't
+            // silence.
+            if run.state == RunState::Running {
+                let limit = run_timeout();
+                let idle = self.run_idle(&run.id).filter(|d| *d > idle_timeout());
+                let why = if run.worked(now) > limit {
+                    Some(format!(
+                        "{OUT_OF_TIME} after {} of work",
+                        span(limit.to_std().unwrap_or_default())
+                    ))
+                } else {
+                    idle.map(|d| format!("{NO_PROGRESS} for {}", span(d)))
+                };
+                if let Some(why) = why {
+                    self.stop_runs(&f.id, RunState::Cancelled, &why).await;
+                }
             }
             return self.decide_open(f).await;
         }
         if f.pending_decisions().next().is_some() {
             return self.decide_open(f).await;
         }
-        // Budgets and loops: deterministic, whatever the brain thinks.
-        if let Some(since) = f.active_since
-            && since + chrono::Duration::minutes(i64::from(f.budget.max_minutes)) < now
-        {
-            let reason = format!(
-                "Stopped: the time budget ({} min) is used up",
-                f.budget.max_minutes
-            );
-            self.fail(&f.id, &reason, Some("time")).await;
-            return Ok(());
+        // Budgets and loops: deterministic, whatever the brain thinks. Time
+        // is the agent's work since the work last (re)started (D-063).
+        if let Some(since) = f.active_since {
+            let worked: chrono::Duration = f
+                .runs
+                .iter()
+                .filter(|r| r.ended_at.is_none_or(|e| e >= since))
+                .map(|r| r.worked(now))
+                .sum();
+            if worked > chrono::Duration::minutes(i64::from(f.budget.max_minutes)) {
+                let reason = format!(
+                    "Stopped: the time budget ({} min of work) is used up",
+                    f.budget.max_minutes
+                );
+                self.fail(&f.id, &reason, Some("time")).await;
+                return Ok(());
+            }
         }
         if let Some(summary) = repeating_failure(f) {
             let reason =
@@ -786,7 +867,7 @@ impl Daemon {
                 .and_then(|c| self.conversations.get(c.as_str()))
                 .map(|c| carried_by(&c))
                 .unwrap_or_default();
-            continue_prompt(f, last.map(|r| r.started_at), &carried)
+            continue_prompt(f, &task, last, &carried)
         } else {
             task_prompt(f, &task)
         };
@@ -1880,12 +1961,29 @@ pub fn task_prompt(f: &Feature, task: &Task) -> String {
 /// What a resumed run is told: carry on, plus anything new from the developer.
 fn continue_prompt(
     f: &Feature,
-    since: Option<chrono::DateTime<Utc>>,
+    task: &Task,
+    last: Option<&otter_core::feature::Run>,
     carried: &std::collections::HashSet<String>,
 ) -> String {
+    // A turn cut off says so (D-063): by a limit, what to do about it.
+    let cut = last
+        .filter(|r| r.state == RunState::Cancelled)
+        .map(|r| r.summary.as_deref().unwrap_or_default());
+    let opening = match cut {
+        Some(why) if why.starts_with(OUT_OF_TIME) || why.starts_with(NO_PROGRESS) => format!(
+            "You ran out of time on “{}” ({}). Continue where you left off: \
+             do what the task still needs first, then end your turn with a short report.",
+            task.title,
+            why.to_lowercase()
+        ),
+        Some(_) => "Your last turn was interrupted before it finished. \
+                    Continue the task where you left off."
+            .into(),
+        None => "Continue the task where you left off.".into(),
+    };
     format!(
-        "Continue the task where you left off.{}",
-        developer_notes(f, since, carried)
+        "{opening}{}",
+        developer_notes(f, last.map(|r| r.started_at), carried)
     )
 }
 
@@ -2030,9 +2128,55 @@ mod tests {
                 activity: vec![],
                 conversation_id: None,
                 turn_id: None,
+                worked_ms: 0,
+                working_since: None,
             });
         }
         f
+    }
+
+    #[test]
+    fn a_resumed_turn_says_why_the_last_one_was_cut_off() {
+        let task = Task {
+            id: TaskId::generate(),
+            title: "Add CSV export".into(),
+            detail: None,
+            status: TaskStatus::Pending,
+            depends_on: vec![],
+            workspace_id: None,
+            session_id: None,
+            attempts: 1,
+            last_error: None,
+        };
+        let none = HashSet::new();
+        let prompt = |summary: &str, state| {
+            let f = feature_with_runs(&[(summary, state)]);
+            continue_prompt(&f, &task, f.runs.last(), &none)
+        };
+        let p = prompt("Out of time after 30 min of work", RunState::Cancelled);
+        assert!(
+            p.starts_with(
+                "You ran out of time on “Add CSV export” (out of time after 30 min of work)."
+            ),
+            "{p}"
+        );
+        assert!(
+            prompt("No progress for 10 min", RunState::Cancelled)
+                .starts_with("You ran out of time")
+        );
+        assert!(
+            prompt(
+                "Interrupted: otterd restarted; resumable",
+                RunState::Cancelled
+            )
+            .starts_with("Your last turn was interrupted")
+        );
+        assert_eq!(
+            prompt("handed back", RunState::HandedOff),
+            "Continue the task where you left off."
+        );
+        assert_eq!(span(Duration::from_millis(1500)), "1 s");
+        assert_eq!(span(Duration::from_secs(1800)), "30 min");
     }
 
     #[test]

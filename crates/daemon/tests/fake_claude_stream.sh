@@ -3,7 +3,8 @@
 # (see crates/daemon/src/agents/claude_stream.rs). Words in a prompt choose
 # what happens: ASK_RM (a command only the developer may allow), ASK_INSTALL
 # (one the Control Agent may decide), ASK_EDIT (a routine edit), ASK_QUESTION,
-# FAIL, HANG (works until interrupted); anything else finishes the turn.
+# FAIL, HANG (works until interrupted), SLOW (works until interrupted, then
+# finishes once resumed); anything else finishes the turn.
 [ -n "$FAKE_CODEX_LOG" ] && echo "claude-stream $*" >> "$FAKE_CODEX_LOG"
 sid="fake-session-$$"
 resumed=
@@ -42,6 +43,13 @@ while read -r line; do
         *ASK_EDIT*) ask r4 Write '{"file_path":"src/a.rs","content":"x"}' ;;
         *ASK_QUESTION*) ask r3 AskUserQuestion '{"questions":[{"question":"Pick one","options":[{"label":"red"},{"label":"blue"}]}]}' ;;
         *FAIL*) result error_during_execution true "it broke" ;;
+        *SLOW*)
+          if [ -n "$resumed" ]; then
+            text "Picked it up again."; result success false "finished after resuming"
+          else
+            text "working on it"
+          fi
+          ;;
         *HANG*) text "working on it" ;;
         # "BG <pidfile>": something left running in the background.
         *'BG '*)

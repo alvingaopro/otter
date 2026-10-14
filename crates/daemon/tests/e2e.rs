@@ -3338,6 +3338,119 @@ async fn a_check_that_cant_run_blocks_on_the_developer_once() {
     assert_eq!(last.ok, Some(true));
 }
 
+/// Time spent waiting on the developer isn't the run's (D-063, audit E1):
+/// a run that waits longer than its limit for an approval still does what
+/// was approved, in the same run.
+#[tokio::test]
+async fn waiting_on_an_approval_doesnt_use_up_the_runs_time() {
+    use otter_core::feature::{FeatureAction, FeatureStatus, RunState};
+    let fake = fake_agent_host_with("ok", "rules", |_| {
+        vec![("OTTER_RUN_TIMEOUT_MS", "3000".into())]
+    })
+    .await;
+    let host = &fake.host;
+    let id = started_feature(host, "Clean up ASK_RM").await;
+    let f = wait_feature(host, &id, "waiting on the developer", |f| {
+        f.status == FeatureStatus::Blocked && f.pending_decisions().next().is_some()
+    })
+    .await;
+    assert_eq!(f.runs[0].state, RunState::Waiting);
+    assert!(f.runs[0].working_since.is_none(), "waiting isn't working");
+    let d = f.pending_decisions().next().unwrap().clone();
+    // Longer than the run may work.
+    tokio::time::sleep(Duration::from_secs(5)).await;
+    host.conn()
+        .await
+        .feature_act(
+            "approve",
+            &id,
+            FeatureAction::Decide {
+                decision_id: d.id.clone(),
+                approve: true,
+                answer: None,
+                answers: None,
+            },
+        )
+        .await
+        .unwrap();
+    let f = wait_feature(host, &id, "review", |f| f.status == FeatureStatus::Review).await;
+    assert_eq!(f.runs.len(), 1, "{:?}", f.runs);
+    assert_eq!(f.runs[0].state, RunState::Completed);
+    assert_eq!(f.runs[0].summary.as_deref(), Some("allowed and done"));
+    assert!(
+        f.runs[0].worked_ms < 3000,
+        "worked {} ms",
+        f.runs[0].worked_ms
+    );
+    assert_eq!(f.budget.iterations_used, 1);
+}
+
+/// A run out of time is cut off and resumed in the same conversation with a
+/// word on why — not failed and started over (D-063).
+#[tokio::test]
+async fn a_run_out_of_time_resumes_its_conversation() {
+    use otter_core::feature::{FeatureStatus, RunState};
+    let fake = fake_agent_host_with("ok", "rules", |_| {
+        vec![("OTTER_RUN_TIMEOUT_MS", "1500".into())]
+    })
+    .await;
+    let host = &fake.host;
+    let id = started_feature(host, "A slow job SLOW").await;
+    let f = wait_feature(host, &id, "review", |f| f.status == FeatureStatus::Review).await;
+    assert_eq!(f.runs.len(), 2, "{:?}", f.runs);
+    assert_eq!(f.runs[0].state, RunState::Cancelled);
+    assert_eq!(
+        f.runs[0].summary.as_deref(),
+        Some("Out of time after 1 s of work")
+    );
+    assert_eq!(f.runs[1].state, RunState::Completed);
+    assert_eq!(
+        f.runs[1].summary.as_deref(),
+        Some("finished after resuming")
+    );
+    assert!(f.runs[0].provider_session_id.is_some());
+    assert_eq!(f.runs[1].provider_session_id, f.runs[0].provider_session_id);
+    assert_eq!(
+        f.budget.iterations_used, 1,
+        "resuming isn't another attempt"
+    );
+    // The agent was told why.
+    let c = host
+        .conn()
+        .await
+        .conversation_get(f.runs[1].conversation_id.as_ref().unwrap().as_str())
+        .await
+        .unwrap();
+    let told = serde_json::to_string(&c).unwrap();
+    assert!(told.contains("You ran out of time on"), "{told}");
+}
+
+/// An agent that goes quiet (no word, no tool running) is cut off and
+/// resumed the same way (D-063).
+#[tokio::test]
+async fn a_silent_run_is_cut_off_and_resumed() {
+    use otter_core::feature::{FeatureStatus, RunState};
+    let fake = fake_agent_host_with("ok", "rules", |_| {
+        vec![("OTTER_RUN_IDLE_MS", "1000".into())]
+    })
+    .await;
+    let host = &fake.host;
+    let id = started_feature(host, "A slow job SLOW").await;
+    let f = wait_feature(host, &id, "review", |f| f.status == FeatureStatus::Review).await;
+    assert_eq!(f.runs.len(), 2, "{:?}", f.runs);
+    assert!(
+        f.runs[0]
+            .summary
+            .as_deref()
+            .is_some_and(|s| s.starts_with("No progress for ")),
+        "{:?}",
+        f.runs[0].summary
+    );
+    assert_eq!(f.runs[1].provider_session_id, f.runs[0].provider_session_id);
+    assert_eq!(f.runs[1].state, RunState::Completed);
+    assert_eq!(f.budget.iterations_used, 1);
+}
+
 /// A judge that is never satisfied, a check that passes and a fix that
 /// changes nothing: the second identical verdict on identical work goes to
 /// review, unverified — no third run (D-062).
@@ -4807,8 +4920,16 @@ async fn guidance_reaches_the_agent_once_across_a_pause_and_a_restart() {
         "{:#?}",
         c.turns.iter().map(|t| t.text()).collect::<Vec<_>>()
     );
+    // It says the last turn was cut off (D-063).
     let continuation = c.turns.last().unwrap();
-    assert!(continuation.text().starts_with("Continue the task"));
+    assert!(
+        continuation.text().starts_with(
+            "Your last turn was interrupted before it finished. \
+             Continue the task where you left off."
+        ),
+        "{}",
+        continuation.text()
+    );
     assert!(!continuation.text().contains("Use tabs"));
 }
 
