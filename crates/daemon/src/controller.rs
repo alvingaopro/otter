@@ -296,7 +296,6 @@ impl Daemon {
     /// ask: go on (resume, unblock, start, retry) or pause. Instructions for
     /// the work reach the coding agent with its next turn.
     async fn converse(self: &Arc<Self>, f: &Feature) -> RpcResult<()> {
-        use crate::brain::Intent;
         let open = unanswered(f);
         let Some(last) = open.last().cloned() else {
             return Ok(());
@@ -339,21 +338,8 @@ impl Daemon {
                 intent: crate::brain::Intent::None,
             }
         });
-        // Done (a question answered, work accepted), there is no current work
-        // to guide or go on with: asking for more moves the goal (D-050).
-        // Asked whether a plan goes ahead, instructions are what to change
-        // (D-084), and going on says yes (below).
-        let plan_asked = f
-            .pending_decisions()
-            .find(|d| d.summary == PLAN_QUESTION)
-            .map(|d| d.id.clone());
-        let intent = match (reply.intent, f.status) {
-            (Intent::Guide | Intent::Redirect | Intent::Continue, FeatureStatus::Done) => {
-                Intent::Revise
-            }
-            (Intent::Guide | Intent::Redirect, _) if plan_asked.is_some() => Intent::Revise,
-            (intent, _) => intent,
-        };
+        let plan_asked = plan_question(f);
+        let intent = effective_intent(reply.intent, f.status, plan_asked.is_some());
         let reply_text = if reply.text.is_empty() {
             crate::brain::status_text(f)
         } else {
@@ -361,85 +347,15 @@ impl Daemon {
         };
         let mut stop = false;
         let applied = self.features.lock().await.apply(&f.id, None, |f, now| {
-            let mut changes = Vec::new();
             let (m, c) = message(
                 MessageRole::Controller,
                 reply_text.clone(),
                 Some(last.id.to_string()),
             );
             f.messages.push(m);
-            changes.push(c);
-            let move_to = |f: &mut Feature, to: FeatureStatus, why: &str| {
-                f.transition(to, Some(why.into()), now)
-                    .ok()
-                    .map(Change::new)
-            };
-            let step = match (intent, f.status) {
-                (Intent::Continue, FeatureStatus::Draft) => {
-                    move_to(f, FeatureStatus::Planning, "You said go on")
-                }
-                (Intent::Continue, FeatureStatus::Paused) => {
-                    let next = crate::features::resume_status(f);
-                    move_to(f, next, "You said go on")
-                }
-                (Intent::Continue, FeatureStatus::Blocked)
-                    if f.pending_decisions().next().is_none() =>
-                {
-                    let next = crate::features::resume_status(f);
-                    move_to(f, next, "You said go on")
-                }
-                (Intent::Continue, FeatureStatus::Failed) => {
-                    f.budget.iterations_used = 0;
-                    for t in &mut f.tasks {
-                        if t.status == TaskStatus::Failed {
-                            t.status = TaskStatus::Pending;
-                            t.attempts = 0;
-                        }
-                    }
-                    let next = crate::features::resume_status(f);
-                    move_to(f, next, "You said go on: retrying with a fresh budget")
-                }
-                (Intent::Pause, s)
-                    if s.is_active()
-                        || s == FeatureStatus::Blocked
-                        || s == FeatureStatus::Review =>
-                {
-                    stop = true;
-                    move_to(f, FeatureStatus::Paused, "Paused: you asked")
-                }
-                // The goal moved (D-050): plan again, keeping what is done.
-                (Intent::Revise, s) if !s.is_terminal() => {
-                    stop = true;
-                    changes.extend(crate::features::replan(
-                        f,
-                        "You changed the goal: planning again",
-                        now,
-                    ));
-                    None
-                }
-                // Satisfied: accept what's in review (its gates still apply),
-                // or stop work in progress.
-                (Intent::Finish, FeatureStatus::Review) => {
-                    let accept = otter_core::feature::FeatureAction::Accept {
-                        override_gates: false,
-                    };
-                    match crate::features::apply_action(f, &accept, last.id.as_str(), now) {
-                        Ok(c) => {
-                            changes.extend(c);
-                            None
-                        }
-                        Err(e) => {
-                            f.rationale.push(format!("Not done yet: {}", e.message));
-                            None
-                        }
-                    }
-                }
-                (Intent::Finish, s) if s.is_active() || s == FeatureStatus::Blocked => {
-                    stop = true;
-                    move_to(f, FeatureStatus::Paused, "Stopped: you said that's enough")
-                }
-                _ => None,
-            };
+            let mut changes = vec![c];
+            let (step, stops) = intent_step(f, intent, last.id.as_str(), now);
+            stop = stops;
             changes.extend(step);
             Ok(changes)
         })?;
@@ -451,19 +367,38 @@ impl Daemon {
             reply_text.clone(),
             true,
         );
-        // What reaches the coding agent (D-059): guidance as turns of their
-        // own (each message's id is its command id, so it is queued once);
-        // a redirect stops the current turn first; a question or chat
-        // doesn't go at all.
+        self.after_intent(f, intent, &open, &text, stop, plan_asked)
+            .await
+    }
+
+    /// What follows an intent once the feature has changed (`converse`, and
+    /// Otter's tools, D-089). What reaches the coding agent (D-059):
+    /// guidance as turns of their own (each message's id is its command id,
+    /// so it is queued once); a redirect stops the current turn first, with
+    /// the last message's id and `redirect` as its text; a question or chat
+    /// doesn't go at all. Work that stopped is held; going on while the plan
+    /// question waits approves the plan, as the developer said.
+    pub(crate) async fn after_intent(
+        self: &Arc<Self>,
+        f: &Feature,
+        intent: crate::brain::Intent,
+        messages: &[otter_core::feature::Message],
+        redirect: &str,
+        stop: bool,
+        plan_asked: Option<DecisionId>,
+    ) -> RpcResult<()> {
+        use crate::brain::Intent;
         match routing(intent) {
             Routing::Queue => {
                 let carried = self.carried(f);
-                for m in open.iter().filter(|m| !carried.contains(m.id.as_str())) {
+                for m in messages.iter().filter(|m| !carried.contains(m.id.as_str())) {
                     self.tell_runs(&f.id, m.id.as_str(), &m.text).await;
                 }
             }
             Routing::Redirect => {
-                self.redirect_runs(&f.id, last.id.as_str(), &text).await;
+                if let Some(last) = messages.last() {
+                    self.redirect_runs(&f.id, last.id.as_str(), redirect).await;
+                }
             }
             Routing::Nothing => {}
         }
@@ -2566,6 +2501,111 @@ impl Daemon {
             .flat_map(|c| carried_by(&c))
             .collect()
     }
+}
+
+/// The plan question waiting on the developer, if one is (D-084).
+pub(crate) fn plan_question(f: &Feature) -> Option<DecisionId> {
+    f.pending_decisions()
+        .find(|d| d.summary == PLAN_QUESTION)
+        .map(|d| d.id.clone())
+}
+
+/// What a message's intent does, given where the feature stands. Done (a
+/// question answered, work accepted), there is no current work to guide or
+/// go on with: asking for more moves the goal (D-050). Asked whether a plan
+/// goes ahead, instructions are what to change (D-084), and going on says
+/// yes ([`Daemon::after_intent`]).
+pub(crate) fn effective_intent(
+    intent: crate::brain::Intent,
+    status: FeatureStatus,
+    plan_asked: bool,
+) -> crate::brain::Intent {
+    use crate::brain::Intent;
+    match (intent, status) {
+        (Intent::Guide | Intent::Redirect | Intent::Continue, FeatureStatus::Done) => {
+            Intent::Revise
+        }
+        (Intent::Guide | Intent::Redirect, _) if plan_asked => Intent::Revise,
+        (intent, _) => intent,
+    }
+}
+
+/// The change an intent makes to the feature (`converse`, and Otter's tools,
+/// D-089), and whether the work in progress stops. `authority` is the
+/// developer's message that asked for it: accepting is recorded under it.
+pub(crate) fn intent_step(
+    f: &mut Feature,
+    intent: crate::brain::Intent,
+    authority: &str,
+    now: otter_core::Timestamp,
+) -> (Vec<Change>, bool) {
+    use crate::brain::Intent;
+    let move_to = |f: &mut Feature, to: FeatureStatus, why: &str| {
+        f.transition(to, Some(why.into()), now)
+            .ok()
+            .map(Change::new)
+    };
+    let mut changes = Vec::new();
+    let mut stop = false;
+    let step = match (intent, f.status) {
+        (Intent::Continue, FeatureStatus::Draft) => {
+            move_to(f, FeatureStatus::Planning, "You said go on")
+        }
+        (Intent::Continue, FeatureStatus::Paused) => {
+            let next = crate::features::resume_status(f);
+            move_to(f, next, "You said go on")
+        }
+        (Intent::Continue, FeatureStatus::Blocked) if f.pending_decisions().next().is_none() => {
+            let next = crate::features::resume_status(f);
+            move_to(f, next, "You said go on")
+        }
+        (Intent::Continue, FeatureStatus::Failed) => {
+            f.budget.iterations_used = 0;
+            for t in &mut f.tasks {
+                if t.status == TaskStatus::Failed {
+                    t.status = TaskStatus::Pending;
+                    t.attempts = 0;
+                }
+            }
+            let next = crate::features::resume_status(f);
+            move_to(f, next, "You said go on: retrying with a fresh budget")
+        }
+        (Intent::Pause, s)
+            if s.is_active() || s == FeatureStatus::Blocked || s == FeatureStatus::Review =>
+        {
+            stop = true;
+            move_to(f, FeatureStatus::Paused, "Paused: you asked")
+        }
+        // The goal moved (D-050): plan again, keeping what is done.
+        (Intent::Revise, s) if !s.is_terminal() => {
+            stop = true;
+            changes.extend(crate::features::replan(
+                f,
+                "You changed the goal: planning again",
+                now,
+            ));
+            None
+        }
+        // Satisfied: accept what's in review (its gates still apply), or
+        // stop work in progress.
+        (Intent::Finish, FeatureStatus::Review) => {
+            let accept = otter_core::feature::FeatureAction::Accept {
+                override_gates: false,
+            };
+            match crate::features::apply_action(f, &accept, authority, now) {
+                Ok(c) => changes.extend(c),
+                Err(e) => f.rationale.push(format!("Not done yet: {}", e.message)),
+            }
+            None
+        }
+        (Intent::Finish, s) if s.is_active() || s == FeatureStatus::Blocked => {
+            stop = true;
+            move_to(f, FeatureStatus::Paused, "Stopped: you said that's enough")
+        }
+        _ => None,
+    };
+    changes.extend(step);
+    (changes, stop)
 }
 
 /// What a developer's message turns into for the coding agent.
