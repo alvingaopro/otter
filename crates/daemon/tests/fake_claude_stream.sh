@@ -4,7 +4,8 @@
 # what happens: ASK_RM (a command only the developer may allow), ASK_INSTALL
 # (one the Control Agent may decide), ASK_EDIT (a routine edit), ASK_QUESTION,
 # FAIL, HANG (works until interrupted), SLOW (works until interrupted, then
-# finishes once resumed); anything else finishes the turn. Asked to plan the
+# finishes once resumed), BGWAIT (waits for background work, then takes it
+# up by itself, as Claude Code does); anything else finishes the turn. Asked to plan the
 # work, it proposes two tasks as JSON (NOPLAN: it answers in prose instead).
 [ -n "$FAKE_CODEX_LOG" ] && echo "claude-stream $*" >> "$FAKE_CODEX_LOG"
 sid="fake-session-$$"
@@ -44,6 +45,15 @@ while read -r line; do
           result success false "I would write the export and test it." ;;
         *'plan the work'*)
           result success false '```json\n{\"summary\": \"Add an exporter, then cover it\", \"tasks\": [{\"title\": \"Write the exporter\", \"detail\": \"in export.sh\"}, {\"title\": \"Cover it with a test\", \"detail\": \"in the Makefile\"}], \"criteria\": [{\"text\": \"Rows export as CSV with a header\", \"how\": \"diff\"}, {\"text\": \"make test passes\", \"how\": \"check\"}], \"check\": \"make test\"}\n```' ;;
+        *BGWAIT*)
+          out '{"type":"system","subtype":"background_tasks_changed","tasks":[{"task_id":"b1","task_type":"local_bash","description":"sleep 1 && echo done"}]}'
+          text "It runs in the background; I will wait for it."
+          result success false "waiting for the background job"
+          sleep 1
+          out '{"type":"system","subtype":"background_tasks_changed","tasks":[]}'
+          text "It printed done."
+          result success false "done after waiting"
+          ;;
         *ASK_RM*) ask r1 Bash '{"command":"rm -rf build"}' ;;
         *ASK_INSTALL*) ask r2 Bash '{"command":"npm install left-pad"}' ;;
         *ASK_EDIT*) ask r4 Write '{"file_path":"src/a.rs","content":"x"}' ;;

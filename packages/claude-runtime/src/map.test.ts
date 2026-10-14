@@ -79,9 +79,26 @@ test("results end the turn with the right outcome; EOF never does", () => {
   assert.equal(failed.outcome, "failed");
   assert.equal(failed.error, "rate_limited");
   assert.equal(failed.summary, "slow down");
-  // No turn running: nothing finishes.
+  // No turn sent yet: nothing finishes.
   const idle = new Mapper();
   assert.ok(idle.map({ type: "result", subtype: "success" }).every((e) => e.type !== "turn_finished"));
+});
+
+test("background work is counted, and a turn Claude Code starts itself goes on from ours", () => {
+  const m = sent();
+  assert.deepEqual(
+    m.map({ type: "system", subtype: "background_tasks_changed", tasks: [{ task_id: "b1", task_type: "local_bash", description: "sleep 20" }, { task_id: "w", ambient: true }] }),
+    [{ type: "background", running: 1 }],
+  );
+  const first = m.map({ type: "result", subtype: "success", is_error: false, result: "I'll wait for it" });
+  assert.equal((first.find((e) => e.type === "turn_finished") as { turn_id: string }).turn_id, "turn_1");
+  assert.deepEqual(m.map({ type: "system", subtype: "background_tasks_changed", tasks: [] }), [{ type: "background", running: 0 }]);
+  // Claude Code takes the result up by itself: still turn_1's.
+  m.map({ type: "assistant", parent_tool_use_id: null, message: { id: "msg_Z", content: [{ type: "text", text: "It printed done." }] } });
+  const second = m.map({ type: "result", subtype: "success", is_error: false, result: "done after waiting" });
+  const fin = second.find((e) => e.type === "turn_finished") as { turn_id: string; summary: string };
+  assert.equal(fin.turn_id, "turn_1");
+  assert.equal(fin.summary, "done after waiting");
 });
 
 test("an authentication failure is told apart", () => {

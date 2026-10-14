@@ -687,6 +687,14 @@ fn result_text(content: &Value) -> String {
     }
 }
 
+/// Background tasks that are work the agent waits on: not the ambient ones
+/// (watchers, housekeeping), which Claude Code says aren't activity.
+pub(crate) fn background_count(tasks: &Value) -> u32 {
+    tasks.as_array().map_or(0, |t| {
+        t.iter().filter(|t| t["ambient"] != true).count() as u32
+    })
+}
+
 /// How a `result` ends the turn.
 fn outcome(v: &Value, interrupting: bool) -> (TurnOutcome, Option<ErrorCategory>) {
     let ok = v["is_error"] != true && v["subtype"] == "success";
@@ -734,6 +742,12 @@ fn parse(v: &Value, shared: &Mutex<Shared>) -> Vec<RuntimeEvent> {
                 s.info.session_id = Some(id.to_owned());
                 out.push(RuntimeEvent::Session { id: id.to_owned() });
             }
+        }
+        // The whole set of background work still running (D-065).
+        Some("system") if v["subtype"] == "background_tasks_changed" => {
+            out.push(RuntimeEvent::Background {
+                running: background_count(&v["tasks"]),
+            });
         }
         Some("stream_event") if main => {
             let ev = &v["event"];
@@ -1010,6 +1024,23 @@ mod tests {
         assert!(
             parse(&sub, &s).is_empty(),
             "a subagent's text isn't the main turn"
+        );
+    }
+
+    #[test]
+    fn background_work_is_counted_without_the_ambient_kind() {
+        let s = Mutex::new(Shared::default());
+        let changed = json!({"type":"system","subtype":"background_tasks_changed","tasks":[
+            {"task_id":"b1","task_type":"local_bash","description":"cargo test"},
+            {"task_id":"w1","task_type":"monitor","description":"watch","ambient":true}]});
+        assert_eq!(
+            parse(&changed, &s),
+            vec![RuntimeEvent::Background { running: 1 }]
+        );
+        let none = json!({"type":"system","subtype":"background_tasks_changed","tasks":[]});
+        assert_eq!(
+            parse(&none, &s),
+            vec![RuntimeEvent::Background { running: 0 }]
         );
     }
 

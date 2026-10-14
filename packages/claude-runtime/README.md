@@ -10,7 +10,7 @@ otterd ──stdin: initialize, send_turn, interrupt, policy_reply,
                 resolve_interaction, shutdown──▶ worker ──SDK──▶ Claude Code
        ◀──stdout: ready, session, delivered, text_delta, text,
                 tool_started, tool_finished, policy_check,
-                permission_request, turn_finished, fatal──
+                permission_request, background, turn_finished, fatal──
 ```
 
 ## Compatibility record
@@ -49,6 +49,17 @@ Observed and relied on:
   then completes normally).
 - Claude Code ignores a project's permission allow-rules in a workspace
   that hasn't been trusted interactively.
+
+From the SDK's typings, not yet probed live (D-065):
+
+- `system/background_tasks_changed` carries the whole set of running
+  background tasks each time it changes (`ambient` ones aren't work); the
+  worker reports the count as `background`.
+- When background work ends, Claude Code may start a turn by itself; its
+  `result` is reported as the last turn otterd sent, which otterd holds
+  open while background work runs.
+- `perTaskStopAffordance: true`: an interrupt stops the turn and spares
+  background work; shutting the run down still ends it.
 
 ## Develop
 

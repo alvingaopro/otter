@@ -802,6 +802,9 @@ fn parse(v: &Value, shared: &Mutex<Shared>) -> Vec<Msg> {
             })
         }
         "delivered" => ev(RuntimeEvent::TurnDelivered),
+        "background" => ev(RuntimeEvent::Background {
+            running: v["running"].as_u64().unwrap_or(0) as u32,
+        }),
         "text_delta" => ev(RuntimeEvent::TextDelta {
             message: s("message"),
             block: v["block"].as_u64().unwrap_or(0) as u32,

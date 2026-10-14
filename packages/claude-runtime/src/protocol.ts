@@ -100,6 +100,8 @@ export type Event =
       auth_source: string;
     }
   | { type: "delivered"; turn_id: string }
+  /** How much background work the agent started still runs (the whole count, each change). */
+  | { type: "background"; running: number }
   | { type: "text_delta"; message: string; block: number; text: string }
   | { type: "text"; message: string; block: number; text: string }
   | { type: "tool_started"; call: string; parent: string | null; tool: string; input: unknown }
