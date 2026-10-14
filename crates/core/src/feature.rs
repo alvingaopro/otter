@@ -19,7 +19,7 @@ use crate::ids::{
     ConversationId, DecisionId, EvidenceId, FeatureId, MessageId, RunId, SessionId, TaskId, TurnId,
     WorkspaceId,
 };
-use crate::model::Timestamp;
+use crate::model::{Activity, Timestamp};
 
 /// Version of the persisted [`Feature`] document. Bump with a migration in
 /// the daemon's feature store.
@@ -441,6 +441,9 @@ pub struct Feature {
     pub status: FeatureStatus,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub status_reason: Option<String>,
+    /// When it took its status (absent in documents from before D-071).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status_since: Option<Timestamp>,
     #[serde(default)]
     pub requirements: Vec<String>,
     #[serde(default)]
@@ -521,6 +524,7 @@ impl Feature {
             title,
             request,
             status: FeatureStatus::Draft,
+            status_since: Some(now),
             status_reason: None,
             requirements: Vec::new(),
             acceptance: Vec::new(),
@@ -570,6 +574,66 @@ impl Feature {
         self.decisions
             .iter()
             .filter(|d| d.status == DecisionStatus::Pending)
+    }
+
+    /// What the feature waits on the developer for, if anything (D-071).
+    /// A decision comes first (the oldest); then review once it's ready to
+    /// accept (or a gate failed), blocked, failed. Review still publishing
+    /// or waiting for CI isn't waiting on them.
+    pub fn needs(&self) -> Option<Need> {
+        let since = self.status_since.unwrap_or(self.updated_at);
+        let reason = |fallback: &str| {
+            self.status_reason
+                .clone()
+                .unwrap_or_else(|| fallback.to_owned())
+        };
+        let mut pending: Vec<&DecisionRequest> = self.pending_decisions().collect();
+        pending.sort_by_key(|d| d.created_at);
+        if let Some(d) = pending.first() {
+            return Some(Need {
+                kind: if d.kind == DecisionKind::Question {
+                    NeedKind::Question
+                } else {
+                    NeedKind::Decision
+                },
+                summary: d.summary.clone(),
+                since: d.created_at,
+                decision_id: Some(d.id.clone()),
+                decisions: pending.len(),
+            });
+        }
+        let need = |kind, summary| {
+            Some(Need {
+                kind,
+                summary,
+                since,
+                decision_id: None,
+                decisions: 0,
+            })
+        };
+        match self.status {
+            FeatureStatus::Review
+                if self.report.is_some()
+                    || self.gates.iter().any(|g| g.status == GateStatus::Failed) =>
+            {
+                need(NeedKind::Review, reason("Ready for your review"))
+            }
+            FeatureStatus::Blocked => need(NeedKind::Blocked, reason("Waiting on you")),
+            FeatureStatus::Failed => need(NeedKind::Failed, reason("Stopped")),
+            _ => None,
+        }
+    }
+
+    /// Where it stands, on the workspaces' scale (D-071).
+    pub fn activity(&self) -> Activity {
+        match (self.needs(), self.status) {
+            (Some(n), _) if n.kind == NeedKind::Failed => Activity::Failed,
+            (Some(_), _) => Activity::NeedsYou,
+            (None, FeatureStatus::Done) => Activity::Completed,
+            (None, FeatureStatus::Cancelled) => Activity::Archived,
+            (None, FeatureStatus::Draft | FeatureStatus::Paused) => Activity::Idle,
+            (None, _) => Activity::Working,
+        }
     }
 
     /// The message the request came in (D-067): the developer's first, when
@@ -623,12 +687,44 @@ impl Feature {
         }
         self.status = to;
         self.status_reason = reason.clone();
+        self.status_since = Some(now);
         self.updated_at = now;
         if to.is_active() && !from.is_active() {
             self.active_since = Some(now);
         }
         Ok(FeatureEvent::StatusChanged { from, to, reason })
     }
+}
+
+/// What a feature waits on the developer for (D-071): one rule, here, for
+/// the app, its notifications and `otter ls`.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct Need {
+    pub kind: NeedKind,
+    /// What it is, in a line: the decision's summary, the status reason.
+    pub summary: String,
+    /// Waiting since.
+    pub since: Timestamp,
+    /// The decision to answer, when it's one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub decision_id: Option<DecisionId>,
+    /// Decisions waiting, this one included.
+    pub decisions: usize,
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum NeedKind {
+    /// To allow or deny.
+    Decision,
+    /// To answer.
+    Question,
+    /// Ready for the developer to accept, or not.
+    Review,
+    /// Waiting on something only the developer can do (no decision).
+    Blocked,
+    /// Stopped: retry, change the goal, or cancel.
+    Failed,
 }
 
 /// What a client tells a feature to do (`feature.act`).
@@ -1084,6 +1180,99 @@ mod tests {
         assert_eq!(f.request_message(), Some(&f.messages[1].id));
         f.request = "Something else".into();
         assert_eq!(f.request_message(), None);
+    }
+
+    fn decision(kind: DecisionKind, summary: &str, at: Timestamp) -> DecisionRequest {
+        DecisionRequest {
+            id: DecisionId::generate(),
+            task_id: None,
+            run_id: None,
+            kind,
+            risk: Risk::High,
+            summary: summary.into(),
+            detail: None,
+            options: vec![],
+            status: DecisionStatus::Pending,
+            decided_by: None,
+            answer: None,
+            rationale: None,
+            created_at: at,
+            decided_at: None,
+            user_only: true,
+            grant: None,
+        }
+    }
+
+    #[test]
+    fn what_a_feature_needs_is_one_rule() {
+        let t0 = chrono::Utc::now();
+        let later = t0 + chrono::Duration::minutes(5);
+        let mut f = Feature::new("t".into(), "r".into(), t0);
+        assert_eq!((f.needs(), f.activity()), (None, Activity::Idle));
+        f.transition(Planning, None, t0).unwrap();
+        f.transition(Implementing, None, t0).unwrap();
+        assert_eq!((f.needs(), f.activity()), (None, Activity::Working));
+        // Decisions: the oldest first, counted.
+        f.decisions.push(decision(
+            DecisionKind::ToolPermission,
+            "Run `git push`",
+            later,
+        ));
+        f.decisions
+            .push(decision(DecisionKind::Question, "Which format?", t0));
+        let n = f.needs().unwrap();
+        assert_eq!(
+            (n.kind, n.summary.as_str(), n.since, n.decisions),
+            (NeedKind::Question, "Which format?", t0, 2)
+        );
+        assert_eq!(n.decision_id.as_ref(), Some(&f.decisions[1].id));
+        assert_eq!(f.activity(), Activity::NeedsYou);
+        f.decisions
+            .iter_mut()
+            .for_each(|d| d.status = DecisionStatus::Approved);
+        // Review waits on the developer once it's ready to accept, not
+        // while it publishes or CI runs.
+        f.transition(Verifying, None, t0).unwrap();
+        f.transition(Review, Some("Ready for your review".into()), later)
+            .unwrap();
+        assert_eq!((f.needs(), f.activity()), (None, Activity::Working));
+        f.report = Some("## Report".into());
+        let n = f.needs().unwrap();
+        assert_eq!((n.kind, n.since), (NeedKind::Review, later));
+        f.report = None;
+        f.gates.push(Gate {
+            name: "CI".into(),
+            status: GateStatus::Failed,
+            detail: None,
+        });
+        assert_eq!(f.needs().unwrap().kind, NeedKind::Review);
+        // Failed waits on a retry; blocked on the developer.
+        f.transition(
+            Failed,
+            Some("Stopped: the time budget is used up".into()),
+            later,
+        )
+        .unwrap();
+        assert_eq!(f.needs().unwrap().kind, NeedKind::Failed);
+        assert_eq!(f.activity(), Activity::Failed);
+        f.status = Blocked;
+        f.status_reason = Some("Choose a workspace".into());
+        let n = f.needs().unwrap();
+        assert_eq!(
+            (n.kind, n.summary.as_str()),
+            (NeedKind::Blocked, "Choose a workspace")
+        );
+        f.status = Done;
+        assert_eq!((f.needs(), f.activity()), (None, Activity::Completed));
+        f.status = Paused;
+        assert_eq!(f.activity(), Activity::Idle);
+        f.status = Cancelled;
+        assert_eq!(f.activity(), Activity::Archived);
+        // Documents from before `status_since`: since the last change.
+        let mut old = f.clone();
+        old.status = Failed;
+        old.status_since = None;
+        assert_eq!(old.needs().unwrap().since, old.updated_at);
     }
 
     #[test]

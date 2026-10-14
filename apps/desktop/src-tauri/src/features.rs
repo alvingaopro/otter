@@ -1,20 +1,45 @@
 //! Features (D-043): pass-throughs to a host's daemon, which owns them. The
 //! UI follows `FeatureChanged` in `host-event` and reloads what changed.
 
-use otter_core::feature::{Feature, FeatureAction, FeatureEventRecord};
+use otter_core::Activity;
+use otter_core::feature::{Feature, FeatureAction, FeatureEventRecord, Need};
 use otter_protocol::feature::FeatureCreate;
+use serde::Serialize;
 use tauri::AppHandle;
 
 use crate::hosts::rpc;
 
+/// A feature as the UI gets it: with what it needs from the developer and
+/// where it stands computed by `otter-core` (D-071), as `view.rs` does for
+/// workspaces, so the frontend never re-implements them.
+#[derive(Serialize)]
+pub struct FeatureView {
+    #[serde(flatten)]
+    feature: Feature,
+    activity: Activity,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    needs: Option<Need>,
+}
+
+impl From<Feature> for FeatureView {
+    fn from(feature: Feature) -> Self {
+        FeatureView {
+            activity: feature.activity(),
+            needs: feature.needs(),
+            feature,
+        }
+    }
+}
+
 /// A host's features, newest first. An `otterd` too old to know features
 /// answers with an error, which the UI treats as "none here".
 #[tauri::command]
-pub async fn features_list(app: AppHandle, host: String) -> Result<Vec<Feature>, String> {
+pub async fn features_list(app: AppHandle, host: String) -> Result<Vec<FeatureView>, String> {
     rpc(&app, &host)
         .await?
         .feature_list()
         .await
+        .map(|l| l.into_iter().map(FeatureView::from).collect())
         .map_err(|e| e.to_string())
 }
 
@@ -26,7 +51,7 @@ pub async fn feature_create(
     title: String,
     request: String,
     workspace: Option<String>,
-) -> Result<Feature, String> {
+) -> Result<FeatureView, String> {
     rpc(&app, &host)
         .await?
         .feature_create(FeatureCreate {
@@ -36,6 +61,7 @@ pub async fn feature_create(
             workspace,
         })
         .await
+        .map(FeatureView::from)
         .map_err(|e| e.to_string())
 }
 
@@ -46,11 +72,12 @@ pub async fn feature_send(
     command_id: String,
     feature: String,
     text: String,
-) -> Result<Feature, String> {
+) -> Result<FeatureView, String> {
     rpc(&app, &host)
         .await?
         .feature_send(&command_id, &feature, &text)
         .await
+        .map(FeatureView::from)
         .map_err(|e| e.to_string())
 }
 
@@ -61,11 +88,12 @@ pub async fn feature_act(
     command_id: String,
     feature: String,
     action: FeatureAction,
-) -> Result<Feature, String> {
+) -> Result<FeatureView, String> {
     rpc(&app, &host)
         .await?
         .feature_act(&command_id, &feature, action)
         .await
+        .map(FeatureView::from)
         .map_err(|e| e.to_string())
 }
 

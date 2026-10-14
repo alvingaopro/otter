@@ -3,6 +3,8 @@
 // be built — owned by a host's daemon and linked to Workspaces and Sessions
 // by id, never embedded in them.
 
+import type { Activity } from "./types";
+
 export type FeatureStatus =
   | "draft"
   | "planning"
@@ -156,6 +158,22 @@ export interface Feature {
   delivery?: Delivery;
   /** The final report (Markdown). */
   report?: string;
+  /** When it took its status. */
+  status_since?: string;
+  /** Computed by otter-core where the app gets features (D-071). */
+  activity?: Activity;
+  /** What it waits on you for, computed by otter-core (D-071). */
+  needs?: Need;
+}
+
+export type NeedKind = "decision" | "question" | "review" | "blocked" | "failed";
+
+export interface Need {
+  kind: NeedKind;
+  summary: string;
+  since: string;
+  decision_id?: string;
+  decisions: number;
 }
 
 export type GateStatus = "passed" | "failed" | "pending" | "not_applicable";
@@ -247,9 +265,24 @@ export function pendingDecisions(f: Feature): DecisionRequest[] {
   return f.decisions.filter((d) => d.status === "pending");
 }
 
-/** The developer has to act: a decision waits, the feature is blocked, or it is ready for review. */
+/**
+ * What it waits on you for. otter-core decides (D-071) and the app is
+ * served the answer; preview features without it get a rough stand-in.
+ */
+export function needOf(f: Feature): Need | undefined {
+  if (f.activity !== undefined) return f.needs;
+  const d = pendingDecisions(f)[0];
+  if (d) return { kind: d.kind === "question" ? "question" : "decision", summary: d.summary, since: d.created_at, decision_id: d.id, decisions: pendingDecisions(f).length };
+  const since = f.status_since ?? f.updated_at;
+  if (f.status === "review" && f.report) return { kind: "review", summary: f.status_reason ?? "Ready for your review", since, decisions: 0 };
+  if (f.status === "blocked") return { kind: "blocked", summary: f.status_reason ?? "Waiting on you", since, decisions: 0 };
+  if (f.status === "failed") return { kind: "failed", summary: f.status_reason ?? "Stopped", since, decisions: 0 };
+  return undefined;
+}
+
+/** The developer has to act: a decision, review, a block, a stop. */
 export function needsYou(f: Feature): boolean {
-  return f.status === "blocked" || f.status === "review" || pendingDecisions(f).length > 0;
+  return needOf(f) !== undefined;
 }
 
 export function matches(f: Feature, filter: FeatureFilter): boolean {
@@ -297,6 +330,7 @@ export function statusDetail(f: Feature): string | undefined {
 
 /** The status mark shared with workspaces (shape, not only color). */
 export function featureGlyph(f: Feature): "needs" | "working" | "done" | "failed" | "idle" {
+  if (needOf(f)?.kind === "failed") return "failed";
   if (needsYou(f)) return "needs";
   if (f.status === "failed") return "failed";
   if (f.status === "done") return "done";
@@ -304,10 +338,13 @@ export function featureGlyph(f: Feature): "needs" | "working" | "done" | "failed
   return "idle";
 }
 
-/** Newest activity first; features that need you on top. */
+/** Features that need you on top, longest-waiting first; then newest activity first. */
 export function sortFeatures(list: PlacedFeature[]): PlacedFeature[] {
   return [...list].sort((a, b) => {
-    const n = Number(needsYou(b.feature)) - Number(needsYou(a.feature));
+    const na = needOf(a.feature);
+    const nb = needOf(b.feature);
+    if (na && nb) return na.since.localeCompare(nb.since);
+    const n = Number(!!nb) - Number(!!na);
     if (n !== 0) return n;
     return b.feature.updated_at.localeCompare(a.feature.updated_at);
   });

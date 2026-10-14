@@ -11,7 +11,13 @@ describe("feature contract helpers", () => {
   it("knows which features need the developer", () => {
     expect(needsYou(blocked)).toBe(true);
     expect(needsYou(active)).toBe(false);
-    expect(needsYou({ ...done, status: "review" })).toBe(true);
+    // Review needs you once it's ready to accept, not while CI runs (D-071).
+    expect(needsYou({ ...done, status: "review", report: "## Report" })).toBe(true);
+    expect(needsYou({ ...done, status: "review", report: undefined })).toBe(false);
+    // A stopped feature waits on your retry.
+    expect(needsYou(failed)).toBe(true);
+    // What otter-core served wins.
+    expect(needsYou({ ...blocked, activity: "working", needs: undefined })).toBe(false);
   });
 
   it("filters by status", () => {
@@ -32,9 +38,9 @@ describe("feature contract helpers", () => {
     expect(failed.status).toBe("failed");
   });
 
-  it("sorts what needs you first, then newest", () => {
-    const placed: PlacedFeature[] = [active, blocked, done].map((f) => ({ host: "h", feature: f, key: f.id }));
-    expect(sortFeatures(placed).map((p) => p.feature.title)).toEqual([blocked.title, active.title, done.title]);
+  it("sorts what needs you first, longest-waiting first, then newest", () => {
+    const placed: PlacedFeature[] = [active, blocked, done, failed].map((f) => ({ host: "h", feature: f, key: f.id }));
+    expect(sortFeatures(placed).map((p) => p.feature.title)).toEqual([failed.title, blocked.title, active.title, done.title]);
   });
 });
 
@@ -95,10 +101,12 @@ describe("Features view", () => {
   it("lists features with what needs you first and says it is a preview", async () => {
     await render(mockSource("mac"));
     const rows = [...host.querySelectorAll('[role="listitem"]')].map((r) => r.querySelector(".ws-name")?.textContent);
-    expect(rows[0]).toBe("Rotate the staging database password");
+    // Waiting on you longest: the stopped one, then the blocked one.
+    expect(rows.slice(0, 2)).toEqual(["Upgrade xterm to v7", "Rotate the staging database password"]);
     expect(rows).toHaveLength(5);
     expect(q('[role="note"]')?.textContent).toContain("Preview");
-    // The selected (blocked) feature opens on its approvals.
+    // A blocked feature opens on its approvals.
+    await act(async () => byText('[role="listitem"]', "Rotate the staging")!.click());
     expect(q('[role="tab"][aria-selected="true"]')?.textContent).toContain("Approvals");
     expect(q(".banner.needs")).not.toBeNull();
   });
@@ -192,6 +200,7 @@ describe("Features view", () => {
 
   it("answers an approval and the feature moves on", async () => {
     await render(mockSource("mac"));
+    await act(async () => byText('[role="listitem"]', "Rotate the staging")!.click());
     await act(async () => byText(".decision button", "Approve")!.click());
     const blocked = source.list().find((p) => p.feature.title.startsWith("Rotate"))!;
     expect(blocked.feature.decisions[0].status).toBe("approved");
