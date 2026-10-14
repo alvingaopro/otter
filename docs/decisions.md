@@ -2301,3 +2301,17 @@ in the menu-bar item, and `otter ls` listed workspaces alone.
   <what>" and since when; `--json` gives them per host with `activity` and
   `needs`. An otterd without features shows none.
 
+## D-074 — M4's scope, derived without its spec (2026-10-14)
+
+As for M3 (D-070): the milestone's spec isn't on this machine and the
+requester asked to go on, so M4 (*failures can be diagnosed without
+exposing secrets or reading raw terminal output*) starts from a scope
+derived from the exit outcome, the design's rules on secrets and an audit
+of the code — `docs/plans/m4-observability.md`, which marks what is already
+met (the env file, events without commands or keys, write-only API keys,
+git's redaction) and six gaps: failure text that reaches durable state
+unredacted, why a process ended living only in its pane, error categories
+without next steps, a failed workspace's reason missing from the app, no
+way to diagnose a host, and a feature's failure not traceable from the
+terminal. When the spec arrives it wins.
+
