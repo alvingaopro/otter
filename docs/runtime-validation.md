@@ -65,6 +65,7 @@ agent) cover the mechanics. Re-run with the audit's harness:
 | M2-2 | One session per feature (t1/t2 Mode C: 1 session each; real features ≤ 2) | Pending | Offline: a fix resumes the session (`--resume`), the planning turn and tasks share it (D-064). |
 | M2-3 | An approval answered after the run's limit: the approved command completes | Pending | Offline: `waiting_on_an_approval_doesnt_use_up_the_runs_time` (audit E1, D-063). |
 | M2-4 | The planning turn with a real model: a JSON proposal, reviewed by the brain | Pending | Offline: `the_coding_agent_plans_first_in_the_features_conversation`, `a_planning_turn_without_a_plan_falls_back` (D-064). |
+| M2-5 | A run that starts `sleep 20 && echo done` in the background and says it will wait ends only after `done` (both backends) | Pending | Offline: `a_run_waits_for_the_agents_background_work` (stream-json shapes), actor unit tests, worker mapping tests (D-065). |
 
 ## Known limits
 

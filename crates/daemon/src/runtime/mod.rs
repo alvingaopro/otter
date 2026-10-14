@@ -201,6 +201,11 @@ pub enum RuntimeEvent {
         call: ToolCall,
         tool_use_id: Option<String>,
     },
+    /// How much background work the agent started still runs (the whole
+    /// count, each time it changes; D-065).
+    Background {
+        running: u32,
+    },
     /// The turn settled; the agent waits for input.
     TurnFinished {
         outcome: TurnOutcome,

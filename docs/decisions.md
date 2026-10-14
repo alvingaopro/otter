@@ -2016,3 +2016,38 @@ session knew.
   for the proposal (planning falls back). `OTTER_PLAN_TURN=0` turns the
   planning turn off; the e2e tests do, except the ones about it.
 
+## D-065 — A turn waits for the agent's background work (2026-10-14)
+
+M2 step 4 (`docs/plans/m2-feature-to-pr.md`; autonomy audit P1-4, RC-8).
+A run ended at the agent's first `result`: the worker was stopped and its
+process group killed, so an agent that said "the tests run in the
+background; I'll wait for them" was cut off, and its task recorded done
+(audit R-4, `run_5e6e0ssfr0`).
+
+- **Runtimes report background work.** Claude Code's
+  `system/background_tasks_changed` (the whole set, each time it changes)
+  becomes `RuntimeEvent::Background { running }` — directly in the
+  stream-json parser, through a new `background` frame from the SDK worker.
+  Ambient tasks (watchers, housekeeping) don't count. A `result` Claude Code
+  produces in a turn it started itself (when background work ends) is
+  reported as the last turn Otter sent, not dropped.
+- **The actor holds the turn.** A turn that completes while background
+  work runs stays open: no next turn is delivered, the run isn't stopped,
+  and what the agent says and does when the work ends belongs to it. It
+  finishes with the agent's next result once nothing runs in the
+  background; or, if the agent says nothing more within
+  `OTTER_BACKGROUND_SETTLE_MS` (5 s) of the work ending, as it was; or
+  after `OTTER_BACKGROUND_WAIT_MS` (20 min) whatever runs. Interrupting,
+  pausing or redirecting a held turn ends it at once as interrupted.
+  Runtime-neutral, in the actor, so both Claude backends get it.
+- **Background work is work under way.** It counts like a running tool for
+  the no-progress watchdog (D-063), and the run's work clock keeps
+  running: a run that never goes quiet is still bounded by its limit.
+- **An interrupt spares background work** (`perTaskStopAffordance: true`
+  on the SDK backend): it stops the agent's turn, not a server or build
+  it started on purpose. Ending the run still ends its process group (the
+  run's processes don't outlive it, D-058).
+- The SDK stays at 0.3.285: it already has the task events and the
+  affordance. Not yet probed live (recorded as pending in
+  `runtime-validation.md`).
+

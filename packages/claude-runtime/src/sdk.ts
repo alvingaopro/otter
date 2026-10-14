@@ -95,6 +95,9 @@ export class Session {
       maxBudgetUsd: i.max_budget_usd,
       permissionMode: "default",
       disallowedTools: DISALLOWED_TOOLS,
+      // An interrupt stops the turn, not the background work the agent
+      // started on purpose (D-065); shutting the run down still ends it.
+      perTaskStopAffordance: true,
       abortController: this.abort,
       hooks: { PreToolUse: [{ hooks: [this.preToolUse] }] },
       canUseTool: this.canUseTool,

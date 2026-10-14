@@ -3528,6 +3528,33 @@ async fn verification_stops_when_a_fix_changes_nothing() {
     assert_eq!((f.status, f.runs.len()), (FeatureStatus::Review, 2));
 }
 
+/// A turn the agent ends while its background work still runs isn't the end
+/// of the run (D-065): what it does when the work is done is part of it.
+#[tokio::test]
+async fn a_run_waits_for_the_agents_background_work() {
+    use otter_core::feature::{FeatureStatus, RunState};
+    let fake = fake_agent_host("ok", "rules").await;
+    let host = &fake.host;
+    let id = started_feature(host, "Build it in the background BGWAIT").await;
+    let f = wait_feature(host, &id, "review", |f| f.status == FeatureStatus::Review).await;
+    assert_eq!(f.runs.len(), 1, "{:?}", f.runs);
+    assert_eq!(f.runs[0].state, RunState::Completed);
+    assert_eq!(f.runs[0].summary.as_deref(), Some("done after waiting"));
+    let c = host
+        .conn()
+        .await
+        .conversation_get(f.runs[0].conversation_id.as_ref().unwrap().as_str())
+        .await
+        .unwrap()
+        .conversation;
+    assert_eq!(c.turns.len(), 1, "one turn, the follow-up included");
+    assert!(
+        c.messages
+            .iter()
+            .any(|m| m.text().contains("It printed done."))
+    );
+}
+
 /// Planning starts with the coding agent reading the code (D-064): its
 /// proposal is the plan (no model to review it here), and the tasks are
 /// turns in the same conversation after it.

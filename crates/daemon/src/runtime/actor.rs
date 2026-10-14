@@ -80,6 +80,38 @@ fn interrupt_deadline() -> std::time::Duration {
     )
 }
 
+/// How long a finished turn may wait for the agent's background work
+/// (`OTTER_BACKGROUND_WAIT_MS`, default 20 min; D-065).
+fn background_wait() -> std::time::Duration {
+    std::time::Duration::from_millis(
+        std::env::var("OTTER_BACKGROUND_WAIT_MS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(20 * 60 * 1000),
+    )
+}
+
+/// Once the background work is done, how long the agent has to take it up
+/// again before its turn finishes as it was (`OTTER_BACKGROUND_SETTLE_MS`,
+/// default 5 s).
+fn background_settle() -> std::time::Duration {
+    std::time::Duration::from_millis(
+        std::env::var("OTTER_BACKGROUND_SETTLE_MS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(5_000),
+    )
+}
+
+/// A turn the agent finished while its background work still ran (D-065).
+struct Held {
+    summary: Option<String>,
+    error: Option<ErrorCategory>,
+    usage: Option<otter_core::conversation::Usage>,
+    /// It finishes by then whatever runs.
+    until: tokio::time::Instant,
+}
+
 /// What happened, with Otter's ids. Listeners use what they need (the
 /// feature bridge needs fewer ids than a conversation view would).
 #[derive(Debug)]
@@ -185,6 +217,15 @@ pub struct Actor {
     interrupt_after: std::time::Duration,
     /// Tool calls started and not yet finished, by the provider's key.
     running: std::collections::HashSet<String>,
+    /// Background work the agent started that still runs, as the runtime
+    /// counts it.
+    background: usize,
+    /// A finished turn waiting for that work, and when to stop waiting for
+    /// the agent to take it up once the work is done.
+    held: Option<Held>,
+    settle_by: Option<tokio::time::Instant>,
+    background_wait: std::time::Duration,
+    background_settle: std::time::Duration,
     pulse: SharedPulse,
 }
 
@@ -239,8 +280,26 @@ impl Actor {
             interrupt_by: None,
             interrupt_after: interrupt_deadline(),
             running: std::collections::HashSet::new(),
+            background: 0,
+            held: None,
+            settle_by: None,
+            background_wait: background_wait(),
+            background_settle: background_settle(),
             pulse: pulse(),
         }
+    }
+
+    /// How long a turn waits for background work, and for the agent once
+    /// it's done (tests).
+    #[cfg(test)]
+    pub fn background_timing(
+        mut self,
+        wait: std::time::Duration,
+        settle: std::time::Duration,
+    ) -> Actor {
+        self.background_wait = wait;
+        self.background_settle = settle;
+        self
     }
 
     /// Report signs of work to `pulse`.
@@ -253,7 +312,8 @@ impl Actor {
     fn beat(&self) {
         let mut p = self.pulse.lock().unwrap();
         p.at = std::time::Instant::now();
-        p.tools = self.running.len();
+        // Background work is work under way, like a tool that runs.
+        p.tools = self.running.len() + self.background;
     }
 
     /// How long an interrupt may take to settle (tests).
@@ -284,6 +344,10 @@ impl Actor {
         }
         loop {
             let deadline = self.interrupt_by;
+            let wake = self
+                .held
+                .as_ref()
+                .map(|h| self.settle_by.map_or(h.until, |s| s.min(h.until)));
             let flow = tokio::select! {
                 ev = self.handle.next_event() => match ev {
                     Some(ev) => self.on_event(ev).await,
@@ -294,6 +358,10 @@ impl Actor {
                     // Nobody can reach the run any more: end it.
                     None => self.stop(TurnOutcome::Interrupted, None).await,
                 },
+                // A held turn's wait is over.
+                _ = tokio::time::sleep_until(wake.unwrap_or_else(tokio::time::Instant::now)), if wake.is_some() => {
+                    self.release_held().await
+                }
                 // An interrupt that didn't settle in time: stop the run; what
                 // its turn did is unknown.
                 _ = tokio::time::sleep_until(deadline.unwrap_or_else(tokio::time::Instant::now)), if deadline.is_some() => {
@@ -337,13 +405,21 @@ impl Actor {
     }
 
     /// Ask the provider to stop the current turn, by a deadline.
-    async fn interrupt_current(&mut self) {
+    async fn interrupt_current(&mut self) -> Flow {
+        // Waiting on background work: nothing runs to stop, so the turn
+        // ends interrupted now (the work itself is spared, D-065).
+        if let Some(h) = self.held.take() {
+            return self
+                .finish_turn(TurnOutcome::Interrupted, h.summary, h.error, h.usage)
+                .await;
+        }
         if self.current.is_some() {
             let _ = self.handle.interrupt().await;
             let after = self.interrupt_after;
             self.interrupt_by
                 .get_or_insert_with(|| tokio::time::Instant::now() + after);
         }
+        Flow::Go
     }
 
     /// Send the next queued turn, if one is due.
@@ -405,7 +481,18 @@ impl Actor {
                 self.running.remove(call);
             }
             RuntimeEvent::TurnFinished { .. } => self.running.clear(),
-            _ => {}
+            RuntimeEvent::Background { running } => {
+                self.background = *running as usize;
+                self.beat();
+                // The work is done: the agent may take it up (a turn the
+                // runtime starts itself), or the held turn finishes.
+                if self.held.is_some() && self.background == 0 {
+                    self.settle_by = Some(tokio::time::Instant::now() + self.background_settle);
+                }
+                return Flow::Go;
+            }
+            // The agent is at it again.
+            _ => self.settle_by = None,
         }
         self.beat();
         match ev {
@@ -617,66 +704,124 @@ impl Actor {
                 error,
                 usage,
             } => {
-                let Some(turn) = self.current.take() else {
+                if self.current.is_none() {
                     return Flow::Go;
-                };
-                tracing::debug!(conversation = %self.conversation, %turn, ?outcome, turns = self.handle.inspect().turns, "turn settled");
-                let reason = (outcome != TurnOutcome::Completed)
-                    .then(|| summary.clone())
-                    .flatten();
-                self.apply(Op::Finished {
-                    turn: turn.clone(),
-                    generation: g,
-                    outcome,
-                    reason,
-                    error,
-                    usage,
-                    at: now,
-                });
-                self.apply(Op::CloseTools {
-                    turn: turn.clone(),
-                    at: now,
-                });
-                self.asks.clear();
-                self.interrupt_by = None;
-                let go_on = match outcome {
-                    TurnOutcome::Completed => self.holding.is_none(),
-                    TurnOutcome::Interrupted => self.redirecting && self.holding.is_none(),
-                    _ => false,
-                };
-                self.redirecting = false;
-                let next = if go_on {
-                    if let Flow::End = self.deliver_next().await {
-                        return Flow::End;
-                    }
-                    self.current.clone()
-                } else {
-                    None
-                };
-                self.emit(ActorEvent::TurnFinished {
-                    turn,
-                    outcome,
-                    summary,
-                    next: next.clone(),
-                })
-                .await;
-                if next.is_none() {
-                    // Idle, held, or stopped short: the run is done. Its
-                    // context stays resumable.
-                    let _ = self.handle.stop().await;
-                    match self.holding.take() {
-                        Some((held, done)) => self.end(held, None, Some(done)).await,
-                        None => self.end(outcome, None, None).await,
-                    }
-                    return Flow::End;
                 }
+                // Done for now, but its background work still runs: the turn
+                // stays open, and what the agent does when that work ends
+                // (the runtime starts a turn by itself) belongs to it (D-065).
+                if outcome == TurnOutcome::Completed
+                    && self.background > 0
+                    && self.holding.is_none()
+                    && !self.redirecting
+                    && !self.stopping
+                {
+                    let until = self.held.as_ref().map_or_else(
+                        || tokio::time::Instant::now() + self.background_wait,
+                        |h| h.until,
+                    );
+                    tracing::debug!(conversation = %self.conversation, background = self.background, "the turn waits for background work");
+                    self.held = Some(Held {
+                        summary,
+                        error,
+                        usage,
+                        until,
+                    });
+                    self.settle_by = None;
+                    return Flow::Go;
+                }
+                return self.finish_turn(outcome, summary, error, usage).await;
             }
+            RuntimeEvent::Background { .. } => {}
             RuntimeEvent::Exited { error, .. } => {
                 let why = error.unwrap_or_else(|| "the agent exited before finishing".into());
                 return self.lost(&why).await;
             }
         }
         Flow::Go
+    }
+
+    /// The turn is over: record it, then go on with the next or end the run.
+    async fn finish_turn(
+        &mut self,
+        outcome: TurnOutcome,
+        summary: Option<String>,
+        error: Option<ErrorCategory>,
+        usage: Option<otter_core::conversation::Usage>,
+    ) -> Flow {
+        let g = self.generation;
+        let now = Utc::now();
+        self.held = None;
+        self.settle_by = None;
+        let Some(turn) = self.current.take() else {
+            return Flow::Go;
+        };
+        tracing::debug!(conversation = %self.conversation, %turn, ?outcome, turns = self.handle.inspect().turns, "turn settled");
+        let reason = (outcome != TurnOutcome::Completed)
+            .then(|| summary.clone())
+            .flatten();
+        self.apply(Op::Finished {
+            turn: turn.clone(),
+            generation: g,
+            outcome,
+            reason,
+            error,
+            usage,
+            at: now,
+        });
+        self.apply(Op::CloseTools {
+            turn: turn.clone(),
+            at: now,
+        });
+        self.asks.clear();
+        self.interrupt_by = None;
+        let go_on = match outcome {
+            TurnOutcome::Completed => self.holding.is_none(),
+            TurnOutcome::Interrupted => self.redirecting && self.holding.is_none(),
+            _ => false,
+        };
+        self.redirecting = false;
+        let next = if go_on {
+            if let Flow::End = self.deliver_next().await {
+                return Flow::End;
+            }
+            self.current.clone()
+        } else {
+            None
+        };
+        self.emit(ActorEvent::TurnFinished {
+            turn,
+            outcome,
+            summary,
+            next: next.clone(),
+        })
+        .await;
+        if next.is_none() {
+            // Idle, held, or stopped short: the run is done. Its
+            // context stays resumable.
+            let _ = self.handle.stop().await;
+            match self.holding.take() {
+                Some((held, done)) => self.end(held, None, Some(done)).await,
+                None => self.end(outcome, None, None).await,
+            }
+            return Flow::End;
+        }
+        Flow::Go
+    }
+
+    /// A held turn's wait is over (its background work ended and the agent
+    /// had nothing more to say, or it took too long): it finishes as it was.
+    async fn release_held(&mut self) -> Flow {
+        match self.held.take() {
+            Some(h) => {
+                self.finish_turn(TurnOutcome::Completed, h.summary, h.error, h.usage)
+                    .await
+            }
+            None => {
+                self.settle_by = None;
+                Flow::Go
+            }
+        }
     }
 
     async fn on_cmd(&mut self, cmd: ActorCmd) -> Flow {
@@ -745,7 +890,7 @@ impl Actor {
                     at: now,
                 });
                 if matches!(accepted, Some(Ok(_))) && self.current.as_ref() == Some(&turn) {
-                    self.interrupt_current().await;
+                    return self.interrupt_current().await;
                 }
             }
             ActorCmd::Redirect {
@@ -772,7 +917,7 @@ impl Actor {
                 ) {
                     if self.current.is_some() {
                         self.redirecting = true;
-                        self.interrupt_current().await;
+                        return self.interrupt_current().await;
                     } else {
                         return self.deliver_next().await;
                     }
@@ -799,7 +944,7 @@ impl Actor {
                     // Ends when the turn settles (or by the deadline).
                     self.holding = Some((outcome, done));
                     self.redirecting = false;
-                    self.interrupt_current().await;
+                    return self.interrupt_current().await;
                 } else {
                     return self.stop(outcome, Some(done)).await;
                 }
@@ -1014,6 +1159,17 @@ mod tests {
                         multi_select: false,
                     }],
                 })),
+                // Starts something in the background and waits for it.
+                t if t.starts_with("BG") => {
+                    self.say(RuntimeEvent::Background { running: 1 });
+                    self.say(text("I'll wait for it."));
+                    self.say(RuntimeEvent::TurnFinished {
+                        outcome: TurnOutcome::Completed,
+                        summary: Some("waiting".into()),
+                        error: None,
+                        usage: None,
+                    });
+                }
                 t if t.starts_with("HANG") || t.starts_with("STUCK") || t.starts_with("RACE") => {
                     self.say(RuntimeEvent::TextDelta {
                         message: "m-h".into(),
@@ -1152,8 +1308,149 @@ mod tests {
             s.convs.clone(),
             Box::new(fake),
             out,
+        )
+        .background_timing(
+            std::time::Duration::from_millis(1500),
+            std::time::Duration::from_millis(200),
         );
         (tx, events, tokio::spawn(actor.run(mailbox)))
+    }
+
+    fn finished(seen: &[ActorEvent]) -> Vec<(TurnOutcome, Option<String>)> {
+        seen.iter()
+            .filter_map(|e| match e {
+                ActorEvent::TurnFinished {
+                    outcome, summary, ..
+                } => Some((*outcome, summary.clone())),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn a_turn_waits_for_its_background_work_and_ends_with_the_follow_up() {
+        let s = setup(&["BG start it"]);
+        let (fake, _, _) = Fake::new();
+        let inject = fake.tx.clone();
+        let (_tx, mut rx, _h) = spawn(&s, "run_bg", fake);
+        // The agent's turn is done for now; the run isn't.
+        let mut seen = vec![];
+        while let Ok(Some(ev)) =
+            tokio::time::timeout(std::time::Duration::from_millis(500), rx.recv()).await
+        {
+            seen.push(ev);
+        }
+        assert!(finished(&seen).is_empty(), "{seen:?}");
+        // The work ends; Claude Code takes it up by itself, in the same turn.
+        inject
+            .try_send(RuntimeEvent::Background { running: 0 })
+            .unwrap();
+        inject
+            .try_send(RuntimeEvent::Text {
+                message: "m-z".into(),
+                block: 0,
+                text: "It printed done.".into(),
+            })
+            .unwrap();
+        inject
+            .try_send(RuntimeEvent::TurnFinished {
+                outcome: TurnOutcome::Completed,
+                summary: Some("done after waiting".into()),
+                error: None,
+                usage: None,
+            })
+            .unwrap();
+        seen.extend(until_ended(&mut rx).await);
+        assert_eq!(
+            finished(&seen),
+            [(TurnOutcome::Completed, Some("done after waiting".into()))]
+        );
+        let c = s.convs.get(s.id.as_str()).unwrap();
+        assert_eq!(c.turns.len(), 1);
+        assert!(
+            c.messages
+                .iter()
+                .any(|m| m.turn_id == c.turns[0].id && m.text().contains("It printed done."))
+        );
+    }
+
+    #[tokio::test]
+    async fn a_held_turn_ends_when_its_work_ends_quietly_or_takes_too_long() {
+        // The work ends and the agent says nothing more: done as it was.
+        let s = setup(&["BG quiet"]);
+        let (fake, _, _) = Fake::new();
+        let inject = fake.tx.clone();
+        let (_tx, mut rx, _h) = spawn(&s, "run_q", fake);
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        inject
+            .try_send(RuntimeEvent::Background { running: 0 })
+            .unwrap();
+        let seen = until_ended(&mut rx).await;
+        assert_eq!(
+            finished(&seen),
+            [(TurnOutcome::Completed, Some("waiting".into()))]
+        );
+        // The work never ends: the turn doesn't wait for ever.
+        let s = setup(&["BG forever"]);
+        let (fake, _, _) = Fake::new();
+        let started = std::time::Instant::now();
+        let (_tx, mut rx, _h) = spawn(&s, "run_f", fake);
+        let seen = until_ended(&mut rx).await;
+        assert_eq!(
+            finished(&seen),
+            [(TurnOutcome::Completed, Some("waiting".into()))]
+        );
+        assert!(started.elapsed() >= std::time::Duration::from_millis(1400));
+    }
+
+    #[tokio::test]
+    async fn interrupting_a_turn_that_waits_on_background_work_ends_it_at_once() {
+        let s = setup(&["BG then stop"]);
+        let (fake, _, _) = Fake::new();
+        let pulse = pulse();
+        let (tx, mut rx, _h) = {
+            // As `spawn`, with a pulse to read.
+            let g = s
+                .convs
+                .apply(
+                    &s.id,
+                    Op::Claim {
+                        run: RunId::from("run_i"),
+                        runtime: None,
+                        at: Utc::now(),
+                    },
+                )
+                .unwrap()
+                .map(|a| match a {
+                    Applied::Claimed(g) => g,
+                    _ => unreachable!(),
+                })
+                .unwrap();
+            let (tx, mailbox) = mpsc::channel(8);
+            let (out, events) = mpsc::channel(64);
+            let actor = Actor::new(
+                s.id.clone(),
+                RunId::from("run_i"),
+                g,
+                s.convs.clone(),
+                Box::new(fake),
+                out,
+            )
+            .with_pulse(pulse.clone());
+            (tx, events, tokio::spawn(actor.run(mailbox)))
+        };
+        let turn = started(&mut rx).await;
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        // Background work counts as work under way (the watchdog).
+        assert_eq!(pulse.lock().unwrap().tools, 1);
+        let t0 = std::time::Instant::now();
+        tx.send(ActorCmd::Interrupt { turn }).await.unwrap();
+        let seen = until_ended(&mut rx).await;
+        assert_eq!(
+            finished(&seen),
+            [(TurnOutcome::Interrupted, Some("waiting".into()))]
+        );
+        assert!(t0.elapsed() < std::time::Duration::from_secs(1));
     }
 
     async fn until_ended(rx: &mut mpsc::Receiver<ActorEvent>) -> Vec<ActorEvent> {

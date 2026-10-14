@@ -8,6 +8,11 @@
 // to result. A subagent's traffic (`parent_tool_use_id` set) isn't the main
 // turn: subagents are disabled for now, and anything that slips through is
 // reported, not shown as the agent's own words.
+//
+// Background work (D-065): the set of running background tasks is reported
+// whenever it changes, and a turn Claude Code starts by itself when such
+// work ends (no turn of ours running) still ends as the last turn we sent:
+// otterd keeps that turn open while the work runs.
 
 import type { ErrorCategory, Event, Outcome } from "./protocol.js";
 
@@ -56,6 +61,8 @@ export function category(error: unknown, status?: unknown): ErrorCategory | null
 export class Mapper {
   /** The turn in progress, and whether we asked it to stop. */
   turn: string | null = null;
+  /** The last turn we sent: what a turn the provider starts itself continues. */
+  private last: string | null = null;
   interrupting = false;
   /** The uuid of the user message carrying the current turn. */
   private sentUuid: string | null = null;
@@ -69,6 +76,7 @@ export class Mapper {
   /** A turn was sent as the user message `uuid`. */
   sent(turn: string, uuid: string) {
     this.turn = turn;
+    this.last = turn;
     this.sentUuid = uuid;
     this.delivered = false;
     this.interrupting = false;
@@ -101,6 +109,11 @@ export class Mapper {
     const main = m.parent_tool_use_id === null || m.parent_tool_use_id === undefined;
     switch (type) {
       case "system":
+        if (m.subtype === "background_tasks_changed") {
+          // The whole set each time; ambient tasks (watchers) aren't work.
+          const running = arr(m.tasks).filter((t) => obj(t).ambient !== true).length;
+          out.push({ type: "background", running });
+        }
         if (m.subtype === "init" && text(m.session_id)) {
           out.push({
             type: "session",
@@ -177,6 +190,9 @@ export class Mapper {
         break;
       }
       case "result": {
+        // A turn Claude Code started itself (background work ended) goes on
+        // from the last one we sent.
+        if (!this.turn && this.last) this.turn = this.last;
         if (!this.turn) {
           out.push({ type: "notice", message: "a result arrived with no turn running" });
           break;

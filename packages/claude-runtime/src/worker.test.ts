@@ -59,6 +59,7 @@ test("the SDK is asked for isolation-safe options", () => {
   assert.deepEqual(o.settingSources, ["project"]);
   assert.deepEqual(o.disallowedTools, DISALLOWED_TOOLS);
   assert.equal(o.permissionMode, "default");
+  assert.equal(o.perTaskStopAffordance, true, "an interrupt spares background work");
   assert.equal(o.pathToClaudeCodeExecutable, undefined, "the bundled Claude Code, not PATH's");
   assert.ok(o.hooks?.PreToolUse?.[0]?.hooks.length === 1);
   assert.deepEqual(o.systemPrompt, { type: "preset", preset: "claude_code", append: "be brief" });
