@@ -4790,6 +4790,15 @@ async fn activity_is_live_without_rewriting_the_feature() {
     assert!(!doc.contains("cargo build"), "{doc}");
     let log = std::fs::read_to_string(fake.host.home().join("state/events.jsonl")).unwrap();
     assert!(!log.contains("FeatureActivity"));
+    // What an action returns shows it too (the app keeps that copy).
+    let f = fake
+        .host
+        .conn()
+        .await
+        .feature_send("msg-live", &id, "Keep going")
+        .await
+        .unwrap();
+    assert_eq!(f.live_run().unwrap().activity, ["$ cargo build"]);
     // Kept once the run ends.
     fake.host
         .conn()

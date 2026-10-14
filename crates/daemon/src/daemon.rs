@@ -215,8 +215,10 @@ impl Daemon {
                 json(self.with_live_activity(self.feature_get(&r.feature).await?))
             }
             Request::FeatureCreate(p) => json(self.feature_create(p).await?),
-            Request::FeatureSend(p) => json(self.feature_send(p).await?),
-            Request::FeatureAct(p) => json(self.clone().feature_act(p).await?),
+            Request::FeatureSend(p) => json(self.with_live_activity(self.feature_send(p).await?)),
+            Request::FeatureAct(p) => {
+                json(self.with_live_activity(self.clone().feature_act(p).await?))
+            }
             Request::FeatureEvents(p) => json(self.feature_events(&p).await?),
             Request::FeatureArtifact(p) => json(self.feature_artifact(&p).await?),
             Request::FeatureDelete(r) => json(self.feature_delete(&r.feature).await?),
