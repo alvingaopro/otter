@@ -216,9 +216,13 @@ impl Daemon {
 
     async fn step(self: &Arc<Self>, id: &FeatureId) -> RpcResult<()> {
         let mut f = self.feature_get(id.as_str()).await?;
-        // The developer said something: answer first (it may pause or go on).
+        // The developer said something: answer first (it may pause or go on)
+        // — with Otter's tools where it has them (D-089).
         if !unanswered(&f).is_empty() {
-            self.converse(&f).await?;
+            match self.turn_backend(&f).await {
+                Some(backend) => self.otter_turn(&f, backend).await?,
+                None => self.converse(&f).await?,
+            }
             f = self.feature_get(id.as_str()).await?;
         }
         // Unattended work doesn't wait for ever on the developer (D-083).
@@ -446,6 +450,7 @@ impl Daemon {
                 .iter()
                 .filter_map(|p| Some((p.key.to_owned(), s.secret(p.key)?)))
                 .collect(),
+            v2: std::env::var("OTTER_BRAIN_V2").is_ok_and(|v| v == "1"),
         }
     }
 

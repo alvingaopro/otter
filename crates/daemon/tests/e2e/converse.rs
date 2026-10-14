@@ -1,8 +1,8 @@
 //! What a developer's message does today (D-089, M0): one test for each
 //! route through the controller's `converse`, driven by the `scripted`
 //! brain (a message's own `INTENT:` line says what it asks). Otter's reply
-//! changes with Brain Runtime V2; what these tests pin must not — they pass
-//! before it and after it.
+//! changes with Brain Runtime V2; what these tests pin must not — each runs
+//! as `converse` answers and as Otter's turn does, with its tools.
 
 use super::*;
 use otter_core::conversation::{TurnOutcome, TurnState};
@@ -10,9 +10,68 @@ use otter_core::feature::{
     Decider, DecisionKind, DecisionStatus, Feature, FeatureAction, FeatureStatus, MessageRole,
 };
 
+/// Otter's tools on (D-089) or off.
+fn flag(v2: bool) -> Vec<(&'static str, String)> {
+    if v2 {
+        vec![("OTTER_BRAIN_V2", "1".into())]
+    } else {
+        vec![]
+    }
+}
+
+/// A host with the `scripted` brain: with Otter's tools, a message's
+/// `INTENT:` line becomes the call the plan gives for it.
+async fn scripted(v2: bool) -> FakeCodex {
+    scripted_with(v2, vec![]).await
+}
+
+async fn scripted_with(v2: bool, more: Vec<(&'static str, String)>) -> FakeCodex {
+    fake_agent_host_with("ok", "scripted", move |_| {
+        more.into_iter().chain(flag(v2)).collect()
+    })
+    .await
+}
+
+/// Each test twice: as `converse` answers (`legacy`), and as Otter's turn
+/// does with its tools (`tools`).
+macro_rules! both {
+    ($($name:ident),* $(,)?) => {
+        $(
+            mod $name {
+                #[tokio::test]
+                async fn legacy() {
+                    super::$name(false).await
+                }
+                #[tokio::test]
+                async fn tools() {
+                    super::$name(true).await
+                }
+            }
+        )*
+    };
+}
+
+both!(
+    guidance_reaches_the_agent_as_the_developer_wrote_it,
+    a_redirect_stops_the_current_turn_and_goes_next,
+    going_on_starts_a_draft,
+    going_on_resumes_paused_work,
+    going_on_retries_failed_work_with_a_fresh_budget,
+    pausing_stops_the_agent,
+    a_changed_goal_plans_again,
+    finishing_work_in_progress_pauses_it,
+    ship_it_accepts_what_is_in_review_and_more_plans_again,
+    going_on_approves_the_plan_on_the_developers_word,
+    guidance_on_a_plan_question_plans_again_with_it,
+    a_question_is_answered_and_goes_nowhere,
+    going_on_doesnt_settle_another_developer_only_decision,
+    without_a_model_a_message_is_guidance,
+);
+
 /// Send `text` as the developer and wait for Otter's answer to it: exactly
-/// one reply, tied to that message.
-async fn tell(host: &TestHost, id: &str, command_id: &str, text: &str) -> Feature {
+/// one reply, tied to that message — given by Otter's turn, with its tools
+/// (`tools`), or by `converse`, which uses none.
+async fn tell(tools: bool, host: &TestHost, id: &str, command_id: &str, text: &str) -> Feature {
     let f = host
         .conn()
         .await
@@ -40,6 +99,16 @@ async fn tell(host: &TestHost, id: &str, command_id: &str, text: &str) -> Featur
     tokio::time::sleep(Duration::from_millis(600)).await;
     let f2 = host.conn().await.feature_get(id).await.unwrap();
     assert_eq!(replies(&f2), 1, "{:#?}", f2.messages);
+    let used = history(host, id)
+        .await
+        .iter()
+        .filter(|l| l.starts_with("Otter: "))
+        .count();
+    if !tools {
+        assert_eq!(used, 0, "converse uses no tools");
+    } else if !text.contains("INTENT: none") {
+        assert!(used > 0, "Otter's turn answered without its tools");
+    }
     f
 }
 
@@ -90,13 +159,12 @@ async fn working(host: &TestHost, request: &str) -> (String, Feature) {
     (id, f)
 }
 
-#[tokio::test]
-async fn guidance_reaches_the_agent_as_the_developer_wrote_it() {
-    let fake = fake_agent_host("ok", "scripted").await;
+async fn guidance_reaches_the_agent_as_the_developer_wrote_it(v2: bool) {
+    let fake = scripted(v2).await;
     let host = &fake.host;
     let (id, _) = working(host, "Add CSV export HANG").await;
     let text = "Use tabs, not commas\nINTENT: guide";
-    let f = tell(host, &id, "say-guide", text).await;
+    let f = tell(v2, host, &id, "say-guide", text).await;
     assert_eq!(f.status, FeatureStatus::Implementing);
     let msg = f.messages.iter().rev().find(|m| m.text == text).unwrap();
     let c = eventually("the guidance queued", || async {
@@ -118,14 +186,13 @@ async fn guidance_reaches_the_agent_as_the_developer_wrote_it() {
     assert!(!t.redirect);
 }
 
-#[tokio::test]
-async fn a_redirect_stops_the_current_turn_and_goes_next() {
-    let fake = fake_agent_host("ok", "scripted").await;
+async fn a_redirect_stops_the_current_turn_and_goes_next(v2: bool) {
+    let fake = scripted(v2).await;
     let host = &fake.host;
     let (id, f) = working(host, "Add CSV export HANG").await;
     let first = conversation(host, &f).await.turns[0].id.clone();
     let text = "Stop that and write the README\nINTENT: redirect";
-    tell(host, &id, "say-redirect", text).await;
+    tell(v2, host, &id, "say-redirect", text).await;
     let c = eventually("redirected", || async {
         let c = conversation(host, &f).await;
         let redirect = c.turns.iter().find(|t| t.redirect)?;
@@ -141,9 +208,8 @@ async fn a_redirect_stops_the_current_turn_and_goes_next() {
     );
 }
 
-#[tokio::test]
-async fn going_on_starts_a_draft() {
-    let fake = fake_agent_host("ok", "scripted").await;
+async fn going_on_starts_a_draft(v2: bool) {
+    let fake = scripted(v2).await;
     let host = &fake.host;
     let dir = host.home().join("draft");
     std::fs::create_dir_all(&dir).unwrap();
@@ -170,14 +236,13 @@ async fn going_on_starts_a_draft() {
         .unwrap();
     assert_eq!(f.status, FeatureStatus::Draft);
     let id = f.id.to_string();
-    tell(host, &id, "say-go", "Go\nINTENT: continue").await;
+    tell(v2, host, &id, "say-go", "Go\nINTENT: continue").await;
     wait_feature(host, &id, "started", |f| f.status != FeatureStatus::Draft).await;
     has_history(host, &id, "You said go on").await;
 }
 
-#[tokio::test]
-async fn going_on_resumes_paused_work() {
-    let fake = fake_agent_host("ok", "scripted").await;
+async fn going_on_resumes_paused_work(v2: bool) {
+    let fake = scripted(v2).await;
     let host = &fake.host;
     let (id, _) = working(host, "Add CSV export HANG").await;
     host.conn()
@@ -186,7 +251,7 @@ async fn going_on_resumes_paused_work() {
         .await
         .unwrap();
     wait_feature(host, &id, "paused", |f| f.status == FeatureStatus::Paused).await;
-    tell(host, &id, "say-resume", "Go on\nINTENT: continue").await;
+    tell(v2, host, &id, "say-resume", "Go on\nINTENT: continue").await;
     wait_feature(host, &id, "working again", |f| {
         f.status == FeatureStatus::Implementing
     })
@@ -194,14 +259,13 @@ async fn going_on_resumes_paused_work() {
     has_history(host, &id, "You said go on").await;
 }
 
-#[tokio::test]
-async fn going_on_retries_failed_work_with_a_fresh_budget() {
-    let fake = fake_agent_host("ok", "scripted").await;
+async fn going_on_retries_failed_work_with_a_fresh_budget(v2: bool) {
+    let fake = scripted(v2).await;
     let host = &fake.host;
     let id = started_feature(host, "Add CSV export FAIL").await;
     let failed = wait_feature(host, &id, "failed", |f| f.status == FeatureStatus::Failed).await;
     assert!(failed.budget.iterations_used > 0);
-    tell(host, &id, "say-retry", "Try again\nINTENT: continue").await;
+    tell(v2, host, &id, "say-retry", "Try again\nINTENT: continue").await;
     has_history(host, &id, "retrying with a fresh budget").await;
     wait_feature(host, &id, "another run", |f| {
         f.runs.len() > failed.runs.len()
@@ -209,12 +273,11 @@ async fn going_on_retries_failed_work_with_a_fresh_budget() {
     .await;
 }
 
-#[tokio::test]
-async fn pausing_stops_the_agent() {
-    let fake = fake_agent_host("ok", "scripted").await;
+async fn pausing_stops_the_agent(v2: bool) {
+    let fake = scripted(v2).await;
     let host = &fake.host;
     let (id, _) = working(host, "Add CSV export HANG").await;
-    tell(host, &id, "say-pause", "Wait a moment\nINTENT: pause").await;
+    tell(v2, host, &id, "say-pause", "Wait a moment\nINTENT: pause").await;
     let f = wait_feature(host, &id, "paused, its run over", |f| {
         f.status == FeatureStatus::Paused && f.runs.iter().all(|r| r.state.is_over())
     })
@@ -222,13 +285,19 @@ async fn pausing_stops_the_agent() {
     assert_eq!(f.status_reason.as_deref(), Some("Paused: you asked"));
 }
 
-#[tokio::test]
-async fn a_changed_goal_plans_again() {
-    let fake = fake_agent_host("ok", "scripted").await;
+async fn a_changed_goal_plans_again(v2: bool) {
+    let fake = scripted(v2).await;
     let host = &fake.host;
     let (id, f) = working(host, "Add CSV export HANG").await;
     let runs = f.runs.len();
-    tell(host, &id, "say-revise", "Also export JSON\nINTENT: revise").await;
+    tell(
+        v2,
+        host,
+        &id,
+        "say-revise",
+        "Also export JSON\nINTENT: revise",
+    )
+    .await;
     has_history(host, &id, "You changed the goal: planning again").await;
     let f = wait_feature(host, &id, "the old run stopped", |f| {
         f.runs[runs - 1].state.is_over()
@@ -237,32 +306,41 @@ async fn a_changed_goal_plans_again() {
     assert_ne!(f.status, FeatureStatus::Cancelled);
 }
 
-#[tokio::test]
-async fn finishing_work_in_progress_pauses_it() {
-    let fake = fake_agent_host("ok", "scripted").await;
+async fn finishing_work_in_progress_pauses_it(v2: bool) {
+    let fake = scripted(v2).await;
     let host = &fake.host;
     let (id, _) = working(host, "Add CSV export HANG").await;
-    tell(host, &id, "say-enough", "That's enough\nINTENT: finish").await;
+    tell(v2, host, &id, "say-enough", "That's enough\nINTENT: finish").await;
     let f = wait_feature(host, &id, "paused", |f| f.status == FeatureStatus::Paused).await;
-    assert_eq!(
-        f.status_reason.as_deref(),
-        Some("Stopped: you said that's enough")
-    );
+    // Otter's `pause_task` can't tell "wait" from "enough": the reason is
+    // the classifier's alone.
+    let reason = if v2 {
+        "Paused: you asked"
+    } else {
+        "Stopped: you said that's enough"
+    };
+    assert_eq!(f.status_reason.as_deref(), Some(reason));
 }
 
-#[tokio::test]
-async fn ship_it_accepts_what_is_in_review_and_more_plans_again() {
-    let fake = fake_agent_host("ok", "scripted").await;
+async fn ship_it_accepts_what_is_in_review_and_more_plans_again(v2: bool) {
+    let fake = scripted(v2).await;
     let host = &fake.host;
     let id = started_feature(host, "Add CSV export").await;
     wait_feature(host, &id, "in review", |f| {
         f.status == FeatureStatus::Review
     })
     .await;
-    tell(host, &id, "say-ship", "Looks good, ship it\nINTENT: finish").await;
+    tell(
+        v2,
+        host,
+        &id,
+        "say-ship",
+        "Looks good, ship it\nINTENT: finish",
+    )
+    .await;
     wait_feature(host, &id, "done", |f| f.status == FeatureStatus::Done).await;
     // Done, more guidance moves the goal (D-050): it plans again.
-    tell(host, &id, "say-more", "Now add JSON too\nINTENT: guide").await;
+    tell(v2, host, &id, "say-more", "Now add JSON too\nINTENT: guide").await;
     has_history(host, &id, "You changed the goal: planning again").await;
     wait_feature(host, &id, "working again", |f| {
         f.status != FeatureStatus::Done
@@ -270,10 +348,8 @@ async fn ship_it_accepts_what_is_in_review_and_more_plans_again() {
     .await;
 }
 
-#[tokio::test]
-async fn going_on_approves_the_plan_on_the_developers_word() {
-    let fake =
-        fake_agent_host_with("ok", "scripted", |_| vec![("OTTER_PLAN_TURN", "1".into())]).await;
+async fn going_on_approves_the_plan_on_the_developers_word(v2: bool) {
+    let fake = scripted_with(v2, vec![("OTTER_PLAN_TURN", "1".into())]).await;
     let host = &fake.host;
     let id = started_feature(host, "Add CSV export").await;
     let f = wait_feature(host, &id, "asking about the plan", |f| {
@@ -282,7 +358,7 @@ async fn going_on_approves_the_plan_on_the_developers_word() {
     })
     .await;
     let d = f.pending_decisions().next().unwrap().id.clone();
-    tell(host, &id, "say-approve", "Go ahead\nINTENT: continue").await;
+    tell(v2, host, &id, "say-approve", "Go ahead\nINTENT: continue").await;
     let f = wait_feature(host, &id, "planned", |f| {
         f.tasks.iter().any(|t| t.title == "Write the exporter")
     })
@@ -293,10 +369,8 @@ async fn going_on_approves_the_plan_on_the_developers_word() {
     assert_eq!(d.rationale.as_deref(), Some("You said go on"));
 }
 
-#[tokio::test]
-async fn guidance_on_a_plan_question_plans_again_with_it() {
-    let fake =
-        fake_agent_host_with("ok", "scripted", |_| vec![("OTTER_PLAN_TURN", "1".into())]).await;
+async fn guidance_on_a_plan_question_plans_again_with_it(v2: bool) {
+    let fake = scripted_with(v2, vec![("OTTER_PLAN_TURN", "1".into())]).await;
     let host = &fake.host;
     let id = started_feature(host, "Add CSV export").await;
     let f = wait_feature(host, &id, "asking about the plan", |f| {
@@ -306,7 +380,7 @@ async fn guidance_on_a_plan_question_plans_again_with_it() {
     .await;
     let d = f.pending_decisions().next().unwrap().id.clone();
     let text = "Use one step only\nINTENT: guide";
-    tell(host, &id, "say-change-plan", text).await;
+    tell(v2, host, &id, "say-change-plan", text).await;
     let f = wait_feature(host, &id, "the plan question settled", |f| {
         f.decisions
             .iter()
@@ -326,13 +400,12 @@ async fn guidance_on_a_plan_question_plans_again_with_it() {
     assert_ne!(f.status, FeatureStatus::Cancelled);
 }
 
-#[tokio::test]
-async fn a_question_is_answered_and_goes_nowhere() {
-    let fake = fake_agent_host("ok", "scripted").await;
+async fn a_question_is_answered_and_goes_nowhere(v2: bool) {
+    let fake = scripted(v2).await;
     let host = &fake.host;
     let (id, _) = working(host, "Add CSV export HANG").await;
     let text = "What are you doing?\nINTENT: none";
-    let f = tell(host, &id, "say-question", text).await;
+    let f = tell(v2, host, &id, "say-question", text).await;
     let msg = f.messages.iter().rev().find(|m| m.text == text).unwrap();
     let reply = f
         .messages
@@ -355,9 +428,8 @@ async fn a_question_is_answered_and_goes_nowhere() {
 
 /// The plan approval is the one developer-only decision a message settles:
 /// a command only the developer may allow still waits for their answer.
-#[tokio::test]
-async fn going_on_doesnt_settle_another_developer_only_decision() {
-    let fake = fake_agent_host("ok", "scripted").await;
+async fn going_on_doesnt_settle_another_developer_only_decision(v2: bool) {
+    let fake = scripted(v2).await;
     let host = &fake.host;
     let id = started_feature(host, "Clean up ASK_RM").await;
     let f = wait_feature(host, &id, "asking about rm", |f| {
@@ -370,7 +442,7 @@ async fn going_on_doesnt_settle_another_developer_only_decision() {
         .unwrap()
         .id
         .clone();
-    tell(host, &id, "say-yes", "Yes, delete it\nINTENT: continue").await;
+    tell(v2, host, &id, "say-yes", "Yes, delete it\nINTENT: continue").await;
     tokio::time::sleep(Duration::from_millis(800)).await;
     let f = host.conn().await.feature_get(&id).await.unwrap();
     let d = f.decisions.iter().find(|x| x.id == d).unwrap();
@@ -380,13 +452,12 @@ async fn going_on_doesnt_settle_another_developer_only_decision() {
 
 /// Without a model, Otter says it can't act on messages, and the message
 /// still reaches the coding agent as guidance (D-049, D-084).
-#[tokio::test]
-async fn without_a_model_a_message_is_guidance() {
-    let fake = fake_agent_host("ok", "rules").await;
+async fn without_a_model_a_message_is_guidance(v2: bool) {
+    let fake = fake_agent_host_with("ok", "rules", move |_| flag(v2)).await;
     let host = &fake.host;
     let (id, f) = working(host, "Add CSV export HANG").await;
     let text = "Use tabs";
-    let answered = tell(host, &id, "say-rules", text).await;
+    let answered = tell(false, host, &id, "say-rules", text).await;
     let msg = answered
         .messages
         .iter()

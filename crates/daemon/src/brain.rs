@@ -170,6 +170,11 @@ pub trait Brain: Send + Sync {
             intent: Intent::Guide,
         })
     }
+    /// Otter's tool-using turn (D-089), for a brain that has one; the rest
+    /// answer with [`Brain::reply`].
+    fn turn(&self) -> Option<Box<dyn crate::turn::TurnBackend>> {
+        None
+    }
 }
 
 /// Where a reply's text goes as it is written: each piece, in order.
@@ -276,6 +281,9 @@ pub struct Choice {
     /// Providers' keys set in Settings, by name (otterd's environment is
     /// looked at too).
     pub keys: std::collections::BTreeMap<String, String>,
+    /// Otter answers with tools where its brain can (`OTTER_BRAIN_V2=1`,
+    /// D-089).
+    pub v2: bool,
 }
 
 impl Choice {
@@ -658,6 +666,9 @@ impl Brain for Scripted {
         say(&text);
         Ok(Reply { text, intent })
     }
+    fn turn(&self) -> Option<Box<dyn crate::turn::TurnBackend>> {
+        Some(Box::new(crate::turn::Scripted))
+    }
 }
 
 /// Where a model brain's answers come from.
@@ -727,7 +738,7 @@ impl Model {
     }
 }
 
-fn brief(f: &Feature) -> String {
+pub(crate) fn brief(f: &Feature) -> String {
     let mut s = format!("Feature: {}\nRequest:\n{}\n", f.title, f.request);
     let request = f.request_message();
     let user: Vec<&str> = f

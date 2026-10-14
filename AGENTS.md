@@ -50,6 +50,10 @@ Inside the daemon (`crates/daemon/src`):
   engine that steps features, and the model calls it makes (`OTTER_CONTROLLER`);
   `work_state.rs` reads the work's diff, status and fingerprint for
   verification (D-062)
+- `turn.rs` + `gateway.rs` — Otter's tool-using turn (D-089, behind
+  `OTTER_BRAIN_V2=1`): the bounded turn that answers the developer, and the
+  tools it may call — checked by what started the turn, applied once, written
+  to the feature's history
 - `runs.rs` + `runtime/` — managed agent runs (D-044): the runtime contract,
   the approval `policy`, the conversation `actor` and registry (D-055/D-056),
   and the bridge from a run to its feature; `agents/claude_stream.rs` is

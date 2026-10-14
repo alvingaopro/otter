@@ -15,6 +15,7 @@ mod environment;
 mod events;
 mod features;
 mod files;
+mod gateway;
 mod git;
 mod history;
 mod login;
@@ -29,6 +30,7 @@ mod sessions;
 mod settings;
 mod store;
 mod triggers;
+mod turn;
 mod work_state;
 mod workspaces;
 
