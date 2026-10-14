@@ -10,8 +10,10 @@
 //! no tools; the default otherwise, when installed), `rules` (no model: one
 //! task, every open decision goes to the developer, criteria are met when
 //! the check passes), `yes` (tests only: approves everything it is asked
-//! — to show that policy still stops it), or `skeptic` (tests only: never
-//! satisfied — to show that verification still finishes).
+//! — to show that policy still stops it), `skeptic` (tests only: never
+//! satisfied — to show that verification still finishes), or `scripted`
+//! (tests only: a message's own `INTENT:` line says what it asks — to drive
+//! each of the conversation's routes, D-089).
 //! `OTTER_CONTROLLER_MODEL` picks the model for any of them.
 
 use std::path::Path;
@@ -301,6 +303,7 @@ pub fn select(env: &EnvMap, choice: &Choice) -> Box<dyn Brain> {
         "rules" | "off" => Box::new(Rules),
         "yes" => Box::new(YesMan),
         "skeptic" => Box::new(Skeptic),
+        "scripted" => Box::new(Scripted),
         "claude" => model(Backend::ClaudeCode),
         id => match crate::providers::get(id).or_else(|| {
             crate::providers::PROVIDERS
@@ -620,6 +623,40 @@ impl Brain for Skeptic {
                 .collect(),
             remediation: "Do it properly.".into(),
         })
+    }
+}
+
+/// Reads what a message asks from the message itself: its last `INTENT:`
+/// line (`INTENT: finish`), else nothing. Plans and judges as `rules` does,
+/// and finds fault with every plan it reviews, as `skeptic` does — so the
+/// plan comes to the developer. Only for tests: each of the conversation's
+/// routes can be driven, and pinned before Otter's turn changes (D-089).
+pub struct Scripted;
+
+#[async_trait]
+impl Brain for Scripted {
+    fn name(&self) -> &'static str {
+        "scripted"
+    }
+    async fn plan(&self, cx: &Context<'_>) -> Result<Plan> {
+        Ok(rules_plan(cx))
+    }
+    async fn review_plan(&self, _: &Context<'_>, _: &Plan) -> Result<Vec<String>> {
+        Ok(vec!["The criteria are too vague to check.".into()])
+    }
+    async fn decide(&self, _: &Context<'_>, d: &DecisionRequest) -> Result<Verdict> {
+        Ok(Verdict::Escalate {
+            why: format!("No model decides for you here: {}", d.summary),
+        })
+    }
+    async fn judge(&self, cx: &Context<'_>) -> Result<Judgement> {
+        Ok(rules_judge(cx))
+    }
+    async fn reply(&self, _: &Context<'_>, message: &str, say: &Say<'_>) -> Result<Reply> {
+        let (_, intent) = split_intent(message);
+        let text = format!("Scripted: {intent:?}.");
+        say(&text);
+        Ok(Reply { text, intent })
     }
 }
 

@@ -16,6 +16,9 @@ use otter_protocol::{
     WorkspaceCreate,
 };
 
+#[path = "e2e/converse.rs"]
+mod converse;
+
 struct TestHost {
     dir: tempfile::TempDir,
     transport: Transport,
