@@ -2136,3 +2136,57 @@ told the agent to confirm the goal with the developer.
   working, the answer arrives as input). The plan made it optional,
   behind a decision; blocking `AskUserQuestion` stays as it is.
 
+## D-068 — The golden path's checkpoints (2026-10-14)
+
+M2 step 7 (`docs/plans/m2-feature-to-pr.md`; the M2 spec: plan → implement
+→ test → review → PR → CI → done with durable checkpoints, deterministic
+controls, bounded retries). Most of it was there — the feature document is
+the checkpoint (D-045), a push is `HEAD:refs/heads/<branch>`, an open pull
+request for the branch is adopted (`gh pr view`, then `edit`), and since
+D-064 a CI fix is a turn in the feature's session. What wasn't:
+
+- **Nothing committed the agent's work.** Delivery pushed HEAD; work the
+  agent left uncommitted never reached the pull request. Publishing — the
+  action the developer allows — now commits it first (`git add -A`, the
+  feature's title as the message), leaving out files that may hold secrets
+  by name (the same list as D-062's snapshot); the commit's SHA is evidence
+  ("Committed …") and the note names what was left out. Without an
+  identity of the host's own, the commit is Otter's. A tree with work
+  still to commit counts as unpublished, so a fix the agent didn't commit
+  is pushed too. Idempotent by construction: after a crash between commit
+  and push, the tree is clean and the retry only pushes.
+- **The same CI failure after a fix goes to the developer.** CI failing
+  with the same checks and the same log as the last failure, once a "Fix
+  what CI found" turn has run, doesn't start another fix: one message
+  ("CI failed the same way after the fix, so another attempt won't help:
+  over to you"), the feature stays in review with the CI gate failed. The
+  flaky-rerun budget (D-047) stays.
+- **Cancelling says what stays.** Otter removes nothing of the work on
+  cancel: the message names the workspace's files, the branch and an open
+  pull request (to close on the forge if unwanted), and that removing the
+  workspace is the developer's step.
+- **Checkpoints, tested by stopping there.** otterd stopped and started
+  again while the developer is asked to publish, right after the pull
+  request opens, and once the report is written: one run, one pull
+  request (`gh pr create` once), one branch, then done. An open pull
+  request is adopted, not opened twice.
+- **The contract, written down:** `docs/feature-states.md` — the states,
+  each transition and who owns it (the developer, or the engine; a model's
+  output is only ever an input), what each checkpoint keeps and what a
+  resume does with it, the controls, the budgets.
+- **From the terminal:** `otter feature accept [--anyway]` (there was no
+  way to finish a feature from the CLI). The CLI's end-to-end test runs the
+  golden path through `otter` — new, start, decide (publish), accept — in
+  a disposable repository with a fake agent and a fake `gh`: a pull
+  request with the agent's uncommitted work, CI green, done. With live
+  Claude and real GitHub it is recorded as pending (`runtime-validation.md`
+  M2-6/M2-7).
+- **The default backend stays `legacy_cli`** (audit P1-6). M2's changes
+  live in the runtime actor, policy and controller, so both backends have
+  them: the work clock and watchdog, one conversation per feature, the
+  planning turn, background work, approvals, the checkpoints. Only two
+  pieces are the SDK's alone: every tool call checked by policy before it
+  runs (legacy sees only what Claude Code asks about) and an interrupt that
+  spares background work. D-060's path to making `sdk` the default — after
+  dogfooding — stands; M2's live scenarios are that dogfooding's checklist.
+

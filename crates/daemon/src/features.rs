@@ -452,6 +452,21 @@ pub fn apply_action(
                 FeatureStatus::Cancelled,
                 Some("Cancelled by you".into()),
             )?);
+            // What stays (D-068): Otter removes nothing of the work.
+            let mut kept =
+                String::from("Cancelled. Nothing is removed: the workspace keeps the work's files");
+            if let Some(d) = &f.delivery {
+                kept.push_str(&format!(" and its branch `{}`", d.branch));
+                if let Some(url) = &d.pr_url {
+                    kept.push_str(&format!(
+                        "; the pull request stays open ({url}) — close it on the forge if you don't want it"
+                    ));
+                }
+            }
+            kept.push_str(". Remove the workspace when you no longer need the work.");
+            let (m, c) = message(MessageRole::Controller, kept, Some(command_id.to_owned()));
+            f.messages.push(m);
+            changes.push(c);
             for d in f.decisions.iter_mut() {
                 if d.status == DecisionStatus::Pending {
                     d.status = DecisionStatus::Cancelled;

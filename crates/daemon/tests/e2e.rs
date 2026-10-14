@@ -4288,6 +4288,204 @@ async fn a_feature_ships_as_a_pull_request_once_ci_is_green() {
     assert!(!calls.to_lowercase().contains("token"), "{calls}");
 }
 
+/// Publishing commits what the agent left uncommitted — never files that
+/// may hold secrets — and pushes that (D-068).
+#[tokio::test]
+async fn publishing_commits_the_work_but_not_its_secrets() {
+    use otter_core::feature::{EvidenceKind, FeatureStatus, MessageRole};
+    let fake = fake_agent_host("ok", "rules").await;
+    let (id, origin) = git_feature(&fake).await;
+    let ws = fake.host.conn().await.workspace_get("csv").await.unwrap();
+    let root = std::path::PathBuf::from(&ws.root);
+    std::fs::write(root.join("export.sh"), "echo id,name\n").unwrap();
+    std::fs::write(root.join(".env"), "API_TOKEN=do-not-push\n").unwrap();
+    allow_publish(&fake.host, &id).await;
+    let f = wait_feature(&fake.host, &id, "published", |f| {
+        f.delivery.as_ref().is_some_and(|d| d.pr_url.is_some())
+    })
+    .await;
+    assert_eq!(f.status, FeatureStatus::Review);
+    let pushed = git(&origin, &["show", "--stat", "--format=%s", "feature/csv"]);
+    assert!(pushed.starts_with("CSV export"), "{pushed}");
+    assert!(pushed.contains("export.sh"), "{pushed}");
+    assert!(!pushed.contains(".env"), "{pushed}");
+    let tree = git(&origin, &["ls-tree", "-r", "--name-only", "feature/csv"]);
+    assert!(!tree.contains(".env"), "{tree}");
+    let head = f.delivery.as_ref().unwrap().head.clone().unwrap();
+    assert_eq!(git(&origin, &["rev-parse", "feature/csv"]).trim(), head);
+    assert!(f.evidence.iter().any(|e| e.kind == EvidenceKind::Diff
+        && e.title.starts_with("Committed ")
+        && e.detail.as_deref() == Some(head.as_str())));
+    assert!(f.messages.iter().any(|m| m.role == MessageRole::Controller
+        && m.text.contains("leaving out what may hold secrets: .env")));
+}
+
+/// CI failing the same way after a fix goes to the developer, once — not
+/// round after round of fixes (D-068).
+#[tokio::test]
+async fn the_same_ci_failure_after_a_fix_goes_to_the_developer() {
+    use otter_core::feature::{EvidenceKind, FeatureStatus, GateStatus, MessageRole};
+    let fake = fake_agent_host("ok", "rules").await;
+    let (id, _) = git_feature(&fake).await;
+    allow_publish(&fake.host, &id).await;
+    std::fs::write(fake.gh.join("log"), "assertion failed: left == right\n").unwrap();
+    write_checks(
+        &fake.gh,
+        "checks.json",
+        serde_json::json!([
+            {"name": "test", "bucket": "fail", "link": "https://github.com/o/r/actions/runs/99/job/1", "description": "exit code 101"}
+        ]),
+    );
+    let over = |f: &otter_core::feature::Feature| {
+        f.messages
+            .iter()
+            .filter(|m| {
+                m.role == MessageRole::Controller && m.text.starts_with("CI failed the same way")
+            })
+            .count()
+    };
+    let f = wait_feature(&fake.host, &id, "handed to the developer", |f| {
+        f.status == FeatureStatus::Review && over(f) == 1
+    })
+    .await;
+    // Some polls later, still once, and no second fix.
+    tokio::time::sleep(Duration::from_millis(1000)).await;
+    let f2 = fake.host.conn().await.feature_get(&id).await.unwrap();
+    assert_eq!(over(&f2), 1);
+    assert_eq!(f2.status, FeatureStatus::Review);
+    assert_eq!(
+        f2.tasks
+            .iter()
+            .filter(|t| t.title == "Fix what CI found")
+            .count(),
+        1
+    );
+    assert_eq!(
+        f2.evidence
+            .iter()
+            .filter(|e| e.kind == EvidenceKind::Ci && e.ok == Some(false))
+            .count(),
+        1
+    );
+    assert!(
+        f.gates
+            .iter()
+            .any(|g| g.name == "CI" && g.status == GateStatus::Failed),
+        "{:?}",
+        f.gates
+    );
+}
+
+/// Otter stopping and starting again at each delivery checkpoint does
+/// nothing twice: one run, one pull request, one branch (D-068).
+#[tokio::test]
+async fn delivery_resumes_at_each_checkpoint_without_repeating_itself() {
+    use otter_core::feature::{EvidenceKind, FeatureAction, FeatureStatus};
+    let mut fake = fake_agent_host("ok", "rules").await;
+    let (id, origin) = git_feature(&fake).await;
+    // Asked to publish.
+    wait_feature(&fake.host, &id, "asked to publish", |f| {
+        f.pending_decisions()
+            .any(|d| d.summary.contains("git push"))
+    })
+    .await;
+    fake.host.restart().await;
+    allow_publish(&fake.host, &id).await;
+    // Published; CI not reported yet.
+    wait_feature(&fake.host, &id, "published", |f| {
+        f.delivery.as_ref().is_some_and(|d| d.pr_url.is_some())
+    })
+    .await;
+    fake.host.restart().await;
+    write_checks(
+        &fake.gh,
+        "checks.json",
+        serde_json::json!([{"name": "test", "bucket": "pass", "link": "", "description": ""}]),
+    );
+    // Ready for acceptance.
+    wait_feature(&fake.host, &id, "ready", |f| f.report.is_some()).await;
+    fake.host.restart().await;
+    let f = fake
+        .host
+        .conn()
+        .await
+        .feature_act(
+            "accept",
+            &id,
+            FeatureAction::Accept {
+                override_gates: false,
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(f.status, FeatureStatus::Done);
+    assert_eq!(f.runs.len(), 1, "{:?}", f.runs);
+    assert_eq!(
+        f.evidence
+            .iter()
+            .filter(|e| e.kind == EvidenceKind::PullRequest)
+            .count(),
+        1
+    );
+    let calls = std::fs::read_to_string(fake.gh.join("calls.log")).unwrap();
+    assert_eq!(calls.matches("gh pr create").count(), 1, "{calls}");
+    assert_eq!(
+        git(&origin, &["branch", "--list"])
+            .lines()
+            .filter(|l| l.contains("feature/csv"))
+            .count(),
+        1
+    );
+}
+
+/// An open pull request for the branch is adopted, not opened again; and a
+/// cancelled feature says what stays (D-068).
+#[tokio::test]
+async fn an_open_pull_request_is_adopted_and_cancelling_keeps_the_work() {
+    use otter_core::feature::{FeatureAction, FeatureStatus, MessageRole};
+    let fake = fake_agent_host("ok", "rules").await;
+    let (id, origin) = git_feature(&fake).await;
+    std::fs::write(fake.gh.join("pr"), "").unwrap();
+    allow_publish(&fake.host, &id).await;
+    let f = wait_feature(&fake.host, &id, "published", |f| {
+        f.delivery.as_ref().is_some_and(|d| d.pr_url.is_some())
+    })
+    .await;
+    assert_eq!(f.delivery.as_ref().unwrap().pr_number, Some(7));
+    let calls = std::fs::read_to_string(fake.gh.join("calls.log")).unwrap();
+    assert!(
+        calls.contains("gh pr edit") && !calls.contains("gh pr create"),
+        "{calls}"
+    );
+    let f = fake
+        .host
+        .conn()
+        .await
+        .feature_act("cancel", &id, FeatureAction::Cancel)
+        .await
+        .unwrap();
+    assert_eq!(f.status, FeatureStatus::Cancelled);
+    let said = f
+        .messages
+        .iter()
+        .rev()
+        .find(|m| m.role == MessageRole::Controller)
+        .unwrap();
+    assert!(
+        said.text.starts_with("Cancelled. Nothing is removed"),
+        "{}",
+        said.text
+    );
+    assert!(
+        said.text.contains("`feature/csv`") && said.text.contains("pull/7"),
+        "{}",
+        said.text
+    );
+    let ws = fake.host.conn().await.workspace_get("csv").await.unwrap();
+    assert!(std::path::Path::new(&ws.root).is_dir(), "the work stays");
+    assert!(git(&origin, &["branch", "--list", "feature/csv"]).contains("feature/csv"));
+}
+
 #[tokio::test]
 async fn flaky_ci_is_rerun_not_blamed_on_the_code() {
     use otter_core::feature::FeatureStatus;

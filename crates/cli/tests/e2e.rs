@@ -65,12 +65,17 @@ impl Drop for Home {
 /// The CLI with its own config directory (never `~/.config/otter`).
 struct Cli {
     config: tempfile::TempDir,
+    /// More variables, for the daemons it starts too (after the defaults).
+    env: Vec<(String, String)>,
 }
 
 impl Cli {
     fn new() -> Self {
         let config = tempfile::Builder::new().prefix("wc").tempdir().unwrap();
-        Cli { config }
+        Cli {
+            config,
+            env: vec![],
+        }
     }
 
     fn run(&self, args: &[&str]) -> Output {
@@ -79,6 +84,7 @@ impl Cli {
             .env("OTTER_CONFIG_DIR", self.config.path())
             // Daemons started here inherit it: no model is ever asked.
             .env("OTTER_CONTROLLER", "off")
+            .envs(self.env.iter().map(|(k, v)| (k, v)))
             // Not a terminal: no prompts, no colors.
             .stdin(Stdio::null())
             .output()
@@ -578,4 +584,168 @@ fn ssh_host_normal_flow() {
         .stderr(Stdio::null())
         .status();
     eprintln!("ssh e2e: passed over ssh localhost");
+}
+
+/// The M2 golden path from the terminal (D-068): a feature written and
+/// started with `otter`, worked on by a coding agent (a fake one), checked,
+/// published as a pull request (a real Git remote, a fake `gh`), followed
+/// through CI and accepted — in a disposable repository.
+#[test]
+fn a_feature_goes_from_the_terminal_to_an_accepted_pull_request() {
+    use std::os::unix::fs::PermissionsExt;
+    let scratch = tempfile::Builder::new().prefix("wg").tempdir().unwrap();
+    let dir = scratch.path();
+    let bin = dir.join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    let exe = |path: &Path, body: &str| {
+        std::fs::write(path, body).unwrap();
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    };
+    exe(
+        &bin.join("claude"),
+        "#!/bin/sh\nif [ \"$1\" = --version ]; then echo \"2.0.0-fake (Claude Code)\"; exit 0; fi\nexec sh \"$FAKE_CLAUDE_STREAM\" \"$@\"\n",
+    );
+    exe(
+        &bin.join("gh"),
+        include_str!("../../daemon/tests/fake_gh.sh"),
+    );
+    let stream = dir.join("fake_claude_stream.sh");
+    std::fs::write(
+        &stream,
+        include_str!("../../daemon/tests/fake_claude_stream.sh"),
+    )
+    .unwrap();
+    let shell = dir.join("login-sh");
+    exe(
+        &shell,
+        "#!/bin/sh\n[ \"$1\" = -l ] && shift\nexec /bin/sh \"$@\"\n",
+    );
+    let (gh, home) = (dir.join("gh"), dir.join("home"));
+    std::fs::create_dir_all(&gh).unwrap();
+    std::fs::create_dir_all(&home).unwrap();
+    // The disposable repository, with CI.
+    let origin = dir.join("origin");
+    std::fs::create_dir_all(origin.join(".github/workflows")).unwrap();
+    std::fs::write(origin.join("Makefile"), "test:\n\t@echo all good\n").unwrap();
+    std::fs::write(origin.join(".github/workflows/ci.yml"), "on: push\n").unwrap();
+    let git = |args: &[&str]| {
+        let out = Command::new("git")
+            .arg("-C")
+            .arg(&origin)
+            .args(["-c", "user.name=t", "-c", "user.email=t@example.com"])
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "git {args:?}: {out:?}");
+        String::from_utf8_lossy(&out.stdout).into_owned()
+    };
+    git(&["init", "-q", "-b", "main"]);
+    git(&["add", "-A"]);
+    git(&["commit", "-q", "-m", "init"]);
+
+    let tmux = std::env::var_os("PATH")
+        .and_then(|p| std::env::split_paths(&p).find(|d| d.join("tmux").is_file()))
+        .expect("tmux on PATH");
+    let p = |x: &Path| x.to_string_lossy().into_owned();
+    let mut cli = Cli::new();
+    cli.env = vec![
+        ("HOME".into(), p(&home)),
+        ("SHELL".into(), p(&shell)),
+        (
+            "PATH".into(),
+            format!("{}:{}:/usr/local/bin:/usr/bin:/bin", p(&bin), p(&tmux)),
+        ),
+        ("CLAUDE_CONFIG_DIR".into(), p(&dir.join("claude-config"))),
+        ("FAKE_CLAUDE_STREAM".into(), p(&stream)),
+        ("FAKE_CODEX_LOG".into(), p(&dir.join("agent.log"))),
+        ("FAKE_GH_DIR".into(), p(&gh)),
+        ("OTTER_CONTROLLER".into(), "rules".into()),
+        ("OTTER_CONTROLLER_TICK_MS".into(), "200".into()),
+        ("OTTER_PLAN_TURN".into(), "0".into()),
+        ("OTTER_CI_POLL_MS".into(), "0".into()),
+        ("OTTER_CI_SETTLE_MS".into(), "0".into()),
+        ("DEVELOPER_DIR".into(), String::new()),
+        ("SDKROOT".into(), String::new()),
+    ];
+    let daemon = Home::new();
+    cli.add_local_host("here", &daemon);
+    cli.ok(&[
+        "new",
+        "csv",
+        "--repo",
+        &p(&origin),
+        "--branch",
+        "feature/csv",
+        "--no-agent",
+        "--no-shell",
+    ]);
+    let out = cli.ok(&[
+        "feature",
+        "new",
+        "CSV export",
+        "--request",
+        "Export the timeline as CSV",
+        "--workspace",
+        "csv",
+    ]);
+    assert!(out.contains("a draft"), "{out}");
+    cli.ok(&["feature", "start", "csv export"]);
+
+    let show = |cli: &Cli| -> serde_json::Value {
+        serde_json::from_str(&cli.ok(&["feature", "show", "csv export", "--json"])).unwrap()
+    };
+    let wait = |what: &str, done: &dyn Fn(&serde_json::Value) -> bool| -> serde_json::Value {
+        let deadline = Instant::now() + Duration::from_secs(30);
+        loop {
+            let f = show(&cli);
+            if done(&f) {
+                return f;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "timed out waiting for {what}: {f:#}"
+            );
+            std::thread::sleep(Duration::from_millis(200));
+        }
+    };
+    // Implemented and checked; Otter asks to publish.
+    let f = wait("the publish question", &|f| {
+        f["decisions"].as_array().is_some_and(|d| {
+            d.iter().any(|d| {
+                d["status"] == "pending" && d["summary"].as_str().unwrap_or("").contains("git push")
+            })
+        })
+    });
+    let decision = f["decisions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|d| d["status"] == "pending")
+        .unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    // Something the agent left uncommitted, to see it published.
+    let ws = cli.workspace("csv");
+    std::fs::write(
+        Path::new(ws["root"].as_str().unwrap()).join("export.sh"),
+        "echo id\n",
+    )
+    .unwrap();
+    cli.ok(&["feature", "decide", "csv export", &decision]);
+    wait("the pull request", &|f| f["delivery"]["pr_url"].is_string());
+    std::fs::write(
+        gh.join("checks.json"),
+        r#"[{"name":"test","bucket":"pass","link":"","description":""}]"#,
+    )
+    .unwrap();
+    wait("the report", &|f| f["report"].is_string());
+    let out = cli.ok(&["feature", "accept", "csv export"]);
+    assert!(out.contains(": done"), "{out}");
+    // On the remote: the branch, with the work.
+    let pushed = git(&["show", "--stat", "--format=%s", "feature/csv"]);
+    assert!(pushed.contains("export.sh"), "{pushed}");
+    let calls = std::fs::read_to_string(gh.join("calls.log")).unwrap();
+    assert_eq!(calls.matches("gh pr create").count(), 1, "{calls}");
+    assert!(!calls.contains("merge"), "{calls}");
 }

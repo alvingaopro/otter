@@ -71,6 +71,14 @@ pub enum FeatureCommand {
     Cancel {
         feature: String,
     },
+    /// Accept a feature in review: it's done. Refused while a gate (the
+    /// pull request, CI, the checks) hasn't passed, unless `--anyway`.
+    Accept {
+        feature: String,
+        /// Accept with gates not met (on record in the report).
+        #[arg(long)]
+        anyway: bool,
+    },
     /// Answer what a feature waits on you for: approve (default) or deny, or
     /// answer a question.
     Decide {
@@ -430,6 +438,18 @@ pub async fn feature_command(config: &Config, cmd: FeatureCommand, json: bool) -
             act(config, &feature, FeatureAction::Cancel, json, |f| {
                 format!("{}: {}", f.title, word(&f.status))
             })
+            .await
+        }
+        FeatureCommand::Accept { feature, anyway } => {
+            act(
+                config,
+                &feature,
+                FeatureAction::Accept {
+                    override_gates: anyway,
+                },
+                json,
+                |f| format!("{}: {}", f.title, word(&f.status)),
+            )
             .await
         }
         FeatureCommand::Decide {

@@ -218,7 +218,7 @@ async fn git_state(root: &Path, env: &EnvMap, base: Option<&str>) -> Option<Work
 }
 
 /// A path whose content may be a secret (by its file name).
-fn secret_like(path: &str) -> bool {
+pub(crate) fn secret_like(path: &str) -> bool {
     let name = path
         .trim_end_matches('/')
         .rsplit('/')
@@ -230,7 +230,7 @@ fn secret_like(path: &str) -> bool {
 }
 
 /// Pathspecs leaving out what [`secret_like`] matches.
-fn secret_pathspecs() -> Vec<String> {
+pub(crate) fn secret_pathspecs() -> Vec<String> {
     let names = SECRET_NAMES.iter().map(|n| format!("**/{n}"));
     let prefixes = SECRET_PREFIXES.iter().map(|p| format!("**/{p}*"));
     let suffixes = SECRET_SUFFIXES.iter().map(|x| format!("**/*{x}"));

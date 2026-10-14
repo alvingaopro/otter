@@ -4,7 +4,8 @@
 feature workflow, plan → implement → test → review → PR → CI → done, with
 durable checkpoints and human control.*
 **Status:** in progress — step 1 done (D-062, PR #53), step 2 done
-(D-063, PR #54), step 3 done (D-064, PR #55), step 4 done (D-065, PR #56), step 5 done (D-066, PR #57), step 6 done (D-067). **Branch:** `roadmap-m2`, started from `main`: M1's runtime changes
+(D-063, PR #54), step 3 done (D-064, PR #55), step 4 done (D-065, PR #56), step 5 done (D-066, PR #57), step 6 done (D-067, PR #58), step 7 done
+(D-068). **Branch:** `roadmap-m2`, started from `main`: M1's runtime changes
 (`roadmap-m1` @ `5ebcf4f`, which the line numbers below refer to) aren't
 published yet, so these steps are built without them.
 **Inputs:** the M2 spec (scope, acceptance, deliverables, release gate — kept
@@ -292,15 +293,24 @@ bounded budgets and escalation rather than loops.
 
 Acceptance:
 
-- [ ] Create a feature from the CLI and complete a PR in a disposable test
-  repository.
-- [ ] Interrupt at each checkpoint; resume without duplicate branches, PRs or
-  tool actions.
-- [ ] Fail tests and CI deliberately; UI/CLI show the failure, evidence and
-  next action.
-- [ ] Cancel midway; preserve work and report the cleanup policy.
+- [x] Create a feature from the CLI and complete a PR in a disposable test
+  repository — offline (fake agent, fake `gh`, real Git remote):
+  `a_feature_goes_from_the_terminal_to_an_accepted_pull_request`; live:
+  pending (M2-6).
+- [x] Interrupt at each checkpoint; resume without duplicate branches, PRs or
+  tool actions — `delivery_resumes_at_each_checkpoint_without_repeating_itself`,
+  `runs_survive_a_restart_and_follow_a_changing_goal`,
+  `an_open_pull_request_is_adopted_and_cancelling_keeps_the_work`.
+- [x] Fail tests and CI deliberately; UI/CLI show the failure, evidence and
+  next action — `verification_stops_when_a_fix_changes_nothing`,
+  `a_check_that_cant_run_blocks_on_the_developer_once`,
+  `the_same_ci_failure_after_a_fix_goes_to_the_developer`,
+  `a_feature_ships_as_a_pull_request_once_ci_is_green`.
+- [x] Cancel midway; preserve work and report the cleanup policy —
+  `an_open_pull_request_is_adopted_and_cancelling_keeps_the_work`.
 - [ ] (from the audit) Benchmark t1/t2 Mode C reach Review with the
-  independent check passing, in one session each.
+  independent check passing, in one session each — needs live Claude:
+  pending (M2-1, M2-2).
 
 Release gate: `cargo fmt --all -- --check`, `cargo clippy --all-targets`,
 `cargo test`; desktop build and smoke test when UI changes; regression tests
