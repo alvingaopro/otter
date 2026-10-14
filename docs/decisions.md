@@ -2232,3 +2232,28 @@ and where each gap comes from. It stays on the read side: no daemon state,
 no change to how work runs, no new requests where a derived value does.
 When the spec arrives it wins, and the plan is redone against it.
 
+## D-071 — One rule for what a feature needs (2026-10-14)
+
+M3 step 1 (`docs/plans/m3-agent-manager-ux.md`, gaps 2 and 4). A
+workspace's activity is computed by `otter-core` and served to the app
+(`view.rs`); a feature's "needs you" was the app's own TypeScript, and
+left out a stopped feature, which waits on the developer's retry
+(audit 05 §4). Features also sorted by their last update.
+
+- **`Feature::needs()`** in `otter-core`: what the feature waits on the
+  developer for — the oldest pending decision (a question, or a decision
+  to allow or deny; with how many wait), else review once it's ready to
+  accept (the report is written) or a gate failed, else blocked, else
+  stopped — with a line saying what, and since when: the decision's time,
+  or `status_since`, a new field every transition sets (older documents
+  fall back to their last update). Review while publishing or waiting for
+  CI isn't waiting on the developer.
+- **`Feature::activity()`** puts features on the workspaces' scale: needs
+  you, failed, working, completed (done), idle (draft, paused), archived
+  (cancelled).
+- **Served, not re-implemented.** The app's feature calls return each
+  feature with both computed (`FeatureView`, flattened, in
+  `src-tauri/src/features.rs`, as `view.rs` does for workspaces);
+  `features.ts` reads them, keeping a stand-in only for preview data.
+  Features that need the developer sort longest-waiting first.
+
