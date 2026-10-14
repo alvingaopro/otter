@@ -990,6 +990,23 @@ pub enum FeatureEvent {
     LimitReached {
         limit: String,
     },
+    /// Otter is about to change something with one of its tools (D-089):
+    /// written before the change, so one that never finished is known.
+    ToolCalled {
+        tool: String,
+        /// What started Otter's turn: `developer` (their message) or `event`.
+        origin: String,
+        /// The developer's message the change acts on, when it does.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        authority: Option<String>,
+    },
+    /// What came of one of Otter's tools: done, or why not.
+    ToolDone {
+        tool: String,
+        /// The error's code; absent: done.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        error: Option<String>,
+    },
     /// A kind this build doesn't know.
     #[serde(other)]
     Unknown,
@@ -1036,6 +1053,11 @@ impl FeatureEvent {
                 format!("Evidence: {kind:?}{verdict}").to_lowercase()
             }
             FeatureEvent::LimitReached { limit } => format!("Stopped: {limit}"),
+            FeatureEvent::ToolCalled { tool, .. } => format!("Otter: {tool}"),
+            FeatureEvent::ToolDone { tool, error } => match error {
+                Some(code) => format!("Otter: {tool} — {}", code.replace('_', " ")),
+                None => format!("Otter: {tool} — done"),
+            },
             FeatureEvent::Unknown => "Something happened".into(),
         }
     }
@@ -1411,6 +1433,35 @@ mod tests {
         )
         .unwrap();
         assert_eq!(future.event, FeatureEvent::Unknown);
+    }
+
+    /// Otter's tool calls (D-089) are history like the rest; a build from
+    /// before them reads them as `Unknown`, with their text (the test above).
+    #[test]
+    fn otters_tool_records_read_back_and_say_what_happened() {
+        let called = FeatureEvent::ToolCalled {
+            tool: "pause_task".into(),
+            origin: "developer".into(),
+            authority: Some("msg_1".into()),
+        };
+        let json = serde_json::to_string(&called).unwrap();
+        assert!(json.contains(r#""type":"ToolCalled""#), "{json}");
+        assert_eq!(serde_json::from_str::<FeatureEvent>(&json).unwrap(), called);
+        assert_eq!(called.text(), "Otter: pause_task");
+        let refused = FeatureEvent::ToolDone {
+            tool: "accept_task".into(),
+            error: Some("not_allowed_in_this_turn".into()),
+        };
+        assert_eq!(
+            refused.text(),
+            "Otter: accept_task — not allowed in this turn"
+        );
+        let done = FeatureEvent::ToolDone {
+            tool: "get_task".into(),
+            error: None,
+        };
+        assert!(!serde_json::to_string(&done).unwrap().contains("error"));
+        assert_eq!(done.text(), "Otter: get_task — done");
     }
 
     #[test]
