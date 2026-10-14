@@ -3573,6 +3573,98 @@ async fn verification_stops_when_a_fix_changes_nothing() {
     assert_eq!((f.status, f.runs.len()), (FeatureStatus::Review, 2));
 }
 
+/// A feature started without a request (D-067): the developer's first
+/// message is the request, not a note to skip; with none, Otter asks once
+/// and waits, and a plain message answers it.
+#[tokio::test]
+async fn a_feature_without_a_request_takes_the_developers_word() {
+    use otter_core::feature::{DecisionKind, FeatureAction, FeatureStatus, MessageRole};
+    let fake = fake_agent_host("ok", "rules").await;
+    let host = &fake.host;
+    // Said before it starts.
+    let dir = host.home().join("said");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("Makefile"), "test:\n\t@echo all good\n").unwrap();
+    let mut conn = host.conn().await;
+    conn.workspace_create(WorkspaceCreate {
+        name: "said".into(),
+        source: SourceSpec::Directory {
+            path: dir.to_string_lossy().into_owned(),
+        },
+        sessions: Some(vec![]),
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+    let f = conn
+        .feature_create(otter_protocol::feature::FeatureCreate {
+            command_id: "create-said".into(),
+            title: "Otter".into(),
+            request: String::new(),
+            workspace: Some("said".into()),
+        })
+        .await
+        .unwrap();
+    let id = f.id.to_string();
+    conn.feature_send("msg-goal", &id, "Add CSV export of the orders")
+        .await
+        .unwrap();
+    conn.feature_act("start", &id, FeatureAction::Start)
+        .await
+        .unwrap();
+    let f = wait_feature(host, &id, "review", |f| f.status == FeatureStatus::Review).await;
+    assert_eq!(f.request, "Add CSV export of the orders");
+    assert!(f.tasks[0].detail.as_deref().unwrap().contains("orders"));
+    let c = conn
+        .conversation_get(f.runs[0].conversation_id.as_ref().unwrap().as_str())
+        .await
+        .unwrap()
+        .conversation;
+    let first = c.turns[0].text();
+    assert!(
+        first.contains("Request:\nAdd CSV export of the orders"),
+        "{first}"
+    );
+    assert!(
+        !first.contains("From the developer"),
+        "not a note too: {first}"
+    );
+
+    // Nothing said at all: Otter asks, once, and waits.
+    let id = started_in(host, "silent", "").await;
+    let f = wait_feature(host, &id, "asking what to do", |f| {
+        f.status == FeatureStatus::Blocked && f.pending_decisions().next().is_some()
+    })
+    .await;
+    let d = f.pending_decisions().next().unwrap().clone();
+    assert_eq!(
+        (d.kind, d.summary.as_str(), d.user_only),
+        (DecisionKind::Question, "What should this feature do?", true)
+    );
+    assert_eq!(
+        f.status_reason.as_deref(),
+        Some("Waiting for what this feature should do")
+    );
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    let f = conn.feature_get(&id).await.unwrap();
+    assert_eq!(f.status, FeatureStatus::Blocked);
+    let asked = |f: &otter_core::feature::Feature| {
+        f.messages
+            .iter()
+            .filter(|m| m.role == MessageRole::Controller && m.text.starts_with("What should"))
+            .count()
+    };
+    assert_eq!(asked(&f), 1);
+    assert!(f.runs.is_empty() && f.tasks.is_empty());
+    // A plain message answers it.
+    conn.feature_send("msg-late", &id, "Export the orders as CSV")
+        .await
+        .unwrap();
+    let f = wait_feature(host, &id, "review", |f| f.status == FeatureStatus::Review).await;
+    assert_eq!(f.request, "Export the orders as CSV");
+    assert_eq!(asked(&f), 1);
+}
+
 /// A turn the agent ends while its background work still runs isn't the end
 /// of the run (D-065): what it does when the work is done is part of it.
 #[tokio::test]

@@ -420,11 +420,11 @@ fn rules_plan(cx: &Context<'_>) -> Plan {
     // Planning again without a model: one task carrying what the developer
     // said since, the criteria as they were.
     if f.replan {
+        let request = f.request_message();
         let notes: Vec<String> = f
             .messages
             .iter()
-            .skip(1)
-            .filter(|m| m.role == otter_core::feature::MessageRole::User)
+            .filter(|m| m.role == otter_core::feature::MessageRole::User && Some(&m.id) != request)
             .map(|m| m.text.clone())
             .collect();
         return Plan {
@@ -678,15 +678,16 @@ impl Model {
 
 fn brief(f: &Feature) -> String {
     let mut s = format!("Feature: {}\nRequest:\n{}\n", f.title, f.request);
+    let request = f.request_message();
     let user: Vec<&str> = f
         .messages
         .iter()
-        .filter(|m| m.role == otter_core::feature::MessageRole::User)
+        .filter(|m| m.role == otter_core::feature::MessageRole::User && Some(&m.id) != request)
         .map(|m| m.text.as_str())
         .collect();
-    if user.len() > 1 {
-        s.push_str("\nLater messages from the developer:\n");
-        for m in &user[1..] {
+    if !user.is_empty() {
+        s.push_str("\nOther messages from the developer:\n");
+        for m in &user {
             s.push_str(&format!("- {m}\n"));
         }
     }
@@ -742,7 +743,8 @@ impl Brain for Model {
              passing proves it (the tests pass), \"diff\" when it is about what the change contains (judged \
              from the diff of the work). A criterion is a fact about the code or the check's result, never \
              about the conversation or the process (not \"confirmed with the requester\", not \"no commit \
-             was made\"). rationale: one sentence.{again}",
+             was made\"). The coding agent works on its own: no task tells it to ask, check with or wait \
+             for the developer (Otter asks them when something needs them). rationale: one sentence.{again}",
             root = cx.root.display(),
             brief = brief(cx.feature),
             hint = detected
