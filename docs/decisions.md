@@ -2218,3 +2218,17 @@ the agent used — on the path that answers the agent's policy check.
 - `escalate` re-checking that a decision is still pending (P2-4) came with
   D-066.
 
+## D-070 — M3's scope, derived without its spec (2026-10-14)
+
+The roadmap takes each milestone's scope and acceptance from its spec file;
+`03-agent-manager-ux.md` isn't on this machine, and the roadmap says later
+milestones don't ship ahead of the P0 gates (M1 unpublished, M2's live
+scenarios pending). The requester, told so, asked to go on. So M3 starts,
+with its scope derived and said to be: from the exit outcome ("parallel
+work is understandable and actionable from the desktop inbox"), design §21
+and §26, the autonomy audit's attention findings (05), and an audit of the
+code — `docs/plans/m3-agent-manager-ux.md`, which marks what is already met
+and where each gap comes from. It stays on the read side: no daemon state,
+no change to how work runs, no new requests where a derived value does.
+When the spec arrives it wins, and the plan is redone against it.
+
