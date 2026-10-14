@@ -93,12 +93,18 @@ jobs:
           components: clippy, rustfmt
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: apps/desktop/src-tauri
+          workspaces: |
+            apps/desktop/src-tauri
+            .
       - run: npm ci
       # UI tests: navigation, feature view, contracts (simulated DOM).
       - run: npm test
       # Type-checks and bundles the UI; Tauri's build embeds dist/.
       - run: npm run build
+      # The bundled otter/otterd (D-085): Tauri's build needs them to exist.
+      - run: npm run sidecars
+        env:
+          TAURI_ENV_DEBUG: "true"
       - run: cargo fmt --check
         working-directory: apps/desktop/src-tauri
       - run: cargo clippy --all-targets --locked -- -D warnings

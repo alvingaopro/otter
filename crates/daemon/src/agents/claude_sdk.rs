@@ -20,7 +20,9 @@
 //! `OTTER_CLAUDE_WORKER` (its `main.js`, or the package directory), else the
 //! one `otter host install` put next to `otterd` for this release
 //! (`../lib/otter/claude-runtime/<version>/dist/main.js`; a directory per
-//! release, so an upgrade never replaces what a live run uses). Node is
+//! release, so an upgrade never replaces what a live run uses) — or, for an
+//! `otterd` run from inside the desktop app rather than through its link in
+//! `~/.local/bin` (D-085), that same directory under `~/.local/lib`. Node is
 //! `OTTER_NODE`, else `node` on the login PATH. Whether they work together
 //! is the worker's own `--check` ([`worker_check`]).
 
@@ -85,13 +87,22 @@ pub fn worker_entry(env: &EnvMap) -> Option<PathBuf> {
             let exe = std::env::current_exe().ok()?;
             let dir = exe.parent()?;
             let installed = dir.join("../lib/otter/claude-runtime");
-            vec![
+            let mut candidates = vec![
                 installed
                     .join(env!("CARGO_PKG_VERSION"))
                     .join("dist/main.js"),
                 installed.join("dist/main.js"),
                 dir.join("claude-runtime/dist/main.js"),
-            ]
+            ];
+            if let Some(home) = std::env::var_os("HOME") {
+                candidates.push(
+                    PathBuf::from(home)
+                        .join(".local/lib/otter/claude-runtime")
+                        .join(env!("CARGO_PKG_VERSION"))
+                        .join("dist/main.js"),
+                );
+            }
+            candidates
         }
     };
     candidates

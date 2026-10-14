@@ -543,8 +543,8 @@ async fn host_command(config: &mut Config, cmd: HostCommand, json: bool) -> Resu
             let host = config.host(&name)?.clone();
             let version = env!("CARGO_PKG_VERSION");
             println!("installing otterd {version} on {name}…");
-            let out =
-                otter_client::install::install(&config.transport(&host), version, true).await?;
+            let out = otter_client::install::install(&config.transport(&host), version, true, true)
+                .await?;
             println!("{out}");
             Ok(())
         }

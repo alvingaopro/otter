@@ -3,9 +3,9 @@
   "productName": "Otter",
   "identifier": "dev.otter.app",
   "build": {
-    "beforeDevCommand": "npm run dev",
+    "beforeDevCommand": "npm run sidecars && npm run dev",
     "devUrl": "http://localhost:1420",
-    "beforeBuildCommand": "npm run build",
+    "beforeBuildCommand": "npm run sidecars && npm run build",
     "frontendDist": "../dist"
   },
   "app": {
@@ -28,6 +28,7 @@
   "bundle": {
     "active": true,
     "targets": "all",
+    "externalBin": ["binaries/otter", "binaries/otterd"],
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",

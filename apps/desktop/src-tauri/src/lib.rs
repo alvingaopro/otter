@@ -50,6 +50,10 @@ pub fn run() {
             }
         })
         .setup(|app| {
+            // Keep linked command-line tools at this app's version (D-085).
+            if let Err(e) = hosts::link_cli(false) {
+                eprintln!("{e}");
+            }
             hosts::start(app.handle());
             forwards::start(app.handle());
             tray::setup(app.handle())?;
