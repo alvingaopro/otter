@@ -1577,6 +1577,124 @@ impl Draft {
 mod tests {
     use super::*;
 
+    fn run_of(task: &TaskId, state: RunState) -> Run {
+        Run {
+            id: RunId::generate(),
+            task_id: task.clone(),
+            runtime: DEFAULT_RUNTIME.into(),
+            state,
+            started_at: Utc::now(),
+            ended_at: None,
+            summary: None,
+            provider_session_id: None,
+            activity: vec![],
+            conversation_id: None,
+            turn_id: None,
+            worked_ms: 0,
+            working_since: None,
+        }
+    }
+
+    fn implementing(task: &TaskId) -> Feature {
+        use otter_core::feature::Task;
+        let now = Utc::now();
+        let mut f = Feature::new("CSV".into(), "Export it".into(), now);
+        f.transition(FeatureStatus::Planning, None, now).unwrap();
+        f.tasks.push(Task {
+            id: task.clone(),
+            title: "Write it".into(),
+            detail: None,
+            status: TaskStatus::Running,
+            depends_on: vec![],
+            workspace_id: None,
+            session_id: None,
+            attempts: 1,
+            last_error: None,
+            planning: false,
+        });
+        f.transition(FeatureStatus::Implementing, None, now)
+            .unwrap();
+        f
+    }
+
+    #[test]
+    fn only_the_latest_cut_offs_of_the_same_task_count() {
+        use RunState::*;
+        let (a, b) = (TaskId::from("a"), TaskId::from("b"));
+        let mut f = implementing(&a);
+        for (t, s) in [
+            (&a, Interrupted),
+            (&a, Failed),
+            (&a, Interrupted),
+            // Another task's run doesn't break the streak, nor count in it.
+            (&b, Interrupted),
+            (&a, Interrupted),
+            (&a, Running),
+            // Runs after this one don't count.
+            (&a, Interrupted),
+        ] {
+            f.runs.push(run_of(t, s));
+        }
+        assert_eq!(losses_before(&f, &f.runs[0]), 0);
+        assert_eq!(
+            losses_before(&f, &f.runs[2]),
+            0,
+            "a failure ends the streak"
+        );
+        assert_eq!(losses_before(&f, &f.runs[5]), 2);
+        assert_eq!(losses_before(&f, &f.runs[3]), 0, "the other task has none");
+    }
+
+    #[test]
+    fn a_run_needing_recovery_blocks_its_task_on_one_developer_decision() {
+        let task = TaskId::from("t1");
+        let mut f = implementing(&task);
+        let now = Utc::now();
+        let changes = require_recovery(&mut f, &task, "otterd restarted", now);
+        assert!(!changes.is_empty());
+        assert_eq!(f.status, FeatureStatus::Blocked);
+        assert_eq!(f.tasks[0].status, TaskStatus::Blocked);
+        assert_eq!(f.tasks[0].last_error.as_deref(), Some("otterd restarted"));
+        let open: Vec<_> = f.pending_decisions().collect();
+        assert_eq!(open.len(), 1);
+        let d = open[0];
+        assert_eq!(d.kind, DecisionKind::Recovery);
+        assert_eq!(d.task_id.as_ref(), Some(&task));
+        assert!(d.user_only && d.run_id.is_none());
+        assert_eq!(d.risk, Risk::High);
+        assert!(d.summary.contains("Write it"), "{}", d.summary);
+        assert!(
+            d.detail
+                .as_deref()
+                .unwrap()
+                .starts_with("otterd restarted."),
+            "{:?}",
+            d.detail
+        );
+        // Asked again while the first is open: still one decision.
+        require_recovery(&mut f, &task, "lost again", now);
+        assert_eq!(f.pending_decisions().count(), 1);
+        assert_eq!(f.tasks[0].last_error.as_deref(), Some("lost again"));
+        // An unknown task changes nothing.
+        assert!(require_recovery(&mut f, &TaskId::from("nope"), "x", now).is_empty());
+    }
+
+    #[test]
+    fn a_run_cut_off_too_often_needs_recovery_even_with_a_session() {
+        let task = TaskId::from("t1");
+        let mut run = run_of(&task, RunState::Running);
+        run.provider_session_id = Some("native-1".into());
+        let (s, why) = unsettled(&run, None, None, MAX_LOSSES - 1, "lost");
+        assert_eq!(s, RunState::RecoveryRequired);
+        assert!(
+            why.contains(&format!("{MAX_LOSSES} runs in a row")),
+            "{why}"
+        );
+        let (s, why) = unsettled(&run, None, None, 0, "lost");
+        assert_eq!(s, RunState::Interrupted);
+        assert_eq!(why, "Interrupted: lost; resumable");
+    }
+
     #[test]
     fn a_denial_says_who_said_no() {
         let deny = |by, why: Option<&str>| match decision_reply(

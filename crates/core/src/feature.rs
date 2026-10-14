@@ -1071,6 +1071,25 @@ mod tests {
     use FeatureStatus::*;
 
     #[test]
+    fn a_run_ending_reads_plainly_and_round_trips() {
+        for (state, text) in [
+            (RunState::Interrupted, "Run interrupted"),
+            (RunState::RecoveryRequired, "Run recovery required"),
+            (RunState::HandedOff, "Run handed off"),
+        ] {
+            let e = FeatureEvent::RunChanged {
+                run_id: RunId::from("run_1"),
+                state,
+            };
+            assert_eq!(e.text(), text);
+        }
+        let k: DecisionKind = serde_json::from_str("\"recovery\"").unwrap();
+        assert_eq!(k, DecisionKind::Recovery);
+        let s: RunState = serde_json::from_str("\"recovery_required\"").unwrap();
+        assert_eq!(s, RunState::RecoveryRequired);
+    }
+
+    #[test]
     fn a_run_ends_once() {
         use RunState as R;
         let ends = [

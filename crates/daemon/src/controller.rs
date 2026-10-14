@@ -2669,6 +2669,14 @@ mod tests {
             prompt("handed back", RunState::HandedOff),
             "Continue the task where you left off."
         );
+        // Lost mid-turn (D-061): the last step's result is unknown.
+        let lost = prompt(
+            "Interrupted: the agent's process was lost",
+            RunState::Interrupted,
+        );
+        assert!(lost.starts_with("Continue the task where you left off."));
+        assert!(lost.contains(CUT_OFF), "{lost}");
+        assert!(!prompt("handed back", RunState::HandedOff).contains("cut off"));
         assert_eq!(span(Duration::from_millis(1500)), "1 s");
         assert_eq!(span(Duration::from_secs(1800)), "30 min");
     }
