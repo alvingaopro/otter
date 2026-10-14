@@ -4083,20 +4083,173 @@ async fn the_coding_agent_plans_first_in_the_features_conversation() {
     assert!(!texts[1].contains("Request:"), "{texts:#?}");
 }
 
-/// A planning turn that doesn't come back with a plan doesn't stop the work:
-/// Otter plans as it would without it (D-064).
+/// A request that asks no change is answered (D-084): the planning turn's
+/// words are the answer, shown in the conversation, and the feature is done
+/// — no plan, no attempt, no check. Asking for a change after it plans, in
+/// the same conversation, through the agent.
 #[tokio::test]
-async fn a_planning_turn_without_a_plan_falls_back() {
-    use otter_core::feature::FeatureStatus;
+async fn a_question_is_answered_and_a_change_after_it_is_planned() {
+    use otter_core::feature::{FeatureStatus, MessageRole};
     let fake = fake_agent_host_with("ok", "rules", |_| vec![("OTTER_PLAN_TURN", "1".into())]).await;
     let host = &fake.host;
-    let id = started_feature(host, "Add CSV export NOPLAN").await;
+    let id = started_feature(host, "How does the export work? NOPLAN").await;
+    let f = wait_feature(host, &id, "answered", |f| f.status == FeatureStatus::Done).await;
+    assert!(
+        f.status_reason
+            .as_deref()
+            .is_some_and(|r| r.starts_with("Answered")),
+        "{:?}",
+        f.status_reason
+    );
+    let titles: Vec<&str> = f.tasks.iter().map(|t| t.title.as_str()).collect();
+    assert_eq!(titles, ["Look at the code and plan the work"]);
+    assert_eq!(f.runs.len(), 1);
+    assert_eq!(f.budget.iterations_used, 0);
+    assert!(f.acceptance.is_empty() && f.verify_command.is_none());
+    assert!(
+        f.messages
+            .iter()
+            .any(|m| m.role == MessageRole::Agent
+                && m.text == "I would write the export and test it."),
+        "{:?}",
+        f.messages
+    );
+    // Asking for a change plans it: the agent's look again, in its conversation.
+    host.conn()
+        .await
+        .feature_send("cmd-change", &id, "Then write it, please")
+        .await
+        .unwrap();
     let f = wait_feature(host, &id, "review", |f| f.status == FeatureStatus::Review).await;
     let titles: Vec<&str> = f.tasks.iter().map(|t| t.title.as_str()).collect();
-    assert_eq!(titles, ["Look at the code and plan the work", "CSV export"]);
+    assert_eq!(
+        titles,
+        [
+            "Look at the code and plan the work",
+            "Write the exporter",
+            "Cover it with a test"
+        ]
+    );
+    assert_eq!(f.runs.len(), 4);
+    let sid = f.runs[0].provider_session_id.clone();
+    assert!(f.runs.iter().all(|r| r.provider_session_id == sid));
+    assert_eq!(f.budget.iterations_used, 2);
+    // Nothing was planned before: a plan, not a revised one.
+    assert!(
+        f.messages
+            .iter()
+            .any(|m| m.role == MessageRole::Controller && m.text.starts_with("Plan: 2 task(s)")),
+        "{:?}",
+        f.messages
+    );
+    let c = host
+        .conn()
+        .await
+        .conversation_get(f.runs[1].conversation_id.as_ref().unwrap().as_str())
+        .await
+        .unwrap()
+        .conversation;
+    let texts: Vec<String> = c.turns.iter().map(|t| t.text()).collect();
+    assert!(texts[1].contains("Then write it, please"), "{texts:#?}");
+    assert!(texts[1].contains("plan the work"), "{texts:#?}");
+    assert!(!texts[1].contains("Request:"), "{texts:#?}");
+}
+
+/// The brain reviews the agent's plan and doesn't rewrite it (D-084): what
+/// it finds goes back to the agent once, in the same conversation; found
+/// again, the developer decides, and their OK sets the agent's plan as is.
+#[tokio::test]
+async fn a_plan_the_brain_faults_goes_back_once_then_to_the_developer() {
+    use otter_core::feature::{DecisionKind, FeatureAction, FeatureStatus};
+    let fake =
+        fake_agent_host_with("ok", "skeptic", |_| vec![("OTTER_PLAN_TURN", "1".into())]).await;
+    let host = &fake.host;
+    let id = started_feature(host, "Add CSV export").await;
+    let f = wait_feature(host, &id, "asking about the plan", |f| {
+        f.status == FeatureStatus::Blocked
+    })
+    .await;
+    let d = f.pending_decisions().next().unwrap().clone();
+    assert_eq!(d.kind, DecisionKind::PlanApproval);
+    assert!(d.user_only && d.run_id.is_none());
+    assert!(d.detail.as_deref().unwrap().contains("too vague"), "{d:?}");
+    assert!(
+        f.tasks.iter().all(|t| t.planning),
+        "nothing is set before the developer says: {:?}",
+        f.tasks
+    );
     assert_eq!(f.runs.len(), 2);
     assert_eq!(f.runs[1].provider_session_id, f.runs[0].provider_session_id);
-    assert_eq!(f.budget.iterations_used, 1);
+    let c = host
+        .conn()
+        .await
+        .conversation_get(f.runs[1].conversation_id.as_ref().unwrap().as_str())
+        .await
+        .unwrap()
+        .conversation;
+    let texts: Vec<String> = c.turns.iter().map(|t| t.text()).collect();
+    assert!(texts[1].contains("Otter reviewed your plan"), "{texts:#?}");
+    assert!(texts[1].contains("too vague"), "{texts:#?}");
+    host.conn()
+        .await
+        .feature_act(
+            "approve-plan",
+            &id,
+            FeatureAction::Decide {
+                decision_id: d.id.clone(),
+                approve: true,
+                answer: None,
+                answers: None,
+            },
+        )
+        .await
+        .unwrap();
+    let f = wait_feature(host, &id, "planned", |f| {
+        f.tasks.iter().any(|t| t.title == "Write the exporter")
+    })
+    .await;
+    assert!(
+        f.rationale
+            .iter()
+            .any(|r| r.starts_with("Plan (approved by you)")),
+        "{:?}",
+        f.rationale
+    );
+    assert_eq!(f.verify_command.as_deref(), Some("make test"));
+}
+
+/// A planning turn that fails stops planning and says so (D-084): no plan
+/// is guessed without the agent's look at the code. Retrying looks again,
+/// in the same conversation.
+#[tokio::test]
+async fn a_failed_look_at_the_code_stops_planning() {
+    use otter_core::feature::{FeatureAction, FeatureStatus};
+    let fake = fake_agent_host_with("ok", "rules", |_| vec![("OTTER_PLAN_TURN", "1".into())]).await;
+    let host = &fake.host;
+    let id = started_feature(host, "Add CSV export PLANFAIL").await;
+    let f = wait_feature(host, &id, "failed", |f| f.status == FeatureStatus::Failed).await;
+    assert!(
+        f.status_reason
+            .as_deref()
+            .is_some_and(|r| r.contains("look at the code failed")),
+        "{:?}",
+        f.status_reason
+    );
+    assert!(f.tasks.iter().all(|t| t.planning), "{:?}", f.tasks);
+    assert!(f.acceptance.is_empty() && f.verify_command.is_none());
+    assert_eq!(f.runs.len(), 1);
+    host.conn()
+        .await
+        .feature_act("retry", &id, FeatureAction::Retry)
+        .await
+        .unwrap();
+    // The conversation has the request: the look again (no PLANFAIL in it) plans.
+    let f = wait_feature(host, &id, "planned", |f| {
+        f.tasks.iter().any(|t| t.title == "Write the exporter")
+    })
+    .await;
+    assert_eq!(f.runs[1].task_id, f.tasks[0].id);
+    assert_eq!(f.runs[1].provider_session_id, f.runs[0].provider_session_id);
 }
 
 /// In the feature's one conversation, a developer message reaches the agent

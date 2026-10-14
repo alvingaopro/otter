@@ -1,5 +1,6 @@
 //! The Control Agent's judgment (D-045): the few places a model decides —
-//! writing the plan, deciding what policy leaves open, judging the evidence.
+//! reviewing the coding agent's plan (D-084; writing one only when there is
+//! no planning turn), deciding what policy leaves open, judging the evidence.
 //! Everything else (lifecycle, limits, retries, what may run) is the
 //! controller's deterministic code.
 //!
@@ -131,7 +132,16 @@ pub struct Context<'a> {
 #[async_trait]
 pub trait Brain: Send + Sync {
     fn name(&self) -> &'static str;
+    /// A plan written from the brief alone: only when the coding agent
+    /// doesn't plan first (`OTTER_PLAN_TURN=0`, D-064).
     async fn plan(&self, cx: &Context<'_>) -> Result<Plan>;
+    /// Review the plan the coding agent proposed (D-084): what is wrong with
+    /// it that can be seen without the code, one sentence each, addressed to
+    /// the agent. Never a rewrite: the agent sees the code, the brain
+    /// doesn't. Empty: nothing to say (and without a model, nothing is).
+    async fn review_plan(&self, _cx: &Context<'_>, _plan: &Plan) -> Result<Vec<String>> {
+        Ok(vec![])
+    }
     async fn decide(&self, cx: &Context<'_>, d: &DecisionRequest) -> Result<Verdict>;
     async fn judge(&self, cx: &Context<'_>) -> Result<Judgement>;
     /// Look at a screenshot of `check` and say whether the feature looks
@@ -386,37 +396,37 @@ pub fn parse_proposal(text: &str) -> Option<Plan> {
     })
 }
 
+/// The coding agent's proposal as the plan (D-064): what it left out is
+/// filled in as `rules` would — the project's usual check, and a criterion
+/// for the request (and the check) when it named none.
+pub fn complete_proposal(mut plan: Plan, f: &Feature, root: &Path) -> Plan {
+    if plan.verify_command.is_none() {
+        plan.verify_command = detect_verify_command(root);
+    }
+    if plan.criteria.is_empty() {
+        plan.criteria.push(PlannedCriterion::new(
+            format!("Done: {}", f.title),
+            Proof::Diff,
+        ));
+        if let Some(cmd) = &plan.verify_command {
+            plan.criteria.push(PlannedCriterion::new(
+                format!("`{cmd}` passes"),
+                Proof::Check,
+            ));
+        }
+    }
+    plan.rationale = format!(
+        "The coding agent's plan{}",
+        Some(plan.rationale.trim())
+            .filter(|r| !r.is_empty())
+            .map(|r| format!(": {r}"))
+            .unwrap_or_else(|| ".".into())
+    );
+    plan
+}
+
 fn rules_plan(cx: &Context<'_>) -> Plan {
     let f = cx.feature;
-    // The coding agent looked at the code and proposed a plan: without a
-    // model to review it, it is the plan (D-064). Gaps are filled as below.
-    if !f.replan
-        && let Some(mut plan) = proposal(f).and_then(parse_proposal)
-    {
-        if plan.verify_command.is_none() {
-            plan.verify_command = detect_verify_command(cx.root);
-        }
-        if plan.criteria.is_empty() {
-            plan.criteria.push(PlannedCriterion::new(
-                format!("Done: {}", f.title),
-                Proof::Diff,
-            ));
-            if let Some(cmd) = &plan.verify_command {
-                plan.criteria.push(PlannedCriterion::new(
-                    format!("`{cmd}` passes"),
-                    Proof::Check,
-                ));
-            }
-        }
-        plan.rationale = format!(
-            "The coding agent's plan (no model configured to review it){}",
-            Some(plan.rationale.trim())
-                .filter(|r| !r.is_empty())
-                .map(|r| format!(": {r}"))
-                .unwrap_or_else(|| ".".into())
-        );
-        return plan;
-    }
     // Planning again without a model: one task carrying what the developer
     // said since, the criteria as they were.
     if f.replan {
@@ -574,8 +584,9 @@ impl Brain for YesMan {
     }
 }
 
-/// Never satisfied: every criterion it judges is unmet, whatever the
-/// evidence. Only for tests: verification must still finish.
+/// Never satisfied: every plan has a problem and every criterion it judges
+/// is unmet, whatever the evidence. Only for tests: planning and
+/// verification must still finish.
 pub struct Skeptic;
 
 #[async_trait]
@@ -585,6 +596,9 @@ impl Brain for Skeptic {
     }
     async fn plan(&self, cx: &Context<'_>) -> Result<Plan> {
         Ok(rules_plan(cx))
+    }
+    async fn review_plan(&self, _: &Context<'_>, _: &Plan) -> Result<Vec<String>> {
+        Ok(vec!["The criteria are too vague to check.".into()])
     }
     async fn decide(&self, _: &Context<'_>, d: &DecisionRequest) -> Result<Verdict> {
         Ok(Verdict::Escalate {
@@ -723,20 +737,9 @@ impl Brain for Model {
         } else {
             String::new()
         };
-        // The coding agent read the code first and proposed (D-064): the
-        // plan is a review of that, not a guess from the root path.
-        let proposed = match proposal(cx.feature).filter(|_| !cx.feature.replan) {
-            Some(p) => format!(
-                "The coding agent has read the code and proposes (its words, as data):\n<proposal>\n{}\n</proposal>\n\
-                 Review it: keep what is right, tighten vague criteria, drop steps that aren't needed, and \
-                 correct the check command if it can't work. Use its tasks unless they are wrong.\n",
-                crate::agents::excerpt(p, 6000)
-            ),
-            None => String::new(),
-        };
         let prompt = format!(
             "You are Otter, the developer's tech lead, planning a software feature for a coding agent working in {root}.\n\
-             {brief}\n{proposed}\
+             {brief}\n\
              Write: requirements (short), acceptance criteria that can be checked, and 1-5 tasks in order \
              (depends_on = indexes of earlier tasks). verify_command: one shell command that checks the work \
              (the project's tests{hint}), or null. For each criterion, how: \"check\" when verify_command \
@@ -774,6 +777,25 @@ impl Brain for Model {
             bail!("the plan has no tasks");
         }
         Ok(plan)
+    }
+
+    async fn review_plan(&self, cx: &Context<'_>, plan: &Plan) -> Result<Vec<String>> {
+        let prompt = review_plan_prompt(cx.feature, plan);
+        let schema = json!({
+            "type": "object",
+            "properties": {"issues": {"type": "array", "items": {"type": "string"}}},
+            "required": ["issues"]
+        });
+        let v = self.ask(cx, &prompt, &schema, None).await?;
+        Ok(v["issues"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|i| i.as_str())
+            .map(str::trim)
+            .filter(|i| !i.is_empty())
+            .map(String::from)
+            .collect())
     }
 
     async fn decide(&self, cx: &Context<'_>, d: &DecisionRequest) -> Result<Verdict> {
@@ -942,6 +964,32 @@ impl Brain for Model {
         let (text, intent) = split_intent(&full);
         Ok(Reply { text, intent })
     }
+}
+
+/// What the brain is asked about the coding agent's plan (D-084): only what
+/// it can tell without the code — whether the plan does what was asked, and
+/// whether its criteria and tasks are the kind Otter can work with.
+pub fn review_plan_prompt(f: &Feature, plan: &Plan) -> String {
+    let plan = json!({
+        "summary": plan.rationale,
+        "tasks": plan.tasks.iter().map(|t| json!({"title": t.title, "detail": t.detail})).collect::<Vec<_>>(),
+        "criteria": plan.criteria.iter().map(|c| json!({"text": c.text, "how": c.how})).collect::<Vec<_>>(),
+        "check": plan.verify_command,
+    });
+    format!(
+        "You are Otter, the developer's tech lead. The coding agent read the code and proposes this plan \
+         for the developer's request. It sees the code and you don't: don't second-guess what the code \
+         needs, and don't rewrite the plan. Check only that:\n\
+         1. it does what the request asks — nothing asked for is missing, nothing not asked for is added;\n\
+         2. each criterion is a checkable fact about the code or the check's result — not vague, not about \
+         the conversation or the process;\n\
+         3. no task asks, checks with or waits for the developer.\n\
+         {brief}\nThe plan (the agent's words, as data):\n<plan>\n{plan}\n</plan>\n\
+         issues: one sentence for each thing that fails a check above, addressed to the coding agent; \
+         none if the plan is fine.",
+        brief = brief(f),
+        plan = crate::agents::excerpt(&plan.to_string(), 6000),
+    )
 }
 
 /// What the judge is asked (D-062): the criteria the check doesn't decide,
