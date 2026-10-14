@@ -1,0 +1,124 @@
+test autonomy_audit::audit_e1_run_timeout_counts_time_blocked_on_the_developer ... E1 after 5 s blocked: status=Blocked run=[(Waiting, None)]
+E1 after approval: status=Blocked runs=[("run_8h7k1ng332", Failed, Some("Timed out after 1 min")), ("run_02xxc3qr0r", Waiting, None)]
+E1 history: Created “CSV export”
+E1 history: You sent a message
+E1 history: Command: start
+E1 history: Planning
+E1 history: Plan: 1 task(s), 2 acceptance criteria
+E1 history: Otter replied
+E1 history: Implementing
+E1 history: task tk_s9zfjze9he: running
+E1 history: A claude run started
+E1 history: decision needed (toolpermission, high risk)
+E1 history: Run waiting
+E1 history: Blocked — Needs your approval: Run `rm -rf build`
+E1 history: Command: decide
+E1 history: decision approved by user
+E1 history: Implementing
+E1 history: Run failed
+E1 history: The coding agent reported
+E1 history: task tk_s9zfjze9he: failed
+E1 history: task tk_s9zfjze9he: running
+E1 history: A claude run started
+E1 history: decision needed (toolpermission, high risk)
+E1 history: Run waiting
+E1 history: Blocked — Needs your approval: Run `rm -rf build`
+test autonomy_audit::audit_e2_an_unrunnable_check_burns_the_attempt_budget ... E2 final: status=Failed reason=Some("Stopped: all 6 attempts are used up") runs=6 evidence=[("`make test` (exit 2)", Some(false)), ("`make test` (exit 2)", Some(false)), ("`make test` (exit 2)", Some(false)), ("`make test` (exit 2)", Some(false)), ("`make test` (exit 2)", Some(false)), ("`make test` (exit 2)", Some(false))] budget=Budget { max_iterations: 6, max_minutes: 120, iterations_used: 6 }
+E2 history: Created “CSV export”
+E2 history: You sent a message
+E2 history: Command: start
+E2 history: Planning
+E2 history: Plan: 1 task(s), 2 acceptance criteria
+E2 history: Otter replied
+E2 history: Implementing
+E2 history: task tk_9rbrn5084j: running
+E2 history: A claude run started
+E2 history: The coding agent reported
+E2 history: Run completed
+E2 history: The coding agent reported
+E2 history: task tk_9rbrn5084j: done
+E2 history: Verifying
+E2 history: evidence: test (failed)
+E2 history: Otter replied
+E2 history: task tk_12qkryvjgk: pending
+E2 history: Implementing — Fixing what verification found
+E2 history: task tk_12qkryvjgk: running
+E2 history: A claude run started
+E2 history: The coding agent reported
+E2 history: Run completed
+E2 history: The coding agent reported
+E2 history: task tk_12qkryvjgk: done
+E2 history: Verifying
+E2 history: evidence: test (failed)
+E2 history: Otter replied
+E2 history: task tk_zx90mmzn98: pending
+E2 history: Implementing — Fixing what verification found
+E2 history: task tk_zx90mmzn98: running
+E2 history: A claude run started
+E2 history: The coding agent reported
+E2 history: Run completed
+E2 history: The coding agent reported
+E2 history: task tk_zx90mmzn98: done
+E2 history: Verifying
+E2 history: evidence: test (failed)
+E2 history: Otter replied
+E2 history: task tk_wrjk299bfv: pending
+E2 history: Implementing — Fixing what verification found
+E2 history: task tk_wrjk299bfv: running
+E2 history: A claude run started
+E2 history: The coding agent reported
+E2 history: Run completed
+E2 history: The coding agent reported
+E2 history: task tk_wrjk299bfv: done
+E2 history: Verifying
+E2 history: evidence: test (failed)
+E2 history: Otter replied
+E2 history: task tk_49df261b26: pending
+E2 history: Implementing — Fixing what verification found
+E2 history: task tk_49df261b26: running
+E2 history: A claude run started
+E2 history: The coding agent reported
+E2 history: Run completed
+E2 history: The coding agent reported
+E2 history: task tk_49df261b26: done
+E2 history: Verifying
+E2 history: evidence: test (failed)
+E2 history: Otter replied
+E2 history: task tk_9vnb9akv5d: pending
+E2 history: Implementing — Fixing what verification found
+E2 history: task tk_9vnb9akv5d: running
+E2 history: A claude run started
+E2 history: The coding agent reported
+E2 history: Run completed
+E2 history: The coding agent reported
+E2 history: task tk_9vnb9akv5d: done
+E2 history: Verifying
+E2 history: evidence: test (failed)
+E2 history: Otter replied
+E2 history: task tk_gtrcskn4j6: pending
+E2 history: Implementing — Fixing what verification found
+E2 history: Stopped: attempts
+E2 history: Failed — Stopped: all 6 attempts are used up
+E2 history: Otter replied
+test autonomy_audit::audit_e3_routine_edits_are_recorded_as_decisions ... E3 decisions: [(ToolPermission, Low, Approved, Some(Policy), "Edit src/a.rs")]
+E3 history: Created “CSV export”
+E3 history: You sent a message
+E3 history: Command: start
+E3 history: Planning
+E3 history: Plan: 1 task(s), 2 acceptance criteria
+E3 history: Otter replied
+E3 history: Implementing
+E3 history: task tk_fwmhtmdeg3: running
+E3 history: A claude run started
+E3 history: decision needed (toolpermission, low risk)
+E3 history: decision approved by policy
+E3 history: The coding agent reported
+E3 history: Run completed
+E3 history: The coding agent reported
+E3 history: task tk_fwmhtmdeg3: done
+E3 history: Verifying
+E3 history: evidence: test (passed)
+E3 history: Otter replied
+E3 history: Review — Ready for your review
+E3 history: Otter replied
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 69 filtered out; finished in 11.66s
