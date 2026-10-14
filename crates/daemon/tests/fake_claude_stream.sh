@@ -58,6 +58,12 @@ while read -r line; do
           text "It printed done."
           result success false "done after waiting"
           ;;
+        # LEAK: its tool prints a token, it repeats it, and it fails with a header.
+        *LEAK*)
+          out '{"type":"assistant","parent_tool_use_id":null,"message":{"id":"msg_l","role":"assistant","content":[{"type":"tool_use","id":"toolu_l","name":"Bash","input":{"command":"make test"}}]}}'
+          out '{"type":"user","parent_tool_use_id":null,"message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_l","is_error":true,"content":"GITHUB_TOKEN=ghp_LEAKLEAKLEAKLEAKLEAKLEAKLEAK1234 rejected"}]}}'
+          text "The token ghp_LEAKLEAKLEAKLEAKLEAKLEAKLEAK1234 was rejected."
+          result error_during_execution true "401 with Authorization: Bearer leakyleakybearer0000" ;;
         *ASK_TWICE*) ask r5 Bash '{"command":"cargo build > /opt/build.log"}' ;;
         *ASK_RM*) ask r1 Bash '{"command":"rm -rf /opt/shared"}' ;;
         *ASK_INSTALL*) ask r2 Bash '{"command":"npm install left-pad"}' ;;

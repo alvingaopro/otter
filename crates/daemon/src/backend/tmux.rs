@@ -136,7 +136,7 @@ impl TmuxBackend {
             bail!(
                 "tmux {}: {}",
                 args.first().unwrap_or(&""),
-                String::from_utf8_lossy(&out.stderr).trim()
+                otter_core::redact::redact(String::from_utf8_lossy(&out.stderr).trim())
             );
         }
         Ok(String::from_utf8_lossy(&out.stdout).into_owned())

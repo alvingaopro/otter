@@ -20,6 +20,7 @@ while IFS= read -r line; do
         silent) continue ;;
         fatal)
           echo "diagnostic line: looking for credentials" >&2
+          echo "tried ANTHROPIC_API_KEY=sk-ant-api03-WORKERLEAKWORKERLEAK00" >&2
           out '{"type":"fatal","message":"no credentials","category":"auth_required"}'
           exit 1
           ;;

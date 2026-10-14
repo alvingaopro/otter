@@ -3071,6 +3071,97 @@ async fn a_model_cannot_approve_what_only_the_developer_may() {
     );
 }
 
+/// Invariant 13 (D-075): a credential printed by what fails — the coding
+/// agent's tool, its own words, its error, a repository URL that can't be
+/// cloned — is in nothing Otter keeps or answers with. (The workspace's
+/// record keeps the URL it was given: Git needs it.)
+#[tokio::test]
+async fn credentials_in_failures_stay_out_of_what_otter_keeps() {
+    use otter_core::feature::FeatureStatus;
+    let fake = fake_agent_host("ok", "rules").await;
+    let host = &fake.host;
+    let id = started_feature(host, "Deploy it LEAK").await;
+    wait_feature(host, &id, "the run failed", |f| {
+        f.runs.first().is_some_and(|r| r.state.is_over()) && f.status != FeatureStatus::Planning
+    })
+    .await;
+    // A repository URL with a token in it, that can't be cloned.
+    let url = "https://bot:ghp_URLURLURLURLURLURLURLURL1234@127.0.0.1:9/o/r.git";
+    let mut conn = host.conn().await;
+    let ws = conn
+        .workspace_create(WorkspaceCreate {
+            name: "leaky".into(),
+            source: SourceSpec::Git {
+                repository: url.into(),
+                branch: None,
+                base: None,
+            },
+            sessions: Some(vec![]),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    let shown = serde_json::to_string(&ws).unwrap();
+    assert!(!shown.contains("URLURL"), "{shown}");
+    let failed = eventually("the clone fails", || async {
+        let ws = host.conn().await.workspace_get("leaky").await.unwrap();
+        (ws.state == WorkspaceState::Failed).then_some(ws)
+    })
+    .await;
+    assert!(
+        failed
+            .state_message
+            .as_deref()
+            .unwrap()
+            .contains("git clone failed")
+    );
+
+    let secrets = ["LEAKLEAK", "leakyleakybearer", "URLURL"];
+    // In the answers…
+    let f = conn.feature_get(&id).await.unwrap();
+    let c = conn
+        .conversation_get(f.runs[0].conversation_id.as_ref().unwrap().as_str())
+        .await
+        .unwrap();
+    let answers = format!(
+        "{}{}{}",
+        serde_json::to_string(&f).unwrap(),
+        serde_json::to_string(&c).unwrap(),
+        serde_json::to_string(&conn.workspace_list().await.unwrap()).unwrap()
+    );
+    // …and in every file Otter keeps, but the workspace record's URL.
+    let mut kept = String::new();
+    let mut stack = vec![host.home().to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        for e in std::fs::read_dir(&dir).unwrap().flatten() {
+            let path = e.path();
+            if path.is_dir() {
+                // Git's own clone attempt is Git's.
+                if !path.ends_with("repos") {
+                    stack.push(path);
+                }
+            } else if let Ok(text) = std::fs::read_to_string(&path) {
+                let text = if path.ends_with("state/state.json") {
+                    text.replace(url, "<the URL as given>")
+                } else {
+                    text
+                };
+                kept.push_str(&format!("\n== {}\n{text}", path.display()));
+            }
+        }
+    }
+    for s in secrets {
+        assert!(!answers.contains(s), "{s} in an answer");
+        assert!(!kept.contains(s), "{s} kept: {kept}");
+    }
+    // What failed is still readable.
+    assert!(
+        f.runs[0].summary.as_deref().unwrap().contains("Bearer ***"),
+        "{:?}",
+        f.runs[0].summary
+    );
+}
+
 /// Allowed once, allowed for the rest of the feature (D-066): the same
 /// write outside the workspace isn't asked about again.
 #[tokio::test]

@@ -2315,3 +2315,38 @@ without next steps, a failed workspace's reason missing from the app, no
 way to diagnose a host, and a feature's failure not traceable from the
 terminal. When the spec arrives it wins.
 
+## D-075 — Secrets stay out of what Otter keeps and shows (2026-10-14)
+
+M4 step 1 (`docs/plans/m4-observability.md`, gap 1). Environments and API
+keys were already kept out (the env file, write-only keys), and Git's
+stderr lost URL credentials; but what other tools printed when they failed
+became Otter's as is: direnv's stderr (an `.envrc` exports secrets) in a
+workspace's state and events, tmux's in a launch error, the Claude
+worker's in a turn's reason — then the run's summary, the task's last
+error, a message in the feature — and a coding agent's tool output, words
+and errors in its conversation's journal.
+
+- **One redactor, `otter_core::redact`**, by shape: credentials in URLs
+  (`scheme://user:pass@`), `Bearer`/`Basic` values, `key=value` and
+  `key: value` whose key names a secret (`…token`, `…secret`, `password`,
+  `api_key`, `access_key`, `private_key`, `credential`, …, also quoted in
+  JSON and in query strings), well-known key shapes (GitHub `ghp_`/`gho_`/
+  `github_pat_`…, GitLab, Anthropic `sk-ant-`, OpenAI `sk-`, Slack `xox?-`,
+  AWS `AKIA`/`ASIA`, Google `AIza`), and private-key blocks. A secret in
+  no known shape passes: shapes, not a scanner. Idempotent.
+- **Applied where outside text becomes Otter's:** Git, direnv and tmux
+  stderr; the Claude worker's diagnostics; every runtime event the actor
+  journals (agent text, tool results, decision summaries, turn results,
+  exit errors — tool calls stay whole for policy, and are journaled by a
+  redacted summary); what the feature keeps (run summaries, last errors,
+  messages, activity, decision summaries) and streams; a workspace's
+  failure and environment messages.
+- **A repository URL** is kept as given in the workspace's record — Git
+  needs it, and keeps it in the repository's own config anyway — and every
+  answer (`workspace.list/get/create/…`) and `otter ws show` gives it
+  without credentials.
+- **Invariant 13** says so, with its tests: the e2e test sends a token
+  through a coding agent's tool output, its words, its error and an
+  unclonable repository URL, then searches every answer and every file
+  Otter keeps.
+

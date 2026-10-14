@@ -170,14 +170,31 @@ impl Daemon {
                     q.range
                 ))),
             },
-            Request::WorkspaceCreate(p) => json(self.workspace_create(p).await?),
-            Request::WorkspaceList => json(self.store.lock().await.state.workspaces.clone()),
-            Request::WorkspaceGet(r) => json(self.workspace_get(&r.workspace).await?),
-            Request::WorkspacePrepare(r) => json(self.workspace_prepare(&r.workspace).await?),
+            // Workspaces as shown: never a token from a repository URL (D-075).
+            Request::WorkspaceCreate(p) => json(self.workspace_create(p).await?.shown()),
+            Request::WorkspaceList => json(
+                self.store
+                    .lock()
+                    .await
+                    .state
+                    .workspaces
+                    .iter()
+                    .cloned()
+                    .map(otter_core::Workspace::shown)
+                    .collect::<Vec<_>>(),
+            ),
+            Request::WorkspaceGet(r) => json(self.workspace_get(&r.workspace).await?.shown()),
+            Request::WorkspacePrepare(r) => {
+                json(self.workspace_prepare(&r.workspace).await?.shown())
+            }
             Request::WorkspaceDelete(p) => json(self.workspace_delete(&p).await?),
-            Request::WorkspaceArchive(r) => json(self.workspace_archive(&r.workspace).await?),
-            Request::WorkspaceUnarchive(r) => json(self.workspace_unarchive(&r.workspace).await?),
-            Request::WorkspaceSetBrief(p) => json(self.workspace_set_brief(p).await?),
+            Request::WorkspaceArchive(r) => {
+                json(self.workspace_archive(&r.workspace).await?.shown())
+            }
+            Request::WorkspaceUnarchive(r) => {
+                json(self.workspace_unarchive(&r.workspace).await?.shown())
+            }
+            Request::WorkspaceSetBrief(p) => json(self.workspace_set_brief(p).await?.shown()),
             Request::SessionCreate(p) => json(self.session_create(p).await?),
             Request::SessionStop(r) => json(self.session_stop(&r).await?),
             Request::SessionRestart(r) => json(self.session_restart(&r).await?),

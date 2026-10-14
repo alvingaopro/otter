@@ -128,3 +128,20 @@ record it in [`decisions.md`](decisions.md) first.
   `rotated_cursors_resync_and_recent_ones_replay`,
   `a_log_that_started_over_is_detected_even_past_the_old_cursor`, and for the
   CLI `events_follow_resyncs_when_the_hosts_log_starts_over`.
+
+### 13. Secrets stay out of what Otter keeps and shows.
+
+- Environments reach a process only through `otterd internal-exec`'s 0600
+  env file, removed once read — never a command line, never
+  `events.jsonl`. API keys are write-only: stored 0600, answered as
+  `set: bool`.
+- Text from outside — what direnv, tmux, Git, the Claude worker, the
+  coding agent and its tools print — passes `otter_core::redact` before it
+  becomes Otter's: state, events, conversation journals, feature
+  documents and messages, otterd's log, responses (D-075). A repository
+  URL is kept as given in its workspace's record (Git needs it) and shown
+  without credentials.
+- Tests: `scratch_workspace_with_default_login_shell` (no env on tmux's
+  command line, the env file gone), `credentials_in_failures_stay_out_of_what_otter_keeps`,
+  `a_failing_worker_says_why`, the `redact` unit tests, and
+  `settings_take_keys_write_only_and_keep_them` (keys).

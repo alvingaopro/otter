@@ -404,7 +404,8 @@ impl Daemon {
                 self.launch_pending(&mut store, &id).await;
             }
             Err(e) => {
-                let message = format!("{e:#}");
+                // Kept, logged and sent: never a credential in it (D-075).
+                let message = otter_core::redact::redact(&format!("{e:#}"));
                 tracing::warn!(workspace = %ws.name, "preparation failed: {message}");
                 ws.state = WorkspaceState::Failed;
                 ws.state_message = Some(message.clone());
@@ -513,7 +514,7 @@ impl Daemon {
                 Ok(())
             }
             Err(e) => {
-                let message = format!("{e:#}");
+                let message = otter_core::redact::redact(&format!("{e:#}"));
                 self.set_environment(id, kind, EnvironmentStatus::Failed, Some(message.clone()))
                     .await;
                 self.events.emit(Event::EnvironmentFailed {

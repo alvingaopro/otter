@@ -7,6 +7,7 @@ pub mod conversation;
 pub mod feature;
 pub mod ids;
 pub mod model;
+pub mod redact;
 
 pub use ids::{
     AttentionId, BlockId, ConversationId, DecisionId, EvidenceId, ExecutionId, FeatureId,

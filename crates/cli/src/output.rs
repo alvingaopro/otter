@@ -83,7 +83,11 @@ pub fn workspace_details(host: &str, ws: &Workspace) {
     println!("  root:     {}", ws.root);
     match &ws.source {
         WorkspaceSource::Git(g) => {
-            println!("  repo:     {}", g.repository);
+            // As given, but never a token in it (D-075).
+            println!(
+                "  repo:     {}",
+                otter_core::redact::url_credentials(&g.repository)
+            );
             if !g.branch.is_empty() {
                 println!(
                     "  branch:   {} (from {} {})",

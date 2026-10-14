@@ -7,7 +7,7 @@ on the requester's instruction to go on, as M3 was (D-070): the scope is
 derived from the exit outcome, the design's rules on secrets (§20, D-005),
 `docs/invariants.md`, and an audit of the code (§2). When the spec arrives,
 it wins (D-074).
-**Status:** planned. **Branch:** `roadmap-m4`, from `main` after M3.
+**Status:** in progress — step 1 (D-075). **Branch:** `roadmap-m4`, from `main` after M3.
 
 ## 1. The outcome, read two ways
 
@@ -112,9 +112,10 @@ traces export, a shareable diagnostics bundle — candidates for the spec.
 
 ## 5. Acceptance (derived)
 
-- [ ] A secret printed by a failing tool (direnv, tmux, the Claude worker,
-  git) or embedded in a repository URL appears in no state, event, journal,
-  feature message or otterd log line (invariant 13's test).
+- [x] A secret printed by a failing tool (direnv, tmux, the Claude worker,
+  git, the coding agent's tools) or embedded in a repository URL appears in
+  no event, journal, feature message, answer or kept file — the
+  workspace's record keeps its URL as given (invariant 13's test).
 - [ ] A process that fails says why without the pane: its last lines are
   kept with it and shown, also after otterd restarts.
 - [ ] Every error category says what happened and what to do, in the CLI
