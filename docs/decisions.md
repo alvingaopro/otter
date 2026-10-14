@@ -2625,10 +2625,13 @@ until then this Mac's host ran the old `otterd` (its `otterd_path` is
   `otterd` in `Otter.app/Contents/MacOS`, built from the main workspace by
   `apps/desktop/scripts/sidecars.mjs` (Tauri's before-dev/before-build
   command, for its target and profile) and signed with the app. A release
-  builds them in the desktop job, for that architecture, rather than
-  downloading the `binaries` job's: same source and version, no wait on
-  the other job. The release checks they're there and, where its runner
-  can run them (arm64), that they say its version.
+  doesn't build them twice: building them in the desktop job put 2–3
+  minutes of compiling in front of the app's own. Instead it compiles the
+  app without them (`--no-bundle`, no `externalBin`), meanwhile the
+  `binaries` job publishes them to the draft release, and `tauri bundle`
+  takes them from there — so the app carries the same build remote hosts
+  install. The release checks they're there and, where its runner can run
+  them (arm64), that they say its version.
 - **`~/.local/bin` holds links to them.** "Install command line tools"
   makes `otter` and `otterd` links into the app (replacing whatever is
   there — the developer asked). At every launch the app re-points links

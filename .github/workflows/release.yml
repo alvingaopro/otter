@@ -101,15 +101,39 @@ jobs:
           targets: ${{ matrix.target }}
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: |
-            apps/desktop/src-tauri
-            .
+          workspaces: apps/desktop/src-tauri
           key: release-${{ matrix.target }}
       - run: npm ci
         working-directory: apps/desktop
-      # Its beforeBuildCommand builds the otter/otterd the .app carries (D-085).
-      - run: npm run tauri build -- --target ${{ matrix.target }} --bundles app,dmg
+      # The otter/otterd the .app carries (D-085) are the `binaries` job's
+      # build (re-signed with the app), not built again here: the app
+      # compiles without them (no externalBin, no sidecars build) while that
+      # job publishes them to the draft release; bundling takes them there.
+      - name: Build
         working-directory: apps/desktop
+        run: >-
+          npm run tauri build -- --target ${{ matrix.target }} --no-bundle
+          --config '{"build":{"beforeBuildCommand":"npm run build"},"bundle":{"externalBin":[]}}'
+      - name: Command-line tools
+        working-directory: apps/desktop
+        run: |
+          name="otter-${VERSION}-macos-${{ matrix.arch }}"
+          # Up to 15 minutes for the binaries job to publish them.
+          for i in $(seq 90); do
+            gh release download "v$VERSION" --pattern "$name.tar.gz" --dir "$RUNNER_TEMP" --clobber 2>/dev/null && break
+            [ "$i" = 90 ] && { echo "$name.tar.gz never appeared on the release" >&2; exit 1; }
+            sleep 10
+          done
+          tar -xzf "$RUNNER_TEMP/$name.tar.gz" -C "$RUNNER_TEMP"
+          mkdir -p src-tauri/binaries
+          for b in otter otterd; do
+            cp "$RUNNER_TEMP/$name/$b" "src-tauri/binaries/$b-${{ matrix.target }}"
+          done
+      - name: Bundle
+        working-directory: apps/desktop
+        run: >-
+          npm run tauri bundle -- --target ${{ matrix.target }} --bundles app,dmg
+          --config '{"build":{"beforeBuildCommand":""}}'
       - name: Upload ${{ matrix.arch }} app
         run: |
           bundle=apps/desktop/src-tauri/target/${{ matrix.target }}/release/bundle
