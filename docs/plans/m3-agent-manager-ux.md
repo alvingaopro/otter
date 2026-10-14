@@ -9,7 +9,7 @@ scope below is derived from the exit outcome, design §21 and §26, the
 autonomy audit's attention findings ([05](../audits/autonomy/05-conversation-attention.md)),
 and an audit of the code (§2) — each item says where it comes from. When
 the spec arrives, it wins: this plan is redone against it (D-070).
-**Status:** steps 1–4 done (D-071, PR #62; D-072, PR #63; D-073 and the record, PR #64). The live scenario is pending (`runtime-validation.md` M3-1). **Branch:** `roadmap-m3`, from `main` after M2.
+**Status:** steps 1–4 done (D-071, PR #62; D-072, D-073 and the record, PR #63). The live scenario is pending (`runtime-validation.md` M3-1). **Branch:** `roadmap-m3`, from `main` after M2.
 
 ## 1. What "the desktop inbox" means here
 
