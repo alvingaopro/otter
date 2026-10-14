@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { sampleFeatures } from "./featureSource";
-import { inboxGroups, inboxItems, needCount, newNeeds, trayFeatures } from "./inbox";
+import { inboxGroups, inboxItems, needCount, newNeeds, trayFeatures } from "./inboxModel";
 import { workspace } from "./inboxFixtures";
 
 const NOW = Date.parse("2026-10-09T12:00:00Z");

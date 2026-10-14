@@ -9,7 +9,7 @@ import { Sidebar } from "./Sidebar";
 import { ActivityBar } from "./ActivityBar";
 import { FeaturesView } from "./FeaturesView";
 import { Inbox } from "./Inbox";
-import { newNeeds, trayFeatures } from "./inbox";
+import { newNeeds, trayFeatures } from "./inboxModel";
 import type { PlacedFeature } from "./features";
 import { daemonSource } from "./featureSource";
 import { needsYou as featureNeedsYou } from "./features";

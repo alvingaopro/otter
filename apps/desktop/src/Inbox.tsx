@@ -3,7 +3,7 @@ import { Decision } from "./FeaturesView";
 import { featureGlyph, type FeatureAction, type PlacedFeature } from "./features";
 import type { FeatureSource } from "./featureSource";
 import { Glyph } from "./Glyph";
-import { inboxGroups, inboxItems, type InboxItem } from "./inbox";
+import { inboxGroups, inboxItems, type InboxItem } from "./inboxModel";
 import { ago, workspaceGlyph } from "./model";
 import type { Placed } from "./types";
 
