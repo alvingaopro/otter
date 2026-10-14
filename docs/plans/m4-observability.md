@@ -7,7 +7,7 @@ on the requester's instruction to go on, as M3 was (D-070): the scope is
 derived from the exit outcome, the design's rules on secrets (§20, D-005),
 `docs/invariants.md`, and an audit of the code (§2). When the spec arrives,
 it wins (D-074).
-**Status:** in progress — step 1 (D-075). **Branch:** `roadmap-m4`, from `main` after M3.
+**Status:** in progress — step 1 (D-075, PR #65), step 2 (D-076). **Branch:** `roadmap-m4`, from `main` after M3.
 
 ## 1. The outcome, read two ways
 
@@ -116,8 +116,9 @@ traces export, a shareable diagnostics bundle — candidates for the spec.
   git, the coding agent's tools) or embedded in a repository URL appears in
   no event, journal, feature message, answer or kept file — the
   workspace's record keeps its URL as given (invariant 13's test).
-- [ ] A process that fails says why without the pane: its last lines are
-  kept with it and shown, also after otterd restarts.
-- [ ] Every error category says what happened and what to do, in the CLI
-  and the app.
+- [x] A process that fails says why without the pane: its last lines are
+  kept with it and shown, also after otterd restarts
+  (`a_failed_process_says_why_without_its_terminal`).
+- [x] Every error category says what happened and what to do, in the CLI
+  and the app (`every_error_says_what_happened_and_what_to_do`).
 - [ ] `otter doctor` lists every problem a host has, each with a next step.

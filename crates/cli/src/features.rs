@@ -71,6 +71,13 @@ pub enum FeatureCommand {
     Cancel {
         feature: String,
     },
+    /// What happened to a feature, oldest first: its history, a line each.
+    History {
+        feature: String,
+        /// Only the last N lines.
+        #[arg(short = 'n', long)]
+        limit: Option<usize>,
+    },
     /// Accept a feature in review: it's done. Refused while a gate (the
     /// pull request, CI, the checks) hasn't passed, unless `--anyway`.
     Accept {
@@ -440,6 +447,25 @@ pub async fn feature_command(config: &Config, cmd: FeatureCommand, json: bool) -
             })
             .await
         }
+        FeatureCommand::History { feature, limit } => {
+            let mut found = find_feature(config, &feature).await?;
+            let records = found
+                .conn
+                .feature_events(found.feature.id.as_str(), None)
+                .await?;
+            let skip = limit.map_or(0, |n| records.len().saturating_sub(n));
+            if json {
+                return output::print_json(&records[skip..]);
+            }
+            for r in &records[skip..] {
+                println!(
+                    "{}  {}",
+                    r.ts.with_timezone(&chrono::Local).format("%m-%d %H:%M:%S"),
+                    r.text
+                );
+            }
+            Ok(())
+        }
         FeatureCommand::Accept { feature, anyway } => {
             act(
                 config,
@@ -618,6 +644,10 @@ fn show(host: &str, f: &Feature) {
         println!("\nTasks:");
         for t in &f.tasks {
             println!("  [{}] {}", word(&t.status), one_line(&t.title, 70));
+            // Why it failed (D-076).
+            if let (otter_core::feature::TaskStatus::Failed, Some(e)) = (t.status, &t.last_error) {
+                println!("      last error: {}", one_line(e, 90));
+            }
         }
     }
     if let Some(run) = f.runs.last() {
@@ -875,8 +905,10 @@ fn turn_word(t: &Turn) -> String {
     if t.redirect {
         s.push_str(" · redirect");
     }
+    // What it means and what to do, not a bare category (D-076).
     if let Some(e) = t.error {
-        s.push_str(&format!(" · {}", word(&e)));
+        let x = e.explain();
+        s.push_str(&format!(" · {} {}", x.what, x.next));
     }
     s
 }

@@ -97,7 +97,14 @@ export interface CodingConversation {
   resumable: boolean;
   /** Why it accepts no more changes, if it doesn't. */
   read_only?: string;
+  /** What its turns' errors mean and what to do, by category (otter-core's words, D-076). */
+  errors?: Partial<Record<ErrorCategory, Explanation>>;
   updated_at: string;
+}
+
+export interface Explanation {
+  what: string;
+  next: string;
 }
 
 /** Mirrors `otter_protocol::conversation::RuntimeCapabilities`. */
@@ -138,7 +145,7 @@ const ERROR: Record<ErrorCategory, string> = {
 };
 
 /** A turn in a few words: what it is doing, or how it ended (never just "failed"). */
-export function turnLabel(t: CodingTurn): string {
+export function turnLabel(t: CodingTurn, errors?: CodingConversation["errors"]): string {
   switch (t.state) {
     case "queued":
       return t.redirect ? "Next: a change of direction" : "Queued after the current work";
@@ -151,7 +158,7 @@ export function turnLabel(t: CodingTurn): string {
     case "finished":
       break;
   }
-  if (t.error) return ERROR[t.error];
+  if (t.error) return errors?.[t.error]?.what ?? ERROR[t.error];
   switch (t.outcome) {
     case "completed":
       return "Done";

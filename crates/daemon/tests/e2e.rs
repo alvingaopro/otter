@@ -1925,6 +1925,49 @@ async fn claude_code_without_hooks_falls_back_to_the_quiet_turn() {
     wait_agent(host, "nohooks", "claude", AgentState::WaitingForInput).await;
 }
 
+/// Why a process failed is kept with it and said, without its terminal —
+/// never a credential it printed — and survives otterd restarting (D-076).
+#[tokio::test]
+async fn a_failed_process_says_why_without_its_terminal() {
+    let mut host = TestHost::with_env(&[]).await;
+    create(
+        &host,
+        "why",
+        Some(vec![spec(
+            SessionKind::Task,
+            "deploy",
+            "echo starting; echo 'using API_TOKEN=tok_abcdef0123456789'; echo 'error: config/prod.toml not found' >&2; exit 3",
+        )]),
+    )
+    .await;
+    let ws = eventually("the failure", || async {
+        let w = host.conn().await.workspace_get("why").await.unwrap();
+        (!w.attention.is_empty()).then_some(w)
+    })
+    .await;
+    assert_eq!(
+        ws.attention[0].summary,
+        "deploy failed (status 3): error: config/prod.toml not found"
+    );
+    let tail = |w: &otter_core::Workspace| {
+        w.sessions[0]
+            .executions
+            .last()
+            .unwrap()
+            .tail
+            .clone()
+            .unwrap_or_default()
+    };
+    let t = tail(&ws);
+    assert!(t.contains("starting") && t.contains("not found"), "{t}");
+    assert!(!t.contains("tok_abcdef"), "{t}");
+    assert!(t.contains("API_TOKEN=***"), "{t}");
+    // Kept: after a restart, when the pane is gone.
+    host.restart().await;
+    let ws = host.conn().await.workspace_get("why").await.unwrap();
+    assert_eq!(tail(&ws), t);
+}
+
 #[tokio::test]
 async fn failures_and_completions_raise_attention() {
     use otter_core::{Activity, AttentionKind};

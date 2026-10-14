@@ -102,6 +102,13 @@ pub fn on_execution_ended(ws: &mut Workspace, session: &Session) -> Vec<Event> {
         ),
         (_, _, None) => (AttentionKind::Failure, format!("{name} exited")),
     };
+    // Why, without its terminal: the last line it printed (D-076).
+    let summary = match (kind, exec.last_line()) {
+        (AttentionKind::Failure, Some(line)) => {
+            format!("{summary}: {}", crate::agents::excerpt(line.trim(), 120))
+        }
+        _ => summary,
+    };
     raise(ws, Some(&session.id), kind, summary)
 }
 

@@ -160,6 +160,16 @@ pub fn workspace_details(host: &str, ws: &Workspace) {
         if let Some(e) = &s.launch_error {
             println!("{}: {e}", s.name);
         }
+        // Why it ended, without its terminal (D-076).
+        if let Some(e) = s.current_execution()
+            && let Some(tail) = &e.tail
+            && e.exit_code != Some(0)
+        {
+            println!("{} printed last:", s.name);
+            for line in tail.lines() {
+                println!("  │ {line}");
+            }
+        }
         if let Some(agent) = &s.agent {
             if let Some(id) = &agent.provider_session_id {
                 println!("{}: {} session {id}", s.name, agent.provider);

@@ -50,7 +50,7 @@ export function Work({ conversations, now }: { conversations: CodingConversation
                 <li key={t.id} className={`turn ${t.state}`}>
                   <div className="turn-head">
                     <Glyph kind={turnGlyph(t)} />
-                    <span className="turn-label">{turnLabel(t)}</span>
+                    <span className="turn-label">{turnLabel(t, c.errors)}</span>
                     {t.redirect && <span className="chip small">change of direction</span>}
                     <span className="spacer" />
                     <span className="muted small">{ago(t.started_at ?? t.queued_at, now)}</span>
@@ -61,6 +61,7 @@ export function Work({ conversations, now }: { conversations: CodingConversation
                   {t.reason && t.state === "finished" && t.outcome !== "completed" && (
                     <div className="turn-reason small">{t.reason}</div>
                   )}
+                  {t.error && c.errors?.[t.error] && <div className="turn-next small">{c.errors[t.error]!.next}</div>}
                   {tools.length > 0 && (
                     <ul className="plain-list tools">
                       {tools.map((x) => (

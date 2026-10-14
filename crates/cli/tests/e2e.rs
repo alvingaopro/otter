@@ -468,6 +468,9 @@ fn features_and_the_coding_runtime_from_the_terminal() {
         show.contains("status: draft") && show.contains("Use commas"),
         "{show}"
     );
+    // Its history, from the terminal (D-076).
+    let history = cli.ok(&["feature", "history", "export"]);
+    assert!(history.contains("You sent a message"), "{history}");
     let err = cli.fails(&["feature", "show", "Nothing like it"]);
     assert!(err.contains("no feature `Nothing like it`"), "{err}");
     let err = cli.fails(&["feature", "decide", "export", "dec_x"]);

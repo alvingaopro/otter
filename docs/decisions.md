@@ -2350,3 +2350,31 @@ and errors in its conversation's journal.
   unclonable repository URL, then searches every answer and every file
   Otter keeps.
 
+## D-076 — Failures say why and what next (2026-10-14)
+
+M4 step 2 (`docs/plans/m4-observability.md`, gaps 2, 3, 4 and 6). Why a
+process ended was only in its tmux pane — released on restart, gone for a
+lost execution; a coding agent's error was a bare category in the CLI; a
+failed workspace's reason was missing from the app; a feature's history
+had no CLI.
+
+- **A process's last lines are kept with it.** When reconciliation finds a
+  session's process dead, it reads the pane's last lines while tmux still
+  holds them and keeps them on the execution (`Execution.tail`: twenty
+  non-empty lines at most, 2,000 characters, redacted). The failure's
+  attention line ends with the last of them ("deploy failed (status 3):
+  error: config/prod.toml not found"); `otter ws show` prints them for a
+  session that didn't exit cleanly, the app under the failure banner. They
+  stay after otterd restarts. A program `internal-exec` couldn't start
+  says so there too ("executing …: No such file or directory").
+- **Every error category explains itself**, in `otter-core`
+  (`ErrorCategory::explain`: what happened and what to do — sign in, wait
+  for the rate limit, `otter host install`, …). Conversation views carry
+  the explanations for the errors their turns hit (`errors`, by category),
+  so the CLI and the app say the same; the app shows the next step under
+  the turn.
+- **A failed workspace shows its reason** in the app, above its sessions.
+- **`otter feature history <feature>`** prints a feature's history (`-n`
+  for the last lines, `--json`); `otter feature show` gives a failed
+  task's last error.
+

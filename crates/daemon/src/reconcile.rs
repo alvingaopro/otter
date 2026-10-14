@@ -6,7 +6,7 @@ use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 
 use chrono::{DateTime, Utc};
-use otter_core::{AgentState, ExecutionState, Workspace};
+use otter_core::{AgentState, ExecutionState, TAIL_LINES, Workspace};
 use otter_protocol::Event;
 
 use crate::agents::{self, ObserveContext, Screen};
@@ -31,10 +31,35 @@ impl Daemon {
             .filter_map(|s| s.agent.as_ref()?.provider_session_id.clone())
             .collect();
 
+        // What the ones that just ended printed last, while the backend still
+        // holds their output (D-076).
+        let ended: Vec<String> = store
+            .state
+            .workspaces
+            .iter()
+            .flat_map(|w| &w.sessions)
+            .filter_map(|s| s.current_execution().filter(|e| e.is_running()))
+            .filter(|e| {
+                matches!(
+                    observed.get(&e.backend_ref),
+                    Some(ProcessState::Dead { .. })
+                )
+            })
+            .map(|e| e.backend_ref.clone())
+            .collect();
+        let mut tails = HashMap::new();
+        for r in ended {
+            if let Ok(screen) = self.backend.capture(&r, Some(TAIL_LINES as u32 * 2)).await
+                && let Some(t) = otter_core::tail_of(&screen)
+            {
+                tails.insert(r, t);
+            }
+        }
+
         let mut events = Vec::new();
         let mut changed = false;
         for ws in &mut store.state.workspaces {
-            changed |= reconcile_executions(ws, &observed, now, &mut events);
+            changed |= reconcile_executions(ws, &observed, &tails, now, &mut events);
             if ws.sessions.iter().all(|s| s.agent.is_none()) {
                 continue;
             }
@@ -128,6 +153,7 @@ struct Seen<'a> {
 fn reconcile_executions(
     ws: &mut Workspace,
     observed: &HashMap<String, ProcessState>,
+    tails: &HashMap<String, String>,
     now: DateTime<Utc>,
     events: &mut Vec<Event>,
 ) -> bool {
@@ -153,6 +179,7 @@ fn reconcile_executions(
                 exec.state = ExecutionState::Exited;
                 exec.exit_code = *exit_code;
                 exec.ended_at = Some(now);
+                exec.tail = tails.get(&exec.backend_ref).cloned();
                 events.push(Event::ExecutionExited {
                     workspace_id: ws.id.clone(),
                     session_id,

@@ -31,6 +31,8 @@ export interface SessionView {
   agent?: AgentView;
   exitCode?: number;
   launchError?: string;
+  /** The last lines its process printed, when it ended (D-076). */
+  tail?: string;
   attention?: AttentionView;
 }
 
