@@ -18,6 +18,8 @@ import type { ErrorCategory, Event, Outcome } from "./protocol.js";
 
 /** A tool's output as kept in the conversation. */
 export const OUTPUT_LEN = 2000;
+/** The most of a turn's final reply that is kept, lines and all (otterd's `REPORT_LEN`, D-086). */
+export const REPORT_LEN = 20_000;
 
 const excerpt = (s: string, n: number) => (s.length <= n ? s : `${s.slice(0, n - 1)}…`);
 
@@ -220,7 +222,7 @@ export class Mapper {
           type: "turn_finished",
           turn_id: this.turn,
           outcome,
-          summary: text(m.result) ? excerpt(m.result as string, OUTPUT_LEN) : errors ? excerpt(errors, OUTPUT_LEN) : null,
+          summary: text(m.result) ? excerpt((m.result as string).trim(), REPORT_LEN) : errors ? excerpt(errors, OUTPUT_LEN) : null,
           error,
           session_cost_usd: typeof m.total_cost_usd === "number" ? m.total_cost_usd : null,
         });

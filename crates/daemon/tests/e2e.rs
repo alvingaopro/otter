@@ -4083,6 +4083,34 @@ async fn the_coding_agent_plans_first_in_the_features_conversation() {
     assert!(!texts[1].contains("Request:"), "{texts:#?}");
 }
 
+/// The coding agent's answer reaches the conversation as it wrote it
+/// (D-086): its lines and Markdown kept, and not cut at a status line's
+/// length.
+#[tokio::test]
+async fn a_long_answer_keeps_its_lines() {
+    use otter_core::feature::{FeatureStatus, MessageRole};
+    let fake = fake_agent_host_with("ok", "rules", |_| vec![("OTTER_PLAN_TURN", "1".into())]).await;
+    let host = &fake.host;
+    let id = started_feature(host, "How does the backport work? LONGANSWER").await;
+    let f = wait_feature(host, &id, "answered", |f| f.status == FeatureStatus::Done).await;
+    let answer = f
+        .messages
+        .iter()
+        .find(|m| m.role == MessageRole::Agent)
+        .map(|m| m.text.as_str())
+        .unwrap_or_else(|| panic!("{:?}", f.messages));
+    assert!(
+        answer
+            .starts_with("## How it works\n\n1. Open a PR.\n2. Label it **backport v3.159**.\n\n"),
+        "{answer:?}"
+    );
+    assert!(
+        answer.ends_with(&"x".repeat(2500)),
+        "cut short: {} chars",
+        answer.len()
+    );
+}
+
 /// A request that asks no change is answered (D-084): the planning turn's
 /// words are the answer, shown in the conversation, and the feature is done
 /// — no plan, no attempt, no check. Asking for a change after it plans, in

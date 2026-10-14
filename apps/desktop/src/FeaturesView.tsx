@@ -1,6 +1,7 @@
-import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { Dialog } from "./Dialog";
 import { Glyph } from "./Glyph";
+import { Markdown } from "./Markdown";
 import { ago } from "./model";
 import otterIcon from "./assets/otter.png";
 import type { CodingConversation, Interaction, RuntimeCapabilities } from "./conversation";
@@ -544,6 +545,21 @@ function Speaker({ role }: { role: string }) {
   );
 }
 
+/** What was said: the developer's words as typed; Otter's and the coding
+ * agent's as the Markdown they write (D-086). */
+function MessageText({ role, text, children }: { role: string; text: string; children?: ReactNode }) {
+  return role === "controller" || role === "agent" ? (
+    <Markdown className="message-text" text={text}>
+      {children}
+    </Markdown>
+  ) : (
+    <div className="message-text">
+      {text}
+      {children}
+    </div>
+  );
+}
+
 function Conversation({
   placed,
   source,
@@ -601,7 +617,7 @@ function Conversation({
               <Speaker role={m.role} />
               <span className="message-at">{ago(m.at, now)}</span>
             </div>
-            <div className="message-text">{m.text}</div>
+            <MessageText role={m.role} text={m.text} />
           </div>
         ))}
         {drafts.map((d) => (
@@ -610,10 +626,9 @@ function Conversation({
               <Speaker role={d.role} />
               <span className="message-at">{d.done ? "now" : "writing…"}</span>
             </div>
-            <div className="message-text">
-              {d.text}
+            <MessageText role={d.role} text={d.text}>
               {!d.done && <span className="cursor" aria-hidden="true" />}
-            </div>
+            </MessageText>
           </div>
         ))}
         {live && (
@@ -953,7 +968,7 @@ function DeliveryPanel({ f }: { f: Feature }) {
         </>
       )}
       <h2 className="sub-title">Report</h2>
-      {f.report ? <pre className="report">{f.report}</pre> : <p className="muted small">Written when every gate has passed.</p>}
+      {f.report ? <Markdown className="report" text={f.report} /> : <p className="muted small">Written when every gate has passed.</p>}
     </div>
   );
 }

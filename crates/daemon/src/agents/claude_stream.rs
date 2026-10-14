@@ -926,7 +926,7 @@ fn parse(v: &Value, shared: &Mutex<Shared>) -> Vec<RuntimeEvent> {
             s.message = None;
             out.push(RuntimeEvent::TurnFinished {
                 outcome,
-                summary: v["result"].as_str().map(|r| super::excerpt(r, 2000)),
+                summary: v["result"].as_str().map(super::report),
                 error,
                 // Claude Code reports the session's cost so far, not the turn's.
                 usage: v["total_cost_usd"].as_f64().map(|c| Usage {

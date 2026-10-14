@@ -901,8 +901,9 @@ impl Daemon {
                     // Stopped, not finished: it runs again later.
                     _ => TaskStatus::Pending,
                 };
+                // One line: it is quoted in reasons and prompts.
                 if state == RunState::Failed {
-                    t.last_error = summary.clone();
+                    t.last_error = summary.as_deref().map(|s| crate::agents::excerpt(s, 2000));
                 }
                 changes.push(Change::new(FeatureEvent::TaskChanged {
                     task_id,
