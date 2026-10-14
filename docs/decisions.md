@@ -2680,3 +2680,31 @@ run's summary, and the message made from it, didn't.
   an image is its description (nothing is fetched on a model's say-so), and
   only http(s) links are links, opened in the browser, never in the app.
 - Adds `react-markdown` and `remark-gfm` to the desktop app.
+
+## D-087 — A stand-in defers once; tests keep off the host's openers (2026-10-14)
+
+Dogfooding: Ctrl+V stopped pasting images into Claude Code on a host, and
+the browser-login e2e tests hung there — and, run while Portkeeper's Mac
+side was up, opened GitHub's sign-in page on the developer's Mac. The host
+still had Portkeeper's stand-ins (D-031's predecessor) in `~/.local/bin`,
+and `~/.zshenv` put that directory first in every zsh, ahead of otterd's
+`run/bin`. Claude Code's `wl-paste` was Portkeeper's, which gives up
+without a Wayland display; and when otterd's `xdg-open` deferred to "the
+next one on PATH" — Portkeeper's — that one deferred back to the first
+other one it found, otterd's: the two called each other for ever.
+
+- **Deferring happens once.** A stand-in (`wl-paste`, `xdg-open`,
+  `www-browser`, `otter-open`) marks the environment when it hands over
+  (`OTTER_STANDIN_DEFERRED`); one called with the mark exits 1. Another
+  tool's stand-in can no longer loop with otterd's.
+- **The browser-login tests keep off the test machine's openers.** Their
+  session's PATH is otterd's stand-ins, then a host `xdg-open` of the
+  test's — one that records the URL and hands straight back, as
+  Portkeeper's did — then the system's; no desktop variables. What the
+  host's opener was asked to open is asserted: once, and only when no
+  client served the page.
+- Unchanged, and the limit D-031 states: a profile that puts its own
+  directories ahead of `run/bin` can put another tool's `wl-paste` first,
+  and the paste never reaches otterd's. On the dogfooding host,
+  Portkeeper's stand-ins were removed. `otter attach` doesn't forward
+  images (the app does).

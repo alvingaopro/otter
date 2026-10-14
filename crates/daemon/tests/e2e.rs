@@ -2369,14 +2369,60 @@ async fn pasted_image_reaches_wl_paste_in_the_session() {
 // Browser login
 // ---------------------------------------------------------------------------
 
+/// Keep `login/sh` away from the test machine's own openers: its PATH
+/// becomes otterd's stand-ins, then a host `xdg-open` of the test's, then
+/// the system's — no desktop, no `~/.local/bin`. That `xdg-open` stands for
+/// another tool's stand-in (as some install in `~/.local/bin`): it records
+/// what it was asked to open, then hands over to the first other `xdg-open`
+/// on PATH, which is otterd's. Returns what it recorded so far.
+async fn host_opener(host: &TestHost) -> impl Fn() -> Vec<String> {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = host.home().join("host-opener");
+    std::fs::create_dir_all(&dir).unwrap();
+    let log = dir.join("opened");
+    std::fs::write(&log, "").unwrap();
+    let opener = dir.join("xdg-open");
+    std::fs::write(
+        &opener,
+        format!(
+            "#!/bin/sh\necho \"$1\" >> '{}'\nself=$(cd \"$(dirname \"$0\")\" && pwd)/xdg-open\nIFS=:\nfor d in $PATH; do\n  [ -x \"$d/xdg-open\" ] && [ \"$d/xdg-open\" != \"$self\" ] && exec \"$d/xdg-open\" \"$@\"\ndone\nexit 1\n",
+            log.display()
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&opener, std::fs::Permissions::from_mode(0o755)).unwrap();
+    host.conn()
+        .await
+        .session_write(
+            "login",
+            "sh",
+            &format!(
+                "export PATH=\"${{PATH%%:*}}:{}:/usr/bin:/bin\"; unset DISPLAY WAYLAND_DISPLAY; echo isolated-$((40+2))",
+                dir.display()
+            ),
+            true,
+        )
+        .await
+        .unwrap();
+    wait_output(host, "login", "sh", "isolated-42").await;
+    move || {
+        std::fs::read_to_string(&log)
+            .unwrap()
+            .lines()
+            .map(String::from)
+            .collect()
+    }
+}
+
 #[tokio::test]
 async fn browser_login_opens_trusted_pages_through_a_connected_app() {
     let host = TestHost::new();
     sh_session(&host, "login").await;
+    let opened_on_host = host_opener(&host).await;
     let mut conn = host.conn().await;
 
-    // No app connected: the tool hears why (and falls back to printing).
-    // A real xdg-open on the host then gets its turn, so its exit status varies.
+    // No app connected: the tool hears why, and the host's own opener gets
+    // its turn — once, though it hands straight back.
     conn.session_write(
         "login",
         "sh",
@@ -2390,6 +2436,7 @@ async fn browser_login_opens_trusted_pages_through_a_connected_app() {
         out.contains("no Otter app or attached terminal is connected"),
         "{out}"
     );
+    assert_eq!(opened_on_host(), ["https://github.com/login/device"]);
 
     // An app subscribes as the browser.
     let mut stream = host.conn().await.subscribe_for_browser(None).await.unwrap();
@@ -2629,6 +2676,7 @@ async fn browser_login_opens_pages_from_attached_terminals_once() {
 
     let host = TestHost::new();
     sh_session(&host, "login").await;
+    let opened_on_host = host_opener(&host).await;
     let mut conn = host.conn().await;
 
     // Two clients serve browser login at once (`otter attach` in two
@@ -2690,6 +2738,8 @@ async fn browser_login_opens_pages_from_attached_terminals_once() {
         "{out}"
     );
     assert_eq!(opened.lock().unwrap().len(), 1);
+    // Only then the host's own opener: served, the page didn't go there.
+    assert_eq!(opened_on_host(), [github]);
 }
 
 #[tokio::test]
