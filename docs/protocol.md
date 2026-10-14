@@ -298,6 +298,26 @@ than reloading the feature.
 
 An addition (no protocol bump): daemons before it answer `invalid_request`.
 
+## Triggers
+
+What starts unattended work on a host (D-083), kept in
+`state/triggers.json`:
+
+- `trigger.create {name, workspace, title?, request, schedule, policy}` →
+  the trigger. `schedule` is `{kind: "every", minutes}`, `{kind: "daily",
+  at: "HH:MM"}` (UTC) or `{kind: "manual"}`; `policy` is `{publish,
+  max_iterations?, max_minutes?, wait_limit_secs?}` — what its features may
+  do without asking, set in advance.
+- `trigger.list` → the triggers, each with `next_at` and its `history` (the
+  last occurrences: the feature each started, or why it was skipped).
+- `trigger.delete {trigger}` → `null` (its features stay).
+- `trigger.run {trigger, occurrence?}` → the trigger, fired now — for
+  `occurrence` (RFC 3339) when given: one feature per occurrence, so a
+  script that retries with the same one starts no second feature.
+
+A triggered feature carries `started_by {trigger_id, trigger, occurrence,
+policy}`. An addition (no protocol bump).
+
 ## Files and image paste
 
 - `fs.list {workspace, path}` → a directory (`path` relative to the

@@ -200,6 +200,21 @@ pub enum Request {
     #[serde(rename = "feature.delete")]
     FeatureDelete(feature::FeatureRef),
 
+    /// Triggers (D-083): what starts unattended work on this host. Result:
+    /// [`otter_core::trigger::Trigger`].
+    #[serde(rename = "trigger.create")]
+    TriggerCreate(TriggerCreate),
+    /// Result: `Vec<`[`otter_core::trigger::Trigger`]`>`.
+    #[serde(rename = "trigger.list")]
+    TriggerList,
+    /// Remove a trigger (the features it started stay). Result: `null`.
+    #[serde(rename = "trigger.delete")]
+    TriggerDelete(TriggerRef),
+    /// Fire a trigger now, by hand (its occurrence: now). Result: the
+    /// [`otter_core::trigger::Trigger`], its history saying what came of it.
+    #[serde(rename = "trigger.run")]
+    TriggerRun(TriggerRun),
+
     /// What the managed coding runtime on this host is and can do (D-055).
     /// Result: [`conversation::RuntimeCapabilities`].
     #[serde(rename = "runtime.capabilities")]
@@ -264,12 +279,46 @@ impl Request {
             Request::FeatureEvents(_) => "feature.events",
             Request::FeatureArtifact(_) => "feature.artifact",
             Request::FeatureDelete(_) => "feature.delete",
+            Request::TriggerCreate(_) => "trigger.create",
+            Request::TriggerList => "trigger.list",
+            Request::TriggerDelete(_) => "trigger.delete",
+            Request::TriggerRun(_) => "trigger.run",
             Request::RuntimeCapabilities => "runtime.capabilities",
             Request::ConversationList(_) => "conversation.list",
             Request::ConversationGet(_) => "conversation.get",
             Request::ConversationHistory(_) => "conversation.history",
         }
     }
+}
+
+/// `trigger.create` (D-083).
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct TriggerCreate {
+    pub name: String,
+    /// The workspace (id or name) its features work in.
+    pub workspace: String,
+    /// The feature's title (default: the trigger's name).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    pub request: String,
+    pub schedule: otter_core::trigger::Schedule,
+    #[serde(default)]
+    pub policy: otter_core::trigger::Policy,
+}
+
+/// `trigger.run`: fire a trigger by hand, for `occurrence` (default: now) —
+/// a script that names its occurrence can retry safely: one feature each.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TriggerRun {
+    pub trigger: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub occurrence: Option<otter_core::Timestamp>,
+}
+
+/// A trigger by id or name.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TriggerRef {
+    pub trigger: String,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]

@@ -90,6 +90,12 @@ id_type!(
     "ft_"
 );
 id_type!(
+    /// Identifies a [`crate::trigger::Trigger`] — what starts unattended
+    /// work (D-083).
+    TriggerId,
+    "trg_"
+);
+id_type!(
     /// Identifies a [`crate::feature::Task`] within a feature's plan.
     TaskId,
     "tk_"

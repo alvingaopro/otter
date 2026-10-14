@@ -193,6 +193,10 @@ impl Daemon {
             self.converse(&f).await?;
             f = self.feature_get(id.as_str()).await?;
         }
+        // Unattended work doesn't wait for ever on the developer (D-083).
+        if self.waited_too_long(&f).await? {
+            return Ok(());
+        }
         match f.status {
             FeatureStatus::Planning => self.plan_step(&f).await,
             FeatureStatus::Implementing => self.implement_step(&f).await,
@@ -207,6 +211,57 @@ impl Daemon {
             }
             _ => Ok(()),
         }
+    }
+
+    /// A triggered feature whose developer-only decision has waited past its
+    /// trigger's limit is paused (D-083): its agent stops, it says why, and
+    /// resuming asks again. Nothing is decided in the developer's name.
+    async fn waited_too_long(self: &Arc<Self>, f: &Feature) -> RpcResult<bool> {
+        let Some(limit) = f.started_by.as_ref().and_then(|s| s.policy.wait_limit_secs) else {
+            return Ok(false);
+        };
+        let now = Utc::now();
+        let Some(d) = f
+            .pending_decisions()
+            .filter(|d| d.user_only)
+            .min_by_key(|d| d.created_at)
+            .filter(|d| now - d.created_at > chrono::Duration::seconds(limit as i64))
+        else {
+            return Ok(false);
+        };
+        if !f.status.can_become(FeatureStatus::Paused) {
+            return Ok(false);
+        }
+        let mins = (now - d.created_at).num_minutes().max(1);
+        let why = format!(
+            "{}{mins} min for you on “{}”: paused, nothing decided. Resume to be asked again.",
+            otter_core::trigger::WAITED,
+            d.summary
+        );
+        self.hold_runs(&f.id, false, "Paused: waited too long for the developer")
+            .await;
+        let did = d.id.clone();
+        let applied = self.features.lock().await.apply(&f.id, None, |f, now| {
+            let mut changes = Vec::new();
+            // What it waited on goes with the run (a decision of its own, like
+            // publishing, is cancelled here): asked again on resume.
+            if let Some(d) = f.decision_mut(&did)
+                && d.status == DecisionStatus::Pending
+            {
+                d.status = DecisionStatus::Cancelled;
+                d.decided_at = Some(now);
+            }
+            f.rationale.push(why.clone());
+            if f.status.can_become(FeatureStatus::Paused) {
+                changes.push(Change::new(
+                    f.transition(FeatureStatus::Paused, Some(why.clone()), now)
+                        .map_err(RpcError::conflict)?,
+                ));
+            }
+            Ok(changes)
+        })?;
+        self.feature_changed(&applied);
+        Ok(true)
     }
 
     /// Answer the developer's latest messages (D-049), and act on what they
@@ -1524,8 +1579,10 @@ impl Daemon {
                 Allowance::Allowed
             }
             Some(DecisionStatus::Pending) => Allowance::Pending,
-            Some(_) => Allowance::Denied("not allowed".into()),
-            None => {
+            // Never answered (the run it belonged to stopped, or it waited
+            // too long, D-083): asked again.
+            Some(DecisionStatus::Denied) => Allowance::Denied("not allowed".into()),
+            Some(_) | None => {
                 let applied = self
                     .features
                     .lock()

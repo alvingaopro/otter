@@ -60,7 +60,7 @@ reply, so they stand until changed):
 | M3 | Built 2026-10-14 on the requester's instruction, without its spec (`03-agent-manager-ux.md` isn't on this machine) and ahead of the P0 gates, from a scope derived in `docs/plans/m3-agent-manager-ux.md` (D-070): the Inbox and one rule for what a feature needs (PRs #61–#63, D-071…D-073). Live scenario pending (M3-1); to be redone against the spec when it arrives. |
 | M4 | Built 2026-10-14 on the requester's instruction, without its spec, from a scope derived in `docs/plans/m4-observability.md` (D-074): secrets kept out of what Otter keeps (invariant 13), failures that say why and what next, `otter doctor` (PRs #64–#66, D-075…D-077). Live scenarios pending (M4-1); to be redone against the spec when it arrives. |
 | M5 | Built 2026-10-14 on the requester's instruction, without its spec, from a scope derived in `docs/plans/m5-orchestration.md` (D-078): one driver per workspace, a worktree of its own for a waiting feature, pause everything (PRs #67–#68, D-079…D-081). Parallel tasks inside a feature wait for the spec. Live scenario pending (M5-1). |
-| M6 | Not started. Its spec (`06-automation.md`) isn't on this machine. |
+| M6 | Built 2026-10-14 on the requester's instruction, without its spec, from a scope derived in `docs/plans/m6-automation.md` (D-082): triggers with one feature per occurrence, an unattended policy set in advance (publish, caps, a wait limit) (D-083). Live scenario pending (M6-1). |
 
 ## Not in scope
 

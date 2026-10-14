@@ -444,6 +444,9 @@ pub struct Feature {
     /// When it took its status (absent in documents from before D-071).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub status_since: Option<Timestamp>,
+    /// The trigger that started it, unattended (D-083).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub started_by: Option<crate::trigger::Started>,
     #[serde(default)]
     pub requirements: Vec<String>,
     #[serde(default)]
@@ -525,6 +528,7 @@ impl Feature {
             request,
             status: FeatureStatus::Draft,
             status_since: Some(now),
+            started_by: None,
             status_reason: None,
             requirements: Vec::new(),
             acceptance: Vec::new(),
@@ -619,6 +623,15 @@ impl Feature {
                 need(NeedKind::Review, reason("Ready for your review"))
             }
             FeatureStatus::Blocked => need(NeedKind::Blocked, reason("Waiting on you")),
+            // Unattended work that waited too long for the developer (D-083).
+            FeatureStatus::Paused
+                if self
+                    .status_reason
+                    .as_deref()
+                    .is_some_and(|r| r.starts_with(crate::trigger::WAITED)) =>
+            {
+                need(NeedKind::Blocked, reason("Waiting on you"))
+            }
             FeatureStatus::Failed => need(NeedKind::Failed, reason("Stopped")),
             _ => None,
         }
