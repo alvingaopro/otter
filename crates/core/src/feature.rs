@@ -120,6 +120,10 @@ pub enum TaskStatus {
     Skipped,
 }
 
+/// Where a managed run stands (D-061). The legal moves are
+/// [`RunState::can_become`]; `docs/runtime-states.md` has the table and what
+/// each crash leaves behind. Input waiting for a run is a queued turn of the
+/// run's conversation, not a run state.
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum RunState {
@@ -129,17 +133,47 @@ pub enum RunState {
     Waiting,
     Completed,
     Failed,
+    /// Stopped on purpose (pause, interrupt, a changed goal, cancel).
     Cancelled,
     /// A human took over the session (D-044).
     HandedOff,
+    /// Ended with its process (otterd restarted, or the agent's process was
+    /// lost) while what it was doing was unsettled. Its conversation
+    /// resumes; nothing claims the cut-off step succeeded.
+    Interrupted,
+    /// Ended in a way Otter can't safely continue on its own: there is no
+    /// conversation to resume, or its record can't be trusted, and starting
+    /// over could repeat what the agent already did. The developer decides
+    /// (a [`DecisionKind::Recovery`]).
+    RecoveryRequired,
 }
 
 impl RunState {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            RunState::Starting => "starting",
+            RunState::Running => "running",
+            RunState::Waiting => "waiting",
+            RunState::Completed => "completed",
+            RunState::Failed => "failed",
+            RunState::Cancelled => "cancelled",
+            RunState::HandedOff => "handed_off",
+            RunState::Interrupted => "interrupted",
+            RunState::RecoveryRequired => "recovery_required",
+        }
+    }
+
     pub fn is_over(self) -> bool {
-        matches!(
+        !matches!(
             self,
-            RunState::Completed | RunState::Failed | RunState::Cancelled | RunState::HandedOff
+            RunState::Starting | RunState::Running | RunState::Waiting
         )
+    }
+
+    /// A run goes starting → running ⇄ waiting, and ends once; an ended run
+    /// never changes again (a later run continues its work).
+    pub fn can_become(self, to: RunState) -> bool {
+        !self.is_over() && self != to && to != RunState::Starting
     }
 }
 
@@ -165,6 +199,9 @@ pub enum DecisionKind {
     Merge,
     /// Deploying (an irreversible external action).
     Deploy,
+    /// A run ended [`RunState::RecoveryRequired`]: start its task over, or
+    /// not yet. The developer's only (D-061).
+    Recovery,
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
@@ -980,7 +1017,7 @@ impl FeatureEvent {
             }
             FeatureEvent::RunStarted { runtime, .. } => format!("A {runtime} run started"),
             FeatureEvent::RunChanged { state, .. } => {
-                format!("Run {}", format!("{state:?}").to_lowercase())
+                format!("Run {}", state.as_str().replace('_', " "))
             }
             FeatureEvent::DecisionRequested { kind, risk, .. } => {
                 format!("Decision needed ({kind:?}, {risk:?} risk)").to_lowercase()
@@ -1032,6 +1069,59 @@ pub struct FeatureEventRecord {
 mod tests {
     use super::*;
     use FeatureStatus::*;
+
+    #[test]
+    fn a_run_ending_reads_plainly_and_round_trips() {
+        for (state, text) in [
+            (RunState::Interrupted, "Run interrupted"),
+            (RunState::RecoveryRequired, "Run recovery required"),
+            (RunState::HandedOff, "Run handed off"),
+        ] {
+            let e = FeatureEvent::RunChanged {
+                run_id: RunId::from("run_1"),
+                state,
+            };
+            assert_eq!(e.text(), text);
+        }
+        let k: DecisionKind = serde_json::from_str("\"recovery\"").unwrap();
+        assert_eq!(k, DecisionKind::Recovery);
+        let s: RunState = serde_json::from_str("\"recovery_required\"").unwrap();
+        assert_eq!(s, RunState::RecoveryRequired);
+    }
+
+    #[test]
+    fn a_run_ends_once() {
+        use RunState as R;
+        let ends = [
+            R::Completed,
+            R::Failed,
+            R::Cancelled,
+            R::HandedOff,
+            R::Interrupted,
+            R::RecoveryRequired,
+        ];
+        for live in [R::Starting, R::Running, R::Waiting] {
+            assert!(!live.is_over());
+            for end in ends {
+                assert!(live.can_become(end), "{live:?} -> {end:?}");
+            }
+            assert!(!live.can_become(R::Starting));
+        }
+        assert!(R::Starting.can_become(R::Running));
+        assert!(R::Running.can_become(R::Waiting));
+        assert!(R::Waiting.can_become(R::Running));
+        for end in ends {
+            assert!(end.is_over());
+            for to in ends.iter().chain(&[R::Running, R::Waiting]) {
+                assert!(!end.can_become(*to), "{end:?} -> {to:?}");
+            }
+            // The wire name is the serde name.
+            assert_eq!(
+                serde_json::to_string(&end).unwrap(),
+                format!("\"{}\"", end.as_str())
+            );
+        }
+    }
 
     #[test]
     fn lifecycle_follows_the_happy_path_and_its_side_exits() {

@@ -864,6 +864,12 @@ impl Daemon {
         let (root, env) = self.feature_workspace(f).await?;
         let brain = brain::select(&env, &self.brain_choice());
         for d in open {
+            // Whether to start cut-off work over is the developer's (D-061).
+            if d.kind == DecisionKind::Recovery {
+                let why = "only you can say whether cut-off work starts over";
+                self.escalate(&f.id, &d, why).await;
+                continue;
+            }
             let verdict = brain
                 .decide(
                     &Context {
@@ -1145,12 +1151,18 @@ impl Daemon {
         }
         // One conversation per feature (D-064): the next task, a fix and a
         // retry are turns in the session the work began in. A turn of this
-        // task that was cut off (restart, pause, a limit, takeover) carries
-        // on; anything else is new work, which is what costs an attempt
-        // (planning doesn't).
+        // task that was cut off (restart, a lost process, pause, a limit,
+        // takeover) carries on; anything else is new work, which is what
+        // costs an attempt (planning doesn't), and so is a task the developer
+        // said to start over (D-061).
         let last = f.runs.iter().rev().find(|r| r.task_id == task.id);
         let continuing = last
-            .filter(|r| matches!(r.state, RunState::Cancelled | RunState::HandedOff))
+            .filter(|r| {
+                matches!(
+                    r.state,
+                    RunState::Cancelled | RunState::HandedOff | RunState::Interrupted
+                )
+            })
             .is_some_and(|r| r.provider_session_id.is_some());
         let session = self.feature_session(f);
         let counts = !continuing && !task.planning;
@@ -2258,7 +2270,8 @@ impl Daemon {
     /// The feature's conversation, to go on in (D-064): the latest run with
     /// an agent session, and its conversation — unless that session is gone
     /// (the agent said so) or the conversation was closed, when the next
-    /// turn starts a new one.
+    /// turn starts a new one. Nor after a run that needed recovery (D-061):
+    /// the developer said to start over, so it starts in a new session.
     fn feature_session(
         &self,
         f: &Feature,
@@ -2271,7 +2284,8 @@ impl Daemon {
             .runs
             .iter()
             .rev()
-            .find(|r| r.provider_session_id.is_some())?;
+            .find(|r| r.provider_session_id.is_some() || r.state == RunState::RecoveryRequired)
+            .filter(|r| r.state != RunState::RecoveryRequired)?;
         let c = self
             .conversations
             .get(run.conversation_id.as_ref()?.as_str())?;
@@ -2448,6 +2462,11 @@ fn continue_prompt(
         Some(_) => "Your last turn was interrupted before it finished. \
                     Continue the task where you left off."
             .into(),
+        // Lost mid-turn (D-061): what it was doing may or may not have
+        // happened, and must not be repeated blindly.
+        None if last.is_some_and(|r| r.state == RunState::Interrupted) => {
+            format!("Continue the task where you left off.{CUT_OFF}")
+        }
         None => "Continue the task where you left off.".into(),
     };
     format!(
@@ -2455,6 +2474,11 @@ fn continue_prompt(
         notes_text(&developer_notes(f, last.map(|r| r.started_at), carried))
     )
 }
+
+/// After a run was cut off mid-turn (D-061).
+const CUT_OFF: &str = " Your last run was cut off before it finished, so the result of \
+what you were doing then is unknown: check whether it took effect (files, \
+processes, anything outside) before you do it again.";
 
 /// Run the check command in the workspace and record what happened; and,
 /// if it couldn't run at all, the line that says why (see [`cant_run`]).
@@ -2645,6 +2669,14 @@ mod tests {
             prompt("handed back", RunState::HandedOff),
             "Continue the task where you left off."
         );
+        // Lost mid-turn (D-061): the last step's result is unknown.
+        let lost = prompt(
+            "Interrupted: the agent's process was lost",
+            RunState::Interrupted,
+        );
+        assert!(lost.starts_with("Continue the task where you left off."));
+        assert!(lost.contains(CUT_OFF), "{lost}");
+        assert!(!prompt("handed back", RunState::HandedOff).contains("cut off"));
         assert_eq!(span(Duration::from_millis(1500)), "1 s");
         assert_eq!(span(Duration::from_secs(1800)), "30 min");
     }

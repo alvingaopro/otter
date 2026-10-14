@@ -23,8 +23,9 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use chrono::Utc;
 use otter_core::feature::{
-    Decider, DecisionStatus, FEATURE_EVENT_SCHEMA, FEATURE_SCHEMA, Feature, FeatureAction,
-    FeatureEvent, FeatureEventRecord, FeatureStatus, Message, MessageRole, TaskStatus,
+    Decider, DecisionKind, DecisionStatus, FEATURE_EVENT_SCHEMA, FEATURE_SCHEMA, Feature,
+    FeatureAction, FeatureEvent, FeatureEventRecord, FeatureStatus, Message, MessageRole,
+    TaskStatus,
 };
 use otter_core::{FeatureId, MessageId, Timestamp, WorkspaceId};
 use otter_protocol::feature::{FeatureAct, FeatureCreate, FeatureEvents, FeatureSend};
@@ -518,6 +519,7 @@ pub fn apply_action(
                 .grant
                 .clone()
                 .filter(|_| d.status == DecisionStatus::Approved);
+            let (kind, task, status) = (d.kind, d.task_id.clone(), d.status);
             changes.push(
                 Change::new(FeatureEvent::DecisionResolved {
                     decision_id: decision_id.clone(),
@@ -532,6 +534,27 @@ pub fn apply_action(
                 f.grants.push(g);
             }
             changes.extend(f.resume_waiting_runs(now).into_iter().map(Change::new));
+            // Cut-off work (D-061): either way its task is ready again, and
+            // its next run starts over. Declined, nothing starts until the
+            // developer resumes.
+            if kind == DecisionKind::Recovery {
+                if let Some(t) = task.as_ref().and_then(|t| f.task_mut(t))
+                    && t.status == TaskStatus::Blocked
+                {
+                    t.status = TaskStatus::Pending;
+                    changes.push(
+                        Change::new(FeatureEvent::TaskChanged {
+                            task_id: t.id.clone(),
+                            status: TaskStatus::Pending,
+                        })
+                        .because(command_id),
+                    );
+                }
+                if status == DecisionStatus::Denied && f.status.can_become(FeatureStatus::Paused) {
+                    let why = "Not started over: resume when you're ready";
+                    changes.push(to(f, FeatureStatus::Paused, Some(why.into()))?);
+                }
+            }
             if f.status == FeatureStatus::Blocked && f.pending_decisions().next().is_none() {
                 let next = resume_status(f);
                 changes.push(to(f, next, None)?);
@@ -1218,6 +1241,99 @@ mod tests {
             apply_action(f, &action, "c10", now)
         });
         assert!(again.is_err());
+    }
+
+    /// A feature blocked on a recovery decision for its blocked task.
+    fn awaiting_recovery(s: &mut FeatureStore, cmd: &str) -> (Feature, DecisionId) {
+        let f = new_feature(s, cmd);
+        let dec = DecisionId::generate();
+        let d2 = dec.clone();
+        let f = s
+            .apply(&f.id, None, move |f, now| {
+                f.transition(FeatureStatus::Planning, None, now).unwrap();
+                let task = TaskId::generate();
+                f.tasks.push(Task {
+                    id: task.clone(),
+                    title: "t".into(),
+                    detail: None,
+                    status: TaskStatus::Blocked,
+                    depends_on: vec![],
+                    workspace_id: None,
+                    session_id: None,
+                    attempts: 1,
+                    last_error: Some("otterd restarted".into()),
+                    planning: false,
+                });
+                f.transition(FeatureStatus::Implementing, None, now)
+                    .unwrap();
+                f.transition(FeatureStatus::Blocked, None, now).unwrap();
+                f.decisions.push(DecisionRequest {
+                    id: d2,
+                    task_id: Some(task),
+                    run_id: None,
+                    kind: DecisionKind::Recovery,
+                    risk: Risk::High,
+                    summary: "Start “t” over?".into(),
+                    detail: None,
+                    options: vec![],
+                    status: DecisionStatus::Pending,
+                    decided_by: None,
+                    answer: None,
+                    rationale: None,
+                    created_at: now,
+                    decided_at: None,
+                    user_only: true,
+                    grant: None,
+                });
+                Ok(vec![])
+            })
+            .unwrap()
+            .feature;
+        (f, dec)
+    }
+
+    fn decide(s: &mut FeatureStore, f: &Feature, dec: &DecisionId, approve: bool) -> Feature {
+        let action = FeatureAction::Decide {
+            decision_id: dec.clone(),
+            approve,
+            answer: None,
+            answers: None,
+        };
+        s.apply(&f.id, Some("c9"), |f, now| {
+            apply_action(f, &action, "c9", now)
+        })
+        .unwrap()
+        .feature
+    }
+
+    #[test]
+    fn starting_cut_off_work_over_frees_its_task_and_carries_on() {
+        let (_dir, mut s) = store();
+        let (f, dec) = awaiting_recovery(&mut s, "c1");
+        let out = decide(&mut s, &f, &dec, true);
+        assert_eq!(out.decisions[0].status, DecisionStatus::Approved);
+        assert_eq!(out.decisions[0].decided_by, Some(Decider::User));
+        assert_eq!(out.tasks[0].status, TaskStatus::Pending);
+        assert_eq!(out.status, FeatureStatus::Implementing);
+    }
+
+    #[test]
+    fn declining_to_start_over_pauses_until_the_developer_resumes() {
+        let (_dir, mut s) = store();
+        let (f, dec) = awaiting_recovery(&mut s, "c1");
+        let out = decide(&mut s, &f, &dec, false);
+        assert_eq!(out.decisions[0].status, DecisionStatus::Denied);
+        // Ready again, but nothing starts on its own.
+        assert_eq!(out.tasks[0].status, TaskStatus::Pending);
+        assert_eq!(out.status, FeatureStatus::Paused);
+        // Resuming carries on with the task.
+        let out = s
+            .apply(&f.id, Some("c10"), |f, now| {
+                apply_action(f, &FeatureAction::Resume, "c10", now)
+            })
+            .unwrap()
+            .feature;
+        assert_eq!(out.status, FeatureStatus::Implementing);
     }
 
     #[test]

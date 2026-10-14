@@ -267,6 +267,15 @@ Product work owned by the daemon (D-043); see `otter_core::feature`.
   …}`. `seq` starts at 1 per feature and never repeats; `v` is the record's
   schema version.
 
+**Runs and recovery** (D-061): a feature's `runs[].state` is `starting`,
+`running`, `waiting`, or how it ended — `completed`, `failed`, `cancelled`,
+`handed_off`, `interrupted` (ended with its process mid-turn; it resumes),
+`recovery_required` (Otter won't continue it on its own). The latter opens
+a `recovery` decision, `user_only`: `decide {approve: true}` starts the task
+over, `approve: false` pauses the feature. States and the crash matrix:
+[`runtime-states.md`](runtime-states.md). Clients treat an unknown run state
+as ended.
+
 **Commands are idempotent.** `command_id` is the client's id for one intent
 (a random string). A command the daemon has applied is not applied again: a
 retry returns the feature as it is. A command that failed was not applied,

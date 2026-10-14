@@ -17,9 +17,18 @@ export type FeatureStatus =
   | "failed"
   | "cancelled";
 export type TaskStatus = "pending" | "running" | "blocked" | "done" | "failed" | "skipped";
-export type RunState = "starting" | "running" | "waiting" | "completed" | "failed" | "cancelled" | "handed_off";
+export type RunState =
+  | "starting"
+  | "running"
+  | "waiting"
+  | "completed"
+  | "failed"
+  | "cancelled"
+  | "handed_off"
+  | "interrupted"
+  | "recovery_required";
 export type MessageRole = "user" | "controller" | "agent" | "system";
-export type DecisionKind = "tool_permission" | "question" | "plan_approval" | "merge" | "deploy";
+export type DecisionKind = "tool_permission" | "question" | "plan_approval" | "merge" | "deploy" | "recovery";
 export type Risk = "low" | "medium" | "high";
 export type DecisionStatus = "pending" | "approved" | "denied" | "answered" | "cancelled";
 export type Decider = "policy" | "controller" | "user";

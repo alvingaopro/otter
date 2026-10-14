@@ -51,8 +51,12 @@ record it in [`decisions.md`](decisions.md) first.
   new daemon records the run's end (outcome unknown, never "completed")
   and marks it interrupted (`recover_runs`), and the controller resumes it.
   A daemon stopping is not a run failing.
+  A run whose agent process dies is likewise `interrupted` and resumed, or
+  `recovery_required` when continuing isn't safe (D-061).
 - Tests: `runs_survive_a_restart_and_follow_a_changing_goal`,
-  `changes_are_journaled_and_replayed_after_a_crash`.
+  `changes_are_journaled_and_replayed_after_a_crash`,
+  `a_run_lost_mid_tool_resumes_without_claiming_the_step`,
+  `a_run_that_keeps_getting_lost_waits_for_the_developer`.
 
 ### 5. Agent-provider details do not leak into generic Workspace logic.
 
