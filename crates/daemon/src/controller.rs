@@ -94,6 +94,8 @@ fn plan_turn() -> bool {
 
 /// The planning task's title.
 const PLANNING: &str = "Look at the code and plan the work";
+/// What Otter asks when a feature starts with nothing to do (D-067).
+const GOAL_QUESTION: &str = "What should this feature do?";
 
 /// A duration for people: seconds while short, then minutes.
 fn span(d: Duration) -> String {
@@ -488,6 +490,11 @@ impl Daemon {
             .await?;
             return Ok(());
         }
+        // Nothing to do yet (D-067): the developer's first message is the
+        // request, or the answer to Otter asking for one.
+        if f.request.trim().is_empty() {
+            return self.find_the_goal(f).await;
+        }
         // The coding agent looks at the code first and proposes (D-064);
         // the brain reviews that. Planning again goes on from the plan.
         if plan_turn() && !f.replan {
@@ -684,7 +691,96 @@ impl Daemon {
     }
 
     /// Ask the brain about open decisions; escalate what it won't take.
+    /// A feature started with no request: take the developer's first
+    /// message, or their answer to Otter's question; else ask, once, and
+    /// wait (D-067). Planning doesn't start without a goal.
+    async fn find_the_goal(self: &Arc<Self>, f: &Feature) -> RpcResult<()> {
+        let said = f
+            .messages
+            .iter()
+            .find(|m| m.role == MessageRole::User)
+            .map(|m| m.text.clone());
+        let answered = f
+            .decisions
+            .iter()
+            .rev()
+            .find(|d| d.summary == GOAL_QUESTION && d.status == DecisionStatus::Answered)
+            .and_then(|d| d.answer.clone());
+        if let Some(goal) = said.or(answered).filter(|g| !g.trim().is_empty()) {
+            self.controller_apply(&f.id, FeatureStatus::Planning, move |f, _| {
+                f.request = goal.trim().to_owned();
+                f.rationale
+                    .push("The request is what you said: planning from it.".into());
+                Ok(vec![])
+            })
+            .await?;
+            return Ok(()); // The change wakes the next step.
+        }
+        if f.pending_decisions().any(|d| d.summary == GOAL_QUESTION) {
+            return Ok(());
+        }
+        self.controller_apply(&f.id, FeatureStatus::Planning, |f, now| {
+            let id = DecisionId::generate();
+            f.decisions.push(DecisionRequest {
+                id: id.clone(),
+                task_id: None,
+                run_id: None,
+                kind: DecisionKind::Question,
+                risk: Risk::Low,
+                summary: GOAL_QUESTION.into(),
+                detail: Some("The feature was started without a request.".into()),
+                options: vec![],
+                status: DecisionStatus::Pending,
+                decided_by: None,
+                answer: None,
+                rationale: None,
+                created_at: now,
+                decided_at: None,
+                user_only: true,
+                grant: None,
+            });
+            let (m, c) = message(
+                MessageRole::Controller,
+                format!(
+                    "{GOAL_QUESTION} Answer here, or just tell me in a message, and I'll plan it."
+                ),
+                Some(id.to_string()),
+            );
+            f.messages.push(m);
+            Ok(vec![
+                Change::new(FeatureEvent::DecisionRequested {
+                    decision_id: id,
+                    kind: DecisionKind::Question,
+                    risk: Risk::Low,
+                }),
+                c,
+                Change::new(
+                    f.transition(
+                        FeatureStatus::Blocked,
+                        Some("Waiting for what this feature should do".into()),
+                        now,
+                    )
+                    .map_err(RpcError::conflict)?,
+                ),
+            ])
+        })
+        .await?;
+        Ok(())
+    }
+
     async fn decide_open(self: &Arc<Self>, f: &Feature) -> RpcResult<()> {
+        // Asked what the feature should do: a message is an answer too.
+        if let Some(d) = f.pending_decisions().find(|d| d.summary == GOAL_QUESTION)
+            && let Some(m) = f
+                .messages
+                .iter()
+                .find(|m| m.role == MessageRole::User && m.at > d.created_at)
+        {
+            let (did, text) = (d.id.clone(), m.text.clone());
+            self.decide(&f.id, &did, true, Some(text), Decider::User, None)
+                .await?;
+            return Ok(());
+        }
         let open: Vec<DecisionRequest> = {
             let mut st = self.controller.lock().unwrap();
             f.pending_decisions()
@@ -1878,11 +1974,13 @@ pub(crate) fn unanswered(f: &Feature) -> Vec<otter_core::feature::Message> {
                 .as_deref()
                 .is_some_and(|c| c.starts_with("msg_"))
     });
+    // The request isn't a message to answer (D-067).
+    let request = f.request_message();
     f.messages
         .iter()
         .enumerate()
-        .skip(answered.map_or(1, |i| i + 1))
-        .filter(|(_, m)| m.role == MessageRole::User)
+        .skip(answered.map_or(0, |i| i + 1))
+        .filter(|(_, m)| m.role == MessageRole::User && Some(&m.id) != request)
         .map(|(_, m)| m.clone())
         .collect()
 }
@@ -2020,9 +2118,10 @@ fn developer_notes(
     since: Option<chrono::DateTime<Utc>>,
     carried: &std::collections::HashSet<String>,
 ) -> Vec<String> {
+    let request = f.request_message();
     f.messages
         .iter()
-        .skip(1) // The request itself.
+        .filter(|m| Some(&m.id) != request)
         .filter(|m| m.role == MessageRole::User && since.is_none_or(|s| m.at > s))
         .filter(|m| !carried.contains(m.id.as_str()))
         .map(|m| m.text.clone())
@@ -2111,7 +2210,8 @@ fn planning_prompt(f: &Feature, notes: Vec<String>) -> String {
          \"tasks\": [{{\"title\": \"...\", \"detail\": \"what to do, where\"}}], \
          \"criteria\": [{{\"text\": \"...\", \"how\": \"check\" or \"diff\"}}], \
          \"check\": \"the command that runs the project's tests here\" or null}}\n\
-         - tasks: the steps in order, 1 to 5; one is right for a small change.\n\
+         - tasks: the steps in order, 1 to 5; one is right for a small change. They are yours to \
+         do on your own: none asks, checks with or waits for the developer.\n\
          - criteria: facts about the code or the check's result, never about the conversation \
          or the process. how: \"check\" when the check passing proves it, \"diff\" when it is \
          about what the change contains.\n\

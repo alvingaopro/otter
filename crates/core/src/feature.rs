@@ -572,6 +572,14 @@ impl Feature {
             .filter(|d| d.status == DecisionStatus::Pending)
     }
 
+    /// The message the request came in (D-067): the developer's first, when
+    /// its text is the request. What else they said is a note, an answer.
+    pub fn request_message(&self) -> Option<&MessageId> {
+        let first = self.messages.iter().find(|m| m.role == MessageRole::User)?;
+        (!self.request.trim().is_empty() && first.text.trim() == self.request.trim())
+            .then_some(&first.id)
+    }
+
     /// The run currently working, if any.
     pub fn live_run(&self) -> Option<&Run> {
         self.runs.iter().rev().find(|r| !r.state.is_over())
@@ -1051,6 +1059,31 @@ mod tests {
             }]
         );
         assert_eq!(f.runs[0].working_since, Some(later));
+    }
+
+    #[test]
+    fn the_request_message_is_the_first_one_only_when_it_is_the_request() {
+        let now = chrono::Utc::now();
+        let msg = |role, text: &str| Message {
+            id: MessageId::generate(),
+            role,
+            text: text.into(),
+            at: now,
+            correlation_id: None,
+        };
+        let mut f = Feature::new("t".into(), String::new(), now);
+        f.messages
+            .push(msg(MessageRole::Controller, "What should this feature do?"));
+        f.messages.push(msg(MessageRole::User, "Add CSV export"));
+        assert_eq!(
+            f.request_message(),
+            None,
+            "no request yet: a message to read"
+        );
+        f.request = "Add CSV export".into();
+        assert_eq!(f.request_message(), Some(&f.messages[1].id));
+        f.request = "Something else".into();
+        assert_eq!(f.request_message(), None);
     }
 
     #[test]

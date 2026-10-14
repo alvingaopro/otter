@@ -2107,3 +2107,32 @@ lexical (audit 03 §3).
   agent's developer-only request is now `rm -rf /opt/shared`: the tests'
   workspaces live in the temp directory, which is scratch.
 
+## D-067 — A feature's request is the developer's word (2026-10-14)
+
+M2 step 6 (`docs/plans/m2-feature-to-pr.md`; autonomy audit P1-3, RC-6).
+The "Otter" feature arrived with no request text, and its goal was in the
+developer's first message — which Otter then skipped everywhere as "the
+request itself" (`skip(1)`): planning had nothing to go on, and the plan
+told the agent to confirm the goal with the developer.
+
+- **The request message is found, not assumed.** `Feature::request_message`
+  is the developer's first message when its text is the request — what a
+  feature created with a request starts with. Developer notes, the
+  messages Otter answers, the brief the brain reads and a replan's notes
+  leave out that message only; with an empty request, every message counts.
+- **No request: the first message is it.** Starting a feature with an
+  empty request plans from the developer's first message, which becomes
+  the request. With none, Otter asks once — a developer-only question,
+  "What should this feature do?", and a message saying they can answer
+  there or just write — and the feature waits, blocked on that question
+  (which is what keeps it blocked). A plain message answers it. Planning
+  doesn't start without a goal.
+- **The plan never sends the agent to the developer.** The brain's plan
+  prompt and the agent's planning turn say the agent works on its own: no
+  task asks, checks with or waits for the developer; Otter asks them when
+  something needs them (the agent's own blocking questions still reach
+  them, as decisions).
+- Not done: a non-blocking question tool (the agent asks and keeps
+  working, the answer arrives as input). The plan made it optional,
+  behind a decision; blocking `AskUserQuestion` stays as it is.
+
