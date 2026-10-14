@@ -2,7 +2,7 @@
 // Switching views only changes what is in front: nothing here may stop,
 // detach or restart anything.
 
-export type View = "features" | "workspaces";
+export type View = "inbox" | "features" | "workspaces";
 
 export interface ViewEntry {
   id: View;
@@ -11,10 +11,11 @@ export interface ViewEntry {
   digit: string;
 }
 
-/** Top to bottom: Features is the primary entry. */
+/** Top to bottom: the Inbox is the primary entry (design §26, D-072). */
 export const VIEWS: ViewEntry[] = [
-  { id: "features", label: "Features", digit: "1" },
-  { id: "workspaces", label: "Workspaces", digit: "2" },
+  { id: "inbox", label: "Inbox", digit: "1" },
+  { id: "features", label: "Features", digit: "2" },
+  { id: "workspaces", label: "Workspaces", digit: "3" },
 ];
 
 const KEY = "otter.view";
@@ -23,12 +24,12 @@ export function parseView(v: string | null | undefined): View | undefined {
   return VIEWS.some((e) => e.id === v) ? (v as View) : undefined;
 }
 
-/** The view remembered on this Mac; Features the first time. */
+/** The view remembered on this Mac; the Inbox the first time. */
 export function storedView(): View {
   try {
-    return parseView(localStorage.getItem(KEY)) ?? "features";
+    return parseView(localStorage.getItem(KEY)) ?? "inbox";
   } catch {
-    return "features";
+    return "inbox";
   }
 }
 

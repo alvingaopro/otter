@@ -74,6 +74,15 @@ export function ActivityBar({ view, onView, badges, settings }: Props) {
 }
 
 function ViewIcon({ view }: { view: View }) {
+  if (view === "inbox") {
+    // A tray: what comes in.
+    return (
+      <svg width="18" height="18" viewBox="0 0 18 18" aria-hidden="true">
+        <path d="M2.5 10.5 4.5 3.5h9l2 7v4h-13z" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round" />
+        <path d="M2.5 10.5h4l1 2h3l1-2h4" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round" />
+      </svg>
+    );
+  }
   if (view === "features") {
     // A flag: a goal to reach.
     return (

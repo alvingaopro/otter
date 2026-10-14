@@ -678,6 +678,14 @@ branch       environment      state
 The UI should feel closer to browser tabs + an inbox than a traditional terminal
 multiplexer.
 
+Built as the desktop app's **Inbox** (D-072) — first in the activity bar —
+and `otter ls` (D-073): features (work Otter drives, D-043) and workspaces
+in one list, NEEDS YOU longest-waiting first, by one rule for each
+(`Workspace::activity`, `Feature::needs`/`activity` in `otter-core`, D-071).
+What waits is done from the list: a feature's decision answered, review
+accepted, a stopped feature retried, a workspace opened at the session that
+needs you.
+
 ## 27. Fast Workspace Creation
 
 Creating a Workspace must remain extremely cheap.

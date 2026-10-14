@@ -2257,3 +2257,47 @@ left out a stopped feature, which waits on the developer's retry
   `features.ts` reads them, keeping a stand-in only for preview data.
   Features that need the developer sort longest-waiting first.
 
+## D-072 — The Inbox (2026-10-14)
+
+M3 step 2 (`docs/plans/m3-agent-manager-ux.md`, gaps 1 and 3). Features and
+workspaces were separate views with separate lists; acting on a feature's
+decision meant opening it, then its Approvals tab.
+
+- **One list, first in the activity bar** (⌘1; Features ⌘2, Workspaces ⌘3;
+  the Inbox is where the app opens the first time, after that the last
+  view): NEEDS YOU, WORKING, DONE — design §26 — across features and
+  workspaces on every connected host. Needs: longest-waiting first
+  (`Feature::needs` and a workspace's oldest attention); working and done:
+  newest first, done capped at eight. Drafts, paused and idle work, and
+  what's archived, aren't in it; the other views have them.
+- **A row says what it is and what's going on** — feature or workspace,
+  host, how long — and what waits: the decision's summary, the stop's
+  reason, the workspace's headline.
+- **What waits is done there.** A feature's oldest pending decision is the
+  same card as in its Approvals tab (approve, deny, an option, an answer),
+  with how many more wait; review offers Accept (refused while a gate
+  waits — the error shows on the row); a stopped feature offers Retry;
+  every row opens its feature, or its workspace at the session that needs
+  the developer. Nothing new on the daemon: the same `feature.act`.
+- The Inbox's badge counts what needs the developer: features, and
+  workspaces that need them or failed.
+
+## D-073 — Told when a feature needs you (2026-10-14)
+
+M3 step 3 (`docs/plans/m3-agent-manager-ux.md`, gaps 5 and 6). A feature
+needing the developer only changed a badge count: no notification, nothing
+in the menu-bar item, and `otter ls` listed workspaces alone.
+
+- **A notification per new need**, once: a decision, review ready, a
+  block, a stop (`Feature::needs`, D-071). A need is new when it differs
+  from the last one the app saw for that feature; the first time the app
+  sees a feature is the baseline, so what waited before it looked isn't
+  announced. Not while the Inbox is in front of the developer.
+  Activating the app soon after opens that feature, as for workspaces.
+- **The menu-bar item lists features with workspaces** (longest-waiting
+  first, "N things need you"); picking one opens it.
+- **`otter ls` lists features that wait on the developer** under NEEDS
+  YOU or FAILED, longest-waiting first with the workspaces, as "feature ·
+  <what>" and since when; `--json` gives them per host with `activity` and
+  `needs`. An otterd without features shows none.
+

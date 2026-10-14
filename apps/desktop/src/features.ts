@@ -280,6 +280,17 @@ export function needOf(f: Feature): Need | undefined {
   return undefined;
 }
 
+/** Where it stands on the workspaces' scale: served by otter-core (D-071); derived for preview data. */
+export function featureActivity(f: Feature): Activity {
+  if (f.activity !== undefined) return f.activity;
+  const n = needOf(f);
+  if (n) return n.kind === "failed" ? "failed" : "needs_you";
+  if (f.status === "done") return "completed";
+  if (f.status === "cancelled") return "archived";
+  if (f.status === "draft" || f.status === "paused") return "idle";
+  return "working";
+}
+
 /** The developer has to act: a decision, review, a block, a stop. */
 export function needsYou(f: Feature): boolean {
   return needOf(f) !== undefined;

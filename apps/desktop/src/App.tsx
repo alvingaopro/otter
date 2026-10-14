@@ -8,6 +8,9 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 import { Sidebar } from "./Sidebar";
 import { ActivityBar } from "./ActivityBar";
 import { FeaturesView } from "./FeaturesView";
+import { Inbox } from "./Inbox";
+import { newNeeds, trayFeatures } from "./inboxModel";
+import type { PlacedFeature } from "./features";
 import { daemonSource } from "./featureSource";
 import { needsYou as featureNeedsYou } from "./features";
 import { saveView, storedView, viewForShortcut, type View } from "./nav";
@@ -34,6 +37,8 @@ interface Jump {
   key: string;
   session?: string;
   at: number;
+  /** A feature (in the Features view), not a workspace. */
+  feature?: boolean;
 }
 
 export default function App() {
@@ -58,11 +63,13 @@ export default function App() {
   const { choice: themeChoice, resolved: theme, cycle: cycleTheme } = useTheme();
   /** Features, from each connected host's otterd (D-043). */
   const [featureSource] = useState(() => daemonSource());
-  const [featureNeeds, setFeatureNeeds] = useState(() => featureSource.list().filter((p) => featureNeedsYou(p.feature)).length);
-  useEffect(
-    () => featureSource.subscribe((list) => setFeatureNeeds(list.filter((p) => featureNeedsYou(p.feature)).length)),
-    [featureSource],
-  );
+  const [features, setFeatures] = useState<PlacedFeature[]>(() => featureSource.list());
+  useEffect(() => featureSource.subscribe(setFeatures), [featureSource]);
+  const featureNeeds = features.filter((p) => featureNeedsYou(p.feature)).length;
+  /** A feature to show in the Features view, opened from the Inbox. */
+  const [featureFocus, setFeatureFocus] = useState<{ key: string; at: number } | undefined>();
+  /** What each feature needed when last looked at (D-073). */
+  const featureSeen = useRef(new Map<string, string | null>());
   /** A workspace just created here: select it once it shows up. */
   const wanted = useRef<string | null>(null);
 
@@ -80,8 +87,13 @@ export default function App() {
     void getVersion().then(setVersion);
     void invoke<ForwardView[]>("forwards_get").then(setForwards);
     const unforwards = listen<ForwardView[]>("forwards", (e) => setForwards(e.payload));
-    // A workspace picked in the menu bar item.
+    // A workspace (or a feature) picked in the menu bar item.
     const unjump = listen<string>("jump", (e) => {
+      if (e.payload.startsWith("feature:")) {
+        setFeatureFocus({ key: e.payload.slice("feature:".length), at: Date.now() });
+        setView("features");
+        return;
+      }
       setSelected(e.payload);
       setHostPage(null);
       setView("workspaces");
@@ -112,9 +124,14 @@ export default function App() {
       focused.current = isFocused;
       const j = jump.current;
       if (isFocused && j && Date.now() - j.at < JUMP_WINDOW_MS) {
-        setSelected(j.key);
-        setView("workspaces");
-        if (j.session) setSessions((m) => ({ ...m, [j.key]: j.session! }));
+        if (j.feature) {
+          setFeatureFocus({ key: j.key, at: Date.now() });
+          setView("features");
+        } else {
+          setSelected(j.key);
+          setView("workspaces");
+          if (j.session) setSessions((m) => ({ ...m, [j.key]: j.session! }));
+        }
       }
       if (isFocused) jump.current = null;
     });
@@ -187,14 +204,30 @@ export default function App() {
     }
   }, [payload]);
 
-  // The menu bar item shows what needs you.
+  // A feature newly needing you notifies once (D-073), unless the Inbox is
+  // in front of you.
   useEffect(() => {
-    const showHost = new Set(placed.map((p) => p.host.name)).size > 1;
-    const waiting = placed
-      .filter((p) => p.ws.activity === "needs_you" || p.ws.activity === "failed")
-      .map((p) => ({ key: p.key, label: trayLabel(p.ws.name, headline(p.ws).text, p.host.name, showHost) }));
+    for (const n of newNeeds(featureSeen.current, features)) {
+      if (focused.current && viewRef.current === "inbox") continue;
+      jump.current = { key: n.key, at: Date.now(), feature: true };
+      sendNotification({
+        title: n.need.kind === "failed" ? `${n.title} stopped` : `${n.title} needs you`,
+        body: `${n.need.summary} · ${n.host}`,
+      });
+    }
+  }, [features]);
+
+  // The menu bar item shows what needs you: workspaces and features.
+  useEffect(() => {
+    const showHost = new Set([...placed.map((p) => p.host.name), ...features.map((p) => p.host)]).size > 1;
+    const waiting = [
+      ...placed
+        .filter((p) => p.ws.activity === "needs_you" || p.ws.activity === "failed")
+        .map((p) => ({ key: p.key, label: trayLabel(p.ws.name, headline(p.ws).text, p.host.name, showHost) })),
+      ...trayFeatures(features, (title, what, host) => trayLabel(title, what, host, showHost)),
+    ];
     void invoke("tray_update", { waiting }).catch(() => {});
-  }, [placed]);
+  }, [placed, features]);
 
   // Keep a valid selection: the most urgent workspace by default.
   useEffect(() => {
@@ -219,7 +252,11 @@ export default function App() {
         <ActivityBar
           view={view}
           onView={setView}
-          badges={{ features: featureNeeds, workspaces: placed.filter((p) => p.ws.activity === "needs_you").length }}
+          badges={{
+            inbox: featureNeeds + placed.filter((p) => p.ws.activity === "needs_you" || p.ws.activity === "failed").length,
+            features: featureNeeds,
+            workspaces: placed.filter((p) => p.ws.activity === "needs_you").length,
+          }}
           settings={[
             { label: `Theme: ${themeChoice === "system" ? "match system" : themeChoice}`, onSelect: cycleTheme },
             { label: "Otter's model and API keys…", onSelect: () => setOpen({ kind: "settings" }) },
@@ -230,9 +267,27 @@ export default function App() {
             },
           ]}
         />
+        <div className="view" id="view-inbox" role="tabpanel" aria-labelledby="view-tab-inbox" hidden={view !== "inbox"}>
+          <Inbox
+            source={featureSource}
+            workspaces={placed.filter((p) => p.host.status === "connected")}
+            now={now}
+            onOpenFeature={(key) => {
+              setFeatureFocus({ key, at: Date.now() });
+              setView("features");
+            }}
+            onOpenWorkspace={(key) => {
+              wanted.current = key;
+              setSelected(key);
+              setHostPage(null);
+              setView("workspaces");
+            }}
+          />
+        </div>
         <div className="view" id="view-features" role="tabpanel" aria-labelledby="view-tab-features" hidden={view !== "features"}>
           <FeaturesView
             source={featureSource}
+            focus={featureFocus}
             hosts={connectedHosts}
             workspaces={Object.fromEntries(
               (payload?.hosts ?? []).map((h) => [
