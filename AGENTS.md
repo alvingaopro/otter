@@ -5,7 +5,7 @@ Otter is a control plane for persistent development work on remote machines:
 
 ## Read before you change
 
-Always: [`docs/invariants.md`](docs/invariants.md) — the 12 rules every change
+Always: [`docs/invariants.md`](docs/invariants.md) — the 13 rules every change
 must keep, with the tests that guard them.
 
 | If you are changing…                                   | Read first                                                                 |

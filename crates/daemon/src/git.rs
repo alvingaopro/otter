@@ -307,26 +307,10 @@ pub fn slug(name: &str) -> String {
     out.trim_end_matches('-').chars().take(48).collect()
 }
 
-/// Remove `user:password@` from URLs in `s` (tokens embedded in HTTPS URLs).
+/// What Git said, without credentials in it (D-075): tokens in URLs, and
+/// the other shapes `otter_core::redact` knows.
 pub fn redact_credentials(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    let mut rest = s;
-    while let Some(i) = rest.find("://") {
-        let (head, tail) = rest.split_at(i + 3);
-        out.push_str(head);
-        let end = tail
-            .find(|c: char| c.is_whitespace() || c == '/' || c == '\'' || c == '"')
-            .unwrap_or(tail.len());
-        match tail[..end].rfind('@') {
-            Some(at) => {
-                out.push_str("***@");
-                rest = &tail[at + 1..];
-            }
-            None => rest = tail,
-        }
-    }
-    out.push_str(rest);
-    out
+    otter_core::redact::redact(s)
 }
 
 fn fnv1a(bytes: &[u8]) -> u64 {

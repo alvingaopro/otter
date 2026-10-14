@@ -277,7 +277,7 @@ impl Daemon {
                 Ok(())
             }
             Err(e) => {
-                let message = format!("{e:#}");
+                let message = otter_core::redact::redact(&format!("{e:#}"));
                 session.launch_error = Some(message.clone());
                 let summary = format!("{} failed to start", session.name);
                 let ws = store.workspace_mut(ws_id.as_str()).expect("exists");

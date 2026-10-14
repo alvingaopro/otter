@@ -583,7 +583,11 @@ impl SdkRun {
         if t.is_empty() {
             "no diagnostics".into()
         } else {
-            format!("worker diagnostics: {}", super::excerpt(t, 1500))
+            // Whatever the worker printed, never a credential (D-075).
+            format!(
+                "worker diagnostics: {}",
+                super::excerpt(&otter_core::redact::redact(t), 1500)
+            )
         }
     }
 }
@@ -1033,6 +1037,9 @@ mod tests {
         let msg = format!("{err:#}");
         assert!(msg.contains("no credentials"), "{msg}");
         assert!(msg.contains("diagnostic line"), "stderr is kept: {msg}");
+        // …but not a credential in it (D-075).
+        assert!(!msg.contains("WORKERLEAK"), "{msg}");
+        assert!(msg.contains("ANTHROPIC_API_KEY=***"), "{msg}");
     }
 
     #[tokio::test]

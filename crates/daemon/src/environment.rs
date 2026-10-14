@@ -98,7 +98,13 @@ impl EnvironmentManager {
             // The interesting part (e.g. a Nix build error) is at the end.
             let tail: Vec<&str> = stderr.trim().lines().rev().take(15).collect();
             let tail: Vec<&str> = tail.into_iter().rev().collect();
-            bail!("direnv {} failed: {}", args.join(" "), tail.join("\n"));
+            // What it printed may hold a secret (an .envrc exports them):
+            // never kept as is (D-075).
+            bail!(
+                "direnv {} failed: {}",
+                args.join(" "),
+                otter_core::redact::redact(&tail.join("\n"))
+            );
         }
         Ok(String::from_utf8_lossy(&out.stdout).into_owned())
     }

@@ -473,6 +473,10 @@ impl Actor {
     async fn on_event(&mut self, ev: RuntimeEvent) -> Flow {
         let g = self.generation;
         let now = Utc::now();
+        // What the agent and its tools printed is journaled and shown, never
+        // a credential in it (D-075). Tool calls stay as they are: policy
+        // reads them, and they're kept in the journal only by summary.
+        let ev = scrub(ev);
         match &ev {
             RuntimeEvent::ToolStarted { call, .. } => {
                 self.running.insert(call.clone());
@@ -532,7 +536,7 @@ impl Actor {
                 if draft.due() {
                     draft.at = std::time::Instant::now();
                     draft.len = draft.text.len();
-                    let so_far = draft.text.clone();
+                    let so_far = otter_core::redact::redact(&draft.text);
                     self.apply(Op::WriteBlock {
                         turn: turn.clone(),
                         message: m.clone(),
@@ -593,7 +597,10 @@ impl Actor {
                     run_id: self.run.clone(),
                     name: tool.clone(),
                     effect: input.effect(),
-                    summary: crate::agents::excerpt(&tool_summary(&tool, &input), 200),
+                    summary: crate::agents::excerpt(
+                        &otter_core::redact::redact(&tool_summary(&tool, &input)),
+                        200,
+                    ),
                     parent: parent.and_then(|p| self.tools.get(&p).cloned()),
                     status: ToolStatus::Running,
                     started_at: now,
@@ -1059,6 +1066,47 @@ fn response_of(kind: &InteractionKind, reply: &DecisionReply) -> InteractionResp
                 .collect(),
         },
         _ => InteractionResponse::Allow,
+    }
+}
+
+/// A runtime event with credentials taken out of what it reports (D-075).
+fn scrub(ev: RuntimeEvent) -> RuntimeEvent {
+    use otter_core::redact::redact;
+    match ev {
+        RuntimeEvent::Text {
+            message,
+            block,
+            text,
+        } => RuntimeEvent::Text {
+            message,
+            block,
+            text: redact(&text),
+        },
+        RuntimeEvent::ToolFinished { call, ok, output } => RuntimeEvent::ToolFinished {
+            call,
+            ok,
+            output: redact(&output),
+        },
+        RuntimeEvent::DecisionNeeded(mut ask) => {
+            ask.summary = redact(&ask.summary);
+            RuntimeEvent::DecisionNeeded(ask)
+        }
+        RuntimeEvent::TurnFinished {
+            outcome,
+            summary,
+            error,
+            usage,
+        } => RuntimeEvent::TurnFinished {
+            outcome,
+            summary: summary.map(|s| redact(&s)),
+            error,
+            usage,
+        },
+        RuntimeEvent::Exited { code, error } => RuntimeEvent::Exited {
+            code,
+            error: error.map(|e| redact(&e)),
+        },
+        other => other,
     }
 }
 

@@ -47,6 +47,15 @@ pub struct Workspace {
 }
 
 impl Workspace {
+    /// As shown to anyone (D-075): a repository URL without the credentials
+    /// it may carry. The record keeps it as given: Git needs it.
+    pub fn shown(mut self) -> Workspace {
+        if let WorkspaceSource::Git(g) = &mut self.source {
+            g.repository = crate::redact::url_credentials(&g.repository);
+        }
+        self
+    }
+
     pub fn session(&self, id_or_name: &str) -> Option<&Session> {
         self.sessions
             .iter()

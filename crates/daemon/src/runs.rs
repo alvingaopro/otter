@@ -678,7 +678,7 @@ impl Daemon {
                 run_id: Some(run.clone()),
                 kind,
                 risk,
-                summary: ask.summary.clone(),
+                summary: otter_core::redact::redact(&ask.summary),
                 detail: Some(why.clone()),
                 options,
                 status,
@@ -748,6 +748,8 @@ impl Daemon {
         announce: bool,
     ) {
         let activity = self.live_activity(run);
+        // Its last words and errors are kept: never a credential in them (D-075).
+        let summary = summary.map(|s| otter_core::redact::redact(&s));
         let applied = self.features.lock().await.apply(feature, None, |f, now| {
             let mut changes = Vec::new();
             let Some(r) = f.run_mut(run) else {
@@ -888,6 +890,7 @@ impl Daemon {
 
     /// What the coding agent said at the end of a turn that isn't the last.
     async fn agent_said(&self, feature: &FeatureId, run: &RunId, text: String) {
+        let text = otter_core::redact::redact(&text);
         let applied = self.features.lock().await.apply(feature, None, |f, _| {
             let (m, c) = message(MessageRole::Agent, text, Some(run.to_string()));
             f.messages.push(m);
@@ -912,7 +915,7 @@ impl Daemon {
                 feature_id: feature.clone(),
                 stream_id: stream_id.to_owned(),
                 role,
-                text,
+                text: otter_core::redact::redact(&text),
                 done,
             });
     }
@@ -921,6 +924,7 @@ impl Daemon {
     /// lines): in memory and to the app, as it happens; into the feature
     /// when the run ends (D-069).
     async fn run_activity(&self, feature: &FeatureId, run: &RunId, line: String) {
+        let line = otter_core::redact::redact(&line);
         if let Some(live) = self.runs.lock().unwrap().get(run) {
             let mut a = live.activity.lock().unwrap();
             a.push(line.clone());
