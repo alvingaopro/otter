@@ -4,8 +4,8 @@
 **Reviewed** twice on 2026-10-14 (a first draft, then a revision); the
 corrections are folded in — among them, that what Otter does on the
 developer's word draws its authority from the developer's own message.
-**Status:** M0 in progress: this plan and D-089 are in. **Branch:** one per
-step, from `main`.
+**Status:** M0 done but for what needs real use (`runtime-validation.md`
+V2-0b, V2-0c); M1 in progress. **Branch:** one per step, from `main`.
 
 > **Core decision:** Otter's replies become a bounded, tool-using turn. Every
 > change the turn makes goes through the controller's existing in-process
@@ -250,8 +250,8 @@ tests:
 
 | `OTTER_CONTROLLER` | V2 turn | Fallback | Notes |
 |---|---|---|---|
-| `claude` (default with Claude Code) | yes, through the Claude worker with an Otter-only tool profile | legacy `claude -p` reply + `INTENT:` when the worker or the host's Node is missing (D-060) | sign-in auth (D-057) |
-| `anthropic` (API key) | **legacy until the M0 spike** shows the worker accepts the key through otterd's env file, never on a command line | legacy | then same as `claude` |
+| `claude` (default with Claude Code) | yes, through the Claude worker with an Otter-only tool profile (spike V2-0a passed: `tools: []` and an in-process tool server) | legacy `claude -p` reply + `INTENT:` when the worker or the host's Node is missing (D-060) | sign-in auth (D-057) |
+| `anthropic` (API key) | **legacy until the spike passes with a key** (V2-0b, pending: the worker must take the key through otterd's env file, never on a command line) | legacy | then same as `claude` |
 | `openrouter`, `openai`, other providers (D-052) | no | legacy `INTENT:` | parity is M5 |
 | `rules` | no | status text **and the message forwarded as guidance** (`Intent::Guide`, `brain.rs:160-171`; D-084) | unchanged |
 | `off` | — | the controller doesn't step, so nothing answers (`controller.rs:180`) | unchanged |
@@ -528,7 +528,9 @@ support table for the rest.
 
 - The Claude worker can run a profile with no built-in tools and only
   external tools, under sign-in and under an API key from the env file.
-- History readers skip record kinds they don't know (§5).
+- ~~History readers skip record kinds they don't know (§5).~~ They do:
+  `FeatureEvent` has `#[serde(other)] Unknown`, every record carries its
+  `text`, and the desktop app reads `type` as a string.
 - Where a queued turn's mode is best stored in the D-058 records (§7.2).
 - How the controller reads the end of a forwarded turn today. A read-only
   question turn must not be taken as the result of the current step, and it
