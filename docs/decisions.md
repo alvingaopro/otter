@@ -1962,3 +1962,57 @@ published, so this decision builds the notice itself.
   interrupted before it finished." The feature's time budget bounds the
   resumes; the attempt budget still counts fresh starts.
 
+## D-064 — One conversation per feature (2026-10-14)
+
+M2 step 3 (`docs/plans/m2-feature-to-pr.md`; autonomy audit P0-2, RC-2;
+plan principle 2). Every task, every fix and every retry used to start a
+new agent session: the benchmark's features took 6 sessions, the real one
+10, and each began cold — re-reading the code, re-deriving what the last
+session knew.
+
+- **The feature's conversation goes on.** The next task, a fix that
+  verification asked for and a retry after a failed run are new turns in
+  the session the feature's work began in (`--resume` with the latest
+  bound session id, in the same Otter conversation: one journal for the
+  feature). A turn of the same task that was cut off — a restart, a
+  pause, a limit (D-063), a takeover — carries on with "continue"; anything
+  else gets the task's prompt. A new session starts only when there is
+  none yet, when the agent reports that the session is gone (its turn
+  failed with `resume_unavailable`), or when the conversation was closed.
+  CI failures as turns come with step 7.
+- **A warm prompt doesn't repeat itself.** In the feature's conversation a
+  task's prompt leaves out the request and requirements (the first turn
+  said them), keeps the criteria, the task, what went wrong last time and
+  the check, and carries only developer messages the conversation hasn't:
+  not ones a turn already delivered, nor ones from before the previous
+  turn began (its prompt had them), nor ones the task's own text says.
+- **Attempts:** a turn that starts new work (a task's first turn, a fix, a
+  retry) costs one, as a fresh run did; carrying on after a cut-off
+  doesn't. The plan asked for per-feature accounting by "consecutive turns
+  without a state change"; that is D-062's loop stop (same work, same
+  verdict → review), so the attempt budget and the three attempts per task
+  stay as they were, as backstops.
+- The "never two drivers" check covers every task's interactive session,
+  since they share one conversation; the agent's instructions say it works
+  on a feature, a task per turn.
+- **The agent that can see the code plans** (plan principle 1). Planning
+  starts with a task of its own, "Look at the code and plan the work"
+  (`Task.planning`): the feature's first turn asks the coding agent to read
+  the code the request touches and end with a JSON proposal — tasks,
+  criteria with `how`, the check command — changing nothing yet. Its
+  report is Otter's to read, not a message in the feature's conversation.
+  The brain's plan is then a review of the proposal (the model is told to
+  keep what is right, tighten criteria and fix the check), no longer a
+  guess from the root path and the brief; without a model the proposal is
+  the plan, its gaps filled as `rules` would. No proposal (prose, a failed
+  turn) → planning goes on as before, without it. The tasks follow as
+  turns in the same conversation, so the first one doesn't repeat the
+  request. Planning costs no attempt. Planning again (a changed goal)
+  doesn't ask again: the session has the code in mind, and the brain
+  plans from what the developer said.
+- Gaps, for later: "don't edit files" is an instruction, not enforced (a
+  run has no read-only mode yet); a developer message sent during the
+  planning turn becomes the run's next turn, whose reply then stands in
+  for the proposal (planning falls back). `OTTER_PLAN_TURN=0` turns the
+  planning turn off; the e2e tests do, except the ones about it.
+

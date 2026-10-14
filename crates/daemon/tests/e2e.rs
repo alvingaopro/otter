@@ -1610,6 +1610,9 @@ async fn fake_agent_host_with(
         ("DEVELOPER_DIR", String::new()),
         ("SDKROOT", String::new()),
         ("OTTER_AGENT_QUIET_SECS", "2".into()),
+        // Planning starts without the agent's look at the code, unless a
+        // test asks for it (D-064).
+        ("OTTER_PLAN_TURN", "0".into()),
     ];
     let more = extra(scratch.path());
     let vars: Vec<(&str, String)> = vars.into_iter().chain(more).collect();
@@ -2921,6 +2924,10 @@ async fn a_feature_goes_from_request_to_review_with_evidence() {
             .contains("Also export JSON")
     );
     assert_eq!(f.runs.len(), 2, "the done task wasn't redone");
+    // One conversation for the feature (D-064): the new task is a turn in it.
+    assert!(f.runs[0].provider_session_id.is_some());
+    assert_eq!(f.runs[1].provider_session_id, f.runs[0].provider_session_id);
+    assert_eq!(f.runs[1].conversation_id, f.runs[0].conversation_id);
 }
 
 #[tokio::test]
@@ -3143,12 +3150,13 @@ async fn runs_survive_a_restart_and_follow_a_changing_goal() {
     );
 
     // The developer changes the goal mid-way (D-050): the run stops, and
-    // the work is planned again with what they said.
+    // the work is planned again with what they said. (Long again: a turn in
+    // the feature's conversation isn't told the request again, D-064.)
     conn.feature_act(
         "revise",
         &id,
         FeatureAction::RequestChanges {
-            note: Some("Also write a README".into()),
+            note: Some("Also write a README HANG".into()),
         },
     )
     .await
@@ -3472,6 +3480,17 @@ async fn verification_stops_when_a_fix_changes_nothing() {
     })
     .await;
     assert_eq!(f.runs.len(), 2, "the task, and one fix");
+    // The fix is a turn in the same session (D-064).
+    let sid = f.runs[0].provider_session_id.clone().unwrap();
+    assert_eq!(f.runs[1].provider_session_id.as_deref(), Some(sid.as_str()));
+    let log = std::fs::read_to_string(&fake.log).unwrap();
+    let launches: Vec<&str> = log
+        .lines()
+        .filter(|l| l.starts_with("claude-stream"))
+        .collect();
+    assert_eq!(launches.len(), 2, "{log}");
+    assert!(!launches[0].contains("--resume"), "{log}");
+    assert!(launches[1].contains(&format!("--resume {sid}")), "{log}");
     assert_eq!(
         f.tasks
             .iter()
@@ -3507,6 +3526,164 @@ async fn verification_stops_when_a_fix_changes_nothing() {
     tokio::time::sleep(Duration::from_millis(1500)).await;
     let f = host.conn().await.feature_get(&id).await.unwrap();
     assert_eq!((f.status, f.runs.len()), (FeatureStatus::Review, 2));
+}
+
+/// Planning starts with the coding agent reading the code (D-064): its
+/// proposal is the plan (no model to review it here), and the tasks are
+/// turns in the same conversation after it.
+#[tokio::test]
+async fn the_coding_agent_plans_first_in_the_features_conversation() {
+    use otter_core::feature::{FeatureStatus, MessageRole, Proof, TaskStatus};
+    let fake = fake_agent_host_with("ok", "rules", |_| vec![("OTTER_PLAN_TURN", "1".into())]).await;
+    let host = &fake.host;
+    let id = started_feature(host, "Add CSV export").await;
+    let f = wait_feature(host, &id, "review", |f| f.status == FeatureStatus::Review).await;
+    let titles: Vec<&str> = f.tasks.iter().map(|t| t.title.as_str()).collect();
+    assert_eq!(
+        titles,
+        [
+            "Look at the code and plan the work",
+            "Write the exporter",
+            "Cover it with a test"
+        ]
+    );
+    assert!(f.tasks[0].planning && !f.tasks[1].planning);
+    assert!(f.tasks.iter().all(|t| t.status == TaskStatus::Done));
+    let criteria: Vec<(&str, Proof)> = f
+        .acceptance
+        .iter()
+        .map(|c| (c.text.as_str(), c.how))
+        .collect();
+    assert_eq!(
+        criteria,
+        [
+            ("Rows export as CSV with a header", Proof::Diff),
+            ("make test passes", Proof::Check)
+        ]
+    );
+    assert_eq!(f.verify_command.as_deref(), Some("make test"));
+    assert!(
+        f.rationale
+            .iter()
+            .any(|r| r.contains("The coding agent's plan") && r.contains("Add an exporter")),
+        "{:?}",
+        f.rationale
+    );
+    // Three turns, one session; planning costs no attempt.
+    assert_eq!(f.runs.len(), 3);
+    let sid = f.runs[0].provider_session_id.clone();
+    assert!(sid.is_some());
+    assert!(f.runs.iter().all(|r| r.provider_session_id == sid));
+    assert_eq!(f.budget.iterations_used, 2);
+    // The proposal is Otter's to read, not a message in the conversation.
+    assert!(
+        !f.messages
+            .iter()
+            .any(|m| m.role == MessageRole::Agent && m.text.contains("\"tasks\"")),
+        "{:?}",
+        f.messages
+    );
+    // The first task's turn doesn't restate the request: the planning turn had it.
+    let c = host
+        .conn()
+        .await
+        .conversation_get(f.runs[1].conversation_id.as_ref().unwrap().as_str())
+        .await
+        .unwrap()
+        .conversation;
+    let texts: Vec<String> = c.turns.iter().map(|t| t.text()).collect();
+    assert!(texts[0].contains("plan the work"), "{texts:#?}");
+    assert!(
+        texts[1].contains("Your task (1 of 2): Write the exporter"),
+        "{texts:#?}"
+    );
+    assert!(!texts[1].contains("Request:"), "{texts:#?}");
+}
+
+/// A planning turn that doesn't come back with a plan doesn't stop the work:
+/// Otter plans as it would without it (D-064).
+#[tokio::test]
+async fn a_planning_turn_without_a_plan_falls_back() {
+    use otter_core::feature::FeatureStatus;
+    let fake = fake_agent_host_with("ok", "rules", |_| vec![("OTTER_PLAN_TURN", "1".into())]).await;
+    let host = &fake.host;
+    let id = started_feature(host, "Add CSV export NOPLAN").await;
+    let f = wait_feature(host, &id, "review", |f| f.status == FeatureStatus::Review).await;
+    let titles: Vec<&str> = f.tasks.iter().map(|t| t.title.as_str()).collect();
+    assert_eq!(titles, ["Look at the code and plan the work", "CSV export"]);
+    assert_eq!(f.runs.len(), 2);
+    assert_eq!(f.runs[1].provider_session_id, f.runs[0].provider_session_id);
+    assert_eq!(f.budget.iterations_used, 1);
+}
+
+/// In the feature's one conversation, a developer message reaches the agent
+/// once: the next turn's prompt (here, a fix) doesn't say it again (D-064).
+#[tokio::test]
+async fn a_message_reaches_the_agent_once_across_turns() {
+    use otter_core::feature::{FeatureAction, FeatureStatus};
+    let fake = fake_agent_host("ok", "skeptic").await;
+    let host = &fake.host;
+    let id = started_feature(host, "Pick a colour ASK_QUESTION").await;
+    let f = wait_feature(host, &id, "asking", |f| {
+        f.pending_decisions().next().is_some()
+    })
+    .await;
+    let d = f.pending_decisions().next().unwrap().clone();
+    let cid = f.runs[0].conversation_id.clone().unwrap();
+    let mut conn = host.conn().await;
+    conn.feature_send("msg-tabs", &id, "Use tabs, not spaces")
+        .await
+        .unwrap();
+    let turns = |c: &otter_core::conversation::Conversation, what: &str| {
+        c.turns.iter().filter(|t| t.text().contains(what)).count()
+    };
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while turns(
+        &conn
+            .conversation_get(cid.as_str())
+            .await
+            .unwrap()
+            .conversation,
+        "Use tabs",
+    ) == 0
+    {
+        assert!(std::time::Instant::now() < deadline, "never queued");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    conn.feature_act(
+        "answer",
+        &id,
+        FeatureAction::Decide {
+            decision_id: d.id,
+            approve: true,
+            answer: Some("blue".into()),
+            answers: None,
+        },
+    )
+    .await
+    .unwrap();
+    // Never satisfied: a fix, in the same conversation, then review.
+    let f = wait_feature(host, &id, "review after a fix", |f| {
+        f.status == FeatureStatus::Review && f.runs.len() == 2
+    })
+    .await;
+    assert_eq!(f.runs[1].conversation_id.as_ref(), Some(&cid));
+    let c = conn
+        .conversation_get(cid.as_str())
+        .await
+        .unwrap()
+        .conversation;
+    let texts: Vec<String> = c.turns.iter().map(|t| t.text()).collect();
+    assert_eq!(turns(&c, "Use tabs"), 1, "{texts:#?}");
+    let fix = texts.last().unwrap();
+    assert!(
+        fix.contains("Your task (2 of 2): Fix what verification found"),
+        "{fix}"
+    );
+    assert!(
+        !fix.contains("ASK_QUESTION"),
+        "the request isn't said again: {fix}"
+    );
 }
 
 // ---------------------------------------------------------------------------

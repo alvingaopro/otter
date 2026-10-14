@@ -368,7 +368,8 @@ fn check_text(what: &str, text: &str, max: usize) -> RpcResult<()> {
 /// Where a paused, failed or unblocked feature picks up: planning until
 /// there is a plan, verifying once every task is done, else implementing.
 pub fn resume_status(f: &Feature) -> FeatureStatus {
-    if f.tasks.is_empty() {
+    // Only the planning turn (D-064): still planning.
+    if f.tasks.iter().all(|t| t.planning) {
         FeatureStatus::Planning
     } else if f
         .tasks
@@ -1060,6 +1061,7 @@ mod tests {
                 session_id: None,
                 attempts: 1,
                 last_error: None,
+                planning: false,
             });
             f.transition(FeatureStatus::Implementing, None, now)
                 .unwrap();

@@ -263,6 +263,9 @@ pub struct Task {
     pub attempts: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_error: Option<String>,
+    /// The coding agent's planning turn (D-064), not a step of the work.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub planning: bool,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]

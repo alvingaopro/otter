@@ -86,6 +86,15 @@ const SLEEP_GAP: Duration = Duration::from_secs(30);
 const OUT_OF_TIME: &str = "Out of time";
 const NO_PROGRESS: &str = "No progress";
 
+/// Whether planning starts with the coding agent's look at the code
+/// (`OTTER_PLAN_TURN`, on unless `0`; D-064).
+fn plan_turn() -> bool {
+    std::env::var("OTTER_PLAN_TURN").map_or(true, |v| v != "0")
+}
+
+/// The planning task's title.
+const PLANNING: &str = "Look at the code and plan the work";
+
 /// A duration for people: seconds while short, then minutes.
 fn span(d: Duration) -> String {
     match d.as_secs() {
@@ -468,7 +477,7 @@ impl Daemon {
             .await?;
             return Ok(());
         }
-        if !f.tasks.is_empty() && !f.replan {
+        if f.tasks.iter().any(|t| !t.planning) && !f.replan {
             // Back from a pause before any plan step was lost: carry on.
             self.controller_apply(&f.id, FeatureStatus::Planning, |f, now| {
                 let next = crate::features::resume_status(f);
@@ -478,6 +487,59 @@ impl Daemon {
             })
             .await?;
             return Ok(());
+        }
+        // The coding agent looks at the code first and proposes (D-064);
+        // the brain reviews that. Planning again goes on from the plan.
+        if plan_turn() && !f.replan {
+            if self.supervise(f).await? {
+                return Ok(());
+            }
+            match f.tasks.iter().find(|t| t.planning) {
+                None => {
+                    self.controller_apply(&f.id, FeatureStatus::Planning, |f, _| {
+                        let task_id = TaskId::generate();
+                        f.tasks.push(Task {
+                            id: task_id.clone(),
+                            title: PLANNING.into(),
+                            detail: None,
+                            status: TaskStatus::Pending,
+                            depends_on: vec![],
+                            workspace_id: f.workspace_id.clone(),
+                            session_id: None,
+                            attempts: 0,
+                            last_error: None,
+                            planning: true,
+                        });
+                        Ok(vec![Change::new(FeatureEvent::TaskChanged {
+                            task_id,
+                            status: TaskStatus::Pending,
+                        })])
+                    })
+                    .await?;
+                    return Ok(()); // The change wakes the next step.
+                }
+                Some(t) if matches!(t.status, TaskStatus::Pending | TaskStatus::Running) => {
+                    return self.start_turn(f, t).await;
+                }
+                // It failed: plan without it.
+                Some(t) if t.status == TaskStatus::Failed => {
+                    let (id, why) = (t.id.clone(), t.last_error.clone().unwrap_or_default());
+                    self.controller_apply(&f.id, FeatureStatus::Planning, move |f, _| {
+                        let task = f.task_mut(&id).expect("found");
+                        task.status = TaskStatus::Skipped;
+                        f.rationale.push(format!(
+                            "The coding agent's look at the code failed ({why}); planning without it."
+                        ));
+                        Ok(vec![Change::new(FeatureEvent::TaskChanged {
+                            task_id: id.clone(),
+                            status: TaskStatus::Skipped,
+                        })])
+                    })
+                    .await?;
+                    return Ok(());
+                }
+                Some(_) => {}
+            }
         }
         let (root, env) = self.feature_workspace(f).await?;
         let brain = brain::select(&env, &self.brain_choice());
@@ -537,6 +599,7 @@ impl Daemon {
                     session_id: None,
                     attempts: 0,
                     last_error: None,
+                    planning: false,
                 })
                 .collect();
             f.tasks = kept.into_iter().chain(fresh).collect();
@@ -745,7 +808,9 @@ impl Daemon {
         }
     }
 
-    async fn implement_step(self: &Arc<Self>, f: &Feature) -> RpcResult<()> {
+    /// A run at work, or decisions open: keep the run within its limits and
+    /// get the decisions made. True when that's all there is to do now.
+    async fn supervise(self: &Arc<Self>, f: &Feature) -> RpcResult<bool> {
         let now = Utc::now();
         if let Some(run) = f.live_run() {
             // Out of time, or silent too long: the turn is cut off, and the
@@ -767,10 +832,20 @@ impl Daemon {
                     self.stop_runs(&f.id, RunState::Cancelled, &why).await;
                 }
             }
-            return self.decide_open(f).await;
+            self.decide_open(f).await?;
+            return Ok(true);
         }
         if f.pending_decisions().next().is_some() {
-            return self.decide_open(f).await;
+            self.decide_open(f).await?;
+            return Ok(true);
+        }
+        Ok(false)
+    }
+
+    async fn implement_step(self: &Arc<Self>, f: &Feature) -> RpcResult<()> {
+        let now = Utc::now();
+        if self.supervise(f).await? {
+            return Ok(());
         }
         // Budgets and loops: deterministic, whatever the brain thinks. Time
         // is the agent's work since the work last (re)started (D-063).
@@ -801,16 +876,11 @@ impl Daemon {
                 .is_some_and(|t| matches!(t.status, TaskStatus::Done | TaskStatus::Skipped))
         };
         let ready = |t: &&Task| t.depends_on.iter().all(done);
-        let next = f
-            .tasks
-            .iter()
-            .filter(ready)
+        let work = || f.tasks.iter().filter(|t| !t.planning).filter(ready);
+        let next = work()
             .find(|t| matches!(t.status, TaskStatus::Pending | TaskStatus::Running))
             .or_else(|| {
-                f.tasks
-                    .iter()
-                    .filter(ready)
-                    .find(|t| t.status == TaskStatus::Failed && t.attempts < MAX_TASK_ATTEMPTS)
+                work().find(|t| t.status == TaskStatus::Failed && t.attempts < MAX_TASK_ATTEMPTS)
             })
             .cloned();
         let Some(task) = next else {
@@ -844,13 +914,23 @@ impl Daemon {
             }
             return Ok(());
         };
-        // An interrupted run (restart, pause, takeover) continues its
-        // conversation; a failed one starts over with what went wrong.
+        self.start_turn(f, &task).await
+    }
+
+    /// Give `task` to the coding agent: a turn in the feature's conversation.
+    async fn start_turn(self: &Arc<Self>, f: &Feature, task: &Task) -> RpcResult<()> {
+        let task = task.clone();
+        // One conversation per feature (D-064): the next task, a fix and a
+        // retry are turns in the session the work began in. A turn of this
+        // task that was cut off (restart, pause, a limit, takeover) carries
+        // on; anything else is new work, which is what costs an attempt
+        // (planning doesn't).
         let last = f.runs.iter().rev().find(|r| r.task_id == task.id);
-        let resume = last
+        let continuing = last
             .filter(|r| matches!(r.state, RunState::Cancelled | RunState::HandedOff))
-            .and_then(|r| r.provider_session_id.clone());
-        let counts = resume.is_none();
+            .is_some_and(|r| r.provider_session_id.is_some());
+        let session = self.feature_session(f);
+        let counts = !continuing && !task.planning;
         if counts && f.budget.iterations_used >= f.budget.max_iterations {
             let reason = format!(
                 "Stopped: all {} attempts are used up",
@@ -859,18 +939,25 @@ impl Daemon {
             self.fail(&f.id, &reason, Some("attempts")).await;
             return Ok(());
         }
-        let prompt = if resume.is_some() {
-            // Messages a turn of the task's conversation already carries
-            // (queued, sent or delivered) aren't restated.
-            let carried = last
-                .and_then(|r| r.conversation_id.as_ref())
-                .and_then(|c| self.conversations.get(c.as_str()))
-                .map(|c| carried_by(&c))
-                .unwrap_or_default();
-            continue_prompt(f, &task, last, &carried)
-        } else {
-            task_prompt(f, &task)
+        // Messages a turn of the conversation already carries (queued, sent
+        // or delivered) aren't restated, nor what an earlier turn's prompt
+        // said (anything before it started).
+        let carried = session
+            .as_ref()
+            .map(|(_, c)| carried_by(c))
+            .unwrap_or_default();
+        let prompt = match (&session, continuing) {
+            (Some(_), true) => continue_prompt(f, &task, last, &carried),
+            (_, false) if task.planning => planning_prompt(f, developer_notes(f, None, &carried)),
+            (Some((run, _)), false) => task_prompt(
+                f,
+                &task,
+                developer_notes(f, Some(run.started_at), &carried),
+                true,
+            ),
+            (None, _) => task_prompt(f, &task, developer_notes(f, None, &carried), false),
         };
+        let resume = session.and_then(|(run, _)| run.provider_session_id.clone());
         if let Err(e) = self
             .start_run(&f.id, &task.id, prompt, resume, counts)
             .await
@@ -1105,6 +1192,7 @@ impl Daemon {
                     session_id: None,
                     attempts: 0,
                     last_error: None,
+                    planning: false,
                 });
                 f.rationale.push(format!("Not verified: {fix}"));
                 let (m, c) = message(
@@ -1662,6 +1750,7 @@ impl Daemon {
                     session_id: None,
                     attempts: 0,
                     last_error: None,
+                    planning: false,
                 });
                 f.report = None;
                 f.rationale.push("CI failed: back to implementing.".into());
@@ -1858,6 +1947,33 @@ fn carried_by(c: &otter_core::conversation::Conversation) -> std::collections::H
 }
 
 impl Daemon {
+    /// The feature's conversation, to go on in (D-064): the latest run with
+    /// an agent session, and its conversation — unless that session is gone
+    /// (the agent said so) or the conversation was closed, when the next
+    /// turn starts a new one.
+    fn feature_session(
+        &self,
+        f: &Feature,
+    ) -> Option<(
+        otter_core::feature::Run,
+        otter_core::conversation::Conversation,
+    )> {
+        use otter_core::conversation::{ErrorCategory, Lifecycle};
+        let run = f
+            .runs
+            .iter()
+            .rev()
+            .find(|r| r.provider_session_id.is_some())?;
+        let c = self
+            .conversations
+            .get(run.conversation_id.as_ref()?.as_str())?;
+        let gone = c.lifecycle == Lifecycle::Closed
+            || c.turns
+                .last()
+                .is_some_and(|t| t.error == Some(ErrorCategory::ResumeUnavailable));
+        (!gone).then(|| (run.clone(), c))
+    }
+
     /// The messages the feature's live runs' conversations already carry.
     fn carried(&self, f: &Feature) -> std::collections::HashSet<String> {
         f.runs
@@ -1894,43 +2010,52 @@ fn developer_notes(
     f: &Feature,
     since: Option<chrono::DateTime<Utc>>,
     carried: &std::collections::HashSet<String>,
-) -> String {
-    let notes: Vec<String> = f
-        .messages
+) -> Vec<String> {
+    f.messages
         .iter()
         .skip(1) // The request itself.
         .filter(|m| m.role == MessageRole::User && since.is_none_or(|s| m.at > s))
         .filter(|m| !carried.contains(m.id.as_str()))
-        .map(|m| format!("- {}", m.text))
-        .collect();
+        .map(|m| m.text.clone())
+        .collect()
+}
+
+/// The developer's notes, as a prompt says them.
+fn notes_text(notes: &[String]) -> String {
     if notes.is_empty() {
         String::new()
     } else {
-        format!("\nFrom the developer:\n{}\n", notes.join("\n"))
+        let lines: Vec<String> = notes.iter().map(|n| format!("- {n}")).collect();
+        format!("\nFrom the developer:\n{}\n", lines.join("\n"))
     }
 }
 
-/// What a coding agent is told for a fresh run of `task`.
-pub fn task_prompt(f: &Feature, task: &Task) -> String {
-    let n = f
-        .tasks
+/// What a coding agent is told to start `task`, with the developer's
+/// `notes` it hasn't had yet. In the feature's conversation (`warm`) the
+/// request and requirements are already said (D-064).
+pub fn task_prompt(f: &Feature, task: &Task, notes: Vec<String>, warm: bool) -> String {
+    let work: Vec<&Task> = f.tasks.iter().filter(|t| !t.planning).collect();
+    let n = work
         .iter()
         .position(|t| t.id == task.id)
         .map_or(0, |i| i + 1);
-    let mut p = format!(
-        "Feature: {}\n\nRequest:\n{}\n",
-        f.title,
-        if f.request.is_empty() {
-            &f.title
-        } else {
-            &f.request
-        }
-    );
-    if !f.requirements.is_empty() {
+    let mut p = String::new();
+    if !warm {
         p.push_str(&format!(
-            "\nRequirements:\n- {}\n",
-            f.requirements.join("\n- ")
+            "Feature: {}\n\nRequest:\n{}\n",
+            f.title,
+            if f.request.is_empty() {
+                &f.title
+            } else {
+                &f.request
+            }
         ));
+        if !f.requirements.is_empty() {
+            p.push_str(&format!(
+                "\nRequirements:\n- {}\n",
+                f.requirements.join("\n- ")
+            ));
+        }
     }
     if !f.acceptance.is_empty() {
         p.push_str("\nAcceptance criteria:\n");
@@ -1940,7 +2065,7 @@ pub fn task_prompt(f: &Feature, task: &Task) -> String {
     }
     p.push_str(&format!(
         "\nYour task ({n} of {}): {}\n",
-        f.tasks.len(),
+        work.len(),
         task.title
     ));
     if let Some(d) = &task.detail {
@@ -1949,13 +2074,47 @@ pub fn task_prompt(f: &Feature, task: &Task) -> String {
     if let Some(e) = &task.last_error {
         p.push_str(&format!("\nThe previous attempt failed: {e}\n"));
     }
-    p.push_str(&developer_notes(f, None, &Default::default()));
+    // Notes the task already says aren't said twice.
+    let detail = task.detail.as_deref().unwrap_or_default();
+    let notes: Vec<String> = notes
+        .into_iter()
+        .filter(|n| !detail.contains(n.trim()))
+        .collect();
+    p.push_str(&notes_text(&notes));
     if let Some(cmd) = &f.verify_command {
         p.push_str(&format!(
             "\nThe work is checked with `{cmd}`; run it before you finish.\n"
         ));
     }
     p
+}
+
+/// The coding agent's first turn (D-064): read the code, then propose the
+/// plan — tasks, criteria and the check — as JSON, changing nothing yet.
+fn planning_prompt(f: &Feature, notes: Vec<String>) -> String {
+    format!(
+        "Feature: {title}\n\nRequest:\n{request}\n{notes}\n\
+         Before changing anything, read the code this request touches and plan the work. \
+         Don't edit files in this turn; Otter reviews the plan, then gives you its tasks one \
+         turn at a time.\n\n\
+         End this turn with only a JSON object, no summary:\n\
+         {{\"summary\": \"one sentence: the approach\", \
+         \"tasks\": [{{\"title\": \"...\", \"detail\": \"what to do, where\"}}], \
+         \"criteria\": [{{\"text\": \"...\", \"how\": \"check\" or \"diff\"}}], \
+         \"check\": \"the command that runs the project's tests here\" or null}}\n\
+         - tasks: the steps in order, 1 to 5; one is right for a small change.\n\
+         - criteria: facts about the code or the check's result, never about the conversation \
+         or the process. how: \"check\" when the check passing proves it, \"diff\" when it is \
+         about what the change contains.\n\
+         - check: one shell command that runs here (look at how the project runs its tests).\n",
+        title = f.title,
+        request = if f.request.trim().is_empty() {
+            &f.title
+        } else {
+            &f.request
+        },
+        notes = notes_text(&notes),
+    )
 }
 
 /// What a resumed run is told: carry on, plus anything new from the developer.
@@ -1983,7 +2142,7 @@ fn continue_prompt(
     };
     format!(
         "{opening}{}",
-        developer_notes(f, last.map(|r| r.started_at), carried)
+        notes_text(&developer_notes(f, last.map(|r| r.started_at), carried))
     )
 }
 
@@ -2147,6 +2306,7 @@ mod tests {
             session_id: None,
             attempts: 1,
             last_error: None,
+            planning: false,
         };
         let none = HashSet::new();
         let prompt = |summary: &str, state| {
@@ -2270,9 +2430,10 @@ mod tests {
             session_id: None,
             attempts: 1,
             last_error: Some("tests failed".into()),
+            planning: false,
         };
         f.tasks.push(t.clone());
-        let p = task_prompt(&f, &t);
+        let p = task_prompt(&f, &t, developer_notes(&f, None, &HashSet::new()), false);
         for want in [
             "Export it",
             "has a header",
@@ -2282,5 +2443,12 @@ mod tests {
         ] {
             assert!(p.contains(want), "{want} in {p}");
         }
+        // In the feature's conversation, the request was said already.
+        let warm = task_prompt(&f, &t, vec![], true);
+        assert!(!warm.contains("Export it"), "{warm}");
+        assert!(
+            warm.contains("has a header") && warm.contains("1 of 1"),
+            "{warm}"
+        );
     }
 }

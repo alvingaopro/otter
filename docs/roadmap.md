@@ -37,7 +37,10 @@ reply, so they stand until changed):
 - **Git:** one `roadmap-mN` branch per milestone, pushed to `origin`, with a PR
   to `main`, as with earlier runtime milestones. Since 2026-10-14 the
   requester has asked for each PR to be opened and merged once its checks
-  pass, and for the work to go on without asking: a PR per plan step.
+  pass, and for the work to go on without asking: a PR per plan step. Every
+  merge to `main` cuts a release unless the PR is labelled `release:skip`,
+  so these PRs carry that label (PRs #53 and #54 didn't, and shipped
+  v0.6.21 and v0.6.22).
 - **Releases:** none are cut as part of this work.
 - **Validation (release gate):** `cargo fmt --all -- --check`,
   `cargo clippy --all-targets`, `cargo test`, the desktop build when UI changes,
