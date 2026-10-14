@@ -844,13 +844,16 @@ impl Daemon {
             }
             return Ok(());
         };
-        // An interrupted run (restart, pause, takeover) continues its
-        // conversation; a failed one starts over with what went wrong.
+        // One conversation per feature (D-064): the next task, a fix and a
+        // retry are turns in the session the work began in. A turn of this
+        // task that was cut off (restart, pause, a limit, takeover) carries
+        // on; anything else is new work, which is what costs an attempt.
         let last = f.runs.iter().rev().find(|r| r.task_id == task.id);
-        let resume = last
+        let continuing = last
             .filter(|r| matches!(r.state, RunState::Cancelled | RunState::HandedOff))
-            .and_then(|r| r.provider_session_id.clone());
-        let counts = resume.is_none();
+            .is_some_and(|r| r.provider_session_id.is_some());
+        let session = self.feature_session(f);
+        let counts = !continuing;
         if counts && f.budget.iterations_used >= f.budget.max_iterations {
             let reason = format!(
                 "Stopped: all {} attempts are used up",
@@ -859,18 +862,24 @@ impl Daemon {
             self.fail(&f.id, &reason, Some("attempts")).await;
             return Ok(());
         }
-        let prompt = if resume.is_some() {
-            // Messages a turn of the task's conversation already carries
-            // (queued, sent or delivered) aren't restated.
-            let carried = last
-                .and_then(|r| r.conversation_id.as_ref())
-                .and_then(|c| self.conversations.get(c.as_str()))
-                .map(|c| carried_by(&c))
-                .unwrap_or_default();
-            continue_prompt(f, &task, last, &carried)
-        } else {
-            task_prompt(f, &task)
+        // Messages a turn of the conversation already carries (queued, sent
+        // or delivered) aren't restated, nor what an earlier turn's prompt
+        // said (anything before it started).
+        let carried = session
+            .as_ref()
+            .map(|(_, c)| carried_by(c))
+            .unwrap_or_default();
+        let prompt = match (&session, continuing) {
+            (Some(_), true) => continue_prompt(f, &task, last, &carried),
+            (Some((run, _)), false) => task_prompt(
+                f,
+                &task,
+                developer_notes(f, Some(run.started_at), &carried),
+                true,
+            ),
+            (None, _) => task_prompt(f, &task, developer_notes(f, None, &carried), false),
         };
+        let resume = session.and_then(|(run, _)| run.provider_session_id.clone());
         if let Err(e) = self
             .start_run(&f.id, &task.id, prompt, resume, counts)
             .await
@@ -1858,6 +1867,33 @@ fn carried_by(c: &otter_core::conversation::Conversation) -> std::collections::H
 }
 
 impl Daemon {
+    /// The feature's conversation, to go on in (D-064): the latest run with
+    /// an agent session, and its conversation — unless that session is gone
+    /// (the agent said so) or the conversation was closed, when the next
+    /// turn starts a new one.
+    fn feature_session(
+        &self,
+        f: &Feature,
+    ) -> Option<(
+        otter_core::feature::Run,
+        otter_core::conversation::Conversation,
+    )> {
+        use otter_core::conversation::{ErrorCategory, Lifecycle};
+        let run = f
+            .runs
+            .iter()
+            .rev()
+            .find(|r| r.provider_session_id.is_some())?;
+        let c = self
+            .conversations
+            .get(run.conversation_id.as_ref()?.as_str())?;
+        let gone = c.lifecycle == Lifecycle::Closed
+            || c.turns
+                .last()
+                .is_some_and(|t| t.error == Some(ErrorCategory::ResumeUnavailable));
+        (!gone).then(|| (run.clone(), c))
+    }
+
     /// The messages the feature's live runs' conversations already carry.
     fn carried(&self, f: &Feature) -> std::collections::HashSet<String> {
         f.runs
@@ -1894,43 +1930,52 @@ fn developer_notes(
     f: &Feature,
     since: Option<chrono::DateTime<Utc>>,
     carried: &std::collections::HashSet<String>,
-) -> String {
-    let notes: Vec<String> = f
-        .messages
+) -> Vec<String> {
+    f.messages
         .iter()
         .skip(1) // The request itself.
         .filter(|m| m.role == MessageRole::User && since.is_none_or(|s| m.at > s))
         .filter(|m| !carried.contains(m.id.as_str()))
-        .map(|m| format!("- {}", m.text))
-        .collect();
+        .map(|m| m.text.clone())
+        .collect()
+}
+
+/// The developer's notes, as a prompt says them.
+fn notes_text(notes: &[String]) -> String {
     if notes.is_empty() {
         String::new()
     } else {
-        format!("\nFrom the developer:\n{}\n", notes.join("\n"))
+        let lines: Vec<String> = notes.iter().map(|n| format!("- {n}")).collect();
+        format!("\nFrom the developer:\n{}\n", lines.join("\n"))
     }
 }
 
-/// What a coding agent is told for a fresh run of `task`.
-pub fn task_prompt(f: &Feature, task: &Task) -> String {
+/// What a coding agent is told to start `task`, with the developer's
+/// `notes` it hasn't had yet. In the feature's conversation (`warm`) the
+/// request and requirements are already said (D-064).
+pub fn task_prompt(f: &Feature, task: &Task, notes: Vec<String>, warm: bool) -> String {
     let n = f
         .tasks
         .iter()
         .position(|t| t.id == task.id)
         .map_or(0, |i| i + 1);
-    let mut p = format!(
-        "Feature: {}\n\nRequest:\n{}\n",
-        f.title,
-        if f.request.is_empty() {
-            &f.title
-        } else {
-            &f.request
-        }
-    );
-    if !f.requirements.is_empty() {
+    let mut p = String::new();
+    if !warm {
         p.push_str(&format!(
-            "\nRequirements:\n- {}\n",
-            f.requirements.join("\n- ")
+            "Feature: {}\n\nRequest:\n{}\n",
+            f.title,
+            if f.request.is_empty() {
+                &f.title
+            } else {
+                &f.request
+            }
         ));
+        if !f.requirements.is_empty() {
+            p.push_str(&format!(
+                "\nRequirements:\n- {}\n",
+                f.requirements.join("\n- ")
+            ));
+        }
     }
     if !f.acceptance.is_empty() {
         p.push_str("\nAcceptance criteria:\n");
@@ -1949,7 +1994,13 @@ pub fn task_prompt(f: &Feature, task: &Task) -> String {
     if let Some(e) = &task.last_error {
         p.push_str(&format!("\nThe previous attempt failed: {e}\n"));
     }
-    p.push_str(&developer_notes(f, None, &Default::default()));
+    // Notes the task already says aren't said twice.
+    let detail = task.detail.as_deref().unwrap_or_default();
+    let notes: Vec<String> = notes
+        .into_iter()
+        .filter(|n| !detail.contains(n.trim()))
+        .collect();
+    p.push_str(&notes_text(&notes));
     if let Some(cmd) = &f.verify_command {
         p.push_str(&format!(
             "\nThe work is checked with `{cmd}`; run it before you finish.\n"
@@ -1983,7 +2034,7 @@ fn continue_prompt(
     };
     format!(
         "{opening}{}",
-        developer_notes(f, last.map(|r| r.started_at), carried)
+        notes_text(&developer_notes(f, last.map(|r| r.started_at), carried))
     )
 }
 
@@ -2272,7 +2323,7 @@ mod tests {
             last_error: Some("tests failed".into()),
         };
         f.tasks.push(t.clone());
-        let p = task_prompt(&f, &t);
+        let p = task_prompt(&f, &t, developer_notes(&f, None, &HashSet::new()), false);
         for want in [
             "Export it",
             "has a header",
@@ -2282,5 +2333,12 @@ mod tests {
         ] {
             assert!(p.contains(want), "{want} in {p}");
         }
+        // In the feature's conversation, the request was said already.
+        let warm = task_prompt(&f, &t, vec![], true);
+        assert!(!warm.contains("Export it"), "{warm}");
+        assert!(
+            warm.contains("has a header") && warm.contains("1 of 1"),
+            "{warm}"
+        );
     }
 }

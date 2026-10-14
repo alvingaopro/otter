@@ -5,9 +5,10 @@
 //!
 //! A run serves a runtime conversation (`runtime::conversations`): the
 //! [`Actor`] owns the agent and the conversation's state; the bridge here
-//! listens to it and is the only thing that touches the feature. The task's
-//! conversation continues across runs (a resumed run is a new run, a new
-//! generation, of the same conversation); a fresh attempt starts a new one.
+//! listens to it and is the only thing that touches the feature. The
+//! feature's conversation continues across runs and tasks (a resumed run is a
+//! new run, a new generation, of the same conversation, D-064); a new one
+//! starts only when there is none yet, or its session is gone.
 //!
 //! A run is a child of `otterd` (its stdin/stdout are the protocol), so
 //! unlike a tmux session it ends when the daemon does. Its conversation
@@ -56,7 +57,7 @@ pub(crate) type Runs = std::sync::Mutex<HashMap<RunId, LiveRun>>;
 
 impl Daemon {
     /// Start a run of `task`: fresh (a new conversation), or continuing
-    /// `resume` (the agent's own conversation id) in the task's
+    /// `resume` (the agent's own conversation id) in the feature's
     /// conversation. `counts` charges an attempt to the budget.
     pub(crate) async fn start_run(
         self: &Arc<Self>,
@@ -89,14 +90,19 @@ impl Daemon {
             .workspace(ws_id.as_str())
             .cloned()
             .ok_or_else(|| workspace_not_found(ws_id.as_str()))?;
-        // Never two drivers for one conversation: not while a developer has it.
-        if let Some(sid) = feature.task(task_id).and_then(|t| t.session_id.clone())
-            && ws
-                .session(sid.as_str())
-                .is_some_and(|s| s.current_execution().is_some_and(|e| e.is_running()))
+        // Never two drivers for one conversation: not while a developer has
+        // it. The feature's tasks share one (D-064).
+        if feature
+            .tasks
+            .iter()
+            .filter_map(|t| t.session_id.as_ref())
+            .any(|sid| {
+                ws.session(sid.as_str())
+                    .is_some_and(|s| s.current_execution().is_some_and(|e| e.is_running()))
+            })
         {
             return Err(RpcError::conflict(
-                "the task's interactive session is still running; quit it first",
+                "the feature's interactive session is still running; quit it first",
             ));
         }
         let mut env = self.env_for_launch(&ws).await?;
@@ -107,16 +113,16 @@ impl Daemon {
             (s.coding_backend(), s.coding_model())
         };
 
-        // The conversation: the task's own when continuing it, else a new one.
-        // A run from before conversations brings its session id (a trusted
-        // link: it is the run's own record), never a guess.
+        // The conversation: the feature's own when continuing it (D-064),
+        // else a new one. A run from before conversations brings its session
+        // id (a trusted link: it is the run's own record), never a guess.
         let now = Utc::now();
         let continued = resume.as_ref().and_then(|sid| {
             feature
                 .runs
                 .iter()
                 .rev()
-                .find(|r| &r.task_id == task_id && r.provider_session_id.as_ref() == Some(sid))
+                .find(|r| r.provider_session_id.as_ref() == Some(sid))
                 .and_then(|r| r.conversation_id.clone())
                 .and_then(|id| self.conversations.get(id.as_str()))
         });
@@ -1148,9 +1154,9 @@ fn finished_run(c: &otter_core::conversation::Conversation, run: &RunId) -> Opti
 }
 
 /// Appended to the coding agent's system prompt for managed runs.
-const INSTRUCTIONS: &str = "You are working on one task of a feature, managed by Otter. \
-Stay inside the working directory. Run the project's tests before you finish. \
-End with a short summary of what you changed and how you checked it.";
+const INSTRUCTIONS: &str = "You are working on a feature, one task per turn, managed by Otter. \
+Stay inside the working directory. Run the project's tests before you finish a task. \
+End each turn with a short summary of what you changed and how you checked it.";
 
 /// One line for a tool the agent used.
 fn activity_line(tool: &str, call: &crate::runtime::ToolCall) -> String {

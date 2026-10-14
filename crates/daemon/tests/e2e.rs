@@ -2921,6 +2921,10 @@ async fn a_feature_goes_from_request_to_review_with_evidence() {
             .contains("Also export JSON")
     );
     assert_eq!(f.runs.len(), 2, "the done task wasn't redone");
+    // One conversation for the feature (D-064): the new task is a turn in it.
+    assert!(f.runs[0].provider_session_id.is_some());
+    assert_eq!(f.runs[1].provider_session_id, f.runs[0].provider_session_id);
+    assert_eq!(f.runs[1].conversation_id, f.runs[0].conversation_id);
 }
 
 #[tokio::test]
@@ -3143,12 +3147,13 @@ async fn runs_survive_a_restart_and_follow_a_changing_goal() {
     );
 
     // The developer changes the goal mid-way (D-050): the run stops, and
-    // the work is planned again with what they said.
+    // the work is planned again with what they said. (Long again: a turn in
+    // the feature's conversation isn't told the request again, D-064.)
     conn.feature_act(
         "revise",
         &id,
         FeatureAction::RequestChanges {
-            note: Some("Also write a README".into()),
+            note: Some("Also write a README HANG".into()),
         },
     )
     .await
@@ -3472,6 +3477,17 @@ async fn verification_stops_when_a_fix_changes_nothing() {
     })
     .await;
     assert_eq!(f.runs.len(), 2, "the task, and one fix");
+    // The fix is a turn in the same session (D-064).
+    let sid = f.runs[0].provider_session_id.clone().unwrap();
+    assert_eq!(f.runs[1].provider_session_id.as_deref(), Some(sid.as_str()));
+    let log = std::fs::read_to_string(&fake.log).unwrap();
+    let launches: Vec<&str> = log
+        .lines()
+        .filter(|l| l.starts_with("claude-stream"))
+        .collect();
+    assert_eq!(launches.len(), 2, "{log}");
+    assert!(!launches[0].contains("--resume"), "{log}");
+    assert!(launches[1].contains(&format!("--resume {sid}")), "{log}");
     assert_eq!(
         f.tasks
             .iter()
@@ -3507,6 +3523,76 @@ async fn verification_stops_when_a_fix_changes_nothing() {
     tokio::time::sleep(Duration::from_millis(1500)).await;
     let f = host.conn().await.feature_get(&id).await.unwrap();
     assert_eq!((f.status, f.runs.len()), (FeatureStatus::Review, 2));
+}
+
+/// In the feature's one conversation, a developer message reaches the agent
+/// once: the next turn's prompt (here, a fix) doesn't say it again (D-064).
+#[tokio::test]
+async fn a_message_reaches_the_agent_once_across_turns() {
+    use otter_core::feature::{FeatureAction, FeatureStatus};
+    let fake = fake_agent_host("ok", "skeptic").await;
+    let host = &fake.host;
+    let id = started_feature(host, "Pick a colour ASK_QUESTION").await;
+    let f = wait_feature(host, &id, "asking", |f| {
+        f.pending_decisions().next().is_some()
+    })
+    .await;
+    let d = f.pending_decisions().next().unwrap().clone();
+    let cid = f.runs[0].conversation_id.clone().unwrap();
+    let mut conn = host.conn().await;
+    conn.feature_send("msg-tabs", &id, "Use tabs, not spaces")
+        .await
+        .unwrap();
+    let turns = |c: &otter_core::conversation::Conversation, what: &str| {
+        c.turns.iter().filter(|t| t.text().contains(what)).count()
+    };
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while turns(
+        &conn
+            .conversation_get(cid.as_str())
+            .await
+            .unwrap()
+            .conversation,
+        "Use tabs",
+    ) == 0
+    {
+        assert!(std::time::Instant::now() < deadline, "never queued");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    conn.feature_act(
+        "answer",
+        &id,
+        FeatureAction::Decide {
+            decision_id: d.id,
+            approve: true,
+            answer: Some("blue".into()),
+            answers: None,
+        },
+    )
+    .await
+    .unwrap();
+    // Never satisfied: a fix, in the same conversation, then review.
+    let f = wait_feature(host, &id, "review after a fix", |f| {
+        f.status == FeatureStatus::Review && f.runs.len() == 2
+    })
+    .await;
+    assert_eq!(f.runs[1].conversation_id.as_ref(), Some(&cid));
+    let c = conn
+        .conversation_get(cid.as_str())
+        .await
+        .unwrap()
+        .conversation;
+    let texts: Vec<String> = c.turns.iter().map(|t| t.text()).collect();
+    assert_eq!(turns(&c, "Use tabs"), 1, "{texts:#?}");
+    let fix = texts.last().unwrap();
+    assert!(
+        fix.contains("Your task (2 of 2): Fix what verification found"),
+        "{fix}"
+    );
+    assert!(
+        !fix.contains("ASK_QUESTION"),
+        "the request isn't said again: {fix}"
+    );
 }
 
 // ---------------------------------------------------------------------------

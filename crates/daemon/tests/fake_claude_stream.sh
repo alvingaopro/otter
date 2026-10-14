@@ -12,7 +12,8 @@ while [ $# -gt 0 ]; do
   [ "$1" = --resume ] && sid="$2" && resumed=1
   shift
 done
-# A conversation remembers how it started (where the log lives, if any).
+# A conversation remembers the work it is on (where the log lives, if any):
+# told to continue, it carries on with that; a new task replaces it.
 memory=
 [ -n "$FAKE_CODEX_LOG" ] && memory="$(dirname "$FAKE_CODEX_LOG")/conversation-$sid"
 out() { printf '%s\n' "$1"; }
@@ -31,11 +32,11 @@ while read -r line; do
     *'"behavior":"deny"'*) result success false "denied, so I stopped" ;;
     *'"type":"user"'*)
       if [ -n "$memory" ]; then
-        if [ -n "$resumed" ] && [ -f "$memory" ]; then
-          line="$(cat "$memory") $line"
-        else
-          printf '%s' "$line" > "$memory"
-        fi
+        case "$line" in
+          *'ontinue the task'*|*'ontinue where you left off'*)
+            [ -n "$resumed" ] && [ -f "$memory" ] && line="$(cat "$memory") $line" ;;
+          *'Your task ('*) printf '%s' "$line" > "$memory" ;;
+        esac
       fi
       case "$line" in
         *ASK_RM*) ask r1 Bash '{"command":"rm -rf build"}' ;;
