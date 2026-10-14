@@ -8,6 +8,14 @@
 //! PNG here first (stored for that session), then the keystroke. The stand-in
 //! serves an image pasted in the last two minutes and otherwise defers to a
 //! real `wl-paste`. Nothing on the host can read the Mac's clipboard.
+//!
+//! **Deferring happens once.** Another tool's stand-in later on PATH may
+//! hand back to the first other one it finds — this one — and two stand-ins
+//! would call each other for ever. Deferring marks the environment
+//! (`OTTER_STANDIN_DEFERRED`); a stand-in called with the mark gives up.
+//! A shell profile that puts its own directories first (`~/.local/bin`) can
+//! still put another tool's stand-in ahead of otterd's: the paste then never
+//! reaches it.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -49,6 +57,8 @@ pub fn install_shim(paths: &Paths) -> anyhow::Result<()> {
         r#"#!/bin/sh
 # otterd's stand-in for wl-paste (generated; see files.rs). Serves an image
 # pasted from the Otter app (Ctrl+V) to Claude Code and the like.
+# Handed back by another stand-in after deferring: nothing else to try.
+[ -n "$OTTER_STANDIN_DEFERRED" ] && exit 1
 img={clip}/"$OTTER_SESSION_ID".png
 fresh() {{ [ -n "$OTTER_SESSION_ID" ] && [ -f "$img" ] && [ -n "$(find "$img" -mmin -2 2>/dev/null)" ]; }}
 case " $* " in
@@ -56,6 +66,7 @@ case " $* " in
   *image/png*) if fresh; then cat "$img"; exit 0; fi ;;
 esac
 # Anything else: a real wl-paste, if there is one.
+export OTTER_STANDIN_DEFERRED=1
 self={dir}
 IFS=:
 for d in $PATH; do
@@ -78,10 +89,13 @@ exit 1
         r#"#!/bin/sh
 # otterd's browser stand-in (generated; see login.rs). Opens sign-in pages
 # from this host in the Otter app's browser on the Mac.
+# Handed back by another stand-in after deferring: nothing else to try.
+[ -n "$OTTER_STANDIN_DEFERRED" ] && exit 1
 name=$(basename "$0")
 self={dir}
 real() {{
   [ "$name" = otter-open ] && exit 1
+  export OTTER_STANDIN_DEFERRED=1
   IFS=:
   for d in $PATH; do
     [ "$d" = "$self" ] && continue
@@ -325,5 +339,53 @@ mod tests {
         assert_eq!(got.stdout, b"\x89PNG\r\n\x1a\nfake");
         // Another session's paste isn't served.
         assert!(!run(&["-l"], "ses_b").status.success());
+    }
+
+    /// Another tool's stand-in later on PATH that hands back to the first
+    /// other `wl-paste` it finds (otterd's) doesn't make the two call each
+    /// other for ever: deferring happens once.
+    #[test]
+    fn deferring_to_another_stand_in_happens_once() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths::new(dir.path().join("home"));
+        install_shim(&paths).unwrap();
+        let other = dir.path().join("other");
+        std::fs::create_dir_all(&other).unwrap();
+        let calls = dir.path().join("calls");
+        let script = format!(
+            "#!/bin/sh\necho call >> '{}'\nself=$(cd \"$(dirname \"$0\")\" && pwd)/wl-paste\nIFS=:\nfor d in $PATH; do\n  [ -x \"$d/wl-paste\" ] && [ \"$d/wl-paste\" != \"$self\" ] && exec \"$d/wl-paste\" \"$@\"\ndone\nexit 1\n",
+            calls.display()
+        );
+        let theirs = other.join("wl-paste");
+        std::fs::write(&theirs, script).unwrap();
+        std::fs::set_permissions(&theirs, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let mut child = std::process::Command::new(shim_dir(&paths).join("wl-paste"))
+            .arg("-l")
+            .env("OTTER_SESSION_ID", "ses_a")
+            .env_remove("OTTER_STANDIN_DEFERRED")
+            .env(
+                "PATH",
+                format!(
+                    "{}:{}:/usr/bin:/bin",
+                    shim_dir(&paths).display(),
+                    other.display()
+                ),
+            )
+            .spawn()
+            .unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let status = loop {
+            if let Some(s) = child.try_wait().unwrap() {
+                break s;
+            }
+            if std::time::Instant::now() > deadline {
+                child.kill().unwrap();
+                panic!("the stand-ins called each other for ever");
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        };
+        assert!(!status.success());
+        assert_eq!(std::fs::read_to_string(&calls).unwrap().lines().count(), 1);
     }
 }
