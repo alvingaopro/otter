@@ -50,7 +50,13 @@ pub(crate) struct LiveRun {
     stopping: Arc<std::sync::Mutex<Option<(RunState, String)>>>,
     /// When the agent was last heard from (the no-progress watchdog).
     pulse: SharedPulse,
+    /// What it did lately, newest last: kept here while it runs, not
+    /// rewritten into the feature for every tool (D-069).
+    activity: Arc<std::sync::Mutex<Vec<String>>>,
 }
+
+/// Lines of activity a run keeps.
+const ACTIVITY_LINES: usize = 30;
 
 /// Live runs by id.
 pub(crate) type Runs = std::sync::Mutex<HashMap<RunId, LiveRun>>;
@@ -313,6 +319,7 @@ impl Daemon {
                 tx: tx.clone(),
                 stopping: stopping.clone(),
                 pulse: pulse.clone(),
+                activity: Arc::default(),
             },
         );
         let actor = Actor::new(
@@ -391,8 +398,6 @@ impl Daemon {
                 .and_then(|r| f.task(&r.task_id))
                 .is_some_and(|t| t.planning)
         });
-        // What the agent said this turn (already in the conversation).
-        let mut said: Vec<String> = Vec::new();
         // What it is saying right now, streamed (D-051), by block.
         let mut draft: Option<Draft> = None;
         let mut last_text: Option<String> = None;
@@ -416,15 +421,15 @@ impl Daemon {
                         self.stream(&feature, &d.id, MessageRole::Agent, so_far, false);
                     }
                 }
+                // What it says along the way streams (transient) and stays
+                // in the conversation's journal; the feature keeps one
+                // message per turn, its result (D-069).
                 ActorEvent::Text { block, text, .. } => {
-                    self.agent_said(&feature, &run, text.clone()).await;
-                    // Kept now: the streamed draft is done.
                     if let Some(d) = draft.take_if(|d| d.id == block.as_str())
                         && d.started()
                     {
                         self.stream(&feature, &d.id, MessageRole::Agent, text.clone(), true);
                     }
-                    said.push(text.trim().to_owned());
                     last_text = Some(text);
                 }
                 ActorEvent::ToolStarted { record, call } => {
@@ -434,9 +439,12 @@ impl Daemon {
                 ActorEvent::Ask { interaction, ask } => {
                     let verdict = policy::classify(&ask.call, &root);
                     let grant = policy::grant(&ask.call, &root);
-                    let waiting = self
-                        .record_ask(&feature, &run, &interaction, &ask, &verdict, grant)
-                        .await;
+                    // Routine work goes on, recorded as the tool it is (in
+                    // the conversation), not as a decision (D-069).
+                    let waiting = verdict != Verdict::Allow
+                        && self
+                            .record_ask(&feature, &run, &interaction, &ask, &verdict, grant)
+                            .await;
                     if !waiting {
                         let reply = match verdict {
                             Verdict::Deny { why } => DecisionReply::Deny { message: why },
@@ -503,12 +511,11 @@ impl Daemon {
                     ..
                 } => {
                     tracing::debug!(?outcome, "run finished its turn");
-                    let summary = summary.or(last_text.take());
-                    // The turn's result repeats what was streamed: say it once.
-                    let announce = summary
-                        .as_deref()
-                        .is_some_and(|s| !said.iter().any(|x| x == s.trim()));
-                    said.clear();
+                    let summary = summary
+                        .filter(|s| !s.trim().is_empty())
+                        .or(last_text.take());
+                    last_text = None;
+                    let announce = summary.is_some();
                     if next.is_some() {
                         // The developer wrote meanwhile: the conversation goes on.
                         if announce && let Some(s) = summary.filter(|s| !s.trim().is_empty()) {
@@ -740,6 +747,7 @@ impl Daemon {
         summary: Option<String>,
         announce: bool,
     ) {
+        let activity = self.live_activity(run);
         let applied = self.features.lock().await.apply(feature, None, |f, now| {
             let mut changes = Vec::new();
             let Some(r) = f.run_mut(run) else {
@@ -752,6 +760,9 @@ impl Daemon {
             r.ended_at = Some(now);
             r.stop_clock(now);
             r.summary = summary.clone();
+            if let Some(a) = activity {
+                r.activity = a;
+            }
             let task_id = r.task_id.clone();
             changes.push(Change::new(FeatureEvent::RunChanged {
                 run_id: run.clone(),
@@ -767,9 +778,17 @@ impl Daemon {
             // A planning turn's report is a plan for Otter to review, not
             // something to show as is (D-064).
             let planning = f.task(&task_id).is_some_and(|t| t.planning);
+            // Said already (the turn before ended the same way): once (D-069).
+            let said = |text: &str| {
+                f.messages
+                    .iter()
+                    .rev()
+                    .find(|m| m.role == MessageRole::Agent)
+                    .is_some_and(|m| same_words(&m.text, text))
+            };
             if let Some(text) = summary
                 .clone()
-                .filter(|s| announce && !planning && !s.trim().is_empty())
+                .filter(|s| announce && !planning && !s.trim().is_empty() && !said(s))
             {
                 let (m, c) = message(MessageRole::Agent, text, Some(run.to_string()));
                 f.messages.push(m);
@@ -898,20 +917,39 @@ impl Daemon {
             });
     }
 
-    /// Note what the agent just did on its run (kept short: the last lines).
+    /// Note what the agent just did on its run (kept short: the last
+    /// lines): in memory and to the app, as it happens; into the feature
+    /// when the run ends (D-069).
     async fn run_activity(&self, feature: &FeatureId, run: &RunId, line: String) {
-        const KEEP: usize = 30;
-        let applied = self.features.lock().await.apply(feature, None, |f, _| {
-            if let Some(r) = f.run_mut(run) {
-                r.activity.push(line);
-                let extra = r.activity.len().saturating_sub(KEEP);
-                r.activity.drain(..extra);
-            }
-            Ok(vec![])
-        });
-        if let Ok(a) = applied {
-            self.feature_changed(&a);
+        if let Some(live) = self.runs.lock().unwrap().get(run) {
+            let mut a = live.activity.lock().unwrap();
+            a.push(line.clone());
+            let extra = a.len().saturating_sub(ACTIVITY_LINES);
+            a.drain(..extra);
         }
+        self.events
+            .emit_transient(otter_protocol::Event::FeatureActivity {
+                feature_id: feature.clone(),
+                run_id: run.clone(),
+                line,
+            });
+    }
+
+    /// What a live run did lately (its activity isn't written into the
+    /// feature until it ends).
+    fn live_activity(&self, run: &RunId) -> Option<Vec<String>> {
+        let runs = self.runs.lock().unwrap();
+        Some(runs.get(run)?.activity.lock().unwrap().clone())
+    }
+
+    /// A feature as clients see it: with its live runs' latest activity.
+    pub(crate) fn with_live_activity(&self, mut f: Feature) -> Feature {
+        for r in f.runs.iter_mut().filter(|r| !r.state.is_over()) {
+            if let Some(a) = self.live_activity(&r.id) {
+                r.activity = a;
+            }
+        }
+        f
     }
 
     /// Hand the developer's message to a run in progress: a turn of its
@@ -1194,6 +1232,11 @@ fn finished_run(c: &otter_core::conversation::Conversation, run: &RunId) -> Opti
 const INSTRUCTIONS: &str = "You are working on a feature, one task per turn, managed by Otter. \
 Stay inside the working directory. Run the project's tests before you finish a task. \
 End each turn with a short summary of what you changed and how you checked it.";
+
+/// The same text, give or take whitespace.
+fn same_words(a: &str, b: &str) -> bool {
+    a.split_whitespace().eq(b.split_whitespace())
+}
 
 /// What a decision tells the agent: allowed, the answer, or who said no
 /// and why, when they said (D-066).

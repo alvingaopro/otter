@@ -2190,3 +2190,31 @@ D-064 a CI fix is a turn in the feature's session. What wasn't:
   spares background work. D-060's path to making `sdk` the default — after
   dogfooding — stands; M2's live scenarios are that dogfooding's checklist.
 
+## D-069 — Report once (2026-10-14)
+
+M2 step 8 (`docs/plans/m2-feature-to-pr.md`; autonomy audit P2-1…P2-5,
+RC-10; plan principle 7). The dogfooding feature's main column held 69
+items: every text block the agent wrote, then its result repeating them;
+83 "Decision needed (tool_permission, low risk)" / "approved by policy"
+records; and the feature document rewritten (and fsynced) for every tool
+the agent used — on the path that answers the agent's policy check.
+
+- **One agent message per turn.** What the agent says along the way
+  streams to the app (`FeatureStream`, transient, D-051) and is kept in its
+  conversation's journal (the Work tab); the feature keeps each turn's
+  result — its summary, else its last text — once. A result that repeats
+  the agent's previous message word for word isn't stored again. A
+  planning turn's report isn't a message at all (D-064).
+- **Activity is transient.** The lines of what the agent did are kept in
+  memory with the live run and sent as `FeatureActivity` events; reads of
+  the feature show them; they are written into the run when it ends. No
+  rewrite of `feature.json` per tool, and no reload of every feature in the
+  app for each one.
+- **What policy allows is a tool, not a decision.** On `legacy_cli`,
+  Claude Code asks about routine tools too; those policy allows used to be
+  recorded as decisions with two history events each. They're the tool
+  records in the conversation now. Denials, asks, and approvals by an
+  earlier grant (D-066) are still decisions.
+- `escalate` re-checking that a decision is still pending (P2-4) came with
+  D-066.
+

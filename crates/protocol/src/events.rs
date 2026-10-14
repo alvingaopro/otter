@@ -163,6 +163,14 @@ pub enum Event {
         #[serde(default)]
         done: bool,
     },
+    /// What a feature's coding agent just did (a tool it used), one line
+    /// (D-069). **Transient**, like [`Event::FeatureStream`]: the run's
+    /// latest lines are in the feature while it runs, and kept when it ends.
+    FeatureActivity {
+        feature_id: FeatureId,
+        run_id: otter_core::RunId,
+        line: String,
+    },
     /// A kind this build doesn't know (from a newer daemon, or an older log
     /// line). New kinds are a compatible protocol change; clients ignore them.
     #[serde(other)]
@@ -198,6 +206,7 @@ impl Event {
             Event::FeatureDeleted { .. } => "FeatureDeleted",
             Event::ConversationChanged { .. } => "ConversationChanged",
             Event::FeatureStream { .. } => "FeatureStream",
+            Event::FeatureActivity { .. } => "FeatureActivity",
             Event::Unknown => "Unknown",
         }
     }
@@ -209,6 +218,7 @@ impl Event {
             | Event::FeatureDeleted { .. }
             | Event::ConversationChanged { .. }
             | Event::FeatureStream { .. }
+            | Event::FeatureActivity { .. }
             | Event::Unknown => None,
             Event::WorkspaceCreated { workspace_id, .. }
             | Event::WorkspaceDeleted { workspace_id, .. }

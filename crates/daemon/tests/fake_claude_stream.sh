@@ -72,6 +72,12 @@ while read -r line; do
           fi
           ;;
         *HANG*) text "working on it" ;;
+        # BUSY: ran something, and keeps going.
+        *BUSY*)
+          out '{"type":"assistant","parent_tool_use_id":null,"message":{"id":"msg_b","role":"assistant","content":[{"type":"tool_use","id":"toolu_b","name":"Bash","input":{"command":"cargo build"}}]}}'
+          out '{"type":"user","parent_tool_use_id":null,"message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_b","is_error":false,"content":"ok"}]}}'
+          text "still going"
+          ;;
         # "BG <pidfile>": something left running in the background.
         *'BG '*)
           f=$(printf '%s' "$line" | sed 's/.*BG \([^"]*\)".*/\1/')
