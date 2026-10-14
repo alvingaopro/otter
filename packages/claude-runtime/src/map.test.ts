@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { Mapper, OUTPUT_LEN, category } from "./map.js";
+import { Mapper, OUTPUT_LEN, REPORT_LEN, category } from "./map.js";
 
 const sent = () => {
   const m = new Mapper();
@@ -79,6 +79,10 @@ test("results end the turn with the right outcome; EOF never does", () => {
   assert.equal(failed.outcome, "failed");
   assert.equal(failed.error, "rate_limited");
   assert.equal(failed.summary, "slow down");
+  // The final reply keeps its lines and Markdown, cut only past REPORT_LEN.
+  const reply = "## How\n\n1. Open a PR.\n2. Label it `backport v3.159`.\n\n" + "x".repeat(5000);
+  assert.equal(done({ subtype: "success", is_error: false, result: `\n${reply}\n` }).summary, reply);
+  assert.equal((done({ subtype: "success", is_error: false, result: "y".repeat(30_000) }).summary as string).length, REPORT_LEN);
   // No turn sent yet: nothing finishes.
   const idle = new Mapper();
   assert.ok(idle.map({ type: "result", subtype: "success" }).every((e) => e.type !== "turn_finished"));

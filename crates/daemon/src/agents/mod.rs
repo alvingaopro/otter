@@ -237,6 +237,23 @@ pub fn settle(
     }
 }
 
+/// The most of a turn's final reply that is kept (D-086): what a feature
+/// message may hold.
+pub const REPORT_LEN: usize = 20_000;
+
+/// A turn's final reply as the developer reads it (D-086): its lines and
+/// Markdown kept, trimmed, cut only past [`REPORT_LEN`]. Not [`excerpt`],
+/// which makes one line of it.
+pub fn report(text: &str) -> String {
+    let text = text.trim();
+    if text.chars().count() <= REPORT_LEN {
+        text.to_owned()
+    } else {
+        let cut: String = text.chars().take(REPORT_LEN - 1).collect();
+        format!("{cut}…")
+    }
+}
+
 /// A single-line excerpt suitable for a status line.
 pub fn excerpt(text: &str, max: usize) -> String {
     let flat: String = text.split_whitespace().collect::<Vec<_>>().join(" ");

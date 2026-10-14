@@ -59,6 +59,9 @@ while read -r line; do
       case "$line" in
         *'plan the work'*NOPLAN*|*NOPLAN*'plan the work'*)
           result success false "I would write the export and test it." ;;
+        # LONGANSWER: a long answer in Markdown, over several lines.
+        *'plan the work'*LONGANSWER*|*LONGANSWER*'plan the work'*)
+          result success false "## How it works\n\n1. Open a PR.\n2. Label it **backport v3.159**.\n\n$(printf '%2500s' '' | tr ' ' x)" ;;
         *'plan the work'*PLANFAIL*|*PLANFAIL*'plan the work'*)
           result error_during_execution true "it broke while planning" ;;
         *'plan the work'*)

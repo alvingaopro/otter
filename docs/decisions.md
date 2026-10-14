@@ -2657,3 +2657,26 @@ until then this Mac's host ran the old `otterd` (its `otterd_path` is
 - Next, separately: the worker is versioned by otter's version, so each
   release downloads it again even when it didn't change. Versioning it by
   its content would make most updates download nothing.
+
+## D-086 — The coding agent's words reach the developer as written (2026-10-14)
+
+Dogfooding: asked how a repository's backport label works, the coding agent
+wrote a good answer in Markdown — headings, numbered steps, code, line
+references — and the conversation showed one paragraph, cut off at 2000
+characters ("如果改了 DB…"). The turn's final reply went through
+`agents::excerpt`, which makes a status line: it joins every line into one
+and cuts at its limit. The conversation journal had the whole reply; the
+run's summary, and the message made from it, didn't.
+
+- **A turn's final reply is a report, not an excerpt.** Both backends keep
+  its lines and Markdown, trimmed, and cut only past 20 000 characters —
+  what a feature message may hold (`agents::report`/`REPORT_LEN` in otterd,
+  `REPORT_LEN` in the Claude worker). `excerpt` stays for what is one line:
+  tool summaries, activity, attention, a task's `last_error` (it is quoted
+  in reasons and prompts).
+- **The app renders what Otter and the coding agent write as Markdown**
+  (GitHub's flavour: lists, code, tables), and the final report too. The
+  developer's own messages stay as typed. Raw HTML in the text is skipped,
+  an image is its description (nothing is fetched on a model's say-so), and
+  only http(s) links are links, opened in the browser, never in the app.
+- Adds `react-markdown` and `remark-gfm` to the desktop app.
