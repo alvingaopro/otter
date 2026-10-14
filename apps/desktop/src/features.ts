@@ -60,6 +60,10 @@ export interface Run {
   provider_session_id?: string;
   /** What the agent did lately (tools it used), newest last. */
   activity?: string[];
+  /** How long the agent has worked, in ms, up to `working_since` (waits don't count). */
+  worked_ms?: number;
+  /** When the current stretch of work began; absent while waiting or over. */
+  working_since?: string;
 }
 
 export interface Message {

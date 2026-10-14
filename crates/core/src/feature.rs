@@ -289,6 +289,53 @@ pub struct Run {
     pub conversation_id: Option<ConversationId>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub turn_id: Option<TurnId>,
+    /// How long the agent has worked on this run, in ms, up to
+    /// `working_since`: waits on a decision don't count (D-063).
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub worked_ms: u64,
+    /// When the current stretch of work began; absent while the run waits on
+    /// a decision, and once it is over.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub working_since: Option<Timestamp>,
+}
+
+fn is_zero(n: &u64) -> bool {
+    *n == 0
+}
+
+impl Run {
+    /// How long the agent has worked on this run as of `now` (D-063).
+    pub fn worked(&self, now: Timestamp) -> chrono::Duration {
+        let banked = chrono::Duration::milliseconds(self.worked_ms as i64);
+        match self.working_since {
+            Some(since) if now > since => banked + (now - since),
+            _ => banked,
+        }
+    }
+
+    /// The agent works (again): its clock runs.
+    pub fn start_clock(&mut self, now: Timestamp) {
+        if self.working_since.is_none() {
+            self.working_since = Some(now);
+        }
+    }
+
+    /// The agent waits, or is done: what it worked so far is banked.
+    pub fn stop_clock(&mut self, now: Timestamp) {
+        if let Some(since) = self.working_since.take()
+            && now > since
+        {
+            self.worked_ms += (now - since).num_milliseconds() as u64;
+        }
+    }
+
+    /// Time that wasn't work (the host asleep) doesn't count: the current
+    /// stretch starts `gap` later, never after `now`.
+    pub fn skip(&mut self, gap: chrono::Duration, now: Timestamp) {
+        if let Some(since) = &mut self.working_since {
+            *since = (*since + gap).min(now);
+        }
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -516,6 +563,27 @@ impl Feature {
     /// The run currently working, if any.
     pub fn live_run(&self) -> Option<&Run> {
         self.runs.iter().rev().find(|r| !r.state.is_over())
+    }
+
+    /// Runs that waited on decisions which are all made now work again: their
+    /// state and clock run (D-063). The events to record.
+    pub fn resume_waiting_runs(&mut self, now: Timestamp) -> Vec<FeatureEvent> {
+        let pending: Vec<RunId> = self
+            .pending_decisions()
+            .filter_map(|d| d.run_id.clone())
+            .collect();
+        let mut events = Vec::new();
+        for r in &mut self.runs {
+            if r.state == RunState::Waiting && !pending.contains(&r.id) {
+                r.state = RunState::Running;
+                r.start_clock(now);
+                events.push(FeatureEvent::RunChanged {
+                    run_id: r.id.clone(),
+                    state: RunState::Running,
+                });
+            }
+        }
+        events
     }
 
     /// Change status if the lifecycle allows it; the event to record.
@@ -884,6 +952,92 @@ mod tests {
             }
         );
         assert_eq!(f.active_since, Some(now));
+    }
+
+    fn run_at(now: Timestamp) -> Run {
+        Run {
+            id: RunId::generate(),
+            task_id: TaskId::generate(),
+            runtime: "claude".into(),
+            state: RunState::Running,
+            started_at: now,
+            ended_at: None,
+            summary: None,
+            provider_session_id: None,
+            activity: vec![],
+            conversation_id: None,
+            turn_id: None,
+            worked_ms: 0,
+            working_since: Some(now),
+        }
+    }
+
+    #[test]
+    fn a_runs_clock_counts_work_not_waits_or_sleep() {
+        let t0 = chrono::Utc::now();
+        let s = chrono::Duration::seconds;
+        let mut r = run_at(t0);
+        assert_eq!(r.worked(t0 + s(10)), s(10));
+        // Waiting on a decision for an hour: not work.
+        r.stop_clock(t0 + s(10));
+        assert_eq!(r.worked(t0 + s(3610)), s(10));
+        r.start_clock(t0 + s(3610));
+        assert_eq!(r.worked(t0 + s(3615)), s(15));
+        // The host slept for 20 min of the stretch: 5 s of it were work.
+        r.skip(s(1200), t0 + s(4815));
+        assert_eq!(r.worked(t0 + s(4815)), s(15));
+        // Never ahead of now.
+        r.skip(s(99_999), t0 + s(4815));
+        assert_eq!(r.worked(t0 + s(4815)), s(10));
+        r.stop_clock(t0 + s(4820));
+        assert_eq!(r.worked_ms, 15_000);
+        assert_eq!(r.worked(t0 + s(9999)), s(15));
+        // Old documents: no clock at all.
+        let old: Run = serde_json::from_value(serde_json::json!({
+            "id": "run_1", "task_id": "task_1", "runtime": "claude",
+            "state": "running", "started_at": t0,
+        }))
+        .unwrap();
+        assert_eq!(old.worked(t0 + s(60)), s(0));
+    }
+
+    #[test]
+    fn a_run_works_again_once_its_decisions_are_made() {
+        let now = chrono::Utc::now();
+        let mut f = Feature::new("t".into(), "r".into(), now);
+        let mut r = run_at(now);
+        r.state = RunState::Waiting;
+        r.working_since = None;
+        let run = r.id.clone();
+        f.runs.push(r);
+        f.decisions.push(DecisionRequest {
+            id: DecisionId::generate(),
+            task_id: None,
+            run_id: Some(run.clone()),
+            kind: DecisionKind::ToolPermission,
+            risk: Risk::High,
+            summary: "Run `rm -rf build`".into(),
+            detail: None,
+            options: vec![],
+            status: DecisionStatus::Pending,
+            decided_by: None,
+            answer: None,
+            rationale: None,
+            created_at: now,
+            decided_at: None,
+            user_only: true,
+        });
+        assert!(f.resume_waiting_runs(now).is_empty(), "still waiting");
+        f.decisions[0].status = DecisionStatus::Approved;
+        let later = now + chrono::Duration::seconds(5);
+        assert_eq!(
+            f.resume_waiting_runs(later),
+            [FeatureEvent::RunChanged {
+                run_id: run,
+                state: RunState::Running
+            }]
+        );
+        assert_eq!(f.runs[0].working_since, Some(later));
     }
 
     #[test]

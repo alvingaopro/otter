@@ -32,7 +32,7 @@ use tokio::sync::{mpsc, oneshot};
 
 use crate::daemon::{Daemon, RpcResult, workspace_not_found};
 use crate::features::{Change, message};
-use crate::runtime::actor::{Actor, ActorCmd, ActorEvent};
+use crate::runtime::actor::{Actor, ActorCmd, ActorEvent, SharedPulse};
 use crate::runtime::policy::{self, Proposal, Verdict};
 use crate::runtime::{CheckDecision, DecisionAsk, DecisionReply, RunLimits, RunSpec, runtime};
 
@@ -47,6 +47,8 @@ pub(crate) struct LiveRun {
     tx: mpsc::Sender<ActorCmd>,
     /// How the run is recorded when it is stopped, and why.
     stopping: Arc<std::sync::Mutex<Option<(RunState, String)>>>,
+    /// When the agent was last heard from (the no-progress watchdog).
+    pulse: SharedPulse,
 }
 
 /// Live runs by id.
@@ -263,6 +265,8 @@ impl Daemon {
                     activity: vec![],
                     conversation_id: Some(cid),
                     turn_id: Some(turn),
+                    worked_ms: 0,
+                    working_since: Some(now),
                 });
                 changes.push(
                     Change::new(FeatureEvent::RunStarted {
@@ -294,6 +298,7 @@ impl Daemon {
         let (tx, mailbox) = mpsc::channel(32);
         let (out, events) = mpsc::channel(256);
         let stopping = Arc::new(std::sync::Mutex::new(None));
+        let pulse = crate::runtime::actor::pulse();
         self.runs.lock().unwrap().insert(
             run_id.clone(),
             LiveRun {
@@ -301,6 +306,7 @@ impl Daemon {
                 conversation: conversation_id.clone(),
                 tx: tx.clone(),
                 stopping: stopping.clone(),
+                pulse: pulse.clone(),
             },
         );
         let actor = Actor::new(
@@ -310,7 +316,8 @@ impl Daemon {
             self.conversations.clone(),
             handle,
             out,
-        );
+        )
+        .with_pulse(pulse);
         tokio::spawn(actor.run(mailbox));
         let daemon = self.clone();
         let (fid, rid) = (feature_id.clone(), run_id.clone());
@@ -322,6 +329,15 @@ impl Daemon {
             daemon.feature_wake.notify_one();
         });
         Ok(run_id)
+    }
+
+    /// How long a live run's agent has gone without a sign of work while
+    /// none of its tools runs (a tool may take long without a word). `None`:
+    /// a tool runs, or the run isn't live here.
+    pub(crate) fn run_idle(&self, run: &RunId) -> Option<std::time::Duration> {
+        let runs = self.runs.lock().unwrap();
+        let p = runs.get(run)?.pulse.lock().unwrap();
+        (p.tools == 0).then(|| p.at.elapsed())
     }
 
     /// A run that never got going: its generation ends, its turns too.
@@ -639,8 +655,10 @@ impl Daemon {
                 );
                 return Ok(changes);
             }
+            // Waiting isn't working: the run's clock stops (D-063).
             if let Some(r) = f.run_mut(run) {
                 r.state = RunState::Waiting;
+                r.stop_clock(now);
             }
             changes.push(Change::new(FeatureEvent::RunChanged {
                 run_id: run.clone(),
@@ -685,6 +703,7 @@ impl Daemon {
             }
             r.state = state;
             r.ended_at = Some(now);
+            r.stop_clock(now);
             r.summary = summary.clone();
             let task_id = r.task_id.clone();
             changes.push(Change::new(FeatureEvent::RunChanged {
@@ -778,6 +797,7 @@ impl Daemon {
                     status,
                     by,
                 })];
+                changes.extend(f.resume_waiting_runs(now).into_iter().map(Change::new));
                 if f.status == FeatureStatus::Blocked && f.pending_decisions().next().is_none() {
                     let next = crate::features::resume_status(f);
                     if let Ok(e) = f.transition(next, None, now) {

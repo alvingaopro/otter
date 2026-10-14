@@ -505,6 +505,7 @@ pub fn apply_action(
                 })
                 .because(command_id),
             );
+            changes.extend(f.resume_waiting_runs(now).into_iter().map(Change::new));
             if f.status == FeatureStatus::Blocked && f.pending_decisions().next().is_none() {
                 let next = resume_status(f);
                 changes.push(to(f, next, None)?);

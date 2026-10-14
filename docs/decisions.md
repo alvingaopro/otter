@@ -1923,3 +1923,42 @@ and 4 ("stop on evidence, not on attempt counts") of the plan, in part:
   asked about a `user_only` decision at all, so a model can neither
   approve one (policy already refused that) nor deny one in the
   developer's name (it could). It goes straight to the developer.
+
+## D-063 — A run's time is the agent's work (2026-10-14)
+
+M2 step 2 (`docs/plans/m2-feature-to-pr.md`; autonomy audit P0-3, RC-3;
+plan principle 5). A run had 30 minutes of wall clock from its start, so a
+run that waited on the developer for an approval was killed right after
+they approved (audit E1, twice in the real feature), and running out of time
+failed the run and started the task over in a new session. Steps 2–8 are
+built on `main`: M1's runtime work (`roadmap-m1` @ `5ebcf4f`, D-061 "an
+interrupted run resumes its session, with a cut-off notice") isn't
+published, so this decision builds the notice itself.
+
+- **The clock runs while the agent works.** A run keeps `worked_ms` and
+  `working_since`: the clock stops when the run waits on a decision
+  (`RunState::Waiting`) and at its end, and runs again once every decision
+  it waited on is made — whoever made it. That also puts the run back to
+  Running: nothing used to, so a run that had asked once stayed Waiting.
+  The per-run limit (`OTTER_RUN_TIMEOUT_MS`, 30 min) and the feature's time
+  budget (`max_minutes`, 120 — "minutes of active work" in D-045, now
+  literally) count this time: the runs' work since the work last started.
+  Checks, model calls and waiting on the developer don't.
+- **Sleep isn't work.** The controller compares the wall clock with the
+  monotonic one, which stands still while the host sleeps; a gap of more
+  than 30 s moves the working runs' current stretch on by that much.
+- **No-progress watchdog.** A run whose agent has said and done nothing for
+  `OTTER_RUN_IDLE_MS` (10 min) while none of its tools runs is cut off too.
+  A running tool isn't silence: builds and tests take long without a word.
+  The runtime actor keeps the pulse (last event, tools in flight) in
+  memory; a restart ends the run anyway.
+- **Out of time means cut off and resumed, not failed.** The turn is
+  interrupted, the run ends Cancelled ("Out of time after 30 min of work",
+  "No progress for 10 min"), and the controller resumes the conversation
+  as it does after a restart or a pause — no attempt charged — opening with
+  "You ran out of time on “<task>” (…). Continue where you left off: do
+  what the task still needs first, then end your turn with a short
+  report." Any other cut-off turn opens with "Your last turn was
+  interrupted before it finished." The feature's time budget bounds the
+  resumes; the attempt budget still counts fresh starts.
+
