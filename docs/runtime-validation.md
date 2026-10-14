@@ -113,6 +113,15 @@ agent) cover the mechanics. Re-run with the audit's harness:
 |---|---|---|---|
 | M6-1 | A daily trigger with live Claude on a real repository, overnight: fires once at its time (and once after otterd was down through it), publishes when allowed, pauses on a decision past its wait limit and waits in the Inbox | Pending | Offline: the four trigger e2e tests and `otter trigger` in the CLI e2e (D-083). |
 
+## Otter answers with tools (plan `brain-runtime-v2`, M0)
+
+| # | Scenario | Status | Evidence |
+|---|---|---|---|
+| V2-0a | The Agent SDK runs Otter's profile — none of Claude Code's tools, one tool the worker defines — under the host's sign-in: only that tool offered, called once with the task, its result in the answer, nothing else run or asked for | Passed 2026-10-14, Ubuntu x86_64, `haiku`, SDK 0.3.285 / Claude Code 2.1.285, auth source `none` (the sign-in) | `node packages/claude-runtime/probes/otter-tools.mjs`: 5/5. Options: `tools: []`, an in-process `createSdkMcpServer` tool, `strictMcpConfig`, `settingSources: []`. The SDK warns that a tool named in `allowedTools` skips `canUseTool`: Otter's gate is otterd's gateway, which every call reaches. |
+| V2-0b | The same under an API key passed through otterd's env file | Pending | No key on the host the spike ran on. |
+| V2-0c | 5–10 dogfooding transcripts (a code question mid-task, a blocked approval, guidance and a redirect while running, more on a done task, a question-only request, "ship it" in review, "go on" on a plan), and the turn's limits calibrated against them | Pending | Needs real use; until then the plan's 60 s / 12 calls / 6 round trips stand. |
+| V2-0d | Today's conversation, pinned: each route through `converse` (guide, redirect, go on from draft, paused and failed, pause, revise, finish in review and at work, done + guidance, the plan question, a question, another developer-only decision, no model) | Passed (offline) | `crates/daemon/tests/e2e/converse.rs`, 14 tests on the `scripted` brain; forcing every intent to none fails 11 of them, the other three expect nothing to happen. |
+
 ## Known limits
 
 - A daemon stop ends the managed run. The next run resumes the native
