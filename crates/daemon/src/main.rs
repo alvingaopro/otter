@@ -28,6 +28,7 @@ mod server;
 mod sessions;
 mod settings;
 mod store;
+mod work_state;
 mod workspaces;
 
 use std::os::unix::fs::PermissionsExt;

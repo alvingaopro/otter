@@ -8,8 +8,11 @@
 //! - **implementing** → the next task whose dependencies are done goes to a
 //!   managed run (an interrupted one resumes its conversation); the brain
 //!   decides what policy leaves open, the rest waits for the developer;
-//! - **verifying** → the check runs, evidence is recorded, the brain judges
-//!   the criteria; all met → review, else a remediation task → implementing.
+//! - **verifying** → the check runs and the work's state (its diff) is read,
+//!   evidence is recorded; the check decides check-typed criteria, the brain
+//!   judges the rest; all met → review, else a remediation task →
+//!   implementing. A check that can't run at all blocks on the developer; a
+//!   fix that changed nothing goes to review unverified (D-062).
 //!
 //! Deterministic code enforces what a model must not decide: the lifecycle,
 //! the attempt and time budgets, per-run timeouts, loop detection, and what
@@ -25,7 +28,8 @@ use std::time::Duration;
 use chrono::Utc;
 use otter_core::feature::{
     Criterion, Decider, DecisionKind, DecisionRequest, DecisionStatus, Evidence, EvidenceKind,
-    Feature, FeatureEvent, FeatureStatus, MessageRole, RunState, Task, TaskStatus,
+    Feature, FeatureEvent, FeatureStatus, MessageRole, Risk, RunState, Task, TaskStatus,
+    VerificationMark,
 };
 use otter_core::{DecisionId, EvidenceId, FeatureId, TaskId};
 use otter_protocol::RpcError;
@@ -42,6 +46,11 @@ const MAX_TASK_ATTEMPTS: u32 = 3;
 /// The same failure this many runs in a row is a loop.
 const LOOP_REPEATS: usize = 3;
 const CHECK_OUTPUT: usize = 3000;
+/// The title of delivery's diffstat evidence, before the branch.
+const CHANGES_ON: &str = "Changes on ";
+/// The answers to "the check can't run here" (D-062).
+const RUN_AGAIN: &str = "Run it again";
+const WITHOUT_CHECK: &str = "Go on without it";
 
 fn env_ms(var: &str, default: u64) -> Duration {
     Duration::from_millis(
@@ -458,11 +467,12 @@ impl Daemon {
                 .criteria
                 .iter()
                 .enumerate()
-                .map(|(i, text)| Criterion {
+                .map(|(i, c)| Criterion {
                     id: format!("ac_{}", i + 1),
-                    text: text.clone(),
+                    text: c.text.clone(),
                     met: None,
                     evidence: vec![],
+                    how: c.how,
                 })
                 .collect();
             // Planning again (D-050): what is done stays; the rest is replaced.
@@ -585,6 +595,15 @@ impl Daemon {
                 .cloned()
                 .collect()
         };
+        if open.is_empty() {
+            return Ok(());
+        }
+        // Developer-only: no model sees it, approves it or denies it.
+        let (open, theirs): (Vec<_>, Vec<_>) = open.into_iter().partition(|d| !d.user_only);
+        for d in theirs {
+            self.escalate(&f.id, &d, "only the developer may approve or answer this")
+                .await;
+        }
         if open.is_empty() {
             return Ok(());
         }
@@ -790,14 +809,24 @@ impl Daemon {
             return self.decide_open(f).await;
         }
         let (root, env) = self.feature_workspace(f).await?;
-        // The check command: run if allowed; a denial drops it.
+        // The check command: run if allowed (or asked to run again once it
+        // can); a denial, or going on without it, drops it.
         if let (Some(_), false, Some(did)) =
             (&f.verify_command, f.verify_approved, &f.verify_decision)
         {
-            let status = f.decisions.iter().find(|d| &d.id == did).map(|d| d.status);
+            let decided = f
+                .decisions
+                .iter()
+                .find(|d| &d.id == did)
+                .map(|d| (d.status, d.answer.clone()));
             self.controller_apply(&f.id, FeatureStatus::Verifying, |f, _| {
-                match status {
-                    Some(DecisionStatus::Approved | DecisionStatus::Answered) => {
+                match decided {
+                    Some((DecisionStatus::Answered, Some(a))) if a == WITHOUT_CHECK => {
+                        f.verify_command = None;
+                        f.rationale
+                            .push("Going on without the check, as you said.".into());
+                    }
+                    Some((DecisionStatus::Approved | DecisionStatus::Answered, _)) => {
                         f.verify_approved = true
                     }
                     _ => {
@@ -813,12 +842,35 @@ impl Daemon {
         }
         let mut evidence = Vec::new();
         if let (Some(cmd), true) = (&f.verify_command, f.verify_approved) {
-            evidence.push(run_check(cmd, &root, &env).await);
+            let (check, cant_run) = run_check(cmd, &root, &env).await;
+            // Not the work's fault: the developer fixes the environment.
+            if let Some(why) = cant_run {
+                return self.check_cant_run(f, cmd, check, &why).await;
+            }
+            evidence.push(check);
         }
         match self.browser_checks(f, &root, &env).await? {
             Some(more) => evidence.extend(more),
             // A preview command waits for someone to allow it.
             None => return Ok(()),
+        }
+        // The work itself, read deterministically: what the judge looks at,
+        // and whether a fix changed anything.
+        let base = self.workspace_base(f).await;
+        let tree = crate::work_state::snapshot(&root, &env, base.as_deref()).await;
+        let outcomes: String = evidence
+            .iter()
+            .filter(|e| !e.uncertain)
+            .filter_map(|e| e.ok)
+            .map(|ok| if ok { '✓' } else { '✗' })
+            .collect();
+        let fingerprint = format!("{}:{outcomes}", tree.fingerprint);
+        if let Some(report) = tree.report {
+            evidence.push(evidence_item(
+                EvidenceKind::Diff,
+                &format!("{}: {}", crate::work_state::TITLE, tree.summary),
+                Some(report),
+            ));
         }
         if !evidence.is_empty() {
             let ev = evidence.clone();
@@ -841,25 +893,63 @@ impl Daemon {
             }
         }
         let f = self.feature_get(f.id.as_str()).await?;
-        let brain = brain::select(&env, &self.brain_choice());
-        let judgement = brain
-            .judge(&Context {
-                feature: &f,
-                root: &root,
-                env: &env,
-            })
-            .await
-            .map_err(|e| RpcError::internal(format!("judging failed: {e:#}")))?;
+        // The check decides check-typed criteria in code; the brain judges
+        // the rest (and isn't asked when there is nothing left to judge).
+        let check = evidence.iter().find(|e| e.kind == EvidenceKind::Test);
+        let check_ok = check.and_then(|e| e.ok) == Some(true);
+        let by_check: HashSet<String> = f
+            .acceptance
+            .iter()
+            .filter(|c| brain::decided_by_check(&f, c))
+            .map(|c| c.id.clone())
+            .collect();
+        let judgement = if by_check.len() < f.acceptance.len() {
+            let brain = brain::select(&env, &self.brain_choice());
+            brain
+                .judge(&Context {
+                    feature: &f,
+                    root: &root,
+                    env: &env,
+                })
+                .await
+                .map_err(|e| RpcError::internal(format!("judging failed: {e:#}")))?
+        } else {
+            brain::Judgement {
+                criteria: vec![],
+                remediation: String::new(),
+            }
+        };
+        let failed_check = check.filter(|e| e.ok == Some(false)).map(|e| {
+            let tail: String = {
+                let d = e.detail.clone().unwrap_or_default();
+                let chars: Vec<char> = d.chars().collect();
+                chars[chars.len().saturating_sub(1500)..].iter().collect()
+            };
+            format!("{} failed:\n{tail}", e.title)
+        });
         let fresh: Vec<EvidenceId> = evidence.iter().map(|e| e.id.clone()).collect();
         let any_failed = evidence.iter().any(|e| e.ok == Some(false) && !e.uncertain);
         self.controller_apply(&f.id, FeatureStatus::Verifying, move |f, now| {
-            for j in &judgement.criteria {
-                if let Some(c) = f.acceptance.iter_mut().find(|c| c.id == j.id) {
-                    c.met = Some(j.met);
-                    c.evidence = fresh.clone();
-                }
+            for c in &mut f.acceptance {
+                c.evidence = fresh.clone();
+                c.met = if by_check.contains(&c.id) {
+                    Some(check_ok)
+                } else {
+                    // Not judged this time: not met.
+                    judgement
+                        .criteria
+                        .iter()
+                        .find(|j| j.id == c.id)
+                        .map(|j| j.met)
+                };
             }
-            let all_met = !any_failed && f.acceptance.iter().all(|c| c.met == Some(true));
+            let unmet: Vec<String> = f
+                .acceptance
+                .iter()
+                .filter(|c| c.met != Some(true))
+                .map(|c| c.text.clone())
+                .collect();
+            let all_met = !any_failed && unmet.is_empty();
             let mut changes = Vec::new();
             let summary = f
                 .acceptance
@@ -867,7 +957,9 @@ impl Daemon {
                 .map(|c| format!("{} {}", if c.met == Some(true) { "✓" } else { "✗" }, c.text))
                 .collect::<Vec<_>>()
                 .join("\n");
+            let mark = VerificationMark { fingerprint, unmet };
             if all_met {
+                f.last_verification = None;
                 f.rationale.push("Verified: every criterion is met.".into());
                 let (m, c) = message(
                     MessageRole::Controller,
@@ -884,11 +976,42 @@ impl Daemon {
                     )
                     .map_err(RpcError::conflict)?,
                 ));
-            } else {
-                let fix = if judgement.remediation.trim().is_empty() {
-                    "Make the failing acceptance criteria pass.".to_owned()
+            } else if f.last_verification.as_ref() == Some(&mark) {
+                // The same work and the same verdict after a fix: another
+                // round won't change it. The developer decides (D-062).
+                let unproven = if mark.unmet.is_empty() {
+                    "a check failed".to_owned()
                 } else {
+                    mark.unmet.join("; ")
+                };
+                f.rationale.push(format!(
+                    "Not verified: {unproven}; nothing changed after a fix"
+                ));
+                let (m, c) = message(
+                    MessageRole::Controller,
+                    format!(
+                        "Not verified, and nothing changed after the last fix, so another attempt won't help.\n{summary}\nAccept it as it is, or tell me what to change."
+                    ),
+                    None,
+                );
+                f.messages.push(m);
+                changes.push(c);
+                changes.push(Change::new(
+                    f.transition(
+                        FeatureStatus::Review,
+                        Some("Not verified: nothing changed after a fix".into()),
+                        now,
+                    )
+                    .map_err(RpcError::conflict)?,
+                ));
+            } else {
+                f.last_verification = Some(mark);
+                let fix = if !judgement.remediation.trim().is_empty() {
                     judgement.remediation.clone()
+                } else if let Some(failed) = failed_check {
+                    failed
+                } else {
+                    "Make the failing acceptance criteria pass.".to_owned()
                 };
                 let id = TaskId::generate();
                 f.tasks.push(Task {
@@ -923,6 +1046,75 @@ impl Daemon {
                     .map_err(RpcError::conflict)?,
                 ));
             }
+            Ok(changes)
+        })
+        .await?;
+        Ok(())
+    }
+
+    /// The check couldn't run at all (a missing command or script): record
+    /// it, ask the developer — it's theirs alone — and wait, blocked. No fix
+    /// task: the work isn't what's wrong (D-062).
+    async fn check_cant_run(
+        &self,
+        f: &Feature,
+        cmd: &str,
+        check: Evidence,
+        why: &str,
+    ) -> RpcResult<()> {
+        let (cmd, why) = (cmd.to_owned(), why.to_owned());
+        self.controller_apply(&f.id, FeatureStatus::Verifying, move |f, now| {
+            let mut changes = vec![Change::new(FeatureEvent::EvidenceAdded {
+                evidence_id: check.id.clone(),
+                kind: check.kind,
+                ok: check.ok,
+            })];
+            f.evidence.push(check);
+            let id = DecisionId::generate();
+            f.decisions.push(DecisionRequest {
+                id: id.clone(),
+                task_id: None,
+                run_id: None,
+                kind: DecisionKind::Question,
+                risk: Risk::Low,
+                summary: format!("`{cmd}` can't run here"),
+                detail: Some(format!(
+                    "{why}\nFix the environment (install what's missing, or the PATH this workspace gets), \
+                     then run it again — or go on without the check."
+                )),
+                options: vec![RUN_AGAIN.into(), WITHOUT_CHECK.into()],
+                status: DecisionStatus::Pending,
+                decided_by: None,
+                answer: None,
+                rationale: None,
+                created_at: now,
+                decided_at: None,
+                user_only: true,
+            });
+            f.verify_decision = Some(id.clone());
+            f.verify_approved = false;
+            changes.push(Change::new(FeatureEvent::DecisionRequested {
+                decision_id: id,
+                kind: DecisionKind::Question,
+                risk: Risk::Low,
+            }));
+            let (m, c) = message(
+                MessageRole::Controller,
+                format!(
+                    "`{cmd}` can't run here: {why}\nThat's the environment, not the work, so I haven't asked the coding agent to fix it. Fix it and choose “{RUN_AGAIN}”, or “{WITHOUT_CHECK}”."
+                ),
+                None,
+            );
+            f.messages.push(m);
+            changes.push(c);
+            changes.push(Change::new(
+                f.transition(
+                    FeatureStatus::Blocked,
+                    Some(format!("`{cmd}` can't run here: {why}")),
+                    now,
+                )
+                .map_err(RpcError::conflict)?,
+            ));
             Ok(changes)
         })
         .await?;
@@ -1220,7 +1412,7 @@ impl Daemon {
                         {
                             evidence.push(evidence_item(
                                 EvidenceKind::Diff,
-                                &format!("Changes on {branch}"),
+                                &format!("{CHANGES_ON}{branch}"),
                                 Some(stat),
                             ));
                         }
@@ -1333,15 +1525,19 @@ impl Daemon {
         next.evidence.extend(evidence.iter().cloned());
         let gates = delivery::gates(&next, &cx);
         let ready = remediation.is_none() && delivery::ready_for_acceptance(&gates);
+        // Delivery's stat of the branch (verification's working-tree diffs
+        // are evidence for the judge, not the report).
+        let is_stat =
+            |e: &&Evidence| e.kind == EvidenceKind::Diff && e.title.starts_with(CHANGES_ON);
         let diffstat = evidence
             .iter()
-            .find(|e| e.kind == EvidenceKind::Diff)
+            .find(is_stat)
             .and_then(|e| e.detail.clone())
             .or_else(|| {
                 f.evidence
                     .iter()
                     .rev()
-                    .find(|e| e.kind == EvidenceKind::Diff)
+                    .find(is_stat)
                     .and_then(|e| e.detail.clone())
             });
         let write_report = ready && f.report.is_none();
@@ -1693,8 +1889,9 @@ fn continue_prompt(
     )
 }
 
-/// Run the check command in the workspace and record what happened.
-async fn run_check(cmd: &str, root: &std::path::Path, env: &EnvMap) -> Evidence {
+/// Run the check command in the workspace and record what happened; and,
+/// if it couldn't run at all, the line that says why (see [`cant_run`]).
+async fn run_check(cmd: &str, root: &std::path::Path, env: &EnvMap) -> (Evidence, Option<String>) {
     let started = Utc::now();
     let result = tokio::time::timeout(
         check_timeout(),
@@ -1708,7 +1905,7 @@ async fn run_check(cmd: &str, root: &std::path::Path, env: &EnvMap) -> Evidence 
             .output(),
     )
     .await;
-    let (ok, title, detail) = match result {
+    let (ok, title, detail, why) = match result {
         Ok(Ok(out)) => {
             let mut text = String::from_utf8_lossy(&out.stdout).into_owned();
             text.push_str(&String::from_utf8_lossy(&out.stderr));
@@ -1718,28 +1915,80 @@ async fn run_check(cmd: &str, root: &std::path::Path, env: &EnvMap) -> Evidence 
                     .iter()
                     .collect()
             };
-            let code = out.status.code().map_or("signal".into(), |c| c.to_string());
-            (out.status.success(), format!("`{cmd}` (exit {code})"), tail)
+            let code = out.status.code();
+            match cant_run(code, &tail) {
+                Some(why) => (None, format!("`{cmd}` can't run here"), tail, Some(why)),
+                None => {
+                    let code = code.map_or("signal".into(), |c| c.to_string());
+                    (
+                        Some(out.status.success()),
+                        format!("`{cmd}` (exit {code})"),
+                        tail,
+                        None,
+                    )
+                }
+            }
         }
-        Ok(Err(e)) => (false, format!("`{cmd}` couldn't start"), e.to_string()),
+        Ok(Err(e)) => (
+            None,
+            format!("`{cmd}` can't run here"),
+            e.to_string(),
+            Some(format!("it couldn't start: {e}")),
+        ),
         Err(_) => (
-            false,
+            Some(false),
             format!("`{cmd}` timed out"),
             format!("after {}s", check_timeout().as_secs()),
+            None,
         ),
     };
-    Evidence {
+    let evidence = Evidence {
         id: EvidenceId::generate(),
         task_id: None,
         criterion_id: None,
         kind: EvidenceKind::Test,
         title,
-        ok: Some(ok),
+        ok,
         uri: None,
         detail: Some(detail).filter(|d| !d.trim().is_empty()),
         uncertain: false,
         at: started,
+    };
+    (evidence, why)
+}
+
+/// Why a check couldn't run at all — a command or script that isn't there,
+/// or can't be executed — from its exit status and output; `None` when it
+/// ran (passing or failing). The output counts too: `make` reports a
+/// missing command as its own exit 2. Only the shell's, `make`'s, `env`'s
+/// and npm's own complaints count, not a test's output that happens to
+/// mention a missing file.
+fn cant_run(code: Option<i32>, output: &str) -> Option<String> {
+    if code == Some(0) {
+        return None;
     }
+    let line = output.lines().map(str::trim).find(|l| says_cant_run(l));
+    match (code, line) {
+        (_, Some(l)) => Some(l.to_owned()),
+        (Some(c @ (126 | 127)), None) => Some(format!("exit {c}")),
+        _ => None,
+    }
+}
+
+fn says_cant_run(line: &str) -> bool {
+    if line.contains("command not found") || line.contains("Missing script:") {
+        return true;
+    }
+    let program = line.split(':').next().unwrap_or("");
+    let program = program.rsplit('/').next().unwrap_or(program);
+    let program = program.split('[').next().unwrap_or(program);
+    if program == "make" && (line.ends_with("Error 127") || line.ends_with("Error 126")) {
+        return true;
+    }
+    matches!(program, "sh" | "bash" | "zsh" | "dash" | "env" | "make")
+        && (line.ends_with(": not found")
+            || line.ends_with("No such file or directory")
+            || line.ends_with("Permission denied"))
 }
 
 #[cfg(test)]
@@ -1817,6 +2066,46 @@ mod tests {
     }
 
     #[test]
+    fn a_check_that_cant_run_is_told_from_one_that_fails() {
+        // A missing command, through the shell or straight from make.
+        assert_eq!(
+            cant_run(Some(127), "sh: 1: cargo: not found\n").as_deref(),
+            Some("sh: 1: cargo: not found")
+        );
+        assert_eq!(
+            cant_run(
+                Some(2),
+                "make: not-on-this-path: No such file or directory\nmake: *** [Makefile:2: test] Error 127\n"
+            )
+            .as_deref(),
+            Some("make: not-on-this-path: No such file or directory")
+        );
+        assert!(
+            cant_run(
+                Some(2),
+                "/bin/sh: 1: pytest: not found\nmake: *** [Makefile:2: test] Error 127"
+            )
+            .is_some()
+        );
+        assert!(cant_run(Some(2), "make[1]: *** [Makefile:5: unit] Error 127").is_some());
+        assert!(cant_run(Some(1), "bash: line 1: go: command not found").is_some());
+        assert!(cant_run(Some(1), "npm error Missing script: \"test\"").is_some());
+        assert_eq!(cant_run(Some(126), "").as_deref(), Some("exit 126"));
+        // Failing tests are the work's: even ones mentioning a missing file.
+        assert!(cant_run(Some(1), "test export ... FAILED\n1 failed").is_none());
+        assert!(
+            cant_run(
+                Some(101),
+                "thread 'x' panicked: No such file or directory (os error 2)"
+            )
+            .is_none()
+        );
+        assert!(cant_run(Some(2), "make: *** [Makefile:2: test] Error 1").is_none());
+        assert!(cant_run(Some(0), "sh: 1: x: not found").is_none());
+        assert!(cant_run(None, "").is_none());
+    }
+
+    #[test]
     fn a_task_prompt_carries_the_plan_and_what_went_wrong() {
         let mut f = Feature::new("CSV".into(), "Export it".into(), Utc::now());
         f.verify_command = Some("make test".into());
@@ -1825,6 +2114,7 @@ mod tests {
             text: "has a header".into(),
             met: None,
             evidence: vec![],
+            how: otter_core::feature::Proof::Diff,
         });
         let t = Task {
             id: TaskId::generate(),

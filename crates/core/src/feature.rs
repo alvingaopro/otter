@@ -220,6 +220,30 @@ pub struct Criterion {
     pub met: Option<bool>,
     #[serde(default)]
     pub evidence: Vec<EvidenceId>,
+    /// What proves it (D-062).
+    #[serde(default)]
+    pub how: Proof,
+}
+
+/// What proves an acceptance criterion (D-062).
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum Proof {
+    /// The check command passing: decided in code, from its result.
+    Check,
+    /// What the change contains: judged from the working tree's diff.
+    #[default]
+    Diff,
+}
+
+/// What the last verification saw (D-062): the state of the work and the
+/// criteria it left unmet. The same again after a fix means the fix
+/// changed nothing.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct VerificationMark {
+    pub fingerprint: String,
+    /// The unmet criteria, by text.
+    pub unmet: Vec<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -395,9 +419,13 @@ pub struct Feature {
     /// Policy (or the developer) allowed `verify_command` to run.
     #[serde(default)]
     pub verify_approved: bool,
-    /// The decision asking to allow `verify_command`, if one was needed.
+    /// The decision asking to allow `verify_command`, or what to do when it
+    /// can't run here, if one was needed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub verify_decision: Option<DecisionId>,
+    /// The last verification that found something unmet (D-062).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_verification: Option<VerificationMark>,
     /// Why the Control Agent did what it did, newest last (short lines).
     #[serde(default)]
     pub rationale: Vec<String>,
@@ -450,6 +478,7 @@ impl Feature {
             replan: false,
             verify_approved: false,
             verify_decision: None,
+            last_verification: None,
             rationale: Vec::new(),
             allowed_commands: Vec::new(),
             preview: None,
