@@ -618,3 +618,6 @@ fieldset.field.coding legend { font-size: 13px; font-weight: 600; padding: 0 4px
 .inbox .tag { font-size: 11px; padding: 1px 6px; border-radius: 4px; background: var(--btn); color: var(--muted); }
 .turn-next { color: var(--muted); }
 .failure-text { margin: 4px 0 0; max-height: 160px; overflow: auto; font-family: var(--mono); font-size: 12px; white-space: pre-wrap; overflow-wrap: anywhere; user-select: text; }
+.problems { display: flex; flex-direction: column; gap: 8px; }
+.problem { padding: 8px 10px; border-radius: 8px; border: 1px solid var(--needs-border); background: var(--needs-bg); }
+.problem-what { font-weight: 600; }

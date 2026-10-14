@@ -32,8 +32,10 @@ impl Daemon {
             .collect();
 
         // What the ones that just ended printed last, while the backend still
-        // holds their output (D-076).
-        let ended: Vec<String> = store
+        // holds their output (D-076). A process seen dead is taken as ended
+        // a moment later: the backend may mark it dead before it has drawn
+        // its last lines — the ones that say why.
+        let dead: Vec<String> = store
             .state
             .workspaces
             .iter()
@@ -47,6 +49,26 @@ impl Daemon {
             })
             .map(|e| e.backend_ref.clone())
             .collect();
+        // What died while otterd was down has long settled.
+        let first = !self
+            .reconciled_once
+            .swap(true, std::sync::atomic::Ordering::SeqCst);
+        let (ended, settling): (Vec<String>, HashSet<String>) = {
+            let mut dying = self.dying.lock().unwrap();
+            dying.retain(|r, _| dead.contains(r));
+            let (ended, settling): (Vec<String>, Vec<String>) = dead.into_iter().partition(|r| {
+                first
+                    || dying
+                        .entry(r.clone())
+                        .or_insert_with(std::time::Instant::now)
+                        .elapsed()
+                        >= SETTLE
+            });
+            for r in &ended {
+                dying.remove(r);
+            }
+            (ended, settling.into_iter().collect())
+        };
         let mut tails = HashMap::new();
         for r in ended {
             if let Ok(screen) = self.backend.capture(&r, Some(TAIL_LINES as u32 * 2)).await
@@ -59,7 +81,7 @@ impl Daemon {
         let mut events = Vec::new();
         let mut changed = false;
         for ws in &mut store.state.workspaces {
-            changed |= reconcile_executions(ws, &observed, &tails, now, &mut events);
+            changed |= reconcile_executions(ws, &observed, &settling, &tails, now, &mut events);
             if ws.sessions.iter().all(|s| s.agent.is_none()) {
                 continue;
             }
@@ -150,9 +172,13 @@ struct Seen<'a> {
     dir: &'a std::path::Path,
 }
 
+/// How long a dead process's output is given to settle before its end is taken.
+const SETTLE: std::time::Duration = std::time::Duration::from_millis(300);
+
 fn reconcile_executions(
     ws: &mut Workspace,
     observed: &HashMap<String, ProcessState>,
+    settling: &HashSet<String>,
     tails: &HashMap<String, String>,
     now: DateTime<Utc>,
     events: &mut Vec<Event>,
@@ -164,7 +190,7 @@ fn reconcile_executions(
         let Some(exec) = session.current_execution_mut() else {
             continue;
         };
-        if !exec.is_running() {
+        if !exec.is_running() || settling.contains(&exec.backend_ref) {
             continue;
         }
         match observed.get(&exec.backend_ref) {

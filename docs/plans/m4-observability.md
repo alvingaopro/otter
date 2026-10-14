@@ -7,7 +7,7 @@ on the requester's instruction to go on, as M3 was (D-070): the scope is
 derived from the exit outcome, the design's rules on secrets (§20, D-005),
 `docs/invariants.md`, and an audit of the code (§2). When the spec arrives,
 it wins (D-074).
-**Status:** in progress — step 1 (D-075, PR #65), step 2 (D-076). **Branch:** `roadmap-m4`, from `main` after M3.
+**Status:** steps 1–4 done (D-075, PR #65; D-076, D-077 and the record, PR #66). The live scenarios are pending (`runtime-validation.md` M4-1). **Branch:** `roadmap-m4`, from `main` after M3.
 
 ## 1. The outcome, read two ways
 
@@ -121,4 +121,6 @@ traces export, a shareable diagnostics bundle — candidates for the spec.
   (`a_failed_process_says_why_without_its_terminal`).
 - [x] Every error category says what happened and what to do, in the CLI
   and the app (`every_error_says_what_happened_and_what_to_do`).
-- [ ] `otter doctor` lists every problem a host has, each with a next step.
+- [x] `otter doctor` lists every problem a host has, each with a next step
+  (`a_host_says_whats_wrong_with_it`, `doctor_says_whats_wrong_and_what_to_do`).
+- [ ] With live failures — pending (M4-1).

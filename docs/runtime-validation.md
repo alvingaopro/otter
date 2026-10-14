@@ -75,6 +75,12 @@ agent) cover the mechanics. Re-run with the audit's harness:
 |---|---|---|---|
 | M3-1 | Several features and workspaces at once on two hosts, handled from the Inbox: decisions answered there, a review accepted, a stopped feature retried, notifications once per need | Pending | Offline: `inbox.test.ts`, `Inbox.test.tsx` (a decision answered and a retry from the list), `what_a_feature_needs_is_one_rule` (core), `features_that_need_you_are_listed` (`otter ls`) (D-071…D-073). |
 
+## Diagnostics (plan M4)
+
+| # | Scenario | Status | Evidence |
+|---|---|---|---|
+| M4-1 | Real failures diagnosed without a terminal and without a secret: Claude Code signed out (auth), a rate limit, a crashing agent, a direnv error printing a token from `.envrc`, a task failing with a reason; `otter doctor` on a host missing tmux | Pending | Offline: `credentials_in_failures_stay_out_of_what_otter_keeps`, `a_failed_process_says_why_without_its_terminal`, `a_host_says_whats_wrong_with_it`, `doctor_says_whats_wrong_and_what_to_do`, the `redact` unit tests (D-075…D-077). |
+
 ## Known limits
 
 - A daemon stop ends the managed run. The next run resumes the native

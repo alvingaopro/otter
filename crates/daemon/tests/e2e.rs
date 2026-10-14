@@ -1925,6 +1925,28 @@ async fn claude_code_without_hooks_falls_back_to_the_quiet_turn() {
     wait_agent(host, "nohooks", "claude", AgentState::WaitingForInput).await;
 }
 
+/// A host says what's wrong with it, each with what to do (D-077): here,
+/// settings it couldn't read, met as it started.
+#[tokio::test]
+async fn a_host_says_whats_wrong_with_it() {
+    let host = TestHost::new();
+    std::fs::create_dir_all(host.home().join("state")).unwrap();
+    std::fs::write(host.home().join("state/settings.json"), "{ not json").unwrap();
+    let status = host.conn().await.host_status().await.unwrap();
+    let p = status
+        .problems
+        .iter()
+        .find(|p| p.what.contains("settings"))
+        .unwrap_or_else(|| panic!("{:?}", status.problems));
+    assert!(p.what.contains("couldn't be read"), "{}", p.what);
+    assert!(p.next.contains("settings.json"), "{}", p.next);
+    assert!(status.log.as_deref().unwrap().ends_with("logs/workd.log"));
+    // Everything else on this host is fine but what its environment lacks.
+    for p in &status.problems {
+        assert!(!p.next.is_empty(), "{p:?}");
+    }
+}
+
 /// Why a process failed is kept with it and said, without its terminal —
 /// never a credential it printed — and survives otterd restarting (D-076).
 #[tokio::test]

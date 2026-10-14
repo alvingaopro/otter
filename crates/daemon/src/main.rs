@@ -181,6 +181,7 @@ async fn serve(paths: Paths) -> Result<()> {
     // exits and losses that happened while we were down.
     if let Err(e) = daemon.reconcile().await {
         tracing::warn!("initial reconcile failed: {e:#}");
+        note_reconcile(&daemon, &e);
     }
     daemon.resume_workspaces().await;
     // Conversations tell clients they changed (ids only, D-055).
@@ -221,6 +222,9 @@ async fn serve(paths: Paths) -> Result<()> {
                 tick.tick().await;
                 if let Err(e) = daemon.reconcile().await {
                     tracing::warn!("reconcile failed: {e:#}");
+                    note_reconcile(&daemon, &e);
+                } else {
+                    daemon.clear_problem("reconcile");
                 }
             }
         })
@@ -301,4 +305,16 @@ async fn open_url(paths: &Paths, url: String) -> Result<()> {
         Some(ServerMessage::Response { error: Some(e), .. }) => anyhow::bail!("{}", e.message),
         _ => anyhow::bail!("no answer from otterd"),
     }
+}
+
+/// Reconciliation keeps failing: said to the developer (D-077).
+fn note_reconcile(daemon: &daemon::Daemon, e: &anyhow::Error) {
+    daemon.note_problem(
+        "reconcile",
+        format!(
+            "otterd can't check its sessions' processes ({}).",
+            otter_core::redact::redact(&format!("{e:#}"))
+        ),
+        "Sessions may show stale states. Check that tmux works for this user (`tmux ls`), then restart otterd.".into(),
+    );
 }

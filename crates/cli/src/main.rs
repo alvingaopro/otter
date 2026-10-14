@@ -5,6 +5,7 @@
 
 mod attach;
 mod dashboard;
+mod doctor;
 mod features;
 mod output;
 mod target;
@@ -102,6 +103,11 @@ enum Command {
         /// Don't press Enter after the text.
         #[arg(long)]
         no_enter: bool,
+    },
+    /// What's wrong with your hosts, and what to do about it (exit 1 if anything is).
+    Doctor {
+        /// Only this host.
+        host: Option<String>,
     },
     /// Show recent events.
     Events {
@@ -446,6 +452,7 @@ async fn run(cli: Cli) -> Result<()> {
                 .await?;
             Ok(())
         }
+        Command::Doctor { host } => doctor::run(&config, host, json).await,
         Command::Events {
             host,
             limit,

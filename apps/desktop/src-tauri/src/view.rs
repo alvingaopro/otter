@@ -36,6 +36,8 @@ pub struct HostView {
     pub version: Option<String>,
     /// Agent providers otterd supports and whether this host can run them.
     pub agents: Vec<otter_core::AgentCapability>,
+    /// What's wrong with the host, each with what to do (D-077).
+    pub problems: Vec<otter_core::Problem>,
     pub workspaces: Vec<WorkspaceView>,
 }
 

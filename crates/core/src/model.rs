@@ -685,6 +685,20 @@ pub struct HostStatus {
     /// Agent providers this otterd supports, and whether the host can run them.
     #[serde(default)]
     pub agents: Vec<AgentCapability>,
+    /// What's wrong with this host, each with what to do (D-077): what otterd
+    /// met since it started, and what it sees now. Empty: nothing.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub problems: Vec<Problem>,
+    /// otterd's own log, for what the problems don't say.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub log: Option<String>,
+}
+
+/// Something wrong with a host, and what to do about it (D-077).
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct Problem {
+    pub what: String,
+    pub next: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]

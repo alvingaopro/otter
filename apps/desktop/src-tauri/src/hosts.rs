@@ -167,6 +167,7 @@ fn reconcile(app: &AppHandle) {
                             message: None,
                             version: None,
                             agents: Vec::new(),
+                            problems: Vec::new(),
                             workspaces: Vec::new(),
                         });
                     views.push(view);
@@ -249,10 +250,12 @@ async fn follow(app: &AppHandle, name: &str, transport: &Transport) -> Result<Ne
     let version = rpc.server_version.clone();
     // Which agents the host can run (for the new-workspace form); probing
     // is cheap enough to do once per connection.
-    let agents = rpc.host_status().await?.agents;
+    // …and what's wrong with it (D-077), as of connecting.
+    let status = rpc.host_status().await?;
     app.state::<Hosts>().update(name, |v| {
         v.version = Some(version);
-        v.agents = agents;
+        v.agents = status.agents;
+        v.problems = status.problems;
     });
     // Events after the snapshot; each burst triggers a fresh snapshot. If the
     // host can't serve the snapshot's cursor (its event log rotated or started

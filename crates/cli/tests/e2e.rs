@@ -752,3 +752,56 @@ fn a_feature_goes_from_the_terminal_to_an_accepted_pull_request() {
     assert_eq!(calls.matches("gh pr create").count(), 1, "{calls}");
     assert!(!calls.contains("merge"), "{calls}");
 }
+
+/// `otter doctor` (D-077): each host's problems with what to do, a host it
+/// can't reach as one of them, and exit 1 when there's any.
+#[test]
+fn doctor_says_whats_wrong_and_what_to_do() {
+    let home = Home::new();
+    let cli = Cli::new();
+    // otterd starts with settings it can't read.
+    std::fs::create_dir_all(std::path::Path::new(home.path()).join("state")).unwrap();
+    std::fs::write(
+        std::path::Path::new(home.path()).join("state/settings.json"),
+        "{ not json",
+    )
+    .unwrap();
+    cli.add_local_host("here", &home);
+    let out = cli.run(&["doctor", "here"]);
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert_eq!(out.status.code(), Some(1), "{text}");
+    assert!(
+        text.contains("here: ") && text.contains("problem(s)"),
+        "{text}"
+    );
+    assert!(
+        text.contains("settings on this host couldn't be read"),
+        "{text}"
+    );
+    assert!(text.contains("→ Fix or remove"), "{text}");
+    assert!(text.contains("otterd's log:"), "{text}");
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("problem(s) found"), "{err}");
+    // A host it can't reach.
+    cli.ok(&[
+        "host",
+        "add",
+        "gone",
+        "--local",
+        "--otterd-path",
+        "/nonexistent/otterd",
+        "--home",
+        "/nonexistent/home",
+        "--no-check",
+    ]);
+    let out = cli.run(&["doctor", "gone", "--json"]);
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let what = v[0]["problems"][0]["what"].as_str().unwrap();
+    assert!(what.contains("can't reach otterd on gone"), "{v}");
+    assert!(
+        v[0]["problems"][0]["next"]
+            .as_str()
+            .unwrap()
+            .contains("otter host install gone")
+    );
+}
