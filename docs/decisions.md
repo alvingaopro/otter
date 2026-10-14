@@ -2404,3 +2404,17 @@ command; the app's host page showed neither.
 - **otterd's log rotates:** over 10 MiB, it's set aside (`workd.log.1`)
   as otterd starts.
 
+## D-078 — M5's scope, derived without its spec (2026-10-14)
+
+As for M3 and M4 (D-070, D-074): the spec isn't on this machine and the
+requester asked to go on. M5 (*several coding agents coordinate without
+corrupting shared work or losing human control*) is read narrowly, from
+the outcome, the M2 plan's rule against parallel work in a shared
+directory, and an audit of the code (`docs/plans/m5-orchestration.md`):
+agents already run side by side, one per feature; nothing stops two of
+them working in one directory, nothing offers a way out, and nothing
+holds them all at once. So: one driver per workspace, a worktree of its
+own for a feature whose workspace is taken, and a pause for everything.
+Parallel tasks inside one feature (with merging) go against D-064 and have
+no evidence yet; they wait for the spec.
+
