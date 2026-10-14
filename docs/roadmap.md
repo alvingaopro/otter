@@ -58,7 +58,8 @@ reply, so they stand until changed):
 | M1 | Done on `roadmap-m1` @ `5ebcf4f` (D-061), which isn't published: not on `origin`, not on `main`. M2 was built on `main` without it. |
 | M2 | Plan steps 1–8 merged (PRs #53–#60; D-062…D-069; `docs/plans/m2-feature-to-pr.md`). Offline acceptance met; the live-Claude and real-GitHub scenarios are pending (`runtime-validation.md`, M2-1…M2-7). |
 | M3 | Built 2026-10-14 on the requester's instruction, without its spec (`03-agent-manager-ux.md` isn't on this machine) and ahead of the P0 gates, from a scope derived in `docs/plans/m3-agent-manager-ux.md` (D-070): the Inbox and one rule for what a feature needs (PRs #61–#63, D-071…D-073). Live scenario pending (M3-1); to be redone against the spec when it arrives. |
-| M4–M6 | Not started. Their specs (`04-…` … `06-automation.md`) aren't on this machine. |
+| M4 | Started 2026-10-14 on the requester's instruction, without its spec: scope derived in `docs/plans/m4-observability.md` (D-074). |
+| M5–M6 | Not started. Their specs (`05-…`, `06-automation.md`) aren't on this machine. |
 
 ## Not in scope
 
