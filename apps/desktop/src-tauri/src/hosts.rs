@@ -10,7 +10,7 @@
 //! hosts, and a lost connection just means "reconnect and snapshot again".
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::{Duration, SystemTime};
 
@@ -486,9 +486,7 @@ pub async fn host_add(
     let transport = config.transport(&entry);
     let mut message = String::new();
     if install {
-        message = otter_client::install::install(&transport, &app_version(&app), true)
-            .await
-            .map_err(|e| e.to_string())?;
+        message = install_release(&app, &transport).await?;
     }
     if !force {
         let checked = async {
@@ -541,23 +539,86 @@ pub fn host_remove(app: AppHandle, name: String) -> Result<(), String> {
 #[tauri::command]
 pub async fn host_install(app: AppHandle, name: String) -> Result<String, String> {
     let transport = app.state::<Hosts>().transport(&name)?;
-    let out = otter_client::install::install(&transport, &app_version(&app), true)
-        .await
-        .map_err(|e| e.to_string())?;
+    let out = install_release(&app, &transport).await?;
     restart(&app, &name);
     Ok(out)
 }
 
-/// Install `otter` and `otterd` for this user on this Mac (`~/.local/bin`).
+/// Install this app's release on a host and stop its running daemon. On
+/// this Mac, when its otterd is the one in `~/.local/bin` and the app
+/// carries its own (D-085), that's a link to the app's and only the Claude
+/// worker is downloaded; otherwise the release's binaries are too.
+async fn install_release(app: &AppHandle, transport: &Transport) -> Result<String, String> {
+    let linked = match transport {
+        Transport::Local { otterd_path, .. }
+            if local_bin().is_some_and(|bin| Path::new(otterd_path) == bin.join("otterd")) =>
+        {
+            link_cli(true)?
+        }
+        _ => None,
+    };
+    let out = otter_client::install::install(transport, &app_version(app), linked.is_none(), true)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(match linked {
+        Some(linked) => format!("{linked}\n{out}"),
+        None => out,
+    })
+}
+
+/// Install `otter` and `otterd` for this user on this Mac (`~/.local/bin`):
+/// links to the app's own when it carries them (D-085), else downloaded.
 #[tauri::command]
 pub async fn install_cli(app: AppHandle) -> Result<String, String> {
     let here = Transport::Local {
         otterd_path: String::new(),
         home: None,
     };
-    otter_client::install::install(&here, &app_version(&app), false)
+    let linked = link_cli(true)?;
+    let out = otter_client::install::install(&here, &app_version(&app), linked.is_none(), false)
         .await
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+    Ok(match linked {
+        Some(linked) => format!("{linked}\n{out}"),
+        None => out,
+    })
+}
+
+/// `~/.local/bin`, where the command-line tools go.
+fn local_bin() -> Option<PathBuf> {
+    std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".local/bin"))
+}
+
+const CLI: [&str; 2] = ["otter", "otterd"];
+
+/// Where this app carries its own `otter` and `otterd` (D-085): beside its
+/// executable in `Otter.app/Contents/MacOS`. None for a development build,
+/// and for an app run from a disk image or a translocated copy, which a link
+/// would outlive.
+fn bundled_cli() -> Option<PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    let dir = exe.parent()?;
+    let path = dir.to_string_lossy();
+    let installed = path.ends_with(".app/Contents/MacOS")
+        && !path.starts_with("/Volumes/")
+        && !path.contains("/AppTranslocation/");
+    (installed && CLI.iter().all(|b| dir.join(b).is_file())).then(|| dir.to_owned())
+}
+
+/// Point `~/.local/bin/otter` and `otterd` at this app's own, so they are
+/// always the app's version (D-085). With `replace`, whatever is there is
+/// replaced (the developer asked); without it — at every launch — only links
+/// into an Otter app are, so a binary put there by hand is left alone.
+/// None when the app carries no binaries; else what it did.
+pub fn link_cli(replace: bool) -> Result<Option<String>, String> {
+    let (Some(app), Some(bin)) = (bundled_cli(), local_bin()) else {
+        return Ok(None);
+    };
+    link(&app, &bin, replace).map_err(|e| format!("couldn't link the command-line tools: {e}"))?;
+    Ok(Some(format!(
+        "otter and otterd in {} are this app's own; they update with it",
+        bin.display()
+    )))
 }
 
 // ---------------------------------------------------------------------------
@@ -748,6 +809,30 @@ pub async fn session_delete(
         .map_err(err)
 }
 
+/// [`link_cli`]'s work: `bin/otter` and `bin/otterd` → `app/…`.
+fn link(app: &Path, bin: &Path, replace: bool) -> std::io::Result<()> {
+    if replace {
+        std::fs::create_dir_all(bin)?;
+    }
+    for b in CLI {
+        let (to, at) = (app.join(b), bin.join(b));
+        let current = std::fs::read_link(&at).ok();
+        let ours = current.as_ref().is_some_and(|p| {
+            p.to_string_lossy()
+                .ends_with(&format!(".app/Contents/MacOS/{b}"))
+        });
+        if current.as_ref() == Some(&to) || !(replace || ours) {
+            continue;
+        }
+        // A link made beside it, then renamed over: never a moment without one.
+        let tmp = bin.join(format!(".{b}.link"));
+        let _ = std::fs::remove_file(&tmp);
+        std::os::unix::fs::symlink(&to, &tmp)?;
+        std::fs::rename(&tmp, &at)?;
+    }
+    Ok(())
+}
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CliStatus {
@@ -783,6 +868,40 @@ pub async fn cli_status() -> CliStatus {
 mod tests {
     use otter_core::SessionKind;
     use otter_protocol::{SessionSpec, SourceSpec};
+
+    /// At launch, links into an Otter app follow this one and anything else
+    /// is left; asked, everything there becomes a link (D-085).
+    #[test]
+    fn command_line_tools_link_to_the_app() {
+        let dir = std::env::temp_dir().join(format!("otter-link-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let app = dir.join("New/Otter.app/Contents/MacOS");
+        let bin = dir.join("bin");
+        std::fs::create_dir_all(&app).unwrap();
+        std::fs::create_dir_all(&bin).unwrap();
+        let old = dir.join("Old/Otter.app/Contents/MacOS/otter");
+        std::os::unix::fs::symlink(&old, bin.join("otter")).unwrap();
+        std::fs::write(bin.join("otterd"), "by hand").unwrap();
+
+        super::link(&app, &bin, false).unwrap();
+        assert_eq!(
+            std::fs::read_link(bin.join("otter")).unwrap(),
+            app.join("otter")
+        );
+        assert_eq!(
+            std::fs::read_to_string(bin.join("otterd")).unwrap(),
+            "by hand"
+        );
+
+        super::link(&app, &bin, true).unwrap();
+        assert_eq!(
+            std::fs::read_link(bin.join("otterd")).unwrap(),
+            app.join("otterd")
+        );
+        // Nothing left beside them.
+        assert_eq!(std::fs::read_dir(&bin).unwrap().count(), 2);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 
     /// The shapes the New workspace / New session dialogs send.
     #[test]

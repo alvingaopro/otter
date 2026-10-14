@@ -2614,3 +2614,43 @@ D-064's planning.
   aren't checked; the judge still sees the diff but not the code around
   it; questions in the middle of a feature are still answered by the
   brain, which can't see the code.
+## D-085 — The app carries its command-line tools; they're links (2026-10-14)
+
+Dogfooding: every app update was followed by "Update command line tools",
+which downloaded the same release's `otter`/`otterd` again (D-020), and
+until then this Mac's host ran the old `otterd` (its `otterd_path` is
+`~/.local/bin/otterd`). Now, as VS Code does with `code`:
+
+- **The `.app` carries them.** `bundle.externalBin` puts `otter` and
+  `otterd` in `Otter.app/Contents/MacOS`, built from the main workspace by
+  `apps/desktop/scripts/sidecars.mjs` (Tauri's before-dev/before-build
+  command, for its target and profile) and signed with the app. A release
+  builds them in the desktop job, for that architecture, rather than
+  downloading the `binaries` job's: same source and version, no wait on
+  the other job. The release checks they're there and, where its runner
+  can run them (arm64), that they say its version.
+- **`~/.local/bin` holds links to them.** "Install command line tools"
+  makes `otter` and `otterd` links into the app (replacing whatever is
+  there — the developer asked). At every launch the app re-points links
+  that lead into an Otter app, so an update — or the app moved — carries
+  them along; a missing one or a binary put there by hand is left alone.
+  Nothing is linked from a development build, a disk image or a
+  translocated copy, which a link would outlive. A deleted app leaves
+  dangling links, as `code` does.
+- **This Mac's host installs from the app.** Install/update for a local
+  host whose `otterd_path` is `~/.local/bin/otterd`: link, then the release
+  script without its binaries part — only the Claude worker (D-060) is
+  downloaded, once per release — then stop the daemon as before. Restarting
+  the daemon stays the developer's button (it ends in-flight runs, D-061);
+  the app never restarts it on its own at launch.
+- **Scripted installs replace links, never write through them.** The
+  release script removes `~/.local/bin/otter{,d}` before installing, so
+  `otter host install` on this Mac can't modify the app's signed binaries.
+- **The worker stays a download** (100 MB per platform, needs the host's
+  Node; D-060). `otterd` run through its link finds it at
+  `~/.local/bin/../lib/otter/claude-runtime/<version>` as before (macOS
+  keeps the link's path as the executable's); `otterd` run from inside the
+  app also looks in `~/.local/lib/otter/claude-runtime/<version>`.
+- Next, separately: the worker is versioned by otter's version, so each
+  release downloads it again even when it didn't change. Versioning it by
+  its content would make most updates download nothing.

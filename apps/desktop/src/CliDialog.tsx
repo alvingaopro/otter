@@ -2,7 +2,10 @@ import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { Dialog } from "./Dialog";
 
-/** Install `otter` (and `otterd`) for this user, matching this app's version. */
+/**
+ * Install `otter` (and `otterd`) for this user, matching this app's version:
+ * links to the app's own, which follow it from then on (D-085).
+ */
 export function CliDialog({ version, onClose }: { version?: string; onClose: () => void }) {
   const [state, setState] = useState<{ busy: boolean; output?: string; error?: string }>({ busy: false });
 
@@ -26,9 +29,9 @@ export function CliDialog({ version, onClose }: { version?: string; onClose: () 
   return (
     <Dialog title="Command line tools" onClose={onClose}>
       <p className="muted">
-        Installs <code>otter</code> and <code>otterd</code> {version} into <code>~/.local/bin</code>.
+        Puts <code>otter</code> and <code>otterd</code> {version} in <code>~/.local/bin</code>.
       </p>
-      {state.busy && <div className="notice">Downloading…</div>}
+      {state.busy && <div className="notice">Installing…</div>}
       {state.output && <pre className="output">{state.output}</pre>}
       {state.output?.includes("not on your PATH") && (
         <p className="muted small">

@@ -101,10 +101,13 @@ jobs:
           targets: ${{ matrix.target }}
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: apps/desktop/src-tauri
+          workspaces: |
+            apps/desktop/src-tauri
+            .
           key: release-${{ matrix.target }}
       - run: npm ci
         working-directory: apps/desktop
+      # Its beforeBuildCommand builds the otter/otterd the .app carries (D-085).
       - run: npm run tauri build -- --target ${{ matrix.target }} --bundles app,dmg
         working-directory: apps/desktop
       - name: Upload ${{ matrix.arch }} app
@@ -112,6 +115,14 @@ jobs:
           bundle=apps/desktop/src-tauri/target/${{ matrix.target }}/release/bundle
           # An invalid signature makes macOS call a download "damaged".
           codesign --verify --deep --strict --verbose=2 "$bundle/macos/Otter.app"
+          # The command-line tools it links into ~/.local/bin, of its own
+          # version (run where the runner can: it's arm64).
+          for b in otter otterd; do
+            test -x "$bundle/macos/Otter.app/Contents/MacOS/$b"
+            if [ "${{ matrix.arch }}" = arm64 ]; then
+              "$bundle/macos/Otter.app/Contents/MacOS/$b" --version | grep -qx "$b $VERSION"
+            fi
+          done
           mkdir -p out
           cp "$bundle"/dmg/*.dmg "out/Otter_${VERSION}_macos_${{ matrix.arch }}.dmg"
           tar -czf "out/Otter_${VERSION}_macos_${{ matrix.arch }}.app.tar.gz" -C "$bundle/macos" Otter.app

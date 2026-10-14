@@ -2,7 +2,10 @@
 //! on a host (over SSH) or on this machine, so neither needs a Rust toolchain.
 //!
 //! The script runs in the host's `sh`: it picks the build for the host's OS
-//! and CPU, downloads it with curl or wget, and installs both binaries.
+//! and CPU, downloads it with curl or wget, and installs both binaries —
+//! unless the desktop app is installing on its own Mac, where they are links
+//! to the app's own (D-085), which the script replaces rather than writes
+//! through when it does install them.
 //!
 //! Then the Claude worker (D-060) — Node code plus the Claude Code its SDK
 //! bundles for this platform — into `~/.local/lib/otter/claude-runtime/<version>`,
@@ -27,10 +30,11 @@ pub const RELEASES: &str = "https://github.com/alvingaopro/otter/releases/downlo
 
 const TIMEOUT: Duration = Duration::from_secs(300);
 
-/// The script that installs release `version` (`X.Y.Z`). With `stop_home`,
-/// it then stops the daemon whose state directory that is (`None` inside:
-/// the default `~/.otter`).
-pub fn script(version: &str, stop_home: Option<Option<&str>>) -> String {
+/// The script that installs release `version` (`X.Y.Z`): its `otterd` and
+/// `otter` unless `binaries` is false (the desktop app links its own, D-085),
+/// then its Claude worker. With `stop_home`, it then stops the daemon whose
+/// state directory that is (`None` inside: the default `~/.otter`).
+pub fn script(version: &str, binaries: bool, stop_home: Option<Option<&str>>) -> String {
     let mut s = format!(
         r#"set -eu
 v={version}
@@ -51,13 +55,18 @@ fetch() {{
   else echo "curl or wget is needed to download $1" >&2; exit 4
   fi
 }}
-fetch "$url" "$tmp/otterd.tar.gz" || {{ echo "could not download $url" >&2; exit 4; }}
-tar -xzf "$tmp/otterd.tar.gz" -C "$tmp"
-mkdir -p "$HOME/.local/bin"
-for b in otterd otter; do
-  install -m 755 "$tmp/otter-$v-$t/$b" "$HOME/.local/bin/$b"
-done
-echo "installed otterd and otter $v in $HOME/.local/bin"
+if [ {binaries} = 1 ]; then
+  fetch "$url" "$tmp/otterd.tar.gz" || {{ echo "could not download $url" >&2; exit 4; }}
+  tar -xzf "$tmp/otterd.tar.gz" -C "$tmp"
+  mkdir -p "$HOME/.local/bin"
+  for b in otterd otter; do
+    # It may be a link into the desktop app (D-085): replace the link, never
+    # write through it.
+    rm -f "$HOME/.local/bin/$b"
+    install -m 755 "$tmp/otter-$v-$t/$b" "$HOME/.local/bin/$b"
+  done
+  echo "installed otterd and otter $v in $HOME/.local/bin"
+fi
 command -v tmux >/dev/null 2>&1 || echo "note: otterd needs tmux 3.2 or newer, which is not installed" >&2
 rt="$HOME/.local/lib/otter/claude-runtime"
 w="otter-claude-runtime-$v-$t"
@@ -94,6 +103,7 @@ fi
 case ":$PATH:" in *":$HOME/.local/bin:"*) ;; *) echo "note: $HOME/.local/bin is not on your PATH" ;; esac
 "#,
         version = sh_quote(version),
+        binaries = u8::from(binaries),
     );
     if let Some(home) = stop_home {
         let dir = match home {
@@ -120,14 +130,16 @@ done
 }
 
 /// Install release `version` on the transport's host and return what the
-/// script printed. `stop_daemon` also stops that host's running daemon (for
-/// an upgrade), using the transport's state directory.
+/// script printed. Without `binaries`, only its Claude worker. `stop_daemon`
+/// also stops that host's running daemon (for an upgrade), using the
+/// transport's state directory.
 pub async fn install(
     transport: &Transport,
     version: &str,
+    binaries: bool,
     stop_daemon: bool,
 ) -> Result<String, ClientError> {
-    let script = script(version, stop_daemon.then(|| transport.home()));
+    let script = script(version, binaries, stop_daemon.then(|| transport.home()));
     let mut cmd = transport.shell();
     cmd.stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -162,22 +174,26 @@ mod tests {
 
     #[test]
     fn script_targets_the_release_and_stops_the_right_daemon() {
-        let s = script("1.2.3", None);
+        let s = script("1.2.3", true, None);
         assert!(s.contains("v=1.2.3\n"), "{s}");
+        assert!(s.contains("if [ 1 = 1 ]; then"), "{s}");
+        assert!(script("1.2.3", false, None).contains("if [ 0 = 1 ]; then"));
         assert!(s.contains("url=\"$base/otter-$v-$t.tar.gz\""), "{s}");
         // The worker: checked, then moved into a directory of its own release.
         assert!(s.contains("$base/$w.tar.gz.sha256"), "{s}");
         assert!(s.contains("mv \"$stage/$w\" \"$rt/$v\""), "{s}");
         assert!(!s.contains("pid_file"), "{s}");
         assert!(
-            script("1.2.3", Some(None))
+            script("1.2.3", true, Some(None))
                 .contains("for home in \"$HOME/.otter\" \"$HOME/.workd\"; do")
         );
         assert!(
-            script("1.2.3", Some(Some("~/.otter-dev")))
+            script("1.2.3", true, Some(Some("~/.otter-dev")))
                 .contains("for home in \"$HOME\"/.otter-dev; do")
         );
-        assert!(script("1.2.3", Some(Some("/srv/w d"))).contains("for home in '/srv/w d'; do"));
+        assert!(
+            script("1.2.3", true, Some(Some("/srv/w d"))).contains("for home in '/srv/w d'; do")
+        );
     }
 
     /// The worker part, against a release served from a directory: installed
@@ -214,7 +230,7 @@ mod tests {
         };
         // Only the worker part of the script, with `fetch` reading files and
         // no Node (so no `--check`).
-        let full = script("9.9.9", None);
+        let full = script("9.9.9", true, None);
         let part = &full[full.find("rt=").unwrap()..full.find("case \":$PATH:\"").unwrap()];
         let run = |home: &std::path::Path| {
             let prelude = format!(
@@ -258,9 +274,65 @@ mod tests {
         assert!(again.contains("already installed"), "{again}");
     }
 
+    /// Installing over links into the desktop app (D-085) replaces the
+    /// links: the app's own binaries are never written.
+    #[test]
+    fn binaries_replace_links_never_write_through_them() {
+        let dir = tempfile::tempdir().unwrap();
+        let rel = dir.path().join("rel/v9.9.9");
+        let pkg = dir.path().join("pkg/otter-9.9.9-test");
+        std::fs::create_dir_all(&rel).unwrap();
+        std::fs::create_dir_all(&pkg).unwrap();
+        for b in ["otter", "otterd"] {
+            std::fs::write(pkg.join(b), "downloaded").unwrap();
+        }
+        let ok = std::process::Command::new("tar")
+            .arg("-czf")
+            .arg(rel.join("otter-9.9.9-test.tar.gz"))
+            .arg("-C")
+            .arg(dir.path().join("pkg"))
+            .arg("otter-9.9.9-test")
+            .status()
+            .unwrap();
+        assert!(ok.success());
+        let app = dir.path().join("Otter.app/Contents/MacOS");
+        let bin = dir.path().join("home/.local/bin");
+        std::fs::create_dir_all(&app).unwrap();
+        std::fs::create_dir_all(&bin).unwrap();
+        for b in ["otter", "otterd"] {
+            std::fs::write(app.join(b), "the app's").unwrap();
+            std::os::unix::fs::symlink(app.join(b), bin.join(b)).unwrap();
+        }
+        let full = script("9.9.9", true, None);
+        let part = &full[full.find("if [ 1 = 1 ]").unwrap()..full.find("command -v tmux").unwrap()];
+        let prelude = format!(
+            "set -eu\nv=9.9.9\nt=test\nurl={}/otter-9.9.9-test.tar.gz\ntmp=$(mktemp -d)\nfetch() {{ cp \"$1\" \"$2\"; }}\nHOME={}\n",
+            rel.display(),
+            dir.path().join("home").display()
+        );
+        let out = std::process::Command::new("/bin/sh")
+            .arg("-c")
+            .arg(format!("{prelude}{part}"))
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        for b in ["otter", "otterd"] {
+            assert_eq!(std::fs::read_to_string(app.join(b)).unwrap(), "the app's");
+            assert!(!bin.join(b).is_symlink());
+            assert_eq!(std::fs::read_to_string(bin.join(b)).unwrap(), "downloaded");
+        }
+    }
+
     #[tokio::test]
     async fn script_is_valid_sh() {
-        for s in [script("1.2.3", None), script("1.2.3", Some(Some("~/x")))] {
+        for s in [
+            script("1.2.3", true, None),
+            script("1.2.3", false, Some(Some("~/x"))),
+        ] {
             let out = tokio::process::Command::new("/bin/sh")
                 .arg("-n")
                 .arg("-c")

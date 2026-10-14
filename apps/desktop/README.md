@@ -7,8 +7,12 @@ It shows the hosts in `$OTTER_CONFIG_DIR/hosts.toml` (default
 `~/.config/otter`, shared with `otter`; hosts can be added and removed in
 the app or with `otter host add/rm`), every workspace on them grouped by
 what needs you (pinned ones first, in your order), and an embedded terminal attached to the selected session.
-It can install `otterd` on a host and the command-line tools on this Mac from
-the matching release (D-020).
+It can install `otterd` on a host from the matching release (D-020). It
+carries `otter` and `otterd` of its own version and links them into
+`~/.local/bin` as the command-line tools on this Mac (D-085):
+`scripts/sidecars.mjs` builds them into `src-tauri/binaries/` before
+`tauri dev` / `tauri build` (`npm run sidecars` alone, before a plain
+`cargo` build of `src-tauri`).
 
 ```sh
 cd apps/desktop
