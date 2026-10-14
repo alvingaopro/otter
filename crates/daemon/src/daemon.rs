@@ -32,6 +32,9 @@ use crate::store::Store;
 pub type RpcResult<T> = Result<T, RpcError>;
 
 pub struct Daemon {
+    /// Workspaces claimed by a run that is starting, and by which feature (D-079).
+    pub(crate) starting:
+        std::sync::Mutex<std::collections::HashMap<otter_core::WorkspaceId, otter_core::FeatureId>>,
     /// Processes seen dead, and since when: their end is taken a moment
     /// later, once the backend has their last output (D-076).
     pub(crate) dying: std::sync::Mutex<std::collections::HashMap<String, std::time::Instant>>,
@@ -125,6 +128,7 @@ impl Daemon {
             tracing::warn!("installing the wl-paste stand-in: {e:#}");
         }
         Daemon {
+            starting: Default::default(),
             dying: Default::default(),
             reconciled_once: Default::default(),
             problems: std::sync::Mutex::new(problems),

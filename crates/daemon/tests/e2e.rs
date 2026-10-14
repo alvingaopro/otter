@@ -1925,6 +1925,150 @@ async fn claude_code_without_hooks_falls_back_to_the_quiet_turn() {
     wait_agent(host, "nohooks", "claude", AgentState::WaitingForInput).await;
 }
 
+/// One driver per workspace (D-079): a second feature on a workspace another
+/// feature's agent works in waits, says why, never runs alongside it, and
+/// goes on by itself when the workspace is free.
+#[tokio::test]
+async fn a_second_feature_waits_for_the_workspace() {
+    use otter_core::feature::{FeatureAction, FeatureStatus, RunState};
+    let fake = fake_agent_host("ok", "rules").await;
+    let host = &fake.host;
+    let first = started_with(host, "shared", "A long job HANG", "test:\n\t@true\n", false).await;
+    wait_feature(host, &first, "working", |f| {
+        f.live_run().is_some_and(|r| r.state == RunState::Running)
+    })
+    .await;
+    let mut conn = host.conn().await;
+    let second = conn
+        .feature_create(otter_protocol::feature::FeatureCreate {
+            command_id: "create-second".into(),
+            title: "Second".into(),
+            request: "Add a README".into(),
+            workspace: Some("shared".into()),
+        })
+        .await
+        .unwrap();
+    let second = second.id.to_string();
+    conn.feature_act("start-second", &second, FeatureAction::Start)
+        .await
+        .unwrap();
+    let f = wait_feature(host, &second, "waiting for the workspace", |f| {
+        f.status_reason.as_deref() == Some("Waiting for shared: “CSV export” is working there")
+    })
+    .await;
+    assert_eq!(f.status, FeatureStatus::Implementing);
+    assert!(f.runs.is_empty());
+    // Still waiting a while later: not alongside.
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    assert!(conn.feature_get(&second).await.unwrap().runs.is_empty());
+    // The first one holds: the second goes on by itself.
+    conn.feature_act("pause-first", &first, FeatureAction::Pause)
+        .await
+        .unwrap();
+    let f = wait_feature(host, &second, "the second done", |f| {
+        f.status == FeatureStatus::Review
+    })
+    .await;
+    let a = conn.feature_get(&first).await.unwrap();
+    assert!(
+        f.runs[0].started_at >= a.runs[0].ended_at.unwrap(),
+        "one at a time: {:?} vs {:?}",
+        f.runs[0].started_at,
+        a.runs[0].ended_at
+    );
+    assert!(!f.rationale.is_empty());
+}
+
+/// A feature waiting for a Git workspace gets one of its own (D-080): a
+/// worktree of the same repository on a branch for it, and both features'
+/// agents work at once, each in its own directory.
+#[tokio::test]
+async fn a_waiting_feature_gets_a_worktree_of_its_own() {
+    use otter_core::feature::{FeatureAction, FeatureStatus, RunState};
+    let fake = fake_agent_host("ok", "rules").await;
+    let host = &fake.host;
+    let src = host.home().join("origin");
+    std::fs::create_dir_all(&src).unwrap();
+    git(&src, &["init", "-q", "-b", "main"]);
+    std::fs::write(src.join("Makefile"), "test:\n\t@echo all good\n").unwrap();
+    git(&src, &["add", "-A"]);
+    git(&src, &["commit", "-q", "-m", "init"]);
+    let mut conn = host.conn().await;
+    conn.workspace_create(git_ws("app", &src, Some("feature/a"), vec![]))
+        .await
+        .unwrap();
+    let ready = |name: &'static str| async move {
+        eventually("workspace ready", || async {
+            let ws = host.conn().await.workspace_get(name).await.unwrap();
+            (ws.state == WorkspaceState::Ready).then_some(ws)
+        })
+        .await
+    };
+    let app = ready("app").await;
+    let new = |title: &str, request: &str| otter_protocol::feature::FeatureCreate {
+        command_id: format!("create-{title}"),
+        title: title.into(),
+        request: request.into(),
+        workspace: Some("app".into()),
+    };
+    let first = conn
+        .feature_create(new("First", "A long job HANG"))
+        .await
+        .unwrap()
+        .id
+        .to_string();
+    conn.feature_act("start-first", &first, FeatureAction::Start)
+        .await
+        .unwrap();
+    wait_feature(host, &first, "working", |f| {
+        f.live_run().is_some_and(|r| r.state == RunState::Running)
+    })
+    .await;
+    let second = conn
+        .feature_create(new("Second", "Add a README"))
+        .await
+        .unwrap()
+        .id
+        .to_string();
+    conn.feature_act("start-second", &second, FeatureAction::Start)
+        .await
+        .unwrap();
+    wait_feature(host, &second, "waiting", |f| {
+        f.status_reason.as_deref() == Some("Waiting for app: “First” is working there")
+    })
+    .await;
+    let f = conn
+        .feature_act("own", &second, FeatureAction::OwnWorkspace)
+        .await
+        .unwrap();
+    let own = f.workspace_id.clone().unwrap();
+    assert_ne!(own, app.id);
+    let f = wait_feature(host, &second, "the second done", |f| {
+        f.status == FeatureStatus::Review
+    })
+    .await;
+    assert_eq!(f.workspace_id.as_ref(), Some(&own));
+    // In parallel: the first is still at work, in its own directory.
+    let a = conn.feature_get(&first).await.unwrap();
+    assert_eq!(a.live_run().map(|r| r.state), Some(RunState::Running));
+    let ws = conn.workspace_get(own.as_str()).await.unwrap();
+    assert_eq!(ws.name, "app-second");
+    assert_ne!(ws.root, app.root);
+    let otter_core::WorkspaceSource::Git(g) = &ws.source else {
+        panic!("{:?}", ws.source)
+    };
+    assert!(g.branch.starts_with("otter/second-"), "{}", g.branch);
+    // Not for a feature that has worked already: its work is where it was.
+    let err = conn
+        .feature_act("own-again", &first, FeatureAction::OwnWorkspace)
+        .await
+        .unwrap_err();
+    assert!(
+        format!("{err:#}").contains("has worked in its workspace already"),
+        "{err:#}"
+    );
+}
+
 /// A host says what's wrong with it, each with what to do (D-077): here,
 /// settings it couldn't read, met as it started.
 #[tokio::test]

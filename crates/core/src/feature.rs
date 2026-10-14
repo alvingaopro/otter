@@ -765,6 +765,10 @@ pub enum FeatureAction {
     SetWorkspace {
         workspace: String,
     },
+    /// Work in a workspace of its own (D-080): a worktree of its Git
+    /// workspace's repository, on a branch for the feature — when another
+    /// feature holds that workspace.
+    OwnWorkspace,
     /// Start (or restart) the app's preview for the developer to look at.
     Preview,
     /// Stop what the coding agent is doing now (its current turn only) and
@@ -866,6 +870,7 @@ impl FeatureAction {
             FeatureAction::Accept { .. } => "accept",
             FeatureAction::RequestChanges { .. } => "request_changes",
             FeatureAction::SetWorkspace { .. } => "set_workspace",
+            FeatureAction::OwnWorkspace => "own_workspace",
             FeatureAction::Preview => "preview",
             FeatureAction::Interrupt => "interrupt",
             FeatureAction::Redirect { .. } => "redirect",

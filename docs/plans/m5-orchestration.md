@@ -7,7 +7,7 @@ the requester's instruction to go on, as M3 and M4 were (D-070, D-074): the
 scope is derived from the exit outcome, the M2 plan's "don't run parallel
 tasks in a shared directory (a worktree per task, `git.rs` already supports
 it)", and an audit of the code (§2). When the spec arrives, it wins (D-078).
-**Status:** planned. **Branch:** `roadmap-m5`, from `main` after M4.
+**Status:** steps 1–4 done (D-079…D-081). The live scenario is pending (`runtime-validation.md` M5-1). **Branch:** `roadmap-m5`, from `main` after M4.
 
 ## 1. The outcome, read narrowly
 
@@ -55,7 +55,7 @@ Each lands as its own PR (`release:skip`) with tests.
 A workspace is driven by at most one managed run at a time; a feature whose
 next turn needs a workspace another feature's run holds waits — visibly, on
 the Inbox ("waiting for <workspace>: <other feature> is working there") —
-and goes on when it's free, in the order they asked. A run doesn't start in
+and goes on when it's free (whichever steps first, D-079). A run doesn't start in
 a workspace where an agent session the developer started is working;
 a session started there while a run works is told so.
 
@@ -88,8 +88,11 @@ the spec arrives, with evidence from dogfooding (architecture-lessons
 
 ## 5. Acceptance (derived)
 
-- [ ] Two features never run agents in one directory at once; the second
-  waits, says why, and goes on by itself.
-- [ ] A feature can be given its own worktree of a busy repository, and
-  both run in parallel, each delivering only its own work.
-- [ ] Every run on a host can be held at once, and resumed.
+- [x] Two features never run agents in one directory at once; the second
+  waits, says why, and goes on by itself (`a_second_feature_waits_for_the_workspace`).
+- [x] A feature can be given its own worktree of a busy repository, and
+  both run in parallel, each delivering only its own work
+  (`a_waiting_feature_gets_a_worktree_of_its_own`).
+- [x] Every run on a host can be held at once, and resumed (CLI e2e
+  `features_and_the_coding_runtime_from_the_terminal`, `Inbox.test.tsx`).
+- [ ] With live agents on a real repository — pending (M5-1).

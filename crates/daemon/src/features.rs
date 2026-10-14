@@ -587,6 +587,12 @@ pub fn apply_action(
         }
         // The preview's session is started by `feature_act`.
         FeatureAction::Preview => {}
+        // Made into `SetWorkspace` by `feature_act`.
+        FeatureAction::OwnWorkspace => {
+            return Err(RpcError::invalid(
+                "own_workspace is resolved before it applies",
+            ));
+        }
         FeatureAction::Interrupt => {
             if f.live_run().is_none() {
                 return Err(RpcError::conflict(
@@ -734,6 +740,77 @@ impl Daemon {
         Ok(applied.feature)
     }
 
+    /// A worktree of the feature's Git workspace's repository, on a branch
+    /// of the feature's own, from the same base (D-080).
+    async fn own_workspace(
+        self: &std::sync::Arc<Self>,
+        id: &FeatureId,
+    ) -> RpcResult<otter_core::Workspace> {
+        let f = self.feature_get(id.as_str()).await?;
+        // Its work so far would stay behind: only before it has any.
+        if !f.runs.is_empty() {
+            return Err(RpcError::conflict(
+                "it has worked in its workspace already, and its work is there: give it its own before it starts",
+            ));
+        }
+        let ws_id = f
+            .workspace_id
+            .clone()
+            .ok_or_else(|| RpcError::conflict("the feature has no workspace yet"))?;
+        let (name, repository, base, taken) = {
+            let store = self.store.lock().await;
+            let ws = store
+                .workspace(ws_id.as_str())
+                .ok_or_else(|| workspace_not_found(ws_id.as_str()))?;
+            let otter_core::WorkspaceSource::Git(g) = &ws.source else {
+                return Err(RpcError::conflict(
+                    "only a Git workspace can be given to a feature of its own (a worktree of its repository)",
+                ));
+            };
+            let taken: Vec<String> = store
+                .state
+                .workspaces
+                .iter()
+                .map(|w| w.name.clone())
+                .collect();
+            (ws.name.clone(), g.repository.clone(), g.base.clone(), taken)
+        };
+        let slug = crate::git::slug(&f.title);
+        let short: String =
+            f.id.as_str()
+                .chars()
+                .rev()
+                .take(4)
+                .collect::<Vec<_>>()
+                .into_iter()
+                .rev()
+                .collect();
+        let mut new_name = format!("{name}-{slug}");
+        let mut n = 2;
+        while taken.contains(&new_name) {
+            new_name = format!("{name}-{slug}-{n}");
+            n += 1;
+        }
+        self.workspace_create(otter_protocol::WorkspaceCreate {
+            name: new_name,
+            brief: Some(otter_core::Brief {
+                title: Some(f.title.clone()),
+                goal: Some(format!(
+                    "The feature “{}”, in a worktree of its own",
+                    f.title
+                )),
+                ..Default::default()
+            }),
+            source: otter_protocol::SourceSpec::Git {
+                repository,
+                branch: Some(format!("otter/{slug}-{short}")),
+                base,
+            },
+            sessions: Some(vec![]),
+        })
+        .await
+    }
+
     pub(crate) async fn feature_act(
         self: std::sync::Arc<Self>,
         p: FeatureAct,
@@ -741,6 +818,16 @@ impl Daemon {
         check_command_id(&p.command_id)?;
         let id = FeatureId::from(p.feature.as_str());
         let mut p = p;
+        // A workspace of its own (D-080): made now, then chosen like any.
+        if p.action == FeatureAction::OwnWorkspace {
+            if let Some(f) = self.features.lock().await.applied(&p.command_id) {
+                return Ok(f.clone());
+            }
+            let ws = self.own_workspace(&id).await?;
+            p.action = FeatureAction::SetWorkspace {
+                workspace: ws.id.to_string(),
+            };
+        }
         if let FeatureAction::SetWorkspace { workspace } = &mut p.action {
             let store = self.store.lock().await;
             let ws = store

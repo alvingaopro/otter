@@ -92,6 +92,9 @@ fn plan_turn() -> bool {
     std::env::var("OTTER_PLAN_TURN").map_or(true, |v| v != "0")
 }
 
+/// How a feature waiting for its workspace says so (D-079).
+const WAITING: &str = "Waiting for ";
+
 /// The planning task's title.
 const PLANNING: &str = "Look at the code and plan the work";
 /// The task CI's failure becomes, and what is said when a fix didn't change it.
@@ -1023,9 +1026,68 @@ impl Daemon {
         self.start_turn(f, &task).await
     }
 
+    /// Why the feature's workspace can't be worked in now, if it can't
+    /// (D-079): another feature's run is there, or an agent the developer
+    /// started is at work there.
+    async fn workspace_taken(&self, f: &Feature) -> Option<String> {
+        let ws_id = f.workspace_id.as_ref()?;
+        let (name, busy_session) = {
+            let store = self.store.lock().await;
+            let ws = store.workspace(ws_id.as_str())?;
+            // A workspace still being made (one of its own, D-080).
+            if ws.state == otter_core::WorkspaceState::Preparing {
+                return Some(format!("{WAITING}{}: it's being prepared", ws.name));
+            }
+            let busy = ws
+                .sessions
+                .iter()
+                .filter(|s| s.current_execution().is_some_and(|e| e.is_running()))
+                .find(|s| {
+                    s.agent.as_ref().is_some_and(|a| {
+                        matches!(
+                            a.state,
+                            otter_core::AgentState::Working
+                                | otter_core::AgentState::Starting
+                                | otter_core::AgentState::Blocked
+                        )
+                    })
+                })
+                .map(|s| s.name.clone());
+            (ws.name.clone(), busy)
+        };
+        if let Some(other) = self.workspace_holder(ws_id).filter(|o| o != &f.id) {
+            let title = self
+                .feature_get(other.as_str())
+                .await
+                .map(|o| o.title)
+                .unwrap_or_else(|_| other.to_string());
+            return Some(format!("{WAITING}{name}: “{title}” is working there"));
+        }
+        busy_session
+            .map(|s| format!("{WAITING}{name}: {s}, an agent you started, is working there"))
+    }
+
+    /// The feature waits for its workspace (D-079): said once, on the
+    /// feature; it starts by itself when the workspace is free.
+    async fn wait_for_workspace(self: &Arc<Self>, f: &Feature, why: String) -> RpcResult<()> {
+        if f.status_reason.as_deref() == Some(why.as_str()) {
+            return Ok(());
+        }
+        self.controller_apply(&f.id, f.status, move |f, _| {
+            f.rationale.push(why.clone());
+            f.status_reason = Some(why);
+            Ok(vec![])
+        })
+        .await?;
+        Ok(())
+    }
+
     /// Give `task` to the coding agent: a turn in the feature's conversation.
     async fn start_turn(self: &Arc<Self>, f: &Feature, task: &Task) -> RpcResult<()> {
         let task = task.clone();
+        if let Some(why) = self.workspace_taken(f).await {
+            return self.wait_for_workspace(f, why).await;
+        }
         // One conversation per feature (D-064): the next task, a fix and a
         // retry are turns in the session the work began in. A turn of this
         // task that was cut off (restart, pause, a limit, takeover) carries
@@ -1064,16 +1126,38 @@ impl Daemon {
             (None, _) => task_prompt(f, &task, developer_notes(f, None, &carried), false),
         };
         let resume = session.and_then(|(run, _)| run.provider_session_id.clone());
-        if let Err(e) = self
+        match self
             .start_run(&f.id, &task.id, prompt, resume, counts)
             .await
         {
-            self.fail(
-                &f.id,
-                &format!("Couldn't start the coding agent: {}", e.message),
-                None,
-            )
-            .await;
+            // Taken in the meantime: wait, as above.
+            Err(e) if e.message.starts_with(crate::runs::BUSY) => {
+                if let Some(why) = self.workspace_taken(f).await {
+                    self.wait_for_workspace(f, why).await?;
+                }
+            }
+            Err(e) => {
+                self.fail(
+                    &f.id,
+                    &format!("Couldn't start the coding agent: {}", e.message),
+                    None,
+                )
+                .await;
+            }
+            // No longer waiting.
+            Ok(_)
+                if f.status_reason
+                    .as_deref()
+                    .is_some_and(|r| r.starts_with(WAITING)) =>
+            {
+                let _ = self
+                    .controller_apply(&f.id, f.status, |f, _| {
+                        f.status_reason = None;
+                        Ok(vec![])
+                    })
+                    .await;
+            }
+            Ok(_) => {}
         }
         Ok(())
     }

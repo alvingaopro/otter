@@ -43,6 +43,8 @@ pub const DEFAULT_RUNTIME: &str = "claude";
 /// A run in progress, as the rest of the daemon reaches it.
 pub(crate) struct LiveRun {
     pub feature: FeatureId,
+    /// The workspace it works in: one driver at a time (D-079).
+    pub workspace: otter_core::WorkspaceId,
     pub conversation: ConversationId,
     /// The run's actor.
     tx: mpsc::Sender<ActorCmd>,
@@ -60,6 +62,22 @@ const ACTIVITY_LINES: usize = 30;
 
 /// Live runs by id.
 pub(crate) type Runs = std::sync::Mutex<HashMap<RunId, LiveRun>>;
+
+/// What a run that can't start because its workspace is taken says first:
+/// the feature waits, it doesn't fail (D-079).
+pub(crate) const BUSY: &str = "busy: ";
+
+/// A workspace claimed by a run that is starting, until it's live (or not).
+struct Claim<'a> {
+    daemon: &'a Daemon,
+    workspace: otter_core::WorkspaceId,
+}
+
+impl Drop for Claim<'_> {
+    fn drop(&mut self) {
+        self.daemon.starting.lock().unwrap().remove(&self.workspace);
+    }
+}
 
 impl Daemon {
     /// Start a run of `task`: fresh (a new conversation), or continuing
@@ -96,6 +114,25 @@ impl Daemon {
             .workspace(ws_id.as_str())
             .cloned()
             .ok_or_else(|| workspace_not_found(ws_id.as_str()))?;
+        // One driver per workspace (D-079): claimed now, held while the run
+        // lives.
+        let _claim = {
+            let runs = self.runs.lock().unwrap();
+            let mut starting = self.starting.lock().unwrap();
+            let holder = runs
+                .values()
+                .find(|r| r.workspace == ws.id && &r.feature != feature_id)
+                .map(|r| r.feature.clone())
+                .or_else(|| starting.get(&ws.id).filter(|f| *f != feature_id).cloned());
+            if let Some(other) = holder {
+                return Err(RpcError::conflict(format!("{BUSY}{other}")));
+            }
+            starting.insert(ws.id.clone(), feature_id.clone());
+            Claim {
+                daemon: self.as_ref(),
+                workspace: ws.id.clone(),
+            }
+        };
         // Never two drivers for one conversation: not while a developer has
         // it. The feature's tasks share one (D-064).
         if feature
@@ -315,6 +352,7 @@ impl Daemon {
             run_id.clone(),
             LiveRun {
                 feature: feature_id.clone(),
+                workspace: ws.id.clone(),
                 conversation: conversation_id.clone(),
                 tx: tx.clone(),
                 stopping: stopping.clone(),
@@ -351,6 +389,19 @@ impl Daemon {
         let runs = self.runs.lock().unwrap();
         let p = runs.get(run)?.pulse.lock().unwrap();
         (p.tools == 0).then(|| p.at.elapsed())
+    }
+
+    /// The feature whose run works in `workspace` now, or is starting there
+    /// (D-079).
+    pub(crate) fn workspace_holder(
+        &self,
+        workspace: &otter_core::WorkspaceId,
+    ) -> Option<FeatureId> {
+        let runs = self.runs.lock().unwrap();
+        runs.values()
+            .find(|r| &r.workspace == workspace)
+            .map(|r| r.feature.clone())
+            .or_else(|| self.starting.lock().unwrap().get(workspace).cloned())
     }
 
     /// A run that never got going: its generation ends, its turns too.

@@ -2418,3 +2418,60 @@ own for a feature whose workspace is taken, and a pause for everything.
 Parallel tasks inside one feature (with merging) go against D-064 and have
 no evidence yet; they wait for the spec.
 
+## D-079 — One driver per workspace (2026-10-14)
+
+M5 step 1 (`docs/plans/m5-orchestration.md`, gap 1). Nothing stopped two
+features' coding agents working in one directory at once — editing the
+same files, and delivery pushing one branch with both features' work —
+nor a feature's agent working next to one the developer started there.
+
+- **A workspace has one managed run at a time.** A run claims its
+  workspace as it starts (atomically: a claim while it starts, then the
+  live run itself) and holds it until it ends. A second feature's turn
+  doesn't start there: the feature keeps its status and says why —
+  "Waiting for <workspace>: “<feature>” is working there" — once, on the
+  feature and in its rationale; it isn't blocked (nothing waits on the
+  developer) and it costs no attempt. When the run ends, the controller is
+  woken and the waiting feature starts by itself; the reason goes. Not
+  first-come-first-served across several waiting features: whichever steps
+  first after the release.
+- **The developer's own agents count.** A run doesn't start in a workspace
+  where an agent session the developer started is starting, working or
+  waiting on them; the feature waits the same way.
+- Not done: telling the developer when they start an agent session in a
+  workspace a run is working in.
+
+## D-080 — A feature can have a workspace of its own (2026-10-14)
+
+M5 step 2 (`docs/plans/m5-orchestration.md`, gap 2). With one driver per
+workspace (D-079), a second feature on a busy workspace waits; to run side
+by side the developer had to make another workspace and move it by hand.
+
+- **`own_workspace`** (`otter feature own-workspace`, the app's waiting
+  banner): otterd makes a worktree of the feature's Git workspace's
+  repository — named after both (`<workspace>-<feature>`), on a branch for
+  the feature (`otter/<feature>-<id end>`), from the same base — and the
+  feature moves there; it waits while that workspace is prepared, then
+  works. Both features' agents then run at once, each in its own
+  directory, and each delivers its own branch.
+- **Only before it has worked**: a feature that has run already has its
+  work in the workspace it has; moving it would leave that behind.
+- A directory workspace can't be split this way (it's not a Git
+  repository Otter manages): its features wait their turn.
+- A feature waiting for any workspace being prepared says so ("it's being
+  prepared"), instead of failing to start.
+
+## D-081 — One control for every agent at work (2026-10-14)
+
+M5 step 3 (`docs/plans/m5-orchestration.md`, gap 3). Pause and cancel were
+per feature; with several agents at work there was no single control.
+
+- **`otter feature pause --all [--host h]`** holds every feature at work
+  (planning, implementing, verifying, or blocked) on every host — each as a
+  pause does: its turn interrupted, its conversation held — and
+  `otter feature resume --all` lets every paused one go on. One line per
+  feature; a host it can't reach, or a feature that can't be held, is said
+  and makes the command fail.
+- **The Inbox's WORKING group has "Pause all features"**, the same for
+  what the app shows.
+

@@ -67,4 +67,12 @@ describe("Inbox", () => {
     await act(async () => button(item("api"), "Open")!.click());
     expect(onOpenWorkspace).toHaveBeenCalledWith("mac/ws_api");
   });
+
+  it("pauses every feature at work at once", async () => {
+    await render();
+    await act(async () => button(section("WORKING"), "Pause all features")!.click());
+    const working = source.list().filter((p) => ["planning", "implementing", "verifying"].includes(p.feature.status));
+    expect(working).toEqual([]);
+    expect(source.list().some((p) => p.feature.status === "paused")).toBe(true);
+  });
 });

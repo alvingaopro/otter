@@ -511,6 +511,24 @@ function StatusBanner({ f, onApprovals, act }: { f: Feature; onApprovals: () => 
       </div>
     );
   }
+  // Waiting for its workspace (D-079): or a worktree of its own (D-080).
+  if (f.status_reason?.startsWith("Waiting for ")) {
+    return (
+      <div className="banner info" role="status">
+        <span className="banner-text">
+          <Glyph kind="working" />
+          <span className="banner-summary">{f.status_reason}</span>
+        </span>
+        {f.status_reason.endsWith("is working there") && f.runs.length === 0 && (
+          <span className="banner-actions">
+            <button className="btn" title="A worktree of the same repository, on a branch for this feature" onClick={() => act({ action: "own_workspace" })}>
+              Work in its own workspace
+            </button>
+          </span>
+        )}
+      </div>
+    );
+  }
   return null;
 }
 

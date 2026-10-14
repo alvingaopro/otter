@@ -317,7 +317,7 @@ export function mockSource(host = "preview", now = Date.now()): FeatureSource {
         request_changes: "implementing",
         set_workspace: "planning",
       };
-      if (action.action === "preview") return;
+      if (action.action === "preview" || action.action === "own_workspace") return;
       if (action.action === "decide") {
         update(key, (f) => ({
           ...f,
