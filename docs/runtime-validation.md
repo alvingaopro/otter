@@ -66,6 +66,8 @@ agent) cover the mechanics. Re-run with the audit's harness:
 | M2-3 | An approval answered after the run's limit: the approved command completes | Pending | Offline: `waiting_on_an_approval_doesnt_use_up_the_runs_time` (audit E1, D-063). |
 | M2-4 | The planning turn with a real model: a JSON proposal, reviewed by the brain | Pending | Offline: `the_coding_agent_plans_first_in_the_features_conversation`, `a_planning_turn_without_a_plan_falls_back` (D-064). |
 | M2-5 | A run that starts `sleep 20 && echo done` in the background and says it will wait ends only after `done` (both backends) | Pending | Offline: `a_run_waits_for_the_agents_background_work` (stream-json shapes), actor unit tests, worker mapping tests (D-065). |
+| M2-6 | The golden path with real Claude and real GitHub: a feature from `otter feature new` to an accepted pull request in a disposable repository | Pending | Offline: `a_feature_goes_from_the_terminal_to_an_accepted_pull_request` (CLI e2e: a fake agent, a real Git remote, a fake `gh`) (D-068). Publishing to GitHub needs an authorized disposable repository. |
+| M2-7 | Dogfooding with deliberate failures: a failing test, failing CI (then the same failure again), otterd stopped at each checkpoint, a cancel midway | Pending | Offline: `the_same_ci_failure_after_a_fix_goes_to_the_developer`, `delivery_resumes_at_each_checkpoint_without_repeating_itself`, `an_open_pull_request_is_adopted_and_cancelling_keeps_the_work`, `runs_survive_a_restart_and_follow_a_changing_goal`, `a_check_that_cant_run_blocks_on_the_developer_once` (D-062, D-068). |
 
 ## Known limits
 

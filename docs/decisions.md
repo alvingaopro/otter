@@ -2170,4 +2170,23 @@ D-064 a CI fix is a turn in the feature's session. What wasn't:
   request opens, and once the report is written: one run, one pull
   request (`gh pr create` once), one branch, then done. An open pull
   request is adopted, not opened twice.
+- **The contract, written down:** `docs/feature-states.md` — the states,
+  each transition and who owns it (the developer, or the engine; a model's
+  output is only ever an input), what each checkpoint keeps and what a
+  resume does with it, the controls, the budgets.
+- **From the terminal:** `otter feature accept [--anyway]` (there was no
+  way to finish a feature from the CLI). The CLI's end-to-end test runs the
+  golden path through `otter` — new, start, decide (publish), accept — in
+  a disposable repository with a fake agent and a fake `gh`: a pull
+  request with the agent's uncommitted work, CI green, done. With live
+  Claude and real GitHub it is recorded as pending (`runtime-validation.md`
+  M2-6/M2-7).
+- **The default backend stays `legacy_cli`** (audit P1-6). M2's changes
+  live in the runtime actor, policy and controller, so both backends have
+  them: the work clock and watchdog, one conversation per feature, the
+  planning turn, background work, approvals, the checkpoints. Only two
+  pieces are the SDK's alone: every tool call checked by policy before it
+  runs (legacy sees only what Claude Code asks about) and an interrupt that
+  spares background work. D-060's path to making `sdk` the default — after
+  dogfooding — stands; M2's live scenarios are that dogfooding's checklist.
 
