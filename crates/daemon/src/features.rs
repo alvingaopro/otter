@@ -369,8 +369,9 @@ fn check_text(what: &str, text: &str, max: usize) -> RpcResult<()> {
 /// Where a paused, failed or unblocked feature picks up: planning until
 /// there is a plan, verifying once every task is done, else implementing.
 pub fn resume_status(f: &Feature) -> FeatureStatus {
-    // Only the planning turn (D-064): still planning.
-    if f.tasks.iter().all(|t| t.planning) {
+    // Only the planning turn (D-064), or planning again (D-084): still
+    // planning — the work there is was planned for the old goal.
+    if f.replan || f.tasks.iter().all(|t| t.planning) {
         FeatureStatus::Planning
     } else if f
         .tasks
@@ -661,22 +662,51 @@ pub fn apply_action(
 }
 
 /// The goal moved (D-050): plan again from where the work stands — what is
-/// done stays done. Nothing to do for a cancelled feature.
+/// done stays done. Nothing to do for a cancelled feature. The coding agent
+/// plans again, in its conversation (D-084): the planning turn is due again,
+/// and a plan waiting for the developer's OK is moot.
 pub fn replan(f: &mut Feature, why: &str, now: Timestamp) -> Vec<Change> {
     if f.status.is_terminal() {
         return vec![];
     }
-    f.replan = !f.tasks.is_empty();
+    // Revising a plan: there is work planned (an answered question had none).
+    f.replan = f.tasks.iter().any(|t| !t.planning);
+    let mut changes = Vec::new();
+    // A plan sent back but not yet looked at again (`Pending` with the
+    // review's points) is a fresh look now, at the new goal.
+    if crate::controller::plan_turn()
+        && let Some(t) = f.tasks.iter_mut().find(|t| t.planning)
+        && matches!(
+            t.status,
+            TaskStatus::Done | TaskStatus::Failed | TaskStatus::Skipped | TaskStatus::Pending
+        )
+    {
+        t.status = TaskStatus::Pending;
+        t.detail = None;
+        t.last_error = None;
+        changes.push(Change::new(FeatureEvent::TaskChanged {
+            task_id: t.id.clone(),
+            status: TaskStatus::Pending,
+        }));
+    }
+    for d in f.decisions.iter_mut().filter(|d| {
+        d.kind == DecisionKind::PlanApproval
+            && d.run_id.is_none()
+            && d.status == DecisionStatus::Pending
+    }) {
+        d.status = DecisionStatus::Cancelled;
+        d.decided_at = Some(now);
+    }
     // The last round's verdict and report are about the old goal.
     f.report = None;
     f.gates.clear();
     f.last_verification = None;
-    if f.status == FeatureStatus::Planning {
-        return vec![];
+    if f.status != FeatureStatus::Planning
+        && let Ok(e) = f.transition(FeatureStatus::Planning, Some(why.into()), now)
+    {
+        changes.push(Change::new(e));
     }
-    f.transition(FeatureStatus::Planning, Some(why.into()), now)
-        .map(|e| vec![Change::new(e)])
-        .unwrap_or_default()
+    changes
 }
 
 impl Daemon {
@@ -1100,6 +1130,77 @@ mod tests {
         )
         .unwrap()
         .feature
+    }
+
+    fn task(title: &str, status: TaskStatus, planning: bool) -> Task {
+        Task {
+            id: TaskId::generate(),
+            title: title.into(),
+            detail: None,
+            status,
+            depends_on: vec![],
+            workspace_id: None,
+            session_id: None,
+            attempts: 0,
+            last_error: None,
+            planning,
+        }
+    }
+
+    /// Planning again goes back to the coding agent (D-084): its planning
+    /// turn is due again, a plan waiting for the developer's OK is moot, and
+    /// the feature plans — even resumed or retried — until a plan is set.
+    #[test]
+    fn planning_again_is_the_agents_turn_again() {
+        let now = Utc::now();
+        // An answered question: nothing was planned, so nothing is revised.
+        let mut f = Feature::new("t".into(), "r".into(), now);
+        f.status = FeatureStatus::Done;
+        f.tasks = vec![task("Look", TaskStatus::Done, true)];
+        replan(&mut f, "more", now);
+        assert_eq!(f.status, FeatureStatus::Planning);
+        assert!(!f.replan);
+        assert_eq!(f.tasks[0].status, TaskStatus::Pending);
+        // Work planned, a revised plan waiting on the developer.
+        let mut f = Feature::new("t".into(), "r".into(), now);
+        f.status = FeatureStatus::Blocked;
+        let mut look = task("Look", TaskStatus::Done, true);
+        look.detail = Some("- vague\n".into());
+        f.tasks = vec![look, task("Build", TaskStatus::Done, false)];
+        f.decisions.push(DecisionRequest {
+            id: DecisionId::generate(),
+            task_id: Some(f.tasks[0].id.clone()),
+            run_id: None,
+            kind: DecisionKind::PlanApproval,
+            risk: Risk::Low,
+            summary: "Go ahead?".into(),
+            detail: None,
+            options: vec![],
+            status: DecisionStatus::Pending,
+            decided_by: None,
+            answer: None,
+            rationale: None,
+            created_at: now,
+            decided_at: None,
+            user_only: true,
+            grant: None,
+        });
+        replan(&mut f, "changed", now);
+        assert!(f.replan);
+        assert_eq!(f.tasks[0].status, TaskStatus::Pending);
+        assert_eq!(f.tasks[0].detail, None, "a fresh look, not a revision");
+        assert_eq!(f.decisions[0].status, DecisionStatus::Cancelled);
+        // All the work done, but planning again: still planning.
+        assert_eq!(resume_status(&f), FeatureStatus::Planning);
+        f.replan = false;
+        f.tasks[0].status = TaskStatus::Done;
+        assert_eq!(resume_status(&f), FeatureStatus::Verifying);
+        // Sent back by the review, then the goal changed before the agent
+        // looked again: a fresh look, not the old points.
+        f.tasks[0].status = TaskStatus::Pending;
+        f.tasks[0].detail = Some("- vague\n".into());
+        replan(&mut f, "changed again", now);
+        assert_eq!(f.tasks[0].detail, None);
     }
 
     #[test]

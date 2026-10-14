@@ -9,7 +9,8 @@
 # up by itself, as Claude Code does), DIE_MIDTOOL (the process dies mid-tool; a
 # resumed run finishes, logging what it was told), DIE_ALWAYS (dies every
 # time); anything else finishes the turn. Asked to plan the work, it proposes
-# two tasks as JSON (NOPLAN: it answers in prose instead). A `skip-init` file
+# two tasks as JSON (NOPLAN: it answers in prose instead; PLANFAIL: the turn
+# fails). A `skip-init` file
 # next to the log keeps the session id back (as if it died before saying it).
 [ -n "$FAKE_CODEX_LOG" ] && echo "claude-stream $*" >> "$FAKE_CODEX_LOG"
 sid="fake-session-$$"
@@ -58,6 +59,8 @@ while read -r line; do
       case "$line" in
         *'plan the work'*NOPLAN*|*NOPLAN*'plan the work'*)
           result success false "I would write the export and test it." ;;
+        *'plan the work'*PLANFAIL*|*PLANFAIL*'plan the work'*)
+          result error_during_execution true "it broke while planning" ;;
         *'plan the work'*)
           result success false '```json\n{\"summary\": \"Add an exporter, then cover it\", \"tasks\": [{\"title\": \"Write the exporter\", \"detail\": \"in export.sh\"}, {\"title\": \"Cover it with a test\", \"detail\": \"in the Makefile\"}], \"criteria\": [{\"text\": \"Rows export as CSV with a header\", \"how\": \"diff\"}, {\"text\": \"make test passes\", \"how\": \"check\"}], \"check\": \"make test\"}\n```' ;;
         *BGWAIT*)

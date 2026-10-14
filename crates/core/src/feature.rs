@@ -100,7 +100,9 @@ impl FeatureStatus {
             ),
             Verifying => matches!(self, Implementing | Paused | Blocked | Failed),
             Review => matches!(self, Verifying | Paused | Blocked),
-            Done => matches!(self, Review),
+            // Accepted in review; or planning found a question, not a
+            // change, and the coding agent answered it (D-084).
+            Done => matches!(self, Review | Planning),
             Blocked => self.is_active() || self == Review,
             Paused => self.is_active() || self == Blocked || self == Review,
             Failed => self.is_active() || self == Blocked || self == Review,
@@ -1133,6 +1135,8 @@ mod tests {
         assert!(!Draft.can_become(Implementing));
         assert!(!Implementing.can_become(Done));
         assert!(!Verifying.can_become(Draft));
+        // A question is answered while planning: done, nothing built.
+        assert!(Planning.can_become(Done));
         assert!(!Done.can_become(Implementing));
         assert!(!Cancelled.can_become(Planning));
         // Verification and review can send work back.

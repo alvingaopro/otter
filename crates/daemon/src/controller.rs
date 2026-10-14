@@ -3,8 +3,10 @@
 //! An event-driven loop in the daemon — woken whenever a feature changes,
 //! and on a tick that enforces time limits — steps each active feature:
 //!
-//! - **planning** → the brain writes requirements, acceptance criteria, tasks
-//!   and a check command (which policy must allow, or someone approves);
+//! - **planning** → the coding agent reads the code and answers a question
+//!   (the feature is done) or proposes requirements, acceptance criteria,
+//!   tasks and a check command (which policy must allow, or someone
+//!   approves); the brain reviews the plan and doesn't rewrite it (D-084);
 //! - **implementing** → the next task whose dependencies are done goes to a
 //!   managed run (an interrupted one resumes its conversation); the brain
 //!   decides what policy leaves open, the rest waits for the developer;
@@ -88,7 +90,7 @@ const NO_PROGRESS: &str = "No progress";
 
 /// Whether planning starts with the coding agent's look at the code
 /// (`OTTER_PLAN_TURN`, on unless `0`; D-064).
-fn plan_turn() -> bool {
+pub(crate) fn plan_turn() -> bool {
     std::env::var("OTTER_PLAN_TURN").map_or(true, |v| v != "0")
 }
 
@@ -102,6 +104,32 @@ const CI_FIX: &str = "Fix what CI found";
 const SAME_CI: &str = "CI failed the same way after the fix";
 /// What Otter asks when a feature starts with nothing to do (D-067).
 const GOAL_QUESTION: &str = "What should this feature do?";
+/// Why a feature is done when its request was a question (D-084).
+const ANSWERED: &str = "Answered: no change was asked for. Say so if you want one.";
+/// What Otter asks when a revised plan still has problems (D-084).
+const PLAN_QUESTION: &str = "Go ahead with the coding agent's plan?";
+
+/// Why planning stopped when the coding agent's look at the code failed.
+fn looked_and_failed(why: &str) -> String {
+    format!("The coding agent's look at the code failed ({why}). Say go on to try again.")
+}
+
+/// The developer's word on the plan the planning turn last came back with:
+/// asked after that turn began (D-084).
+fn plan_decision<'a>(f: &'a Feature, task: &TaskId) -> Option<&'a DecisionRequest> {
+    let since = f
+        .runs
+        .iter()
+        .rev()
+        .find(|r| &r.task_id == task && r.state == RunState::Completed)?
+        .started_at;
+    f.decisions.iter().rev().find(|d| {
+        d.kind == DecisionKind::PlanApproval
+            && d.run_id.is_none()
+            && d.task_id.as_ref() == Some(task)
+            && d.created_at > since
+    })
+}
 
 /// A duration for people: seconds while short, then minutes.
 fn span(d: Duration) -> String {
@@ -311,7 +339,21 @@ impl Daemon {
                 intent: crate::brain::Intent::None,
             }
         });
-        let intent = reply.intent;
+        // Done (a question answered, work accepted), there is no current work
+        // to guide or go on with: asking for more moves the goal (D-050).
+        // Asked whether a plan goes ahead, instructions are what to change
+        // (D-084), and going on says yes (below).
+        let plan_asked = f
+            .pending_decisions()
+            .find(|d| d.summary == PLAN_QUESTION)
+            .map(|d| d.id.clone());
+        let intent = match (reply.intent, f.status) {
+            (Intent::Guide | Intent::Redirect | Intent::Continue, FeatureStatus::Done) => {
+                Intent::Revise
+            }
+            (Intent::Guide | Intent::Redirect, _) if plan_asked.is_some() => Intent::Revise,
+            (intent, _) => intent,
+        };
         let reply_text = if reply.text.is_empty() {
             crate::brain::status_text(f)
         } else {
@@ -427,6 +469,17 @@ impl Daemon {
         }
         if stop {
             self.hold_runs(&f.id, false, "Paused").await;
+        }
+        if let (Intent::Continue, Some(did)) = (intent, plan_asked) {
+            self.decide(
+                &f.id,
+                &did,
+                true,
+                None,
+                Decider::User,
+                Some("You said go on".into()),
+            )
+            .await?;
         }
         Ok(())
     }
@@ -556,9 +609,10 @@ impl Daemon {
         if f.request.trim().is_empty() {
             return self.find_the_goal(f).await;
         }
-        // The coding agent looks at the code first and proposes (D-064);
-        // the brain reviews that. Planning again goes on from the plan.
-        if plan_turn() && !f.replan {
+        // The coding agent looks at the code first (D-064) and either
+        // answers or proposes a plan, which the brain reviews (D-084). So
+        // does planning again: the agent plans what is left.
+        if plan_turn() {
             if self.supervise(f).await? {
                 return Ok(());
             }
@@ -589,22 +643,16 @@ impl Daemon {
                 Some(t) if matches!(t.status, TaskStatus::Pending | TaskStatus::Running) => {
                     return self.start_turn(f, t).await;
                 }
-                // It failed: plan without it.
+                // It failed: say so, and don't plan blind (D-084). Going on
+                // runs it again.
                 Some(t) if t.status == TaskStatus::Failed => {
-                    let (id, why) = (t.id.clone(), t.last_error.clone().unwrap_or_default());
-                    self.controller_apply(&f.id, FeatureStatus::Planning, move |f, _| {
-                        let task = f.task_mut(&id).expect("found");
-                        task.status = TaskStatus::Skipped;
-                        f.rationale.push(format!(
-                            "The coding agent's look at the code failed ({why}); planning without it."
-                        ));
-                        Ok(vec![Change::new(FeatureEvent::TaskChanged {
-                            task_id: id.clone(),
-                            status: TaskStatus::Skipped,
-                        })])
-                    })
-                    .await?;
+                    let why = t.last_error.clone().unwrap_or_else(|| "it failed".into());
+                    self.fail(&f.id, &looked_and_failed(&why), None).await;
                     return Ok(());
+                }
+                Some(t) if t.status == TaskStatus::Done => {
+                    let t = t.clone();
+                    return self.after_the_look(f, &t).await;
                 }
                 Some(_) => {}
             }
@@ -619,11 +667,218 @@ impl Daemon {
             })
             .await
             .map_err(|e| RpcError::internal(format!("planning failed: {e:#}")))?;
+        self.set_plan(f, plan, brain.name(), &root).await
+    }
+
+    /// The coding agent's look at the code is over (D-084). A plan in its
+    /// report is reviewed — the brain's points go back to the agent once,
+    /// and to the developer after that — and set. Anything else is its
+    /// answer: the request asked no change, and the feature is done.
+    async fn after_the_look(self: &Arc<Self>, f: &Feature, task: &Task) -> RpcResult<()> {
+        let report = brain::proposal(f).unwrap_or_default().trim().to_owned();
+        let Some(proposed) = brain::parse_proposal(&report) else {
+            return self.answered(f, task, report).await;
+        };
+        let (root, env) = self.feature_workspace(f).await?;
+        let plan = brain::complete_proposal(proposed, f, &root);
+        // What the developer said about this plan, if they were asked.
+        match plan_decision(f, &task.id) {
+            Some(d) if d.status == DecisionStatus::Pending => return Ok(()),
+            Some(d)
+                if matches!(
+                    d.status,
+                    DecisionStatus::Approved | DecisionStatus::Answered
+                ) =>
+            {
+                return self.set_plan(f, plan, "approved by you", &root).await;
+            }
+            Some(d) if d.status == DecisionStatus::Denied => {
+                let issues = d.detail.clone().unwrap_or_default();
+                return self
+                    .send_plan_back(
+                        f,
+                        task,
+                        format!("{issues}\n- The developer turned this plan down."),
+                    )
+                    .await;
+            }
+            _ => {}
+        }
+        let brain = brain::select(&env, &self.brain_choice());
+        let cx = Context {
+            feature: f,
+            root: &root,
+            env: &env,
+        };
+        let issues = match brain.review_plan(&cx, &plan).await {
+            Ok(issues) => issues,
+            // The agent's plan stands: it is the one that saw the code.
+            Err(e) => {
+                tracing::warn!(feature = %f.id, "reviewing the plan: {e:#}");
+                vec![]
+            }
+        };
+        let by = match brain.name() {
+            "rules" => "no model to review it".to_owned(),
+            name => format!("reviewed by {name}"),
+        };
+        if issues.is_empty() {
+            return self.set_plan(f, plan, &by, &root).await;
+        }
+        let issues: String = issues.iter().map(|i| format!("- {i}\n")).collect();
+        // Sent back once (its detail says what for); then it's the developer's.
+        if task.detail.is_none() {
+            self.send_plan_back(f, task, issues).await
+        } else {
+            self.ask_about_the_plan(f, task, &plan, issues).await
+        }
+    }
+
+    /// The planning turn's report was no plan: it is the answer (D-084).
+    async fn answered(&self, f: &Feature, task: &Task, report: String) -> RpcResult<()> {
+        let id = task.id.clone();
+        if report.is_empty() {
+            let why = "it ended without a plan or an answer";
+            self.controller_apply(&f.id, FeatureStatus::Planning, |f, _| {
+                let t = f.task_mut(&id).expect("found");
+                t.status = TaskStatus::Failed;
+                t.last_error = Some(why.into());
+                Ok(vec![Change::new(FeatureEvent::TaskChanged {
+                    task_id: id.clone(),
+                    status: TaskStatus::Failed,
+                })])
+            })
+            .await?;
+            self.fail(&f.id, &looked_and_failed(why), None).await;
+            return Ok(());
+        }
+        let run = f
+            .runs
+            .iter()
+            .rev()
+            .find(|r| r.task_id == id && r.state == RunState::Completed)
+            .map(|r| r.id.to_string());
+        self.controller_apply(&f.id, FeatureStatus::Planning, move |f, now| {
+            let (m, c) = message(MessageRole::Agent, report, run);
+            f.messages.push(m);
+            f.rationale.push(
+                "The coding agent answered: the request asks no change, so nothing was planned or built."
+                    .into(),
+            );
+            Ok(vec![
+                c,
+                Change::new(
+                    f.transition(FeatureStatus::Done, Some(ANSWERED.into()), now)
+                        .map_err(RpcError::conflict)?,
+                ),
+            ])
+        })
+        .await?;
+        Ok(())
+    }
+
+    /// The planning turn again, with what is wrong with its plan (D-084).
+    async fn send_plan_back(&self, f: &Feature, task: &Task, issues: String) -> RpcResult<()> {
+        let id = task.id.clone();
+        self.controller_apply(&f.id, FeatureStatus::Planning, move |f, _| {
+            f.rationale.push(format!(
+                "Sent the plan back to the coding agent:\n{}",
+                issues.trim_end()
+            ));
+            let t = f.task_mut(&id).expect("found");
+            t.status = TaskStatus::Pending;
+            t.detail = Some(issues);
+            Ok(vec![Change::new(FeatureEvent::TaskChanged {
+                task_id: id.clone(),
+                status: TaskStatus::Pending,
+            })])
+        })
+        .await?;
+        Ok(())
+    }
+
+    /// A revised plan the brain still finds fault with: the developer says
+    /// whether it goes ahead (D-084). Nothing is set until they do.
+    async fn ask_about_the_plan(
+        &self,
+        f: &Feature,
+        task: &Task,
+        plan: &brain::Plan,
+        issues: String,
+    ) -> RpcResult<()> {
+        let task_id = task.id.clone();
+        let mut text = format!(
+            "I sent the coding agent's plan back once, and the revised plan still has problems I can see:\n{issues}\nThe plan:\n{}\nAcceptance criteria:\n{}",
+            plan.tasks
+                .iter()
+                .enumerate()
+                .map(|(i, t)| format!("{}. {}", i + 1, t.title))
+                .collect::<Vec<_>>()
+                .join("\n"),
+            plan.criteria
+                .iter()
+                .map(|c| format!("- {}", c.text))
+                .collect::<Vec<_>>()
+                .join("\n"),
+        );
+        if let Some(cmd) = &plan.verify_command {
+            text.push_str(&format!("\nThe check: `{cmd}`."));
+        }
+        text.push_str(
+            "\nApprove it to go ahead as it is, turn it down to have it planned again, or tell me what to change.",
+        );
+        self.controller_apply(&f.id, FeatureStatus::Planning, move |f, now| {
+            let id = DecisionId::generate();
+            f.decisions.push(DecisionRequest {
+                id: id.clone(),
+                task_id: Some(task_id),
+                run_id: None,
+                kind: DecisionKind::PlanApproval,
+                risk: Risk::Low,
+                summary: PLAN_QUESTION.into(),
+                detail: Some(issues),
+                options: vec![],
+                status: DecisionStatus::Pending,
+                decided_by: None,
+                answer: None,
+                rationale: None,
+                created_at: now,
+                decided_at: None,
+                user_only: true,
+                grant: None,
+            });
+            let (m, c) = message(MessageRole::Controller, text, Some(id.to_string()));
+            f.messages.push(m);
+            Ok(vec![
+                Change::new(FeatureEvent::DecisionRequested {
+                    decision_id: id,
+                    kind: DecisionKind::PlanApproval,
+                    risk: Risk::Low,
+                }),
+                c,
+                Change::new(
+                    f.transition(FeatureStatus::Blocked, Some(PLAN_QUESTION.into()), now)
+                        .map_err(RpcError::conflict)?,
+                ),
+            ])
+        })
+        .await?;
+        Ok(())
+    }
+
+    /// Set `plan` as the feature's plan, `by` whom it says.
+    async fn set_plan(
+        &self,
+        f: &Feature,
+        plan: brain::Plan,
+        by: &str,
+        root: &std::path::Path,
+    ) -> RpcResult<()> {
         let verify = plan.verify_command.clone().filter(|c| !c.trim().is_empty());
         let check_verdict = verify
             .as_ref()
-            .map(|c| policy::classify(&ToolCall::Command { line: c.clone() }, &root));
-        let brain_name = brain.name();
+            .map(|c| policy::classify(&ToolCall::Command { line: c.clone() }, root));
+        let by = by.to_owned();
         self.controller_apply(&f.id, FeatureStatus::Planning, move |f, now| {
             f.requirements = plan.requirements.clone();
             f.acceptance = plan
@@ -672,8 +927,7 @@ impl Daemon {
                 .collect();
             f.tasks = kept.into_iter().chain(fresh).collect();
             f.verify_command = verify.clone();
-            f.rationale
-                .push(format!("Plan ({brain_name}): {}", plan.rationale));
+            f.rationale.push(format!("Plan ({by}): {}", plan.rationale));
             let mut changes = vec![Change::new(FeatureEvent::PlanSet {
                 tasks: f.tasks.len(),
                 criteria: f.acceptance.len(),
@@ -719,12 +973,13 @@ impl Daemon {
                 (Some(_), Some(Verdict::Deny { .. })) => f.verify_command = None,
                 _ => {}
             }
+            // The work, not the look at the code that planned it.
+            let work: Vec<&Task> = f.tasks.iter().filter(|t| !t.planning).collect();
             let mut text = format!(
                 "{}: {} task(s).\n{}\nAcceptance criteria:\n{}",
                 if revised { "Revised plan" } else { "Plan" },
-                f.tasks.len(),
-                f.tasks
-                    .iter()
+                work.len(),
+                work.iter()
                     .enumerate()
                     .map(|(i, t)| format!("{}. {}", i + 1, t.title))
                     .collect::<Vec<_>>()
@@ -1183,7 +1438,12 @@ impl Daemon {
             .unwrap_or_default();
         let prompt = match (&session, continuing) {
             (Some(_), true) => continue_prompt(f, &task, last, &carried),
-            (_, false) if task.planning => planning_prompt(f, developer_notes(f, None, &carried)),
+            (_, false) if task.planning => planning_prompt(
+                f,
+                &task,
+                developer_notes(f, session.as_ref().map(|(r, _)| r.started_at), &carried),
+                session.is_some(),
+            ),
             (Some((run, _)), false) => task_prompt(
                 f,
                 &task,
@@ -2412,32 +2672,80 @@ pub fn task_prompt(f: &Feature, task: &Task, notes: Vec<String>, warm: bool) -> 
     p
 }
 
-/// The coding agent's first turn (D-064): read the code, then propose the
-/// plan — tasks, criteria and the check — as JSON, changing nothing yet.
-fn planning_prompt(f: &Feature, notes: Vec<String>) -> String {
+/// What a plan proposal looks like, as the planning turn is told (D-064).
+const PLAN_FORMAT: &str = "{\"summary\": \"one sentence: the approach\", \
+     \"tasks\": [{\"title\": \"...\", \"detail\": \"what to do, where\"}], \
+     \"criteria\": [{\"text\": \"...\", \"how\": \"check\" or \"diff\"}], \
+     \"check\": \"the command that runs the project's tests here\" or null}\n\
+     - tasks: the steps in order, 1 to 5; one is right for a small change. They are yours to \
+     do on your own: none asks, checks with or waits for the developer.\n\
+     - criteria: facts about the code or the check's result, never about the conversation \
+     or the process. how: \"check\" when the check passing proves it, \"diff\" when it is \
+     about what the change contains.\n\
+     - check: one shell command that runs here (look at how the project runs its tests).\n";
+
+/// The planning turn (D-064, D-084): read the code, then answer a question,
+/// or propose the plan for a change as JSON, changing nothing yet. In the
+/// feature's conversation (`warm`: planning again) the request is already
+/// said; a plan sent back by Otter's review gets its points instead.
+fn planning_prompt(f: &Feature, task: &Task, notes: Vec<String>, warm: bool) -> String {
+    if let Some(issues) = &task.detail {
+        return format!(
+            "Otter reviewed your plan and sees these problems:\n{issues}{notes}\n\
+             Look again where you need to, and plan the work again. Where a point is wrong given \
+             the code, keep your plan and say why in its summary. End this turn with only the \
+             JSON object, as before:\n{PLAN_FORMAT}",
+            notes = notes_text(&notes),
+        );
+    }
+    let done: Vec<String> = f
+        .tasks
+        .iter()
+        .filter(|t| !t.planning && t.status == TaskStatus::Done)
+        .map(|t| format!("- {}", t.title))
+        .collect();
+    let opening = if warm {
+        format!(
+            "{}{}",
+            if !notes.is_empty() {
+                notes_text(&notes)
+            } else if f.replan {
+                "The developer asked to plan again.\n".to_owned()
+            } else {
+                "Look at the request again.\n".to_owned()
+            },
+            if done.is_empty() {
+                String::new()
+            } else {
+                format!(
+                    "\nAlready done (don't redo it, don't list it again):\n{}\n",
+                    done.join("\n")
+                )
+            }
+        )
+    } else {
+        format!(
+            "Feature: {}\n\nRequest:\n{}\n{}",
+            f.title,
+            if f.request.trim().is_empty() {
+                &f.title
+            } else {
+                &f.request
+            },
+            notes_text(&notes),
+        )
+    };
     format!(
-        "Feature: {title}\n\nRequest:\n{request}\n{notes}\n\
-         Before changing anything, read the code this request touches and plan the work. \
-         Don't edit files in this turn; Otter reviews the plan, then gives you its tasks one \
-         turn at a time.\n\n\
-         End this turn with only a JSON object, no summary:\n\
-         {{\"summary\": \"one sentence: the approach\", \
-         \"tasks\": [{{\"title\": \"...\", \"detail\": \"what to do, where\"}}], \
-         \"criteria\": [{{\"text\": \"...\", \"how\": \"check\" or \"diff\"}}], \
-         \"check\": \"the command that runs the project's tests here\" or null}}\n\
-         - tasks: the steps in order, 1 to 5; one is right for a small change. They are yours to \
-         do on your own: none asks, checks with or waits for the developer.\n\
-         - criteria: facts about the code or the check's result, never about the conversation \
-         or the process. how: \"check\" when the check passing proves it, \"diff\" when it is \
-         about what the change contains.\n\
-         - check: one shell command that runs here (look at how the project runs its tests).\n",
-        title = f.title,
-        request = if f.request.trim().is_empty() {
-            &f.title
-        } else {
-            &f.request
-        },
-        notes = notes_text(&notes),
+        "{opening}\n\
+         Read the code this touches first. Then do one of these:\n\
+         - If it asks a question (how or why something works, where something is) or for an \
+         explanation or an investigation, and not for a change: answer it. That is the whole \
+         turn: say what you found and point to the code (path:line). Change nothing, and add \
+         no JSON.\n\
+         - If it asks for a change: don't change anything yet; plan the work{left}. Otter \
+         reviews the plan, then gives you its tasks one turn at a time. End this turn with \
+         only a JSON object, no summary:\n{PLAN_FORMAT}",
+        left = if done.is_empty() { "" } else { " that is left" },
     )
 }
 
@@ -2626,6 +2934,59 @@ mod tests {
             });
         }
         f
+    }
+
+    fn task(title: &str, status: TaskStatus, planning: bool) -> Task {
+        Task {
+            id: TaskId::generate(),
+            title: title.into(),
+            detail: None,
+            status,
+            depends_on: vec![],
+            workspace_id: None,
+            session_id: None,
+            attempts: 0,
+            last_error: None,
+            planning,
+        }
+    }
+
+    /// The planning turn (D-084): a question is answered, a change planned;
+    /// planning again in the conversation doesn't restate the request but
+    /// says what is done; a plan sent back gets the review's points.
+    #[test]
+    fn the_planning_turn_answers_or_plans() {
+        let mut f = Feature::new(
+            "Backport".into(),
+            "How does the backport tag work?".into(),
+            Utc::now(),
+        );
+        let look = task(PLANNING, TaskStatus::Pending, true);
+        let cold = planning_prompt(&f, &look, vec![], false);
+        assert!(
+            cold.contains("Request:\nHow does the backport tag work?"),
+            "{cold}"
+        );
+        assert!(cold.contains("answer it"), "{cold}");
+        assert!(cold.contains("plan the work."), "{cold}");
+        f.tasks = vec![
+            look.clone(),
+            task("Tag the backport", TaskStatus::Done, false),
+            task("Document it", TaskStatus::Pending, false),
+        ];
+        let warm = planning_prompt(&f, &look, vec!["Also cover 2.x".into()], true);
+        assert!(!warm.contains("Request:"), "{warm}");
+        assert!(warm.contains("- Also cover 2.x"), "{warm}");
+        assert!(warm.contains("Already done"), "{warm}");
+        assert!(warm.contains("- Tag the backport"), "{warm}");
+        assert!(!warm.contains("- Document it"), "{warm}");
+        assert!(warm.contains("plan the work that is left"), "{warm}");
+        let mut back = look.clone();
+        back.detail = Some("- The criteria are too vague.\n".into());
+        let again = planning_prompt(&f, &back, vec![], true);
+        assert!(again.starts_with("Otter reviewed your plan"), "{again}");
+        assert!(again.contains("too vague"), "{again}");
+        assert!(!again.contains("answer it"), "{again}");
     }
 
     #[test]

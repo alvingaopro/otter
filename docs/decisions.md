@@ -2562,3 +2562,55 @@ M6 (`docs/plans/m6-automation.md`).
   `otter trigger run`), cron expressions, cross-host triggers,
   notifications beyond the app's.
 
+
+## D-084 — The coding agent answers or plans; the brain reviews, it doesn't rewrite (2026-10-14)
+
+Dogfooding: "告诉我现在 backport tag 是怎么工作的" — how does the backport
+tag work? — became "Plan: 1 task(s). 1. Add a minimal test case", checked
+with `npm test`. Every path out of planning needed at least one task
+(`parse_proposal` dropped a proposal without one, `Model::plan` failed on
+an empty plan, `rules` always made one); the planning turn's words were
+never shown; and when they weren't a plan, the brain — which can't see
+the code — planned from the brief anyway, and in any case rewrote the
+agent's plan. A question had no way out but invented work. This revises
+D-064's planning.
+
+- **The agent that reads the code decides what kind of request it is.**
+  The planning turn says: a question, an explanation, an investigation —
+  answer it, pointing to the code, changing nothing and adding no JSON; a
+  change — plan it, as before. Otter only reads what came back: a JSON
+  plan with tasks is a plan; anything else is the answer. The answer is
+  posted as the agent's message and the feature is **done**
+  (`planning → done`, "Answered: no change was asked for"): no tasks, no
+  check, no attempt, no pull request. Failing toward showing, not toward
+  inventing.
+- **No blind plan when the look didn't work.** A planning turn that fails,
+  or ends with nothing, fails the feature with why; going on (or Retry)
+  looks again. `brain.plan` — planning from the brief alone — is left for
+  `OTTER_PLAN_TURN=0` only.
+- **Planning again is the agent's turn again.** A changed goal (D-050)
+  makes the planning turn due again, in the feature's conversation: the
+  request isn't restated, what the developer said since and what is done
+  are (D-064 had the brain plan a replan, blind). The feature stays
+  planning until a plan is set — resumed, retried or unblocked — and only
+  a feature with work planned is "revised". Asking for more on a done
+  feature (guidance, go on) plans again: after an answer, "then change it"
+  works. Without a model every message reads as guidance, so on a done
+  feature any message, a "thanks" too, starts a look at the code.
+- **The brain reviews the plan; it doesn't write it.** `review_plan` asks
+  only what can be told without the code: does it do what was asked (no
+  more, no less), are the criteria checkable facts, does any task send the
+  agent to the developer. Its points go back to the agent once, as a turn
+  in the same conversation (the agent may keep its plan and say why);
+  found again, the developer decides — a developer-only plan approval,
+  with the plan and the points, before anything is set. Approve: the
+  agent's plan as it is; turn it down: the agent plans again with the
+  points; a message is what to change (going on approves). A review that
+  can't be had leaves the agent's plan standing. Without a model there is
+  no review: the agent's plan, its gaps filled, is the plan.
+- The plan's announcement counts the work, not the look at the code.
+- Not done: the planning turn's text still isn't streamed while it is
+  written (an answer arrives whole); an answer's `path:line` references
+  aren't checked; the judge still sees the diff but not the code around
+  it; questions in the middle of a feature are still answered by the
+  brain, which can't see the code.
