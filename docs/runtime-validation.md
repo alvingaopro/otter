@@ -69,6 +69,12 @@ agent) cover the mechanics. Re-run with the audit's harness:
 | M2-6 | The golden path with real Claude and real GitHub: a feature from `otter feature new` to an accepted pull request in a disposable repository | Pending | Offline: `a_feature_goes_from_the_terminal_to_an_accepted_pull_request` (CLI e2e: a fake agent, a real Git remote, a fake `gh`) (D-068). Publishing to GitHub needs an authorized disposable repository. |
 | M2-7 | Dogfooding with deliberate failures: a failing test, failing CI (then the same failure again), otterd stopped at each checkpoint, a cancel midway | Pending | Offline: `the_same_ci_failure_after_a_fix_goes_to_the_developer`, `delivery_resumes_at_each_checkpoint_without_repeating_itself`, `an_open_pull_request_is_adopted_and_cancelling_keeps_the_work`, `runs_survive_a_restart_and_follow_a_changing_goal`, `a_check_that_cant_run_blocks_on_the_developer_once` (D-062, D-068). |
 
+## The agent manager (plan M3)
+
+| # | Scenario | Status | Evidence |
+|---|---|---|---|
+| M3-1 | Several features and workspaces at once on two hosts, handled from the Inbox: decisions answered there, a review accepted, a stopped feature retried, notifications once per need | Pending | Offline: `inbox.test.ts`, `Inbox.test.tsx` (a decision answered and a retry from the list), `what_a_feature_needs_is_one_rule` (core), `features_that_need_you_are_listed` (`otter ls`) (D-071…D-073). |
+
 ## Known limits
 
 - A daemon stop ends the managed run. The next run resumes the native

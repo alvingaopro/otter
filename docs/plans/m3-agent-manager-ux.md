@@ -9,7 +9,7 @@ scope below is derived from the exit outcome, design §21 and §26, the
 autonomy audit's attention findings ([05](../audits/autonomy/05-conversation-attention.md)),
 and an audit of the code (§2) — each item says where it comes from. When
 the spec arrives, it wins: this plan is redone against it (D-070).
-**Status:** in progress — step 1 (D-071, PR #62), step 2 (D-072, PR #63), step 3 (D-073). **Branch:** `roadmap-m3`, from `main` after M2.
+**Status:** steps 1–4 done (D-071, PR #62; D-072, PR #63; D-073 and the record, PR #64). The live scenario is pending (`runtime-validation.md` M3-1). **Branch:** `roadmap-m3`, from `main` after M2.
 
 ## 1. What "the desktop inbox" means here
 
@@ -105,11 +105,12 @@ grouping by project or repository, bulk actions, keyboard triage.
 
 ## 5. Acceptance (derived)
 
-- [ ] Everything that waits on the developer — feature decisions, reviews,
+- [x] Everything that waits on the developer — feature decisions, reviews,
   blocked and failed features, workspaces that need them — is in one list,
-  longest-waiting first, across hosts.
-- [ ] Each can be acted on from that list: a decision answered, a review
-  accepted, a failed feature retried, a workspace opened.
-- [ ] A feature's "needs you" is computed once, in `otter-core`, and the app,
-  the notifications and `otter ls` agree on it.
-- [ ] A new need notifies once.
+  longest-waiting first, across hosts (`inbox.test.ts`).
+- [x] Each can be acted on from that list: a decision answered, a review
+  accepted, a failed feature retried, a workspace opened (`Inbox.test.tsx`).
+- [x] A feature's "needs you" is computed once, in `otter-core`, and the app,
+  the notifications and `otter ls` agree on it (D-071, D-073).
+- [x] A new need notifies once (`inbox.test.ts`).
+- [ ] With live work on two hosts — pending (M3-1).
