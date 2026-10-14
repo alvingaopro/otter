@@ -380,6 +380,10 @@ pub struct DecisionRequest {
     /// Only the developer may decide this one (policy said so; D-044).
     #[serde(default)]
     pub user_only: bool,
+    /// What the developer's approval lets through for the rest of the
+    /// feature, when policy says it may (D-066): opaque to all but policy.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub grant: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -476,6 +480,10 @@ pub struct Feature {
     /// The last verification that found something unmet (D-062).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_verification: Option<VerificationMark>,
+    /// What the developer allowed once and isn't asked about again in this
+    /// feature (D-066): `DecisionRequest::grant`s they approved.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub grants: Vec<String>,
     /// Why the Control Agent did what it did, newest last (short lines).
     #[serde(default)]
     pub rationale: Vec<String>,
@@ -529,6 +537,7 @@ impl Feature {
             verify_approved: false,
             verify_decision: None,
             last_verification: None,
+            grants: vec![],
             rationale: Vec::new(),
             allowed_commands: Vec::new(),
             preview: None,
@@ -1029,6 +1038,7 @@ mod tests {
             created_at: now,
             decided_at: None,
             user_only: true,
+            grant: None,
         });
         assert!(f.resume_waiting_runs(now).is_empty(), "still waiting");
         f.decisions[0].status = DecisionStatus::Approved;

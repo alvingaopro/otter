@@ -1,7 +1,8 @@
 #!/bin/sh
 # A fake `claude -p` speaking stream-json the way Claude Code 2.1.295 does
 # (see crates/daemon/src/agents/claude_stream.rs). Words in a prompt choose
-# what happens: ASK_RM (a command only the developer may allow), ASK_INSTALL
+# what happens: ASK_RM (a command only the developer may allow), ASK_TWICE
+# (a write outside the workspace, asked again once allowed), ASK_INSTALL
 # (one the Control Agent may decide), ASK_EDIT (a routine edit), ASK_QUESTION,
 # FAIL, HANG (works until interrupted), SLOW (works until interrupted, then
 # finishes once resumed), BGWAIT (waits for background work, then takes it
@@ -30,8 +31,11 @@ while read -r line; do
   case "$line" in
     *'"subtype":"interrupt"'*) result error_during_execution true "" ;;
     *'"behavior":"allow"'*'"answers"'*) text "Going with that."; result success false "answered" ;;
+    *'"request_id":"r5"'*'"behavior":"allow"'*) ask r6 Bash '{"command":"cargo build > /opt/build.log"}' ;;
     *'"behavior":"allow"'*) text "Ran it."; result success false "allowed and done" ;;
-    *'"behavior":"deny"'*) result success false "denied, so I stopped" ;;
+    *'"behavior":"deny"'*)
+      why=$(printf '%s' "$line" | sed -n 's/.*"message":"\([^"]*\)".*/\1/p')
+      result success false "denied ($why), so I stopped" ;;
     *'"type":"user"'*)
       if [ -n "$memory" ]; then
         case "$line" in
@@ -54,7 +58,8 @@ while read -r line; do
           text "It printed done."
           result success false "done after waiting"
           ;;
-        *ASK_RM*) ask r1 Bash '{"command":"rm -rf build"}' ;;
+        *ASK_TWICE*) ask r5 Bash '{"command":"cargo build > /opt/build.log"}' ;;
+        *ASK_RM*) ask r1 Bash '{"command":"rm -rf /opt/shared"}' ;;
         *ASK_INSTALL*) ask r2 Bash '{"command":"npm install left-pad"}' ;;
         *ASK_EDIT*) ask r4 Write '{"file_path":"src/a.rs","content":"x"}' ;;
         *ASK_QUESTION*) ask r3 AskUserQuestion '{"questions":[{"question":"Pick one","options":[{"label":"red"},{"label":"blue"}]}]}' ;;

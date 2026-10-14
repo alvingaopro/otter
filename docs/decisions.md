@@ -2051,3 +2051,59 @@ background; I'll wait for them" was cut off, and its task recorded done
   affordance. Not yet probed live (recorded as pending in
   `runtime-validation.md`).
 
+## D-066 — Approvals without noise (2026-10-14)
+
+M2 step 5 (`docs/plans/m2-feature-to-pr.md`; autonomy audit P1-1, P1-2,
+P1-5; RC-5, RC-7, RC-9). In the real feature, 16 developer-only asks were
+all "high risk" and most weren't: `cat .envrc` (the `.env` rule matched a
+substring), build logs redirected to `/tmp`, `rm` of a file the agent had
+just made. Identical asks came back seconds apart, and the SDK's own tools
+each cost a model decision. The rules' intent was right; the matching was
+lexical (audit 03 §3).
+
+- **Secrets files by name.** `.env` and `.env.<anything>` are credentials
+  by file name — an operand of a command, an edited path — not wherever
+  the letters appear. `.envrc` (direnv's config) and the templates
+  (`.env.example`, `.sample`, `.template`, `.dist`, `.defaults`, `.schema`)
+  aren't.
+- **Scratch space is inside the boundary.** Writing (or deleting) under
+  `/tmp`, `/private/tmp`, `/var/tmp` or `$TMPDIR` is routine, the temp
+  directory itself excepted. `/dev/zero` joins the streams a redirection
+  may name. `$HOME`, system paths and other directories still ask.
+- **Deleting the work's own files is routine.** `rm`, `rmdir` and `unlink`
+  of paths inside the workspace (or scratch) run without asking — not the
+  workspace itself, not `.git`, not a glob at its top (`rm -rf *`), not
+  anything outside. The word lists are read piece by piece; only what no
+  one may allow (a pipe into a shell) is read across the whole line.
+- **Allowed once, allowed for the feature.** An ask that policy raised only
+  for where it reaches — a command whose one risk is writing outside the
+  workspace, an edit outside it (by directory), an MCP tool — carries a
+  grant key (`DecisionRequest.grant`). When the developer approves it, the
+  key is kept on the feature (`Feature.grants`), and the same thing later
+  in the feature runs without asking, recorded as decided by policy
+  ("you allowed this earlier in this feature"). Deleting, credentials,
+  pushing and deploying, and root are never granted: asked every time.
+  Kept per feature rather than returned to Claude Code as
+  `updatedPermissions`, so it works the same on both backends and is in
+  the record.
+- **Who said no.** A denial reaches the agent as "The developer declined
+  this.", "Otter declined this: <why>" or "Otter's policy doesn't allow
+  this: <why>" — not always as the developer's. `escalate` blocks only if
+  the decision is still pending (no Blocked/unblocked flicker). The brain
+  never sees a developer-only decision (D-062).
+- **Every built-in tool has a kind.** The agent's own session — its task
+  list, background work, plan mode, MCP resources — reads as `Read` (runs);
+  `Monitor` runs its command as a `Command`; `Workflow` delegates (off, like
+  subagents); tools that reach beyond the run — scheduling (`CronCreate`,
+  `ScheduleWakeup`, `RemoteTrigger`), notifying (`PushNotification`,
+  `SendFeedback`), other worktrees, the host app's own tools — are a new
+  `ToolCall::Outside`, which policy denies: Otter schedules work and tells
+  the developer. Only MCP tools are left to the Control Agent.
+  `packages/claude-runtime/tools.json` lists the pinned SDK's tools: the
+  worker's test fails when the SDK has one the list doesn't, otterd's when
+  one in the list has no kind.
+- Replayed (unit test): of the dogfooding record's developer-only asks,
+  only the write to Claude's memory and `git push` still ask. The fake
+  agent's developer-only request is now `rm -rf /opt/shared`: the tests'
+  workspaces live in the temp directory, which is scratch.
+

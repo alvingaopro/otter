@@ -95,6 +95,8 @@ export interface DecisionRequest {
   decided_at?: string;
   /** Only the developer may decide this one (policy). */
   user_only?: boolean;
+  /** What approving it allows for the rest of the feature (opaque). */
+  grant?: string;
 }
 
 export interface Evidence {
@@ -144,6 +146,8 @@ export interface Feature {
   verify_command?: string;
   /** Why the Control Agent did what it did, newest last. */
   rationale?: string[];
+  /** What the developer allowed once and isn't asked about again (opaque). */
+  grants?: string[];
   /** The app's preview for the developer, if running: a port on the host. */
   preview?: { session_id: string; port: number; path: string };
   /** What must hold before done, as last evaluated. */

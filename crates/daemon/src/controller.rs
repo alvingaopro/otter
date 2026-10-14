@@ -639,6 +639,7 @@ impl Daemon {
                         created_at: now,
                         decided_at: None,
                         user_only: *user_only,
+                        grant: None,
                     });
                     f.verify_decision = Some(id.clone());
                     changes.push(Change::new(FeatureEvent::DecisionRequested {
@@ -761,7 +762,13 @@ impl Daemon {
 
     async fn escalate(&self, id: &FeatureId, d: &DecisionRequest, why: &str) {
         let line = format!("Needs your decision: {} — {why}", d.summary);
+        let did = d.id.clone();
         let applied = self.features.lock().await.apply(id, None, |f, now| {
+            // Decided meanwhile (the run ended, the developer answered):
+            // nothing to block on, which would only unblock again (D-066).
+            if !f.pending_decisions().any(|x| x.id == did) {
+                return Ok(vec![]);
+            }
             f.rationale.push(line.clone());
             let mut changes = Vec::new();
             if f.status.can_become(FeatureStatus::Blocked) {
@@ -1259,6 +1266,7 @@ impl Daemon {
                 created_at: now,
                 decided_at: None,
                 user_only: true,
+                grant: None,
             });
             f.verify_decision = Some(id.clone());
             f.verify_approved = false;
@@ -1357,6 +1365,7 @@ impl Daemon {
                             created_at: now,
                             decided_at: None,
                             user_only,
+                            grant: None,
                         });
                         Ok(vec![Change::new(FeatureEvent::DecisionRequested {
                             decision_id: id,

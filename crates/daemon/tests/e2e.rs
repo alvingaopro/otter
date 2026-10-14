@@ -3012,7 +3012,7 @@ async fn a_model_cannot_approve_what_only_the_developer_may() {
     })
     .await;
     let d = f.pending_decisions().next().expect("still pending").clone();
-    assert_eq!(d.summary, "Run `rm -rf build`");
+    assert_eq!(d.summary, "Run `rm -rf /opt/shared`");
     assert!(d.user_only);
     assert_eq!(d.risk, Risk::High);
     // Some time later, still not approved by anyone but the developer.
@@ -3038,10 +3038,11 @@ async fn a_model_cannot_approve_what_only_the_developer_may() {
         )
         .await
         .unwrap();
+    // The agent is told who said no (D-066).
     let f = wait_feature(&fake.host, &id, "the denial reaches the agent", |f| {
-        f.runs
-            .first()
-            .is_some_and(|r| r.summary.as_deref() == Some("denied, so I stopped"))
+        f.runs.first().is_some_and(|r| {
+            r.summary.as_deref() == Some("denied (The developer declined this.), so I stopped")
+        })
     })
     .await;
     let d = f.decisions.iter().find(|x| x.id == d.id).unwrap();
@@ -3049,6 +3050,50 @@ async fn a_model_cannot_approve_what_only_the_developer_may() {
         (d.status, d.decided_by),
         (DecisionStatus::Denied, Some(Decider::User))
     );
+}
+
+/// Allowed once, allowed for the rest of the feature (D-066): the same
+/// write outside the workspace isn't asked about again.
+#[tokio::test]
+async fn an_approval_is_remembered_for_the_feature() {
+    use otter_core::feature::{Decider, DecisionStatus, FeatureAction, FeatureStatus};
+    let fake = fake_agent_host("ok", "rules").await;
+    let host = &fake.host;
+    let id = started_feature(host, "Keep a build log ASK_TWICE").await;
+    let f = wait_feature(host, &id, "blocked on the developer", |f| {
+        f.status == FeatureStatus::Blocked && f.pending_decisions().next().is_some()
+    })
+    .await;
+    let d = f.pending_decisions().next().unwrap().clone();
+    assert!(d.user_only);
+    assert_eq!(d.grant.as_deref(), Some("cmd:cargo build > /opt/build.log"));
+    host.conn()
+        .await
+        .feature_act(
+            "allow-log",
+            &id,
+            FeatureAction::Decide {
+                decision_id: d.id.clone(),
+                approve: true,
+                answer: None,
+                answers: None,
+            },
+        )
+        .await
+        .unwrap();
+    let f = wait_feature(host, &id, "review", |f| f.status == FeatureStatus::Review).await;
+    assert_eq!(f.grants, ["cmd:cargo build > /opt/build.log"]);
+    assert_eq!(f.decisions.len(), 2, "{:?}", f.decisions);
+    let again = &f.decisions[1];
+    assert_eq!(
+        (again.status, again.decided_by),
+        (DecisionStatus::Approved, Some(Decider::Policy))
+    );
+    assert_eq!(
+        again.rationale.as_deref(),
+        Some("you allowed this earlier in this feature")
+    );
+    assert_eq!(f.runs[0].summary.as_deref(), Some("allowed and done"));
 }
 
 #[tokio::test]
