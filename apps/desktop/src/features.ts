@@ -45,6 +45,8 @@ export interface Task {
   session_id?: string;
   attempts: number;
   last_error?: string;
+  /** The coding agent's planning turn, not a step of the work. */
+  planning?: boolean;
 }
 
 export interface Run {

@@ -382,6 +382,15 @@ impl Daemon {
         actor: mpsc::Sender<ActorCmd>,
         stopping: Arc<std::sync::Mutex<Option<(RunState, String)>>>,
     ) {
+        // A planning turn's words are a proposal for Otter, not for the
+        // feature's conversation (D-064); its journal keeps them.
+        let quiet = self.feature_get(feature.as_str()).await.is_ok_and(|f| {
+            f.runs
+                .iter()
+                .find(|r| r.id == run)
+                .and_then(|r| f.task(&r.task_id))
+                .is_some_and(|t| t.planning)
+        });
         // What the agent said this turn (already in the conversation).
         let mut said: Vec<String> = Vec::new();
         // What it is saying right now, streamed (D-051), by block.
@@ -397,6 +406,7 @@ impl Daemon {
                 }
                 ActorEvent::TurnStarted { .. } => {}
                 // Streamed: what the agent says shows up as it says it.
+                ActorEvent::TextDelta { .. } | ActorEvent::Text { .. } if quiet => {}
                 ActorEvent::TextDelta { block, piece, .. } => {
                     let d = match &mut draft {
                         Some(d) if d.id == block.as_str() => d,
@@ -723,7 +733,13 @@ impl Daemon {
                     d.decided_at = Some(now);
                 }
             }
-            if let Some(text) = summary.clone().filter(|s| announce && !s.trim().is_empty()) {
+            // A planning turn's report is a plan for Otter to review, not
+            // something to show as is (D-064).
+            let planning = f.task(&task_id).is_some_and(|t| t.planning);
+            if let Some(text) = summary
+                .clone()
+                .filter(|s| announce && !planning && !s.trim().is_empty())
+            {
                 let (m, c) = message(MessageRole::Agent, text, Some(run.to_string()));
                 f.messages.push(m);
                 changes.push(c);

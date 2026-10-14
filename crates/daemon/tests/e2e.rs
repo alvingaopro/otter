@@ -1610,6 +1610,9 @@ async fn fake_agent_host_with(
         ("DEVELOPER_DIR", String::new()),
         ("SDKROOT", String::new()),
         ("OTTER_AGENT_QUIET_SECS", "2".into()),
+        // Planning starts without the agent's look at the code, unless a
+        // test asks for it (D-064).
+        ("OTTER_PLAN_TURN", "0".into()),
     ];
     let more = extra(scratch.path());
     let vars: Vec<(&str, String)> = vars.into_iter().chain(more).collect();
@@ -3523,6 +3526,94 @@ async fn verification_stops_when_a_fix_changes_nothing() {
     tokio::time::sleep(Duration::from_millis(1500)).await;
     let f = host.conn().await.feature_get(&id).await.unwrap();
     assert_eq!((f.status, f.runs.len()), (FeatureStatus::Review, 2));
+}
+
+/// Planning starts with the coding agent reading the code (D-064): its
+/// proposal is the plan (no model to review it here), and the tasks are
+/// turns in the same conversation after it.
+#[tokio::test]
+async fn the_coding_agent_plans_first_in_the_features_conversation() {
+    use otter_core::feature::{FeatureStatus, MessageRole, Proof, TaskStatus};
+    let fake = fake_agent_host_with("ok", "rules", |_| vec![("OTTER_PLAN_TURN", "1".into())]).await;
+    let host = &fake.host;
+    let id = started_feature(host, "Add CSV export").await;
+    let f = wait_feature(host, &id, "review", |f| f.status == FeatureStatus::Review).await;
+    let titles: Vec<&str> = f.tasks.iter().map(|t| t.title.as_str()).collect();
+    assert_eq!(
+        titles,
+        [
+            "Look at the code and plan the work",
+            "Write the exporter",
+            "Cover it with a test"
+        ]
+    );
+    assert!(f.tasks[0].planning && !f.tasks[1].planning);
+    assert!(f.tasks.iter().all(|t| t.status == TaskStatus::Done));
+    let criteria: Vec<(&str, Proof)> = f
+        .acceptance
+        .iter()
+        .map(|c| (c.text.as_str(), c.how))
+        .collect();
+    assert_eq!(
+        criteria,
+        [
+            ("Rows export as CSV with a header", Proof::Diff),
+            ("make test passes", Proof::Check)
+        ]
+    );
+    assert_eq!(f.verify_command.as_deref(), Some("make test"));
+    assert!(
+        f.rationale
+            .iter()
+            .any(|r| r.contains("The coding agent's plan") && r.contains("Add an exporter")),
+        "{:?}",
+        f.rationale
+    );
+    // Three turns, one session; planning costs no attempt.
+    assert_eq!(f.runs.len(), 3);
+    let sid = f.runs[0].provider_session_id.clone();
+    assert!(sid.is_some());
+    assert!(f.runs.iter().all(|r| r.provider_session_id == sid));
+    assert_eq!(f.budget.iterations_used, 2);
+    // The proposal is Otter's to read, not a message in the conversation.
+    assert!(
+        !f.messages
+            .iter()
+            .any(|m| m.role == MessageRole::Agent && m.text.contains("\"tasks\"")),
+        "{:?}",
+        f.messages
+    );
+    // The first task's turn doesn't restate the request: the planning turn had it.
+    let c = host
+        .conn()
+        .await
+        .conversation_get(f.runs[1].conversation_id.as_ref().unwrap().as_str())
+        .await
+        .unwrap()
+        .conversation;
+    let texts: Vec<String> = c.turns.iter().map(|t| t.text()).collect();
+    assert!(texts[0].contains("plan the work"), "{texts:#?}");
+    assert!(
+        texts[1].contains("Your task (1 of 2): Write the exporter"),
+        "{texts:#?}"
+    );
+    assert!(!texts[1].contains("Request:"), "{texts:#?}");
+}
+
+/// A planning turn that doesn't come back with a plan doesn't stop the work:
+/// Otter plans as it would without it (D-064).
+#[tokio::test]
+async fn a_planning_turn_without_a_plan_falls_back() {
+    use otter_core::feature::FeatureStatus;
+    let fake = fake_agent_host_with("ok", "rules", |_| vec![("OTTER_PLAN_TURN", "1".into())]).await;
+    let host = &fake.host;
+    let id = started_feature(host, "Add CSV export NOPLAN").await;
+    let f = wait_feature(host, &id, "review", |f| f.status == FeatureStatus::Review).await;
+    let titles: Vec<&str> = f.tasks.iter().map(|t| t.title.as_str()).collect();
+    assert_eq!(titles, ["Look at the code and plan the work", "CSV export"]);
+    assert_eq!(f.runs.len(), 2);
+    assert_eq!(f.runs[1].provider_session_id, f.runs[0].provider_session_id);
+    assert_eq!(f.budget.iterations_used, 1);
 }
 
 /// In the feature's one conversation, a developer message reaches the agent

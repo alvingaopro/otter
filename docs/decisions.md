@@ -1995,4 +1995,24 @@ session knew.
 - The "never two drivers" check covers every task's interactive session,
   since they share one conversation; the agent's instructions say it works
   on a feature, a task per turn.
+- **The agent that can see the code plans** (plan principle 1). Planning
+  starts with a task of its own, "Look at the code and plan the work"
+  (`Task.planning`): the feature's first turn asks the coding agent to read
+  the code the request touches and end with a JSON proposal — tasks,
+  criteria with `how`, the check command — changing nothing yet. Its
+  report is Otter's to read, not a message in the feature's conversation.
+  The brain's plan is then a review of the proposal (the model is told to
+  keep what is right, tighten criteria and fix the check), no longer a
+  guess from the root path and the brief; without a model the proposal is
+  the plan, its gaps filled as `rules` would. No proposal (prose, a failed
+  turn) → planning goes on as before, without it. The tasks follow as
+  turns in the same conversation, so the first one doesn't repeat the
+  request. Planning costs no attempt. Planning again (a changed goal)
+  doesn't ask again: the session has the code in mind, and the brain
+  plans from what the developer said.
+- Gaps, for later: "don't edit files" is an instruction, not enforced (a
+  run has no read-only mode yet); a developer message sent during the
+  planning turn becomes the run's next turn, whose reply then stands in
+  for the proposal (planning falls back). `OTTER_PLAN_TURN=0` turns the
+  planning turn off; the e2e tests do, except the ones about it.
 

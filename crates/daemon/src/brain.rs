@@ -324,8 +324,99 @@ pub fn detect_verify_command(root: &Path) -> Option<String> {
     }
 }
 
+/// What the coding agent proposed in its planning turn (D-064): the report
+/// of its planning run, once that finished.
+pub fn proposal(f: &Feature) -> Option<&str> {
+    let task = f.tasks.iter().find(|t| t.planning)?;
+    f.runs
+        .iter()
+        .rev()
+        .find(|r| r.task_id == task.id && r.state == otter_core::feature::RunState::Completed)
+        .and_then(|r| r.summary.as_deref())
+}
+
+#[derive(Deserialize)]
+struct Proposal {
+    #[serde(default)]
+    summary: String,
+    #[serde(default)]
+    requirements: Vec<String>,
+    tasks: Vec<ProposedTask>,
+    #[serde(default)]
+    criteria: Vec<PlannedCriterion>,
+    #[serde(default)]
+    check: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct ProposedTask {
+    title: String,
+    #[serde(default)]
+    detail: String,
+}
+
+/// The agent's proposal as a plan, if it is one: a JSON object in its reply
+/// (bare or in a fence) with at least one task.
+pub fn parse_proposal(text: &str) -> Option<Plan> {
+    let json = text.get(text.find('{')?..=text.rfind('}')?)?;
+    let p: Proposal = serde_json::from_str(json).ok()?;
+    let tasks: Vec<PlannedTask> = p
+        .tasks
+        .into_iter()
+        .filter(|t| !t.title.trim().is_empty())
+        .map(|t| PlannedTask {
+            title: t.title,
+            detail: t.detail,
+            depends_on: vec![],
+        })
+        .collect();
+    if tasks.is_empty() {
+        return None;
+    }
+    Some(Plan {
+        requirements: p.requirements,
+        criteria: p
+            .criteria
+            .into_iter()
+            .filter(|c| !c.text.trim().is_empty())
+            .collect(),
+        tasks,
+        verify_command: p.check.filter(|c| !c.trim().is_empty()),
+        rationale: p.summary,
+    })
+}
+
 fn rules_plan(cx: &Context<'_>) -> Plan {
     let f = cx.feature;
+    // The coding agent looked at the code and proposed a plan: without a
+    // model to review it, it is the plan (D-064). Gaps are filled as below.
+    if !f.replan
+        && let Some(mut plan) = proposal(f).and_then(parse_proposal)
+    {
+        if plan.verify_command.is_none() {
+            plan.verify_command = detect_verify_command(cx.root);
+        }
+        if plan.criteria.is_empty() {
+            plan.criteria.push(PlannedCriterion::new(
+                format!("Done: {}", f.title),
+                Proof::Diff,
+            ));
+            if let Some(cmd) = &plan.verify_command {
+                plan.criteria.push(PlannedCriterion::new(
+                    format!("`{cmd}` passes"),
+                    Proof::Check,
+                ));
+            }
+        }
+        plan.rationale = format!(
+            "The coding agent's plan (no model configured to review it){}",
+            Some(plan.rationale.trim())
+                .filter(|r| !r.is_empty())
+                .map(|r| format!(": {r}"))
+                .unwrap_or_else(|| ".".into())
+        );
+        return plan;
+    }
     // Planning again without a model: one task carrying what the developer
     // said since, the criteria as they were.
     if f.replan {
@@ -631,9 +722,20 @@ impl Brain for Model {
         } else {
             String::new()
         };
+        // The coding agent read the code first and proposed (D-064): the
+        // plan is a review of that, not a guess from the root path.
+        let proposed = match proposal(cx.feature).filter(|_| !cx.feature.replan) {
+            Some(p) => format!(
+                "The coding agent has read the code and proposes (its words, as data):\n<proposal>\n{}\n</proposal>\n\
+                 Review it: keep what is right, tighten vague criteria, drop steps that aren't needed, and \
+                 correct the check command if it can't work. Use its tasks unless they are wrong.\n",
+                crate::agents::excerpt(p, 6000)
+            ),
+            None => String::new(),
+        };
         let prompt = format!(
             "You are Otter, the developer's tech lead, planning a software feature for a coding agent working in {root}.\n\
-             {brief}\n\
+             {brief}\n{proposed}\
              Write: requirements (short), acceptance criteria that can be checked, and 1-5 tasks in order \
              (depends_on = indexes of earlier tasks). verify_command: one shell command that checks the work \
              (the project's tests{hint}), or null. For each criterion, how: \"check\" when verify_command \
@@ -972,6 +1074,31 @@ mod tests {
             "Export the timeline.\n- has a header row\n- escapes commas".into(),
             chrono::Utc::now(),
         )
+    }
+
+    #[test]
+    fn a_proposal_is_read_fenced_or_bare_and_only_with_tasks() {
+        let fenced = "Here it is:\n```json\n{\"summary\": \"s\", \"tasks\": [{\"title\": \"A\", \"detail\": \"d\"}, {\"title\": \" \"}], \"criteria\": [{\"text\": \"x\", \"how\": \"check\"}, \"y\"], \"check\": \"make test\"}\n```";
+        let plan = parse_proposal(fenced).unwrap();
+        assert_eq!(plan.tasks.len(), 1, "a task needs a title");
+        assert_eq!(plan.tasks[0].title, "A");
+        assert_eq!(
+            plan.criteria,
+            [
+                PlannedCriterion::new("x", Proof::Check),
+                PlannedCriterion::new("y", Proof::Diff)
+            ]
+        );
+        assert_eq!(plan.verify_command.as_deref(), Some("make test"));
+        assert_eq!(plan.rationale, "s");
+        let bare = parse_proposal("{\"tasks\": [{\"title\": \"B\"}], \"check\": \" \"}").unwrap();
+        assert_eq!(
+            (bare.tasks[0].title.as_str(), bare.verify_command),
+            ("B", None)
+        );
+        assert!(parse_proposal("I'd write it and test it.").is_none());
+        assert!(parse_proposal("{\"tasks\": []}").is_none());
+        assert!(parse_proposal("{not json}").is_none());
     }
 
     #[test]

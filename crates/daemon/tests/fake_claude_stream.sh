@@ -4,7 +4,8 @@
 # what happens: ASK_RM (a command only the developer may allow), ASK_INSTALL
 # (one the Control Agent may decide), ASK_EDIT (a routine edit), ASK_QUESTION,
 # FAIL, HANG (works until interrupted), SLOW (works until interrupted, then
-# finishes once resumed); anything else finishes the turn.
+# finishes once resumed); anything else finishes the turn. Asked to plan the
+# work, it proposes two tasks as JSON (NOPLAN: it answers in prose instead).
 [ -n "$FAKE_CODEX_LOG" ] && echo "claude-stream $*" >> "$FAKE_CODEX_LOG"
 sid="fake-session-$$"
 resumed=
@@ -39,6 +40,10 @@ while read -r line; do
         esac
       fi
       case "$line" in
+        *'plan the work'*NOPLAN*|*NOPLAN*'plan the work'*)
+          result success false "I would write the export and test it." ;;
+        *'plan the work'*)
+          result success false '```json\n{\"summary\": \"Add an exporter, then cover it\", \"tasks\": [{\"title\": \"Write the exporter\", \"detail\": \"in export.sh\"}, {\"title\": \"Cover it with a test\", \"detail\": \"in the Makefile\"}], \"criteria\": [{\"text\": \"Rows export as CSV with a header\", \"how\": \"diff\"}, {\"text\": \"make test passes\", \"how\": \"check\"}], \"check\": \"make test\"}\n```' ;;
         *ASK_RM*) ask r1 Bash '{"command":"rm -rf build"}' ;;
         *ASK_INSTALL*) ask r2 Bash '{"command":"npm install left-pad"}' ;;
         *ASK_EDIT*) ask r4 Write '{"file_path":"src/a.rs","content":"x"}' ;;
