@@ -30,6 +30,8 @@ interface Props {
   /** Workspaces per host, to work in. */
   workspaces: Record<string, WorkspaceChoice[]>;
   now: number;
+  /** A feature to show, asked for from elsewhere (the Inbox); `at` makes asking again count. */
+  focus?: { key: string; at: number };
   /** Show a workspace (and session) in the Workspaces view. */
   onOpenWorkspace: (host: string, workspaceId: string, sessionId?: string) => void;
   /** Open a preview port of a host in the browser (forwarding it if remote). */
@@ -37,11 +39,17 @@ interface Props {
 }
 
 /** The Features view (D-041, D-042): product work, independent of the Workspace view. */
-export function FeaturesView({ source, hosts, workspaces, now, onOpenWorkspace, onOpenPreview }: Props) {
+export function FeaturesView({ source, hosts, workspaces, now, focus, onOpenWorkspace, onOpenPreview }: Props) {
   const [list, setList] = useState<PlacedFeature[]>(() => source.list());
   const [filter, setFilter] = useState<FeatureFilter>("all");
   const [selected, setSelected] = useState<string | undefined>();
   const [creating, setCreating] = useState(false);
+  // Opened from elsewhere (the Inbox): show that one.
+  useEffect(() => {
+    if (!focus) return;
+    setSelected(focus.key);
+    setFilter("all");
+  }, [focus]);
 
   useEffect(() => {
     setList(source.list());
@@ -766,7 +774,7 @@ function Approvals({
   );
 }
 
-function Decision({
+export function Decision({
   d,
   act,
   now,

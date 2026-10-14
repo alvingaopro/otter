@@ -8,6 +8,7 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 import { Sidebar } from "./Sidebar";
 import { ActivityBar } from "./ActivityBar";
 import { FeaturesView } from "./FeaturesView";
+import { Inbox } from "./Inbox";
 import { daemonSource } from "./featureSource";
 import { needsYou as featureNeedsYou } from "./features";
 import { saveView, storedView, viewForShortcut, type View } from "./nav";
@@ -59,6 +60,8 @@ export default function App() {
   /** Features, from each connected host's otterd (D-043). */
   const [featureSource] = useState(() => daemonSource());
   const [featureNeeds, setFeatureNeeds] = useState(() => featureSource.list().filter((p) => featureNeedsYou(p.feature)).length);
+  /** A feature to show in the Features view, opened from the Inbox. */
+  const [featureFocus, setFeatureFocus] = useState<{ key: string; at: number } | undefined>();
   useEffect(
     () => featureSource.subscribe((list) => setFeatureNeeds(list.filter((p) => featureNeedsYou(p.feature)).length)),
     [featureSource],
@@ -219,7 +222,11 @@ export default function App() {
         <ActivityBar
           view={view}
           onView={setView}
-          badges={{ features: featureNeeds, workspaces: placed.filter((p) => p.ws.activity === "needs_you").length }}
+          badges={{
+            inbox: featureNeeds + placed.filter((p) => p.ws.activity === "needs_you" || p.ws.activity === "failed").length,
+            features: featureNeeds,
+            workspaces: placed.filter((p) => p.ws.activity === "needs_you").length,
+          }}
           settings={[
             { label: `Theme: ${themeChoice === "system" ? "match system" : themeChoice}`, onSelect: cycleTheme },
             { label: "Otter's model and API keys…", onSelect: () => setOpen({ kind: "settings" }) },
@@ -230,9 +237,27 @@ export default function App() {
             },
           ]}
         />
+        <div className="view" id="view-inbox" role="tabpanel" aria-labelledby="view-tab-inbox" hidden={view !== "inbox"}>
+          <Inbox
+            source={featureSource}
+            workspaces={placed.filter((p) => p.host.status === "connected")}
+            now={now}
+            onOpenFeature={(key) => {
+              setFeatureFocus({ key, at: Date.now() });
+              setView("features");
+            }}
+            onOpenWorkspace={(key) => {
+              wanted.current = key;
+              setSelected(key);
+              setHostPage(null);
+              setView("workspaces");
+            }}
+          />
+        </div>
         <div className="view" id="view-features" role="tabpanel" aria-labelledby="view-tab-features" hidden={view !== "features"}>
           <FeaturesView
             source={featureSource}
+            focus={featureFocus}
             hosts={connectedHosts}
             workspaces={Object.fromEntries(
               (payload?.hosts ?? []).map((h) => [

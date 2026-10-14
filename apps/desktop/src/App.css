@@ -605,3 +605,14 @@ code, .mono { font-family: var(--mono); }
 .composer-actions { display: flex; flex-direction: column; gap: 6px; }
 fieldset.field.coding { border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; display: flex; flex-direction: column; gap: 8px; }
 fieldset.field.coding legend { font-size: 13px; font-weight: 600; padding: 0 4px; }
+
+/* The Inbox (D-072): one list of what is going on, on every host. */
+.pane.inbox { overflow-y: auto; }
+.inbox-body { width: 100%; max-width: 760px; margin: 0 auto; padding: 8px 24px 32px; display: flex; flex-direction: column; gap: 22px; }
+.inbox-title { margin: 0; font-size: 18px; font-weight: 600; }
+.inbox-items { display: flex; flex-direction: column; gap: 8px; }
+.inbox-item { padding: 10px 12px; border-radius: 8px; border: 1px solid var(--line); display: flex; flex-direction: column; gap: 6px; }
+.inbox-head { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.inbox-name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.inbox-summary { margin: 0; color: var(--muted); font-size: 13px; overflow-wrap: anywhere; }
+.inbox .tag { font-size: 11px; padding: 1px 6px; border-radius: 4px; background: var(--btn); color: var(--muted); }
