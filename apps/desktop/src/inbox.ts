@@ -92,3 +92,42 @@ export function inboxGroups(items: InboxItem[]): InboxGroup[] {
 export function needCount(items: InboxItem[]): number {
   return items.filter((i) => GROUP[i.activity] === "needs").length;
 }
+
+/** A need, as one thing that happened: notified about once (D-073). */
+export function needId(need: Need): string {
+  return `${need.kind}:${need.decision_id ?? ""}:${need.since}`;
+}
+
+export interface NewNeed {
+  key: string;
+  host: string;
+  title: string;
+  need: Need;
+}
+
+/**
+ * What features newly need the developer, since `seen` (feature key → the
+ * need it had, `null` for none). A feature seen for the first time is the
+ * baseline — what waited before the app looked isn't news.
+ */
+export function newNeeds(seen: Map<string, string | null>, list: PlacedFeature[]): NewNeed[] {
+  const out: NewNeed[] = [];
+  for (const p of list) {
+    const need = needOf(p.feature);
+    const id = need ? needId(need) : null;
+    if (seen.has(p.key) && need && id !== seen.get(p.key)) {
+      out.push({ key: p.key, host: p.host, title: p.feature.title, need });
+    }
+    seen.set(p.key, id);
+  }
+  return out;
+}
+
+/** Features in the menu bar item: what waits, longest first (keys `feature:host/id`). */
+export function trayFeatures(list: PlacedFeature[], label: (title: string, what: string, host: string) => string): { key: string; label: string }[] {
+  return list
+    .map((p) => ({ p, need: needOf(p.feature) }))
+    .filter((x): x is { p: PlacedFeature; need: Need } => x.need !== undefined)
+    .sort((a, b) => a.need.since.localeCompare(b.need.since))
+    .map(({ p, need }) => ({ key: `feature:${p.key}`, label: label(p.feature.title, need.summary, p.host) }));
+}

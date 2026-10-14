@@ -1,5 +1,5 @@
 //! The primary view (design §26): workspaces grouped by what they need from
-//! you, across all hosts.
+//! you, across all hosts — and features that wait on you (D-073).
 //!
 //! ```text
 //! NEEDS YOU
@@ -14,6 +14,7 @@ use std::time::Duration;
 use anyhow::{Result, bail};
 use chrono::Utc;
 use otter_client::Connection;
+use otter_core::feature::Feature;
 use otter_core::{
     Activity, AgentState, SessionKind, SessionStatus, Timestamp, Workspace, WorkspaceSource,
     WorkspaceState,
@@ -26,6 +27,8 @@ use crate::output;
 pub struct HostResult {
     pub host: String,
     pub result: Result<Vec<Workspace>, String>,
+    /// Its features (none from an otterd that predates them).
+    pub features: Vec<Feature>,
 }
 
 /// Every host's workspaces, queried concurrently, in registry order.
@@ -40,11 +43,24 @@ pub async fn fetch_all(config: &Config) -> Result<Vec<HostResult>> {
         tasks.spawn(async move {
             let result = async {
                 let mut conn = Connection::connect(&transport).await?;
-                conn.workspace_list().await
+                let workspaces = conn.workspace_list().await?;
+                let features = conn.feature_list().await.unwrap_or_default();
+                anyhow::Ok((workspaces, features))
             }
             .await
             .map_err(|e| e.to_string());
-            (i, HostResult { host: name, result })
+            let (result, features) = match result {
+                Ok((w, f)) => (Ok(w), f),
+                Err(e) => (Err(e), vec![]),
+            };
+            (
+                i,
+                HostResult {
+                    host: name,
+                    result,
+                    features,
+                },
+            )
         });
     }
     let mut results = tasks.join_all().await;
@@ -65,7 +81,20 @@ pub async fn show(config: &Config, json: bool, archived: bool) -> Result<()> {
                         .filter(|w| archived || w.state != WorkspaceState::Archived)
                         .map(|w| serde_json::json!({"activity": w.activity(), "workspace": w}))
                         .collect();
-                    serde_json::json!({"host": r.host, "workspaces": ws})
+                    // Features that wait on the developer (D-073).
+                    let features: Vec<_> = r
+                        .features
+                        .iter()
+                        .filter_map(|f| {
+                            let needs = f.needs()?;
+                            Some(serde_json::json!({
+                                "activity": f.activity(),
+                                "needs": needs,
+                                "feature": {"id": f.id, "title": f.title, "status": f.status},
+                            }))
+                        })
+                        .collect();
+                    serde_json::json!({"host": r.host, "workspaces": ws, "features": features})
                 }
                 Err(e) => serde_json::json!({"host": r.host, "error": e}),
             })
@@ -128,8 +157,19 @@ pub async fn watch(config: &Config, archived: bool) -> Result<()> {
     }
 }
 
+/// One line of the view: a workspace, or a feature waiting on the developer.
+struct Row<'a> {
+    activity: Activity,
+    host: &'a str,
+    name: String,
+    detail: String,
+    since: Option<Timestamp>,
+    /// Waiting since (the order within a group).
+    waiting: Option<Timestamp>,
+}
+
 pub fn render(results: &[HostResult], color: bool, archived: bool) -> String {
-    let mut rows: Vec<(Activity, &str, &Workspace)> = Vec::new();
+    let mut rows: Vec<Row> = Vec::new();
     let mut out = String::new();
     let mut hidden = 0;
     for r in results {
@@ -140,7 +180,15 @@ pub fn render(results: &[HostResult], color: bool, archived: bool) -> String {
                     if activity == Activity::Archived && !archived {
                         hidden += 1;
                     } else {
-                        rows.push((activity, r.host.as_str(), w));
+                        let (detail, since) = detail(activity, w);
+                        rows.push(Row {
+                            activity,
+                            host: r.host.as_str(),
+                            name: w.name.clone(),
+                            detail,
+                            since,
+                            waiting: oldest_attention(w),
+                        });
                     }
                 }
             }
@@ -148,6 +196,19 @@ pub fn render(results: &[HostResult], color: bool, archived: bool) -> String {
                 "{}\n",
                 dim(&format!("{}: unreachable ({e})", r.host), color)
             )),
+        }
+        // A feature waiting on the developer, by the rule the app uses (D-071).
+        for f in &r.features {
+            if let Some(n) = f.needs() {
+                rows.push(Row {
+                    activity: f.activity(),
+                    host: r.host.as_str(),
+                    name: truncate(&f.title, 40),
+                    detail: truncate(&format!("feature · {}", n.summary), 90),
+                    since: Some(n.since),
+                    waiting: Some(n.since),
+                });
+            }
         }
     }
     let hidden_note = format!("{hidden} archived (`otter ls --archived` to show)");
@@ -160,36 +221,35 @@ pub fn render(results: &[HostResult], color: bool, archived: bool) -> String {
         return out;
     }
     // Most urgent first; within a group, the longest-waiting first.
-    rows.sort_by_key(|(activity, _, ws)| (*activity, oldest_attention(ws)));
+    rows.sort_by_key(|r| (r.activity, r.waiting));
     let name_w = rows
         .iter()
-        .map(|(_, _, w)| w.name.chars().count())
+        .map(|r| r.name.chars().count())
         .max()
         .unwrap_or(0);
     let host_w = rows
         .iter()
-        .map(|(_, h, _)| h.chars().count())
+        .map(|r| r.host.chars().count())
         .max()
         .unwrap_or(0);
 
     let mut current = None;
-    for (activity, host, ws) in &rows {
-        if current != Some(*activity) {
+    for row in &rows {
+        if current != Some(row.activity) {
             if current.is_some() {
                 out.push('\n');
             }
-            out.push_str(&format!("{}\n", heading(*activity, color)));
-            current = Some(*activity);
+            out.push_str(&format!("{}\n", heading(row.activity, color)));
+            current = Some(row.activity);
         }
-        let (detail, since) = detail(*activity, ws);
         let line = format!(
             "  {} {:<name_w$}  {:<host_w$}  {}",
-            bullet(*activity, color),
-            ws.name,
-            host,
-            detail,
+            bullet(row.activity, color),
+            row.name,
+            row.host,
+            row.detail,
         );
-        match since {
+        match row.since {
             Some(t) => out.push_str(&format!("{line}  {}\n", dim(&ago(t), color))),
             None => out.push_str(&format!("{line}\n")),
         }
@@ -344,6 +404,7 @@ mod tests {
     fn archived_workspaces_are_hidden_unless_asked_for() {
         let results = vec![HostResult {
             host: "dev".into(),
+            features: vec![],
             result: Ok(vec![
                 ws("live", WorkspaceState::Ready),
                 ws("old", WorkspaceState::Archived),
@@ -362,8 +423,34 @@ mod tests {
         let only_archived = vec![HostResult {
             host: "dev".into(),
             result: Ok(vec![ws("old", WorkspaceState::Archived)]),
+            features: vec![],
         }];
         let out = render(&only_archived, false, false);
         assert!(out.starts_with("no active workspaces; 1 archived"), "{out}");
+    }
+
+    /// Features that wait on the developer are in the view, with what and
+    /// since when, by the same rule as the app (D-071, D-073).
+    #[test]
+    fn features_that_need_you_are_listed() {
+        use otter_core::feature::{Feature, FeatureStatus};
+        let now = Utc::now();
+        let mut stopped = Feature::new("Upgrade xterm".into(), String::new(), now);
+        stopped.status = FeatureStatus::Failed;
+        stopped.status_reason = Some("Stopped: all 6 attempts are used up".into());
+        let mut working = Feature::new("Export CSV".into(), String::new(), now);
+        working.status = FeatureStatus::Implementing;
+        let results = vec![HostResult {
+            host: "dev".into(),
+            result: Ok(vec![ws("live", WorkspaceState::Ready)]),
+            features: vec![stopped, working],
+        }];
+        let out = render(&results, false, false);
+        assert!(out.contains("FAILED"), "{out}");
+        assert!(
+            out.contains("Upgrade xterm") && out.contains("feature · Stopped: all 6 attempts"),
+            "{out}"
+        );
+        assert!(!out.contains("Export CSV"), "only what waits on you: {out}");
     }
 }

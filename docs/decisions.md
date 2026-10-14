@@ -2282,3 +2282,22 @@ decision meant opening it, then its Approvals tab.
 - The Inbox's badge counts what needs the developer: features, and
   workspaces that need them or failed.
 
+## D-073 — Told when a feature needs you (2026-10-14)
+
+M3 step 3 (`docs/plans/m3-agent-manager-ux.md`, gaps 5 and 6). A feature
+needing the developer only changed a badge count: no notification, nothing
+in the menu-bar item, and `otter ls` listed workspaces alone.
+
+- **A notification per new need**, once: a decision, review ready, a
+  block, a stop (`Feature::needs`, D-071). A need is new when it differs
+  from the last one the app saw for that feature; the first time the app
+  sees a feature is the baseline, so what waited before it looked isn't
+  announced. Not while the Inbox is in front of the developer.
+  Activating the app soon after opens that feature, as for workspaces.
+- **The menu-bar item lists features with workspaces** (longest-waiting
+  first, "N things need you"); picking one opens it.
+- **`otter ls` lists features that wait on the developer** under NEEDS
+  YOU or FAILED, longest-waiting first with the workspaces, as "feature ·
+  <what>" and since when; `--json` gives them per host with `activity` and
+  `needs`. An otterd without features shows none.
+

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { sampleFeatures } from "./featureSource";
-import { inboxGroups, inboxItems, needCount } from "./inbox";
+import { inboxGroups, inboxItems, needCount, newNeeds, trayFeatures } from "./inbox";
 import { workspace } from "./inboxFixtures";
 
 const NOW = Date.parse("2026-10-09T12:00:00Z");
@@ -30,5 +30,25 @@ describe("the inbox", () => {
 
   it("is empty when nothing is going on", () => {
     expect(inboxGroups(inboxItems([], [workspace("old", "idle", 1)]))).toEqual([]);
+  });
+
+  it("tells about a need once, and not about what waited before it looked", () => {
+    const seen = new Map<string, string | null>();
+    const placed = (f: typeof active) => ({ host: "mac", feature: f, key: `mac/${f.id}` });
+    // The first look: the baseline.
+    expect(newNeeds(seen, [placed(active), placed(blocked)])).toEqual([]);
+    // The same again: nothing new.
+    expect(newNeeds(seen, [placed(active), placed(blocked)])).toEqual([]);
+    // The working one stops: news, once.
+    const stopped = { ...active, status: "failed" as const, status_reason: "Stopped: out of attempts", status_since: "2026-10-09T12:01:00Z" };
+    const told = newNeeds(seen, [placed(stopped), placed(blocked)]);
+    expect(told.map((t) => [t.title, t.need.kind])).toEqual([[active.title, "failed"]]);
+    expect(newNeeds(seen, [placed(stopped), placed(blocked)])).toEqual([]);
+  });
+
+  it("lists what waits in the menu bar, longest first", () => {
+    const items = trayFeatures(features, (t, what, h) => `${t} · ${what} (${h})`);
+    expect(items.map((i) => i.key)).toEqual([`feature:mac/${failed.id}`, `feature:mac/${blocked.id}`]);
+    expect(items[0].label).toContain("Stopped after 6 of 6 attempts");
   });
 });

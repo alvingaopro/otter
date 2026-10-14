@@ -52,10 +52,11 @@ pub fn setup(app: &AppHandle) -> tauri::Result<()> {
 
 fn build_menu(app: &AppHandle, waiting: &[Waiting]) -> tauri::Result<Menu<Wry>> {
     let menu = Menu::new(app)?;
+    // Workspaces and features (D-073).
     let header = match waiting.len() {
         0 => "Nothing needs you".to_owned(),
-        1 => "1 workspace needs you".to_owned(),
-        n => format!("{n} workspaces need you"),
+        1 => "1 thing needs you".to_owned(),
+        n => format!("{n} things need you"),
     };
     menu.append(&MenuItem::with_id(
         app,

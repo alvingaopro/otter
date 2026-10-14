@@ -9,7 +9,7 @@ scope below is derived from the exit outcome, design §21 and §26, the
 autonomy audit's attention findings ([05](../audits/autonomy/05-conversation-attention.md)),
 and an audit of the code (§2) — each item says where it comes from. When
 the spec arrives, it wins: this plan is redone against it (D-070).
-**Status:** in progress — step 1 (D-071, PR #62), step 2 (D-072). **Branch:** `roadmap-m3`, from `main` after M2.
+**Status:** in progress — step 1 (D-071, PR #62), step 2 (D-072, PR #63), step 3 (D-073). **Branch:** `roadmap-m3`, from `main` after M2.
 
 ## 1. What "the desktop inbox" means here
 
