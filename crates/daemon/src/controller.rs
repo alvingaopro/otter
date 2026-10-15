@@ -621,6 +621,11 @@ impl Daemon {
         };
         let (root, env) = self.feature_workspace(f).await?;
         let plan = brain::complete_proposal(proposed, f, &root);
+        // Only an answer was wanted (D-092): a plan to change things is the
+        // developer's to allow.
+        if f.answer_only {
+            return self.plan_for_an_answer(f, task, plan, &root).await;
+        }
         // What the developer said about this plan, if they were asked.
         match plan_decision(f, &task.id) {
             Some(d) if d.status == DecisionStatus::Pending => return Ok(()),
@@ -671,6 +676,90 @@ impl Daemon {
             self.send_plan_back(f, task, issues).await
         } else {
             self.ask_about_the_plan(f, task, &plan, issues).await
+        }
+    }
+
+    /// The agent proposes changes to a task that only wanted an answer
+    /// (D-092). Asked first; allowed, the task may change code and the plan
+    /// is set; turned down, the plan is the answer and the task is done.
+    async fn plan_for_an_answer(
+        &self,
+        f: &Feature,
+        task: &Task,
+        plan: brain::Plan,
+        root: &std::path::Path,
+    ) -> RpcResult<()> {
+        match plan_decision(f, &task.id) {
+            Some(d) if d.status == DecisionStatus::Pending => Ok(()),
+            Some(d)
+                if matches!(
+                    d.status,
+                    DecisionStatus::Approved | DecisionStatus::Answered
+                ) =>
+            {
+                self.controller_apply(&f.id, FeatureStatus::Planning, |f, _| {
+                    f.answer_only = false;
+                    f.rationale.push(
+                        "You let it change the code: the task is no longer answer-only.".into(),
+                    );
+                    Ok(vec![])
+                })
+                .await?;
+                self.set_plan(f, plan, "approved by you", root).await
+            }
+            Some(d) if d.status == DecisionStatus::Denied => {
+                let answer = format!(
+                    "{}\n\nNot carried out: this task only answers.",
+                    plan_text(&plan)
+                );
+                self.answered(f, task, answer).await
+            }
+            _ => {
+                let task_id = task.id.clone();
+                let detail =
+                    "This task only answers, and the coding agent proposes changing the code.";
+                let text = format!(
+                    "This task only answers, but the coding agent proposes changes:\n{}\nApprove to let it change the code; turn it down and this plan stands as the answer.",
+                    plan_text(&plan)
+                );
+                self.controller_apply(&f.id, FeatureStatus::Planning, move |f, now| {
+                    let id = DecisionId::generate();
+                    f.decisions.push(DecisionRequest {
+                        id: id.clone(),
+                        task_id: Some(task_id),
+                        run_id: None,
+                        kind: DecisionKind::PlanApproval,
+                        risk: Risk::Medium,
+                        summary: PLAN_QUESTION.into(),
+                        detail: Some(detail.into()),
+                        options: vec![],
+                        status: DecisionStatus::Pending,
+                        decided_by: None,
+                        answer: None,
+                        rationale: None,
+                        created_at: now,
+                        decided_at: None,
+                        user_only: true,
+                        grant: None,
+                    });
+                    let (m, c) = message(MessageRole::Controller, text, Some(id.to_string()));
+                    f.messages.push(m);
+                    Ok(vec![
+                        Change::new(FeatureEvent::DecisionRequested {
+                            decision_id: id,
+                            kind: DecisionKind::PlanApproval,
+                            risk: Risk::Medium,
+                        }),
+                        c,
+                        Change::new(
+                            f.transition(FeatureStatus::Blocked, Some(PLAN_QUESTION.into()), now)
+                                .map_err(RpcError::conflict)?,
+                        ),
+                    ])
+                })
+                .await?;
+                Ok(())
+            }
         }
     }
 
@@ -2506,6 +2595,28 @@ impl Daemon {
             .flat_map(|c| carried_by(&c))
             .collect()
     }
+}
+
+/// A plan, for the developer to read: its steps, criteria and check.
+fn plan_text(plan: &brain::Plan) -> String {
+    let mut text = format!(
+        "{}\nAcceptance criteria:\n{}",
+        plan.tasks
+            .iter()
+            .enumerate()
+            .map(|(i, t)| format!("{}. {}", i + 1, t.title))
+            .collect::<Vec<_>>()
+            .join("\n"),
+        plan.criteria
+            .iter()
+            .map(|c| format!("- {}", c.text))
+            .collect::<Vec<_>>()
+            .join("\n"),
+    );
+    if let Some(cmd) = &plan.verify_command {
+        text.push_str(&format!("\nThe check: `{cmd}`."));
+    }
+    text
 }
 
 /// The plan question waiting on the developer, if one is (D-084).

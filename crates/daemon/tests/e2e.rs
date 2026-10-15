@@ -1960,6 +1960,7 @@ async fn a_second_feature_waits_for_the_workspace() {
             title: "Second".into(),
             request: "Add a README".into(),
             workspace: Some("shared".into()),
+            answer_only: false,
         })
         .await
         .unwrap();
@@ -2025,6 +2026,7 @@ async fn a_waiting_feature_gets_a_worktree_of_its_own() {
         title: title.into(),
         request: request.into(),
         workspace: Some("app".into()),
+        answer_only: false,
     };
     let first = conn
         .feature_create(new("First", "A long job HANG"))
@@ -2869,6 +2871,7 @@ async fn features_persist_dedupe_commands_and_replay_after_a_restart() {
         title: "Export CSV".into(),
         request: "Export the timeline as CSV".into(),
         workspace: Some("fw".into()),
+        answer_only: false,
     };
     let f = conn.feature_create(created.clone()).await.unwrap();
     assert_eq!(f.status, FeatureStatus::Draft);
@@ -3037,6 +3040,7 @@ async fn started_with(
             title: "CSV export".into(),
             request: request.into(),
             workspace: Some(ws.into()),
+            answer_only: false,
         })
         .await
         .unwrap();
@@ -3986,6 +3990,7 @@ async fn a_feature_without_a_request_takes_the_developers_word() {
             title: "Otter".into(),
             request: String::new(),
             workspace: Some("said".into()),
+            answer_only: false,
         })
         .await
         .unwrap();
@@ -4704,6 +4709,7 @@ async fn web_feature(host: &TestHost, expect: &str) -> String {
             title: "Greeter".into(),
             request: "Greet people by name".into(),
             workspace: Some("web".into()),
+            answer_only: false,
         })
         .await
         .unwrap();
@@ -4890,6 +4896,7 @@ async fn git_feature(fake: &FakeCodex) -> (String, std::path::PathBuf) {
             title: "CSV export".into(),
             request: "Export the timeline as CSV".into(),
             workspace: Some("csv".into()),
+            answer_only: false,
         })
         .await
         .unwrap();
@@ -5635,6 +5642,7 @@ async fn a_feature_that_isnt_running_can_be_deleted() {
             title: "Throwaway".into(),
             request: "Nothing much".into(),
             workspace: Some("dw".into()),
+            answer_only: false,
         })
         .await
         .unwrap();

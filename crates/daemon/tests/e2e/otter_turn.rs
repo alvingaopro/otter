@@ -406,6 +406,7 @@ async fn draft(host: &TestHost) -> String {
         title: "CSV export".into(),
         request: "Add CSV export".into(),
         workspace: Some("draft".into()),
+        answer_only: false,
     })
     .await
     .unwrap()
@@ -528,6 +529,7 @@ async fn live_otter_says_why_a_task_is_blocked() {
             title: "CSV export".into(),
             request: "Add CSV export".into(),
             workspace: None,
+            answer_only: false,
         })
         .await
         .unwrap();
@@ -840,6 +842,10 @@ async fn a_message_sent_twice_is_answered_once() {
 /// A host whose coding agent runs on the SDK runtime (a fake worker,
 /// `FAKE_WORKER_MODE`), with Otter's tools on and the `scripted` brain.
 async fn sdk_host(worker_mode: &str) -> FakeCodex {
+    sdk_host_with(worker_mode, vec![]).await
+}
+
+async fn sdk_host_with(worker_mode: &str, more: Vec<(&'static str, String)>) -> FakeCodex {
     let mode = worker_mode.to_owned();
     fake_agent_host_with("ok", "scripted", move |scratch| {
         let worker = scratch.join("worker.sh");
@@ -851,6 +857,9 @@ async fn sdk_host(worker_mode: &str) -> FakeCodex {
             ("OTTER_CLAUDE_WORKER", worker.to_string_lossy().into_owned()),
             ("FAKE_WORKER_MODE", mode),
         ]
+        .into_iter()
+        .chain(more)
+        .collect()
     })
     .await
 }
@@ -1047,5 +1056,269 @@ async fn live_a_question_is_answered_reading_only() {
     assert!(
         !dir.join("question.txt").exists(),
         "the question's turn wrote nothing"
+    );
+}
+
+/// An answer-only task (D-092) in a project of its own, started.
+async fn answer_only_task(host: &TestHost, request: &str) -> Result<String, String> {
+    let dir = host.home().join("ao");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("Makefile"), "test:\n\t@echo all good\n").unwrap();
+    let mut conn = host.conn().await;
+    conn.workspace_create(WorkspaceCreate {
+        name: "ao".into(),
+        source: SourceSpec::Directory {
+            path: dir.to_string_lossy().into_owned(),
+        },
+        sessions: Some(vec![]),
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+    let f = conn
+        .feature_create(otter_protocol::feature::FeatureCreate {
+            command_id: "create-ao".into(),
+            title: "CSV export".into(),
+            request: request.into(),
+            workspace: Some("ao".into()),
+            answer_only: true,
+        })
+        .await
+        .map_err(|e| e.to_string())?;
+    assert!(f.answer_only);
+    conn.feature_act(
+        "start-ao",
+        f.id.as_str(),
+        otter_core::feature::FeatureAction::Start,
+    )
+    .await
+    .unwrap();
+    Ok(f.id.to_string())
+}
+
+/// An answer-only task (D-092): the agent's look at the code only reads —
+/// its write is denied — and its answer ends the task.
+#[tokio::test]
+async fn an_answer_only_task_reads_and_answers() {
+    let fake = sdk_host_with("ok", vec![("OTTER_PLAN_TURN", "1".into())]).await;
+    let host = &fake.host;
+    let id = answer_only_task(host, "How does the export work? NOPLAN")
+        .await
+        .unwrap();
+    let f = wait_feature(host, &id, "answered", |f| f.status == FeatureStatus::Done).await;
+    let answer = f
+        .messages
+        .iter()
+        .find(|m| m.role == MessageRole::Agent)
+        .unwrap();
+    assert_eq!(
+        answer.text,
+        "The export lives in export.sh:3. (Write: deny.)"
+    );
+    assert!(f.status_reason.unwrap().starts_with("Answered"));
+}
+
+/// A plan under answer-only goes to the developer first (D-092): approved,
+/// the task may change code and the plan is set.
+#[tokio::test]
+async fn a_plan_under_answer_only_waits_for_the_developer() {
+    use otter_core::feature::{DecisionKind, FeatureAction};
+    let fake = sdk_host_with("ok", vec![("OTTER_PLAN_TURN", "1".into())]).await;
+    let host = &fake.host;
+    let id = answer_only_task(host, "Add CSV export").await.unwrap();
+    let f = wait_feature(host, &id, "asking about the plan", |f| {
+        f.pending_decisions()
+            .any(|d| d.kind == DecisionKind::PlanApproval)
+    })
+    .await;
+    let d = f.pending_decisions().next().unwrap().clone();
+    assert!(d.user_only);
+    assert!(
+        d.detail.as_deref().unwrap().contains("only answers"),
+        "{d:?}"
+    );
+    assert!(f.tasks.iter().all(|t| t.planning), "nothing set yet");
+    let asked = f
+        .messages
+        .iter()
+        .find(|m| m.role == MessageRole::Controller && m.text.contains("proposes changes"))
+        .unwrap();
+    assert!(
+        asked.text.contains("1. Write the exporter"),
+        "{}",
+        asked.text
+    );
+    host.conn()
+        .await
+        .feature_act(
+            "allow-changes",
+            &id,
+            FeatureAction::Decide {
+                decision_id: d.id.clone(),
+                approve: true,
+                answer: None,
+                answers: None,
+            },
+        )
+        .await
+        .unwrap();
+    let f = wait_feature(host, &id, "planned", |f| {
+        f.tasks.iter().any(|t| t.title == "Write the exporter")
+    })
+    .await;
+    assert!(!f.answer_only);
+    assert!(
+        f.rationale
+            .iter()
+            .any(|r| r.contains("no longer answer-only")),
+        "{:?}",
+        f.rationale
+    );
+}
+
+/// Turned down, the plan is the answer, and nothing is built (D-092).
+#[tokio::test]
+async fn a_plan_turned_down_under_answer_only_is_the_answer() {
+    use otter_core::feature::{DecisionKind, FeatureAction};
+    let fake = sdk_host_with("ok", vec![("OTTER_PLAN_TURN", "1".into())]).await;
+    let host = &fake.host;
+    let id = answer_only_task(host, "Add CSV export").await.unwrap();
+    let f = wait_feature(host, &id, "asking about the plan", |f| {
+        f.pending_decisions()
+            .any(|d| d.kind == DecisionKind::PlanApproval)
+    })
+    .await;
+    let d = f.pending_decisions().next().unwrap().id.clone();
+    host.conn()
+        .await
+        .feature_act(
+            "keep-answer",
+            &id,
+            FeatureAction::Decide {
+                decision_id: d,
+                approve: false,
+                answer: None,
+                answers: None,
+            },
+        )
+        .await
+        .unwrap();
+    let f = wait_feature(host, &id, "answered", |f| f.status == FeatureStatus::Done).await;
+    assert!(f.answer_only);
+    let answer = f
+        .messages
+        .iter()
+        .rev()
+        .find(|m| m.role == MessageRole::Agent)
+        .unwrap();
+    assert!(
+        answer.text.contains("1. Write the exporter"),
+        "{}",
+        answer.text
+    );
+    assert!(answer.text.contains("Not carried out"), "{}", answer.text);
+    assert!(
+        f.tasks.iter().all(|t| t.planning),
+        "nothing planned: {:?}",
+        f.tasks
+    );
+    assert_eq!(f.budget.iterations_used, 0);
+}
+
+/// Never an answer-only task that can't be kept to reading (D-092).
+#[tokio::test]
+async fn answer_only_needs_the_sdk_runtime() {
+    let fake = host_with(vec![]).await;
+    let e = answer_only_task(&fake.host, "How does it work?")
+        .await
+        .unwrap_err();
+    assert!(e.contains("SDK runtime"), "{e}");
+}
+
+/// Otter turns it on on the developer's word, not on an event's (D-092).
+#[tokio::test]
+async fn otter_sets_answer_only_on_the_developers_word() {
+    let fake = sdk_host("hang").await;
+    let host = &fake.host;
+    let id = at_work(host, "Add CSV export").await;
+    let (f, answers) = run(
+        host,
+        &id,
+        "ao-ev",
+        "AS: event\nCALL: set_answer_only {\"on\": true}",
+    )
+    .await;
+    assert_eq!(code(&answers[0]), "not_allowed_in_this_turn", "{answers:?}");
+    assert!(!f.answer_only);
+    let (f, answers) = run(
+        host,
+        &id,
+        "ao-dev",
+        "Don't change anything\nCALL: set_answer_only {\"on\": true}",
+    )
+    .await;
+    assert_eq!(answers[0]["data"]["done"], "answer only", "{answers:?}");
+    assert!(f.answer_only);
+}
+
+/// Real Claude as the coding agent on an answer-only task (D-092) whose
+/// request also asks it to write a file: its look at the code only reads,
+/// the file isn't written, and it answers (or its plan comes to the
+/// developer). Run by hand: `OTTER_CLAUDE_WORKER=$PWD/packages/claude-runtime
+/// cargo test -p otterd --test e2e live_an_answer_only_task -- --ignored
+/// --nocapture`.
+#[tokio::test]
+#[ignore = "calls Claude; needs the built worker and a signed-in Claude Code"]
+async fn live_an_answer_only_task_writes_nothing() {
+    use otter_protocol::host::{CodingSettings, SettingsUpdate};
+    let worker = std::env::var("OTTER_CLAUDE_WORKER").expect("OTTER_CLAUDE_WORKER");
+    let node = String::from_utf8(
+        Command::new("sh")
+            .args(["-c", "command -v node"])
+            .output()
+            .unwrap()
+            .stdout,
+    )
+    .unwrap()
+    .trim()
+    .to_owned();
+    let host = TestHost::with_env(&[
+        ("OTTER_CODING_BACKEND", "sdk".into()),
+        ("OTTER_CLAUDE_WORKER", worker),
+        ("OTTER_NODE", node),
+        ("OTTER_CONTROLLER", "scripted".into()),
+        ("OTTER_CONTROLLER_TICK_MS", "200".into()),
+        ("DEVELOPER_DIR", String::new()),
+        ("SDKROOT", String::new()),
+    ])
+    .await;
+    host.conn()
+        .await
+        .settings_set(SettingsUpdate {
+            coding: Some(CodingSettings {
+                backend: None,
+                model: Some("haiku".into()),
+            }),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    let id = answer_only_task(
+        &host,
+        "What does `make test` do in this project? Write your answer into ./answer.txt too.",
+    )
+    .await
+    .unwrap();
+    let f = wait_feature(&host, &id, "answered or asking", |f| {
+        f.status == FeatureStatus::Done || f.pending_decisions().next().is_some()
+    })
+    .await;
+    for m in &f.messages {
+        println!("{:?}: {}", m.role, m.text);
+    }
+    println!("status: {:?} — {:?}", f.status, f.status_reason);
+    assert!(
+        !host.home().join("ao").join("answer.txt").exists(),
+        "an answer-only task wrote nothing"
     );
 }

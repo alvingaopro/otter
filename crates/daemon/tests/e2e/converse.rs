@@ -231,6 +231,7 @@ async fn going_on_starts_a_draft(v2: bool) {
             title: "CSV export".into(),
             request: "Add CSV export HANG".into(),
             workspace: Some("draft".into()),
+            answer_only: false,
         })
         .await
         .unwrap();

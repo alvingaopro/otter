@@ -240,6 +240,7 @@ impl Daemon {
                 title: t.title.clone(),
                 request: t.request.clone(),
                 workspace: Some(t.workspace_id.to_string()),
+                answer_only: false,
             })
             .await?;
         // Its policy, set as it's made (D-083).

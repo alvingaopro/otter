@@ -37,6 +37,11 @@ pub enum FeatureCommand {
         /// The workspace to do the work in.
         #[arg(long)]
         workspace: Option<String>,
+        /// Only an answer is wanted: the coding agent reads and changes
+        /// nothing, and a plan to change things comes to you first (needs
+        /// the coding agent on the SDK runtime).
+        #[arg(long)]
+        answer_only: bool,
         /// The host (default: the default host, else the only one).
         #[arg(long)]
         host: Option<String>,
@@ -368,6 +373,7 @@ pub async fn feature_command(config: &Config, cmd: FeatureCommand, json: bool) -
             title,
             request,
             workspace,
+            answer_only,
             host,
         } => {
             let entry = match host {
@@ -388,6 +394,7 @@ pub async fn feature_command(config: &Config, cmd: FeatureCommand, json: bool) -
                     request: request.unwrap_or_else(|| title.clone()),
                     title,
                     workspace,
+                    answer_only,
                 })
                 .await?;
             if json {

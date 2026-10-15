@@ -477,6 +477,10 @@ pub struct Feature {
     /// What the developer asked for, as written.
     #[serde(default)]
     pub request: String,
+    /// Only an answer is wanted (D-092): every turn of the coding agent's
+    /// only reads, and a plan to change things goes to the developer first.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub answer_only: bool,
     pub status: FeatureStatus,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub status_reason: Option<String>,
@@ -565,6 +569,7 @@ impl Feature {
             id: FeatureId::generate(),
             title,
             request,
+            answer_only: false,
             status: FeatureStatus::Draft,
             status_since: Some(now),
             started_by: None,
