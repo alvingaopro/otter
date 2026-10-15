@@ -2913,3 +2913,24 @@ before the dogfooding (V2-0c), to revisit with it.
 - **One narrator per task stays** (D-069): the task's own conversation
   keeps the controller's messages; the follow-up is in the host's
   conversation, about the task.
+
+## D-095 — The API providers answer with Otter's tools (2026-10-15)
+
+Plan `brain-runtime-v2` M5, at the developer's direction (before V2-0c).
+
+- **The tool loop runs in otterd** for a provider's API (`ApiTurn`): each
+  round a request with Otter's tools — chat completions' `tools` for the
+  OpenAI-style providers, the Messages API's for Anthropic — each tool call
+  answered by the same gateway as Claude's turn, until the model answers or
+  its round trips run out. Same limits, same one reply per message.
+- **Where a provider has its key.** Without one, the brain answers as
+  before, and Settings and `otter doctor` say "no API key".
+- The key goes as before: in curl's config on stdin, never on a command
+  line or in what is sent.
+- The reply isn't streamed: it comes whole at the end of the turn.
+- `OTTER_PROVIDER_BASE` (tests only) points every provider at a stand-in.
+- **`INTENT:` isn't retired.** It still answers where there is no turn —
+  `claude` without the worker, a provider without a key, `rules` — and
+  retiring it is a decision of its own.
+- Tried: OpenRouter, live (V2-6); both API styles offline. The other
+  OpenAI-style providers share the code; their own quirks are untried.

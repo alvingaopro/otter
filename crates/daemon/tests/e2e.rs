@@ -22,6 +22,8 @@ mod converse;
 mod host_chat;
 #[path = "e2e/otter_turn.rs"]
 mod otter_turn;
+#[path = "e2e/provider_turn.rs"]
+mod provider_turn;
 
 struct TestHost {
     dir: tempfile::TempDir,

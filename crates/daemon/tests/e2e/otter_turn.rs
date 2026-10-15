@@ -570,17 +570,23 @@ async fn live_otter_says_why_a_task_is_blocked() {
     assert_eq!(f.status, FeatureStatus::Blocked, "nothing changed");
 }
 
-/// A brain without a tool-using turn (a provider's API, M5) answers as
-/// before with the flag on, and the host says so.
+/// A provider without its API key has no tool-using turn (D-095): it
+/// answers as before with the flag on, and the host says why.
 #[tokio::test]
 async fn a_provider_without_a_turn_answers_as_before_and_says_so() {
-    let fake =
-        fake_agent_host_with("ok", "openrouter", |_| vec![("OTTER_BRAIN_V2", "1".into())]).await;
+    // No key, whatever the machine running the test has.
+    let fake = fake_agent_host_with("ok", "openrouter", |_| {
+        vec![
+            ("OTTER_BRAIN_V2", "1".into()),
+            ("OPENROUTER_API_KEY", String::new()),
+        ]
+    })
+    .await;
     let host = &fake.host;
     let status = host.conn().await.host_status().await.unwrap();
     assert_eq!(
         status.otter.as_deref(),
-        Some("without tools: `openrouter` has no tool-using turn yet")
+        Some("without tools: no API key for `openrouter` (Settings)")
     );
     assert!(
         status

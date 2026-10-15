@@ -154,8 +154,12 @@ impl Daemon {
                     .err()
                     .unwrap_or_else(|| "the Claude worker isn't ready".into())
             )),
+            None if crate::providers::get(brain.name()).is_some() => Err(format!(
+                "without tools: no API key for `{}` (Settings)",
+                brain.name()
+            )),
             None => Err(format!(
-                "without tools: `{}` has no tool-using turn yet",
+                "without tools: `{}` has no tool-using turn",
                 brain.name()
             )),
         }
@@ -598,6 +602,62 @@ impl TurnBackend for ClaudeTurn {
         )
         .await?;
         Ok(reply)
+    }
+}
+
+/// A model provider's API (D-095, plan M5): the tool loop run here, each
+/// round a request with Otter's tools, each tool call answered by the
+/// gateway, until the model answers or its round trips run out. The reply
+/// isn't streamed: it comes whole at the end.
+pub struct ApiTurn {
+    pub provider: &'static crate::providers::Provider,
+    pub key: String,
+    pub model: Option<String>,
+    pub env: crate::env::EnvMap,
+}
+
+#[async_trait]
+impl TurnBackend for ApiTurn {
+    fn name(&self) -> &'static str {
+        self.provider.id
+    }
+
+    async fn run(&self, turn: &Turn<'_>, gateway: &Gateway) -> Result<String> {
+        let specs: Vec<(&str, &str, &Value)> = turn
+            .tools
+            .iter()
+            .map(|t| (t.name, t.description, &t.input))
+            .collect();
+        let tools = self.provider.tool_defs(&specs);
+        let mut messages = vec![self.provider.first_message(&prompt(turn))];
+        for _ in 0..turn.limits.max_round_trips.max(1) {
+            let round = self
+                .provider
+                .tool_round(
+                    &self.env,
+                    &self.key,
+                    self.model.as_deref(),
+                    turn.instructions,
+                    &messages,
+                    &tools,
+                )
+                .await?;
+            if round.uses.is_empty() {
+                (turn.say)(&round.text);
+                return Ok(round.text);
+            }
+            messages.push(round.assistant);
+            let mut results = Vec::new();
+            for u in round.uses {
+                let output = gateway.call(&u.name, u.input).await.to_string();
+                results.push((u.id, output));
+            }
+            messages.extend(self.provider.tool_results(&results));
+        }
+        anyhow::bail!(
+            "it used its {} round trips without an answer",
+            turn.limits.max_round_trips
+        )
     }
 }
 

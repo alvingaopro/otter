@@ -765,7 +765,7 @@ impl Brain for Model {
         }
     }
     /// Claude, through the worker's Otter profile, where the worker has it;
-    /// a provider's API has no tool-using turn yet (M5).
+    /// a provider's API with its key, the tool loop run here (D-095).
     fn turn(&self, env: &EnvMap, root: &Path) -> Option<Box<dyn crate::turn::TurnBackend>> {
         match self.backend {
             Backend::ClaudeCode if crate::agents::claude_otter::ready(env).is_ok() => {
@@ -775,6 +775,14 @@ impl Brain for Model {
                     root: root.to_owned(),
                 }))
             }
+            Backend::Api(p) => self.key.clone().map(|key| {
+                Box::new(crate::turn::ApiTurn {
+                    provider: p,
+                    key,
+                    model: self.model.clone(),
+                    env: env.clone(),
+                }) as Box<dyn crate::turn::TurnBackend>
+            }),
             _ => None,
         }
     }
