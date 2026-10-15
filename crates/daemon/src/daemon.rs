@@ -162,7 +162,7 @@ impl Daemon {
             reconciled_once: Default::default(),
             problems: std::sync::Mutex::new(problems),
             git: GitManager::new(paths.home.join("repos"), &env.vars),
-            environments: EnvironmentManager::new(&env.vars),
+            environments: EnvironmentManager::new(&env.vars, crate::files::shim_dir(&paths)),
             env_source: env.source,
             paths,
             store: Mutex::new(store),

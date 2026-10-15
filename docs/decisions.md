@@ -3298,3 +3298,32 @@ on a click, and syntax colours.
   plain. The theme's own colours apply, light and dark. The Files preview
   (D-103) is highlighted the same way.
 - About 150 KB more JavaScript (50 KB gzipped).
+
+## D-112 — The stand-ins stay on PATH when direnv reloads (2026-10-15)
+
+Dogfooding: Ctrl+V stopped pasting images into Claude Code. The image
+reached otterd, but the session's `claude` had no `run/bin` on its PATH, so
+it never ran otterd's `wl-paste` (D-031). otterd resolves a workspace's
+direnv environment, then puts `run/bin` first when it launches. What direnv
+exports remembers the PATH it started from, without `run/bin`. A session's
+shell hook goes back to that PATH when a file direnv watches changes (here
+nix-direnv refreshed the dev shell after otterd restarted) or when the
+shell `cd`s elsewhere, and the stand-ins were gone until the session
+restarted.
+
+- **direnv runs with `run/bin` already first on PATH**, so the PATH it
+  remembers has the stand-ins and a reload or unload keeps them. A session
+  still gets `run/bin` first, once.
+- **The login environment drops `DIRENV_DIFF`, `DIRENV_DIR`, `DIRENV_FILE`
+  and `DIRENV_WATCHES`.** They describe the directory the daemon happened to
+  start from, such as a dev shell. Any direnv run, otterd's or a session's,
+  would first go back to the PATH from before that directory loaded.
+- Limit: after a reload, the dev shell's own directories come before
+  `run/bin`. A dev shell that provides `wl-paste` or `xdg-open` would win
+  over otterd's. This is not "first on every session's PATH" as D-031 says.
+- PATH additions in `.zshrc` are still lost on a reload. otterd captures
+  the login environment with a non-interactive login shell, which doesn't
+  read `.zshrc`, so they aren't in the PATH direnv goes back to. Additions
+  in `.zprofile` or `.zshenv` are kept.
+- Tested end to end: a session touches its `.envrc`, runs what the hook
+  runs, and `run/bin` is still on PATH.

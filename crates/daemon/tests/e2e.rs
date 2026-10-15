@@ -1413,6 +1413,63 @@ async fn direnv_environment_is_resolved_and_inherited() {
     );
 }
 
+/// A session's shell hook reloads direnv when a file it watches changes
+/// (a refreshed Nix dev shell), and goes back to the PATH the export started
+/// from: otterd's stand-ins (`run/bin`, e.g. the `wl-paste` image paste
+/// needs) must still be on it afterwards.
+#[tokio::test]
+async fn stand_ins_survive_a_direnv_reload_in_a_session() {
+    if Command::new("direnv").arg("version").output().is_err() {
+        eprintln!("skipping: direnv not installed");
+        return;
+    }
+    let scratch = tempfile::Builder::new().prefix("wdx").tempdir().unwrap();
+    let host = TestHost::with_env(&[
+        (
+            "XDG_DATA_HOME",
+            scratch.path().join("data").to_string_lossy().into_owned(),
+        ),
+        (
+            "XDG_CONFIG_HOME",
+            scratch.path().join("config").to_string_lossy().into_owned(),
+        ),
+    ])
+    .await;
+    let shim = host.home().join("run/bin");
+    // What `eval "$(direnv hook bash)"` does at a prompt, after the .envrc's
+    // time changed (its content didn't: still allowed).
+    let reload = format!(
+        "has() {{ case \":$PATH:\" in *\":{shim}:\"*) echo \"$1=kept\" ;; *) echo \"$1=lost\" ;; esac; }}\n\
+         has before\n\
+         touch -t 203001010000 .envrc\n\
+         out=$(direnv export bash 2>/dev/null)\n\
+         [ -n \"$out\" ] && echo reloaded\n\
+         eval \"$out\"\n\
+         has after\n",
+        shim = shim.display()
+    );
+    let src = make_repo(
+        &host,
+        "src",
+        &[(".envrc", "PATH_add tools\n"), ("reload.sh", &reload)],
+    );
+    let mut conn = host.conn().await;
+    conn.workspace_create(git_ws(
+        "env",
+        &src,
+        None,
+        vec![spec(SessionKind::Command, "reload", "bash reload.sh")],
+    ))
+    .await
+    .unwrap();
+    let ws = wait_prepared(&host, "env").await;
+    assert_eq!(ws.state, WorkspaceState::Ready, "{:?}", ws.state_message);
+    let out = wait_output(&host, "env", "reload", "after=").await;
+    assert!(out.contains("before=kept"), "{out}");
+    assert!(out.contains("reloaded"), "direnv didn't reload: {out}");
+    assert!(out.contains("after=kept"), "{out}");
+}
+
 // ---------------------------------------------------------------------------
 // Agents and attention (phases 4 and 7)
 // ---------------------------------------------------------------------------

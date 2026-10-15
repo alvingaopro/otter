@@ -422,8 +422,9 @@ policy}`. An addition (no protocol bump).
   anything a path resolves to outside it — and on a link itself, not what it
   points to. Additions: daemons before them answer `invalid_request`.
 - `session.paste_image {workspace, session, png}` → stores the PNG (≤ 20 MB)
-  for that session; the session's stand-in `wl-paste` (first on its PATH)
-  serves it for two minutes, so Claude Code's Ctrl+V picks it up.
+  for that session; the session's stand-in `wl-paste` (on its PATH ahead of
+  the host's own, even after direnv reloads in the session, D-112) serves it
+  for two minutes, so Claude Code's Ctrl+V picks it up.
 
 ## Browser login
 
