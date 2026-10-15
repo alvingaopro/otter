@@ -29,6 +29,17 @@ pub fn raise(
     kind: AttentionKind,
     summary: String,
 ) -> Vec<Event> {
+    raise_item(ws, session_id, kind, summary, false)
+}
+
+/// [`raise`], saying whether it is a guess (D-109).
+pub fn raise_item(
+    ws: &mut Workspace,
+    session_id: Option<&SessionId>,
+    kind: AttentionKind,
+    summary: String,
+    inferred: bool,
+) -> Vec<Event> {
     // An archived workspace asks for nothing (D-036).
     if ws.state == WorkspaceState::Archived {
         return Vec::new();
@@ -41,6 +52,7 @@ pub fn raise(
         kind,
         summary,
         created_at: Utc::now(),
+        inferred,
     };
     events.push(Event::AttentionCreated {
         workspace_id: ws.id.clone(),
@@ -153,7 +165,7 @@ pub fn on_agent_state(
         }
         AgentState::Blocked => {
             let (kind, summary) = blocked_item(name, blocker);
-            raise(ws, Some(session_id), kind, summary)
+            raise_item(ws, Some(session_id), kind, summary, blocker.is_none())
         }
         // Back at work, or the prompt was declined / the turn interrupted.
         AgentState::Working | AgentState::Idle => resolve_session(ws, session_id),

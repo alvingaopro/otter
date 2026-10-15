@@ -788,10 +788,11 @@ pub async fn workspace_diff(
     host: String,
     workspace: String,
     path: String,
+    context: Option<u32>,
 ) -> Result<otter_protocol::work::FileDiff, String> {
     rpc(&app, &host)
         .await?
-        .workspace_diff(&workspace, &path)
+        .workspace_diff(&workspace, &path, context)
         .await
         .map_err(err)
 }

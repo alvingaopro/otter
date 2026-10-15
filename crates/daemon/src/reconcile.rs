@@ -311,7 +311,7 @@ fn observe_agent(ws: &mut Workspace, i: usize, seen: &Seen<'_>, events: &mut Vec
             let id = session.id.clone();
             info.blocker = Some(summary.clone());
             changed = true;
-            events.extend(attention::raise(ws, Some(&id), kind, summary));
+            events.extend(attention::raise_item(ws, Some(&id), kind, summary, false));
         }
     }
     if changed {

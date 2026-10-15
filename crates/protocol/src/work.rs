@@ -74,6 +74,10 @@ pub struct WorkspaceDiff {
     pub workspace: String,
     /// Relative to the workspace root, as `workspace.changes` lists it.
     pub path: String,
+    /// Lines of context around each change (git's default, 3, if absent); a
+    /// large number gives the whole file, for a client to fold (D-111).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context: Option<u32>,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]

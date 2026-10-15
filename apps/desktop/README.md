@@ -44,7 +44,9 @@ Layout:
   tasks come from: the hosts, or sample data in tests; D-042),
   `Sidebar` (with the filter), `QuickOpen` (⌘K), `WorkspacePane` (kept
   mounted while hidden, D-100), `ChangesPanel` + `changes.ts` (D-102),
-  `FindPanel` (⌘F), `Terminal` (xterm.js; `links.ts` for ⌘-click,
+  `FindPanel` (⌘F), `SessionTerminal` (a session's terminal and its end
+  banners; two side by side, D-110), `DiffView` + `diff.ts` + `highlight.ts`
+  (diffs side by side, folded, highlighted, D-111), `Terminal` (xterm.js; `links.ts` for ⌘-click,
   `terminalFont.ts` for ⌘=/⌘-), `newer.ts` (requests older hosts don't
   know), `panelResize` (the
   list's and the Files/Timeline panel's widths, D-097; `composerResize` is

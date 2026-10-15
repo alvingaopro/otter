@@ -343,6 +343,21 @@ impl Daemon {
                 ws.name, ws.root
             )));
         }
+        // Its branch goes with it (D-108): not commits that are nowhere else.
+        if let WorkspaceSource::Git(g) = &ws.source
+            && !p.force
+        {
+            let n = self.git.unpushed(&g.repo_id, &g.branch).await.unwrap_or(0);
+            if n > 0 {
+                return Err(RpcError::conflict(format!(
+                    "workspace `{}`'s branch `{}` has {n} commit{} not pushed anywhere; delete with force to discard {}",
+                    ws.name,
+                    g.branch,
+                    if n == 1 { "" } else { "s" },
+                    if n == 1 { "it" } else { "them" },
+                )));
+            }
+        }
 
         let mut store = self.store.lock().await;
         let Some(idx) = store.workspace_index(ws.id.as_str()) else {
@@ -358,13 +373,28 @@ impl Daemon {
         let managed_dir = self.paths.workspace_dir(ws.id.as_str());
         match &ws.source {
             WorkspaceSource::Git(git) => {
+                let mut removed = true;
                 if self.git.base_dir(&git.repo_id).exists() {
                     self.git
                         .remove_worktree(&git.repo_id, Path::new(&ws.root))
                         .await
                         .map_err(|e| RpcError::internal(format!("removing worktree: {e:#}")))?;
+                    removed = self.git.delete_branch(&git.repo_id, &git.branch).await;
                 }
                 remove_managed_dir(&managed_dir)?;
+                // The repository's copy goes when nothing uses it any more;
+                // checked under the store's lock, so a workspace being made
+                // on it is seen.
+                let in_use = store.state.workspaces.iter().any(|w| {
+                    w.id != ws.id
+                        && matches!(&w.source, WorkspaceSource::Git(o) if o.repo_id == git.repo_id)
+                });
+                if removed
+                    && !in_use
+                    && let Err(e) = self.git.remove_repo(&git.repo_id).await
+                {
+                    tracing::warn!(repo = %git.repo_id, "removing the repository: {e:#}");
+                }
             }
             WorkspaceSource::Empty => remove_managed_dir(&managed_dir)?,
             // Attached, not managed: never deleted (design §29).

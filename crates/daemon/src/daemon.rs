@@ -267,7 +267,10 @@ impl Daemon {
             Request::WorkspaceSetBrief(p) => json(self.workspace_set_brief(p).await?.shown()),
             Request::WorkspaceRename(p) => json(self.workspace_rename(p).await?.shown()),
             Request::WorkspaceChanges(r) => json(self.workspace_changes(&r.workspace).await?),
-            Request::WorkspaceDiff(p) => json(self.workspace_diff(&p.workspace, &p.path).await?),
+            Request::WorkspaceDiff(p) => json(
+                self.workspace_diff(&p.workspace, &p.path, p.context)
+                    .await?,
+            ),
             Request::WorkspacePorts(r) => json(self.workspace_ports(&r.workspace).await?),
             Request::SessionCreate(p) => json(self.session_create(p).await?),
             Request::SessionStop(r) => json(self.session_stop(&r).await?),

@@ -49,7 +49,10 @@ const payload: HostsPayload = {
           brief: {},
           sourceKind: "empty",
           source: "",
-          sessions: [{ id: "ses_2", name: "shell", kind: "terminal", status: "running" }],
+          sessions: [
+            { id: "ses_2", name: "shell", kind: "terminal", status: "running" },
+            { id: "ses_3", name: "logs", kind: "terminal", status: "running" },
+          ],
           attention: [],
           updatedAt: new Date().toISOString(),
         },
@@ -188,6 +191,30 @@ describe("Activity Bar navigation", () => {
     // Shown again without attaching: what attaching settles is settled, by id.
     const resolved = calls.mock.calls.filter(([cmd]) => cmd === "attention_resolve").map(([, args]) => args);
     expect(resolved).toEqual([{ host: "mac", workspace: "ws_1", session: null, attention: "at_1" }]);
+  });
+
+  it("shows two sessions side by side, and one again (D-110)", async () => {
+    const row = (name: string) =>
+      [...host.querySelectorAll<HTMLButtonElement>(".ws-row")].find((b) => b.textContent?.includes(name))!;
+    await act(async () => tab("workspaces").click());
+    await act(async () => row("other").click());
+    await flush();
+    const pane = () => host.querySelector<HTMLElement>(".ws-pane:not([hidden])")!;
+    const mounts = terminal.mounts;
+    const split = () => pane().querySelector<HTMLButtonElement>(".split-btn")!;
+    await act(async () => split().click());
+    expect(terminal.mounts).toBe(mounts + 1);
+    expect(pane().querySelectorAll('[data-testid="terminal"]').length).toBe(2);
+    expect(pane().querySelector(".tab.beside")?.textContent).toContain("logs");
+    // The tab on the right, clicked: the two trade places.
+    const tabNamed = (n: string) => [...pane().querySelectorAll<HTMLButtonElement>(".tab-main")].find((b) => b.textContent?.includes(n))!;
+    await act(async () => tabNamed("logs").click());
+    expect(pane().querySelector(".tab.selected")?.textContent).toContain("logs");
+    expect(pane().querySelector(".tab.beside")?.textContent).toContain("shell");
+    const unmounts = terminal.unmounts;
+    await act(async () => split().click());
+    expect(pane().querySelectorAll('[data-testid="terminal"]').length).toBe(1);
+    expect(terminal.unmounts).toBe(unmounts + 1);
   });
 
   it("goes to a workspace with ⌘K", async () => {

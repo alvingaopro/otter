@@ -189,6 +189,74 @@ impl GitManager {
         Ok(())
     }
 
+    /// Commits on `branch` that no remote-tracking branch has: what deleting
+    /// the branch would lose (D-108). 0 when there's no such branch.
+    pub async fn unpushed(&self, repo_id: &str, branch: &str) -> Result<u32> {
+        let repo = self.base_dir(repo_id);
+        let head = format!("refs/heads/{branch}");
+        if branch.is_empty() || !self.ref_exists(&repo, &head).await {
+            return Ok(0);
+        }
+        let out = self
+            .git(
+                Some(&repo),
+                &["rev-list", "--count", &head, "--not", "--remotes"],
+            )
+            .await?;
+        Ok(out.trim().parse().unwrap_or(0))
+    }
+
+    /// Delete a workspace's branch once its worktree is gone (D-108).
+    /// `false`: kept — another worktree has it checked out, or git said no.
+    pub async fn delete_branch(&self, repo_id: &str, branch: &str) -> bool {
+        let lock = self.lock_for(repo_id);
+        let _guard = lock.lock().await;
+        let repo = self.base_dir(repo_id);
+        if branch.is_empty()
+            || !self
+                .ref_exists(&repo, &format!("refs/heads/{branch}"))
+                .await
+        {
+            return true;
+        }
+        match self.git(Some(&repo), &["branch", "-D", "--", branch]).await {
+            Ok(_) => true,
+            Err(e) => {
+                tracing::warn!(repo_id, branch, "keeping the branch: {e:#}");
+                false
+            }
+        }
+    }
+
+    /// Remove the backing repository once no workspace uses it (D-108) —
+    /// unless a branch in it still holds commits on no remote (one kept by
+    /// a delete from before, say): then it stays, with that work.
+    pub async fn remove_repo(&self, repo_id: &str) -> Result<bool> {
+        let lock = self.lock_for(repo_id);
+        let _guard = lock.lock().await;
+        let repo = self.base_dir(repo_id);
+        if repo.join("HEAD").exists() {
+            let out = self
+                .git(
+                    Some(&repo),
+                    &["rev-list", "--count", "--branches", "--not", "--remotes"],
+                )
+                .await?;
+            if out.trim().parse::<u32>().unwrap_or(1) > 0 {
+                tracing::info!(
+                    repo_id,
+                    "keeping the repository: a branch holds unpushed commits"
+                );
+                return Ok(false);
+            }
+        }
+        let dir = self.repos_dir.join(repo_id);
+        if dir.exists() {
+            std::fs::remove_dir_all(&dir).with_context(|| format!("removing {}", dir.display()))?;
+        }
+        Ok(true)
+    }
+
     /// Whether the worktree at `path` has uncommitted changes.
     pub async fn is_dirty(&self, path: &Path) -> Result<bool> {
         if !path.exists() {

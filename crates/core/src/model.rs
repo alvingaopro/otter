@@ -562,6 +562,10 @@ pub struct Attention {
     pub kind: AttentionKind,
     pub summary: String,
     pub created_at: Timestamp,
+    /// Guessed, not reported (D-109): an agent gone quiet that seems to be
+    /// waiting (agents::settle), where it didn't say what it waits for.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub inferred: bool,
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]

@@ -3225,3 +3225,76 @@ included. Three names move together, because "task" was taken twice:
 - **The models read it too.** Otter's prompts say task. The coding agent is
   given "Your step (1 of 2)", and the planner proposes `steps`; `tasks`
   still parses.
+
+## D-108 — Deleting a workspace deletes what Otter made for it (2026-10-15)
+
+Deleting a Git workspace removed its worktree but kept its branch, and the
+repository's copy under `~/.otter/repos` stayed after its last workspace
+went. That copy is a full clone. The developer asked that deleting clean up.
+
+- **Its branch goes too.** Commits on it that are on no remote-tracking
+  branch stop the delete without force, the way uncommitted changes do. With
+  force both go: `--force` and the app's checkbox now say so.
+- **The repository's copy goes with the last workspace that used it.** The
+  check runs under the store's lock, so a workspace being made on it is
+  counted. The copy stays while any branch in it holds commits on no remote,
+  for example a branch kept by a delete from before this change.
+- **A branch another worktree has checked out stays,** and so does
+  everything if removing the worktree failed: nothing half-removed.
+- **Never touched:** an existing folder attached as a workspace (design §29),
+  and anything outside `~/.otter`.
+
+## D-109 — Attention says whether it is a guess, and notifications say how much it asks (2026-10-15)
+
+The rest of the notification review that D-099 started:
+
+- **`Attention.inferred`** is additive: absent when false, so older clients
+  ignore it. It marks an item raised from a still turn (`agents::settle`)
+  where the agent didn't say what it waits for. Codex never says, so every
+  Codex prompt is a guess and still notifies, now titled "may be waiting
+  for you". The workspace's banner tags it "possibly".
+- **A finished turn is news, not a call:** its notification is titled "turn
+  finished". `needs_you()` (D-014) is unchanged: the CLI and the Inbox still
+  count it.
+- **Suppressed per session, not per workspace:** an item on a session other
+  than the one on screen notifies, even when its workspace is in front.
+- **NEEDS YOU lists what blocks first:** prompts an agent reported, then
+  guesses, then finished turns, each longest-waiting first.
+- No new method and no protocol bump.
+
+## D-110 — Two sessions side by side (2026-10-15)
+
+The pane showed one session; watching an agent and a shell (`nvim`,
+`lazygit`) meant switching tabs.
+
+- **The split button, or ⌘\\,** shows the next session beside the one on the
+  left. Each has its own attached terminal. The one clicked last has the
+  keyboard and ⌘F. A grip sets the right one's width, remembered like the
+  other panels' (D-097).
+- **The right one's tab is marked.** Clicking it swaps the two; any other tab
+  replaces the left. The split itself isn't remembered: a session gone since
+  would be worse than none.
+- **The terminal and its end banners became `SessionTerminal`,** so the
+  pane renders one or two of them.
+
+## D-111 — Diffs side by side, highlighted, with folds that open (2026-10-15)
+
+The Changes panel's diff (D-102) was plain unified text with git's 3 lines
+of context. The developer asked for GitHub's way: side by side, more context
+on a click, and syntax colours.
+
+- **`workspace.diff` takes an optional `context`** (additive). The app asks
+  for the whole file, bounded by the existing 512 KiB, and folds it itself:
+  - 3 lines around each change;
+  - a fold between changes opens 20 lines from either side, or all of it.
+
+  An older otterd ignores `context` and sends its 3-line hunks; the app
+  shows those, with a "⋯" where lines were left out.
+- **Side by side by default, or unified,** remembered on this Mac. Removed
+  lines pair with the lines that took their place, as GitHub does.
+- **Highlighted with highlight.js** for the usual languages, chosen by file
+  name. Both the whole old text and the whole new text are highlighted, so
+  multi-line comments and strings keep their colour. Text over 300 KB stays
+  plain. The theme's own colours apply, light and dark. The Files preview
+  (D-103) is highlighted the same way.
+- About 150 KB more JavaScript (50 KB gzipped).
