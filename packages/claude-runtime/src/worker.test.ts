@@ -6,7 +6,7 @@ import type { Options, Query, SDKUserMessage } from "@anthropic-ai/claude-agent-
 import { Pending } from "./interactions.js";
 import { Frames, bundledClaude, check, worker } from "./main.js";
 import { MAX_FRAME, PROFILES, PROTOCOL_VERSION, parseCommand } from "./protocol.js";
-import { DISALLOWED_TOOLS, Session, otterToolName, shapeOf } from "./sdk.js";
+import { DISALLOWED_TOOLS, SEARCH_TOOLS, Session, otterToolName, shapeOf } from "./sdk.js";
 
 const env = (type: string, payload: unknown, request_id = `r-${type}`) =>
   JSON.stringify({ protocol_version: PROTOCOL_VERSION, request_id, run_id: "run_1", generation: 1, type, payload });
@@ -58,6 +58,7 @@ test("the SDK is asked for isolation-safe options", () => {
   assert.equal(o.includePartialMessages, true);
   assert.deepEqual(o.settingSources, ["project"]);
   assert.deepEqual(o.disallowedTools, DISALLOWED_TOOLS);
+  assert.deepEqual(o.allowedTools, SEARCH_TOOLS, "the search tools a native build leaves out unless asked");
   assert.equal(o.permissionMode, "default");
   assert.equal(o.perTaskStopAffordance, true, "an interrupt spares background work");
   assert.equal(o.pathToClaudeCodeExecutable, undefined, "the bundled Claude Code, not PATH's");

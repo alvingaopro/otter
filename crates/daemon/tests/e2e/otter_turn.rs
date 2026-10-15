@@ -836,3 +836,216 @@ async fn a_message_sent_twice_is_answered_once() {
     assert_eq!(f.messages.iter().filter(|m| m.text == text).count(), 1);
     assert_eq!(tool_records(host, &id, "get_task").await, (0, 1));
 }
+
+/// A host whose coding agent runs on the SDK runtime (a fake worker,
+/// `FAKE_WORKER_MODE`), with Otter's tools on and the `scripted` brain.
+async fn sdk_host(worker_mode: &str) -> FakeCodex {
+    let mode = worker_mode.to_owned();
+    fake_agent_host_with("ok", "scripted", move |scratch| {
+        let worker = scratch.join("worker.sh");
+        std::fs::write(&worker, include_str!("../fake_claude_worker.sh")).unwrap();
+        vec![
+            ("OTTER_BRAIN_V2", "1".into()),
+            ("OTTER_CODING_BACKEND", "sdk".into()),
+            ("OTTER_NODE", "/bin/sh".into()),
+            ("OTTER_CLAUDE_WORKER", worker.to_string_lossy().into_owned()),
+            ("FAKE_WORKER_MODE", mode),
+        ]
+    })
+    .await
+}
+
+/// A question while the agent works (D-089 M2.5): a turn of its own after
+/// the work's, in which Otter's policy lets it only read; its answer is the
+/// agent's message, and the run's result stays the work's.
+#[tokio::test]
+async fn a_question_at_work_is_answered_by_the_agent_reading_only() {
+    let fake = sdk_host("slow").await;
+    let host = &fake.host;
+    let id = at_work(host, "Add CSV export").await;
+    let (_, answers) = run(host, &id, "ask-1", "Where is the export?\nASK").await;
+    assert_eq!(answers[0]["data"]["done"], "asked", "{answers:?}");
+    assert_eq!(answers[0]["data"]["turns"], 1, "{answers:?}");
+    let f = wait_feature(host, &id, "the agent's answer", |f| {
+        f.messages
+            .iter()
+            .any(|m| m.role == MessageRole::Agent && m.text.contains("src/export.rs:12"))
+    })
+    .await;
+    let answer = f
+        .messages
+        .iter()
+        .find(|m| m.role == MessageRole::Agent && m.text.contains("src/export.rs:12"))
+        .unwrap();
+    // It tried to write and to run a command: both denied, whatever policy
+    // would otherwise allow.
+    assert!(
+        answer.text.contains("(Write: deny; Bash: deny.)"),
+        "{}",
+        answer.text
+    );
+    let c = host
+        .conn()
+        .await
+        .conversation_get(f.runs[0].conversation_id.as_ref().unwrap().as_str())
+        .await
+        .unwrap()
+        .conversation;
+    let asked: Vec<_> = c.turns.iter().filter(|t| t.read_only).collect();
+    assert_eq!(asked.len(), 1, "{:#?}", c.turns);
+    assert!(asked[0].text().contains("Where is the export?"));
+    // The run's result is the work's, and the question cost no attempt.
+    let f = wait_feature(host, &id, "the run over", |f| {
+        f.runs.first().is_some_and(|r| r.state.is_over())
+    })
+    .await;
+    assert_eq!(f.runs[0].summary.as_deref(), Some("Did the work."));
+    assert_eq!(f.runs[0].state, RunState::Completed);
+    assert_eq!(f.budget.iterations_used, 1);
+}
+
+#[tokio::test]
+async fn a_question_needs_the_sdk_runtime() {
+    let fake = host_with(vec![]).await;
+    let host = &fake.host;
+    let id = at_work(host, "Add CSV export HANG").await;
+    let (_, answers) = run(host, &id, "ask-legacy", "Where is it?\nASK").await;
+    assert_eq!(code(&answers[0]), "not_allowed_in_this_turn", "{answers:?}");
+    assert!(
+        answers[0]["error"]["next"]
+            .as_str()
+            .unwrap()
+            .contains("SDK"),
+        "{answers:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_question_with_nothing_at_work_is_a_task_of_its_own() {
+    let fake = host_with(vec![]).await;
+    let host = &fake.host;
+    let id = in_review(host).await;
+    let (_, answers) = run(host, &id, "ask-review", "Where is it?\nASK").await;
+    assert_eq!(code(&answers[0]), "not_ready", "{answers:?}");
+    assert!(
+        answers[0]["error"]["next"]
+            .as_str()
+            .unwrap()
+            .contains("task of its own"),
+        "{answers:?}"
+    );
+}
+
+/// The turn's mode is the journal's: a restart keeps it read-only.
+#[tokio::test]
+async fn a_question_turn_stays_read_only_after_a_restart() {
+    let mut fake = sdk_host("hang").await;
+    let id = at_work(&fake.host, "Add CSV export").await;
+    run(&fake.host, &id, "ask-hang", "Where is it?\nASK").await;
+    fake.host.restart().await;
+    let f = fake.host.conn().await.feature_get(&id).await.unwrap();
+    let c = fake
+        .host
+        .conn()
+        .await
+        .conversation_get(f.runs[0].conversation_id.as_ref().unwrap().as_str())
+        .await
+        .unwrap()
+        .conversation;
+    let asked: Vec<_> = c
+        .turns
+        .iter()
+        .filter(|t| t.text().contains("a question."))
+        .collect();
+    assert_eq!(asked.len(), 1, "{:#?}", c.turns);
+    assert!(asked[0].read_only);
+}
+
+/// Real Claude as the coding agent, through the built worker (D-089
+/// M2.5): asked a question while it works — one that also tells it to
+/// write a file — it answers after the work, reading only; the file isn't
+/// written. Run by hand: `OTTER_CLAUDE_WORKER=$PWD/packages/claude-runtime
+/// cargo test -p otterd --test e2e live_a_question_is_answered_reading_only
+/// -- --ignored --nocapture`.
+#[tokio::test]
+#[ignore = "calls Claude; needs the built worker and a signed-in Claude Code"]
+async fn live_a_question_is_answered_reading_only() {
+    use otter_protocol::host::{CodingSettings, SettingsUpdate};
+    let worker = std::env::var("OTTER_CLAUDE_WORKER").expect("OTTER_CLAUDE_WORKER");
+    let node = String::from_utf8(
+        Command::new("sh")
+            .args(["-c", "command -v node"])
+            .output()
+            .unwrap()
+            .stdout,
+    )
+    .unwrap()
+    .trim()
+    .to_owned();
+    let host = TestHost::with_env(&[
+        ("OTTER_CODING_BACKEND", "sdk".into()),
+        ("OTTER_CLAUDE_WORKER", worker),
+        ("OTTER_NODE", node),
+        ("OTTER_CONTROLLER", "scripted".into()),
+        ("OTTER_BRAIN_V2", "1".into()),
+        ("OTTER_PLAN_TURN", "0".into()),
+        ("OTTER_CONTROLLER_TICK_MS", "200".into()),
+        ("DEVELOPER_DIR", String::new()),
+        ("SDKROOT", String::new()),
+    ])
+    .await;
+    host.conn()
+        .await
+        .settings_set(SettingsUpdate {
+            coding: Some(CodingSettings {
+                backend: None,
+                model: Some("haiku".into()),
+            }),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    let ws = "liveask";
+    let id = started_in(
+        &host,
+        ws,
+        "Work only in the current working directory. Use the Bash tool to run exactly `sleep 20`, then create ./done.txt containing the word ok. Nothing else.",
+    )
+    .await;
+    wait_feature(&host, &id, "the agent at work", |f| {
+        f.runs.last().is_some_and(|r| r.state == RunState::Running)
+    })
+    .await;
+    run(
+        &host,
+        &id,
+        "live-ask",
+        "Create ./question.txt containing yes, then tell me which files are in the working directory.\nASK",
+    )
+    .await;
+    let deadline = std::time::Instant::now() + Duration::from_secs(240);
+    let f = loop {
+        let f = host.conn().await.feature_get(&id).await.unwrap();
+        let answered = f
+            .messages
+            .iter()
+            .filter(|m| m.role == MessageRole::Agent)
+            .count()
+            >= 2;
+        if answered && f.runs.first().is_some_and(|r| r.state.is_over()) {
+            break f;
+        }
+        assert!(std::time::Instant::now() < deadline, "{:#?}", f.messages);
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    };
+    for m in f.messages.iter().filter(|m| m.role == MessageRole::Agent) {
+        println!("agent: {}", m.text);
+    }
+    println!("run summary: {:?}", f.runs[0].summary);
+    let dir = host.home().join(ws);
+    assert!(dir.join("done.txt").exists(), "the work was done");
+    assert!(
+        !dir.join("question.txt").exists(),
+        "the question's turn wrote nothing"
+    );
+}

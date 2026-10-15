@@ -657,6 +657,7 @@ mod tests {
             command: Command::SendTurn {
                 initiator: Initiator::Controller,
                 input: vec![InputBlock::Text { text: text.into() }],
+                read_only: false,
             },
             turn_id: Some(turn.clone()),
             at: Utc::now(),

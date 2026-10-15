@@ -1313,6 +1313,7 @@ mod tests {
                     command: Command::SendTurn {
                         initiator: Initiator::Controller,
                         input: vec![InputBlock::Text { text: text.into() }],
+                        read_only: false,
                     },
                     turn_id: Some(otter_core::TurnId::generate()),
                     at: Utc::now(),
