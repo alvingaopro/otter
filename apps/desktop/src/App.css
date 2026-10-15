@@ -472,9 +472,9 @@ code, .mono { font-family: var(--mono); }
 
 /* A panel's inner edge (D-097): drag it to make the panel wider or narrower.
    It takes no room in its row and overlaps the border it sits on. */
-.panel-grip { flex: none; position: relative; z-index: 5; width: 7px; margin: 0 -3px; cursor: col-resize; touch-action: none; }
+.panel-grip { flex: none; position: relative; z-index: 5; width: 6px; margin: 0 -3px; cursor: col-resize; touch-action: none; }
 .panel-grip::after {
-  content: ""; position: absolute; top: 0; bottom: 0; left: 2px; width: 3px;
+  content: ""; position: absolute; top: 0; bottom: 0; left: 1px; width: 3px;
   background: var(--working); opacity: 0; transition: opacity 0.15s;
 }
 .panel-grip:hover::after { transition-delay: 0.15s; }
