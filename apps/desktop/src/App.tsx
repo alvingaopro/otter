@@ -9,6 +9,8 @@ import { Sidebar } from "./Sidebar";
 import { ActivityBar } from "./ActivityBar";
 import { FeaturesView } from "./FeaturesView";
 import { Inbox } from "./Inbox";
+import { OtterView } from "./OtterView";
+import { daemonOtter } from "./otterChat";
 import { newNeeds, trayFeatures } from "./inboxModel";
 import type { PlacedFeature } from "./features";
 import { daemonSource } from "./featureSource";
@@ -63,6 +65,7 @@ export default function App() {
   const { choice: themeChoice, resolved: theme, cycle: cycleTheme } = useTheme();
   /** Features, from each connected host's otterd (D-043). */
   const [featureSource] = useState(() => daemonSource());
+  const [otterSource] = useState(() => daemonOtter());
   const [features, setFeatures] = useState<PlacedFeature[]>(() => featureSource.list());
   useEffect(() => featureSource.subscribe(setFeatures), [featureSource]);
   const featureNeeds = features.filter((p) => featureNeedsYou(p.feature)).length;
@@ -281,6 +284,17 @@ export default function App() {
               setSelected(key);
               setHostPage(null);
               setView("workspaces");
+            }}
+          />
+        </div>
+        <div className="view" id="view-otter" role="tabpanel" aria-labelledby="view-tab-otter" hidden={view !== "otter"}>
+          <OtterView
+            hosts={connectedHosts}
+            source={otterSource}
+            now={now}
+            onOpenTask={(host, task) => {
+              setFeatureFocus({ key: `${host}/${task}`, at: Date.now() });
+              setView("features");
             }}
           />
         </div>

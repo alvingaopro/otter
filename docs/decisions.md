@@ -2862,8 +2862,10 @@ the dogfooding (V2-0c): the choices here are defaults, to revisit with it.
 
 - **One conversation per host, with Otter**, about any task there, apart
   from each task's own (`otter.get`/`otter.send`/`otter.events`; events
-  `OtterChanged`, `OtterStream`). `otter chat` in the terminal; the app's
-  Otter view next.
+  `OtterChanged`, `OtterStream`). `otter chat` in the terminal; in the app,
+  the **Otter** view (⌘4, last so the other views keep their keys): the host
+  it talks to chosen and shown, the reply streamed, a task it names one
+  click away, and an otterd too old for it said so.
 - **Answered as a turn with Otter's tools — the host's:** `list_tasks`,
   `list_workspaces`, a task's `get_task`/`get_pending_decisions`/
   `get_run_events`, and, on the developer's word, `create_task`,

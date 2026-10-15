@@ -83,6 +83,8 @@ pub fn run() {
             forwards::forward_pin,
             features::features_list,
             features::feature_create,
+            features::otter_get,
+            features::otter_send,
             features::feature_send,
             features::feature_act,
             features::feature_events,

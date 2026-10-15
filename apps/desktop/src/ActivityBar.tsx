@@ -92,6 +92,14 @@ function ViewIcon({ view }: { view: View }) {
       </svg>
     );
   }
+  if (view === "otter") {
+    // A speech bubble: talking to Otter.
+    return (
+      <svg width="18" height="18" viewBox="0 0 18 18" aria-hidden="true">
+        <path d="M3 3.5h12v8H8l-3.5 3v-3H3z" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round" />
+      </svg>
+    );
+  }
   // Stacked panes: places where work runs.
   return (
     <svg width="18" height="18" viewBox="0 0 18 18" aria-hidden="true">

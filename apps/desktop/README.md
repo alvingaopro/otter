@@ -39,7 +39,7 @@ Layout:
 - `src-tauri/src/attach.rs` — terminal bridge (raw-byte channel out, commands in).
 - `src-tauri/src/pins.rs` — pinned workspaces, kept in `pins.toml` (D-040).
 - `src-tauri/src/features.rs` — feature commands, passed through to each host's otterd (D-043).
-- `src/` — React: `ActivityBar` + `nav.ts` (the Tasks — features in code, D-088 — / Workspaces views, D-041),
+- `src/` — React: `ActivityBar` + `nav.ts` (the Tasks — features in code, D-088 — / Workspaces / Otter views, D-041; `OtterView` + `otterChat.ts` are Otter's conversation on a host, D-093),
   `FeaturesView` + `features.ts` (the contract) + `featureSource.ts` (where
   features come from: the hosts, or sample data in tests; D-042),
   `Sidebar`, `WorkspacePane`, `Terminal` (xterm.js), `model.ts`
