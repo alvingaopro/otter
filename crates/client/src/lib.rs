@@ -554,6 +554,34 @@ impl Connection {
     }
 
     /// A message from the developer; `command_id` makes a retry harmless.
+    /// Otter's conversation on this host (D-093).
+    pub async fn otter_get(&mut self) -> Result<otter_core::feature::OtterChat> {
+        self.call(Request::OtterGet).await
+    }
+
+    pub async fn otter_send(
+        &mut self,
+        command_id: &str,
+        text: &str,
+    ) -> Result<otter_core::feature::OtterChat> {
+        self.call(Request::OtterSend(otter_protocol::otter::OtterSend {
+            command_id: command_id.to_owned(),
+            text: text.to_owned(),
+        }))
+        .await
+    }
+
+    pub async fn otter_events(
+        &mut self,
+        after: Option<u64>,
+    ) -> Result<Vec<otter_core::feature::FeatureEventRecord>> {
+        self.call(Request::OtterEvents(otter_protocol::otter::OtterEvents {
+            after,
+            limit: None,
+        }))
+        .await
+    }
+
     pub async fn feature_send(
         &mut self,
         command_id: &str,

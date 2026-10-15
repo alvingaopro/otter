@@ -70,8 +70,9 @@ async fn records(host: &TestHost, id: &str) -> Vec<otter_core::feature::FeatureE
 
 async fn in_review(host: &TestHost) -> String {
     let id = started_feature(host, "Add CSV export").await;
-    wait_feature(host, &id, "in review", |f| {
-        f.status == FeatureStatus::Review
+    // Its gates checked too: accepting before they are is refused.
+    wait_feature(host, &id, "in review, gates checked", |f| {
+        f.status == FeatureStatus::Review && !f.gates.is_empty()
     })
     .await;
     id

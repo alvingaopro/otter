@@ -6,6 +6,7 @@ mod attention;
 mod backend;
 mod brain;
 mod browser;
+mod chat;
 mod controller;
 mod daemon;
 mod delivery;

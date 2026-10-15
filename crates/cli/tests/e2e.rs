@@ -855,3 +855,23 @@ fn doctor_says_whats_wrong_and_what_to_do() {
             .contains("otter host install gone")
     );
 }
+
+/// `otter chat` (D-093): a message to Otter on a host, and its answer; then
+/// the conversation lately.
+#[test]
+fn otter_chat_talks_to_otter_on_a_host() {
+    let home = Home::new();
+    let mut cli = Cli::new();
+    cli.env = vec![
+        ("OTTER_CONTROLLER".into(), "scripted".into()),
+        ("OTTER_BRAIN_V2".into(), "1".into()),
+        ("OTTER_CONTROLLER_TICK_MS".into(), "200".into()),
+    ];
+    cli.add_local_host("here", &home);
+    let out = cli.ok(&["chat", "What's here?\nCALL: list_tasks {}"]);
+    assert!(out.contains("list_tasks:"), "{out}");
+    assert!(out.contains("\"newest_first\":[]"), "{out}");
+    let out = cli.ok(&["chat"]);
+    assert!(out.contains("you: What's here?"), "{out}");
+    assert!(out.contains("Otter: list_tasks:"), "{out}");
+}

@@ -391,6 +391,18 @@ pub struct Message {
     pub correlation_id: Option<String>,
 }
 
+/// Otter's conversation on a host (D-093): the developer and Otter about
+/// any task there, apart from each task's own conversation. Its messages
+/// are [`Message`]s, as a task's are.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+pub struct OtterChat {
+    #[serde(default)]
+    pub messages: Vec<Message>,
+    /// The last entry of its history (Otter's tool calls).
+    #[serde(default)]
+    pub history_seq: u64,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct DecisionRequest {
     pub id: DecisionId,

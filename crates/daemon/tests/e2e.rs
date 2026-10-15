@@ -18,6 +18,8 @@ use otter_protocol::{
 
 #[path = "e2e/converse.rs"]
 mod converse;
+#[path = "e2e/host_chat.rs"]
+mod host_chat;
 #[path = "e2e/otter_turn.rs"]
 mod otter_turn;
 

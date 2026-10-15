@@ -37,7 +37,7 @@ use crate::daemon::{Daemon, RpcResult, workspace_not_found};
 /// Command ids remembered per feature (a retry comes soon after the original).
 const REMEMBERED_COMMANDS: usize = 256;
 const MAX_TITLE: usize = 200;
-const MAX_TEXT: usize = 20_000;
+pub(crate) const MAX_TEXT: usize = 20_000;
 const DEFAULT_HISTORY_LIMIT: usize = 1000;
 
 /// `feature.json`: the feature plus the daemon's bookkeeping.
@@ -295,7 +295,8 @@ fn migrate(value: serde_json::Value, _schema: u32) -> serde_json::Value {
     value
 }
 
-fn write_doc(path: &Path, doc: &Doc) -> Result<()> {
+/// Write a document atomically: a private temporary file, synced, renamed.
+pub(crate) fn write_doc<T: Serialize>(path: &Path, doc: &T) -> Result<()> {
     let tmp = path.with_extension("json.tmp");
     let mut f = std::fs::OpenOptions::new()
         .write(true)
@@ -311,7 +312,8 @@ fn write_doc(path: &Path, doc: &Doc) -> Result<()> {
     Ok(())
 }
 
-fn append_history(path: &Path, records: &[FeatureEventRecord]) -> Result<()> {
+/// Append history records, synced.
+pub(crate) fn append_history(path: &Path, records: &[FeatureEventRecord]) -> Result<()> {
     if records.is_empty() {
         return Ok(());
     }
@@ -331,7 +333,8 @@ fn append_history(path: &Path, records: &[FeatureEventRecord]) -> Result<()> {
     Ok(())
 }
 
-fn last_seq(path: &Path) -> u64 {
+/// The last record's `seq` in a history file (0: none).
+pub(crate) fn last_seq(path: &Path) -> u64 {
     let Ok(file) = std::fs::File::open(path) else {
         return 0;
     };
@@ -348,7 +351,7 @@ pub(crate) fn feature_not_found(r: &str) -> RpcError {
     RpcError::not_found(format!("no feature `{r}`"))
 }
 
-fn check_command_id(id: &str) -> RpcResult<()> {
+pub(crate) fn check_command_id(id: &str) -> RpcResult<()> {
     if id.is_empty() || id.len() > 128 || id.chars().any(char::is_control) {
         return Err(RpcError::invalid(
             "command_id must be 1–128 printable characters",
@@ -357,7 +360,7 @@ fn check_command_id(id: &str) -> RpcResult<()> {
     Ok(())
 }
 
-fn check_text(what: &str, text: &str, max: usize) -> RpcResult<()> {
+pub(crate) fn check_text(what: &str, text: &str, max: usize) -> RpcResult<()> {
     if text.len() > max {
         return Err(RpcError::invalid(format!(
             "{what} is too long (max {max} bytes)"

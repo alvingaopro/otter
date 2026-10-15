@@ -138,6 +138,19 @@ pub enum Event {
         history_seq: u64,
         status: FeatureStatus,
     },
+    /// Otter's conversation on this host changed (D-093): a message, or a
+    /// tool call in its history.
+    OtterChanged {
+        history_seq: u64,
+    },
+    /// Otter's reply on this host as it is written. **Transient**, like
+    /// [`Event::FeatureStream`]; `done`: the message is in the conversation.
+    OtterStream {
+        stream_id: String,
+        text: String,
+        #[serde(default)]
+        done: bool,
+    },
     /// A feature was deleted (`feature.delete`): it is gone, history and all.
     FeatureDeleted {
         feature_id: FeatureId,
@@ -203,6 +216,8 @@ impl Event {
             Event::AttentionResolved { .. } => "AttentionResolved",
             Event::BrowserOpenRequested { .. } => "BrowserOpenRequested",
             Event::FeatureChanged { .. } => "FeatureChanged",
+            Event::OtterChanged { .. } => "OtterChanged",
+            Event::OtterStream { .. } => "OtterStream",
             Event::FeatureDeleted { .. } => "FeatureDeleted",
             Event::ConversationChanged { .. } => "ConversationChanged",
             Event::FeatureStream { .. } => "FeatureStream",
@@ -215,6 +230,8 @@ impl Event {
         match self {
             Event::DaemonStarted { .. }
             | Event::FeatureChanged { .. }
+            | Event::OtterChanged { .. }
+            | Event::OtterStream { .. }
             | Event::FeatureDeleted { .. }
             | Event::ConversationChanged { .. }
             | Event::FeatureStream { .. }

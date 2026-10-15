@@ -225,6 +225,108 @@ pub fn tools() -> Vec<ToolSpec> {
     ]
 }
 
+fn task_id(more: Value) -> Value {
+    let mut props = json!({"task_id": {"type": "string"}});
+    if let Value::Object(m) = more {
+        props.as_object_mut().unwrap().extend(m);
+    }
+    json!({
+        "type": "object",
+        "properties": props,
+        "required": ["task_id"],
+        "additionalProperties": false
+    })
+}
+
+/// Otter's tools in its conversation on the host (D-093): looking across
+/// the host's tasks, and making, starting, resuming and pausing them. What
+/// belongs to one task — guidance, its questions, its decisions — is said in
+/// that task's own conversation.
+pub fn host_tools() -> Vec<ToolSpec> {
+    use Class::*;
+    let t = |name, class, description, input| ToolSpec {
+        name,
+        class,
+        description,
+        input,
+    };
+    vec![
+        t(
+            "list_tasks",
+            Observe,
+            "The tasks on this host, newest first: id, title, status and why, what each waits on.",
+            limit(30, 100),
+        ),
+        t(
+            "list_workspaces",
+            Observe,
+            "The workspaces on this host (where tasks do their work): id, name, state.",
+            none(),
+        ),
+        t(
+            "get_task",
+            Observe,
+            "Where one task stands: status and why, its steps, criteria, gates, attempts, the report.",
+            task_id(json!({})),
+        ),
+        t(
+            "get_pending_decisions",
+            Observe,
+            "What waits on a decision in one task, and whether only the developer may make it.",
+            task_id(json!({})),
+        ),
+        t(
+            "get_run_events",
+            Observe,
+            "One task's coding agent: its latest run, what it did lately, what it last said.",
+            task_id(json!({"limit": {"type": "integer", "minimum": 1, "maximum": 100}})),
+        ),
+        t(
+            "create_task",
+            DeveloperWord,
+            "Make a task of what the developer asked for: their message(s) by id are its request, word for word; the title is yours; a workspace (name or id) if they said where; answer_only if they only want an answer; start if they asked for it to start.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "title": {"type": "string"},
+                    "message_ids": {"type": "array", "items": {"type": "string"}, "minItems": 1},
+                    "workspace": {"type": "string"},
+                    "answer_only": {"type": "boolean"},
+                    "start": {"type": "boolean"}
+                },
+                "required": ["title", "message_ids"],
+                "additionalProperties": false
+            }),
+        ),
+        t(
+            "start_task",
+            DeveloperWord,
+            "Start a draft task.",
+            task_id(json!({})),
+        ),
+        t(
+            "resume_task",
+            DeveloperWord,
+            "Resume a paused task.",
+            task_id(json!({})),
+        ),
+        t(
+            "pause_task",
+            Routine,
+            "Pause a task: its coding agent stops; it can be resumed.",
+            task_id(json!({})),
+        ),
+    ]
+}
+
+/// The tools a turn in `scope` has.
+pub fn tools_for(scope: &Scope) -> Vec<ToolSpec> {
+    match scope {
+        Scope::Task(_) => tools(),
+        Scope::Host => host_tools(),
+    }
+}
+
 /// Why a tool did nothing, and what would work instead.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ToolError {
@@ -274,7 +376,14 @@ pub fn answer(result: &Result<Value, ToolError>) -> Value {
     }
 }
 
-/// One turn's tools: its origin, its feature, how many calls it has left.
+/// Where a turn is: a task's conversation, or Otter's on the host (D-093).
+#[derive(Clone, Debug)]
+pub enum Scope {
+    Task(FeatureId),
+    Host,
+}
+
+/// One turn's tools: its origin, its scope, how many calls it has left.
 #[derive(Clone)]
 pub struct Gateway {
     inner: Arc<Inner>,
@@ -282,7 +391,7 @@ pub struct Gateway {
 
 struct Inner {
     daemon: Arc<Daemon>,
-    feature: FeatureId,
+    scope: Scope,
     origin: Origin,
     max_calls: usize,
     calls: AtomicUsize,
@@ -291,11 +400,11 @@ struct Inner {
 }
 
 impl Gateway {
-    pub fn new(daemon: Arc<Daemon>, feature: FeatureId, origin: Origin, max_calls: usize) -> Self {
+    pub fn new(daemon: Arc<Daemon>, scope: Scope, origin: Origin, max_calls: usize) -> Self {
         Gateway {
             inner: Arc::new(Inner {
                 daemon,
-                feature,
+                scope,
                 origin,
                 max_calls,
                 calls: AtomicUsize::new(0),
@@ -322,7 +431,7 @@ impl Gateway {
     async fn run(&self, name: &str, args: Value) -> Value {
         let result = self.checked(name, &args).await;
         if let Err(e) = &result {
-            tracing::debug!(feature = %self.inner.feature, tool = name, code = e.code, "Otter's tool");
+            tracing::debug!(scope = ?self.inner.scope, tool = name, code = e.code, "Otter's tool");
         }
         answer(&result)
     }
@@ -336,7 +445,10 @@ impl Gateway {
             )
             .next("answer with what you know"));
         }
-        let Some(spec) = tools().into_iter().find(|t| t.name == name) else {
+        let Some(spec) = tools_for(&self.inner.scope)
+            .into_iter()
+            .find(|t| t.name == name)
+        else {
             return Err(fail("not_found", format!("there is no tool `{name}`")));
         };
         if spec.class == Class::DeveloperWord && self.inner.origin.authority().is_none() {
@@ -348,9 +460,11 @@ impl Gateway {
             self.record_done(name, Some(e.code)).await;
             return Err(e);
         }
-        let result = match spec.class {
-            Class::Observe => self.observe(name, args).await,
-            Class::Routine | Class::DeveloperWord => self.write(name, args).await,
+        let result = match (&self.inner.scope, spec.class) {
+            (Scope::Host, Class::Observe) => self.host_observe(name, args).await,
+            (Scope::Host, _) => self.host_write(name, args).await,
+            (Scope::Task(id), Class::Observe) => self.observe(id, name, args).await,
+            (Scope::Task(_), _) => self.write(name, args).await,
         };
         if spec.class == Class::Observe {
             self.record_done(name, result.as_ref().err().map(|e| e.code))
@@ -359,12 +473,16 @@ impl Gateway {
         result
     }
 
+    /// The task this turn is about (a task's conversation).
+    fn task(&self) -> &FeatureId {
+        match &self.inner.scope {
+            Scope::Task(id) => id,
+            Scope::Host => unreachable!("a host turn names its task"),
+        }
+    }
+
     async fn feature(&self) -> Result<Feature, ToolError> {
-        Ok(self
-            .inner
-            .daemon
-            .feature_get(self.inner.feature.as_str())
-            .await?)
+        Ok(self.inner.daemon.feature_get(self.task().as_str()).await?)
     }
 
     /// Write `ToolDone` for a call that changed nothing (a read, a refusal).
@@ -378,28 +496,40 @@ impl Gateway {
 
     async fn record(&self, event: FeatureEvent, because: Option<&str>) {
         let d = &self.inner.daemon;
-        let applied = d
-            .features
-            .lock()
-            .await
-            .apply(&self.inner.feature, None, |_, _| {
-                let c = Change::new(event);
-                Ok(vec![match because {
-                    Some(id) => c.because(id),
-                    None => c,
-                }])
-            });
-        match applied {
-            Ok(a) => d.feature_changed(&a),
-            Err(e) => {
-                tracing::warn!(feature = %self.inner.feature, "recording Otter's tool: {}", e.message)
-            }
+        let change = |event: FeatureEvent| {
+            let c = Change::new(event);
+            vec![match because {
+                Some(id) => c.because(id),
+                None => c,
+            }]
+        };
+        let recorded = match &self.inner.scope {
+            Scope::Task(id) => d
+                .features
+                .lock()
+                .await
+                .apply(id, None, |_, _| Ok(change(event)))
+                .map(|a| d.feature_changed(&a)),
+            Scope::Host => d
+                .chat
+                .lock()
+                .await
+                .apply(None, |_, _| Ok(change(event)))
+                .map(|a| d.chat_changed(&a)),
+        };
+        if let Err(e) = recorded {
+            tracing::warn!(scope = ?self.inner.scope, "recording Otter's tool: {}", e.message);
         }
     }
 
     // --- Observe -----------------------------------------------------------
 
-    async fn observe(&self, name: &str, args: &Value) -> Result<Value, ToolError> {
+    async fn observe(
+        &self,
+        task: &FeatureId,
+        name: &str,
+        args: &Value,
+    ) -> Result<Value, ToolError> {
         let lim = |default: usize, max: usize| -> Result<usize, ToolError> {
             match args.get("limit") {
                 None | Some(Value::Null) => Ok(default),
@@ -411,7 +541,10 @@ impl Gateway {
             }
         };
         // A live run's activity isn't in the feature until it ends.
-        let f = self.inner.daemon.with_live_activity(self.feature().await?);
+        let f = self
+            .inner
+            .daemon
+            .with_live_activity(self.inner.daemon.feature_get(task.as_str()).await?);
         let r = |s: &str| redact(s);
         let short = |s: &str, n: usize| excerpt(&redact(s), n);
         match name {
@@ -516,6 +649,203 @@ impl Gateway {
             }
             _ => Err(fail("not_found", format!("there is no tool `{name}`"))),
         }
+    }
+
+    // --- On the host (D-093) -----------------------------------------------
+
+    /// The task a host tool names.
+    fn named_task(args: &Value) -> Result<FeatureId, ToolError> {
+        args.get("task_id")
+            .and_then(Value::as_str)
+            .filter(|s| !s.trim().is_empty())
+            .map(|s| FeatureId::from(s.trim()))
+            .ok_or_else(|| fail("invalid", "task_id names the task (list_tasks has them)"))
+    }
+
+    async fn host_observe(&self, name: &str, args: &Value) -> Result<Value, ToolError> {
+        let d = &self.inner.daemon;
+        match name {
+            "list_tasks" => {
+                let n = match args.get("limit") {
+                    None | Some(Value::Null) => 30,
+                    Some(v) => v
+                        .as_u64()
+                        .filter(|n| (1..=100).contains(n))
+                        .ok_or_else(|| fail("invalid", "limit is a number from 1 to 100"))?
+                        as usize,
+                };
+                let store = d.store.lock().await;
+                let tasks: Vec<Value> = d
+                    .features
+                    .lock()
+                    .await
+                    .list()
+                    .into_iter()
+                    .take(n)
+                    .map(|f| {
+                        let workspace = f
+                            .workspace_id
+                            .as_ref()
+                            .and_then(|w| store.workspace(w.as_str()))
+                            .map(|w| w.name.clone());
+                        json!({
+                            "id": f.id.as_str(),
+                            "title": redact(&f.title),
+                            "status": f.status.as_str(),
+                            "status_reason": f.status_reason.as_deref().map(redact),
+                            "waits_on_developer": f.needs().map(|n| redact(&n.summary)),
+                            "workspace": workspace,
+                            "answer_only": f.answer_only,
+                        })
+                    })
+                    .collect();
+                Ok(json!({"newest_first": tasks}))
+            }
+            "list_workspaces" => {
+                let store = d.store.lock().await;
+                let ws: Vec<Value> = store
+                    .state
+                    .workspaces
+                    .iter()
+                    .map(|w| json!({"id": w.id.as_str(), "name": w.name, "state": format!("{:?}", w.state).to_lowercase()}))
+                    .collect();
+                Ok(json!({"workspaces": ws}))
+            }
+            _ => {
+                let task = Self::named_task(args)?;
+                let mut rest = args.clone();
+                if let Some(m) = rest.as_object_mut() {
+                    m.remove("task_id");
+                }
+                self.observe(&task, name, &rest).await
+            }
+        }
+    }
+
+    async fn host_write(&self, name: &str, args: &Value) -> Result<Value, ToolError> {
+        let result = self.host_change(name, args).await;
+        if let Err(e) = &result {
+            self.record_done(name, Some(e.code)).await;
+        }
+        result
+    }
+
+    async fn host_change(&self, name: &str, args: &Value) -> Result<Value, ToolError> {
+        use otter_core::feature::FeatureAction;
+        use otter_protocol::feature::{FeatureAct, FeatureCreate};
+        let d = &self.inner.daemon;
+        let origin = &self.inner.origin;
+        let authority = origin.authority().map(|m| m.id.to_string());
+        let called = |command: String| {
+            let event = FeatureEvent::ToolCalled {
+                tool: name.into(),
+                origin: origin.name().into(),
+                authority: authority.clone(),
+            };
+            (event, command)
+        };
+        if name == "create_task" {
+            let title = args
+                .get("title")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|t| !t.is_empty() && t.len() <= 200)
+                .ok_or_else(|| {
+                    fail(
+                        "invalid",
+                        "title is the task's name, at most 200 characters",
+                    )
+                })?
+                .to_owned();
+            // The request is the developer's own words, never Otter's.
+            let messages = self.chosen(args)?;
+            let request = messages
+                .iter()
+                .map(|m| m.text.as_str())
+                .collect::<Vec<_>>()
+                .join("\n\n");
+            let workspace = args
+                .get("workspace")
+                .and_then(Value::as_str)
+                .map(str::to_owned);
+            let answer_only = args
+                .get("answer_only")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            let start = args.get("start").and_then(Value::as_bool).unwrap_or(false);
+            let (event, command) = called(origin.command(name));
+            self.record(event, Some(&command)).await;
+            let f = d
+                .feature_create(FeatureCreate {
+                    command_id: command.clone(),
+                    title,
+                    request,
+                    workspace,
+                    answer_only,
+                })
+                .await?;
+            let mut status = f.status;
+            if start {
+                status = d
+                    .clone()
+                    .feature_act(FeatureAct {
+                        command_id: format!("{command}:start"),
+                        feature: f.id.to_string(),
+                        action: FeatureAction::Start,
+                    })
+                    .await?
+                    .status;
+            }
+            self.record(
+                FeatureEvent::ToolDone {
+                    tool: name.into(),
+                    error: None,
+                },
+                Some(&command),
+            )
+            .await;
+            self.inner
+                .done
+                .lock()
+                .unwrap()
+                .push(format!("create_task: {} ({})", f.title, f.id));
+            return Ok(
+                json!({"done": "created", "task_id": f.id.as_str(), "title": f.title, "status": status.as_str()}),
+            );
+        }
+        let task = Self::named_task(args)?;
+        let action = match name {
+            "start_task" => FeatureAction::Start,
+            "resume_task" => FeatureAction::Resume,
+            "pause_task" => FeatureAction::Pause,
+            _ => return Err(fail("not_found", format!("there is no tool `{name}`"))),
+        };
+        let (event, command) = called(format!("{}:{task}", origin.command(name)));
+        self.record(event, Some(&command)).await;
+        let f = d
+            .clone()
+            .feature_act(FeatureAct {
+                command_id: command.clone(),
+                feature: task.to_string(),
+                action,
+            })
+            .await?;
+        self.record(
+            FeatureEvent::ToolDone {
+                tool: name.into(),
+                error: None,
+            },
+            Some(&command),
+        )
+        .await;
+        self.inner
+            .done
+            .lock()
+            .unwrap()
+            .push(format!("{name}: {}", f.title));
+        Ok(
+            json!({"done": name.trim_end_matches("_task"), "task_id": f.id.as_str(), "status": f.status.as_str()}),
+        )
     }
 
     // --- Changes -----------------------------------------------------------

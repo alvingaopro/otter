@@ -197,6 +197,11 @@ The Control Agent's model and API keys on this host (D-048).
   (`legacy_cli` or `sdk`, D-057) and its Claude model, apart from Otter's
   own; `settings.set {coding: {backend?, model?}}` changes them (`""`
   resets). Absent from older daemons.
+- The view also has `otter_tools` (Otter answers with its tools, D-089/D-090),
+  `otter_tools_from_env` (`OTTER_BRAIN_V2`, which overrides it) and
+  `otter_answers` ("with tools (claude)", or "without tools…" and why);
+  `settings.set {otter_tools: bool}` turns it on or off. `settings.set`
+  answers with the same view as `settings.get`. Absent from older daemons.
 - `settings.models {controller}` → `[{id, name?}]`: the models that
   controller offers, as its provider lists them, asked by the host with the
   key set there (OpenRouter's list needs none); `claude` answers Claude
@@ -306,6 +311,29 @@ client adds each line to the run's `activity` (keeping the last 30) rather
 than reloading the feature.
 
 An addition (no protocol bump): daemons before it answer `invalid_request`.
+
+## Otter on the host
+
+Otter's conversation on a host (D-093): the developer and Otter about any
+task there, apart from each task's own conversation. Answered as a turn with
+Otter's tools (the host's: looking across tasks, making, starting, resuming
+and pausing them) when *Otter's tools* are on; otherwise Otter says how to
+turn them on.
+
+- `otter.get` → `OtterChat {messages, history_seq}` (the newest 200
+  messages; the same `Message` as a feature's).
+- `otter.send {command_id, text}` → the same. The same `command_id` again
+  adds nothing. Otter's reply is a `Controller` message whose
+  `correlation_id` is the developer's message's id.
+- `otter.events {after?, limit?}` → `FeatureEventRecord[]`: the history of
+  Otter's tool calls there (`ToolCalled`, `ToolDone`).
+- Events: `OtterChanged {history_seq}`; `OtterStream {stream_id, text,
+  done}` — the reply as it is written, transient like `FeatureStream`.
+- A feature made from it is an ordinary feature; its request is the
+  developer's message(s) as written.
+
+An addition (no protocol bump): daemons before it answer `invalid_request`;
+`otter chat` says the host's otterd is too old.
 
 ## Triggers
 

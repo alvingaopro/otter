@@ -317,7 +317,7 @@ async fn find_conversation(
 
 /// A command id: the host records it, so retrying the same command is
 /// harmless; a new command gets a new one.
-fn command_id() -> String {
+pub(crate) fn command_id() -> String {
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_nanos())
