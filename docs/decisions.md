@@ -3089,9 +3089,9 @@ seeing it meant a shell and `git status`. Verification already read the work
   listed and diffed. This is the developer's own workspace, which the Files
   panel already downloads whole.
 - The merge-base lookup is shared with `work_state` (`merge_base`).
-- App: a chip beside the branch (`3 files · +120 −14 · ↑2`) opens a
-  **Changes** panel, next to Files and Timeline, listing the files and each
-  one's diff. It is read when the workspace is shown and something
+- App: a chip beside the branch (`3 files · +120 −14 · ↑2`, none when
+  there's nothing to say) opens a **Changes** panel, next to Files and
+  Timeline, listing the files and each one's diff. It is read when the workspace is shown and something
   happened in it (a session or agent moved). An agent's edits make no event,
   so while the panel is open it reads again every 30 s, and on ↻.
 - Not done: staging, committing, or diffs of a single commit.
@@ -3110,7 +3110,8 @@ a download, and a stray file meant a shell.
   root itself, is refused. Reading stays as it was (any path the
   daemon's user can read).
 - The app asks before deleting, and says "and everything in it" for a
-  folder.
+  folder. Only the panel in front takes files dropped on the window (a
+  kept workspace's is mounted too, D-100).
 - The path field takes a folder to go to (`~ws/…` is the workspace). A
   dotfiles switch is remembered on this Mac; it starts on, as before. The
   side panel last open opens with the next workspace too.
@@ -3162,15 +3163,18 @@ All app-side, kept on this Mac where remembered:
   **Idle and archived workspaces are listed the latest active first** (its
   last change, an agent's last move, its newest attention), not by name.
 - **Shortcuts in a workspace:** ⌘T a new session; ⌘⇧[ / ⌘⇧] the session
-  before / after; ⌘F finds in the session's history.
+  before / after; ⌘F finds in the session's history. Not while a dialog is
+  open.
 - **⌘F reads the session's history** (`session.read`, the last 10 000
   lines) and searches it in the app. The history lives in the session
   (tmux's alternate screen keeps it out of the app's terminal), so the
   matches are listed, with line numbers, rather than scrolled to.
 - **Text size:** ⌘= / ⌘- / ⌘0, for every terminal at once, remembered.
 - **⌘-click a link** in a terminal opens it. The session has the mouse
-  (tmux), so the app reads the line under the pointer itself, joining the
-  rows a long line wrapped into, and keeps the click from the session.
+  (tmux), so the app reads the line under the pointer itself and keeps the
+  click from the session. Rows are joined where the terminal knows the line
+  wrapped; tmux draws each row itself, so a link split across rows may not
+  open (to check in use).
 - **New workspace suggests the repositories** the host's workspaces came
   from.
 - **Older hosts:** every request above is new. A host that answers

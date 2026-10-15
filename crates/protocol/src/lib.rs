@@ -766,5 +766,12 @@ mod tests {
     fn unknown_method_is_rejected() {
         let err = serde_json::from_str::<ClientMessage>(r#"{"id":1,"method":"nope"}"#);
         assert!(err.is_err());
+        // What an older daemon says to a newer method, and what the app looks
+        // for to leave that host alone (apps/desktop/src/newer.ts).
+        let err = serde_json::from_str::<ClientMessage>(
+            r#"{"id":1,"method":"workspace.someday","params":{"workspace":"w"}}"#,
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("unknown variant"), "{err}");
     }
 }

@@ -62,7 +62,18 @@ export function typedPath(typed: string, root: string): string {
   return t;
 }
 
-export function FilesPanel({ host, workspace, onClose }: { host: string; workspace: string; onClose: () => void }) {
+export function FilesPanel({
+  host,
+  workspace,
+  active = true,
+  onClose,
+}: {
+  host: string;
+  workspace: string;
+  /** In front: only that panel takes files dropped on the window (D-100 keeps others mounted). */
+  active?: boolean;
+  onClose: () => void;
+}) {
   const [listing, setListing] = useState<Listing | null>(null);
   const [path, setPath] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -119,8 +130,10 @@ export function FilesPanel({ host, workspace, onClose }: { host: string; workspa
     void load(dir);
   }
 
-  // Files dropped on the window go into the folder shown here.
+  // Files dropped on the window go into the folder shown here — only the
+  // panel in front's: kept workspaces' panels are mounted too.
   useEffect(() => {
+    if (!active) return;
     const un = getCurrentWebview().onDragDropEvent((e) => {
       if (e.payload.type === "over" || e.payload.type === "enter") setDropping(true);
       else if (e.payload.type === "leave") setDropping(false);
@@ -129,8 +142,11 @@ export function FilesPanel({ host, workspace, onClose }: { host: string; workspa
         void upload(e.payload.paths, path);
       }
     });
-    return () => void un.then((f) => f());
-  }, [path]);
+    return () => {
+      setDropping(false);
+      void un.then((f) => f());
+    };
+  }, [path, active]);
 
   function toggleHidden() {
     setHidden((h) => {

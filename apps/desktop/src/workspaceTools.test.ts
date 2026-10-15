@@ -64,7 +64,7 @@ describe("changes", () => {
   });
 
   it("say how much changed in one line", () => {
-    expect(changesLine(c({}))).toBe("no changes");
+    expect(changesLine(c({}))).toBeUndefined();
     expect(changesLine(c({ git: false }))).toBeUndefined();
     const file = { path: "a", change: "modified" as const, insertions: 3, deletions: 1, uncommitted: true };
     expect(changesLine(c({ files: [file], more: 1, insertions: 12, deletions: 4, ahead: 2 }))).toBe(

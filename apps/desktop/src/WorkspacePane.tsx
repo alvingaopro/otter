@@ -210,6 +210,8 @@ export function WorkspacePane({
     if (!active || open !== null) return;
     const onKey = (e: KeyboardEvent) => {
       if (!e.metaKey || e.ctrlKey || e.altKey) return;
+      // Not under another dialog (⌘K's, say).
+      if (document.querySelector('[aria-modal="true"]')) return;
       const key = e.key.toLowerCase();
       if (!e.shiftKey && key === "t" && !archived) {
         e.preventDefault();
@@ -573,7 +575,7 @@ export function WorkspacePane({
             onClose={() => setSide(null)}
           />
         )}
-        {side === "files" && <FilesPanel host={host.name} workspace={ws.id} onClose={() => setSide(null)} />}
+        {side === "files" && <FilesPanel host={host.name} workspace={ws.id} active={active} onClose={() => setSide(null)} />}
         {side === "timeline" && <TimelinePanel host={host.name} ws={ws} now={now} onClose={() => setSide(null)} />}
       </div>
 
