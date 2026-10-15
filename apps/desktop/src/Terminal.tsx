@@ -9,6 +9,9 @@ import { FitAddon } from "@xterm/addon-fit";
 import { WebglAddon } from "@xterm/addon-webgl";
 import { ClipboardAddon, type IClipboardProvider } from "@xterm/addon-clipboard";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
+import { openUrl } from "@tauri-apps/plugin-opener";
+import { logicalLine, urlAtColumn } from "./links";
+import { fontSize, onFontSize } from "./terminalFont";
 import "@xterm/xterm/css/xterm.css";
 import type { AttachEvent } from "./types";
 
@@ -91,9 +94,29 @@ interface Props {
   /** Dim the screen (the attach is over or lost). */
   dimmed: boolean;
   theme: "light" | "dark";
+  /** On screen (its workspace kept but not shown otherwise, D-100): takes the keyboard when it comes back. */
+  active?: boolean;
 }
 
-export function Terminal({ host, workspace, session, onEnd, generation, label, where, dimmed, theme }: Props) {
+/** The http(s) link under the pointer, if any. */
+function linkAt(term: XTerm, e: MouseEvent): string | undefined {
+  const screen = term.element?.querySelector(".xterm-screen");
+  if (!screen) return undefined;
+  const r = screen.getBoundingClientRect();
+  if (r.width === 0 || r.height === 0) return undefined;
+  const col = Math.floor(((e.clientX - r.left) / r.width) * term.cols);
+  const row = Math.floor(((e.clientY - r.top) / r.height) * term.rows);
+  if (col < 0 || row < 0 || col >= term.cols || row >= term.rows) return undefined;
+  const buf = term.buffer.active;
+  const rows = Array.from({ length: term.rows }, (_, i) => {
+    const line = buf.getLine(buf.viewportY + i);
+    return { text: line?.translateToString(false) ?? "", wrapped: line?.isWrapped ?? false };
+  });
+  const { text, offset } = logicalLine(rows, row);
+  return urlAtColumn(text, offset + col);
+}
+
+export function Terminal({ host, workspace, session, onEnd, generation, label, where, dimmed, theme, active = true }: Props) {
   const el = useRef<HTMLDivElement>(null);
   const onEndRef = useRef(onEnd);
   onEndRef.current = onEnd;
@@ -107,10 +130,15 @@ export function Terminal({ host, workspace, session, onEnd, generation, label, w
     if (termRef.current) termRef.current.options.theme = theme === "light" ? LIGHT : DARK;
   }, [theme]);
 
+  // Shown again: the keyboard is the terminal's.
+  useEffect(() => {
+    if (active) termRef.current?.focus();
+  }, [active]);
+
   useEffect(() => {
     const term = new XTerm({
       fontFamily: '"JetBrains Mono", "SF Mono", Menlo, monospace',
-      fontSize: 13,
+      fontSize: fontSize(),
       lineHeight: 1.25,
       cursorBlink: true,
       scrollback: 5000,
@@ -202,10 +230,39 @@ export function Terminal({ host, workspace, session, onEnd, generation, label, w
       if (el.current && el.current.offsetWidth > 0 && el.current.offsetHeight > 0) fit.fit();
     });
     observer.observe(el.current!);
+    // ⌘= / ⌘- anywhere (D-106); a hidden terminal fits when it's shown.
+    const unfont = onFontSize((n) => {
+      term.options.fontSize = n;
+      if (el.current && el.current.offsetWidth > 0 && el.current.offsetHeight > 0) fit.fit();
+    });
+    // ⌘-click a link to open it (D-106): the session has the mouse otherwise,
+    // so neither the press nor its release reaches it.
+    let swallowUp = false;
+    const linkDown = (e: MouseEvent) => {
+      if (!e.metaKey || e.button !== 0) return;
+      const url = linkAt(term, e);
+      if (!url) return;
+      e.preventDefault();
+      e.stopPropagation();
+      swallowUp = true;
+      void openUrl(url);
+    };
+    const linkUp = (e: MouseEvent) => {
+      if (!swallowUp) return;
+      swallowUp = false;
+      e.preventDefault();
+      e.stopPropagation();
+    };
+    const box = el.current!;
+    box.addEventListener("mousedown", linkDown, true);
+    box.addEventListener("mouseup", linkUp, true);
 
     return () => {
       disposed = true;
       observer.disconnect();
+      unfont();
+      box.removeEventListener("mousedown", linkDown, true);
+      box.removeEventListener("mouseup", linkUp, true);
       input.dispose();
       resized.dispose();
       if (id !== null) void invoke("attach_close", { id });
@@ -220,7 +277,7 @@ export function Terminal({ host, workspace, session, onEnd, generation, label, w
         <div className="terminal" ref={el} />
       </section>
       <div className="statusbar">
-        <span className="statusbar-left">
+        <span className="statusbar-left" title="⌘-click a link to open it · ⌘F finds in its history · ⌘= ⌘- text size">
           <span className={dimmed ? "dot off" : "dot"} />
           {dimmed ? "not attached" : "attached"} · {label}
         </span>

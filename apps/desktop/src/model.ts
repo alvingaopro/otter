@@ -38,11 +38,42 @@ export function groups(placed: Placed[]): Group[] {
   const sorted = [...placed].sort((a, b) => {
     const d = ORDER.indexOf(a.ws.activity) - ORDER.indexOf(b.ws.activity);
     if (d !== 0) return d;
+    // Idle and archived: the latest active first (D-106).
+    if (a.ws.activity === "idle" || a.ws.activity === "archived") {
+      return lastActive(b.ws).localeCompare(lastActive(a.ws)) || a.ws.name.localeCompare(b.ws.name);
+    }
     // Longest-waiting first, as in `otter ls`.
     return (oldestAttention(a.ws) ?? "").localeCompare(oldestAttention(b.ws) ?? "") || a.ws.name.localeCompare(b.ws.name);
   });
   for (const p of sorted) out.find((g) => g.id === GROUP_OF[p.ws.activity])!.items.push(p);
   return out.filter((g) => g.items.length > 0);
+}
+
+/** When a workspace was last active: its last change, an agent's last move, its newest attention. */
+export function lastActive(ws: WorkspaceView): string {
+  return [ws.updatedAt, ...ws.sessions.map((s) => s.agent?.since ?? ""), ...ws.attention.map((a) => a.createdAt)].reduce(
+    (a, b) => (b > a ? b : a),
+    "",
+  );
+}
+
+/**
+ * How well a workspace matches what was typed (⌘K, the sidebar's filter):
+ * 0 not at all, higher better. Every word must be in its name, host, branch
+ * or folder, repository, brief title or a session's name.
+ */
+export function matchScore(p: Placed, query: string): number {
+  const q = query.trim().toLowerCase();
+  if (!q) return 1;
+  const name = p.ws.name.toLowerCase();
+  const rest = [p.host.name, p.ws.source, p.ws.repository ?? "", p.ws.brief.title ?? "", ...p.ws.sessions.map((s) => s.name)]
+    .join(" ")
+    .toLowerCase();
+  const words = q.split(/\s+/);
+  if (!words.every((w) => name.includes(w) || rest.includes(w))) return 0;
+  if (name.startsWith(q)) return 4;
+  if (name.includes(q)) return 3;
+  return words.every((w) => name.includes(w)) ? 2 : 1;
 }
 
 function oldestAttention(ws: WorkspaceView): string | undefined {

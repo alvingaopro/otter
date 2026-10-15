@@ -55,6 +55,10 @@ export interface WorkspaceView {
   brief: Brief;
   sourceKind: "git" | "directory" | "empty";
   source: string;
+  /** A Git workspace's repository, without credentials. */
+  repository?: string;
+  /** The task it was made for (D-105). */
+  featureId?: string;
   sessions: SessionView[];
   attention: AttentionView[];
   updatedAt: string;
@@ -157,4 +161,41 @@ export interface TrendPoint {
 export interface HostHistory {
   resolution_secs: number;
   points: TrendPoint[];
+}
+
+// A workspace's work (otter_protocol::work, D-102, D-104): snake_case, as the
+// daemon sends it.
+
+export type ChangeKind = "added" | "modified" | "deleted" | "renamed" | "untracked";
+
+export interface ChangedFile {
+  path: string;
+  change: ChangeKind;
+  insertions?: number;
+  deletions?: number;
+  uncommitted: boolean;
+}
+
+export interface WorkspaceChanges {
+  git: boolean;
+  branch?: string;
+  base?: string;
+  ahead: number;
+  behind: number;
+  files: ChangedFile[];
+  more: number;
+  insertions: number;
+  deletions: number;
+}
+
+export interface FileDiff {
+  text: string;
+  truncated: boolean;
+}
+
+export interface SessionPort {
+  session_id: string;
+  port: number;
+  address: string;
+  process?: string;
 }

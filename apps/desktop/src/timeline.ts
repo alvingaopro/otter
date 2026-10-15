@@ -91,6 +91,12 @@ export function timelineRows(records: EventRecord[], ws: WorkspaceView): Row[] {
       case "WorkspaceBriefChanged":
         row("idle", "Brief edited");
         break;
+      case "WorkspaceRenamed":
+        row("idle", `Renamed to ${r.name}`);
+        break;
+      case "SessionRenamed":
+        row("idle", `Session renamed to ${r.name}`);
+        break;
       case "EnvironmentPreparing":
         row("working", "Preparing the environment");
         break;

@@ -20,13 +20,36 @@ const payload: HostsPayload = {
         {
           id: "ws_1",
           name: "scratch",
-          activity: "idle",
+          activity: "needs_you",
           state: "ready",
           root: "/tmp/ws",
           brief: {},
           sourceKind: "empty",
           source: "",
           sessions: [{ id: "ses_1", name: "shell", kind: "terminal", status: "running" }],
+          // A finished turn: what looking at the session settles (D-099).
+          attention: [
+            {
+              id: "at_1",
+              sessionId: "ses_1",
+              kind: "review",
+              needsYou: true,
+              summary: "shell finished",
+              createdAt: new Date().toISOString(),
+            },
+          ],
+          updatedAt: new Date().toISOString(),
+        },
+        {
+          id: "ws_2",
+          name: "other",
+          activity: "idle",
+          state: "ready",
+          root: "/tmp/other",
+          brief: {},
+          sourceKind: "empty",
+          source: "",
+          sessions: [{ id: "ses_2", name: "shell", kind: "terminal", status: "running" }],
           attention: [],
           updatedAt: new Date().toISOString(),
         },
@@ -142,6 +165,50 @@ describe("Activity Bar navigation", () => {
       .map(([cmd]) => cmd)
       .filter((cmd) => /stop|delete|restart|close|resolve|create|archive|set|input|resize/.test(cmd));
     expect(changing).toEqual([]);
+  });
+
+  it("keeps a workspace's terminal attached while another is shown (D-100)", async () => {
+    const { invoke } = await import("@tauri-apps/api/core");
+    const calls = vi.mocked(invoke);
+    const row = (name: string) =>
+      [...host.querySelectorAll<HTMLButtonElement>(".ws-row")].find((b) => b.textContent?.includes(name))!;
+    await act(async () => tab("workspaces").click());
+    expect(terminal.mounts).toBe(1);
+    await act(async () => row("other").click());
+    await flush();
+    expect(terminal.mounts).toBe(2);
+    expect(terminal.unmounts).toBe(0);
+    expect(host.querySelectorAll(".ws-pane[hidden]").length).toBe(1);
+
+    calls.mockClear();
+    await act(async () => row("scratch").click());
+    await flush();
+    expect(terminal.mounts).toBe(2);
+    expect(terminal.unmounts).toBe(0);
+    // Shown again without attaching: what attaching settles is settled, by id.
+    const resolved = calls.mock.calls.filter(([cmd]) => cmd === "attention_resolve").map(([, args]) => args);
+    expect(resolved).toEqual([{ host: "mac", workspace: "ws_1", session: null, attention: "at_1" }]);
+  });
+
+  it("goes to a workspace with ⌘K", async () => {
+    await act(async () => {
+      window.dispatchEvent(new KeyboardEvent("keydown", { key: "k", metaKey: true, bubbles: true }));
+    });
+    const input = host.querySelector<HTMLInputElement>(".quick-input")!;
+    expect(input).not.toBeNull();
+    await act(async () => {
+      const set = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
+      set.call(input, "oth");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    expect([...host.querySelectorAll(".quick-name")].map((n) => n.textContent)).toEqual(["other"]);
+    await act(async () => {
+      input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    });
+    await flush();
+    expect(host.querySelector(".quick")).toBeNull();
+    expect(tab("workspaces").getAttribute("aria-selected")).toBe("true");
+    expect(host.querySelector(".ws-pane:not([hidden]) h1")?.textContent).toBe("other");
   });
 
   it("supports the keyboard: arrows in the bar and ⌘1/⌘2/⌘3 anywhere", async () => {

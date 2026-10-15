@@ -40,6 +40,14 @@ export function NewWorkspaceDialog({
   const [error, setError] = useState<string | null>(null);
 
   const hostAgents = usable.find((h) => h.name === host)?.agents ?? [];
+  // Repositories this host's workspaces came from, the latest first (D-106).
+  const repos = [
+    ...new Set(
+      [...(usable.find((h) => h.name === host)?.workspaces ?? [])]
+        .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
+        .flatMap((w) => (w.repository ? [w.repository] : [])),
+    ),
+  ];
   const available = (id: string) => hostAgents.find((a) => a.provider === id)?.available ?? false;
   // Default to the first agent this host can run; "none" once chosen sticks.
   const chosen = agent ?? AGENTS.find(([id]) => available(id))?.[0] ?? "none";
@@ -136,9 +144,15 @@ export function NewWorkspaceDialog({
                 value={repo}
                 onChange={(e) => setRepo(e.target.value)}
                 placeholder="git@github.com:org/repo.git"
+                list="known-repos"
                 spellCheck={false}
                 required
               />
+              <datalist id="known-repos">
+                {repos.map((r) => (
+                  <option key={r} value={r} />
+                ))}
+              </datalist>
             </label>
             <div className="row-2">
               <label className="field">

@@ -1,5 +1,6 @@
-// A workspace's files on its host: browse, download (save dialog), upload
-// (button or drop files on the window). Transfers stream through otterd.
+// A workspace's files on its host: browse, preview, download (save dialog),
+// upload (button or drop files on the window), rename and delete (D-103).
+// Transfers stream through otterd.
 
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
@@ -7,6 +8,9 @@ import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { ask, open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
 import { bytes } from "./format";
+import { ContextMenu, Menu } from "./Menu";
+import { explain } from "./newer";
+import { RenameDialog } from "./RenameDialog";
 
 interface Entry {
   name: string;
@@ -29,18 +33,54 @@ interface Transfer {
 
 let nextId = 0;
 
+/** The start of a file, as `file_preview` reads it. */
+interface Preview {
+  text?: string;
+  size: number;
+  truncated: boolean;
+}
+
+const HIDDEN_KEY = "otter.files.hidden";
+
+function storedHidden(): boolean {
+  try {
+    return localStorage.getItem(HIDDEN_KEY) !== "false";
+  } catch {
+    return true;
+  }
+}
+
+/** What the path field shows: below the root as `~ws/…`, else the path. */
+export function shownPath(path: string, root: string): string {
+  return path.startsWith(root) ? `~ws${path.slice(root.length)}` : path;
+}
+
+/** What to list for what was typed in the path field: `~ws/…` is below the root. */
+export function typedPath(typed: string, root: string): string {
+  const t = typed.trim();
+  if (t === "~ws" || t.startsWith("~ws/")) return root + t.slice(3);
+  return t;
+}
+
 export function FilesPanel({ host, workspace, onClose }: { host: string; workspace: string; onClose: () => void }) {
   const [listing, setListing] = useState<Listing | null>(null);
   const [path, setPath] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [transfers, setTransfers] = useState<Record<string, Transfer>>({});
   const [dropping, setDropping] = useState(false);
+  // Dotfiles shown (as before) unless turned off; remembered on this Mac.
+  const [hidden, setHidden] = useState(storedHidden);
+  const [typed, setTyped] = useState<string | null>(null);
+  const [preview, setPreview] = useState<{ entry: Entry; preview?: Preview } | null>(null);
+  const [renaming, setRenaming] = useState<Entry | null>(null);
+  const [menu, setMenu] = useState<{ entry: Entry; x: number; y: number } | null>(null);
 
   async function load(p = path) {
     try {
       const l = await invoke<Listing>("fs_list", { host, workspace, path: p });
       setListing(l);
       setPath(l.path);
+      setPreview(null);
       setError(null);
     } catch (e) {
       setError(String(e));
@@ -92,6 +132,40 @@ export function FilesPanel({ host, workspace, onClose }: { host: string; workspa
     return () => void un.then((f) => f());
   }, [path]);
 
+  function toggleHidden() {
+    setHidden((h) => {
+      try {
+        localStorage.setItem(HIDDEN_KEY, String(!h));
+      } catch {
+        // Not remembered; fine.
+      }
+      return !h;
+    });
+  }
+
+  async function open(entry: Entry) {
+    setPreview({ entry });
+    try {
+      const p = await invoke<Preview>("file_preview", { host, workspace, path: `${path}/${entry.name}` });
+      setPreview((cur) => (cur?.entry === entry ? { entry, preview: p } : cur));
+    } catch (e) {
+      setPreview(null);
+      setError(explain(host, e));
+    }
+  }
+
+  async function remove(entry: Entry) {
+    const what = entry.kind === "dir" ? `${entry.name} and everything in it` : entry.name;
+    if (!(await ask(`Delete ${what}? This can't be undone.`, { title: "Delete", kind: "warning" }))) return;
+    try {
+      await invoke("fs_remove", { host, workspace, path: `${path}/${entry.name}` });
+      setPreview(null);
+    } catch (e) {
+      setError(explain(host, e));
+    }
+    void load(path);
+  }
+
   async function download(entry: Entry) {
     const dest = await saveDialog({ defaultPath: entry.name });
     if (!dest) return;
@@ -114,17 +188,28 @@ export function FilesPanel({ host, workspace, onClose }: { host: string; workspa
     void upload(Array.isArray(picked) ? picked : [picked], path);
   }
 
-  const shown = listing
-    ? listing.path.startsWith(listing.root)
-      ? `~ws${listing.path.slice(listing.root.length)}` || "~ws"
-      : listing.path
-    : "";
+  const shown = listing ? shownPath(listing.path, listing.root) : "";
+  const entries = (listing?.entries ?? []).filter((e) => hidden || !e.name.startsWith("."));
+  const actionsFor = (e: Entry) => [
+    { label: "Download…", hidden: e.kind === "dir", onSelect: () => void download(e) },
+    { label: "Rename…", onSelect: () => setRenaming(e) },
+    { label: "Delete…", danger: true, onSelect: () => void remove(e) },
+  ];
 
   return (
     <aside className={dropping ? "files dropping" : "files"} aria-label="Files">
       <div className="files-head">
         <span className="files-title">Files</span>
         <span className="files-actions">
+          <button
+            className={hidden ? "icon-btn files-hidden on" : "icon-btn files-hidden"}
+            aria-pressed={hidden}
+            aria-label="Show hidden files"
+            title={hidden ? "Hide dotfiles" : "Show dotfiles"}
+            onClick={toggleHidden}
+          >
+            .*
+          </button>
           <button className="btn outline small-btn" onClick={() => void pickAndUpload()}>
             Upload…
           </button>
@@ -145,32 +230,87 @@ export function FilesPanel({ host, workspace, onClose }: { host: string; workspa
         >
           ↑
         </button>
-        <span className="mono files-where" title={listing?.path}>
-          {shown}
-        </span>
+        <input
+          className="mono files-where files-path-input"
+          aria-label="Folder"
+          title={`${listing?.path ?? ""}\nType a folder (~ws/… is in the workspace) and press Return`}
+          value={typed ?? shown}
+          onChange={(e) => setTyped(e.target.value)}
+          onBlur={() => setTyped(null)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && typed !== null && listing) {
+              e.preventDefault();
+              void load(typedPath(typed, listing.root)).then(() => setTyped(null));
+            } else if (e.key === "Escape") {
+              setTyped(null);
+              e.currentTarget.blur();
+            }
+          }}
+          spellCheck={false}
+        />
         <button className="icon-btn" aria-label="Refresh" title="Refresh" onClick={() => void load()}>
           ↻
         </button>
       </div>
       {error && <div className="notice error">{error}</div>}
-      <ul className="files-list">
-        {listing?.entries.map((e) => (
-          <li key={e.name}>
-            <button
-              className="files-row"
-              onClick={() => (e.kind === "dir" ? void load(`${path}/${e.name}`) : void download(e))}
-              title={e.kind === "dir" ? `Open ${e.name}` : `Download ${e.name}`}
-            >
-              <span className="files-icon" aria-hidden="true">
-                {e.kind === "dir" ? "▸" : "·"}
-              </span>
-              <span className="files-name">{e.name}</span>
-              <span className="files-size muted">{e.kind === "dir" ? "" : bytes(e.size)}</span>
+      {preview ? (
+        <div className="file-preview">
+          <div className="files-path">
+            <button className="icon-btn" aria-label="Back to the folder" title="Back" onClick={() => setPreview(null)}>
+              ←
             </button>
-          </li>
-        ))}
-        {listing && listing.entries.length === 0 && <li className="muted files-empty">Empty folder</li>}
-      </ul>
+            <span className="mono files-where" title={preview.entry.name}>
+              {preview.entry.name}
+            </span>
+            <button className="btn outline small-btn" onClick={() => void download(preview.entry)}>
+              Download…
+            </button>
+            <Menu label={`${preview.entry.name} actions`} items={actionsFor(preview.entry).filter((i) => i.label !== "Download…")} />
+          </div>
+          {!preview.preview && <p className="muted files-empty">Reading…</p>}
+          {preview.preview && preview.preview.text === undefined && (
+            <p className="muted files-empty">Not text ({bytes(preview.preview.size)}): download it to open it.</p>
+          )}
+          {preview.preview?.text !== undefined && <pre className="file-text">{preview.preview.text}</pre>}
+          {preview.preview?.truncated && preview.preview.text !== undefined && (
+            <p className="files-hint muted">The first {bytes(preview.preview.text.length)} of {bytes(preview.preview.size)}.</p>
+          )}
+        </div>
+      ) : (
+        <ul className="files-list">
+          {entries.map((e) => (
+            <li key={e.name} className="files-item">
+              <button
+                className="files-row"
+                onClick={() => (e.kind === "dir" ? void load(`${path}/${e.name}`) : void open(e))}
+                onContextMenu={(ev) => {
+                  ev.preventDefault();
+                  setMenu({ entry: e, x: ev.clientX, y: ev.clientY });
+                }}
+                title={e.kind === "dir" ? `Open ${e.name}` : `Show ${e.name}`}
+              >
+                <span className="files-icon" aria-hidden="true">
+                  {e.kind === "dir" ? "▸" : "·"}
+                </span>
+                <span className="files-name">{e.name}</span>
+                <span className="files-size muted">{e.kind === "dir" ? "" : bytes(e.size)}</span>
+              </button>
+              <button
+                className="icon-btn files-more"
+                aria-label={`${e.name} actions`}
+                title="Download, rename or delete"
+                onClick={(ev) => {
+                  const r = ev.currentTarget.getBoundingClientRect();
+                  setMenu({ entry: e, x: r.right - 190, y: r.bottom + 2 });
+                }}
+              >
+                ⋯
+              </button>
+            </li>
+          ))}
+          {listing && entries.length === 0 && <li className="muted files-empty">Empty folder</li>}
+        </ul>
+      )}
       {Object.values(transfers).map((t) => (
         <div key={t.id} className="transfer">
           <span>{t.name}</span>
@@ -182,7 +322,24 @@ export function FilesPanel({ host, workspace, onClose }: { host: string; workspa
           </div>
         </div>
       ))}
-      <p className="files-hint muted">Click a file to download it. Drop files on the window to upload them here.</p>
+      <p className="files-hint muted">Click a file to see it; ⋯ to download, rename or delete. Drop files on the window to upload them here.</p>
+      {menu && <ContextMenu x={menu.x} y={menu.y} items={actionsFor(menu.entry)} onClose={() => setMenu(null)} />}
+      {renaming && (
+        <RenameDialog
+          title={`Rename ${renaming.name}`}
+          initial={renaming.name}
+          onRename={async (name) => {
+            try {
+              await invoke("fs_rename", { host, workspace, path: `${path}/${renaming.name}`, name });
+            } catch (e) {
+              throw explain(host, e);
+            }
+            setPreview(null);
+            void load(path);
+          }}
+          onClose={() => setRenaming(null)}
+        />
+      )}
     </aside>
   );
 }

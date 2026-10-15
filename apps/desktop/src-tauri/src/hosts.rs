@@ -396,12 +396,15 @@ pub async fn attention_resolve(
     host: String,
     workspace: String,
     session: Option<String>,
+    attention: Option<String>,
 ) -> Result<usize, String> {
-    rpc(&app, &host)
-        .await?
-        .attention_resolve(&workspace, session.as_deref())
-        .await
-        .map_err(|e| e.to_string())
+    let mut conn = rpc(&app, &host).await?;
+    match attention {
+        // One item: what showing a workspace again settles (D-099).
+        Some(id) => conn.attention_resolve_item(&workspace, &id).await,
+        None => conn.attention_resolve(&workspace, session.as_deref()).await,
+    }
+    .map_err(|e| e.to_string())
 }
 
 /// Start a session again (a new execution of the same session).

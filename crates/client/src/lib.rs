@@ -836,6 +836,20 @@ impl Connection {
         .await
     }
 
+    /// Mark one item handled, by its id.
+    pub async fn attention_resolve_item(
+        &mut self,
+        workspace: &str,
+        attention: &str,
+    ) -> Result<usize> {
+        self.call(Request::AttentionResolve(AttentionResolve {
+            workspace: workspace.to_owned(),
+            session: None,
+            attention: Some(attention.to_owned()),
+        }))
+        .await
+    }
+
     pub async fn events_list(&mut self, limit: Option<u32>) -> Result<Vec<EventRecord>> {
         self.call(Request::EventsList(EventsList { limit })).await
     }
