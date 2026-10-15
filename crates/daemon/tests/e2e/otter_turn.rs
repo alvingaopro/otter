@@ -206,6 +206,22 @@ async fn a_turn_that_fails_still_answers_once() {
         "the status: {}",
         reply.text
     );
+    // Said, not only logged (D-076); and `otter doctor` has it until a turn works.
+    assert!(
+        reply
+            .text
+            .contains("I couldn't look just now: scripted failure."),
+        "{}",
+        reply.text
+    );
+    let couldnt = |s: &otter_core::HostStatus| {
+        s.problems
+            .iter()
+            .any(|p| p.what.starts_with("Otter couldn't answer on"))
+    };
+    assert!(couldnt(&host.conn().await.host_status().await.unwrap()));
+    run(host, &id, "fail-2", "And now?\nCALL: get_task {}").await;
+    assert!(!couldnt(&host.conn().await.host_status().await.unwrap()));
 }
 
 #[tokio::test]
@@ -351,4 +367,234 @@ async fn otter_sees_no_secrets() {
     for secret in ["LEAKLEAK", "leakyleakybearer"] {
         assert!(!reply.text.contains(secret), "{secret} in {}", reply.text);
     }
+}
+
+/// A host whose Otter is Claude, through a fake worker
+/// (`tests/fake_claude_worker.sh`, `FAKE_WORKER_MODE`).
+async fn claude_host(worker_mode: &str) -> FakeCodex {
+    let mode = worker_mode.to_owned();
+    fake_agent_host_with("ok", "claude", move |scratch| {
+        let worker = scratch.join("worker.sh");
+        std::fs::write(&worker, include_str!("../fake_claude_worker.sh")).unwrap();
+        vec![
+            ("OTTER_BRAIN_V2", "1".into()),
+            ("OTTER_NODE", "/bin/sh".into()),
+            ("OTTER_CLAUDE_WORKER", worker.to_string_lossy().into_owned()),
+            ("FAKE_WORKER_MODE", mode),
+        ]
+    })
+    .await
+}
+
+/// A draft feature in a workspace of its own: nothing plans it.
+async fn draft(host: &TestHost) -> String {
+    let dir = host.home().join("draft");
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut conn = host.conn().await;
+    conn.workspace_create(WorkspaceCreate {
+        name: "draft".into(),
+        source: SourceSpec::Directory {
+            path: dir.to_string_lossy().into_owned(),
+        },
+        sessions: Some(vec![]),
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+    conn.feature_create(otter_protocol::feature::FeatureCreate {
+        command_id: "create-draft".into(),
+        title: "CSV export".into(),
+        request: "Add CSV export".into(),
+        workspace: Some("draft".into()),
+    })
+    .await
+    .unwrap()
+    .id
+    .to_string()
+}
+
+#[tokio::test]
+async fn claude_answers_through_the_worker_with_otters_tools() {
+    let fake = claude_host("ok").await;
+    let host = &fake.host;
+    let status = host.conn().await.host_status().await.unwrap();
+    assert_eq!(status.otter.as_deref(), Some("with tools (claude)"));
+    assert!(
+        !status.problems.iter().any(|p| p.what.starts_with("Otter")),
+        "{:?}",
+        status.problems
+    );
+    let id = draft(host).await;
+    let text = "Where is it? FORWARD";
+    let f = host
+        .conn()
+        .await
+        .feature_send("w-1", &id, text)
+        .await
+        .unwrap();
+    let msg = f
+        .messages
+        .iter()
+        .rev()
+        .find(|m| m.text == text)
+        .unwrap()
+        .id
+        .clone();
+    let f = wait_feature(host, &id, "Otter's answer", |f| {
+        f.messages
+            .iter()
+            .any(|m| m.correlation_id.as_deref() == Some(msg.as_str()))
+    })
+    .await;
+    let reply = f
+        .messages
+        .iter()
+        .find(|m| m.correlation_id.as_deref() == Some(msg.as_str()))
+        .unwrap();
+    // It looked the task up, then passed the developer's message on by its id.
+    assert_eq!(reply.text, "The task is draft; your message: passed on.");
+    let recs = records(host, &id).await;
+    let forwarded = recs.iter().find_map(|r| match &r.event {
+        FeatureEvent::ToolCalled {
+            tool, authority, ..
+        } if tool == "forward_to_agent" => Some(authority.clone()),
+        _ => None,
+    });
+    assert_eq!(forwarded, Some(Some(msg.to_string())));
+    assert!(recs.iter().any(
+        |r| matches!(&r.event, FeatureEvent::ToolDone { tool, error: None } if tool == "get_task")
+    ));
+}
+
+#[tokio::test]
+async fn a_worker_without_otters_profile_leaves_otter_without_tools_and_says_so() {
+    let fake = claude_host("coding-only").await;
+    let status = fake.host.conn().await.host_status().await.unwrap();
+    let how = status.otter.unwrap();
+    assert!(how.starts_with("without tools: "), "{how}");
+    assert!(how.contains("no Otter profile"), "{how}");
+    assert!(
+        status
+            .problems
+            .iter()
+            .any(|p| p.what.starts_with("Otter answers without tools")),
+        "{:?}",
+        status.problems
+    );
+}
+
+/// Real Claude through the built worker, the whole way: a task blocked
+/// before any planning (no workspace), asked why. Run by hand:
+/// `OTTER_CLAUDE_WORKER=$PWD/packages/claude-runtime cargo test -p otterd
+/// --test e2e live_otter_says_why_a_task_is_blocked -- --ignored --nocapture`.
+#[tokio::test]
+#[ignore = "calls Claude; needs the built worker and a signed-in Claude Code"]
+async fn live_otter_says_why_a_task_is_blocked() {
+    use otter_core::feature::FeatureAction;
+    let worker = std::env::var("OTTER_CLAUDE_WORKER").expect("OTTER_CLAUDE_WORKER");
+    let node = String::from_utf8(
+        Command::new("sh")
+            .args(["-c", "command -v node"])
+            .output()
+            .unwrap()
+            .stdout,
+    )
+    .unwrap()
+    .trim()
+    .to_owned();
+    let host = TestHost::with_env(&[
+        ("OTTER_CONTROLLER", "claude".into()),
+        ("OTTER_CONTROLLER_MODEL", "haiku".into()),
+        ("OTTER_BRAIN_V2", "1".into()),
+        ("OTTER_CLAUDE_WORKER", worker),
+        ("OTTER_NODE", node),
+        ("OTTER_CONTROLLER_TICK_MS", "200".into()),
+    ])
+    .await;
+    assert_eq!(
+        host.conn()
+            .await
+            .host_status()
+            .await
+            .unwrap()
+            .otter
+            .as_deref(),
+        Some("with tools (claude)")
+    );
+    let mut conn = host.conn().await;
+    let f = conn
+        .feature_create(otter_protocol::feature::FeatureCreate {
+            command_id: "create-live".into(),
+            title: "CSV export".into(),
+            request: "Add CSV export".into(),
+            workspace: None,
+        })
+        .await
+        .unwrap();
+    let id = f.id.to_string();
+    conn.feature_act("start", &id, FeatureAction::Start)
+        .await
+        .unwrap();
+    let f = wait_feature(&host, &id, "blocked", |f| {
+        f.status == FeatureStatus::Blocked
+    })
+    .await;
+    println!("status: {:?} — {:?}", f.status, f.status_reason);
+    let (f, _) = run(&host, &id, "live-why", "Why is this task blocked?").await;
+    let reply = f
+        .messages
+        .iter()
+        .rev()
+        .find(|m| m.role == MessageRole::Controller)
+        .unwrap();
+    println!("reply: {}", reply.text);
+    let looked: Vec<String> = records(&host, &id)
+        .await
+        .into_iter()
+        .filter_map(|r| match r.event {
+            FeatureEvent::ToolDone { tool, .. } => Some(tool),
+            _ => None,
+        })
+        .collect();
+    // The context already says why; looking further is the model's call.
+    println!("tools: {looked:?}");
+    assert!(
+        reply.text.to_lowercase().contains("workspace"),
+        "{}",
+        reply.text
+    );
+    assert!(!reply.text.contains("INTENT:"), "{}", reply.text);
+    assert_eq!(f.status, FeatureStatus::Blocked, "nothing changed");
+}
+
+/// A brain without a tool-using turn (a provider's API, M5) answers as
+/// before with the flag on, and the host says so.
+#[tokio::test]
+async fn a_provider_without_a_turn_answers_as_before_and_says_so() {
+    let fake =
+        fake_agent_host_with("ok", "openrouter", |_| vec![("OTTER_BRAIN_V2", "1".into())]).await;
+    let host = &fake.host;
+    let status = host.conn().await.host_status().await.unwrap();
+    assert_eq!(
+        status.otter.as_deref(),
+        Some("without tools: `openrouter` has no tool-using turn yet")
+    );
+    assert!(
+        status
+            .problems
+            .iter()
+            .any(|p| p.what.starts_with("Otter answers without tools")),
+        "{:?}",
+        status.problems
+    );
+    let id = draft(host).await;
+    let (_, answers) = run(host, &id, "or-1", "What's going on?\nCALL: get_task {}").await;
+    assert!(answers.is_empty(), "no tool answered: {answers:?}");
+    assert!(
+        !records(host, &id)
+            .await
+            .iter()
+            .any(|r| r.text.starts_with("Otter: ")),
+        "converse uses no tools"
+    );
 }

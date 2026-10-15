@@ -85,10 +85,8 @@ pub enum Class {
     DeveloperWord,
 }
 
-/// A tool as the model sees it. (`description` and `input` go to the model
-/// in M1b's Claude turn; the scripted one names tools itself.)
+/// A tool as the model sees it.
 #[derive(Clone, Debug)]
-#[allow(dead_code)]
 pub struct ToolSpec {
     pub name: &'static str,
     pub class: Class,

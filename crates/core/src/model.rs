@@ -692,6 +692,10 @@ pub struct HostStatus {
     /// otterd's own log, for what the problems don't say.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub log: Option<String>,
+    /// How Otter answers the developer here (D-089): "with tools (…)", or
+    /// "without tools…" and why. Absent from an otterd before it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub otter: Option<String>,
 }
 
 /// Something wrong with a host, and what to do about it (D-077).

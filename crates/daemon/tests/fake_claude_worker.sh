@@ -3,14 +3,25 @@
 # for otterd's tests: no Node, no SDK, no Claude. FAKE_WORKER_MODE picks the
 # behaviour: ok (a turn with a policy check, a tool result and a two-question
 # form), silent (never ready), fatal (fails to start), noisy (floods stderr
-# and sends an oversized frame), old (an older protocol). Every command is
-# appended to FAKE_WORKER_LOG.
+# and sends an oversized frame), old (an older protocol), coding-only (no
+# Otter profile). Every command is appended to FAKE_WORKER_LOG.
+#
+# Initialized with the Otter profile (D-089), a turn looks the task up
+# (get_task); when the prompt says FORWARD, it passes on the developer's
+# last message by the id the prompt gives it (forward_to_agent); then it
+# answers with what it was told.
 mode="${FAKE_WORKER_MODE:-ok}"
 out() { printf '%s\n' "$1"; }
+profiles='"profiles":["coding","otter"],'
+[ "$mode" = coding-only ] && profiles=
 if [ "${1:-}" = --check ]; then
-  out '{"protocol_version":1,"worker_version":"0.1.0","sdk_version":"fake","node_version":"0","node_supported":true,"claude_code":true}'
+  out '{"protocol_version":1,"worker_version":"0.1.0","sdk_version":"fake","node_version":"0","node_supported":true,'"$profiles"'"claude_code":true}'
   exit 0
 fi
+otter=
+forward=
+msg=
+status=
 turn=
 while IFS= read -r line; do
   [ -n "$FAKE_WORKER_LOG" ] && printf '%s\n' "$line" >> "$FAKE_WORKER_LOG"
@@ -25,14 +36,23 @@ while IFS= read -r line; do
           exit 1
           ;;
         old) out '{"type":"ready","protocol_version":0,"worker_version":"0.0.1","sdk_version":"0","node_version":"0"}' ;;
-        *) out '{"type":"ready","protocol_version":1,"worker_version":"0.1.0","sdk_version":"fake","node_version":"0"}' ;;
+        *) out '{"type":"ready",'"$profiles"'"protocol_version":1,"worker_version":"0.1.0","sdk_version":"fake","node_version":"0"}' ;;
       esac
+      case "$line" in *'"profile":"otter"'*) otter=1 ;; esac
       ;;
     *'"type":"send_turn"'*)
+      if [ -n "$otter" ]; then
+        turn=t1
+        case "$line" in *FORWARD*) forward=1 ;; esac
+        msg=$(printf '%s' "$line" | grep -o '\[msg_[A-Za-z0-9]*\]' | tail -1 | tr -d '[]')
+        out '{"type":"tool_call","call_id":"call-1","tool":"get_task","input":{}}'
+        continue
+      fi
       turn=$(printf '%s' "$line" | sed 's/.*"turn_id":"\([^"]*\)".*/\1/')
       out '{"type":"session","session_id":"s-1","model":"fake","claude_code_version":"0","auth_source":"none"}'
       out '{"type":"delivered","turn_id":"'"$turn"'"}'
       if [ "$mode" = noisy ]; then
+
         head -c 3000000 /dev/zero | tr '\0' x >&2
         printf '{"type":"text","message":"big","block":0,"text":"'
         head -c 2000000 /dev/zero | tr '\0' y
@@ -61,6 +81,22 @@ while IFS= read -r line; do
       ;;
     *'"type":"interrupt"'*)
       out '{"type":"turn_finished","turn_id":"'"$turn"'","outcome":"interrupted","summary":null,"error":null,"session_cost_usd":0.02}'
+      ;;
+    *'"type":"tool_result"'*)
+      case "$line" in
+        *'"call_id":"call-2"'*)
+          done=$(printf '%s' "$line" | grep -o '\\"done\\":\\"[a-z ]*' | head -1 | sed 's/.*"//')
+          out '{"type":"turn_finished","turn_id":"t1","outcome":"completed","summary":"The task is '"$status"'; your message: '"$done"'.","error":null,"session_cost_usd":0.01}'
+          continue
+          ;;
+      esac
+      status=$(printf '%s' "$line" | grep -o '\\"status\\":\\"[a-z_]*' | head -1 | sed 's/.*"//')
+      if [ -n "$forward" ]; then
+        out '{"type":"tool_call","call_id":"call-2","tool":"forward_to_agent","input":{"message_ids":["'"$msg"'"]}}'
+        continue
+      fi
+      out '{"type":"text","message":"m1","block":0,"text":"The task is '"$status"'."}'
+      out '{"type":"turn_finished","turn_id":"t1","outcome":"completed","summary":"The task is '"$status"'.","error":null,"session_cost_usd":0.01}'
       ;;
     *'"type":"shutdown"'*)
       exit 0

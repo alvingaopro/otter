@@ -133,6 +133,10 @@ pub struct WorkerCheck {
     pub node_supported: bool,
     /// The SDK's Claude Code for this platform is installed.
     pub claude_code: bool,
+    /// The runs it can do: `coding`, and `otter` (Otter's own turn, D-089).
+    /// Absent from workers before it: coding only.
+    #[serde(default)]
+    pub profiles: Vec<String>,
 }
 
 impl WorkerCheck {
@@ -432,21 +436,21 @@ impl AgentRuntime for ClaudeSdkRuntime {
     }
 }
 
-fn strip_nulls(v: Value) -> Value {
+pub(super) fn strip_nulls(v: Value) -> Value {
     match v {
         Value::Object(o) => Value::Object(o.into_iter().filter(|(_, v)| !v.is_null()).collect()),
         v => v,
     }
 }
 
-enum Frame {
+pub(super) enum Frame {
     Line,
     TooLarge,
     End,
 }
 
 /// One line, at most [`MAX_FRAME`] bytes; a longer one is skipped whole.
-async fn read_frame<R: tokio::io::AsyncBufRead + Unpin>(
+pub(super) async fn read_frame<R: tokio::io::AsyncBufRead + Unpin>(
     r: &mut R,
     out: &mut Vec<u8>,
 ) -> std::io::Result<Frame> {
@@ -1163,6 +1167,7 @@ mod tests {
             node_version: "22.1.0".into(),
             node_supported: true,
             claude_code: true,
+            profiles: vec!["coding".into(), "otter".into()],
         };
         assert!(ok.problems().is_empty());
         assert_eq!(

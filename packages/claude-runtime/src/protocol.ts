@@ -17,7 +17,27 @@ export interface Envelope<T extends string = string, P = unknown> {
   payload: P;
 }
 
+/** A tool Otter offers its own turn (D-089): otterd answers each call. */
+export interface OtterTool {
+  name: string;
+  description: string;
+  /** Its arguments, as a JSON schema (an object's properties). */
+  input_schema: Record<string, unknown>;
+}
+
+/**
+ * What a run is for: `coding` (Claude Code's tools, Otter's policy on each
+ * call) or `otter` (Otter's own turn: none of Claude Code's tools, only
+ * `otter_tools`). A worker says which it has (`ready`, `--check`).
+ */
+export const PROFILES = ["coding", "otter"] as const;
+export type Profile = (typeof PROFILES)[number];
+
 export interface InitializePayload {
+  /** Absent: `coding`. */
+  profile?: Profile;
+  /** The tools of an `otter` run (required there, refused elsewhere). */
+  otter_tools?: OtterTool[];
   conversation_id: string;
   cwd: string;
   /** The coding model; absent: the SDK's default. */
@@ -53,6 +73,12 @@ export interface ResolvePayload {
   resolution: Resolution;
 }
 
+/** What otterd answered to one of Otter's tool calls (an `otter` run). */
+export interface ToolResultPayload {
+  call_id: string;
+  output: string;
+}
+
 /** Otter's policy for one tool call, checked before it runs. */
 export interface PolicyReplyPayload {
   check_id: string;
@@ -66,6 +92,7 @@ export type Command =
   | Envelope<"interrupt", InterruptPayload>
   | Envelope<"resolve_interaction", ResolvePayload>
   | Envelope<"policy_reply", PolicyReplyPayload>
+  | Envelope<"tool_result", ToolResultPayload>
   | Envelope<"shutdown", Record<string, never>>;
 
 export type Outcome = "completed" | "interrupted" | "cancelled" | "failed" | "limit_reached" | "outcome_unknown";
@@ -88,6 +115,8 @@ export type Event =
       worker_version: string;
       sdk_version: string;
       node_version: string;
+      /** The profiles it runs ([`PROFILES`]); absent from older workers. */
+      profiles: string[];
     }
   | { type: "ack"; request_id: string }
   | { type: "nack"; request_id: string; error: string; category: ErrorCategory }
@@ -107,6 +136,8 @@ export type Event =
   | { type: "tool_started"; call: string; parent: string | null; tool: string; input: unknown }
   | { type: "tool_finished"; call: string; ok: boolean; output: string }
   | { type: "policy_check"; check_id: string; tool: string; input: unknown; tool_use_id: string }
+  /** One of Otter's tools was called (an `otter` run): answer with `tool_result`. */
+  | { type: "tool_call"; call_id: string; tool: string; input: unknown }
   | { type: "permission_request"; request_id: string; tool: string; input: unknown; tool_use_id: string }
   | {
       type: "turn_finished";
@@ -152,6 +183,21 @@ export function parseCommand(line: string): { ok: true; command: Command } | { o
       if (!Array.isArray(sources) || !sources.every((s) => s === "user" || s === "project" || s === "local")) {
         return bad("setting_sources must list user/project/local");
       }
+      if (p.profile !== undefined && !PROFILES.includes(p.profile as Profile)) return bad("unknown profile");
+      if (p.profile === "otter") {
+        const tools = p.otter_tools;
+        if (!Array.isArray(tools) || tools.length === 0) return bad("an otter run needs otter_tools");
+        const ok = (t: unknown) =>
+          isObject(t) &&
+          str(t.name) &&
+          /^[a-z][a-z_]{0,63}$/.test(t.name) &&
+          str(t.description) &&
+          isObject(t.input_schema);
+        if (!tools.every(ok)) return bad("each otter tool needs a name, a description and an input_schema");
+        if (sources.length > 0) return bad("an otter run reads no settings");
+      } else if (p.otter_tools !== undefined) {
+        return bad("otter_tools are for an otter run");
+      }
       break;
     }
     case "send_turn":
@@ -172,6 +218,9 @@ export function parseCommand(line: string): { ok: true; command: Command } | { o
     }
     case "policy_reply":
       if (!str(p.check_id) || !["allow", "deny", "ask"].includes(String(p.decision))) return bad("check_id and decision are required");
+      break;
+    case "tool_result":
+      if (!str(p.call_id) || !str(p.output)) return bad("call_id and output are required");
       break;
     case "shutdown":
       break;

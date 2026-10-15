@@ -8,7 +8,7 @@ import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { MAX_FRAME, PROTOCOL_VERSION, frame, parseCommand, type Command, type Event } from "./protocol.js";
+import { MAX_FRAME, PROFILES, PROTOCOL_VERSION, frame, parseCommand, type Command, type Event } from "./protocol.js";
 import { Session, type QueryFn } from "./sdk.js";
 
 export const WORKER_VERSION = "0.1.0";
@@ -61,6 +61,7 @@ export function check() {
     node_version: process.versions.node,
     node_supported: major >= MIN_NODE,
     claude_code: claude !== null && existsSync(claude),
+    profiles: [...PROFILES],
   };
 }
 
@@ -123,6 +124,7 @@ export function worker(write: (s: string) => void, exit: (code: number) => void,
         worker_version: WORKER_VERSION,
         sdk_version: sdkVersion(),
         node_version: process.versions.node,
+        profiles: [...PROFILES],
       });
     }
     if (!session) return nack(c.request_id, "initialize first");
@@ -136,6 +138,8 @@ export function worker(write: (s: string) => void, exit: (code: number) => void,
           return ack(c.request_id);
         case "policy_reply":
           return session.policyReply(c.payload) ? ack(c.request_id) : nack(c.request_id, "no such check is waiting");
+        case "tool_result":
+          return session.toolResult(c.payload) ? ack(c.request_id) : nack(c.request_id, "no such tool call is waiting");
         case "resolve_interaction":
           return session.resolve(c.payload.request_id, c.payload.resolution)
             ? ack(c.request_id)
@@ -169,7 +173,12 @@ export function worker(write: (s: string) => void, exit: (code: number) => void,
       }
       const command = parsed.command;
       // Answers can't wait behind a command that waits for them.
-      if (command.type === "policy_reply" || command.type === "resolve_interaction" || command.type === "interrupt") {
+      if (
+        command.type === "policy_reply" ||
+        command.type === "resolve_interaction" ||
+        command.type === "interrupt" ||
+        command.type === "tool_result"
+      ) {
         void handle(command);
       } else {
         chain = chain.then(() => handle(command));

@@ -5,8 +5,8 @@ import type { Options, Query, SDKUserMessage } from "@anthropic-ai/claude-agent-
 
 import { Pending } from "./interactions.js";
 import { Frames, bundledClaude, check, worker } from "./main.js";
-import { MAX_FRAME, PROTOCOL_VERSION, parseCommand } from "./protocol.js";
-import { DISALLOWED_TOOLS, Session } from "./sdk.js";
+import { MAX_FRAME, PROFILES, PROTOCOL_VERSION, parseCommand } from "./protocol.js";
+import { DISALLOWED_TOOLS, Session, otterToolName, shapeOf } from "./sdk.js";
 
 const env = (type: string, payload: unknown, request_id = `r-${type}`) =>
   JSON.stringify({ protocol_version: PROTOCOL_VERSION, request_id, run_id: "run_1", generation: 1, type, payload });
@@ -181,4 +181,74 @@ test("--check says what this worker is without starting anything", () => {
   // there's never one for a platform the SDK doesn't ship.
   assert.equal(typeof c.claude_code, "boolean");
   assert.equal(bundledClaude("aix", "ppc64"), null);
+});
+
+const getTask = { name: "get_task", description: "Where the task stands.", input_schema: { type: "object", properties: {} } };
+const otterInit = { conversation_id: "otter_1", cwd: "/w", setting_sources: [], profile: "otter", otter_tools: [getTask], instructions: "You are Otter." };
+
+test("an otter run is asked for with its tools, and nothing else", () => {
+  assert.equal(parseCommand(env("initialize", otterInit)).ok, true);
+  assert.equal(parseCommand(env("initialize", { ...otterInit, otter_tools: [] })).ok, false);
+  assert.equal(parseCommand(env("initialize", { ...otterInit, otter_tools: [{ ...getTask, name: "Bash" }] })).ok, false);
+  assert.equal(parseCommand(env("initialize", { ...otterInit, setting_sources: ["project"] })).ok, false, "no settings");
+  assert.equal(parseCommand(env("initialize", { ...init, otter_tools: [getTask] })).ok, false, "tools only for an otter run");
+  assert.equal(parseCommand(env("initialize", { ...init, profile: "root" })).ok, false);
+  assert.equal(parseCommand(env("tool_result", { call_id: "call-1", output: "{}" })).ok, true);
+  assert.equal(parseCommand(env("tool_result", { call_id: "call-1" })).ok, false);
+});
+
+test("Otter's turn has none of Claude Code's tools, only its own", () => {
+  const o = new Session(() => {}, otterInit as never).options();
+  assert.deepEqual(o.tools, [], "no built-in tools");
+  assert.deepEqual(Object.keys(o.mcpServers ?? {}), ["otter"]);
+  assert.equal(o.strictMcpConfig, true);
+  assert.deepEqual(o.allowedTools, [otterToolName("get_task")]);
+  assert.deepEqual(o.settingSources, []);
+  assert.equal(o.systemPrompt, "You are Otter.");
+  assert.equal(o.hooks, undefined, "no coding policy hook: nothing to check but Otter's tools");
+  assert.deepEqual(o.disallowedTools, DISALLOWED_TOOLS);
+});
+
+test("a JSON schema becomes the shape the model is told", () => {
+  const shape = shapeOf({
+    type: "object",
+    properties: { limit: { type: "integer" }, message_ids: { type: "array", items: { type: "string" } } },
+    required: ["message_ids"],
+  });
+  assert.equal(shape.limit!.safeParse(undefined).success, true, "optional");
+  assert.equal(shape.limit!.safeParse(2.5).success, false, "an integer");
+  assert.equal(shape.message_ids!.safeParse(undefined).success, false, "required");
+  assert.equal(shape.message_ids!.safeParse(["msg_1"]).success, true);
+});
+
+test("each of Otter's tool calls goes to otterd, and its answer back", async () => {
+  const out: Record<string, unknown>[] = [];
+  const s = new Session((e) => out.push(e as never), otterInit as never);
+  const answered = s.otterCall("get_task", {});
+  const call = await until(out, (e) => e.type === "tool_call");
+  assert.deepEqual([call.tool, call.input], ["get_task", {}]);
+  assert.equal(s.toolResult({ call_id: "nope", output: "x" }), false);
+  assert.equal(s.toolResult({ call_id: String(call.call_id), output: '{"ok":true}' }), true);
+  assert.deepEqual(await answered, { content: [{ type: "text", text: '{"ok":true}' }] });
+  // A turn that ends first answers with an error, never hangs.
+  const late = s.otterCall("get_task", {});
+  await s.shutdown(10);
+  const text = (await late).content[0]!.text;
+  assert.match(text, /"ok":false/);
+});
+
+test("a worker says which runs it can do", async () => {
+  const { out } = await drive(
+    async function* () {},
+    async (send, out) => {
+      send(env("initialize", otterInit));
+      const ready = await until(out, (e) => e.type === "ready");
+      assert.deepEqual(ready.profiles, [...PROFILES]);
+      send(env("tool_result", { call_id: "call-9", output: "{}" }, "r-stray"));
+      await until(out, (e) => e.type === "nack" && e.request_id === "r-stray");
+      send(env("shutdown", {}));
+    },
+  );
+  assert.ok(out.length > 0);
+  assert.deepEqual(check().profiles, ["coding", "otter"]);
 });
