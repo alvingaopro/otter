@@ -213,8 +213,25 @@ impl Daemon {
                     daemon.controller.lock().unwrap().inflight.remove(&id);
                 });
             }
-            // Otter's conversation on the host (D-093): one turn at a time.
+            // Otter's conversation on the host (D-093): one turn at a time —
+            // the developer's messages first, then follow-ups (D-094).
             let waiting = !crate::chat::unanswered(self.chat.lock().await.get()).is_empty();
+            let busy = self.controller.lock().unwrap().host_turn;
+            if !waiting
+                && !busy
+                && let Some((task, key)) = self.due_follow_up().await
+            {
+                self.controller.lock().unwrap().host_turn = true;
+                let daemon = self.clone();
+                tokio::spawn(async move {
+                    let done = daemon.follow_up(task, key).await;
+                    daemon.controller.lock().unwrap().host_turn = false;
+                    match done {
+                        Ok(()) => daemon.feature_wake.notify_one(),
+                        Err(e) => tracing::warn!("Otter's follow-up: {}", e.message),
+                    }
+                });
+            }
             if waiting && !std::mem::replace(&mut self.controller.lock().unwrap().host_turn, true) {
                 let daemon = self.clone();
                 tokio::spawn(async move {

@@ -401,6 +401,19 @@ pub struct OtterChat {
     /// The last entry of its history (Otter's tool calls).
     #[serde(default)]
     pub history_seq: u64,
+    /// The tasks Otter follows here (D-094): those it made.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub follows: Vec<Follow>,
+}
+
+/// A task Otter follows in its conversation on the host (D-094), and the
+/// last change it said something about.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct Follow {
+    pub task_id: FeatureId,
+    /// The last change followed up ([`Feature::follow_key`]); empty: none.
+    #[serde(default)]
+    pub seen: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -640,6 +653,25 @@ impl Feature {
     /// A decision comes first (the oldest); then review once it's ready to
     /// accept (or a gate failed), blocked, failed. Review still publishing
     /// or waiting for CI isn't waiting on them.
+    /// The change worth a follow-up (D-094), if it stands at one: done,
+    /// failed, in review, or waiting on the developer — with when it got
+    /// there, so each change is its own.
+    pub fn follow_key(&self) -> Option<String> {
+        let notable = matches!(
+            self.status,
+            FeatureStatus::Done | FeatureStatus::Failed | FeatureStatus::Review
+        ) || (self.status == FeatureStatus::Blocked && self.needs().is_some());
+        notable.then(|| {
+            format!(
+                "{}:{}",
+                self.status.as_str(),
+                self.status_since
+                    .unwrap_or(self.updated_at)
+                    .timestamp_millis()
+            )
+        })
+    }
+
     pub fn needs(&self) -> Option<Need> {
         let since = self.status_since.unwrap_or(self.updated_at);
         let reason = |fallback: &str| {

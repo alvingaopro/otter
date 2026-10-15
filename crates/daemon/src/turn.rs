@@ -58,6 +58,9 @@ pub struct Turn<'a> {
     pub feature: Option<&'a Feature>,
     /// What Otter is told ([`INSTRUCTIONS`], [`HOST_INSTRUCTIONS`]).
     pub instructions: &'static str,
+    /// A follow-up's turn (D-094): the task that changed, and how. No
+    /// developer's message started it.
+    pub event: Option<(otter_core::FeatureId, String)>,
     /// The developer's unanswered messages, oldest first.
     pub messages: &'a [Message],
     /// What `reply` gave the model: the brief, the status, the steps and
@@ -195,6 +198,7 @@ impl Daemon {
         let turn = Turn {
             feature: Some(f),
             instructions: INSTRUCTIONS,
+            event: None,
             messages: &open,
             context: context(f),
             tools: tools(),
@@ -287,6 +291,7 @@ impl Daemon {
         let turn = Turn {
             feature: None,
             instructions: HOST_INSTRUCTIONS,
+            event: None,
             messages: &open,
             context: self.host_context(&chat).await,
             tools: host_tools(),
@@ -368,6 +373,120 @@ impl Daemon {
     }
 }
 
+impl Daemon {
+    /// A task Otter follows changed (D-094): a turn started by that change —
+    /// it may look and pause, nothing on the developer's word — says so in
+    /// Otter's conversation on the host, once. The message and the change it
+    /// is about are recorded together: a crash before leaves the change to
+    /// be followed up after the restart; never twice.
+    pub(crate) async fn follow_up(
+        self: &Arc<Self>,
+        task: otter_core::FeatureId,
+        key: String,
+    ) -> RpcResult<()> {
+        let f = self.feature_get(task.as_str()).await?;
+        let what = format!(
+            "[{}] {} is now {}{}",
+            f.id,
+            f.title,
+            f.status.as_str(),
+            f.status_reason
+                .as_deref()
+                .map(|r| format!(": {r}"))
+                .unwrap_or_default()
+        );
+        let reply = match self.turn_backend() {
+            None => format!("{what}."),
+            Some(backend) => {
+                let chat = self.chat.lock().await.get().clone();
+                let limits = Limits::from_env();
+                let gateway = Gateway::new(
+                    self.clone(),
+                    Scope::Host,
+                    Origin::Event {
+                        event_id: format!("follow:{}:{key}", f.id),
+                    },
+                    limits.max_calls,
+                );
+                let say = |_: &str| {};
+                let turn = Turn {
+                    feature: None,
+                    instructions: HOST_INSTRUCTIONS,
+                    event: Some((f.id.clone(), what.clone())),
+                    messages: &[],
+                    context: self.host_context(&chat).await,
+                    tools: host_tools(),
+                    limits: &limits,
+                    say: &say,
+                };
+                match bounded(&*backend, &turn, &gateway, &limits).await {
+                    (Some(text), _) => text,
+                    (None, why) => {
+                        tracing::warn!(task = %f.id, "Otter's follow-up: {why}");
+                        format!("{what}.")
+                    }
+                }
+            }
+        };
+        crate::gateway::crash_point("follow", "post");
+        let applied = self.chat.lock().await.apply(None, |chat, _| {
+            let Some(follow) = chat.follows.iter_mut().find(|x| x.task_id == task) else {
+                return Ok(vec![]);
+            };
+            if follow.seen == key {
+                return Ok(vec![]);
+            }
+            follow.seen = key.clone();
+            let (m, c) = message(
+                MessageRole::Controller,
+                reply,
+                Some(format!("follow:{task}:{key}")),
+            );
+            chat.messages.push(m);
+            Ok(vec![c])
+        })?;
+        self.chat_changed(&applied);
+        Ok(())
+    }
+
+    /// The next change to follow up on the host, if one is due: a followed
+    /// task at a change it hasn't said anything about. Tasks gone are no
+    /// longer followed.
+    pub(crate) async fn due_follow_up(&self) -> Option<(otter_core::FeatureId, String)> {
+        let follows = self.chat.lock().await.get().follows.clone();
+        if follows.is_empty() {
+            return None;
+        }
+        let features = self.features.lock().await;
+        let mut gone = vec![];
+        let mut due = None;
+        for follow in &follows {
+            match features.get(follow.task_id.as_str()) {
+                None => gone.push(follow.task_id.clone()),
+                Some(f) => {
+                    if let Some(key) = f.follow_key()
+                        && key != follow.seen
+                        && due.is_none()
+                    {
+                        due = Some((follow.task_id.clone(), key));
+                    }
+                }
+            }
+        }
+        drop(features);
+        if !gone.is_empty() {
+            let applied = self.chat.lock().await.apply(None, |chat, _| {
+                chat.follows.retain(|x| !gone.contains(&x.task_id));
+                Ok(vec![])
+            });
+            if let Ok(a) = applied {
+                self.chat_changed(&a);
+            }
+        }
+        due
+    }
+}
+
 /// Run `backend`'s turn within its limits: its answer, or why there is
 /// none (D-076: said, not only logged).
 async fn bounded(
@@ -427,6 +546,12 @@ pub struct ClaudeTurn {
 /// What a turn of Claude's starts with: the context, then the developer's
 /// messages with the ids its tools take.
 pub fn prompt(turn: &Turn<'_>) -> String {
+    if let (Some((_, what)), true) = (&turn.event, turn.messages.is_empty()) {
+        return format!(
+            "{}\n\nNo message from the developer started this turn: a task you follow changed — {what}. Say in a sentence or two what happened and what it needs from them, if anything. Look with your tools if that helps; act for them in nothing (pausing is all you may do).",
+            turn.context
+        );
+    }
     let messages: Vec<String> = turn
         .messages
         .iter()
@@ -582,6 +707,11 @@ impl TurnBackend for Scripted {
             for (name, args) in Self::from_intent(turn) {
                 call(&name, args).await;
             }
+        }
+        // A follow-up's turn: a look at the task, and what happened.
+        if let (Some((task, what)), true) = (&turn.event, turn.messages.is_empty()) {
+            call("get_task", serde_json::json!({ "task_id": task.as_str() })).await;
+            out.insert(0, format!("Follow-up: {what}."));
         }
         let text = if out.is_empty() {
             "Scripted: None.".to_owned()
