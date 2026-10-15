@@ -27,22 +27,24 @@ describe("nav", () => {
     expect(parseView(null)).toBeUndefined();
   });
 
-  it("maps ⌘1/⌘2/⌘3 and nothing else", () => {
+  it("maps ⌘1–⌘4 and nothing else", () => {
     expect(viewForShortcut(key("1", { metaKey: true }))).toBe("inbox");
     expect(viewForShortcut(key("2", { metaKey: true }))).toBe("features");
     expect(viewForShortcut(key("3", { metaKey: true }))).toBe("workspaces");
+    expect(viewForShortcut(key("4", { metaKey: true }))).toBe("otter");
     expect(viewForShortcut(key("2"))).toBeUndefined();
     expect(viewForShortcut(key("2", { metaKey: true, shiftKey: true }))).toBeUndefined();
-    expect(viewForShortcut(key("4", { metaKey: true }))).toBeUndefined();
+    expect(viewForShortcut(key("5", { metaKey: true }))).toBeUndefined();
   });
 
   it("moves with arrows, wrapping, and jumps with Home/End", () => {
     expect(viewForArrow("inbox", "ArrowDown")).toBe("features");
     expect(viewForArrow("features", "ArrowDown")).toBe("workspaces");
-    expect(viewForArrow("workspaces", "ArrowDown")).toBe("inbox");
-    expect(viewForArrow("inbox", "ArrowUp")).toBe("workspaces");
+    expect(viewForArrow("workspaces", "ArrowDown")).toBe("otter");
+    expect(viewForArrow("otter", "ArrowDown")).toBe("inbox");
+    expect(viewForArrow("inbox", "ArrowUp")).toBe("otter");
     expect(viewForArrow("workspaces", "Home")).toBe("inbox");
-    expect(viewForArrow("inbox", "End")).toBe("workspaces");
+    expect(viewForArrow("inbox", "End")).toBe("otter");
     expect(viewForArrow("features", "Enter")).toBeUndefined();
   });
 });

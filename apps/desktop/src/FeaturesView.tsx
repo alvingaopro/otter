@@ -542,7 +542,7 @@ function StatusBanner({ f, onApprovals, act }: { f: Feature; onApprovals: () => 
 const ROLE: Record<string, string> = { user: "You", controller: "Otter", agent: "Coding agent", system: "System" };
 
 /** Who said it; Otter with its face. */
-function Speaker({ role }: { role: string }) {
+export function Speaker({ role }: { role: string }) {
   return (
     <span className="message-role">
       {role === "controller" && <img src={otterIcon} width={16} height={16} alt="" className="message-avatar" />}
@@ -553,7 +553,7 @@ function Speaker({ role }: { role: string }) {
 
 /** What was said: the developer's words as typed; Otter's and the coding
  * agent's as the Markdown they write (D-086). */
-function MessageText({ role, text, children }: { role: string; text: string; children?: ReactNode }) {
+export function MessageText({ role, text, children }: { role: string; text: string; children?: ReactNode }) {
   return role === "controller" || role === "agent" ? (
     <Markdown className="message-text" text={text}>
       {children}

@@ -302,6 +302,8 @@ async fn follow(app: &AppHandle, name: &str, transport: &Transport) -> Result<Ne
                             | otter_protocol::Event::FeatureChanged { .. }
                             | otter_protocol::Event::FeatureDeleted { .. }
                             | otter_protocol::Event::ConversationChanged { .. }
+                            | otter_protocol::Event::OtterChanged { .. }
+                            | otter_protocol::Event::OtterStream { .. }
                     ) {
                         continue;
                     }
