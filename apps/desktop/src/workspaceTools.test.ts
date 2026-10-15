@@ -2,7 +2,7 @@
 // the sidebar's order, the files panel's path, text size.
 
 import { describe, expect, it } from "vitest";
-import { changesLine, diffLines } from "./changes";
+import { changesLine } from "./changes";
 import { findLines } from "./FindPanel";
 import { shownPath, typedPath } from "./FilesPanel";
 import { logicalLine, urlAtColumn } from "./links";
@@ -73,10 +73,6 @@ describe("changes", () => {
     expect(changesLine(c({ behind: 3 }))).toBe("↓3");
   });
 
-  it("read a diff line by line", () => {
-    const kinds = diffLines("diff --git a/x b/x\n--- a/x\n+++ b/x\n@@ -1 +1 @@\n-old\n+new\n same\n").map((l) => l.kind);
-    expect(kinds).toEqual(["meta", "meta", "meta", "hunk", "del", "add", "same"]);
-  });
 });
 
 describe("find in a session's history", () => {

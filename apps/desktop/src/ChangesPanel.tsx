@@ -1,8 +1,12 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { CHANGE_LETTER, diffLines } from "./changes";
+import { CHANGE_LETTER } from "./changes";
+import { DiffView } from "./DiffView";
 import { explain } from "./newer";
 import type { FileDiff, WorkspaceChanges } from "./types";
+
+/** Context enough for any file the host sends: the diff carries the whole of it. */
+const WHOLE_FILE = 1_000_000;
 
 /** What `WorkspacePane` holds of a workspace's changes. */
 export type Changes = { state: "loading" } | { state: "ready"; changes: WorkspaceChanges } | { state: "too_old" } | { state: "error"; error: string };
@@ -33,7 +37,8 @@ export function ChangesPanel({
     if (!file) return;
     let live = true;
     setError(null);
-    invoke<FileDiff>("workspace_diff", { host, workspace, path: file })
+    // The whole file, folded here (D-111); an older otterd sends its usual hunks.
+    invoke<FileDiff>("workspace_diff", { host, workspace, path: file, context: WHOLE_FILE })
       .then((d) => live && setDiff(d))
       .catch((e) => live && setError(explain(host, e)));
     return () => {
@@ -114,16 +119,7 @@ export function ChangesPanel({
             </span>
           </div>
           {error && <div className="notice error">{error}</div>}
-          <pre className="diff" aria-label={`Diff of ${file}`}>
-            {diff &&
-              diffLines(diff.text).map((l, i) => (
-                <span key={i} className={`diff-${l.kind}`}>
-                  {l.text}
-                  {"\n"}
-                </span>
-              ))}
-          </pre>
-          {diff?.truncated && <p className="files-hint muted">Cut short: the diff is longer.</p>}
+          {diff ? <DiffView text={diff.text} path={file} truncated={diff.truncated} /> : !error && <p className="muted files-empty">Reading…</p>}
         </>
       )}
     </aside>

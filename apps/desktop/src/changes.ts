@@ -18,23 +18,3 @@ export const CHANGE_LETTER: Record<ChangeKind, string> = {
   renamed: "R",
   untracked: "U",
 };
-
-export type DiffLine = { kind: "add" | "del" | "hunk" | "meta" | "same"; text: string };
-
-/** A unified diff's lines, by what each is. */
-export function diffLines(text: string): DiffLine[] {
-  const lines = text.split("\n");
-  if (lines[lines.length - 1] === "") lines.pop();
-  let inHunk = false;
-  return lines.map((t) => {
-    if (t.startsWith("@@")) {
-      inHunk = true;
-      return { kind: "hunk", text: t };
-    }
-    if (t.startsWith("diff --git")) inHunk = false;
-    if (!inHunk) return { kind: "meta", text: t };
-    if (t.startsWith("+")) return { kind: "add", text: t };
-    if (t.startsWith("-")) return { kind: "del", text: t };
-    return { kind: "same", text: t };
-  });
-}

@@ -2308,10 +2308,15 @@ async fn workspaces_and_sessions_are_renamed() {
 async fn a_workspace_shows_its_changes() {
     use otter_protocol::work::ChangeKind;
     let host = TestHost::new();
+    let long: String = (1..=40).map(|i| format!("line {i}\n")).collect();
     let repo = make_repo(
         &host,
         "origin",
-        &[("a.txt", "one\ntwo\n"), ("b.txt", "keep\n")],
+        &[
+            ("a.txt", "one\ntwo\n"),
+            ("b.txt", "keep\n"),
+            ("long.txt", long.as_str()),
+        ],
     );
     let mut conn = host.conn().await;
     conn.workspace_create(git_ws("work", &repo, Some("feature/x"), vec![]))
@@ -2357,13 +2362,30 @@ async fn a_workspace_shows_its_changes() {
         ]
     );
     assert_eq!((c.insertions, c.deletions), (5, 1));
-    let d = conn.workspace_diff("work", "a.txt").await.unwrap();
+    let d = conn.workspace_diff("work", "a.txt", None).await.unwrap();
     assert!(
         d.text.contains("-two") && d.text.contains("+three"),
         "{}",
         d.text
     );
-    let d = conn.workspace_diff("work", "new.md").await.unwrap();
+    // The whole file, for the app to fold (D-111): far from the change too.
+    std::fs::write(
+        root.join("long.txt"),
+        long.replace("line 20\n", "line twenty\n"),
+    )
+    .unwrap();
+    let near = conn.workspace_diff("work", "long.txt", None).await.unwrap();
+    assert!(!near.text.contains("line 40"), "{}", near.text);
+    let all = conn
+        .workspace_diff("work", "long.txt", Some(1_000_000))
+        .await
+        .unwrap();
+    assert!(
+        all.text.contains("line 40") && all.text.contains("+line twenty"),
+        "{}",
+        all.text
+    );
+    let d = conn.workspace_diff("work", "new.md", None).await.unwrap();
     assert!(d.text.contains("+# new"), "{}", d.text);
 
     create(&host, "plain", Some(vec![])).await;

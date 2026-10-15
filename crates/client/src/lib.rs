@@ -733,16 +733,19 @@ impl Connection {
         .await
     }
 
-    /// One changed file's diff (D-102).
+    /// One changed file's diff (D-102), with `context` lines around each
+    /// change (git's 3 if `None`; D-111).
     pub async fn workspace_diff(
         &mut self,
         workspace: &str,
         path: &str,
+        context: Option<u32>,
     ) -> Result<otter_protocol::work::FileDiff> {
         self.call(Request::WorkspaceDiff(
             otter_protocol::work::WorkspaceDiff {
                 workspace: workspace.to_owned(),
                 path: path.to_owned(),
+                context,
             },
         ))
         .await

@@ -21,6 +21,8 @@ use crate::work_state::merge_base;
 
 /// New files whose lines are counted, up to this size each.
 const COUNTED_BYTES: u64 = 1 << 20;
+/// Most context `workspace.diff` gives: more than any file it can return.
+const MAX_CONTEXT: u32 = 1_000_000;
 
 struct Git<'a> {
     git: PathBuf,
@@ -226,11 +228,18 @@ pub(crate) async fn changes(root: &Path, env: &EnvMap, base: Option<&str>) -> Wo
 
 /// `workspace.diff`: one file, since the same starting point; a new file
 /// against nothing.
-pub(crate) async fn diff(root: &Path, env: &EnvMap, base: Option<&str>, path: &str) -> FileDiff {
+pub(crate) async fn diff(
+    root: &Path,
+    env: &EnvMap,
+    base: Option<&str>,
+    path: &str,
+    context: Option<u32>,
+) -> FileDiff {
     let Some(g) = open(root, env).await else {
         return FileDiff::default();
     };
-    let flags = ["--no-color", "--no-ext-diff", "--relative"];
+    let lines = format!("-U{}", context.unwrap_or(3).min(MAX_CONTEXT));
+    let flags = ["--no-color", "--no-ext-diff", "--relative", lines.as_str()];
     let untracked = g
         .run(&[
             "ls-files",
@@ -248,6 +257,7 @@ pub(crate) async fn diff(root: &Path, env: &EnvMap, base: Option<&str>, path: &s
             "diff",
             "--no-color",
             "--no-ext-diff",
+            lines.as_str(),
             "--no-index",
             "--",
             "/dev/null",
@@ -310,10 +320,22 @@ impl Daemon {
         Ok(changes(Path::new(&ws.root), &env, base_of(&ws).as_deref()).await)
     }
 
-    pub(crate) async fn workspace_diff(&self, r: &str, path: &str) -> RpcResult<FileDiff> {
+    pub(crate) async fn workspace_diff(
+        &self,
+        r: &str,
+        path: &str,
+        context: Option<u32>,
+    ) -> RpcResult<FileDiff> {
         let ws = self.workspace_get(r).await?;
         let env = self.environments.base().clone();
-        Ok(diff(Path::new(&ws.root), &env, base_of(&ws).as_deref(), path).await)
+        Ok(diff(
+            Path::new(&ws.root),
+            &env,
+            base_of(&ws).as_deref(),
+            path,
+            context,
+        )
+        .await)
     }
 
     /// Ports listened on by a process in one of the workspace's running

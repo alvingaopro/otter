@@ -8,6 +8,7 @@ import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { ask, open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
 import { bytes } from "./format";
+import { highlightLines, languageOf } from "./highlight";
 import { ContextMenu, Menu } from "./Menu";
 import { explain } from "./newer";
 import { RenameDialog } from "./RenameDialog";
@@ -287,7 +288,12 @@ export function FilesPanel({
           {preview.preview && preview.preview.text === undefined && (
             <p className="muted files-empty">Not text ({bytes(preview.preview.size)}): download it to open it.</p>
           )}
-          {preview.preview?.text !== undefined && <pre className="file-text">{preview.preview.text}</pre>}
+          {preview.preview?.text !== undefined && (
+            <pre
+              className="file-text hl"
+              dangerouslySetInnerHTML={{ __html: highlightLines(preview.preview.text, languageOf(preview.entry.name)).join("\n") }}
+            />
+          )}
           {preview.preview?.truncated && preview.preview.text !== undefined && (
             <p className="files-hint muted">The first {bytes(preview.preview.text.length)} of {bytes(preview.preview.size)}.</p>
           )}
