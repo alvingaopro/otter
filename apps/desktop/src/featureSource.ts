@@ -15,7 +15,7 @@ export interface FeatureSource {
   list(): PlacedFeature[];
   /** Called with the new list whenever anything changes. Returns an unsubscribe. */
   subscribe(listener: (list: PlacedFeature[]) => void): () => void;
-  create(host: string, title: string, request: string, workspace?: string): Promise<PlacedFeature>;
+  create(host: string, title: string, request: string, workspace?: string, answerOnly?: boolean): Promise<PlacedFeature>;
   /** A message from the developer to Otter, about the feature. */
   send(key: string, text: string): Promise<void>;
   act(key: string, action: FeatureAction): Promise<void>;
@@ -242,12 +242,13 @@ export function mockSource(host = "preview", now = Date.now()): FeatureSource {
       listeners.add(listener);
       return () => listeners.delete(listener);
     },
-    async create(h, title, request, workspace) {
+    async create(h, title, request, workspace, answerOnly) {
       const feature: Feature = {
         ...sampleFeatures(Date.now())[4],
         id: id("ft"),
         title,
         request,
+        ...(answerOnly ? { answer_only: true } : {}),
         messages: request ? [{ id: id("msg"), role: "user", text: request, at: stamp() }] : [],
         workspace_id: workspace,
         created_at: stamp(),
@@ -457,8 +458,15 @@ export function daemonSource(): FeatureSource {
       listeners.add(listener);
       return () => listeners.delete(listener);
     },
-    async create(host, title, request, workspace) {
-      const feature = await invoke<Feature>("feature_create", { host, commandId: commandId(), title, request, workspace: workspace ?? null });
+    async create(host, title, request, workspace, answerOnly) {
+      const feature = await invoke<Feature>("feature_create", {
+        host,
+        commandId: commandId(),
+        title,
+        request,
+        workspace: workspace ?? null,
+        answerOnly: answerOnly ?? false,
+      });
       put(host, feature);
       return { host, feature, key: `${host}/${feature.id}` };
     },

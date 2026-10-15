@@ -154,6 +154,26 @@ describe("Features view", () => {
     expect(byText("button", "Take over")).toBeUndefined();
   });
 
+  it("creates an answer-only task, and says so on it", async () => {
+    const base = mockSource("mac");
+    const made: unknown[] = [];
+    const s: FeatureSource = {
+      ...base,
+      create: async (h, title, request, workspace, answerOnly) => {
+        made.push({ title, answerOnly });
+        return base.create(h, title, request, workspace, answerOnly);
+      },
+    };
+    await render(s);
+    await act(async () => q('[aria-label="New task"]')!.click());
+    const dialog = document.querySelector('[role="dialog"]')!;
+    type(dialog.querySelector("input")!, "How does export work?");
+    await act(async () => dialog.querySelector<HTMLInputElement>('input[aria-label="Only an answer"]')!.click());
+    await act(async () => byText("button", "Create draft")!.click());
+    expect(made).toEqual([{ title: "How does export work?", answerOnly: true }]);
+    expect(byText(".chip", "Answer only")).toBeTruthy();
+  });
+
   it("shows the coding agent's work and offers interrupt and redirect while it runs", async () => {
     const base = mockSource("mac");
     const acts: unknown[] = [];

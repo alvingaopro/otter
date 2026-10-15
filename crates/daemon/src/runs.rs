@@ -498,8 +498,8 @@ impl Daemon {
                         .await;
                 }
                 ActorEvent::Ask { interaction, ask } => {
-                    let verdict = self
-                        .reads_only(conversation.as_ref(), None)
+                    let verdict = (self.reads_only(conversation.as_ref(), None)
+                        || self.answer_only(&feature).await)
                         .then(|| policy::read_only(&ask.call))
                         .flatten()
                         .unwrap_or_else(|| policy::classify(&ask.call, &root));
@@ -533,8 +533,8 @@ impl Daemon {
                     call,
                     ..
                 } => {
-                    let verdict = self
-                        .reads_only(conversation.as_ref(), None)
+                    let verdict = (self.reads_only(conversation.as_ref(), None)
+                        || self.answer_only(&feature).await)
                         .then(|| policy::read_only(&call))
                         .flatten()
                         .unwrap_or_else(|| policy::classify(&call, &root));
@@ -1180,6 +1180,15 @@ impl Daemon {
             }
         }
         queued_in
+    }
+
+    /// Whether the feature only wants an answer (D-092): all its turns read.
+    async fn answer_only(&self, feature: &FeatureId) -> bool {
+        self.features
+            .lock()
+            .await
+            .get(feature.as_str())
+            .is_some_and(|f| f.answer_only)
     }
 
     /// Whether the run's turn in progress (or `turn`) is a question's.

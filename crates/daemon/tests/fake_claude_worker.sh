@@ -14,7 +14,9 @@
 # A coding turn that is a question ("a question." in it, D-089 M2.5) tries
 # to write a file and to run a command, then answers, saying what Otter's
 # policy said to each. Modes for the work turn: slow (finishes after 2 s),
-# hang (never finishes).
+# hang (never finishes). A planning turn ("plan the work") tries to write a
+# file, then answers in prose (NOPLAN) or proposes a two-step plan as JSON,
+# saying what Otter's policy said to the write.
 mode="${FAKE_WORKER_MODE:-ok}"
 out() { printf '%s\n' "$1"; }
 profiles='"profiles":["coding","otter"],'
@@ -30,8 +32,25 @@ status=
 turn=
 question=
 q1=
+planning=
+noplan=
 while IFS= read -r line; do
   [ -n "$FAKE_WORKER_LOG" ] && printf '%s\n' "$line" >> "$FAKE_WORKER_LOG"
+  if [ -n "$planning" ]; then
+    case "$line" in
+      *'"type":"policy_reply"'*)
+        d=$(printf '%s' "$line" | grep -o '"decision":"[a-z]*"' | sed 's/.*:"//; s/"//')
+        if [ -n "$noplan" ]; then
+          out '{"type":"turn_finished","turn_id":"'"$turn"'","outcome":"completed","summary":"The export lives in export.sh:3. (Write: '"$d"'.)","error":null,"session_cost_usd":0.01}'
+        else
+          out '{"type":"turn_finished","turn_id":"'"$turn"'","outcome":"completed","summary":"(Write: '"$d"'.)\n```json\n{\"summary\": \"Add an exporter, then cover it\", \"tasks\": [{\"title\": \"Write the exporter\", \"detail\": \"in export.sh\"}, {\"title\": \"Cover it with a test\", \"detail\": \"in the Makefile\"}], \"criteria\": [{\"text\": \"Rows export as CSV with a header\", \"how\": \"diff\"}, {\"text\": \"make test passes\", \"how\": \"check\"}], \"check\": \"make test\"}\n```","error":null,"session_cost_usd":0.01}'
+        fi
+        planning=
+        noplan=
+        continue
+        ;;
+    esac
+  fi
   if [ -n "$question" ]; then
     case "$line" in
       *'"type":"policy_reply"'*)
@@ -78,6 +97,12 @@ while IFS= read -r line; do
       out '{"type":"session","session_id":"s-1","model":"fake","claude_code_version":"0","auth_source":"none"}'
       out '{"type":"delivered","turn_id":"'"$turn"'"}'
       case "$line" in
+        *'plan the work'*)
+          planning=1
+          case "$line" in *NOPLAN*) noplan=1 ;; esac
+          out '{"type":"policy_check","check_id":"chk-p1","tool":"Write","input":{"file_path":"export.sh","content":"x"},"tool_use_id":"tu_p1"}'
+          continue
+          ;;
         *'a question.'*)
           question=1
           out '{"type":"policy_check","check_id":"chk-q1","tool":"Write","input":{"file_path":"src/a.rs","content":"x"},"tool_use_id":"tu_q1"}'

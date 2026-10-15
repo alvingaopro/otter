@@ -206,6 +206,17 @@ pub fn tools() -> Vec<ToolSpec> {
             none(),
         ),
         t(
+            "set_answer_only",
+            DeveloperWord,
+            "Only an answer is wanted (on), or changes are fine again (off): the developer said so. On, the coding agent only reads, and a plan to change things comes to the developer first.",
+            json!({
+                "type": "object",
+                "properties": {"on": {"type": "boolean"}},
+                "required": ["on"],
+                "additionalProperties": false
+            }),
+        ),
+        t(
             "accept_task",
             DeveloperWord,
             "Accept the task in review; its gates still apply.",
@@ -611,6 +622,61 @@ impl Gateway {
         Ok(json!({"done": "asked", "turns": asked, "status": f.status.as_str()}))
     }
 
+    /// Answer-only on or off, on the developer's word (D-092). On needs the
+    /// SDK runtime, where the agent can be kept to reading.
+    async fn set_answer_only(&self, f: &Feature, args: &Value) -> Result<Value, ToolError> {
+        let Some(on) = args.get("on").and_then(Value::as_bool) else {
+            return Err(fail("invalid", "on is true or false"));
+        };
+        let d = &self.inner.daemon;
+        if on {
+            d.can_answer_only().map_err(|e| {
+                fail("not_allowed_in_this_turn", e.message)
+                    .next("in Settings, run the coding agent through the Claude Agent SDK worker")
+            })?;
+        }
+        let origin = &self.inner.origin;
+        let command = origin.command("set_answer_only");
+        self.record(
+            FeatureEvent::ToolCalled {
+                tool: "set_answer_only".into(),
+                origin: origin.name().into(),
+                authority: origin.authority().map(|m| m.id.to_string()),
+            },
+            Some(&command),
+        )
+        .await;
+        let applied = d
+            .features
+            .lock()
+            .await
+            .apply(&f.id, Some(&command), |f, _| {
+                f.answer_only = on;
+                f.rationale.push(if on {
+                    "You said only an answer is wanted: the coding agent only reads.".into()
+                } else {
+                    "You said changes are fine: the task is no longer answer-only.".into()
+                });
+                Ok(vec![
+                    Change::new(FeatureEvent::ToolDone {
+                        tool: "set_answer_only".into(),
+                        error: None,
+                    })
+                    .because(&command),
+                ])
+            })?;
+        d.feature_changed(&applied);
+        let did = if on { "answer only" } else { "changes allowed" };
+        if !applied.duplicate {
+            self.inner
+                .done
+                .lock()
+                .unwrap()
+                .push(format!("set_answer_only: {did}"));
+        }
+        Ok(json!({"done": did, "status": applied.feature.status.as_str()}))
+    }
+
     async fn write(&self, name: &str, args: &Value) -> Result<Value, ToolError> {
         let refused = |e: ToolError| async move {
             self.record_done(name, Some(e.code)).await;
@@ -622,6 +688,12 @@ impl Gateway {
         }
         if name == "ask_agent" {
             return match self.ask(&f, args).await {
+                Err(e) => refused(e).await,
+                ok => ok,
+            };
+        }
+        if name == "set_answer_only" {
+            return match self.set_answer_only(&f, args).await {
                 Err(e) => refused(e).await,
                 ok => ok,
             };
@@ -812,6 +884,7 @@ mod tests {
             "retry_task",
             "approve_plan",
             "revise_task",
+            "set_answer_only",
             "accept_task",
         ] {
             assert_eq!(class(n), Class::DeveloperWord, "{n}");

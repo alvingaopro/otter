@@ -2832,3 +2832,25 @@ a feature was answered by the brain, which can't see the code.
   happens when the agent's look at the code returns a plan anyway (answered,
   refused, or asked). The dogfooding transcripts (V2-0c) are the evidence
   for both.
+
+## D-092 — Answer-only tasks (2026-10-15)
+
+Plan `brain-runtime-v2` §7.3. The developer asked for every milestone
+before the dogfooding (V2-0c) was in: the two open points D-091 left are
+decided here by default, to revisit with the transcripts.
+
+- **Set when the task is made** — `answer_only` in `feature.create`,
+  `otter feature new --answer-only`, *Only an answer* in the app's New task
+  — **or by Otter on the developer's word** (`set_answer_only`, on or off:
+  "don't change anything"). The app shows *Answer only* on such a task.
+- **Every turn of the task's coding agent only reads**, by the rule of a
+  question's turn (D-091, `policy::read_only`) — its look at the code too.
+- **Only on the SDK runtime.** Elsewhere `feature.create` and the tool
+  refuse: never an answer-only task that can't be kept to reading.
+- **A plan under it comes to the developer**, as the plan question D-084
+  already asks (`PlanApproval`, the developer's only — "go on" in chat
+  approves it, as for any plan): approved, the task stops being answer-only
+  and the plan is set; turned down, the plan, written out, is the answer
+  and the task is done ("Not carried out: this task only answers"). The
+  brain doesn't review such a plan: nothing is built unless it's allowed.
+- `answer_only` is a new field with a default: no schema bump (D-061).

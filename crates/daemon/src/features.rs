@@ -742,12 +742,16 @@ impl Daemon {
             ),
             None => None,
         };
+        if p.answer_only {
+            self.can_answer_only()?;
+        }
         let mut features = self.features.lock().await;
         if let Some(f) = features.applied(&p.command_id) {
             return Ok(f.clone());
         }
         let mut f = Feature::new(title.clone(), p.request.trim().to_owned(), Utc::now());
         f.workspace_id = workspace_id;
+        f.answer_only = p.answer_only;
         let mut changes =
             vec![Change::new(FeatureEvent::FeatureCreated { title }).because(&p.command_id)];
         if !f.request.is_empty() {
@@ -765,6 +769,20 @@ impl Daemon {
         drop(features);
         self.feature_changed(&applied);
         Ok(applied.feature)
+    }
+
+    /// Whether a task here can be answer-only (D-092): its coding agent
+    /// must run on the SDK runtime, where every tool call reaches Otter's
+    /// policy. Never an answer-only task that can't be kept to reading.
+    pub(crate) fn can_answer_only(&self) -> RpcResult<()> {
+        let backend = self.settings.read().unwrap().coding_backend();
+        if backend == "sdk" {
+            Ok(())
+        } else {
+            Err(RpcError::invalid(
+                "an answer-only task needs the coding agent on the SDK runtime (Settings), where Otter can keep it to reading",
+            ))
+        }
     }
 
     pub(crate) async fn feature_send(&self, p: FeatureSend) -> RpcResult<Feature> {

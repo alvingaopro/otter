@@ -28,6 +28,10 @@ pub struct FeatureCreate {
     /// (`feature.act` `set_workspace`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workspace: Option<String>,
+    /// Only an answer is wanted: the coding agent only reads (D-092). Needs
+    /// the coding agent on the SDK runtime.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub answer_only: bool,
 }
 
 /// A message from the developer to the feature's Control Agent.

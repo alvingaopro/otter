@@ -149,8 +149,8 @@ export function FeaturesView({ source, hosts, workspaces, now, focus, onOpenWork
           hosts={hosts.length > 0 ? hosts : ["preview"]}
           workspaces={workspaces}
           onClose={() => setCreating(false)}
-          onCreate={async (host, title, request, workspace) => {
-            const p = await source.create(host, title, request, workspace);
+          onCreate={async (host, title, request, workspace, answerOnly) => {
+            const p = await source.create(host, title, request, workspace, answerOnly);
             setFilter("all");
             setSelected(p.key);
             setCreating(false);
@@ -242,6 +242,11 @@ function FeaturePane({
         <span className={`status-pill ${featureGlyph(f)}`}>{STATUS_LABEL[f.status]}</span>
         {statusDetail(f) && <span className="status-detail">{statusDetail(f)}</span>}
         <span className="chips">
+          {f.answer_only && (
+            <span className="chip" title="The coding agent only reads; a plan to change things comes to you first">
+              Answer only
+            </span>
+          )}
           <span className="chip">{placed.host}</span>
           {f.workspace_id && (
             <button className="chip link-btn" onClick={() => onOpenWorkspace(placed.host, f.workspace_id!)}>
@@ -1026,12 +1031,13 @@ function NewFeatureDialog({
 }: {
   hosts: string[];
   workspaces: Record<string, WorkspaceChoice[]>;
-  onCreate: (host: string, title: string, request: string, workspace?: string) => Promise<void>;
+  onCreate: (host: string, title: string, request: string, workspace?: string, answerOnly?: boolean) => Promise<void>;
   onClose: () => void;
 }) {
   const [host, setHost] = useState(hosts[0]);
   const choices = workspaces[host] ?? [];
   const [workspace, setWorkspace] = useState<string>("");
+  const [answerOnly, setAnswerOnly] = useState(false);
   const [title, setTitle] = useState("");
   const [request, setRequest] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -1043,7 +1049,7 @@ function NewFeatureDialog({
     setBusy(true);
     setError(null);
     try {
-      await onCreate(host, title.trim(), request.trim(), workspace || undefined);
+      await onCreate(host, title.trim(), request.trim(), workspace || undefined, answerOnly);
     } catch (err) {
       setError(String(err));
       setBusy(false);
@@ -1087,6 +1093,15 @@ function NewFeatureDialog({
               </option>
             ))}
           </select>
+        </label>
+        <label className="check">
+          <input
+            type="checkbox"
+            aria-label="Only an answer"
+            checked={answerOnly}
+            onChange={(e) => setAnswerOnly(e.target.checked)}
+          />
+          Only an answer — the coding agent reads, changes nothing
         </label>
         {error && <p className="error-text small">{error}</p>}
         <div className="form-actions">

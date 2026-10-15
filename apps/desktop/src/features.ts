@@ -137,6 +137,8 @@ export interface Feature {
   title: string;
   /** What the developer asked for, as written. */
   request: string;
+  /** Only an answer is wanted: the coding agent only reads (D-092). */
+  answer_only?: boolean;
   status: FeatureStatus;
   status_reason?: string;
   requirements: string[];

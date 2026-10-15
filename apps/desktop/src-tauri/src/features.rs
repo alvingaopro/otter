@@ -51,6 +51,7 @@ pub async fn feature_create(
     title: String,
     request: String,
     workspace: Option<String>,
+    answer_only: Option<bool>,
 ) -> Result<FeatureView, String> {
     rpc(&app, &host)
         .await?
@@ -59,6 +60,7 @@ pub async fn feature_create(
             title,
             request,
             workspace,
+            answer_only: answer_only.unwrap_or(false),
         })
         .await
         .map(FeatureView::from)
