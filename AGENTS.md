@@ -16,7 +16,7 @@ must keep, with the tests that guard them.
 | attention, the `otter ls` view                       | design §21, §26 · decisions D-014, D-099                                   |
 | the desktop app                                        | `apps/desktop/README.md` · decisions D-018, D-085 · invariants 11, 12       |
 | the wire protocol, events or client                    | [`docs/protocol.md`](docs/protocol.md) · decisions D-004, D-016 · invariant 12 |
-| features, the controller, delivery                     | [`docs/feature-states.md`](docs/feature-states.md) · decisions D-045, D-047, D-062–D-068 |
+| tasks, the controller, delivery                     | [`docs/task-states.md`](docs/task-states.md) · decisions D-045, D-047, D-062–D-068 |
 | Otter's conversation, the brain's tools                | [`docs/plans/brain-runtime-v2.md`](docs/plans/brain-runtime-v2.md) · decisions D-084, D-089–D-096 |
 | transport, daemon lifecycle, persistence               | decisions D-003, D-005, D-008 · invariants 4, 8, 11, 12                    |
 | the architecture itself                                | [`docs/design.md`](docs/design.md), [`docs/decisions.md`](docs/decisions.md), [`docs/architecture-lessons.md`](docs/architecture-lessons.md) |
@@ -44,23 +44,23 @@ Inside the daemon (`crates/daemon/src`):
 - `sessions.rs` — sessions/executions, launching
 - `reconcile.rs` — process exits + agent observation, every 500 ms
 - `attention.rs` — what needs the developer (raise/resolve rules)
-- `features.rs` — features (D-043): their own store under `state/features/`,
-  idempotent commands, per-feature history
+- `tasks.rs` — tasks (D-043): their own store under `state/tasks/`,
+  idempotent commands, per-task history
 - `controller.rs` + `brain.rs` — the Control Agent (D-045): the deterministic
-  engine that steps features, and the model calls it makes (`OTTER_CONTROLLER`);
+  engine that steps tasks, and the model calls it makes (`OTTER_CONTROLLER`);
   `work_state.rs` reads the work's diff, status and fingerprint for
   verification (D-062)
 - `turn.rs` + `gateway.rs` — Otter's tool-using turn (D-089; on by
   default, the host setting *Otter's tools* turns it off, D-096): the bounded turn that
   answers the developer, and the
   tools it may call — checked by what started the turn, applied once, written
-  to the feature's history; `agents/claude_otter.rs` runs Claude's turn
+  to the task's history; `agents/claude_otter.rs` runs Claude's turn
   through the worker's `otter` profile (no Claude Code tools, only Otter's);
   `chat.rs` is Otter's conversation on the host (D-093), with the host's
   tools, `otter chat` in the CLI
 - `runs.rs` + `runtime/` — managed agent runs (D-044): the runtime contract,
   the approval `policy`, the conversation `actor` and registry (D-055/D-056),
-  and the bridge from a run to its feature; `agents/claude_stream.rs` is
+  and the bridge from a run to its task; `agents/claude_stream.rs` is
   Claude Code's stream-json mode (`legacy_cli`), `agents/claude_sdk.rs` the
   Claude Agent SDK worker's protocol (`sdk`, D-057)
 - `agents/` — agent providers behind `AgentProvider` (`detect`, `launch_argv`, `observe`);

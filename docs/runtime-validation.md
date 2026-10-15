@@ -41,11 +41,11 @@ keys or transcripts are kept here. "Pending" means not yet run, not failed.
 
 | # | Scenario | Status | Evidence |
 |---|---|---|---|
-| 1 | Non-Git coding task | Partial | `live_sdk_restart`: a disposable directory workspace; Claude ran a command and wrote the file it was asked for, and the feature reached review. Not yet tried: planning by a model and real tests. |
+| 1 | Non-Git coding task | Partial | `live_sdk_restart`: a disposable directory workspace; Claude ran a command and wrote the file it was asked for, and the task reached review. Not yet tried: planning by a model and real tests. |
 | 2 | Existing directory with `.envrc`/flake | Pending | — |
 | 3 | Native context across runs | Passed | Probes on both hosts: a new run resumed the native session by id and recalled a fact. `live_sdk_restart` and `live_sdk_controls`: generation 2 continued the same native session. |
-| 4 | Real interaction (permission, deny, form) | Passed at worker level | Probes: policy "ask" reached a permission request; a denied command didn't run; a two-question form was answered per question. Not yet tried: the same through the desktop app on a real feature. |
-| 5 | Mid-run guidance | Partial | `live_sdk_controls`: a redirect mid-tool ran next in the same run, once, and the feature reached review. Not yet tried: queue one message *then* redirect, checking order. |
+| 4 | Real interaction (permission, deny, form) | Passed at worker level | Probes: policy "ask" reached a permission request; a denied command didn't run; a two-question form was answered per question. Not yet tried: the same through the desktop app on a real task. |
+| 5 | Mid-run guidance | Partial | `live_sdk_controls`: a redirect mid-tool ran next in the same run, once, and the task reached review. Not yet tried: queue one message *then* redirect, checking order. |
 | 6 | Connectivity (app/SSH drop, reconnect) | Pending | Reconnect is covered offline (CLI and daemon e2e); not with real Claude over SSH. |
 | 7 | Daemon crash mid-turn | Partial | `live_sdk_restart`: otterd **stopped** (graceful shutdown) mid-tool. The turn became `outcome_unknown`, its input `delivered`, and the next run resumed it as generation 2. Not yet tried: `SIGKILL` of otterd with real Claude (the leftover process-group cleanup is tested offline only). |
 | 8 | Missing binding / auth / runtime | Partial | Missing worker, old Node and a worker that can't be checked are reported (`runtime status`; unit tests). Not yet tried: a missing sign-in or transcript with real Claude. |
@@ -62,7 +62,7 @@ The table of states and crashes is `runtime-states.md`.
 | Scenario | Offline | Live Claude |
 |---|---|---|
 | Kill the agent's process mid-tool: the recovered state doesn't claim success or repeat the tool call | Passed — `a_run_lost_mid_tool_resumes_without_claiming_the_step`: the turn is `outcome_unknown` (`worker_crashed`), the tool `result_unavailable`, the run `interrupted`; the next run resumed the same native session (no fresh start, no attempt spent) and was told to check before repeating. `a_run_lost_before_its_conversation_was_kept_starts_over_only_when_allowed`: with nothing to resume, nothing restarted until the developer approved. | Pending |
-| Kill otterd before/after an approval decision is persisted: neither lost nor applied twice | Passed — decisions are applied by `feature.act` with a `command_id` (a retry returns the result, `a_run_that_keeps_getting_lost_waits_for_the_developer` repeats one); a decision of a run that died with otterd is cancelled, not carried over (`recover_runs`); a `recovery` decision survives a restart and nobody decides it for the developer (same test). Not run: `SIGKILL` between the feature store's write and its rename. | Pending |
+| Kill otterd before/after an approval decision is persisted: neither lost nor applied twice | Passed — decisions are applied by `task.act` with a `command_id` (a retry returns the result, `a_run_that_keeps_getting_lost_waits_for_the_developer` repeats one); a decision of a run that died with otterd is cancelled, not carried over (`recover_runs`); a `recovery` decision survives a restart and nobody decides it for the developer (same test). Not run: `SIGKILL` between the task store's write and its rename. | Pending |
 | Disconnect SSH/desktop during a run: the run continues; reconnecting shows ordered history | Passed — `client_disconnect_does_not_affect_session`, `event_replay_resumes_after_disconnect_and_daemon_restart`, conversation history paging (D-058), CLI `events_follow_resyncs_when_the_hosts_log_starts_over`. | Pending (plan M6 #6) |
 | Resume after a restart: conversation identity and cursor stay stable | Passed — `runs_survive_a_restart_and_follow_a_changing_goal` (same conversation, generation 2, same native session, run `interrupted`), `changes_are_journaled_and_replayed_after_a_crash`. Live: `live_sdk_restart` (graceful stop, 2026-10-10). | Partial (no `SIGKILL` yet) |
 
@@ -71,41 +71,41 @@ Release gate for this change: `cargo fmt --all -- --check`, `cargo clippy
 2026-10-14 after rebasing onto M2–M6); the desktop app's sources typecheck
 (only type changes there).
 
-## The feature-to-PR workflow (plan M2)
+## The task-to-PR workflow (plan M2)
 
 What M2's steps need a live Claude run to show; the offline e2e tests (fake
 agent) cover the mechanics. Re-run with the audit's harness:
 `docs/audits/autonomy/scripts/bench.sh` (Modes B and C on t1/t2) and
-`feature_metrics.py` on real features.
+`task_metrics.py` on real tasks.
 
 | # | Scenario | Status | Evidence |
 |---|---|---|---|
 | M2-1 | Benchmark t1/t2, Mode C: reach Review with the independent check passing | Pending | Offline: `verification_stops_when_a_fix_changes_nothing`, `a_check_that_cant_run_blocks_on_the_developer_once` (D-062). |
-| M2-2 | One session per feature (t1/t2 Mode C: 1 session each; real features ≤ 2) | Pending | Offline: a fix resumes the session (`--resume`), the planning turn and tasks share it (D-064). |
+| M2-2 | One session per task (t1/t2 Mode C: 1 session each; real tasks ≤ 2) | Pending | Offline: a fix resumes the session (`--resume`), the planning turn and steps share it (D-064). |
 | M2-3 | An approval answered after the run's limit: the approved command completes | Pending | Offline: `waiting_on_an_approval_doesnt_use_up_the_runs_time` (audit E1, D-063). |
-| M2-4 | The planning turn with a real model: a JSON proposal, reviewed by the brain | Pending | Offline: `the_coding_agent_plans_first_in_the_features_conversation`, `a_plan_the_brain_faults_goes_back_once_then_to_the_developer` (D-064, D-084). |
-| M2-8 | A question with real Claude ("how does X work?" on a real repository): the agent's answer with `path:line`, the feature done with no tasks; then "then change it": a plan in the same session | Pending | Offline: `a_question_is_answered_and_a_change_after_it_is_planned`, `a_failed_look_at_the_code_stops_planning` (D-084). |
+| M2-4 | The planning turn with a real model: a JSON proposal, reviewed by the brain | Pending | Offline: `the_coding_agent_plans_first_in_the_tasks_conversation`, `a_plan_the_brain_faults_goes_back_once_then_to_the_developer` (D-064, D-084). |
+| M2-8 | A question with real Claude ("how does X work?" on a real repository): the agent's answer with `path:line`, the task done with no steps; then "then change it": a plan in the same session | Pending | Offline: `a_question_is_answered_and_a_change_after_it_is_planned`, `a_failed_look_at_the_code_stops_planning` (D-084). |
 | M2-5 | A run that starts `sleep 20 && echo done` in the background and says it will wait ends only after `done` (both backends) | Pending | Offline: `a_run_waits_for_the_agents_background_work` (stream-json shapes), actor unit tests, worker mapping tests (D-065). |
-| M2-6 | The golden path with real Claude and real GitHub: a feature from `otter feature new` to an accepted pull request in a disposable repository | Pending | Offline: `a_feature_goes_from_the_terminal_to_an_accepted_pull_request` (CLI e2e: a fake agent, a real Git remote, a fake `gh`) (D-068). Publishing to GitHub needs an authorized disposable repository. |
+| M2-6 | The golden path with real Claude and real GitHub: a task from `otter task new` to an accepted pull request in a disposable repository | Pending | Offline: `a_task_goes_from_the_terminal_to_an_accepted_pull_request` (CLI e2e: a fake agent, a real Git remote, a fake `gh`) (D-068). Publishing to GitHub needs an authorized disposable repository. |
 | M2-7 | Dogfooding with deliberate failures: a failing test, failing CI (then the same failure again), otterd stopped at each checkpoint, a cancel midway | Pending | Offline: `the_same_ci_failure_after_a_fix_goes_to_the_developer`, `delivery_resumes_at_each_checkpoint_without_repeating_itself`, `an_open_pull_request_is_adopted_and_cancelling_keeps_the_work`, `runs_survive_a_restart_and_follow_a_changing_goal`, `a_check_that_cant_run_blocks_on_the_developer_once` (D-062, D-068). |
 
 ## The agent manager (plan M3)
 
 | # | Scenario | Status | Evidence |
 |---|---|---|---|
-| M3-1 | Several features and workspaces at once on two hosts, handled from the Inbox: decisions answered there, a review accepted, a stopped feature retried, notifications once per need | Pending | Offline: `inbox.test.ts`, `Inbox.test.tsx` (a decision answered and a retry from the list), `what_a_feature_needs_is_one_rule` (core), `features_that_need_you_are_listed` (`otter ls`) (D-071…D-073). |
+| M3-1 | Several tasks and workspaces at once on two hosts, handled from the Inbox: decisions answered there, a review accepted, a stopped task retried, notifications once per need | Pending | Offline: `inbox.test.ts`, `Inbox.test.tsx` (a decision answered and a retry from the list), `what_a_task_needs_is_one_rule` (core), `tasks_that_need_you_are_listed` (`otter ls`) (D-071…D-073). |
 
 ## Diagnostics (plan M4)
 
 | # | Scenario | Status | Evidence |
 |---|---|---|---|
-| M4-1 | Real failures diagnosed without a terminal and without a secret: Claude Code signed out (auth), a rate limit, a crashing agent, a direnv error printing a token from `.envrc`, a task failing with a reason; `otter doctor` on a host missing tmux | Pending | Offline: `credentials_in_failures_stay_out_of_what_otter_keeps`, `a_failed_process_says_why_without_its_terminal`, `a_host_says_whats_wrong_with_it`, `doctor_says_whats_wrong_and_what_to_do`, the `redact` unit tests (D-075…D-077). |
+| M4-1 | Real failures diagnosed without a terminal and without a secret: Claude Code signed out (auth), a rate limit, a crashing agent, a direnv error printing a token from `.envrc`, a command failing with a reason; `otter doctor` on a host missing tmux | Pending | Offline: `credentials_in_failures_stay_out_of_what_otter_keeps`, `a_failed_process_says_why_without_its_terminal`, `a_host_says_whats_wrong_with_it`, `doctor_says_whats_wrong_and_what_to_do`, the `redact` unit tests (D-075…D-077). |
 
 ## Parallel agents (plan M5)
 
 | # | Scenario | Status | Evidence |
 |---|---|---|---|
-| M5-1 | Three features on one real repository with live Claude: two in parallel worktrees, one waiting for the busy workspace and going on by itself; all paused at once and resumed; each PR with only its own work | Pending | Offline: `a_second_feature_waits_for_the_workspace`, `a_waiting_feature_gets_a_worktree_of_its_own`, `pause --all` in the CLI e2e, `Inbox.test.tsx` (D-079…D-081). |
+| M5-1 | Three tasks on one real repository with live Claude: two in parallel worktrees, one waiting for the busy workspace and going on by itself; all paused at once and resumed; each PR with only its own work | Pending | Offline: `a_second_task_waits_for_the_workspace`, `a_waiting_task_gets_a_worktree_of_its_own`, `pause --all` in the CLI e2e, `Inbox.test.tsx` (D-079…D-081). |
 
 ## Unattended work (plan M6)
 

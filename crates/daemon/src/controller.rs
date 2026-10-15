@@ -3309,7 +3309,7 @@ mod tests {
     }
 
     #[test]
-    fn a_task_prompt_carries_the_plan_and_what_went_wrong() {
+    fn a_step_prompt_carries_the_plan_and_what_went_wrong() {
         let mut f = Task::new("CSV".into(), "Export it".into(), Utc::now());
         f.verify_command = Some("make test".into());
         f.acceptance.push(Criterion {

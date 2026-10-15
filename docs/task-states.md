@@ -1,10 +1,10 @@
-# Feature states, transitions and checkpoints
+# Task states, transitions and checkpoints
 
-How a feature goes from a request to an accepted pull request (M2,
+How a task goes from a request to an accepted pull request (M2,
 D-068), who moves it, and what is kept at each step so that otterd can stop
 anywhere and pick up without doing anything twice. Code:
-`crates/core/src/feature.rs` (`FeatureStatus::can_become`),
-`crates/daemon/src/controller.rs` (the engine), `features.rs` (the
+`crates/core/src/task.rs` (`TaskStatus::can_become`),
+`crates/daemon/src/controller.rs` (the engine), `tasks.rs` (the
 developer's actions), `runs.rs` (runs), `delivery.rs` (publishing).
 
 ## States
@@ -13,7 +13,7 @@ developer's actions), `runs.rs` (runs), `delivery.rs` (publishing).
 |---|---|---|
 | `draft` | Written down, not started. | — |
 | `planning` | Finding the goal (D-067), the coding agent's look at the code — an answer or a plan (D-064, D-084) — the plan's review. | engine |
-| `implementing` | The next task is a turn in the feature's conversation (D-064). | engine |
+| `implementing` | The next step is a turn in the task's conversation (D-064). | engine |
 | `verifying` | The check runs, the work's state is read, criteria are judged (D-062). | engine |
 | `review` | Verified (or stopped on evidence): publishing, CI, gates, the report (D-047). | engine, then the developer |
 | `done` | Accepted; or a question, answered (D-084). Not final: a new ask plans again (D-050). | developer, engine |
@@ -28,22 +28,22 @@ Active (`planning`, `implementing`, `verifying`) is what the engine steps;
 ## Transitions and their owners
 
 The engine is deterministic code. A model (the brain) never moves a
-feature: its plans, verdicts and judgments are *inputs* the engine checks
+task: its plans, verdicts and judgments are *inputs* the engine checks
 and acts on — and policy decides what a model may decide at all (D-044,
 D-066).
 
 | From → to | Owner | When |
 |---|---|---|
 | draft → planning | developer | Start. |
-| planning → blocked | engine | No workspace; or no request and no message (asks "What should this feature do?", D-067); or the agent's plan, sent back once, still has problems (asks "Go ahead with the coding agent's plan?", D-084). |
+| planning → blocked | engine | No workspace; or no request and no message (asks "What should this task do?", D-067); or the agent's plan, sent back once, still has problems (asks "Go ahead with the coding agent's plan?", D-084). |
 | planning → implementing | engine | The plan is set — the agent's proposal, reviewed by the brain (D-064, D-084). |
 | planning → done | engine | The look at the code came back with no plan: the request was a question, and the agent's words are the answer (D-084). |
 | planning → failed | engine | The look at the code failed or said nothing: no plan is guessed (D-084). |
-| implementing → verifying | engine | Every task done or skipped. |
-| verifying → implementing | engine | Something unmet, and the work changed since the last verdict: a fix task (D-062). |
+| implementing → verifying | engine | Every step done or skipped. |
+| verifying → implementing | engine | Something unmet, and the work changed since the last verdict: a fix step (D-062). |
 | verifying → review | engine | All criteria met; or unmet with nothing changed after a fix (unverified, D-062). |
 | verifying → blocked | engine | The check can't run here (D-062). |
-| review → implementing | engine | CI failed on the code: a fix task, unless it failed the same way after a fix (D-068). |
+| review → implementing | engine | CI failed on the code: a fix step, unless it failed the same way after a fix (D-068). |
 | review → done | developer | Accept (every gate passed, or `--anyway`, on record). |
 | done → planning | developer | A new ask (any message asking for work, D-084): the agent looks again. |
 | any active → blocked | engine | A decision only the developer may make (policy `user_only`). |
@@ -57,15 +57,15 @@ D-066).
 
 ## Checkpoints
 
-The feature document (`state/features/<id>/feature.json`, written whole and
-fsynced, with a per-feature history) is the checkpoint; the conversation's
+The task document (`state/tasks/<id>/task.json`, written whole and
+fsynced, with a per-task history) is the checkpoint; the conversation's
 journal is the agent's. A restarted otterd reads them and goes on.
 
 | Step | What is kept | On resume |
 |---|---|---|
-| Goal | `request`, or the answered "What should this feature do?" decision | Plans from it; asks again only if nothing was said. |
-| Planning turn | the planning task's run, its report (a proposal or an answer); a plan sent back carries the review's points (`Task.detail`); a plan approval names the planning task | Continues the turn if cut off; else reviews the proposal (or reads the developer's word on it), or posts the answer. |
-| Plan | `requirements`, `acceptance` (typed), `tasks`, `verify_command` (+ its decision) | Carries on with the next task. |
+| Goal | `request`, or the answered "What should this task do?" decision | Plans from it; asks again only if nothing was said. |
+| Planning turn | the planning step's run, its report (a proposal or an answer); a plan sent back carries the review's points (`Step.detail`); a plan approval names the planning task | Continues the turn if cut off; else reviews the proposal (or reads the developer's word on it), or posts the answer. |
+| Plan | `requirements`, `acceptance` (typed), `steps`, `verify_command` (+ its decision) | Carries on with the next step. |
 | Each turn | a `Run`: state, `provider_session_id`, `worked_ms`, summary; the turn in the journal | A cut-off turn continues the same session with a notice (D-063); a finished one isn't repeated (recovered from the journal). |
 | Check | `Test` evidence: command, exit, output tail | Re-run on the next verification (cheap, local). |
 | Work state | `Working tree` evidence, `last_verification` (fingerprint + unmet) | The loop stop compares against it. |
@@ -86,24 +86,24 @@ At any checkpoint, deterministically:
 - **Pause** — the current turn is interrupted, the run ends, the
   conversation is held; resume continues it with a notice.
 - **Resume** — back to the state it was paused in.
-- **Interrupt** — the current turn stops; the feature goes on.
+- **Interrupt** — the current turn stops; the task goes on.
 - **Redirect** — the current turn stops and the developer's message goes
   next, in the same run (D-059).
 - **Message** — guidance queued for the agent's next turn, once.
 - **Cancel** — runs end and the conversation closes; the workspace, its
   files, the branch and an open pull request stay, and the message says so
   (D-068).
-- **Decide** — answer what the feature waits on; an approval of an ask
-  raised only for where it reaches is remembered for the feature (D-066).
+- **Decide** — answer what the task waits on; an approval of an ask
+  raised only for where it reaches is remembered for the task (D-066).
 
 ## Budgets and stops
 
 Deterministic, whatever a model thinks:
 
 - Time: the agent's working time per run (`OTTER_RUN_TIMEOUT_MS`, 30 min)
-  and per feature (`max_minutes`), waits excluded; out of time is cut off
+  and per task (`max_minutes`), waits excluded; out of time is cut off
   and resumed, not failed (D-063). Silent too long: the same (watchdog).
-- Attempts: new work costs one (`max_iterations`, 6); three per task.
+- Attempts: new work costs one (`max_iterations`, 6); three per step.
 - Loops: the same failed run three times; the same work and verdict after
   a fix (→ review); the same CI failure after a fix (→ the developer).
 - CI that looks like the infrastructure's fault: rerun at most twice per

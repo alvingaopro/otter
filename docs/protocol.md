@@ -1,9 +1,9 @@
-# Otter protocol (v2)
+# Otter protocol (v3)
 
 The contract between `otterd` and its clients (the `otter` CLI and the
 desktop app). Types live in `crates/protocol`; this document is the prose. Decisions:
 D-004 (shape), D-016 (cursors, snapshot, compatibility), D-037 (bounded
-log, log id).
+log, log id), D-107 (v3: features are tasks).
 
 ## Connection
 
@@ -247,18 +247,18 @@ An addition (no protocol bump): daemons before it answer `invalid_request`.
 
 ## Runtime conversations
 
-The coding agent's side of a feature's work (D-055): conversations, their
+The coding agent's side of a task's work (D-055): conversations, their
 turns, messages, tool calls and interactions. See
 `otter_core::conversation`.
 
 - `runtime.capabilities` → `{provider, backend, available, notes?,
-  tested_version?, structured_ready, features: {send_turn, resume,
+  tested_version?, structured_ready, tasks: {send_turn, resume,
   interrupt_turn, permission_requests, questions, tool_results, streaming,
   attachments, usage, pause, redirect}}`: what the host's managed runtime
-  can do. Missing features are reported, never simulated. For `sdk`,
+  can do. Missing tasks are reported, never simulated. For `sdk`,
   `available` needs Node, the installed worker and its `--check` (D-060);
   `notes` say which is missing.
-- `conversation.list {feature?}` → conversations, newest first;
+- `conversation.list {task?}` → conversations, newest first;
   `conversation.get {conversation}` → one. Each is the conversation with
   `resumable` in place of the provider's own session id, which stays on
   the host, and `runtime_version?` — what its latest run ran on (D-060).
@@ -270,22 +270,22 @@ turns, messages, tool calls and interactions. See
   another journal fails with `cursor_expired`.
 - A conversation whose journal can't be written or read is `read_only`
   (with why): its recorded history stays readable.
-- Event `ConversationChanged {conversation_id, revision, feature_id?}`
+- Event `ConversationChanged {conversation_id, revision, task_id?}`
   after each change: ids only; read the content with `conversation.get`.
 
 Read-only: coding work is sent by Otter, not by clients. Older daemons
 answer `invalid_request` (or `unsupported`).
 
-## Features
+## Tasks
 
-Product work owned by the daemon (D-043); see `otter_core::feature`.
+Product work owned by the daemon (D-043); see `otter_core::task`.
 
-- `feature.list` → every feature, newest first; `feature.get {feature}` → one.
-- `feature.create {command_id, title, request?, workspace?}` → a `draft`
-  feature; the request becomes the first message.
-- `feature.send {command_id, feature, text}` → the feature, with the
+- `task.list` → every task, newest first; `task.get {task}` → one.
+- `task.create {command_id, title, request?, workspace?}` → a `draft`
+  task; the request becomes the first message.
+- `task.send {command_id, task, text}` → the task, with the
   developer's message added.
-- `feature.act {command_id, feature, action, …}` → the feature. `action`:
+- `task.act {command_id, task, action, …}` → the task. `action`:
   `start`, `pause`, `resume`, `cancel`, `retry`, `accept {override_gates?}`,
   `request_changes {note?}` (the goal changed: plan again from where the
   work stands — any state but cancelled, D-050), `decide {decision_id,
@@ -295,55 +295,55 @@ Product work owned by the daemon (D-043); see `otter_core::feature`.
   turn stops and this goes next; refused when nothing is running). An
   action the lifecycle doesn't allow fails with `conflict`, and so does
   `accept` while a gate (D-047) is open, unless `override_gates`.
-- `feature.delete {feature}` → `null`: removes a feature with its history
-  and artifacts; the workspace it used stays. A feature being worked on
+- `task.delete {task}` → `null`: removes a task with its history
+  and artifacts; the workspace it used stays. A task being worked on
   (planning, implementing, verifying, or with a run going) fails with
-  `conflict`: pause or cancel it first. Emits `FeatureDeleted {feature_id}`.
-- `feature.artifact {feature, name}` → a file the feature's checks produced
+  `conflict`: pause or cancel it first. Emits `TaskDeleted {task_id}`.
+- `task.artifact {task, name}` → a file the task's checks produced
   (a screenshot), named as evidence refers to it (`artifact:<name>`):
   `{data (base64), size, eof: true}`, at most 8 MiB.
-- `feature.events {feature, after?, limit?}` → the feature's own history,
+- `task.events {task, after?, limit?}` → the task's own history,
   `seq > after`, oldest first: `{seq, ts, v, correlation_id?, text, type,
-  …}`. `seq` starts at 1 per feature and never repeats; `v` is the record's
+  …}`. `seq` starts at 1 per task and never repeats; `v` is the record's
   schema version.
 
-**Runs and recovery** (D-061): a feature's `runs[].state` is `starting`,
+**Runs and recovery** (D-061): a task's `runs[].state` is `starting`,
 `running`, `waiting`, or how it ended — `completed`, `failed`, `cancelled`,
 `handed_off`, `interrupted` (ended with its process mid-turn; it resumes),
 `recovery_required` (Otter won't continue it on its own). The latter opens
-a `recovery` decision, `user_only`: `decide {approve: true}` starts the task
-over, `approve: false` pauses the feature. States and the crash matrix:
+a `recovery` decision, `user_only`: `decide {approve: true}` starts the step
+over, `approve: false` pauses the task. States and the crash matrix:
 [`runtime-states.md`](runtime-states.md). Clients treat an unknown run state
 as ended.
 
 **Commands are idempotent.** `command_id` is the client's id for one intent
 (a random string). A command the daemon has applied is not applied again: a
-retry returns the feature as it is. A command that failed was not applied,
+retry returns the task as it is. A command that failed was not applied,
 so its id may be reused.
 
-**Following a feature:** every change emits `FeatureChanged {feature_id,
+**Following a task:** every change emits `TaskChanged {task_id,
 history_seq, status}` on the host's event log, so `events.subscribe` with a
-cursor (above) tells a reconnecting client which features changed while it
-was away; it then reads `feature.events {after: <last seq it saw>}`. The
-history is the feature's own: it isn't rotated with the host's log.
+cursor (above) tells a reconnecting client which tasks changed while it
+was away; it then reads `task.events {after: <last seq it saw>}`. The
+history is the task's own: it isn't rotated with the host's log.
 
-**Text being written** (D-051): `FeatureStream {feature_id, stream_id, role,
+**Text being written** (D-051): `TaskStream {task_id, stream_id, role,
 text, done}` carries a message's text so far while the coding agent or the
 Control Agent writes it, at most every 100 ms. It is **transient**: sent to
 live `events.subscribe` streams only, never logged or replayed, stamped with
 the latest logged `seq` (so it doesn't advance a cursor and may repeat one),
 and outside the `seq` order. A client may drop any of them; with `done` the
 message is complete. The coding agent's text along the way isn't stored in
-the feature: only each turn's result is (D-069); the rest is in its
+the task: only each turn's result is (D-069); the rest is in its
 conversation.
 
-**What the agent did** (D-069): `FeatureActivity {feature_id, run_id, line}`
+**What the agent did** (D-069): `TaskActivity {task_id, run_id, line}`
 — one line per tool the coding agent used (`$ cargo test`, `✎ src/a.rs`).
-Transient in the same way. While a run works, `feature.get`/`feature.list`
+Transient in the same way. While a run works, `task.get`/`task.list`
 show its latest lines in `runs[].activity` (kept in memory, not written to
-the feature for each tool); when the run ends they are stored with it. A
+the task for each tool); when the run ends they are stored with it. A
 client adds each line to the run's `activity` (keeping the last 30) rather
-than reloading the feature.
+than reloading the task.
 
 An addition (no protocol bump): daemons before it answer `invalid_request`.
 
@@ -356,15 +356,15 @@ and pausing them) when *Otter's tools* are on; otherwise Otter says how to
 turn them on.
 
 - `otter.get` → `OtterChat {messages, history_seq}` (the newest 200
-  messages; the same `Message` as a feature's).
+  messages; the same `Message` as a task's).
 - `otter.send {command_id, text}` → the same. The same `command_id` again
   adds nothing. Otter's reply is a `Controller` message whose
   `correlation_id` is the developer's message's id.
-- `otter.events {after?, limit?}` → `FeatureEventRecord[]`: the history of
+- `otter.events {after?, limit?}` → `TaskEventRecord[]`: the history of
   Otter's tool calls there (`ToolCalled`, `ToolDone`).
 - Events: `OtterChanged {history_seq}`; `OtterStream {stream_id, text,
-  done}` — the reply as it is written, transient like `FeatureStream`.
-- A feature made from it is an ordinary feature; its request is the
+  done}` — the reply as it is written, transient like `TaskStream`.
+- A task made from it is an ordinary task; its request is the
   developer's message(s) as written.
 
 An addition (no protocol bump): daemons before it answer `invalid_request`;
@@ -378,16 +378,16 @@ What starts unattended work on a host (D-083), kept in
 - `trigger.create {name, workspace, title?, request, schedule, policy}` →
   the trigger. `schedule` is `{kind: "every", minutes}`, `{kind: "daily",
   at: "HH:MM"}` (UTC) or `{kind: "manual"}`; `policy` is `{publish,
-  max_iterations?, max_minutes?, wait_limit_secs?}` — what its features may
+  max_iterations?, max_minutes?, wait_limit_secs?}` — what its tasks may
   do without asking, set in advance.
 - `trigger.list` → the triggers, each with `next_at` and its `history` (the
-  last occurrences: the feature each started, or why it was skipped).
-- `trigger.delete {trigger}` → `null` (its features stay).
+  last occurrences: the task each started, or why it was skipped).
+- `trigger.delete {trigger}` → `null` (its tasks stay).
 - `trigger.run {trigger, occurrence?}` → the trigger, fired now — for
-  `occurrence` (RFC 3339) when given: one feature per occurrence, so a
-  script that retries with the same one starts no second feature.
+  `occurrence` (RFC 3339) when given: one task per occurrence, so a
+  script that retries with the same one starts no second task.
 
-A triggered feature carries `started_by {trigger_id, trigger, occurrence,
+A triggered task carries `started_by {trigger_id, trigger, occurrence,
 policy}`. An addition (no protocol bump).
 
 ## Files and image paste
@@ -488,3 +488,25 @@ Incompatible — bump:
 
 Clients must tolerate the compatible additions above: never fail on unknown
 fields, event kinds or error codes.
+
+### v3 (D-107)
+
+What was a feature is a task, on the wire too; the client and daemon must
+match (a v2 peer is told the versions differ, and the app offers to update
+the host). Renamed:
+
+| v2 | v3 |
+|---|---|
+| `feature.list` `.get` `.create` `.send` `.act` `.events` `.artifact` `.delete` | `task.*`, the same |
+| params `feature` (and `conversation.list {feature}`) | `task` |
+| `FeatureChanged` `FeatureDeleted` `FeatureStream` `FeatureActivity`, their `feature_id` | `TaskChanged` `TaskDeleted` `TaskStream` `TaskActivity`, `task_id` |
+| `ConversationChanged.feature_id`, `Workspace.feature_id`, a conversation's `feature_id` | `task_id` |
+| a plan's `tasks`, `TaskId` | `steps`, `StepId` (`Run.step_id`, a decision's and evidence's `step_id`) |
+| history `FeatureCreated`, `TaskChanged` (a step) | `TaskCreated`, `StepChanged` |
+| session kind `task` | `command` |
+
+Ids keep their prefixes (`ft_` a task, `tk_` a step). What a v2 daemon
+stored still reads: `state/features/` moves to `state/tasks/` (each
+`feature.json` to `task.json`) once, at start, and the old names in
+`state.json`, `events.jsonl`, histories, conversations and triggers read
+through aliases.

@@ -3180,3 +3180,48 @@ All app-side, kept on this Mac where remembered:
 - **Older hosts:** every request above is new. A host that answers
   `unknown variant` is not asked that again until it reconnects (maybe
   updated). Its chips stay hidden, and an action says to update it.
+
+## D-107 — Features are tasks, everywhere (2026-10-15)
+
+D-088 renamed features to tasks where the developer reads them, the app,
+and kept "feature" in the model, the protocol, the CLI, the daemon and these
+docs. The developer asked for the code to say task too, wire and disk
+included. Three names move together, because "task" was taken twice:
+
+| Before | Now |
+|---|---|
+| a feature (`Feature`, `FeatureId`, `feature.*`, `FeatureChanged`, `feature_id`, `otter feature`, `state/features/`) | a **task** (`Task`, `TaskId`, `task.*`, `TaskChanged`, `task_id`, `otter task`, `state/tasks/`) |
+| a plan's task (`Task`, `TaskId`, `tasks`, `task_id`, `TaskChanged` in a history) | a **step** (`Step`, `StepId`, `steps`, `step_id`, `StepChanged`) |
+| a session of kind `task` | a session of kind **`command`** |
+
+- **The protocol is v3.** Renaming on the wire is incompatible
+  (protocol.md lists every name). App and daemon must match; the app shows
+  an older host as "incompatible" and offers to update it. That update
+  stops the old daemon by its pid file, never over the protocol, so it
+  works across the bump.
+- **A v2 host's state still reads.**
+  - At start, `state/features/` moves once to `state/tasks/`, and each
+    `feature.json` becomes `task.json`. If both directories exist (an older
+    otterd ran after a newer one), what's under `state/tasks` stays, and the
+    log says so.
+  - Old names elsewhere read through serde aliases: events, histories,
+    `state.json`, triggers, a plan proposed with `"tasks"`.
+  - A conversation needs its own deserializer: it named both its feature
+    (`feature_id`) and its step (`task_id`).
+  - `a_hosts_features_become_its_tasks` starts a daemon on a real v2 home,
+    captured by the ignored `capture_v2_state` before the rename.
+  - Going back to an older otterd isn't supported.
+- **What doesn't change:**
+  - Ids keep their prefixes (`ft_` a task, `tk_` a step): they're quoted in
+    histories, transcripts and Otter's replies.
+  - This file's history, `docs/plans/` and `docs/audits/`.
+  - Others' names: Claude Code's `Task*` tools, Codex's `task_complete`,
+    tmux's `terminal-features`, branches named `feature/…`.
+  - The capability `RuntimeCapabilities.features`, which is about the
+    runtime, not tasks.
+- **Old ways in still work:** `otter feature …`, `otter conversation list
+  --feature`, `otter start --kind task`, and the app's remembered "features"
+  view.
+- **The models read it too.** Otter's prompts say task. The coding agent is
+  given "Your step (1 of 2)", and the planner proposes `steps`; `tasks`
+  still parses.

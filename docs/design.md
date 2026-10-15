@@ -47,7 +47,7 @@ V1 should support:
 - Codex sessions.
 - Interactive shell sessions.
 - Long-running services such as development servers.
-- Background tasks such as tests.
+- Background commands such as tests.
 - tmux-backed process persistence.
 - Optional Git repositories.
 - Git worktrees for isolated Git-backed workspaces.
@@ -290,7 +290,7 @@ Initial session kinds:
 | `agent`    | Codex           |
 | `terminal` | Shell           |
 | `service`  | `npm run dev`   |
-| `task`     | `npm test`      |
+| `command`  | `npm test`      |
 
 A Workspace can contain multiple Sessions. Do not assume one Workspace equals
 one coding agent.
@@ -491,7 +491,7 @@ environment ready
       ├── start Codex
       ├── start shell
       ├── start server
-      └── run tasks
+      └── run commands
 ```
 
 Environment preparation may take time and therefore needs observable state:
@@ -678,11 +678,11 @@ The UI should feel closer to browser tabs + an inbox than a traditional terminal
 multiplexer.
 
 Built as the desktop app's **Inbox** (D-072) — first in the activity bar —
-and `otter ls` (D-073): features (work Otter drives, D-043) and workspaces
+and `otter ls` (D-073): tasks (work Otter drives, D-043) and workspaces
 in one list, NEEDS YOU longest-waiting first, by one rule for each
-(`Workspace::activity`, `Feature::needs`/`activity` in `otter-core`, D-071).
-What waits is done from the list: a feature's decision answered, review
-accepted, a stopped feature retried, a workspace opened at the session that
+(`Workspace::activity`, `Task::needs`/`activity` in `otter-core`, D-071).
+What waits is done from the list: a task's decision answered, review
+accepted, a stopped task retried, a workspace opened at the session that
 needs you.
 
 ## 27. Fast Workspace Creation

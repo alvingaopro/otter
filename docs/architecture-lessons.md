@@ -16,7 +16,7 @@ filesystem access, and multi-agent orchestration.
 The purpose of this document is not to make otterd resemble Cindy. The
 comparison mainly validates several architectural decisions already made in
 otterd and reveals a few boundaries worth strengthening before we build more UI
-and higher-level features.
+and higher-level tasks.
 
 The core conclusion:
 
@@ -61,7 +61,7 @@ possible source/provisioning mechanism:
 Workspace
 ├── Empty directory          otter new scratch
 ├── Existing directory       otter new experiment --dir ~/experiments/foo
-└── Git-backed workspace     otter new feature-x --repo git@github.com:org/repo.git
+└── Git-backed workspace     otter new task-x --repo git@github.com:org/repo.git
       └── managed worktree
 ```
 
@@ -161,7 +161,7 @@ The provider owns the meaning of its identifiers.
 
 ## 10. Sessions and agents are different concepts
 
-A workspace holds sessions — terminals, services, tasks, one or more agents —
+A workspace holds sessions — terminals, services, commands, one or more agents —
 with an agent being one kind of session. `Workspace → Agent` is too
 restrictive.
 

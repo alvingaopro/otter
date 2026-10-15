@@ -1708,7 +1708,7 @@ mod tests {
     }
 
     #[test]
-    fn only_the_latest_cut_offs_of_the_same_task_count() {
+    fn only_the_latest_cut_offs_of_the_same_step_count() {
         use RunState::*;
         let (a, b) = (StepId::from("a"), StepId::from("b"));
         let mut f = implementing(&a);
@@ -1736,7 +1736,7 @@ mod tests {
     }
 
     #[test]
-    fn a_run_needing_recovery_blocks_its_task_on_one_developer_decision() {
+    fn a_run_needing_recovery_blocks_its_step_on_one_developer_decision() {
         let step = StepId::from("t1");
         let mut f = implementing(&step);
         let now = Utc::now();
