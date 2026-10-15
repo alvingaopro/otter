@@ -633,8 +633,6 @@ body.resizing-row { cursor: row-resize; user-select: none; }
 .combo-name { font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .combo-id { font-size: 11.5px; font-family: var(--mono); color: var(--faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .combo-list li.combo-more { cursor: default; color: var(--faint); font-size: 12px; }
-.settings-intro { margin: 0; line-height: 1.5; }
-.settings-intro strong { color: var(--text); font-weight: 600; }
 .settings-host { font-family: var(--mono); font-size: 13px; }
 .message-role { display: inline-flex; align-items: center; gap: 6px; }
 .message-avatar { border-radius: 50%; display: block; flex: none; }
@@ -663,8 +661,6 @@ body.resizing-row { cursor: row-resize; user-select: none; }
 .question legend { font-size: 13px; font-weight: 500; margin-bottom: 4px; }
 .question .option { display: flex; align-items: baseline; gap: 6px; font-size: 13px; }
 .composer-actions { display: flex; flex-direction: column; gap: 6px; }
-fieldset.field.coding { border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; display: flex; flex-direction: column; gap: 8px; }
-fieldset.field.coding legend { font-size: 13px; font-weight: 600; padding: 0 4px; }
 
 /* The Inbox (D-072): one list of what is going on, on every host. */
 .pane.inbox { overflow-y: auto; }
@@ -794,3 +790,26 @@ fieldset.field.coding legend { font-size: 13px; font-weight: 600; padding: 0 4px
 .hl .hljs-meta, .hl .hljs-tag, .hl .hljs-punctuation { color: var(--hl-meta); }
 .hl .hljs-emphasis { font-style: italic; }
 .hl .hljs-strong { font-weight: 600; }
+
+/* Settings: name on the left, control and one short hint on the right. */
+.form.settings { gap: 10px; }
+.settings-section { display: flex; flex-direction: column; gap: 10px; padding-top: 12px; border-top: 1px solid var(--line); }
+.settings-section h2 { margin: 0; font-size: 13px; font-weight: 600; }
+.settings-section h2 span { margin-left: 6px; font-weight: 400; color: var(--muted); font-size: 12px; }
+.settings-row { display: grid; grid-template-columns: 7.5em minmax(0, 1fr); gap: 4px 12px; align-items: start; }
+.settings-label { padding-top: 7px; font-size: 12.5px; color: var(--muted); }
+.settings-control { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.settings-control.field { gap: 4px; }
+.settings-control > .settings-host { color: var(--text); padding-top: 7px; }
+.settings-control .key-row { margin-top: 0; }
+.settings-key .key-state { margin: 0 4px 0 0; }
+.settings-control > select, .settings-control > input { width: 100%; }
+.settings-key { display: flex; flex-direction: column; gap: 4px; }
+.settings-status { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding-top: 6px; font-size: 13px; }
+.status-dot { width: 7px; height: 7px; border-radius: 50%; flex: none; }
+.status-dot.ok { background: var(--done); }
+.status-dot.bad { background: var(--failed); }
+.settings-details { flex-basis: 100%; }
+.settings-details p { margin: 4px 0 0; }
+.settings-keys > summary { cursor: pointer; font-size: 13px; }
+.btn.icon-only { width: 32px; padding: 0; justify-content: center; }

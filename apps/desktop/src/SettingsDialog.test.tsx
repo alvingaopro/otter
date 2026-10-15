@@ -100,7 +100,7 @@ describe("Settings", () => {
   it("sets what Otter thinks with and a key, which is sent once and never shown", async () => {
     expect(calls[0]).toEqual({ cmd: "settings_get", args: { host: "mac" } });
     expect(dialog().textContent).toContain("not set");
-    const select = dialog().querySelector<HTMLSelectElement>('select[aria-label="Thinks with"]')!;
+    const select = dialog().querySelector<HTMLSelectElement>('select[aria-label="Model provider"]')!;
     select.value = "openrouter";
     await act(async () => select.dispatchEvent(new Event("change", { bubbles: true })));
     const key = dialog().querySelector<HTMLInputElement>('input[aria-label="OPENROUTER_API_KEY"]')!;
@@ -144,7 +144,7 @@ describe("Settings", () => {
     expect(dialog().textContent).toContain("OpenAI: GPT X");
 
     // OpenAI: no default, no key yet — the listing says why, Save waits for a model.
-    const select = dialog().querySelector<HTMLSelectElement>('select[aria-label="Thinks with"]')!;
+    const select = dialog().querySelector<HTMLSelectElement>('select[aria-label="Model provider"]')!;
     select.value = "openai";
     await act(async () => select.dispatchEvent(new Event("change", { bubbles: true })));
     await flush();
@@ -166,7 +166,7 @@ describe("Settings", () => {
 
   it("sets how the coding agent runs, and says whether it can here", async () => {
     expect(calls).toContainEqual({ cmd: "runtime_capabilities", args: { host: "mac" } });
-    expect(dialog().textContent).toContain("Ready on this host.");
+    expect(dialog().querySelector('[role="status"]')?.textContent).toBe("Ready");
     const select = dialog().querySelector<HTMLSelectElement>('select[aria-label="Coding agent runs through"]')!;
     expect(select.value).toBe("legacy_cli");
     select.value = "sdk";
@@ -177,11 +177,11 @@ describe("Settings", () => {
     const set = calls.find((c) => c.cmd === "settings_set")!;
     expect((set.args.update as { coding: object }).coding).toEqual({ backend: "sdk", model: "sonnet" });
     // Rechecked after the save: the SDK worker isn't ready, and why.
-    expect(dialog().textContent).toContain("Not ready on this host. Node.js wasn't found.");
+    expect(dialog().textContent).toContain("Not ready — Node.js wasn't found.");
   });
 
   it("turns Otter's tools on for a host, and says how Otter answers there", async () => {
-    expect(dialog().textContent).toContain("Now Otter answers without tools (off in Settings).");
+    expect(dialog().textContent).toContain("Now: without tools (off in Settings).");
     const box = dialog().querySelector<HTMLInputElement>('input[aria-label="Otter answers with tools"]')!;
     expect(box.checked).toBe(false);
     await act(async () => box.click());
@@ -189,7 +189,7 @@ describe("Settings", () => {
     await flush();
     const set = calls.find((c) => c.cmd === "settings_set")!;
     expect((set.args.update as { otter_tools: boolean }).otter_tools).toBe(true);
-    expect(dialog().textContent).toContain("Now Otter answers with tools (claude).");
+    expect(dialog().textContent).toContain("Now: with tools (claude).");
   });
 
   it("shows no tools toggle for an older host", async () => {

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
+import { useEffect, useRef, useState, type FormEvent, type KeyboardEvent, type ReactNode } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { Dialog } from "./Dialog";
 import type { RuntimeCapabilities } from "./conversation";
@@ -37,8 +37,8 @@ export interface HostSettings {
 
 /** How the coding agent can run on a host (D-057). */
 const BACKENDS: [string, string][] = [
-  ["legacy_cli", "Claude Code's own stream (the long-standing way)"],
-  ["sdk", "Claude Agent SDK worker (structured; needs Node and the worker)"],
+  ["legacy_cli", "Claude Code CLI"],
+  ["sdk", "Claude Agent SDK (needs Node.js)"],
 ];
 
 /** Mirrors `otter_protocol::host::ModelInfo`. */
@@ -50,9 +50,9 @@ export interface ModelInfo {
 /** For an otterd that doesn't list its controllers. */
 const OLD_CONTROLLERS: ControllerInfo[] = [
   { id: "openrouter", label: "OpenRouter", secret: "OPENROUTER_API_KEY", models: true, default_model: "openrouter/auto" },
-  { id: "claude", label: "Claude Code (its own sign-in on the host)", models: true },
-  { id: "rules", label: "No model: every decision goes to you", models: false },
-  { id: "off", label: "Off: tasks don't run on their own", models: false },
+  { id: "claude", label: "Claude Code", models: true },
+  { id: "rules", label: "No model", models: false },
+  { id: "off", label: "Off", models: false },
 ];
 
 type Models = { state: "loading" } | { state: "ready"; list: ModelInfo[] } | { state: "error"; error: string };
@@ -192,11 +192,7 @@ export function SettingsDialog({ hosts, defaultHost, onClose }: { hosts: string[
 
   const label = (id: string) => controllers.find((c) => c.id === id)?.label ?? id;
   const keyField = (s: HostSettings["secrets"][number]) => (
-    <fieldset key={s.name} className="field">
-      <legend>
-        {s.name} <span className={s.set ? "key-state set" : "key-state"}>{s.set ? "set" : "not set"}</span>
-      </legend>
-      <span className="muted small">{s.purpose}. Kept on {host}; it can't be read back.</span>
+    <div key={s.name} className="settings-key">
       <div className="key-row">
         <input
           type="password"
@@ -213,22 +209,21 @@ export function SettingsDialog({ hosts, defaultHost, onClose }: { hosts: string[
           </button>
         )}
       </div>
-    </fieldset>
+      <span className="muted small">
+        <span className={s.set ? "key-state set" : "key-state"}>{s.set ? "set" : "not set"}</span> {s.purpose}. Kept on{" "}
+        {host}, never read back.
+      </span>
+    </div>
   );
   const mainKey = settings?.secrets?.find((s) => s.name === info?.secret);
   const otherKeys = settings?.secrets?.filter((s) => s !== mainKey) ?? [];
   const chosen = models?.state === "ready" ? models.list.find((m) => m.id === model.trim()) : undefined;
 
+  const coding = settings?.coding?.backend ? caps : null;
   return (
     <Dialog title="Settings" onClose={onClose}>
-      <form className="form" onSubmit={submit}>
-        <p className="muted small settings-intro">
-          <strong>Otter</strong> runs each task for you: it plans the work, directs a coding agent, answers its
-          questions, and checks the result before handing it to you. It runs on the host, so it keeps working while
-          this app is closed.
-        </p>
-        <label className="field">
-          <span>Host</span>
+      <form className="form settings" onSubmit={submit}>
+        <Row label="Host" hint="Each host keeps its own settings; Otter works there while this app is closed.">
           {hosts.length > 1 ? (
             <select value={host} onChange={(e) => setHost(e.target.value)} aria-label="Host">
               {hosts.map((h) => (
@@ -238,151 +233,156 @@ export function SettingsDialog({ hosts, defaultHost, onClose }: { hosts: string[
           ) : (
             <span className="settings-host">{host}</span>
           )}
-          <span className="muted small">
-            Otter runs on each host with that host's model and keys: tasks on {host} use these.
-          </span>
-        </label>
+        </Row>
         {!settings && !error && <p className="muted small">Loading…</p>}
         {settings && (
           <>
-            <label className="field">
-              <span>Thinks with</span>
-              <select value={controller} onChange={(e) => choose(e.target.value)} aria-label="Thinks with">
-                <option value="">
-                  Automatic{settings.active ? ` (now: ${label(settings.active)})` : " (the first provider with a key, else Claude Code)"}
-                </option>
-                {controllers.map((c) => (
-                  <option key={c.id} value={c.id}>
-                    {c.label}
+            <section className="settings-section" aria-label="Otter">
+              <h2>
+                Otter <span>plans each task, decides, and checks the work</span>
+              </h2>
+              <Row label="Model provider" hint={explain(effective, info, !controller)}>
+                <select value={controller} onChange={(e) => choose(e.target.value)} aria-label="Model provider">
+                  <option value="">
+                    {settings.active ? `Automatic — ${short(label(settings.active))}` : "Automatic"}
                   </option>
-                ))}
-              </select>
-              <span className="muted small">{explain(effective, info, !controller)}</span>
-            </label>
-            {settings.controller_from_env && (
-              <p className="notice small">
-                otterd on {host} runs with OTTER_CONTROLLER={settings.controller_from_env}, which overrides this.
-              </p>
-            )}
-            {mainKey && keyField(mainKey)}
-            {info?.models && (
-              <div className="field">
-                <span>Model{!controller && info ? ` for ${info.label}` : ""}</span>
-                <div className="key-row">
-                  <ModelPicker
-                    value={model}
-                    onChange={setModel}
-                    models={models?.state === "ready" ? models.list : []}
-                    placeholder={
-                      info.default_model
-                        ? `Default: ${info.default_model}`
-                        : info.id === "claude"
-                          ? "Default: Claude Code's"
-                          : "Choose a model"
-                    }
-                  />
-                  {listsModels && (
-                    <button type="button" className="btn outline" disabled={models?.state === "loading"} onClick={() => setReload((n) => n + 1)}>
-                      Refresh
-                    </button>
-                  )}
-                </div>
-                <span className="muted small">
-                  The model Otter thinks with. The coding agent's own model is set separately.
-                </span>
-                <span className="muted small" aria-live="polite">
-                  {models?.state === "loading" && "Loading models…"}
-                  {models?.state === "ready" &&
-                    (chosen?.name ? chosen.name : `${models.list.length} models: type to search, or enter any model name.`)}
-                  {models?.state === "error" && `Couldn't list models: ${models.error}`}
-                  {!models && !listsModels && "Any model name the provider accepts."}
-                </span>
-              </div>
-            )}
-            {needsModel && <p className="notice small">{info?.label} has no default model: choose one.</p>}
-            {settings.otter_tools !== undefined && (
-              <fieldset className="field coding">
-                <legend>Otter's tools</legend>
-                <label className="check">
-                  <input
-                    type="checkbox"
-                    aria-label="Otter answers with tools"
-                    checked={otterTools}
-                    disabled={!!settings.otter_tools_from_env}
-                    onChange={(e) => setOtterTools(e.target.checked)}
-                  />
-                  Otter answers with tools
-                </label>
-                <span className="muted small">
-                  Before it answers, Otter looks at the task, its runs and what waits on you, and acts on what you ask
-                  through its own tools — never a shell or your files. Needs Claude Code as Otter's model and the Claude
-                  worker on {host}. Off: Otter answers as before.
-                </span>
-                {settings.otter_tools_from_env && (
-                  <span className="muted small">
-                    Set by OTTER_BRAIN_V2={settings.otter_tools_from_env} in otterd's environment.
-                  </span>
-                )}
-                {settings.otter_answers && (
-                  <p className="muted small" role="status">
-                    Now Otter answers {settings.otter_answers}.
-                  </p>
-                )}
-              </fieldset>
-            )}
+                  {controllers.map((c) => (
+                    <option key={c.id} value={c.id}>
+                      {short(c.label)}
+                    </option>
+                  ))}
+                </select>
+              </Row>
+              {settings.controller_from_env && (
+                <p className="notice small">
+                  OTTER_CONTROLLER={settings.controller_from_env} in otterd's environment on {host} overrides this.
+                </p>
+              )}
+              {mainKey && <Row label="API key">{keyField(mainKey)}</Row>}
+              {info?.models && (
+                <Row
+                  label="Model"
+                  hint={
+                    models?.state === "loading"
+                      ? "Loading models…"
+                      : models?.state === "ready"
+                        ? chosen?.name ?? `${models.list.length} models — type to search, or enter any name`
+                        : models?.state === "error"
+                          ? `Couldn't list models: ${models.error}`
+                          : "Any model name the provider accepts"
+                  }
+                >
+                  <div className="key-row">
+                    <ModelPicker
+                      value={model}
+                      onChange={setModel}
+                      models={models?.state === "ready" ? models.list : []}
+                      placeholder={info.default_model ? `Default: ${info.default_model}` : info.id === "claude" ? "Default" : "Choose a model"}
+                    />
+                    {listsModels && (
+                      <button
+                        type="button"
+                        className="btn outline icon-only"
+                        aria-label="Reload the models"
+                        title="Reload the models"
+                        disabled={models?.state === "loading"}
+                        onClick={() => setReload((n) => n + 1)}
+                      >
+                        ↻
+                      </button>
+                    )}
+                  </div>
+                </Row>
+              )}
+              {needsModel && <p className="notice small">{short(info?.label ?? "")} has no default model: choose one.</p>}
+              {settings.otter_tools !== undefined && (
+                <Row
+                  label="Tools"
+                  hint={
+                    settings.otter_tools_from_env
+                      ? `Set by OTTER_BRAIN_V2=${settings.otter_tools_from_env} in otterd's environment.`
+                      : settings.otter_answers
+                        ? `Now: ${settings.otter_answers}.`
+                        : undefined
+                  }
+                >
+                  <label className="check">
+                    <input
+                      type="checkbox"
+                      aria-label="Otter answers with tools"
+                      checked={otterTools}
+                      disabled={!!settings.otter_tools_from_env}
+                      onChange={(e) => setOtterTools(e.target.checked)}
+                    />
+                    <span>
+                      Look things up before answering
+                      <span className="muted small"> — the task, its runs, what waits on you; never a shell. Needs Claude Code.</span>
+                    </span>
+                  </label>
+                </Row>
+              )}
+            </section>
             {settings.coding?.backend && (
-              <fieldset className="field coding">
-                <legend>Coding agent</legend>
-                <span className="muted small">
-                  Claude does the coding on {host}; Otter (above) plans, decides and checks. This is how Claude runs and
-                  which model it codes with — separate from Otter's own model. Changes apply to work that starts after.
-                </span>
-                <label className="field">
-                  <span>Runs through</span>
+              <section className="settings-section" aria-label="Coding agent">
+                <h2>
+                  Coding agent <span>Claude Code, which writes the code — for work that starts after you save</span>
+                </h2>
+                <Row label="Runs via">
                   <select aria-label="Coding agent runs through" value={backend} onChange={(e) => setBackend(e.target.value)}>
-                    {BACKENDS.map(([id, label]) => (
+                    {BACKENDS.map(([id, name]) => (
                       <option key={id} value={id}>
-                        {label}
+                        {name}
                       </option>
                     ))}
                   </select>
-                </label>
-                <label className="field">
-                  <span>Model</span>
+                </Row>
+                <Row label="Model">
                   <input
                     aria-label="Coding model"
                     value={codingModel}
                     onChange={(e) => setCodingModel(e.target.value)}
-                    placeholder="Default: Claude Code's (e.g. opus, sonnet, claude-sonnet-5-5)"
+                    placeholder="Default (e.g. opus, sonnet)"
                     spellCheck={false}
                     autoComplete="off"
                   />
-                </label>
-                {caps && caps.backend === settings.coding.backend && (
-                  <p className={caps.available ? "muted small" : "notice small"} role="status">
-                    {caps.available ? "Ready on this host." : "Not ready on this host."}{" "}
-                    {(caps.notes ?? []).join(" ")}
-                  </p>
+                </Row>
+                {coding && coding.backend === settings.coding.backend && (
+                  <Row label="Status">
+                    <div role="status" className="settings-status">
+                      <span className={coding.available ? "status-dot ok" : "status-dot bad"} />
+                      {coding.available ? "Ready" : "Not ready"}
+                      {!coding.available && coding.notes?.[0] && <span className="muted"> — {coding.notes[0]}</span>}
+                      {(coding.notes?.length ?? 0) > (coding.available ? 0 : 1) && (
+                        <details className="settings-details">
+                          <summary className="muted small">Details</summary>
+                          <p className="muted small">{(coding.notes ?? []).slice(coding.available ? 0 : 1).join(" ")}</p>
+                        </details>
+                      )}
+                    </div>
+                  </Row>
                 )}
-              </fieldset>
+              </section>
             )}
             {otherKeys.length > 0 && (
-              <details className="field">
-                <summary className="muted small">
-                  Other API keys ({otherKeys.filter((s) => s.set).length} set)
+              <details className="settings-section settings-keys">
+                <summary>
+                  Other API keys <span className="muted small">({otherKeys.filter((s) => s.set).length} set)</span>
                 </summary>
                 <p className="muted small">
-                  Keys for the other providers, so you can switch without entering them again. In Automatic, the
-                  first provider with a key is used.
+                  For switching providers without entering them again. Automatic uses the first one with a key.
                 </p>
-                {otherKeys.map(keyField)}
+                {otherKeys.map((k) => (
+                  <Row key={k.name} label={k.name}>
+                    {keyField(k)}
+                  </Row>
+                ))}
               </details>
             )}
           </>
         )}
         {error && <p className="error-text small">{error}</p>}
-        {saved && <p className="muted small">Saved on {host}.</p>}
         <div className="form-actions">
+          {saved && <span className="muted small">Saved on {host}.</span>}
           <span className="spacer" />
           <button type="button" className="btn outline" onClick={onClose}>
             Close
@@ -396,20 +396,38 @@ export function SettingsDialog({ hosts, defaultHost, onClose }: { hosts: string[
   );
 }
 
-/** What a choice of what Otter thinks with means, in a sentence. */
+/** A setting: its name on the left, the control and a short hint on the right. */
+function Row({ label, hint, children }: { label: string; hint?: string; children: ReactNode }) {
+  return (
+    <div className="settings-row">
+      <span className="settings-label">{label}</span>
+      <div className="settings-control field">
+        {children}
+        {hint && <span className="muted small">{hint}</span>}
+      </div>
+    </div>
+  );
+}
+
+/** A provider's name without what an older otterd wrote after it. */
+export function short(label: string): string {
+  return label.replace(/\s*\(.*\)\s*$/, "").replace(/:.*$/, "");
+}
+
+/** What a choice of provider means, in a line. */
 function explain(id: string, info: ControllerInfo | undefined, automatic: boolean): string {
   const how = !info
-    ? "With no key and no Claude Code, it follows fixed rules."
+    ? "No key and no Claude Code: no model, every decision comes to you."
     : info.secret
-      ? `Asks ${info.label}'s models through its API, with the key below. Usage is billed to that key.`
+      ? `Through ${short(info.label)}'s API, billed to the key below.`
       : id === "claude"
-        ? "Uses Claude Code installed on the host, with its own sign-in there: no key needed."
+        ? "Claude Code's own sign-in on the host — no key needed."
         : id === "rules"
-          ? "No model: it plans one step, every open decision comes to you, and a passing check counts as done."
+          ? "No model: every decision comes to you; a passing check counts as done."
           : id === "off"
-            ? "Tasks don't move on their own: nothing is planned or run until you change this."
+            ? "Tasks don't move on their own."
             : "";
-  return automatic ? `Automatic picks the first provider with a key, else Claude Code, else fixed rules. ${how}` : how;
+  return automatic ? `Automatic: the first provider with a key, else Claude Code. ${how}` : how;
 }
 
 /** At most this many matches are shown; typing narrows them. */
