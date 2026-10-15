@@ -215,9 +215,13 @@ An addition (no protocol bump): daemons before it answer `invalid_request`.
   counts for a binary file). Paths are relative to the workspace root and
   limited to it. At most 500 files; `more` counts the rest. Outside Git only
   `git: false`. Read-only: the index is never touched.
-- `workspace.diff {workspace, path}` → `{text, truncated}`: that file's
-  unified diff since the same base (a new file against nothing), at most
-  512 KiB.
+- `workspace.diff {workspace, path, context?}` → `{text, truncated}`: that
+  file's unified diff since the same base (a new file against nothing), at
+  most 512 KiB, with `context` lines around each change (git's 3 when
+  absent; a large number gives the whole file, which the app folds, D-111).
+- An attention item may carry `inferred: true` (D-109): the agent seems to
+  be waiting (a still turn) but didn't say so. Absent when false; older
+  clients ignore it.
 - `workspace.ports {workspace}` → `[{session_id, port, address, process?}]`
   (D-104): the TCP ports listened on by a process in one of the workspace's
   running sessions' process trees, found from `host.ports` and each

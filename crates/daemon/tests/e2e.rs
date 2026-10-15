@@ -1240,16 +1240,20 @@ async fn git_workspaces_share_one_backing_repository() {
         "{worktrees}"
     );
 
-    // Uncommitted work is protected unless forced; the branch survives.
+    // Uncommitted work is protected unless forced; then the worktree and its
+    // branch go, the shared copy stays for task-b, and goes with it (D-108).
     std::fs::write(Path::new(&a.root).join("wip.txt"), "wip").unwrap();
     let err = conn.workspace_delete("task-a", false).await.unwrap_err();
     assert!(err.to_string().contains("uncommitted"), "{err}");
     conn.workspace_delete("task-a", true).await.unwrap();
     assert!(!Path::new(&a.root).exists());
-    git(&base, &["show-ref", "--verify", "refs/heads/otterd/task-a"]);
+    let branches = git(&base, &["branch", "--list", "otterd/*"]);
+    assert!(
+        !branches.contains("otterd/task-a") && branches.contains("otterd/task-b"),
+        "{branches}"
+    );
     conn.workspace_delete("task-b", false).await.unwrap();
-    let worktrees = git(&base, &["worktree", "list", "--porcelain"]);
-    assert!(!worktrees.contains(&b.root), "{worktrees}");
+    assert!(!Path::new(&b.root).exists() && !base.exists());
 }
 
 #[tokio::test]
