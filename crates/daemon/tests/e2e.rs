@@ -89,6 +89,16 @@ impl TestHost {
         self.spawn_daemon().await;
     }
 
+    /// After a daemon started by `with_env` died on its own (a crash test),
+    /// start it again without `var`.
+    async fn revive_without(&mut self, var: &str) {
+        if let Some(mut d) = self.daemon.take() {
+            let _ = d.wait();
+        }
+        self.vars.retain(|(k, _)| k != var);
+        self.spawn_daemon().await;
+    }
+
     fn home(&self) -> &Path {
         self.dir.path()
     }
