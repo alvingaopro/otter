@@ -2825,5 +2825,10 @@ a feature was answered by the brain, which can't see the code.
 - An older otterd ignores the mode: one started on a journal with a queued
   question's turn would run it unrestricted. No schema bump for that edge —
   a bump would shut an older otterd out of every conversation.
-- Not done: `DeliveryMode::AnswerOnly` (every turn of a task read-only),
-  which the plan pairs with this — next, on the same rule.
+- Not done, and waiting: `DeliveryMode::AnswerOnly` (every turn of a task
+  read-only), which the plan pairs with this. The rule is the same, but two
+  things aren't decided: how it is set (on creating a task, from the CLI, in
+  the app, by Otter on the developer's word — four surfaces) and what
+  happens when the agent's look at the code returns a plan anyway (answered,
+  refused, or asked). The dogfooding transcripts (V2-0c) are the evidence
+  for both.

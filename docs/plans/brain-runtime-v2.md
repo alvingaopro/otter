@@ -15,7 +15,9 @@ end), and the crash and replay tests of §8 (a crash before a change: made
 once after; after a forward: delivered once; a message sent twice:
 answered once). M2 is done but for the default, which waits on V2-0c.
 M2.5: a question for the agent at work is a turn that only reads (D-091;
-live: V2-2); `AnswerOnly` is next. **To make the default
+live: V2-2). Waiting on the dogfooding (V2-0c): `AnswerOnly` (how it is set
+and what a plan under it means aren't decided, D-091), M3 (a new view in the
+app, the second integration), M4, M5. **To make the default
 possible, the developer:** turns the setting on for a host whose Otter is
 Claude Code, works real tasks with it, and records 5–10 transcripts
 (V2-0c); and, on a host with an API key, runs the spike with it (V2-0b).
