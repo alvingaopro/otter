@@ -6,7 +6,7 @@
 //! Host
 //!  └── Workspace          durable logical context (NOT a repo/dir/tmux session)
 //!       ├── Brief         why the workspace exists
-//!       └── Session       durable logical activity (agent, shell, service, task)
+//!       └── Session       durable logical activity (agent, shell, service, command)
 //!            └── Execution  one concrete process run of the session
 //! ```
 
@@ -255,8 +255,10 @@ pub enum SessionKind {
     Terminal,
     /// A long-running process such as a dev server.
     Service,
-    /// A process expected to finish, such as a test run.
-    Task,
+    /// A process expected to finish, such as a test run. Was `task`
+    /// (D-107), which still reads.
+    #[serde(alias = "task")]
+    Command,
 }
 
 impl SessionKind {
@@ -265,7 +267,7 @@ impl SessionKind {
             SessionKind::Agent => "agent",
             SessionKind::Terminal => "terminal",
             SessionKind::Service => "service",
-            SessionKind::Task => "task",
+            SessionKind::Command => "command",
         }
     }
 }
@@ -277,9 +279,9 @@ impl std::str::FromStr for SessionKind {
             "agent" => Ok(SessionKind::Agent),
             "terminal" | "shell" => Ok(SessionKind::Terminal),
             "service" => Ok(SessionKind::Service),
-            "task" => Ok(SessionKind::Task),
+            "command" | "task" => Ok(SessionKind::Command),
             other => Err(format!(
-                "unknown session kind `{other}` (expected terminal, service, task or agent)"
+                "unknown session kind `{other}` (expected terminal, service, command or agent)"
             )),
         }
     }
@@ -292,7 +294,7 @@ pub struct SessionSpec {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
     pub kind: SessionKind,
-    /// Shell command line. Required for `service` and `task`; `None` for a
+    /// Shell command line. Required for `service` and `command`; `None` for a
     /// `terminal` means the login shell. Not used by `agent` sessions.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub command: Option<String>,
@@ -573,7 +575,7 @@ pub enum AttentionKind {
     Failure,
     /// Work is ready to look at (e.g. an agent finished a turn).
     Review,
-    /// Something finished successfully (e.g. a task).
+    /// Something finished successfully (e.g. a command).
     Completion,
 }
 
@@ -826,6 +828,17 @@ mod tests {
         assert_eq!(b.description.as_deref(), Some("fix it"));
         assert_eq!(b.decisions, vec!["keep v1".to_owned()]);
         assert!(Brief::default().normalized().is_empty());
+    }
+
+    #[test]
+    fn a_command_session_was_a_task_session() {
+        // Its kind before D-107 still reads; it's written, and parsed, anew.
+        let k: SessionKind = serde_json::from_str("\"task\"").unwrap();
+        assert_eq!(k, SessionKind::Command);
+        assert_eq!(serde_json::to_string(&k).unwrap(), "\"command\"");
+        assert_eq!("task".parse::<SessionKind>(), Ok(SessionKind::Command));
+        assert_eq!("command".parse::<SessionKind>(), Ok(SessionKind::Command));
+        assert_eq!(SessionKind::Command.as_str(), "command");
     }
 
     #[test]

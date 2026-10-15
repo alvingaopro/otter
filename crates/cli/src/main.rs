@@ -360,8 +360,8 @@ struct SessionCreateArgs {
     /// Session name (default: derived from the command or agent).
     #[arg(long)]
     name: Option<String>,
-    /// terminal (interactive, default), service (long-running) or task (runs
-    /// to completion).
+    /// terminal (interactive, default), service (long-running) or command
+    /// (runs to completion; `task`, its old name, too).
     #[arg(long, default_value = "terminal", conflicts_with = "agent")]
     kind: SessionKind,
     /// Start a coding agent instead of a command (`--agent` alone: codex).

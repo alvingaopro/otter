@@ -1,7 +1,7 @@
 //! Human attention (design §21): which work needs the developer right now.
 //!
 //! Attention items are raised from state transitions — an agent finishing a
-//! turn or waiting on an approval or a question, a task or service failing, preparation
+//! turn or waiting on an approval or a question, a command or service failing, preparation
 //! failing — and from a blocked agent moving on to another prompt. They are
 //! resolved when the situation changes (the agent starts working again), when
 //! the developer answers (sends to the session, restarts, stops it), or
@@ -84,7 +84,7 @@ pub fn on_execution_ended(ws: &mut Workspace, session: &Session) -> Vec<Event> {
         (SessionKind::Terminal, _, _) | (SessionKind::Agent, ExecutionState::Exited, Some(0)) => {
             return resolve_session(ws, &session.id);
         }
-        (SessionKind::Task, ExecutionState::Exited, Some(0)) => {
+        (SessionKind::Command, ExecutionState::Exited, Some(0)) => {
             (AttentionKind::Completion, format!("{name} completed"))
         }
         (_, ExecutionState::Lost, _) => (

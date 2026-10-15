@@ -1018,7 +1018,7 @@ mod tests {
         assert!(matches!(dir, SourceSpec::Directory { .. }));
 
         let sessions: Vec<SessionSpec> = serde_json::from_str(
-            r#"[{"kind":"agent","provider":"codex","prompt":"fix it"},{"kind":"terminal"},{"kind":"task","name":"tests","command":"cargo test"}]"#,
+            r#"[{"kind":"agent","provider":"codex","prompt":"fix it"},{"kind":"terminal"},{"kind":"command","name":"tests","command":"cargo test"}]"#,
         )
         .unwrap();
         assert_eq!(sessions[0].kind, SessionKind::Agent);

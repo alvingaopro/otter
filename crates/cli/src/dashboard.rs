@@ -303,7 +303,7 @@ fn detail(activity: Activity, ws: &Workspace) -> (String, Option<Timestamp>) {
                             ago(a.state_since)
                         ))
                     }
-                    (None, SessionKind::Service | SessionKind::Task, SessionStatus::Running) => {
+                    (None, SessionKind::Service | SessionKind::Command, SessionStatus::Running) => {
                         Some(format!("{} running", s.name))
                     }
                     _ => None,

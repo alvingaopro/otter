@@ -316,18 +316,18 @@ async fn scratch_workspace_with_default_login_shell() {
 }
 
 #[tokio::test]
-async fn task_exit_code_is_recorded_and_restart_creates_new_execution() {
+async fn command_exit_code_is_recorded_and_restart_creates_new_execution() {
     let host = TestHost::new();
     create(
         &host,
-        "tasks",
+        "commands",
         Some(vec![
-            spec(SessionKind::Task, "fail", "echo task-output; exit 3"),
-            spec(SessionKind::Task, "ok", "true"),
+            spec(SessionKind::Command, "fail", "echo command-output; exit 3"),
+            spec(SessionKind::Command, "ok", "true"),
         ]),
     )
     .await;
-    let ws = wait_status(&host, "tasks", "fail", SessionStatus::Failed).await;
+    let ws = wait_status(&host, "commands", "fail", SessionStatus::Failed).await;
     let exec = ws
         .session("fail")
         .unwrap()
@@ -336,15 +336,15 @@ async fn task_exit_code_is_recorded_and_restart_creates_new_execution() {
         .clone();
     assert_eq!(exec.state, ExecutionState::Exited);
     assert_eq!(exec.exit_code, Some(3));
-    wait_status(&host, "tasks", "ok", SessionStatus::Completed).await;
+    wait_status(&host, "commands", "ok", SessionStatus::Completed).await;
 
     // Output of an exited process stays readable.
-    wait_output(&host, "tasks", "fail", "task-output").await;
+    wait_output(&host, "commands", "fail", "command-output").await;
 
     let restarted = host
         .conn()
         .await
-        .session_restart("tasks", "fail")
+        .session_restart("commands", "fail")
         .await
         .unwrap();
     assert_eq!(restarted.executions.len(), 2);
@@ -356,7 +356,7 @@ async fn task_exit_code_is_recorded_and_restart_creates_new_execution() {
     );
     // The previous execution's backend resources are released.
     assert!(!host.tmux_has_session(&exec.backend_ref));
-    wait_status(&host, "tasks", "fail", SessionStatus::Failed).await;
+    wait_status(&host, "commands", "fail", SessionStatus::Failed).await;
 
     let events = host.conn().await.events_list(None).await.unwrap();
     assert!(events.iter().any(|e| matches!(
@@ -368,7 +368,7 @@ async fn task_exit_code_is_recorded_and_restart_creates_new_execution() {
     )));
     // Commands never end up in the event log.
     let log = std::fs::read_to_string(host.home().join("state/events.jsonl")).unwrap();
-    assert!(!log.contains("task-output"));
+    assert!(!log.contains("command-output"));
 }
 
 #[tokio::test]
@@ -847,7 +847,7 @@ async fn daemon_restart_adopts_running_sessions_and_records_changes() {
         Some(vec![
             spec(SessionKind::Service, "keep", "sleep 600"),
             spec(SessionKind::Service, "vanish", "sleep 600"),
-            spec(SessionKind::Task, "finish", "sleep 1; exit 7"),
+            spec(SessionKind::Command, "finish", "sleep 1; exit 7"),
         ]),
     )
     .await;
@@ -896,7 +896,7 @@ async fn event_stream_reports_lifecycle() {
         .await
         .session_create(SessionCreate {
             workspace: "ev".into(),
-            spec: spec(SessionKind::Task, "t", "exit 0"),
+            spec: spec(SessionKind::Command, "t", "exit 0"),
         })
         .await
         .unwrap();
@@ -933,12 +933,12 @@ async fn events_through(
     out
 }
 
-async fn task(host: &TestHost, ws: &str, name: &str) {
+async fn command(host: &TestHost, ws: &str, name: &str) {
     host.conn()
         .await
         .session_create(SessionCreate {
             workspace: ws.into(),
-            spec: spec(SessionKind::Task, name, "exit 0"),
+            spec: spec(SessionKind::Command, name, "exit 0"),
         })
         .await
         .unwrap();
@@ -963,8 +963,8 @@ async fn event_replay_resumes_after_disconnect_and_daemon_restart() {
     assert_eq!(stream.cursor(), snapshot.cursor());
     drop(stream);
 
-    // Meanwhile: a task runs, and the daemon restarts.
-    task(&host, "ev", "t").await;
+    // Meanwhile: a command runs, and the daemon restarts.
+    command(&host, "ev", "t").await;
     host.stop_daemon().await;
 
     // Reconnecting with the cursor replays exactly what was missed, in order:
@@ -991,7 +991,7 @@ async fn event_replay_resumes_after_disconnect_and_daemon_restart() {
     }
 
     // Then it continues live, without a gap.
-    task(&host, "ev", "u").await;
+    command(&host, "ev", "u").await;
     let next = events_through(&mut stream, head + 1).await;
     assert_eq!(next[0].seq, head + 1);
     assert_eq!(next[0].event.kind(), "SessionCreated");
@@ -1010,7 +1010,7 @@ async fn snapshot_then_subscribe_has_no_gap_and_stale_cursors_are_rejected() {
         .subscribe(Some(snapshot.cursor()))
         .await
         .unwrap();
-    task(&host, "snap", "t").await;
+    command(&host, "snap", "t").await;
     let first = events_through(&mut stream, snapshot.seq + 1).await;
     assert_eq!(first[0].seq, snapshot.seq + 1);
 
@@ -1320,7 +1320,7 @@ async fn existing_directory_workspace_is_attached_not_managed() {
             source: SourceSpec::Directory {
                 path: dir.to_string_lossy().into_owned(),
             },
-            sessions: Some(vec![spec(SessionKind::Task, "where", "pwd")]),
+            sessions: Some(vec![spec(SessionKind::Command, "where", "pwd")]),
             ..Default::default()
         })
         .await
@@ -1363,7 +1363,11 @@ async fn direnv_environment_is_resolved_and_inherited() {
         "env",
         &src,
         None,
-        vec![spec(SessionKind::Task, "show", "echo var=$OTTER_TEST_VAR")],
+        vec![spec(
+            SessionKind::Command,
+            "show",
+            "echo var=$OTTER_TEST_VAR",
+        )],
     ))
     .await
     .unwrap();
@@ -2479,7 +2483,7 @@ async fn a_failed_process_says_why_without_its_terminal() {
         &host,
         "why",
         Some(vec![spec(
-            SessionKind::Task,
+            SessionKind::Command,
             "deploy",
             "echo starting; echo 'using API_TOKEN=tok_abcdef0123456789'; echo 'error: config/prod.toml not found' >&2; exit 3",
         )]),
@@ -2521,8 +2525,8 @@ async fn failures_and_completions_raise_attention() {
         &host,
         "jobs",
         Some(vec![
-            spec(SessionKind::Task, "tests", "exit 1"),
-            spec(SessionKind::Task, "lint", "true"),
+            spec(SessionKind::Command, "tests", "exit 1"),
+            spec(SessionKind::Command, "lint", "true"),
             spec(SessionKind::Terminal, "sh", "exit 4"),
         ]),
     )
@@ -2548,7 +2552,7 @@ async fn failures_and_completions_raise_attention() {
     // A terminal the user left is not attention-worthy.
     assert_eq!(ws.activity(), Activity::Failed);
 
-    // Restarting the failed task resolves its item.
+    // Restarting the failed command resolves its item.
     host.conn()
         .await
         .session_restart("jobs", "tests")
@@ -2876,7 +2880,7 @@ async fn archive_stops_sessions_and_unarchive_brings_the_workspace_back() {
         "shelf",
         Some(vec![
             spec(SessionKind::Service, "server", "sleep 600"),
-            spec(SessionKind::Task, "tests", "exit 3"),
+            spec(SessionKind::Command, "tests", "exit 3"),
         ]),
     )
     .await;
@@ -2890,7 +2894,7 @@ async fn archive_stops_sessions_and_unarchive_brings_the_workspace_back() {
         .current_execution()
         .unwrap()
         .clone();
-    let ws = eventually("the failed task asks for attention", || async {
+    let ws = eventually("the failed command asks for attention", || async {
         let w = host.conn().await.workspace_get("shelf").await.unwrap();
         (!w.attention.is_empty()).then_some(w)
     })
@@ -2944,7 +2948,7 @@ async fn archive_stops_sessions_and_unarchive_brings_the_workspace_back() {
     let err = conn
         .session_create(SessionCreate {
             workspace: "shelf".into(),
-            spec: spec(SessionKind::Task, "more", "exit 0"),
+            spec: spec(SessionKind::Command, "more", "exit 0"),
         })
         .await
         .unwrap_err();
@@ -7189,7 +7193,7 @@ async fn capture_v2_state() {
         "app",
         &src,
         Some("feature/a"),
-        vec![spec(SessionKind::Task, "check", "echo checked")],
+        vec![spec(SessionKind::Command, "check", "echo checked")],
     ))
     .await
     .unwrap();
