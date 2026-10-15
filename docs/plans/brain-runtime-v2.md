@@ -19,7 +19,11 @@ live: V2-2), and answer-only tasks (D-092; live: V2-3). The developer asked
 for every milestone before the dogfooding; what is decided without it says
 so in its decision. M3 done: Otter's conversation on the host (D-093;
 `otter chat`; the app's Otter view; live: V2-4). M4 done: follow-ups on the
-tasks Otter made (D-094; live: V2-5). Next: M5. **To make the default
+tasks Otter made (D-094; live: V2-5). M5 done: the API providers answer with
+Otter's tools (D-095; live with OpenRouter: V2-6; §6 has the matrix).
+`INTENT:` stays for what has no turn (`claude` without the worker, a
+provider without a key, `rules`) until a decision of its own retires it.
+What remains of the plan is making the turn the default (D-090). **To make the default
 possible, the developer:** turns the setting on for a host whose Otter is
 Claude Code, works real tasks with it, and records 5–10 transcripts
 (V2-0c); and, on a host with an API key, runs the spike with it (V2-0b).
@@ -269,8 +273,9 @@ tests:
 | `OTTER_CONTROLLER` | V2 turn | Fallback | Notes |
 |---|---|---|---|
 | `claude` (default with Claude Code) | yes, through the Claude worker with an Otter-only tool profile (spike V2-0a passed: `tools: []` and an in-process tool server) | legacy `claude -p` reply + `INTENT:` when the worker or the host's Node is missing (D-060) | sign-in auth (D-057) |
-| `anthropic` (API key) | **legacy until the spike passes with a key** (V2-0b, pending: the worker must take the key through otterd's env file, never on a command line) | legacy | then same as `claude` |
-| `openrouter`, `openai`, other providers (D-052) | no | legacy `INTENT:` | parity is M5 |
+| `anthropic` (API key) | yes, since M5: the tool loop in otterd over the Messages API (D-095); the worker under a key (V2-0b) is still to be tried | legacy `INTENT:` without a key | offline (a stand-in API); live pending: no key here |
+| `openrouter` (API key) | yes, since M5: the tool loop in otterd over chat completions with tools (D-095) | legacy `INTENT:` without a key | **live: V2-6** |
+| `openai`, `gemini`, `deepseek`, `xai`, `mistral`, `groq` (D-052) | yes, since M5: the same OpenAI-style loop | legacy `INTENT:` without a key | offline only (same code as `openrouter`); each provider's tool-calling quirks untried |
 | `rules` | no | status text **and the message forwarded as guidance** (`Intent::Guide`, `brain.rs:160-171`; D-084) | unchanged |
 | `off` | — | the controller doesn't step, so nothing answers (`controller.rs:180`) | unchanged |
 | `yes`, `skeptic` | no | unchanged | tests |

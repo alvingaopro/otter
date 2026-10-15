@@ -22,6 +22,23 @@ use tokio::io::AsyncWriteExt;
 
 use crate::env::{EnvMap, which};
 
+/// A tool a model asked for in a round (D-095).
+#[derive(Clone, Debug, PartialEq)]
+pub struct ToolUse {
+    pub id: String,
+    pub name: String,
+    pub input: Value,
+}
+
+/// One round of a tool-using turn: what the model said, the tools it asked
+/// for (none: it answered), and its message, to send back with the answers.
+#[derive(Clone, Debug)]
+pub struct Round {
+    pub text: String,
+    pub uses: Vec<ToolUse>,
+    pub assistant: Value,
+}
+
 /// How a provider is spoken to.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Style {
@@ -182,10 +199,19 @@ impl Provider {
         c
     }
 
+    /// Where its API is. `OTTER_PROVIDER_BASE` (tests only) points every
+    /// provider at a stand-in server.
+    fn base(&self) -> String {
+        std::env::var("OTTER_PROVIDER_BASE")
+            .ok()
+            .filter(|b| !b.is_empty())
+            .unwrap_or_else(|| self.base.to_owned())
+    }
+
     fn endpoint(&self) -> String {
         match self.style {
-            Style::OpenAi => format!("{}/chat/completions", self.base),
-            Style::Anthropic => format!("{}/messages", self.base),
+            Style::OpenAi => format!("{}/chat/completions", self.base()),
+            Style::Anthropic => format!("{}/messages", self.base()),
         }
     }
 
@@ -280,6 +306,166 @@ impl Provider {
                 .with_context(|| format!("reading {}'s answer", self.label)),
             _ => bail!("{}'s answer isn't JSON", self.label),
         }
+    }
+
+    /// Otter's tools as this provider takes them (D-095): each a name, a
+    /// description and a JSON schema.
+    pub fn tool_defs(&self, tools: &[(&str, &str, &Value)]) -> Value {
+        Value::Array(
+            tools
+                .iter()
+                .map(|(name, description, schema)| match self.style {
+                    Style::OpenAi => json!({
+                        "type": "function",
+                        "function": {"name": name, "description": description, "parameters": schema}
+                    }),
+                    Style::Anthropic => json!({
+                        "name": name, "description": description, "input_schema": schema
+                    }),
+                })
+                .collect(),
+        )
+    }
+
+    /// A tool-using conversation's first message.
+    pub fn first_message(&self, prompt: &str) -> Value {
+        json!({"role": "user", "content": prompt})
+    }
+
+    /// One round's request (exported for tests).
+    pub fn tool_request(
+        &self,
+        model: &str,
+        system: &str,
+        messages: &[Value],
+        tools: &Value,
+    ) -> Value {
+        match self.style {
+            Style::OpenAi => {
+                let mut all = vec![json!({"role": "system", "content": system})];
+                all.extend(messages.iter().cloned());
+                json!({"model": model, "messages": all, "tools": tools})
+            }
+            Style::Anthropic => json!({
+                "model": model,
+                "max_tokens": 4096,
+                "system": system,
+                "messages": messages,
+                "tools": tools
+            }),
+        }
+    }
+
+    /// What the model said in a round, and the tools it asked for.
+    pub fn read_round(&self, response: &Value) -> Result<Round> {
+        if let Some(e) = response.get("error") {
+            bail!(
+                "{}: {}",
+                self.label,
+                e["message"].as_str().unwrap_or("request failed")
+            );
+        }
+        match self.style {
+            Style::OpenAi => {
+                let message = &response["choices"][0]["message"];
+                if message.is_null() {
+                    bail!("{} gave no answer", self.label);
+                }
+                let uses = message["tool_calls"]
+                    .as_array()
+                    .map(|calls| {
+                        calls
+                            .iter()
+                            .map(|c| ToolUse {
+                                id: c["id"].as_str().unwrap_or_default().to_owned(),
+                                name: c["function"]["name"]
+                                    .as_str()
+                                    .unwrap_or_default()
+                                    .to_owned(),
+                                input: c["function"]["arguments"]
+                                    .as_str()
+                                    .and_then(|a| serde_json::from_str(a).ok())
+                                    .unwrap_or_else(|| json!({})),
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                Ok(Round {
+                    text: message["content"].as_str().unwrap_or_default().to_owned(),
+                    uses,
+                    assistant: message.clone(),
+                })
+            }
+            Style::Anthropic => {
+                let blocks = response["content"]
+                    .as_array()
+                    .ok_or_else(|| anyhow!("{} gave no answer", self.label))?;
+                let text = blocks
+                    .iter()
+                    .filter(|b| b["type"] == "text")
+                    .filter_map(|b| b["text"].as_str())
+                    .collect::<Vec<_>>()
+                    .join("");
+                let uses = blocks
+                    .iter()
+                    .filter(|b| b["type"] == "tool_use")
+                    .map(|b| ToolUse {
+                        id: b["id"].as_str().unwrap_or_default().to_owned(),
+                        name: b["name"].as_str().unwrap_or_default().to_owned(),
+                        input: b["input"].clone(),
+                    })
+                    .collect();
+                Ok(Round {
+                    text,
+                    uses,
+                    assistant: json!({"role": "assistant", "content": blocks}),
+                })
+            }
+        }
+    }
+
+    /// The messages that give a round's tool calls their answers.
+    pub fn tool_results(&self, results: &[(String, String)]) -> Vec<Value> {
+        match self.style {
+            Style::OpenAi => results
+                .iter()
+                .map(|(id, output)| json!({"role": "tool", "tool_call_id": id, "content": output}))
+                .collect(),
+            Style::Anthropic => vec![json!({
+                "role": "user",
+                "content": results
+                    .iter()
+                    .map(|(id, output)| json!({"type": "tool_result", "tool_use_id": id, "content": output}))
+                    .collect::<Vec<_>>()
+            })],
+        }
+    }
+
+    /// One round of a tool-using turn: the request, the answer read.
+    pub async fn tool_round(
+        &self,
+        env: &EnvMap,
+        key: &str,
+        model: Option<&str>,
+        system: &str,
+        messages: &[Value],
+        tools: &Value,
+    ) -> Result<Round> {
+        let body = self.tool_request(&self.model(model)?, system, messages, tools);
+        let curl = self
+            .curl(env, key, &self.endpoint(), Some(&body), false)
+            .await?;
+        let out = curl.child.wait_with_output().await?;
+        if !out.status.success() {
+            bail!(
+                "reaching {}: {}",
+                self.label,
+                String::from_utf8_lossy(&out.stderr).trim()
+            );
+        }
+        let v: Value = serde_json::from_slice(&out.stdout)
+            .with_context(|| format!("reading {}'s response", self.label))?;
+        self.read_round(&v)
     }
 
     /// One structured answer. `image`: a PNG to look at.
@@ -566,6 +752,71 @@ fn sse_piece(line: &str) -> Sse {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Otter's tools in a round, for each kind of API (D-095), and the
+    /// model's tool calls read back.
+    #[test]
+    fn a_tool_round_in_either_api() {
+        let schema = json!({"type": "object", "properties": {}});
+        let tools = [("get_task", "Where it stands.", &schema)];
+        let messages = vec![json!({"role": "user", "content": "Why is it stuck?"})];
+
+        let openai = get("openrouter").unwrap();
+        let defs = openai.tool_defs(&tools);
+        assert_eq!(defs[0]["function"]["name"], "get_task");
+        let body = openai.tool_request("m", "You are Otter.", &messages, &defs);
+        assert_eq!(
+            body["messages"][0],
+            json!({"role": "system", "content": "You are Otter."})
+        );
+        assert_eq!(body["messages"][1]["content"], "Why is it stuck?");
+        let round = openai
+            .read_round(&json!({"choices": [{"message": {"role": "assistant", "content": null,
+                "tool_calls": [{"id": "c1", "type": "function", "function": {"name": "get_task", "arguments": "{\"task_id\": \"ft_1\"}"}}]}}]}))
+            .unwrap();
+        assert_eq!(
+            round.uses,
+            [ToolUse {
+                id: "c1".into(),
+                name: "get_task".into(),
+                input: json!({"task_id": "ft_1"})
+            }]
+        );
+        assert_eq!(
+            openai.tool_results(&[("c1".into(), "{}".into())]),
+            [json!({"role": "tool", "tool_call_id": "c1", "content": "{}"})]
+        );
+        let done = openai
+            .read_round(&json!({"choices": [{"message": {"role": "assistant", "content": "It waits on you."}}]}))
+            .unwrap();
+        assert!(done.uses.is_empty());
+        assert_eq!(done.text, "It waits on you.");
+
+        let anthropic = get("anthropic").unwrap();
+        let defs = anthropic.tool_defs(&tools);
+        assert_eq!(defs[0]["input_schema"], schema);
+        let body = anthropic.tool_request("m", "You are Otter.", &messages, &defs);
+        assert_eq!(body["system"], "You are Otter.");
+        assert_eq!(body["messages"], json!(messages));
+        let round = anthropic
+            .read_round(&json!({"content": [{"type": "text", "text": "Looking."},
+                {"type": "tool_use", "id": "t1", "name": "get_task", "input": {}}], "stop_reason": "tool_use"}))
+            .unwrap();
+        assert_eq!(round.text, "Looking.");
+        assert_eq!(round.uses[0].name, "get_task");
+        assert_eq!(round.assistant["role"], "assistant");
+        assert_eq!(
+            anthropic.tool_results(&[("t1".into(), "{}".into())]),
+            [
+                json!({"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t1", "content": "{}"}]})
+            ]
+        );
+        assert!(
+            anthropic
+                .read_round(&json!({"error": {"message": "overloaded"}}))
+                .is_err()
+        );
+    }
     use std::os::unix::fs::PermissionsExt;
 
     fn openrouter() -> &'static Provider {
