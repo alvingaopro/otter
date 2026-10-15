@@ -6,7 +6,7 @@ import { Menu, type MenuItem } from "./Menu";
 import { NewSessionDialog } from "./NewSessionDialog";
 import { FilesPanel } from "./FilesPanel";
 import { TimelinePanel } from "./TimelinePanel";
-import { PanelGrip, SIDE_PANEL, usePanelWidth } from "./panelResize";
+import { PanelGrip, SIDE_PANEL, SPLIT, usePanelWidth } from "./panelResize";
 import { BriefDialog, briefSummary } from "./BriefDialog";
 import { ChangesPanel, type Changes } from "./ChangesPanel";
 import { changesLine } from "./changes";
@@ -14,7 +14,7 @@ import { FindPanel } from "./FindPanel";
 import { ago, kindLabel, sessionGlyph } from "./model";
 import { explain, invokeNewer } from "./newer";
 import { RenameDialog } from "./RenameDialog";
-import { Terminal, type Ending } from "./Terminal";
+import { SessionTerminal } from "./SessionTerminal";
 import type { AttentionView, Placed, SessionPort, SessionView, WorkspaceChanges } from "./types";
 
 type Side = "files" | "timeline" | "changes";
@@ -72,8 +72,6 @@ export function WorkspacePane({
 }: Props) {
   const { host, ws } = placed;
   const current = ws.sessions.find((s) => s.id === session) ?? ws.sessions[0];
-  const [ending, setEnding] = useState<Ending | null>(null);
-  const [generation, setGeneration] = useState(0);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [open, setOpen] = useState<Open>(null);
@@ -142,42 +140,41 @@ export function WorkspacePane({
   }, [active, host.name, host.status, ws.id, runningAny]);
   const shownPorts = [...new Map(ports.map((p) => [p.port, p])).values()].sort((a, b) => a.port - b.port);
 
-  // A new session, or a new execution of it, starts a fresh attach.
-  const running = current?.status === "running";
+  useEffect(() => setError(null), [placed.key, current?.id]);
+
+  // Split (D-110): a second session on the right, its own terminal; the one
+  // clicked last has the keyboard. Not remembered: a session gone since
+  // would be worse than no split.
+  const [split, setSplit] = useState<string | null>(null);
+  const [right, setRight] = useState(false);
+  const [splitWidth, setSplitWidth] = usePanelWidth(SPLIT);
+  const beside = ws.sessions.find((s) => s.id === split && s.id !== current?.id);
   useEffect(() => {
-    setEnding(null);
-    setError(null);
-  }, [placed.key, current?.id]);
-  useEffect(() => {
-    if (running && ending && ending.kind !== "error") {
-      setEnding(null);
-      setGeneration((g) => g + 1);
+    if (split && !beside) {
+      setSplit(null);
+      setRight(false);
     }
-  }, [running]);
-
-  // Lost connection: try again while the host is up.
-  useEffect(() => {
-    if (ending?.kind !== "lost" || host.status !== "connected") return;
-    const t = setTimeout(() => {
-      setEnding(null);
-      setGeneration((g) => g + 1);
-    }, 2000);
-    return () => clearTimeout(t);
-  }, [ending, host.status]);
-
-  // A session that isn't running, however it got there (also when we never
-  // watched it end): the last screen stays visible, dimmed.
-  const over: string | null = !current
-    ? null
-    : current.status === "completed" || current.status === "failed"
-      ? `${current.name} exited${current.exitCode !== undefined ? ` with status ${current.exitCode}` : ""}.`
-      : current.status === "stopped"
-        ? `${current.name} was stopped.`
-        : current.status === "lost"
-          ? `${current.name}'s process is gone.`
-          : current.status === "pending" && current.launchError
-            ? `${current.name} failed to start: ${current.launchError}`
-            : null;
+  }, [split, beside]);
+  /** Show the next session beside this one, or stop showing two. */
+  function toggleSplit() {
+    if (beside) {
+      setSplit(null);
+      setRight(false);
+      return;
+    }
+    const ids = ws.sessions.map((s) => s.id);
+    const at = current ? ids.indexOf(current.id) : -1;
+    const next = ids.length > 1 ? ids[(at + 1) % ids.length] : undefined;
+    if (next && next !== current?.id) setSplit(next);
+  }
+  /** A tab: shown on the left; the one on the right trades places. */
+  function choose(id: string) {
+    if (beside && id === beside.id && current) setSplit(current.id);
+    setRight(false);
+    onSession(id);
+  }
+  /** The session the keyboard goes to (⌘F finds in it). */
+  const keyed = beside && right ? beside : current;
 
   const attention: AttentionView | undefined =
     current?.attention ?? ws.attention.find((a) => !a.sessionId);
@@ -221,6 +218,10 @@ export function WorkspacePane({
         e.preventDefault();
         e.stopPropagation();
         setFinding((f) => !f);
+      } else if (!e.shiftKey && e.code === "Backslash" && current && !archived) {
+        e.preventDefault();
+        e.stopPropagation();
+        toggleSplit();
       } else if (e.shiftKey && (e.code === "BracketLeft" || e.code === "BracketRight") && current) {
         e.preventDefault();
         e.stopPropagation();
@@ -232,7 +233,7 @@ export function WorkspacePane({
     };
     window.addEventListener("keydown", onKey, true);
     return () => window.removeEventListener("keydown", onKey, true);
-  }, [active, open, archived, current?.id, sessionIds]);
+  }, [active, open, archived, current?.id, sessionIds, split]);
   useEffect(() => setFinding(false), [current?.id]);
 
   async function act(command: string, args: Record<string, unknown>): Promise<boolean> {
@@ -366,12 +367,16 @@ export function WorkspacePane({
 
       <div className="tabs" role="tablist" aria-label="Sessions">
         {ws.sessions.map((s) => (
-          <div key={s.id} className={s.id === current?.id ? "tab selected" : "tab"}>
+          <div
+            key={s.id}
+            className={s.id === current?.id ? "tab selected" : s.id === beside?.id ? "tab beside" : "tab"}
+            title={s.id === beside?.id ? "On the right" : undefined}
+          >
             <button
               role="tab"
               aria-selected={s.id === current?.id}
               className="tab-main"
-              onClick={() => onSession(s.id)}
+              onClick={() => choose(s.id)}
               onDoubleClick={() => {
                 setRenaming(s);
                 setOpen("rename-session");
@@ -397,6 +402,20 @@ export function WorkspacePane({
             </button>
           </div>
         ))}
+        {!archived && ws.sessions.length > 1 && (
+          <button
+            className={beside ? "icon-btn new-tab split-btn on" : "icon-btn new-tab split-btn"}
+            aria-label={beside ? "Show one session" : "Show two sessions side by side"}
+            aria-pressed={!!beside}
+            title={beside ? "Back to one session (⌘\\)" : "Split: the next session beside this one (⌘\\)"}
+            onClick={toggleSplit}
+          >
+            <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true">
+              <rect x="1" y="1.5" width="10" height="9" rx="1.5" fill="none" stroke="currentColor" strokeWidth="1.3" />
+              <path d="M6 1.5v9" stroke="currentColor" strokeWidth="1.3" />
+            </svg>
+          </button>
+        )}
         {!archived && (
           <button className="icon-btn new-tab" aria-label="New session" title="New session" onClick={() => setOpen("new-session")}>
             <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true">
@@ -492,66 +511,54 @@ export function WorkspacePane({
         </div>
       ) : current ? (
         <>
-          {finding && (
+          {finding && keyed && (
             <FindPanel
               host={host.name}
               workspace={ws.id}
-              session={current.id}
-              name={current.name}
+              session={keyed.id}
+              name={keyed.name}
               onClose={() => setFinding(false)}
             />
           )}
-          <Terminal
-            key={`${placed.key}/${current.id}`}
-            host={host.name}
-            workspace={ws.id}
-            session={current.id}
-            generation={generation}
-            onEnd={setEnding}
-            label={current.name}
-            where={host.name}
-            dimmed={ending !== null || over !== null}
-            theme={theme}
-            active={active && !finding}
-          />
-          {!ending && over && (
-            <div className="ending">
-              <span>{over}</span>
-              <span className="banner-actions">
-                <button className="btn outline" disabled={busy} onClick={() => { setClosing(current.id); setOpen("delete-session"); }}>
-                  Delete
-                </button>
-                <button className="btn primary" disabled={busy} onClick={restart}>
-                  {current.agent ? "Restart (resumes the conversation)" : "Restart"}
-                </button>
-              </span>
-            </div>
-          )}
-          {ending && (
-            <div className="ending">
-              <span>
-                {ending.kind === "exited" &&
-                  `${current.name} exited${ending.exitCode !== undefined ? ` with status ${ending.exitCode}` : ""}`}
-                {ending.kind === "ended" && `${current.name} ended`}
-                {ending.kind === "lost" && `Reconnecting to ${host.name}… the session keeps running.`}
-                {ending.kind === "error" && ending.message}
-              </span>
-              {ending.kind !== "lost" && (
-                <span className="banner-actions">
-                  {ending.kind === "error" && (
-                    <button className="btn outline" onClick={() => { setEnding(null); setGeneration((g) => g + 1); }}>
-                      Retry
-                    </button>
-                  )}
-                  {(ending.kind === "exited" || ending.kind === "ended") && (
-                    <button className="btn" disabled={busy} onClick={restart}>
-                      Restart
-                    </button>
-                  )}
-                </span>
-              )}
-            </div>
-          )}
+          <div className="session-row" style={{ "--split-width": `${splitWidth}px` } as CSSProperties}>
+            <SessionTerminal
+              key={current.id}
+              host={host}
+              workspace={ws.id}
+              wsKey={placed.key}
+              session={current}
+              theme={theme}
+              active={active && !finding && !(beside && right)}
+              busy={busy}
+              onRestart={() => void act("session_restart", { host: host.name, workspace: ws.id, session: current.id })}
+              onDelete={() => {
+                setClosing(current.id);
+                setOpen("delete-session");
+              }}
+              onFocus={() => setRight(false)}
+            />
+            {beside && (
+              <>
+                <PanelGrip panel={SPLIT} width={splitWidth} onResize={setSplitWidth} label="Right session width" />
+                <SessionTerminal
+                  key={beside.id}
+                  host={host}
+                  workspace={ws.id}
+                  wsKey={placed.key}
+                  session={beside}
+                  theme={theme}
+                  active={active && !finding && right}
+                  busy={busy}
+                  onRestart={() => void act("session_restart", { host: host.name, workspace: ws.id, session: beside.id })}
+                  onDelete={() => {
+                    setClosing(beside.id);
+                    setOpen("delete-session");
+                  }}
+                  onFocus={() => setRight(true)}
+                />
+              </>
+            )}
+          </div>
         </>
       ) : (
         <div className="empty">
