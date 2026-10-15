@@ -904,13 +904,17 @@ impl Daemon {
 
     /// When a task ends (done or cancelled), the workspace made for it
     /// (D-080) is archived (D-105): files, branch and conversations kept,
-    /// nothing left running. Not while something the developer may be using
-    /// runs there — a shell, a service, a command, an agent at work or
-    /// waiting on them; then it stays as it is.
+    /// nothing left running. Not while the task still asks something (a
+    /// push to allow, say: answering it tries again), nor while something
+    /// the developer may be using runs there — a shell, a service, a
+    /// command, an agent at work or waiting on them; then it stays.
     pub(crate) async fn put_away_workspace(self: &std::sync::Arc<Self>, id: &FeatureId) {
         let Ok(f) = self.feature_get(id.as_str()).await else {
             return;
         };
+        if f.pending_decisions().next().is_some() {
+            return;
+        }
         let Some(ws_id) = f.workspace_id.clone() else {
             return;
         };
@@ -987,6 +991,17 @@ impl Daemon {
         self.feature_changed(&applied);
         if applied.duplicate {
             return Ok(applied.feature);
+        }
+        // Answered what an ended task still asked: its own workspace may be
+        // put away now (D-105).
+        if matches!(p.action, FeatureAction::Decide { .. })
+            && matches!(
+                applied.feature.status,
+                FeatureStatus::Done | FeatureStatus::Cancelled
+            )
+        {
+            self.finished.lock().unwrap().push(id.clone());
+            self.feature_wake.notify_one();
         }
         // What the action means for a run in progress.
         use otter_core::feature::RunState;

@@ -2183,6 +2183,38 @@ async fn a_waiting_feature_gets_a_worktree_of_its_own() {
     )
     .await
     .unwrap();
+    // A push it still asks to be allowed (raised as review ended) holds the
+    // workspace until it's answered.
+    let pending = eventually("archived, or held by a question", || async {
+        let ws = host.conn().await.workspace_get(own.as_str()).await.unwrap();
+        let f = host.conn().await.feature_get(&second).await.unwrap();
+        let asks: Vec<_> = f.pending_decisions().cloned().collect();
+        match ws.state {
+            WorkspaceState::Archived => Some(Vec::new()),
+            _ if !asks.is_empty() => Some(asks),
+            _ => None,
+        }
+    })
+    .await;
+    if !pending.is_empty() {
+        tokio::time::sleep(Duration::from_millis(1500)).await;
+        let ws = conn.workspace_get(own.as_str()).await.unwrap();
+        assert_eq!(ws.state, WorkspaceState::Ready, "held while it asks");
+        for d in pending {
+            conn.feature_act(
+                &format!("deny-{}", d.id),
+                &second,
+                FeatureAction::Decide {
+                    decision_id: d.id.clone(),
+                    approve: false,
+                    answer: None,
+                    answers: None,
+                },
+            )
+            .await
+            .unwrap();
+        }
+    }
     eventually("its own workspace is archived", || async {
         let ws = host.conn().await.workspace_get(own.as_str()).await.unwrap();
         (ws.state == WorkspaceState::Archived).then_some(())
@@ -2199,23 +2231,8 @@ async fn a_waiting_feature_gets_a_worktree_of_its_own() {
         conn.workspace_get("app").await.unwrap().state,
         WorkspaceState::Ready
     );
-    // More asked of it (not pushed yet): its workspace comes back, and the
-    // work goes on there.
+    // More asked of it: its workspace comes back, and the work goes on there.
     let runs = f.runs.len();
-    for d in f.pending_decisions().cloned().collect::<Vec<_>>() {
-        conn.feature_act(
-            &format!("deny-{}", d.id),
-            &second,
-            FeatureAction::Decide {
-                decision_id: d.id.clone(),
-                approve: false,
-                answer: None,
-                answers: None,
-            },
-        )
-        .await
-        .unwrap();
-    }
     conn.feature_act(
         "more-second",
         &second,
