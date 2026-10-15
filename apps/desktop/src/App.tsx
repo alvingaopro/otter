@@ -138,6 +138,13 @@ export default function App() {
         setOpen({ kind: "new" });
         return;
       }
+      // ⌘,: Settings (the app menu has it too).
+      if (e.metaKey && !e.shiftKey && !e.altKey && !e.ctrlKey && e.key === ",") {
+        e.preventDefault();
+        e.stopPropagation();
+        setOpen({ kind: "settings" });
+        return;
+      }
       // ⌘K: go to a workspace (D-106).
       if (e.metaKey && !e.shiftKey && !e.altKey && !e.ctrlKey && e.key.toLowerCase() === "k") {
         e.preventDefault();
@@ -153,7 +160,10 @@ export default function App() {
     };
     window.addEventListener("keydown", onKey, true);
     const unlisten = listen<HostsPayload>("hosts", (e) => setPayload(e.payload));
-    const unmenu = listen<string>("menu", (e) => e.payload === "install-cli" && setOpen({ kind: "cli" }));
+    const unmenu = listen<string>("menu", (e) => {
+      if (e.payload === "install-cli") setOpen({ kind: "cli" });
+      if (e.payload === "settings") setOpen({ kind: "settings" });
+    });
     const tick = setInterval(() => setNow(Date.now()), 15_000);
     void (async () => {
       if (!(await isPermissionGranted())) await requestPermission();
@@ -333,7 +343,7 @@ export default function App() {
           }}
           settings={[
             { label: `Theme: ${themeChoice === "system" ? "match system" : themeChoice}`, onSelect: cycleTheme },
-            { label: "Otter's model and API keys…", onSelect: () => setOpen({ kind: "settings" }) },
+            { label: "Settings… (⌘,)", onSelect: () => setOpen({ kind: "settings" }) },
             { label: "Add a host…", onSelect: () => setOpen({ kind: "add" }) },
             {
               label: cli?.version ? "Update command line tools…" : "Install command line tools…",
