@@ -7,9 +7,9 @@ mod attach;
 mod chat;
 mod dashboard;
 mod doctor;
-mod features;
 mod output;
 mod target;
+mod tasks;
 mod triggers;
 
 use std::collections::HashMap;
@@ -51,15 +51,15 @@ enum Command {
     /// Manage sessions.
     #[command(subcommand)]
     Session(SessionCommand),
-    /// Features: work Otter plans, has coded, checks, and brings to you.
-    #[command(subcommand)]
-    Feature(features::FeatureCommand),
+    /// Tasks: work Otter plans, has coded, checks, and brings to you.
+    #[command(subcommand, alias = "feature")]
+    Task(tasks::TaskCommand),
     /// Triggers: work that starts by itself, unattended, under a policy set in advance.
     #[command(subcommand)]
     Trigger(triggers::TriggerCommand),
     /// The coding agent's conversations: what it was asked, did and said.
     #[command(subcommand, visible_alias = "conv")]
-    Conversation(features::ConversationCommand),
+    Conversation(tasks::ConversationCommand),
     /// The coding runtime on each host: what runs the coding agent, and what
     /// it can do.
     #[command(subcommand)]
@@ -391,11 +391,11 @@ async fn run(cli: Cli) -> Result<()> {
         Command::Host(cmd) => host_command(&mut config, cmd, json).await,
         Command::Workspace(cmd) => workspace_command(&config, cmd, json).await,
         Command::Session(cmd) => session_command(&config, cmd, json).await,
-        Command::Feature(cmd) => features::feature_command(&config, cmd, json).await,
+        Command::Task(cmd) => tasks::task_command(&config, cmd, json).await,
         Command::Trigger(cmd) => triggers::command(&config, cmd, json).await,
-        Command::Conversation(cmd) => features::conversation_command(&config, cmd, json).await,
+        Command::Conversation(cmd) => tasks::conversation_command(&config, cmd, json).await,
         Command::Runtime(RuntimeCommand::Status { host }) => {
-            features::runtime_status(&config, host, json).await
+            tasks::runtime_status(&config, host, json).await
         }
         Command::Ls {
             watch,
@@ -839,10 +839,10 @@ async fn list_workspaces(config: &Config, json: bool, archived: bool) -> Result<
     if config.hosts.is_empty() {
         bail!("no hosts registered; add one with `otter host add <name>`");
     }
-    let mut tasks = JoinSet::new();
+    let mut jobs = JoinSet::new();
     for (i, host) in config.hosts.iter().enumerate() {
         let transport = config.transport(host);
-        tasks.spawn(async move {
+        jobs.spawn(async move {
             let result = async {
                 let mut conn = Connection::connect(&transport).await?;
                 conn.workspace_list().await
@@ -851,7 +851,7 @@ async fn list_workspaces(config: &Config, json: bool, archived: bool) -> Result<
             (i, result)
         });
     }
-    let mut results: Vec<_> = tasks.join_all().await;
+    let mut results: Vec<_> = jobs.join_all().await;
     results.sort_by_key(|(i, _)| *i);
     if !archived {
         for (_, r) in &mut results {

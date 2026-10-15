@@ -13,7 +13,7 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-use crate::ids::{AttentionId, ExecutionId, FeatureId, SessionId, WorkspaceId};
+use crate::ids::{AttentionId, ExecutionId, SessionId, TaskId, WorkspaceId};
 
 pub type Timestamp = DateTime<Utc>;
 
@@ -45,9 +45,9 @@ pub struct Workspace {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub attention: Vec<Attention>,
     /// The task it was made for (D-080), which puts it away when it ends
-    /// (D-105).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub feature_id: Option<FeatureId>,
+    /// (D-105). Was `feature_id` (D-107).
+    #[serde(default, alias = "feature_id", skip_serializing_if = "Option::is_none")]
+    pub task_id: Option<TaskId>,
 }
 
 impl Workspace {
@@ -807,7 +807,7 @@ mod tests {
             updated_at: Utc::now(),
             sessions: vec![],
             attention: vec![],
-            feature_id: None,
+            task_id: None,
         };
         let json = serde_json::to_string(&ws).unwrap();
         assert!(json.contains(r#""source":{"type":"empty"}"#), "{json}");

@@ -4,15 +4,15 @@
 //! the control-plane CLI (`otter`) and the future desktop app.
 
 pub mod conversation;
-pub mod feature;
 pub mod ids;
 pub mod model;
 pub mod redact;
+pub mod task;
 pub mod trigger;
 
 pub use ids::{
-    AttentionId, BlockId, ConversationId, DecisionId, EvidenceId, ExecutionId, FeatureId,
-    MessageId, RunId, SessionId, StepId, ToolCallId, TriggerId, TurnId, WorkspaceId,
+    AttentionId, BlockId, ConversationId, DecisionId, EvidenceId, ExecutionId, MessageId, RunId,
+    SessionId, StepId, TaskId, ToolCallId, TriggerId, TurnId, WorkspaceId,
 };
 pub use model::*;
 

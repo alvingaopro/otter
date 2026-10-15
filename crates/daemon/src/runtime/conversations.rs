@@ -42,11 +42,11 @@ use otter_core::conversation::{
     Applied, CONVERSATION_SCHEMA, Conversation, Op, Rejection, TurnOutcome,
 };
 use otter_core::model::Timestamp;
-use otter_core::{ConversationId, FeatureId};
+use otter_core::{ConversationId, TaskId};
 use serde::{Deserialize, Serialize};
 
-/// Told about every committed change: (conversation, revision, feature).
-pub type Notify = Box<dyn Fn(&ConversationId, u64, Option<&FeatureId>) + Send + Sync>;
+/// Told about every committed change: (conversation, revision, task).
+pub type Notify = Box<dyn Fn(&ConversationId, u64, Option<&TaskId>) + Send + Sync>;
 
 /// A snapshot every this many records.
 const SNAPSHOT_EVERY: u64 = 64;
@@ -417,9 +417,9 @@ impl Conversations {
         let _ = self.notify.set(notify);
     }
 
-    fn changed(&self, id: &ConversationId, revision: u64, feature: Option<&FeatureId>) {
+    fn changed(&self, id: &ConversationId, revision: u64, task: Option<&TaskId>) {
         if let Some(n) = self.notify.get() {
-            n(id, revision, feature);
+            n(id, revision, task);
         }
     }
 
@@ -439,7 +439,7 @@ impl Conversations {
             .lock()
             .unwrap()
             .insert(c.id.clone(), Arc::new(Mutex::new(entry)));
-        self.changed(&c.id, c.revision, c.feature_id.as_ref());
+        self.changed(&c.id, c.revision, c.task_id.as_ref());
         Ok(())
     }
 
@@ -452,15 +452,13 @@ impl Conversations {
         self.entry(id)?.lock().unwrap().read_only.clone()
     }
 
-    /// Newest activity first; only `feature`'s, if given.
-    pub fn list(&self, feature: Option<&str>) -> Vec<Conversation> {
+    /// Newest activity first; only `task`'s, if given.
+    pub fn list(&self, task: Option<&str>) -> Vec<Conversation> {
         let entries: Vec<_> = self.map.lock().unwrap().values().cloned().collect();
         let mut out: Vec<Conversation> = entries
             .iter()
             .map(|e| e.lock().unwrap().conversation.clone())
-            .filter(|c| {
-                feature.is_none_or(|f| c.feature_id.as_ref().is_some_and(|x| x.as_str() == f))
-            })
+            .filter(|c| task.is_none_or(|f| c.task_id.as_ref().is_some_and(|x| x.as_str() == f)))
             .collect();
         out.sort_by_key(|c| std::cmp::Reverse(c.updated_at));
         out
@@ -518,9 +516,9 @@ impl Conversations {
         if e.since_snapshot >= SNAPSHOT_EVERY {
             self.snapshot(&mut e);
         }
-        let (revision, feature) = (e.conversation.revision, e.conversation.feature_id.clone());
+        let (revision, task) = (e.conversation.revision, e.conversation.task_id.clone());
         drop(e);
-        self.changed(id, revision, feature.as_ref());
+        self.changed(id, revision, task.as_ref());
         Some(Ok(applied))
     }
 
@@ -608,16 +606,15 @@ impl Conversations {
         Some(read().map(|r| (log_id, r)))
     }
 
-    /// Forget a feature's conversations (when the feature is deleted).
+    /// Forget a task's conversations (when the task is deleted).
     /// Only Otter's records go: the provider's own transcripts stay.
-    pub fn remove_for_feature(&self, feature: &FeatureId) {
+    pub fn remove_for_task(&self, task: &TaskId) {
         let mut map = self.map.lock().unwrap();
         let ids: Vec<ConversationId> = map
             .iter()
             .filter(|(_, e)| {
                 let e = e.lock().unwrap();
-                e.conversation.feature_id.as_ref() == Some(feature)
-                    && e.conversation.active_run.is_none()
+                e.conversation.task_id.as_ref() == Some(task) && e.conversation.active_run.is_none()
             })
             .map(|(id, _)| id.clone())
             .collect();
@@ -644,7 +641,7 @@ mod tests {
 
     fn new_conv(convs: &Conversations) -> ConversationId {
         let mut c = Conversation::new("claude", "sdk", "ws_1".into(), Utc::now());
-        c.feature_id = Some("ft_1".into());
+        c.task_id = Some("ft_1".into());
         let id = c.id.clone();
         convs.insert(c).unwrap();
         id
@@ -981,13 +978,13 @@ mod tests {
     }
 
     #[test]
-    fn deleting_a_features_conversations_removes_their_records() {
+    fn deleting_a_tasks_conversations_removes_their_records() {
         let dir = tempfile::tempdir().unwrap();
         let convs = Conversations::load(dir.path()).unwrap();
         let id = new_conv(&convs);
         assert_eq!(convs.list(Some("ft_1")).len(), 1);
         assert!(convs.list(Some("ft_2")).is_empty());
-        convs.remove_for_feature(&"ft_1".into());
+        convs.remove_for_task(&"ft_1".into());
         assert!(convs.get(id.as_str()).is_none());
         assert!(!dir.path().join(id.as_str()).exists());
     }

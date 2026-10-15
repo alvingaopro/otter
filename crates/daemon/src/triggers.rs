@@ -2,14 +2,14 @@
 //! a schedule kept here or fired by hand, under a policy the developer set
 //! in advance. Kept in `state/triggers.json`.
 //!
-//! - **One feature per occurrence:** an occurrence's feature is created
+//! - **One task per occurrence:** an occurrence's task is created
 //!   and started with command ids derived from the trigger and the
 //!   occurrence (`Trigger::command_id`), so firing it again — a retry, a
-//!   restart, a script run twice — finds the same feature.
+//!   restart, a script run twice — finds the same task.
 //! - **Missed occurrences** (otterd was down) fire once, the latest.
-//! - **No overlap:** an occurrence whose trigger's last feature is still at
+//! - **No overlap:** an occurrence whose trigger's last task is still at
 //!   work is skipped, and says so in the trigger's history.
-//! - **The policy** is applied to the feature as it's made: budget caps,
+//! - **The policy** is applied to the task as it's made: budget caps,
 //!   publishing allowed to the workspace's branch, a wait limit (enforced
 //!   by the controller, `waited_too_long`).
 
@@ -17,7 +17,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use chrono::Utc;
-use otter_core::feature::{FeatureAction, FeatureStatus};
+use otter_core::task::{TaskAction, TaskStatus};
 use otter_core::trigger::{Firing, Schedule, Started, Trigger};
 use otter_core::{Timestamp, TriggerId};
 use otter_protocol::{RpcError, TriggerCreate};
@@ -79,7 +79,7 @@ impl Daemon {
         otter_core::validate_name("trigger", &name).map_err(RpcError::invalid)?;
         if p.request.trim().is_empty() {
             return Err(RpcError::invalid(
-                "a trigger needs a request: what its features do",
+                "a trigger needs a request: what its tasks do",
             ));
         }
         match &p.schedule {
@@ -208,7 +208,7 @@ impl Daemon {
         }
     }
 
-    /// One occurrence: the trigger's feature, made and started once (D-083).
+    /// One occurrence: the trigger's task, made and started once (D-083).
     async fn fire(self: &Arc<Self>, t: &Trigger, occurrence: Timestamp) -> RpcResult<()> {
         let command = t.command_id(occurrence);
         // Already fired for this occurrence: nothing more.
@@ -217,13 +217,13 @@ impl Daemon {
         }
         // Made but not recorded (otterd stopped half way): each step below
         // finds what it already did, and the rest is done.
-        let made = self.features.lock().await.applied(&command).is_some();
-        // Its last feature still at work: this occurrence is skipped.
-        let last = t.history.iter().rev().find_map(|h| h.feature_id.clone());
+        let made = self.tasks.lock().await.applied(&command).is_some();
+        // Its last task still at work: this occurrence is skipped.
+        let last = t.history.iter().rev().find_map(|h| h.task_id.clone());
         if !made
             && let Some(id) = last
-            && let Ok(f) = self.feature_get(id.as_str()).await
-            && (f.status.is_active() || f.status == FeatureStatus::Blocked)
+            && let Ok(f) = self.task_get(id.as_str()).await
+            && (f.status.is_active() || f.status == TaskStatus::Blocked)
         {
             return self
                 .record_firing(
@@ -235,7 +235,7 @@ impl Daemon {
                 .await;
         }
         let f = self
-            .feature_create(otter_protocol::feature::FeatureCreate {
+            .task_create(otter_protocol::task::TaskCreate {
                 command_id: command.clone(),
                 title: t.title.clone(),
                 request: t.request.clone(),
@@ -262,7 +262,7 @@ impl Daemon {
             policy: t.policy.clone(),
         };
         let policy = t.policy.clone();
-        let applied = self.features.lock().await.apply(
+        let applied = self.tasks.lock().await.apply(
             &f.id,
             Some(&format!("{command}:policy")),
             move |f, _| {
@@ -283,13 +283,13 @@ impl Daemon {
         );
         let applied = applied?;
         if !applied.duplicate {
-            self.feature_changed(&applied);
+            self.task_changed(&applied);
         }
         self.clone()
-            .feature_act(otter_protocol::feature::FeatureAct {
+            .task_act(otter_protocol::task::TaskAct {
                 command_id: format!("{command}:start"),
-                feature: f.id.to_string(),
-                action: FeatureAction::Start,
+                task: f.id.to_string(),
+                action: TaskAction::Start,
             })
             .await?;
         self.record_firing(t, occurrence, Some(f.id), None).await
@@ -299,7 +299,7 @@ impl Daemon {
         &self,
         t: &Trigger,
         occurrence: Timestamp,
-        feature_id: Option<otter_core::FeatureId>,
+        task_id: Option<otter_core::TaskId>,
         skipped: Option<String>,
     ) -> RpcResult<()> {
         let mut store = self.triggers.lock().await;
@@ -309,7 +309,7 @@ impl Daemon {
             x.history.push(Firing {
                 occurrence,
                 at: Utc::now(),
-                feature_id,
+                task_id,
                 skipped,
             });
             let extra = x.history.len().saturating_sub(HISTORY);

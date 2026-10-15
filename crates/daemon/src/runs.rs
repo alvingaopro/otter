@@ -1,12 +1,12 @@
-//! Managed runs (D-044, D-055): one coding-agent run working on one feature
-//! step, bridged to the feature — progress becomes history, permission
+//! Managed runs (D-044, D-055): one coding-agent run working on one task
+//! step, bridged to the task — progress becomes history, permission
 //! requests become [`DecisionRequest`]s decided by policy, the Control Agent
 //! or the developer.
 //!
 //! A run serves a runtime conversation (`runtime::conversations`): the
 //! [`Actor`] owns the agent and the conversation's state; the bridge here
-//! listens to it and is the only thing that touches the feature. The
-//! feature's conversation continues across runs and steps (a resumed run is a
+//! listens to it and is the only thing that touches the task. The
+//! task's conversation continues across runs and steps (a resumed run is a
 //! new run, a new generation, of the same conversation, D-064); a new one
 //! starts only when there is none yet, or its session is gone.
 //!
@@ -23,26 +23,26 @@ use chrono::Utc;
 use otter_core::conversation::{
     Applied, Command, Conversation, Initiator, InputBlock, NativeBinding, Op, TurnOutcome,
 };
-use otter_core::feature::{
-    Decider, DecisionKind, DecisionRequest, DecisionStatus, Feature, FeatureEvent, FeatureStatus,
-    MessageRole, Risk, Run, RunState, StepStatus,
+use otter_core::task::{
+    Decider, DecisionKind, DecisionRequest, DecisionStatus, MessageRole, Risk, Run, RunState,
+    StepStatus, Task, TaskEvent, TaskStatus,
 };
-use otter_core::{ConversationId, DecisionId, FeatureId, RunId, StepId};
+use otter_core::{ConversationId, DecisionId, RunId, StepId, TaskId};
 use otter_protocol::RpcError;
 use tokio::sync::{mpsc, oneshot};
 
 use crate::daemon::{Daemon, RpcResult, workspace_not_found};
-use crate::features::{Change, message};
 use crate::runtime::actor::{Actor, ActorCmd, ActorEvent, SharedPulse};
 use crate::runtime::policy::{self, Proposal, Verdict};
 use crate::runtime::{CheckDecision, DecisionAsk, DecisionReply, RunLimits, RunSpec, runtime};
+use crate::tasks::{Change, message};
 
-/// The runtime features use (the only one with a managed mode so far).
+/// The runtime tasks use (the only one with a managed mode so far).
 pub const DEFAULT_RUNTIME: &str = "claude";
 
 /// A run in progress, as the rest of the daemon reaches it.
 pub(crate) struct LiveRun {
-    pub feature: FeatureId,
+    pub task: TaskId,
     /// The workspace it works in: one driver at a time (D-079).
     pub workspace: otter_core::WorkspaceId,
     pub conversation: ConversationId,
@@ -53,7 +53,7 @@ pub(crate) struct LiveRun {
     /// When the agent was last heard from (the no-progress watchdog).
     pulse: SharedPulse,
     /// What it did lately, newest last: kept here while it runs, not
-    /// rewritten into the feature for every tool (D-069).
+    /// rewritten into the task for every tool (D-069).
     activity: Arc<std::sync::Mutex<Vec<String>>>,
 }
 
@@ -64,7 +64,7 @@ const ACTIVITY_LINES: usize = 30;
 pub(crate) type Runs = std::sync::Mutex<HashMap<RunId, LiveRun>>;
 
 /// What a run that can't start because its workspace is taken says first:
-/// the feature waits, it doesn't fail (D-079).
+/// the task waits, it doesn't fail (D-079).
 pub(crate) const BUSY: &str = "busy: ";
 
 /// A workspace claimed by a run that is starting, until it's live (or not).
@@ -81,32 +81,30 @@ impl Drop for Claim<'_> {
 
 impl Daemon {
     /// Start a run of `step`: fresh (a new conversation), or continuing
-    /// `resume` (the agent's own conversation id) in the feature's
+    /// `resume` (the agent's own conversation id) in the task's
     /// conversation. `counts` charges an attempt to the budget.
     pub(crate) async fn start_run(
         self: &Arc<Self>,
-        feature_id: &FeatureId,
-        task_id: &StepId,
+        task_id: &TaskId,
+        step_id: &StepId,
         prompt: String,
         resume: Option<String>,
         counts: bool,
     ) -> RpcResult<RunId> {
-        let feature = self.feature_get(feature_id.as_str()).await?;
-        if !feature.status.is_active() {
+        let task = self.task_get(task_id.as_str()).await?;
+        if !task.status.is_active() {
             return Err(RpcError::conflict(format!(
-                "the feature is {}",
-                feature.status.as_str()
+                "the task is {}",
+                task.status.as_str()
             )));
         }
-        if feature.live_run().is_some() {
-            return Err(RpcError::conflict(
-                "a run is already working on this feature",
-            ));
+        if task.live_run().is_some() {
+            return Err(RpcError::conflict("a run is already working on this task"));
         }
-        let ws_id = feature
+        let ws_id = task
             .workspace_id
             .clone()
-            .ok_or_else(|| RpcError::conflict("the feature has no workspace yet"))?;
+            .ok_or_else(|| RpcError::conflict("the task has no workspace yet"))?;
         let ws = self
             .store
             .lock()
@@ -121,21 +119,21 @@ impl Daemon {
             let mut starting = self.starting.lock().unwrap();
             let holder = runs
                 .values()
-                .find(|r| r.workspace == ws.id && &r.feature != feature_id)
-                .map(|r| r.feature.clone())
-                .or_else(|| starting.get(&ws.id).filter(|f| *f != feature_id).cloned());
+                .find(|r| r.workspace == ws.id && &r.task != task_id)
+                .map(|r| r.task.clone())
+                .or_else(|| starting.get(&ws.id).filter(|f| *f != task_id).cloned());
             if let Some(other) = holder {
                 return Err(RpcError::conflict(format!("{BUSY}{other}")));
             }
-            starting.insert(ws.id.clone(), feature_id.clone());
+            starting.insert(ws.id.clone(), task_id.clone());
             Claim {
                 daemon: self.as_ref(),
                 workspace: ws.id.clone(),
             }
         };
         // Never two drivers for one conversation: not while a developer has
-        // it. The feature's steps share one (D-064).
-        if feature
+        // it. The task's steps share one (D-064).
+        if task
             .steps
             .iter()
             .filter_map(|t| t.session_id.as_ref())
@@ -145,24 +143,23 @@ impl Daemon {
             })
         {
             return Err(RpcError::conflict(
-                "the feature's interactive session is still running; quit it first",
+                "the task's interactive session is still running; quit it first",
             ));
         }
         let mut env = self.env_for_launch(&ws).await?;
         env.insert("OTTER_WORKSPACE_ID".into(), ws.id.to_string());
-        env.insert("OTTER_FEATURE_ID".into(), feature_id.to_string());
+        env.insert("OTTER_TASK_ID".into(), task_id.to_string());
         let (backend, coding_model) = {
             let s = self.settings.read().unwrap();
             (s.coding_backend(), s.coding_model())
         };
 
-        // The conversation: the feature's own when continuing it (D-064),
+        // The conversation: the task's own when continuing it (D-064),
         // else a new one. A run from before conversations brings its session
         // id (a trusted link: it is the run's own record), never a guess.
         let now = Utc::now();
         let continued = resume.as_ref().and_then(|sid| {
-            feature
-                .runs
+            task.runs
                 .iter()
                 .rev()
                 .find(|r| r.provider_session_id.as_ref() == Some(sid))
@@ -174,8 +171,8 @@ impl Daemon {
             Some(c) => (c.id, c.backend),
             None => {
                 let mut c = Conversation::new(DEFAULT_RUNTIME, &backend, ws.id.clone(), now);
-                c.feature_id = Some(feature_id.clone());
-                c.step_id = Some(task_id.clone());
+                c.task_id = Some(task_id.clone());
+                c.step_id = Some(step_id.clone());
                 c.binding = resume
                     .clone()
                     .map(|session_id| NativeBinding { session_id });
@@ -253,7 +250,7 @@ impl Daemon {
             current.binding.as_ref().map(|b| b.session_id.clone()),
             current.model.clone(),
         );
-        tracing::info!(runtime = rt.id(), feature = %feature_id, conversation = %conversation_id, generation, resume = native.is_some(), "starting a managed run");
+        tracing::info!(runtime = rt.id(), task = %task_id, conversation = %conversation_id, generation, resume = native.is_some(), "starting a managed run");
         let root = PathBuf::from(&ws.root);
         let handle = match rt
             .start(RunSpec {
@@ -282,56 +279,52 @@ impl Daemon {
         };
 
         let rid = run_id.clone();
-        let tid = task_id.clone();
+        let tid = step_id.clone();
         let (cid, turn) = (conversation_id.clone(), turn_id.clone());
-        let applied = self
-            .features
-            .lock()
-            .await
-            .apply(feature_id, None, move |f, now| {
-                let step = f
-                    .step_mut(&tid)
-                    .ok_or_else(|| RpcError::not_found(format!("no step `{tid}`")))?;
-                step.status = StepStatus::Running;
-                if counts {
-                    step.attempts += 1;
-                }
-                let mut changes = vec![Change::new(FeatureEvent::StepChanged {
-                    step_id: tid.clone(),
-                    status: StepStatus::Running,
-                })];
-                if counts {
-                    f.budget.iterations_used += 1;
-                }
-                f.runs.push(Run {
-                    id: rid.clone(),
+        let applied = self.tasks.lock().await.apply(task_id, None, move |f, now| {
+            let step = f
+                .step_mut(&tid)
+                .ok_or_else(|| RpcError::not_found(format!("no step `{tid}`")))?;
+            step.status = StepStatus::Running;
+            if counts {
+                step.attempts += 1;
+            }
+            let mut changes = vec![Change::new(TaskEvent::StepChanged {
+                step_id: tid.clone(),
+                status: StepStatus::Running,
+            })];
+            if counts {
+                f.budget.iterations_used += 1;
+            }
+            f.runs.push(Run {
+                id: rid.clone(),
+                step_id: tid.clone(),
+                runtime: DEFAULT_RUNTIME.into(),
+                state: RunState::Running,
+                started_at: now,
+                ended_at: None,
+                summary: None,
+                provider_session_id: native,
+                activity: vec![],
+                conversation_id: Some(cid),
+                turn_id: Some(turn),
+                worked_ms: 0,
+                working_since: Some(now),
+            });
+            changes.push(
+                Change::new(TaskEvent::RunStarted {
+                    run_id: rid.clone(),
                     step_id: tid.clone(),
                     runtime: DEFAULT_RUNTIME.into(),
-                    state: RunState::Running,
-                    started_at: now,
-                    ended_at: None,
-                    summary: None,
-                    provider_session_id: native,
-                    activity: vec![],
-                    conversation_id: Some(cid),
-                    turn_id: Some(turn),
-                    worked_ms: 0,
-                    working_since: Some(now),
-                });
-                changes.push(
-                    Change::new(FeatureEvent::RunStarted {
-                        run_id: rid.clone(),
-                        step_id: tid.clone(),
-                        runtime: DEFAULT_RUNTIME.into(),
-                    })
-                    .because(rid.as_str()),
-                );
-                Ok(changes)
-            });
+                })
+                .because(rid.as_str()),
+            );
+            Ok(changes)
+        });
         let applied = match applied {
             Ok(a) => a,
             Err(e) => {
-                // The feature changed under us: don't leave the agent running.
+                // The task changed under us: don't leave the agent running.
                 let mut handle = handle;
                 let _ = handle.stop().await;
                 self.end_conversation_run(
@@ -343,7 +336,7 @@ impl Daemon {
                 return Err(e);
             }
         };
-        self.feature_changed(&applied);
+        self.task_changed(&applied);
 
         let (tx, mailbox) = mpsc::channel(32);
         let (out, events) = mpsc::channel(256);
@@ -352,7 +345,7 @@ impl Daemon {
         self.runs.lock().unwrap().insert(
             run_id.clone(),
             LiveRun {
-                feature: feature_id.clone(),
+                task: task_id.clone(),
                 workspace: ws.id.clone(),
                 conversation: conversation_id.clone(),
                 tx: tx.clone(),
@@ -372,13 +365,13 @@ impl Daemon {
         .with_pulse(pulse);
         tokio::spawn(actor.run(mailbox));
         let daemon = self.clone();
-        let (fid, rid) = (feature_id.clone(), run_id.clone());
+        let (fid, rid) = (task_id.clone(), run_id.clone());
         tokio::spawn(async move {
             daemon
                 .bridge(fid, rid.clone(), root, events, tx, stopping)
                 .await;
             daemon.runs.lock().unwrap().remove(&rid);
-            daemon.feature_wake.notify_one();
+            daemon.task_wake.notify_one();
         });
         Ok(run_id)
     }
@@ -392,16 +385,13 @@ impl Daemon {
         (p.tools == 0).then(|| p.at.elapsed())
     }
 
-    /// The feature whose run works in `workspace` now, or is starting there
+    /// The task whose run works in `workspace` now, or is starting there
     /// (D-079).
-    pub(crate) fn workspace_holder(
-        &self,
-        workspace: &otter_core::WorkspaceId,
-    ) -> Option<FeatureId> {
+    pub(crate) fn workspace_holder(&self, workspace: &otter_core::WorkspaceId) -> Option<TaskId> {
         let runs = self.runs.lock().unwrap();
         runs.values()
             .find(|r| &r.workspace == workspace)
-            .map(|r| r.feature.clone())
+            .map(|r| r.task.clone())
             .or_else(|| self.starting.lock().unwrap().get(workspace).cloned())
     }
 
@@ -431,10 +421,10 @@ impl Daemon {
         );
     }
 
-    /// Follow one run's actor until the run ends, keeping the feature in step.
+    /// Follow one run's actor until the run ends, keeping the task in step.
     async fn bridge(
         self: &Arc<Self>,
-        feature: FeatureId,
+        task: TaskId,
         run: RunId,
         root: PathBuf,
         mut events: mpsc::Receiver<ActorEvent>,
@@ -442,8 +432,8 @@ impl Daemon {
         stopping: Arc<std::sync::Mutex<Option<(RunState, String)>>>,
     ) {
         // A planning turn's words are a proposal for Otter, not for the
-        // feature's conversation (D-064); its journal keeps them.
-        let quiet = self.feature_get(feature.as_str()).await.is_ok_and(|f| {
+        // task's conversation (D-064); its journal keeps them.
+        let quiet = self.task_get(task.as_str()).await.is_ok_and(|f| {
             f.runs
                 .iter()
                 .find(|r| r.id == run)
@@ -467,7 +457,7 @@ impl Daemon {
         while let Some(ev) = events.recv().await {
             match ev {
                 ActorEvent::Bound { session_id } => {
-                    self.update_run(&feature, &run, |r| r.provider_session_id = Some(session_id))
+                    self.update_run(&task, &run, |r| r.provider_session_id = Some(session_id))
                         .await;
                 }
                 ActorEvent::TurnStarted { .. } => {}
@@ -479,27 +469,27 @@ impl Daemon {
                         _ => draft.insert(Draft::new(block.to_string())),
                     };
                     if let Some(so_far) = d.push(&piece) {
-                        self.stream(&feature, &d.id, MessageRole::Agent, so_far, false);
+                        self.stream(&task, &d.id, MessageRole::Agent, so_far, false);
                     }
                 }
                 // What it says along the way streams (transient) and stays
-                // in the conversation's journal; the feature keeps one
+                // in the conversation's journal; the task keeps one
                 // message per turn, its result (D-069).
                 ActorEvent::Text { block, text, .. } => {
                     if let Some(d) = draft.take_if(|d| d.id == block.as_str())
                         && d.started()
                     {
-                        self.stream(&feature, &d.id, MessageRole::Agent, text.clone(), true);
+                        self.stream(&task, &d.id, MessageRole::Agent, text.clone(), true);
                     }
                     last_text = Some(text);
                 }
                 ActorEvent::ToolStarted { record, call } => {
-                    self.run_activity(&feature, &run, activity_line(&record.name, &call))
+                    self.run_activity(&task, &run, activity_line(&record.name, &call))
                         .await;
                 }
                 ActorEvent::Ask { interaction, ask } => {
                     let verdict = (self.reads_only(conversation.as_ref(), None)
-                        || self.answer_only(&feature).await)
+                        || self.answer_only(&task).await)
                         .then(|| policy::read_only(&ask.call))
                         .flatten()
                         .unwrap_or_else(|| policy::classify(&ask.call, &root));
@@ -508,7 +498,7 @@ impl Daemon {
                     // the conversation), not as a decision (D-069).
                     let waiting = verdict != Verdict::Allow
                         && self
-                            .record_ask(&feature, &run, &interaction, &ask, &verdict, grant)
+                            .record_ask(&task, &run, &interaction, &ask, &verdict, grant)
                             .await;
                     if !waiting {
                         let reply = match verdict {
@@ -534,7 +524,7 @@ impl Daemon {
                     ..
                 } => {
                     let verdict = (self.reads_only(conversation.as_ref(), None)
-                        || self.answer_only(&feature).await)
+                        || self.answer_only(&task).await)
                         .then(|| policy::read_only(&call))
                         .flatten()
                         .unwrap_or_else(|| policy::classify(&call, &root));
@@ -551,7 +541,7 @@ impl Daemon {
                                 questions: vec![],
                             };
                             self.record_ask(
-                                &feature,
+                                &task,
                                 &run,
                                 &DecisionId::generate(),
                                 &ask,
@@ -563,9 +553,9 @@ impl Daemon {
                                 reason: why.clone(),
                             }
                         }
-                        // Allowed already in this feature (D-066): goes on.
+                        // Allowed already in this task (D-066): goes on.
                         Verdict::Ask { .. }
-                            if self.granted(&feature, policy::grant(&call, &root)).await =>
+                            if self.granted(&task, policy::grant(&call, &root)).await =>
                         {
                             CheckDecision::Allow
                         }
@@ -596,7 +586,7 @@ impl Daemon {
                         // A question's answer is the agent's message, never
                         // the run's result: that stays the work's (D-089 M2.5).
                         if let Some(s) = summary {
-                            self.agent_said(&feature, &run, s).await;
+                            self.agent_said(&task, &run, s).await;
                         }
                         if next.is_none() {
                             ending = Some(work_ending.take().unwrap_or((
@@ -610,7 +600,7 @@ impl Daemon {
                         if announce
                             && let Some(s) = summary.clone().filter(|s| !s.trim().is_empty())
                         {
-                            self.agent_said(&feature, &run, s).await;
+                            self.agent_said(&task, &run, s).await;
                         }
                         // Said already: if a question's turn ends the run,
                         // this is still its result.
@@ -637,23 +627,22 @@ impl Daemon {
                             .unwrap()
                             .take()
                             .unwrap_or((RunState::Cancelled, "Stopped".into()));
-                        self.finish_run(&feature, &run, state, Some(reason), true)
+                        self.finish_run(&task, &run, state, Some(reason), true)
                             .await;
                         let _ = done.send(());
                     } else if let Some((state, summary, announce)) = ending.take() {
-                        self.finish_run(&feature, &run, state, summary, announce)
-                            .await;
+                        self.finish_run(&task, &run, state, summary, announce).await;
                     } else {
                         let why =
                             error.unwrap_or_else(|| "the agent exited before finishing".into());
                         // Lost mid-turn: what it was doing is unknown, so it
                         // isn't a failure to start over from (D-061).
                         let state = if outcome == TurnOutcome::OutcomeUnknown {
-                            self.unsettled_state(&feature, &run, &why).await
+                            self.unsettled_state(&task, &run, &why).await
                         } else {
                             (RunState::Failed, why)
                         };
-                        self.finish_run(&feature, &run, state.0, Some(state.1), true)
+                        self.finish_run(&task, &run, state.0, Some(state.1), true)
                             .await;
                     }
                     return;
@@ -666,7 +655,7 @@ impl Daemon {
             return;
         }
         self.finish_run(
-            &feature,
+            &task,
             &run,
             RunState::Failed,
             Some("the run ended unexpectedly".into()),
@@ -675,16 +664,16 @@ impl Daemon {
         .await;
     }
 
-    async fn update_run(&self, feature: &FeatureId, run: &RunId, f: impl FnOnce(&mut Run)) {
+    async fn update_run(&self, task: &TaskId, run: &RunId, f: impl FnOnce(&mut Run)) {
         let mut f = Some(f);
-        let applied = self.features.lock().await.apply(feature, None, |feat, _| {
+        let applied = self.tasks.lock().await.apply(task, None, |feat, _| {
             if let Some(r) = feat.run_mut(run) {
                 let before = r.state;
                 (f.take().unwrap())(r);
                 if r.state != before && !before.can_become(r.state) {
                     r.state = before;
                 } else if r.state != before {
-                    return Ok(vec![Change::new(FeatureEvent::RunChanged {
+                    return Ok(vec![Change::new(TaskEvent::RunChanged {
                         run_id: run.clone(),
                         state: r.state,
                     })]);
@@ -693,26 +682,26 @@ impl Daemon {
             Ok(vec![])
         });
         if let Ok(a) = applied {
-            self.feature_changed(&a);
+            self.task_changed(&a);
         }
     }
 
     /// Record a permission request under the interaction's id. True when
     /// someone has to decide; false when policy decided (the request is
     /// recorded as decided, for the audit trail).
-    /// Whether the developer allowed `grant` earlier in this feature.
-    async fn granted(&self, feature: &FeatureId, grant: Option<String>) -> bool {
+    /// Whether the developer allowed `grant` earlier in this task.
+    async fn granted(&self, task: &TaskId, grant: Option<String>) -> bool {
         let Some(g) = grant else {
             return false;
         };
-        self.feature_get(feature.as_str())
+        self.task_get(task.as_str())
             .await
             .is_ok_and(|f| f.grants.contains(&g))
     }
 
     async fn record_ask(
         &self,
-        feature: &FeatureId,
+        task: &TaskId,
         run: &RunId,
         interaction: &DecisionId,
         ask: &crate::runtime::DecisionAsk,
@@ -749,12 +738,12 @@ impl Daemon {
             ),
         };
         let did = interaction.clone();
-        // The developer allowed it earlier in this feature (D-066).
+        // The developer allowed it earlier in this task (D-066).
         let (status, why) =
-            if status == DecisionStatus::Pending && self.granted(feature, grant.clone()).await {
+            if status == DecisionStatus::Pending && self.granted(task, grant.clone()).await {
                 (
                     DecisionStatus::Approved,
-                    "you allowed this earlier in this feature".to_owned(),
+                    "you allowed this earlier in this task".to_owned(),
                 )
             } else {
                 (status, why)
@@ -764,15 +753,15 @@ impl Daemon {
             crate::runtime::ToolCall::Question { options, .. } => options.clone(),
             _ => vec![],
         };
-        let applied = self.features.lock().await.apply(feature, None, |f, _| {
-            let task_id = f
+        let applied = self.tasks.lock().await.apply(task, None, |f, _| {
+            let step_id = f
                 .runs
                 .iter()
                 .find(|r| &r.id == run)
                 .map(|r| r.step_id.clone());
             f.decisions.push(DecisionRequest {
                 id: did.clone(),
-                step_id: task_id,
+                step_id,
                 run_id: Some(run.clone()),
                 kind,
                 risk,
@@ -789,7 +778,7 @@ impl Daemon {
                 grant: grant.clone(),
             });
             let mut changes = vec![
-                Change::new(FeatureEvent::DecisionRequested {
+                Change::new(TaskEvent::DecisionRequested {
                     decision_id: did.clone(),
                     kind,
                     risk,
@@ -798,7 +787,7 @@ impl Daemon {
             ];
             if status != DecisionStatus::Pending {
                 changes.push(
-                    Change::new(FeatureEvent::DecisionResolved {
+                    Change::new(TaskEvent::DecisionResolved {
                         decision_id: did.clone(),
                         status,
                         by: Decider::Policy,
@@ -813,15 +802,15 @@ impl Daemon {
             {
                 r.state = RunState::Waiting;
                 r.stop_clock(now);
-                changes.push(Change::new(FeatureEvent::RunChanged {
+                changes.push(Change::new(TaskEvent::RunChanged {
                     run_id: run.clone(),
                     state: RunState::Waiting,
                 }));
             }
             // Only the developer can answer this one: tell them.
-            if user_only && f.status.can_become(FeatureStatus::Blocked) {
+            if user_only && f.status.can_become(TaskStatus::Blocked) {
                 let reason = format!("Needs your approval: {}", ask.summary);
-                if let Ok(e) = f.transition(FeatureStatus::Blocked, Some(reason), now) {
+                if let Ok(e) = f.transition(TaskStatus::Blocked, Some(reason), now) {
                     changes.push(Change::new(e));
                 }
             }
@@ -829,7 +818,7 @@ impl Daemon {
         });
         match applied {
             Ok(a) => {
-                self.feature_changed(&a);
+                self.task_changed(&a);
                 status == DecisionStatus::Pending
             }
             Err(e) => {
@@ -840,13 +829,8 @@ impl Daemon {
     }
 
     /// How a run lost mid-turn while otterd runs is recorded ([`unsettled`]).
-    async fn unsettled_state(
-        &self,
-        feature: &FeatureId,
-        run: &RunId,
-        why: &str,
-    ) -> (RunState, String) {
-        let Ok(f) = self.feature_get(feature.as_str()).await else {
+    async fn unsettled_state(&self, task: &TaskId, run: &RunId, why: &str) -> (RunState, String) {
+        let Ok(f) = self.task_get(task.as_str()).await else {
             return (RunState::Failed, why.to_owned());
         };
         let Some(r) = f.runs.iter().find(|r| &r.id == run) else {
@@ -866,7 +850,7 @@ impl Daemon {
 
     async fn finish_run(
         &self,
-        feature: &FeatureId,
+        task: &TaskId,
         run: &RunId,
         state: RunState,
         summary: Option<String>,
@@ -875,7 +859,7 @@ impl Daemon {
         let activity = self.live_activity(run);
         // Its last words and errors are kept: never a credential in them (D-075).
         let summary = summary.map(|s| otter_core::redact::redact(&s));
-        let applied = self.features.lock().await.apply(feature, None, |f, now| {
+        let applied = self.tasks.lock().await.apply(task, None, |f, now| {
             let mut changes = Vec::new();
             let Some(r) = f.run_mut(run) else {
                 return Ok(changes);
@@ -890,8 +874,8 @@ impl Daemon {
             if let Some(a) = activity {
                 r.activity = a;
             }
-            let task_id = r.step_id.clone();
-            changes.push(Change::new(FeatureEvent::RunChanged {
+            let step_id = r.step_id.clone();
+            changes.push(Change::new(TaskEvent::RunChanged {
                 run_id: run.clone(),
                 state,
             }));
@@ -904,7 +888,7 @@ impl Daemon {
             }
             // A planning turn's report is a plan for Otter to review, not
             // something to show as is (D-064).
-            let planning = f.step(&task_id).is_some_and(|t| t.planning);
+            let planning = f.step(&step_id).is_some_and(|t| t.planning);
             // Said already (the turn before ended the same way): once (D-069).
             let said = |text: &str| {
                 f.messages
@@ -924,11 +908,11 @@ impl Daemon {
             if state == RunState::RecoveryRequired {
                 changes.extend(require_recovery(
                     f,
-                    &task_id,
+                    &step_id,
                     summary.as_deref().unwrap_or_default(),
                     now,
                 ));
-            } else if let Some(t) = f.step_mut(&task_id) {
+            } else if let Some(t) = f.step_mut(&step_id) {
                 t.status = match state {
                     RunState::Completed => StepStatus::Done,
                     RunState::Failed => StepStatus::Failed,
@@ -939,15 +923,15 @@ impl Daemon {
                 if state == RunState::Failed {
                     t.last_error = summary.as_deref().map(|s| crate::agents::excerpt(s, 2000));
                 }
-                changes.push(Change::new(FeatureEvent::StepChanged {
-                    step_id: task_id,
+                changes.push(Change::new(TaskEvent::StepChanged {
+                    step_id,
                     status: t.status,
                 }));
             }
             Ok(changes)
         });
         if let Ok(a) = applied {
-            self.feature_changed(&a);
+            self.task_changed(&a);
         }
     }
 
@@ -956,15 +940,15 @@ impl Daemon {
     /// denial around.
     pub(crate) async fn decide(
         &self,
-        feature_id: &FeatureId,
+        task_id: &TaskId,
         decision_id: &DecisionId,
         allow: bool,
         answer: Option<String>,
         by: Decider,
         rationale: Option<String>,
-    ) -> RpcResult<Feature> {
-        let feature = self.feature_get(feature_id.as_str()).await?;
-        let d = feature
+    ) -> RpcResult<Task> {
+        let task = self.task_get(task_id.as_str()).await?;
+        let d = task
             .decisions
             .iter()
             .find(|d| &d.id == decision_id)
@@ -985,10 +969,10 @@ impl Daemon {
         let ans = answer.clone();
         let why = rationale.clone();
         let applied = self
-            .features
+            .tasks
             .lock()
             .await
-            .apply(feature_id, None, move |f, now| {
+            .apply(task_id, None, move |f, now| {
                 let d = f.decision_mut(&did).expect("checked");
                 d.status = match (&ans, allow) {
                     (Some(_), _) => DecisionStatus::Answered,
@@ -1000,52 +984,51 @@ impl Daemon {
                 d.rationale = rationale;
                 d.decided_at = Some(now);
                 let status = d.status;
-                let mut changes = vec![Change::new(FeatureEvent::DecisionResolved {
+                let mut changes = vec![Change::new(TaskEvent::DecisionResolved {
                     decision_id: did.clone(),
                     status,
                     by,
                 })];
                 changes.extend(f.resume_waiting_runs(now).into_iter().map(Change::new));
-                if f.status == FeatureStatus::Blocked && f.pending_decisions().next().is_none() {
-                    let next = crate::features::resume_status(f);
+                if f.status == TaskStatus::Blocked && f.pending_decisions().next().is_none() {
+                    let next = crate::tasks::resume_status(f);
                     if let Ok(e) = f.transition(next, None, now) {
                         changes.push(Change::new(e));
                     }
                 }
                 Ok(changes)
             })?;
-        self.feature_changed(&applied);
+        self.task_changed(&applied);
         let reply = decision_reply(allow, answer, None, by, why);
-        self.forward_decision(feature_id, decision_id, reply, by)
-            .await;
-        Ok(applied.feature)
+        self.forward_decision(task_id, decision_id, reply, by).await;
+        Ok(applied.task)
     }
 
     /// What the coding agent said at the end of a turn that isn't the last.
-    async fn agent_said(&self, feature: &FeatureId, run: &RunId, text: String) {
+    async fn agent_said(&self, task: &TaskId, run: &RunId, text: String) {
         let text = otter_core::redact::redact(&text);
-        let applied = self.features.lock().await.apply(feature, None, |f, _| {
+        let applied = self.tasks.lock().await.apply(task, None, |f, _| {
             let (m, c) = message(MessageRole::Agent, text, Some(run.to_string()));
             f.messages.push(m);
             Ok(vec![c])
         });
         if let Ok(a) = applied {
-            self.feature_changed(&a);
+            self.task_changed(&a);
         }
     }
 
     /// Text being written right now, to the app (transient, D-051).
     pub(crate) fn stream(
         &self,
-        feature: &FeatureId,
+        task: &TaskId,
         stream_id: &str,
         role: MessageRole,
         text: String,
         done: bool,
     ) {
         self.events
-            .emit_transient(otter_protocol::Event::FeatureStream {
-                feature_id: feature.clone(),
+            .emit_transient(otter_protocol::Event::TaskStream {
+                task_id: task.clone(),
                 stream_id: stream_id.to_owned(),
                 role,
                 text: otter_core::redact::redact(&text),
@@ -1054,9 +1037,9 @@ impl Daemon {
     }
 
     /// Note what the agent just did on its run (kept short: the last
-    /// lines): in memory and to the app, as it happens; into the feature
+    /// lines): in memory and to the app, as it happens; into the task
     /// when the run ends (D-069).
-    async fn run_activity(&self, feature: &FeatureId, run: &RunId, line: String) {
+    async fn run_activity(&self, task: &TaskId, run: &RunId, line: String) {
         let line = otter_core::redact::redact(&line);
         if let Some(live) = self.runs.lock().unwrap().get(run) {
             let mut a = live.activity.lock().unwrap();
@@ -1065,22 +1048,22 @@ impl Daemon {
             a.drain(..extra);
         }
         self.events
-            .emit_transient(otter_protocol::Event::FeatureActivity {
-                feature_id: feature.clone(),
+            .emit_transient(otter_protocol::Event::TaskActivity {
+                task_id: task.clone(),
                 run_id: run.clone(),
                 line,
             });
     }
 
     /// What a live run did lately (its activity isn't written into the
-    /// feature until it ends).
+    /// task until it ends).
     fn live_activity(&self, run: &RunId) -> Option<Vec<String>> {
         let runs = self.runs.lock().unwrap();
         Some(runs.get(run)?.activity.lock().unwrap().clone())
     }
 
-    /// A feature as clients see it: with its live runs' latest activity.
-    pub(crate) fn with_live_activity(&self, mut f: Feature) -> Feature {
+    /// A task as clients see it: with its live runs' latest activity.
+    pub(crate) fn with_live_activity(&self, mut f: Task) -> Task {
         for r in f.runs.iter_mut().filter(|r| !r.state.is_over()) {
             if let Some(a) = self.live_activity(&r.id) {
                 r.activity = a;
@@ -1092,9 +1075,9 @@ impl Daemon {
     /// Hand the developer's message to a run in progress: a turn of its
     /// own, delivered after the current one (never merged with another).
     /// `command_id` is the message's own, so a repeat is queued once.
-    pub(crate) async fn tell_runs(&self, feature_id: &FeatureId, command_id: &str, text: &str) {
+    pub(crate) async fn tell_runs(&self, task_id: &TaskId, command_id: &str, text: &str) {
         let input = format!("From the developer:\n{text}");
-        self.queue_turn(feature_id, command_id, input, false).await;
+        self.queue_turn(task_id, command_id, input, false).await;
     }
 
     /// Ask a run in progress the developer's question (D-089 M2.5): a turn
@@ -1102,37 +1085,32 @@ impl Daemon {
     /// ([`policy::read_only`]); its answer is its message, not the run's
     /// result. Only runs on the SDK runtime, where Otter's policy sees every
     /// tool call; how many it went to.
-    pub(crate) async fn ask_runs(
-        &self,
-        feature_id: &FeatureId,
-        command_id: &str,
-        text: &str,
-    ) -> usize {
+    pub(crate) async fn ask_runs(&self, task_id: &TaskId, command_id: &str, text: &str) -> usize {
         let input = format!(
             "From the developer, a question. This turn can only read: Read, Grep and Glob work; writing files and running commands are refused. Answer what you can, pointing to the code (path:line); if part of it asks for a change, say that needs a turn of its own:\n{text}"
         );
-        self.queue_turn(feature_id, command_id, input, true).await
+        self.queue_turn(task_id, command_id, input, true).await
     }
 
-    /// The runtime backend of the feature's run in progress, if one is.
-    pub(crate) fn live_backend(&self, feature_id: &FeatureId) -> Option<String> {
+    /// The runtime backend of the task's run in progress, if one is.
+    pub(crate) fn live_backend(&self, task_id: &TaskId) -> Option<String> {
         let conversation = self
             .runs
             .lock()
             .unwrap()
             .values()
-            .find(|r| &r.feature == feature_id)
+            .find(|r| &r.task == task_id)
             .map(|r| r.conversation.clone())?;
         self.conversations
             .get(conversation.as_str())
             .map(|c| c.backend)
     }
 
-    /// Queue a turn in each run of the feature (read-only: SDK runs only);
+    /// Queue a turn in each run of the task (read-only: SDK runs only);
     /// how many it was queued in.
     async fn queue_turn(
         &self,
-        feature_id: &FeatureId,
+        task_id: &TaskId,
         command_id: &str,
         input: String,
         read_only: bool,
@@ -1142,7 +1120,7 @@ impl Daemon {
             .lock()
             .unwrap()
             .values()
-            .filter(|r| &r.feature == feature_id)
+            .filter(|r| &r.task == task_id)
             .map(|r| (r.conversation.clone(), r.tx.clone()))
             .filter(|(c, _)| {
                 !read_only
@@ -1182,12 +1160,12 @@ impl Daemon {
         queued_in
     }
 
-    /// Whether the feature only wants an answer (D-092): all its turns read.
-    async fn answer_only(&self, feature: &FeatureId) -> bool {
-        self.features
+    /// Whether the task only wants an answer (D-092): all its turns read.
+    async fn answer_only(&self, task: &TaskId) -> bool {
+        self.tasks
             .lock()
             .await
-            .get(feature.as_str())
+            .get(task.as_str())
             .is_some_and(|f| f.answer_only)
     }
 
@@ -1206,10 +1184,10 @@ impl Daemon {
         }
     }
 
-    /// Pass a decision made in the feature on to the run waiting for it.
+    /// Pass a decision made in the task on to the run waiting for it.
     pub(crate) async fn forward_decision(
         &self,
-        feature_id: &FeatureId,
+        task_id: &TaskId,
         decision_id: &DecisionId,
         reply: DecisionReply,
         by: Decider,
@@ -1219,7 +1197,7 @@ impl Daemon {
             .lock()
             .unwrap()
             .values()
-            .filter(|r| &r.feature == feature_id)
+            .filter(|r| &r.task == task_id)
             .map(|r| r.tx.clone())
             .collect();
         for tx in senders {
@@ -1233,16 +1211,16 @@ impl Daemon {
         }
     }
 
-    /// Pause (or cancel) every run of a feature: its turn is interrupted,
+    /// Pause (or cancel) every run of a task: its turn is interrupted,
     /// then the run ends, recorded as cancelled with `reason`; its
     /// conversation is held (or closed). Waits until each has ended.
-    pub(crate) async fn hold_runs(&self, feature_id: &FeatureId, cancel: bool, reason: &str) {
+    pub(crate) async fn hold_runs(&self, task_id: &TaskId, cancel: bool, reason: &str) {
         let live: Vec<_> = self
             .runs
             .lock()
             .unwrap()
             .values()
-            .filter(|r| &r.feature == feature_id)
+            .filter(|r| &r.task == task_id)
             .map(|r| (r.tx.clone(), r.stopping.clone()))
             .collect();
         for (tx, stopping) in live {
@@ -1264,13 +1242,13 @@ impl Daemon {
     }
 
     /// Stop what the coding agent is doing now (its current turn only).
-    pub(crate) async fn interrupt_runs(&self, feature_id: &FeatureId) {
+    pub(crate) async fn interrupt_runs(&self, task_id: &TaskId) {
         let live: Vec<_> = self
             .runs
             .lock()
             .unwrap()
             .values()
-            .filter(|r| &r.feature == feature_id)
+            .filter(|r| &r.task == task_id)
             .map(|r| (r.tx.clone(), r.conversation.clone()))
             .collect();
         for (tx, conversation) in live {
@@ -1285,13 +1263,13 @@ impl Daemon {
     }
 
     /// Guidance that can't wait: the current turn stops and this goes next.
-    pub(crate) async fn redirect_runs(&self, feature_id: &FeatureId, command_id: &str, text: &str) {
+    pub(crate) async fn redirect_runs(&self, task_id: &TaskId, command_id: &str, text: &str) {
         let live: Vec<_> = self
             .runs
             .lock()
             .unwrap()
             .values()
-            .filter(|r| &r.feature == feature_id)
+            .filter(|r| &r.task == task_id)
             .map(|r| r.tx.clone())
             .collect();
         for tx in live {
@@ -1307,15 +1285,15 @@ impl Daemon {
         }
     }
 
-    /// Stop every run of a feature and wait until each has ended. What it
+    /// Stop every run of a task and wait until each has ended. What it
     /// was doing ends interrupted (or, for a run out of time, at its limit).
-    pub(crate) async fn stop_runs(&self, feature_id: &FeatureId, state: RunState, reason: &str) {
+    pub(crate) async fn stop_runs(&self, task_id: &TaskId, state: RunState, reason: &str) {
         let senders: Vec<_> = self
             .runs
             .lock()
             .unwrap()
             .values()
-            .filter(|r| &r.feature == feature_id)
+            .filter(|r| &r.task == task_id)
             .map(|r| (r.tx.clone(), r.stopping.clone()))
             .collect();
         let outcome = if state == RunState::Failed {
@@ -1344,8 +1322,8 @@ impl Daemon {
                 crate::runtime::end_leftover(p).await;
             }
         }
-        let ids: Vec<FeatureId> = self
-            .features
+        let ids: Vec<TaskId> = self
+            .tasks
             .lock()
             .await
             .list()
@@ -1355,7 +1333,7 @@ impl Daemon {
             .collect();
         let conversations = self.conversations.list(None);
         for id in ids {
-            let applied = self.features.lock().await.apply(&id, None, |f, now| {
+            let applied = self.tasks.lock().await.apply(&id, None, |f, now| {
                 let mut changes = Vec::new();
                 let mut steps = Vec::new();
                 let mut done = Vec::new();
@@ -1368,7 +1346,7 @@ impl Daemon {
                     .collect();
                 for r in f.runs.iter_mut().filter(|r| !r.state.is_over()) {
                     // The journal may show the run had finished its work
-                    // before the old daemon could tell the feature.
+                    // before the old daemon could tell the task.
                     let conversation = r
                         .conversation_id
                         .as_ref()
@@ -1405,7 +1383,7 @@ impl Daemon {
                         }
                     }
                     r.ended_at = Some(now);
-                    changes.push(Change::new(FeatureEvent::RunChanged {
+                    changes.push(Change::new(TaskEvent::RunChanged {
                         run_id: r.id.clone(),
                         state: r.state,
                     }));
@@ -1413,7 +1391,7 @@ impl Daemon {
                 for t in done {
                     if let Some(t) = f.step_mut(&t) {
                         t.status = StepStatus::Done;
-                        changes.push(Change::new(FeatureEvent::StepChanged {
+                        changes.push(Change::new(TaskEvent::StepChanged {
                             step_id: t.id.clone(),
                             status: StepStatus::Done,
                         }));
@@ -1435,8 +1413,8 @@ impl Daemon {
                     changes.extend(require_recovery(f, &t, &why, now));
                 }
                 // A block that was about the interrupted run is moot.
-                if f.status == FeatureStatus::Blocked && f.pending_decisions().next().is_none() {
-                    let next = crate::features::resume_status(f);
+                if f.status == TaskStatus::Blocked && f.pending_decisions().next().is_none() {
+                    let next = crate::tasks::resume_status(f);
                     if let Ok(e) = f.transition(next, None, now) {
                         changes.push(Change::new(e));
                     }
@@ -1444,8 +1422,8 @@ impl Daemon {
                 Ok(changes)
             });
             match applied {
-                Ok(a) => self.feature_changed(&a),
-                Err(e) => tracing::warn!(feature = %id, "recovering runs: {e:?}"),
+                Ok(a) => self.task_changed(&a),
+                Err(e) => tracing::warn!(task = %id, "recovering runs: {e:?}"),
             }
         }
     }
@@ -1500,7 +1478,7 @@ fn unsettled(
 }
 
 /// How many runs of `r`'s step, just before it, were cut off in a row.
-fn losses_before(f: &Feature, r: &Run) -> usize {
+fn losses_before(f: &Task, r: &Run) -> usize {
     let earlier: Vec<&Run> = f
         .runs
         .iter()
@@ -1516,9 +1494,9 @@ fn losses_before(f: &Feature, r: &Run) -> usize {
 
 /// A run ended [`RunState::RecoveryRequired`]: its step waits for the
 /// developer to say whether it starts over (a [`DecisionKind::Recovery`],
-/// theirs only), and the feature is blocked until then.
+/// theirs only), and the task is blocked until then.
 fn require_recovery(
-    f: &mut Feature,
+    f: &mut Task,
     step: &StepId,
     why: &str,
     now: chrono::DateTime<Utc>,
@@ -1530,7 +1508,7 @@ fn require_recovery(
     t.status = StepStatus::Blocked;
     t.last_error = Some(why.to_owned());
     let title = t.title.clone();
-    changes.push(Change::new(FeatureEvent::StepChanged {
+    changes.push(Change::new(TaskEvent::StepChanged {
         step_id: step.clone(),
         status: StepStatus::Blocked,
     }));
@@ -1561,15 +1539,15 @@ fn require_recovery(
             user_only: true,
             grant: None,
         });
-        changes.push(Change::new(FeatureEvent::DecisionRequested {
+        changes.push(Change::new(TaskEvent::DecisionRequested {
             decision_id: id,
             kind: DecisionKind::Recovery,
             risk: Risk::High,
         }));
     }
-    if f.status.can_become(FeatureStatus::Blocked)
+    if f.status.can_become(TaskStatus::Blocked)
         && let Ok(e) = f.transition(
-            FeatureStatus::Blocked,
+            TaskStatus::Blocked,
             Some(format!("Needs you: a run can't safely continue — {why}")),
             now,
         )
@@ -1601,7 +1579,7 @@ fn finished_run(c: &otter_core::conversation::Conversation, run: &RunId) -> Opti
 }
 
 /// Appended to the coding agent's system prompt for managed runs.
-const INSTRUCTIONS: &str = "You are working on a feature, one step per turn, managed by Otter. \
+const INSTRUCTIONS: &str = "You are working on a task, one step per turn, managed by Otter. \
 Stay inside the working directory. Run the project's tests before you finish a step. \
 End each turn with a short summary of what you changed and how you checked it.";
 
@@ -1708,11 +1686,11 @@ mod tests {
         }
     }
 
-    fn implementing(step: &StepId) -> Feature {
-        use otter_core::feature::Step;
+    fn implementing(step: &StepId) -> Task {
+        use otter_core::task::Step;
         let now = Utc::now();
-        let mut f = Feature::new("CSV".into(), "Export it".into(), now);
-        f.transition(FeatureStatus::Planning, None, now).unwrap();
+        let mut f = Task::new("CSV".into(), "Export it".into(), now);
+        f.transition(TaskStatus::Planning, None, now).unwrap();
         f.steps.push(Step {
             id: step.clone(),
             title: "Write it".into(),
@@ -1725,8 +1703,7 @@ mod tests {
             last_error: None,
             planning: false,
         });
-        f.transition(FeatureStatus::Implementing, None, now)
-            .unwrap();
+        f.transition(TaskStatus::Implementing, None, now).unwrap();
         f
     }
 
@@ -1765,7 +1742,7 @@ mod tests {
         let now = Utc::now();
         let changes = require_recovery(&mut f, &step, "otterd restarted", now);
         assert!(!changes.is_empty());
-        assert_eq!(f.status, FeatureStatus::Blocked);
+        assert_eq!(f.status, TaskStatus::Blocked);
         assert_eq!(f.steps[0].status, StepStatus::Blocked);
         assert_eq!(f.steps[0].last_error.as_deref(), Some("otterd restarted"));
         let open: Vec<_> = f.pending_decisions().collect();
@@ -1822,8 +1799,8 @@ mod tests {
         };
         assert_eq!(deny(Decider::User, None), "The developer declined this.");
         assert_eq!(
-            deny(Decider::Controller, Some("not needed for the feature")),
-            "Otter declined this: not needed for the feature"
+            deny(Decider::Controller, Some("not needed for the task")),
+            "Otter declined this: not needed for the task"
         );
         assert_eq!(
             deny(Decider::Policy, Some(" ")),

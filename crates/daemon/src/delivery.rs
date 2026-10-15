@@ -1,27 +1,25 @@
-//! Delivery (D-047): publishing a verified feature as a pull request,
+//! Delivery (D-047): publishing a verified task as a pull request,
 //! following its CI, and deciding when it may be called done.
 //!
 //! - **Forge:** GitHub through the host's own `gh` (its sign-in, its scope):
 //!   Otter stores no token and passes none on a command line. Another forge
 //!   is another implementation of the same few calls.
 //! - **Publishing is an external action:** pushing the branch and opening the
-//!   pull request needs the developer's approval once per feature (a
+//!   pull request needs the developer's approval once per task (a
 //!   `user_only` decision — `git push` is high risk to policy); later pushes
 //!   of the same branch reuse it. Otter never merges or deploys.
 //! - **Gates** are deterministic: requirements met, local tests, browser
 //!   evidence where the project declares checks, the pull request, CI, and
 //!   the developer's acceptance. Done needs every gate passed or not
 //!   applicable (or the developer overriding, on record).
-//! - **CI failing** sends the feature back to implementing with the failed
+//! - **CI failing** sends the task back to implementing with the failed
 //!   log; a failure that looks like the infrastructure (a runner lost, a
 //!   network error) is rerun instead, at most twice per pushed commit.
 
 use std::path::Path;
 
 use anyhow::{Context, Result, anyhow, bail};
-use otter_core::feature::{
-    CiCheck, Decider, DecisionStatus, EvidenceKind, Feature, Gate, GateStatus,
-};
+use otter_core::task::{CiCheck, Decider, DecisionStatus, EvidenceKind, Gate, GateStatus, Task};
 use serde_json::Value;
 use tokio::io::AsyncWriteExt;
 
@@ -53,7 +51,7 @@ pub fn looks_flaky(text: &str) -> bool {
     FLAKY.iter().any(|p| lower.contains(p))
 }
 
-/// What the gates need to know beyond the feature.
+/// What the gates need to know beyond the task.
 pub struct GateContext {
     /// A Git workspace with an `origin` and `gh` available.
     pub publishable: bool,
@@ -75,7 +73,7 @@ fn gate(name: &str, status: GateStatus, detail: impl Into<String>) -> Gate {
 }
 
 /// Evaluate the gates (D-047).
-pub fn gates(f: &Feature, cx: &GateContext) -> Vec<Gate> {
+pub fn gates(f: &Task, cx: &GateContext) -> Vec<Gate> {
     let mut out = Vec::new();
     // Requirements: every acceptance criterion met.
     let unmet: Vec<&str> = f
@@ -223,7 +221,7 @@ pub fn ready_for_acceptance(gates: &[Gate]) -> bool {
 
 /// The final report: what changed, how it was checked, what was decided,
 /// what is still open.
-pub fn report(f: &Feature, diffstat: Option<&str>) -> String {
+pub fn report(f: &Task, diffstat: Option<&str>) -> String {
     let mut r = format!("# {}\n\n{}\n", f.title, f.request);
     if let Some(d) = &f.delivery
         && let Some(url) = &d.pr_url
@@ -649,16 +647,16 @@ impl<'a> GitHub<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use otter_core::feature::{Criterion, Delivery, Evidence};
+    use otter_core::task::{Criterion, Delivery, Evidence};
 
-    fn feature() -> Feature {
-        let mut f = Feature::new("CSV".into(), "Export".into(), chrono::Utc::now());
+    fn task() -> Task {
+        let mut f = Task::new("CSV".into(), "Export".into(), chrono::Utc::now());
         f.acceptance.push(Criterion {
             id: "ac_1".into(),
             text: "exports".into(),
             met: Some(true),
             evidence: vec![],
-            how: otter_core::feature::Proof::Diff,
+            how: otter_core::task::Proof::Diff,
         });
         f.verify_command = Some("make test".into());
         f.evidence.push(Evidence {
@@ -703,8 +701,8 @@ mod tests {
     }
 
     #[test]
-    fn a_local_feature_needs_only_its_checks_and_you() {
-        let f = feature();
+    fn a_local_task_needs_only_its_checks_and_you() {
+        let f = task();
         let g = gates(
             &f,
             &GateContext {
@@ -723,8 +721,8 @@ mod tests {
     }
 
     #[test]
-    fn a_published_feature_waits_for_green_ci() {
-        let mut f = feature();
+    fn a_published_task_waits_for_green_ci() {
+        let mut f = task();
         let cx = GateContext {
             publishable: true,
             has_ci: true,
@@ -787,7 +785,7 @@ mod tests {
 
     #[test]
     fn the_report_lists_what_is_still_open() {
-        let mut f = feature();
+        let mut f = task();
         f.delivery = Some(delivery(&[("test", "pass")]));
         f.gates = gates(
             &f,

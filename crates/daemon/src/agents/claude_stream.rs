@@ -611,7 +611,7 @@ pub fn tool_call(name: &str, input: &Value) -> ToolCall {
             },
         },
         // Beyond the run: scheduling, notifying, other worktrees, the host
-        // app's features. Otter is what schedules and tells people.
+        // app's tasks. Otter is what schedules and tells people.
         "CronCreate"
         | "CronDelete"
         | "CronList"

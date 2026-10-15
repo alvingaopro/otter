@@ -30,8 +30,8 @@ pub struct Paths {
     pub state_dir: PathBuf,
     pub state_file: PathBuf,
     pub events_file: PathBuf,
-    /// Features (D-043), one directory each.
-    pub features_dir: PathBuf,
+    /// Tasks (D-043), one directory each.
+    pub tasks_dir: PathBuf,
     pub log_dir: PathBuf,
     pub log_file: PathBuf,
     pub workspaces_dir: PathBuf,
@@ -54,7 +54,7 @@ impl Paths {
             env_dir: run_dir.join("env"),
             state_file: state_dir.join("state.json"),
             events_file: state_dir.join("events.jsonl"),
-            features_dir: state_dir.join("features"),
+            tasks_dir: state_dir.join("tasks"),
             log_file: log_dir.join("workd.log"),
             workspaces_dir: home.join("workspaces"),
             agents_dir: run_dir.join("agents"),

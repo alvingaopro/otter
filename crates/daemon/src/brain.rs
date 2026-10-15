@@ -20,7 +20,7 @@ use std::path::Path;
 
 use anyhow::{Result, bail};
 use async_trait::async_trait;
-use otter_core::feature::{Criterion, DecisionKind, DecisionRequest, EvidenceKind, Feature, Proof};
+use otter_core::task::{Criterion, DecisionKind, DecisionRequest, EvidenceKind, Proof, Task};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
@@ -126,9 +126,9 @@ pub struct Judgement {
     pub remediation: String,
 }
 
-/// What a brain can look at: the feature and the workspace it works in.
+/// What a brain can look at: the task and the workspace it works in.
 pub struct Context<'a> {
-    pub feature: &'a Feature,
+    pub task: &'a Task,
     pub root: &'a Path,
     pub env: &'a EnvMap,
 }
@@ -148,7 +148,7 @@ pub trait Brain: Send + Sync {
     }
     async fn decide(&self, cx: &Context<'_>, d: &DecisionRequest) -> Result<Verdict>;
     async fn judge(&self, cx: &Context<'_>) -> Result<Judgement>;
-    /// Look at a screenshot of `check` and say whether the feature looks
+    /// Look at a screenshot of `check` and say whether the task looks
     /// right: supplementary, uncertain evidence. `None`: no opinion.
     async fn review(
         &self,
@@ -167,7 +167,7 @@ pub trait Brain: Send + Sync {
         Ok(Reply {
             text: format!(
                 "{} (No model is set for Otter on this host, so I can't act on messages: use the buttons, or choose a model in Settings.)",
-                status_text(cx.feature)
+                status_text(cx.task)
             ),
             intent: Intent::Guide,
         })
@@ -182,7 +182,7 @@ pub trait Brain: Send + Sync {
 /// Where a reply's text goes as it is written: each piece, in order.
 pub type Say<'a> = dyn Fn(&str) + Send + Sync + 'a;
 
-/// What the developer's message asks the feature to do.
+/// What the developer's message asks the task to do.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Intent {
     /// Just talking: a question, chat. Answered by Otter, not forwarded.
@@ -207,9 +207,9 @@ pub struct Reply {
     pub intent: Intent,
 }
 
-/// Where the feature stands, in a few lines (deterministic).
-pub fn status_text(f: &Feature) -> String {
-    use otter_core::feature::{FeatureStatus as S, StepStatus};
+/// Where the task stands, in a few lines (deterministic).
+pub fn status_text(f: &Task) -> String {
+    use otter_core::task::{StepStatus, TaskStatus as S};
     let done = f
         .steps
         .iter()
@@ -349,12 +349,12 @@ pub fn detect_verify_command(root: &Path) -> Option<String> {
 
 /// What the coding agent proposed in its planning turn (D-064): the report
 /// of its planning run, once that finished.
-pub fn proposal(f: &Feature) -> Option<&str> {
-    let task = f.steps.iter().find(|t| t.planning)?;
+pub fn proposal(f: &Task) -> Option<&str> {
+    let step = f.steps.iter().find(|t| t.planning)?;
     f.runs
         .iter()
         .rev()
-        .find(|r| r.step_id == task.id && r.state == otter_core::feature::RunState::Completed)
+        .find(|r| r.step_id == step.id && r.state == otter_core::task::RunState::Completed)
         .and_then(|r| r.summary.as_deref())
 }
 
@@ -413,7 +413,7 @@ pub fn parse_proposal(text: &str) -> Option<Plan> {
 /// The coding agent's proposal as the plan (D-064): what it left out is
 /// filled in as `rules` would — the project's usual check, and a criterion
 /// for the request (and the check) when it named none.
-pub fn complete_proposal(mut plan: Plan, f: &Feature, root: &Path) -> Plan {
+pub fn complete_proposal(mut plan: Plan, f: &Task, root: &Path) -> Plan {
     if plan.verify_command.is_none() {
         plan.verify_command = detect_verify_command(root);
     }
@@ -440,7 +440,7 @@ pub fn complete_proposal(mut plan: Plan, f: &Feature, root: &Path) -> Plan {
 }
 
 fn rules_plan(cx: &Context<'_>) -> Plan {
-    let f = cx.feature;
+    let f = cx.task;
     // Planning again without a model: one task carrying what the developer
     // said since, the criteria as they were.
     if f.replan {
@@ -448,7 +448,7 @@ fn rules_plan(cx: &Context<'_>) -> Plan {
         let notes: Vec<String> = f
             .messages
             .iter()
-            .filter(|m| m.role == otter_core::feature::MessageRole::User && Some(&m.id) != request)
+            .filter(|m| m.role == otter_core::task::MessageRole::User && Some(&m.id) != request)
             .map(|m| m.text.clone())
             .collect();
         return Plan {
@@ -517,13 +517,13 @@ fn rules_plan(cx: &Context<'_>) -> Plan {
 
 /// Whether the check's result decides `c` in code (D-062): a check-typed
 /// criterion, when there is a check that runs. Everything else is judged.
-pub fn decided_by_check(f: &Feature, c: &Criterion) -> bool {
+pub fn decided_by_check(f: &Task, c: &Criterion) -> bool {
     c.how == Proof::Check && f.verify_command.is_some() && f.verify_approved
 }
 
 /// Criteria are met when the latest check passed, and nothing failed since.
 fn rules_judge(cx: &Context<'_>) -> Judgement {
-    let f = cx.feature;
+    let f = cx.task;
     let latest = f.evidence.iter().rev().find(|e| e.ok.is_some());
     let passed = latest.is_some_and(|e| e.ok == Some(true));
     let reason = match latest {
@@ -620,7 +620,7 @@ impl Brain for Skeptic {
         })
     }
     async fn judge(&self, cx: &Context<'_>) -> Result<Judgement> {
-        let f = cx.feature;
+        let f = cx.task;
         Ok(Judgement {
             criteria: f
                 .acceptance
@@ -741,13 +741,13 @@ impl Model {
     }
 }
 
-pub(crate) fn brief(f: &Feature) -> String {
-    let mut s = format!("Feature: {}\nRequest:\n{}\n", f.title, f.request);
+pub(crate) fn brief(f: &Task) -> String {
+    let mut s = format!("Task: {}\nRequest:\n{}\n", f.title, f.request);
     let request = f.request_message();
     let user: Vec<&str> = f
         .messages
         .iter()
-        .filter(|m| m.role == otter_core::feature::MessageRole::User && Some(&m.id) != request)
+        .filter(|m| m.role == otter_core::task::MessageRole::User && Some(&m.id) != request)
         .map(|m| m.text.as_str())
         .collect();
     if !user.is_empty() {
@@ -794,13 +794,13 @@ impl Brain for Model {
         let detected = detect_verify_command(cx.root);
         // Planning again: what's done stays done; plan what's left.
         let done: Vec<String> = cx
-            .feature
+            .task
             .steps
             .iter()
-            .filter(|t| matches!(t.status, otter_core::feature::StepStatus::Done))
+            .filter(|t| matches!(t.status, otter_core::task::StepStatus::Done))
             .map(|t| format!("- {}", t.title))
             .collect();
-        let again = if cx.feature.replan && !done.is_empty() {
+        let again = if cx.task.replan && !done.is_empty() {
             format!(
                 "\nThis is a revised plan: the developer changed or added to the goal (see their later messages). \
                  Already done (don't redo, don't list again):\n{}\nPlan only the remaining work; restate the \
@@ -811,7 +811,7 @@ impl Brain for Model {
             String::new()
         };
         let prompt = format!(
-            "You are Otter, the developer's tech lead, planning a software feature for a coding agent working in {root}.\n\
+            "You are Otter, the developer's tech lead, planning a software task for a coding agent working in {root}.\n\
              {brief}\n\
              Write: requirements (short), acceptance criteria that can be checked, and 1-5 steps in order \
              (depends_on = indexes of earlier steps). verify_command: one shell command that checks the work \
@@ -822,7 +822,7 @@ impl Brain for Model {
              was made\"). The coding agent works on its own: no task tells it to ask, check with or wait \
              for the developer (Otter asks them when something needs them). rationale: one sentence.{again}",
             root = cx.root.display(),
-            brief = brief(cx.feature),
+            brief = brief(cx.task),
             hint = detected
                 .as_deref()
                 .map(|c| format!("; this project looks like `{c}`"))
@@ -853,7 +853,7 @@ impl Brain for Model {
     }
 
     async fn review_plan(&self, cx: &Context<'_>, plan: &Plan) -> Result<Vec<String>> {
-        let prompt = review_plan_prompt(cx.feature, plan);
+        let prompt = review_plan_prompt(cx.task, plan);
         let schema = json!({
             "type": "object",
             "properties": {"issues": {"type": "array", "items": {"type": "string"}}},
@@ -873,11 +873,11 @@ impl Brain for Model {
 
     async fn decide(&self, cx: &Context<'_>, d: &DecisionRequest) -> Result<Verdict> {
         let prompt = format!(
-            "You are Otter, the developer's tech lead, supervising a coding agent on this feature.\n{brief}\n\
+            "You are Otter, the developer's tech lead, supervising a coding agent on this task.\n{brief}\n\
              The agent asks ({kind:?}, {risk:?} risk): {summary}\nPolicy note: {detail}\n{options}\
              Decide: allow, deny, answer (for a question: give the answer), or escalate to the developer \
-             when it's ambiguous, risky, or not clearly needed for the feature. Be conservative.",
-            brief = brief(cx.feature),
+             when it's ambiguous, risky, or not clearly needed for the task. Be conservative.",
+            brief = brief(cx.task),
             kind = d.kind,
             risk = d.risk,
             summary = d.summary,
@@ -911,7 +911,7 @@ impl Brain for Model {
     }
 
     async fn judge(&self, cx: &Context<'_>) -> Result<Judgement> {
-        let f = cx.feature;
+        let f = cx.task;
         let prompt = judge_prompt(f);
         let schema = json!({
             "type": "object",
@@ -948,9 +948,9 @@ impl Brain for Model {
     ) -> Result<Option<(bool, String)>> {
         let prompt = format!(
             "Look at the screenshot (from the browser check “{check}”) and judge whether the UI \
-             looks right for this feature: nothing broken, overlapping or obviously wrong.\n{brief}\n\
+             looks right for this task: nothing broken, overlapping or obviously wrong.\n{brief}\n\
              looks_right: your judgment; notes: one or two sentences.",
-            brief = brief(cx.feature),
+            brief = brief(cx.task),
         );
         let schema = json!({
             "type": "object",
@@ -965,7 +965,7 @@ impl Brain for Model {
     }
 
     async fn reply(&self, cx: &Context<'_>, message: &str, say: &Say<'_>) -> Result<Reply> {
-        let f = cx.feature;
+        let f = cx.task;
         let recent: Vec<String> = f
             .messages
             .iter()
@@ -981,7 +981,7 @@ impl Brain for Model {
             .map(|(i, t)| format!("{}. {} — {:?}", i + 1, t.title, t.status))
             .collect();
         let prompt = format!(
-            "You are Otter, the developer's tech lead, running a software feature for the developer. Reply to their \
+            "You are Otter, the developer's tech lead, running a software task for the developer. Reply to their \
              latest message directly and briefly (2-5 sentences), in the language they wrote in. \
              Say what is happening and what happens next; if they give instructions, say how you'll \
              act on them. Don't invent progress.\n{brief}\nStatus: {status}\nSteps:\n{steps}\n\
@@ -1042,7 +1042,7 @@ impl Brain for Model {
 /// What the brain is asked about the coding agent's plan (D-084): only what
 /// it can tell without the code — whether the plan does what was asked, and
 /// whether its criteria and steps are the kind Otter can work with.
-pub fn review_plan_prompt(f: &Feature, plan: &Plan) -> String {
+pub fn review_plan_prompt(f: &Task, plan: &Plan) -> String {
     let plan = json!({
         "summary": plan.rationale,
         "steps": plan.steps.iter().map(|t| json!({"title": t.title, "detail": t.detail})).collect::<Vec<_>>(),
@@ -1067,7 +1067,7 @@ pub fn review_plan_prompt(f: &Feature, plan: &Plan) -> String {
 
 /// What the judge is asked (D-062): the criteria the check doesn't decide,
 /// and the evidence — the work's latest state (its diff) among it.
-pub fn judge_prompt(f: &Feature) -> String {
+pub fn judge_prompt(f: &Task) -> String {
     let criteria: Vec<_> = f
         .acceptance
         .iter()
@@ -1075,7 +1075,7 @@ pub fn judge_prompt(f: &Feature) -> String {
         .map(|c| json!({"id": c.id, "text": c.text}))
         .collect();
     // Only the newest snapshot of the work: older ones are history.
-    let is_tree = |e: &otter_core::feature::Evidence| {
+    let is_tree = |e: &otter_core::task::Evidence| {
         e.kind == EvidenceKind::Diff && e.title.starts_with(crate::work_state::TITLE)
     };
     let latest_tree = f.evidence.iter().rposition(is_tree);
@@ -1096,7 +1096,7 @@ pub fn judge_prompt(f: &Feature) -> String {
         .filter_map(|r| r.summary.clone())
         .collect();
     format!(
-        "You are Otter, the developer's tech lead, verifying a feature. Judge each acceptance criterion strictly from \
+        "You are Otter, the developer's tech lead, verifying a task. Judge each acceptance criterion strictly from \
          the evidence. The working tree's status and diff are deterministic evidence of what the change contains; \
          a check's output proves only what that check ran; a deterministic check outranks a claim; the coding \
          agent's own summary is a claim, not evidence. If unsure, it is not met.\n{brief}\nCriteria: {criteria}\n\
@@ -1158,7 +1158,7 @@ pub fn split_intent(text: &str) -> (String, Intent) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use otter_core::feature::{Criterion, Evidence, EvidenceKind};
+    use otter_core::task::{Criterion, Evidence, EvidenceKind};
 
     #[test]
     fn the_intent_line_is_read_and_never_shown() {
@@ -1185,14 +1185,14 @@ mod tests {
 
     #[test]
     fn the_status_says_where_things_stand() {
-        let mut f = feature();
+        let mut f = task();
         assert!(status_text(&f).contains("draft"));
-        f.status = otter_core::feature::FeatureStatus::Paused;
+        f.status = otter_core::task::TaskStatus::Paused;
         assert!(status_text(&f).contains("continue"));
     }
 
-    fn feature() -> Feature {
-        Feature::new(
+    fn task() -> Task {
+        Task::new(
             "CSV export".into(),
             "Export the timeline.\n- has a header row\n- escapes commas".into(),
             chrono::Utc::now(),
@@ -1233,10 +1233,10 @@ mod tests {
             "build:\n\ttrue\ntest:\n\ttrue\n",
         )
         .unwrap();
-        let f = feature();
+        let f = task();
         let env = EnvMap::new();
         let plan = rules_plan(&Context {
-            feature: &f,
+            task: &f,
             root: dir.path(),
             env: &env,
         });
@@ -1286,7 +1286,7 @@ mod tests {
         let env: EnvMap = std::env::vars().collect();
         let state = crate::work_state::snapshot(root, &env, Some("main")).await;
 
-        let mut f = feature();
+        let mut f = task();
         f.verify_command = Some("pytest".into());
         f.verify_approved = true;
         let criterion = |id: &str, text: &str, how| Criterion {
@@ -1328,7 +1328,7 @@ mod tests {
 
     #[test]
     fn rules_judge_follows_the_latest_check() {
-        let mut f = feature();
+        let mut f = task();
         f.acceptance = vec![Criterion {
             id: "ac_1".into(),
             text: "x".into(),
@@ -1350,9 +1350,9 @@ mod tests {
             uncertain: false,
             at: chrono::Utc::now(),
         };
-        let judge = |f: &Feature| {
+        let judge = |f: &Task| {
             rules_judge(&Context {
-                feature: f,
+                task: f,
                 root,
                 env: &env,
             })

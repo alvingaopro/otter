@@ -238,7 +238,7 @@ pub fn settle(
     }
 }
 
-/// The most of a turn's final reply that is kept (D-086): what a feature
+/// The most of a turn's final reply that is kept (D-086): what a task
 /// message may hold.
 pub const REPORT_LEN: usize = 20_000;
 

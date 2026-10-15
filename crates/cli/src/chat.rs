@@ -2,7 +2,7 @@
 //! there, apart from each task's own.
 
 use anyhow::{Result, bail};
-use otter_core::feature::{MessageRole, OtterChat};
+use otter_core::task::{MessageRole, OtterChat};
 
 use crate::config::{Config, HostEntry};
 use crate::output;
@@ -59,7 +59,7 @@ pub async fn run(
         }
         return Ok(());
     }
-    let command_id = crate::features::command_id();
+    let command_id = crate::tasks::command_id();
     let chat = conn.otter_send(&command_id, &text).await.map_err(too_old)?;
     let Some(sent) = chat
         .messages

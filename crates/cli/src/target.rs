@@ -99,10 +99,10 @@ pub async fn find(config: &Config, target: &Target) -> Result<Found> {
         None => config.hosts.clone(),
     };
 
-    let mut tasks = JoinSet::new();
+    let mut jobs = JoinSet::new();
     for host in hosts {
         let transport = config.transport(&host);
-        tasks.spawn(async move {
+        jobs.spawn(async move {
             let result = async {
                 let mut conn = Connection::connect(&transport).await?;
                 let list = conn.workspace_list().await?;
@@ -115,7 +115,7 @@ pub async fn find(config: &Config, target: &Target) -> Result<Found> {
 
     let mut matches = Vec::new();
     let mut failures = Vec::new();
-    while let Some(joined) = tasks.join_next().await {
+    while let Some(joined) = jobs.join_next().await {
         let (host, result) = joined?;
         match result {
             Ok((conn, list)) => {

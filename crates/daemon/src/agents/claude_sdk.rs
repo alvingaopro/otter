@@ -755,7 +755,7 @@ fn resolution(tool: &str, input: &Value, reply: &DecisionReply) -> Value {
         DecisionReply::Answers { answers } if tool == "AskUserQuestion" => {
             json!({"behavior": "answer", "answers": answers})
         }
-        // One answer for a form: the same for each question (the feature's
+        // One answer for a form: the same for each question (the task's
         // single answer field; per-question answers come with the forms UI).
         DecisionReply::Answer { text } if tool == "AskUserQuestion" => {
             let answers: serde_json::Map<String, Value> = questions(input)

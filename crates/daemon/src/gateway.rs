@@ -1,7 +1,7 @@
 //! Otter's tools (D-089): what a turn may look at and change, and the
 //! checks — here, in otterd, never in the model.
 //!
-//! - **Observe** tools read the feature, its history, its run, its
+//! - **Observe** tools read the task, its history, its run, its
 //!   decisions and evidence; everything they return is redacted (D-075) and
 //!   bounded.
 //! - **Routine**: pausing — the safe direction — in any turn.
@@ -13,16 +13,16 @@
 //!
 //! Every change goes through what `converse` does (`effective_intent`,
 //! `intent_step`, `after_intent`): a tool and a classified message have the
-//! same effect. A change is written to the feature's history before it is
+//! same effect. A change is written to the task's history before it is
 //! made (`ToolCalled`), and what came of it with it (`ToolDone`). A tool,
 //! once called, finishes even when the turn stops waiting for it.
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
-use otter_core::FeatureId;
-use otter_core::feature::{Feature, FeatureEvent, FeatureStatus, Message};
+use otter_core::TaskId;
 use otter_core::redact::redact;
+use otter_core::task::{Message, Task, TaskEvent, TaskStatus};
 use otter_protocol::{ErrorCode, RpcError};
 use serde_json::{Value, json};
 
@@ -30,7 +30,7 @@ use crate::agents::excerpt;
 use crate::brain::Intent;
 use crate::controller::{effective_intent, intent_step, plan_question};
 use crate::daemon::Daemon;
-use crate::features::Change;
+use crate::tasks::Change;
 
 /// What started Otter's turn (D-089 §3). Set by otterd, never by the model.
 #[derive(Clone, Debug)]
@@ -379,7 +379,7 @@ pub fn answer(result: &Result<Value, ToolError>) -> Value {
 /// Where a turn is: a task's conversation, or Otter's on the host (D-093).
 #[derive(Clone, Debug)]
 pub enum Scope {
-    Task(FeatureId),
+    Task(TaskId),
     Host,
 }
 
@@ -474,29 +474,29 @@ impl Gateway {
     }
 
     /// The task this turn is about (a task's conversation).
-    fn task(&self) -> &FeatureId {
+    fn task(&self) -> &TaskId {
         match &self.inner.scope {
             Scope::Task(id) => id,
             Scope::Host => unreachable!("a host turn names its task"),
         }
     }
 
-    async fn feature(&self) -> Result<Feature, ToolError> {
-        Ok(self.inner.daemon.feature_get(self.task().as_str()).await?)
+    async fn load(&self) -> Result<Task, ToolError> {
+        Ok(self.inner.daemon.task_get(self.task().as_str()).await?)
     }
 
     /// Write `ToolDone` for a call that changed nothing (a read, a refusal).
     async fn record_done(&self, tool: &str, error: Option<&str>) {
-        let event = FeatureEvent::ToolDone {
+        let event = TaskEvent::ToolDone {
             tool: tool.into(),
             error: error.map(Into::into),
         };
         self.record(event, None).await;
     }
 
-    async fn record(&self, event: FeatureEvent, because: Option<&str>) {
+    async fn record(&self, event: TaskEvent, because: Option<&str>) {
         let d = &self.inner.daemon;
-        let change = |event: FeatureEvent| {
+        let change = |event: TaskEvent| {
             let c = Change::new(event);
             vec![match because {
                 Some(id) => c.because(id),
@@ -505,11 +505,11 @@ impl Gateway {
         };
         let recorded = match &self.inner.scope {
             Scope::Task(id) => d
-                .features
+                .tasks
                 .lock()
                 .await
                 .apply(id, None, |_, _| Ok(change(event)))
-                .map(|a| d.feature_changed(&a)),
+                .map(|a| d.task_changed(&a)),
             Scope::Host => d
                 .chat
                 .lock()
@@ -524,12 +524,7 @@ impl Gateway {
 
     // --- Observe -----------------------------------------------------------
 
-    async fn observe(
-        &self,
-        task: &FeatureId,
-        name: &str,
-        args: &Value,
-    ) -> Result<Value, ToolError> {
+    async fn observe(&self, task: &TaskId, name: &str, args: &Value) -> Result<Value, ToolError> {
         let lim = |default: usize, max: usize| -> Result<usize, ToolError> {
             match args.get("limit") {
                 None | Some(Value::Null) => Ok(default),
@@ -540,11 +535,11 @@ impl Gateway {
                     .ok_or_else(|| fail("invalid", format!("limit is a number from 1 to {max}"))),
             }
         };
-        // A live run's activity isn't in the feature until it ends.
+        // A live run's activity isn't in the task until it ends.
         let f = self
             .inner
             .daemon
-            .with_live_activity(self.inner.daemon.feature_get(task.as_str()).await?);
+            .with_live_activity(self.inner.daemon.task_get(task.as_str()).await?);
         let r = |s: &str| redact(s);
         let short = |s: &str, n: usize| excerpt(&redact(s), n);
         match name {
@@ -575,7 +570,7 @@ impl Gateway {
                 let all = self
                     .inner
                     .daemon
-                    .features
+                    .tasks
                     .lock()
                     .await
                     .history(&f.id, 0, usize::MAX)
@@ -654,11 +649,11 @@ impl Gateway {
     // --- On the host (D-093) -----------------------------------------------
 
     /// The task a host tool names.
-    fn named_task(args: &Value) -> Result<FeatureId, ToolError> {
+    fn named_task(args: &Value) -> Result<TaskId, ToolError> {
         args.get("task_id")
             .and_then(Value::as_str)
             .filter(|s| !s.trim().is_empty())
-            .map(|s| FeatureId::from(s.trim()))
+            .map(|s| TaskId::from(s.trim()))
             .ok_or_else(|| fail("invalid", "task_id names the task (list_tasks has them)"))
     }
 
@@ -676,7 +671,7 @@ impl Gateway {
                 };
                 let store = d.store.lock().await;
                 let tasks: Vec<Value> = d
-                    .features
+                    .tasks
                     .lock()
                     .await
                     .list()
@@ -731,13 +726,13 @@ impl Gateway {
     }
 
     async fn host_change(&self, name: &str, args: &Value) -> Result<Value, ToolError> {
-        use otter_core::feature::FeatureAction;
-        use otter_protocol::feature::{FeatureAct, FeatureCreate};
+        use otter_core::task::TaskAction;
+        use otter_protocol::task::{TaskAct, TaskCreate};
         let d = &self.inner.daemon;
         let origin = &self.inner.origin;
         let authority = origin.authority().map(|m| m.id.to_string());
         let called = |command: String| {
-            let event = FeatureEvent::ToolCalled {
+            let event = TaskEvent::ToolCalled {
                 tool: name.into(),
                 origin: origin.name().into(),
                 authority: authority.clone(),
@@ -776,7 +771,7 @@ impl Gateway {
             let (event, command) = called(origin.command(name));
             self.record(event, Some(&command)).await;
             let f = d
-                .feature_create(FeatureCreate {
+                .task_create(TaskCreate {
                     command_id: command.clone(),
                     title,
                     request,
@@ -788,19 +783,19 @@ impl Gateway {
             if start {
                 status = d
                     .clone()
-                    .feature_act(FeatureAct {
+                    .task_act(TaskAct {
                         command_id: format!("{command}:start"),
-                        feature: f.id.to_string(),
-                        action: FeatureAction::Start,
+                        task: f.id.to_string(),
+                        action: TaskAction::Start,
                     })
                     .await?
                     .status;
             }
             // Otter follows what it made (D-094), from where it stands now.
-            let now = d.feature_get(f.id.as_str()).await?;
+            let now = d.task_get(f.id.as_str()).await?;
             let applied = d.chat.lock().await.apply(None, |chat, _| {
                 if !chat.follows.iter().any(|x| x.task_id == now.id) {
-                    chat.follows.push(otter_core::feature::Follow {
+                    chat.follows.push(otter_core::task::Follow {
                         task_id: now.id.clone(),
                         seen: now.follow_key().unwrap_or_default(),
                     });
@@ -809,7 +804,7 @@ impl Gateway {
             })?;
             d.chat_changed(&applied);
             self.record(
-                FeatureEvent::ToolDone {
+                TaskEvent::ToolDone {
                     tool: name.into(),
                     error: None,
                 },
@@ -827,23 +822,23 @@ impl Gateway {
         }
         let task = Self::named_task(args)?;
         let action = match name {
-            "start_task" => FeatureAction::Start,
-            "resume_task" => FeatureAction::Resume,
-            "pause_task" => FeatureAction::Pause,
+            "start_task" => TaskAction::Start,
+            "resume_task" => TaskAction::Resume,
+            "pause_task" => TaskAction::Pause,
             _ => return Err(fail("not_found", format!("there is no tool `{name}`"))),
         };
         let (event, command) = called(format!("{}:{task}", origin.command(name)));
         self.record(event, Some(&command)).await;
         let f = d
             .clone()
-            .feature_act(FeatureAct {
+            .task_act(TaskAct {
                 command_id: command.clone(),
-                feature: task.to_string(),
+                task: task.to_string(),
                 action,
             })
             .await?;
         self.record(
-            FeatureEvent::ToolDone {
+            TaskEvent::ToolDone {
                 tool: name.into(),
                 error: None,
             },
@@ -904,7 +899,7 @@ impl Gateway {
     /// turn of its own, on the SDK runtime only (where Otter's policy sees
     /// every tool call). Without a run at work, a question of its own is a
     /// task of its own (D-084).
-    async fn ask(&self, f: &Feature, args: &Value) -> Result<Value, ToolError> {
+    async fn ask(&self, f: &Task, args: &Value) -> Result<Value, ToolError> {
         let messages = self.chosen(args)?;
         let d = &self.inner.daemon;
         match d.live_backend(&f.id).as_deref() {
@@ -925,7 +920,7 @@ impl Gateway {
         let origin = &self.inner.origin;
         let command = origin.command("ask_agent");
         self.record(
-            FeatureEvent::ToolCalled {
+            TaskEvent::ToolCalled {
                 tool: "ask_agent".into(),
                 origin: origin.name().into(),
                 authority: origin.authority().map(|m| m.id.to_string()),
@@ -933,20 +928,16 @@ impl Gateway {
             Some(&command),
         )
         .await;
-        let applied = d
-            .features
-            .lock()
-            .await
-            .apply(&f.id, Some(&command), |_, _| {
-                Ok(vec![
-                    Change::new(FeatureEvent::ToolDone {
-                        tool: "ask_agent".into(),
-                        error: None,
-                    })
-                    .because(&command),
-                ])
-            })?;
-        d.feature_changed(&applied);
+        let applied = d.tasks.lock().await.apply(&f.id, Some(&command), |_, _| {
+            Ok(vec![
+                Change::new(TaskEvent::ToolDone {
+                    tool: "ask_agent".into(),
+                    error: None,
+                })
+                .because(&command),
+            ])
+        })?;
+        d.task_changed(&applied);
         // Each message once, by its own id (D-059): asked again (a turn run
         // again), it isn't queued twice.
         let carried = d.carried(f);
@@ -966,7 +957,7 @@ impl Gateway {
 
     /// Answer-only on or off, on the developer's word (D-092). On needs the
     /// SDK runtime, where the agent can be kept to reading.
-    async fn set_answer_only(&self, f: &Feature, args: &Value) -> Result<Value, ToolError> {
+    async fn set_answer_only(&self, f: &Task, args: &Value) -> Result<Value, ToolError> {
         let Some(on) = args.get("on").and_then(Value::as_bool) else {
             return Err(fail("invalid", "on is true or false"));
         };
@@ -980,7 +971,7 @@ impl Gateway {
         let origin = &self.inner.origin;
         let command = origin.command("set_answer_only");
         self.record(
-            FeatureEvent::ToolCalled {
+            TaskEvent::ToolCalled {
                 tool: "set_answer_only".into(),
                 origin: origin.name().into(),
                 authority: origin.authority().map(|m| m.id.to_string()),
@@ -988,26 +979,22 @@ impl Gateway {
             Some(&command),
         )
         .await;
-        let applied = d
-            .features
-            .lock()
-            .await
-            .apply(&f.id, Some(&command), |f, _| {
-                f.answer_only = on;
-                f.rationale.push(if on {
-                    "You said only an answer is wanted: the coding agent only reads.".into()
-                } else {
-                    "You said changes are fine: the task is no longer answer-only.".into()
-                });
-                Ok(vec![
-                    Change::new(FeatureEvent::ToolDone {
-                        tool: "set_answer_only".into(),
-                        error: None,
-                    })
-                    .because(&command),
-                ])
-            })?;
-        d.feature_changed(&applied);
+        let applied = d.tasks.lock().await.apply(&f.id, Some(&command), |f, _| {
+            f.answer_only = on;
+            f.rationale.push(if on {
+                "You said only an answer is wanted: the coding agent only reads.".into()
+            } else {
+                "You said changes are fine: the task is no longer answer-only.".into()
+            });
+            Ok(vec![
+                Change::new(TaskEvent::ToolDone {
+                    tool: "set_answer_only".into(),
+                    error: None,
+                })
+                .because(&command),
+            ])
+        })?;
+        d.task_changed(&applied);
         let did = if on { "answer only" } else { "changes allowed" };
         if !applied.duplicate {
             self.inner
@@ -1016,7 +1003,7 @@ impl Gateway {
                 .unwrap()
                 .push(format!("set_answer_only: {did}"));
         }
-        Ok(json!({"done": did, "status": applied.feature.status.as_str()}))
+        Ok(json!({"done": did, "status": applied.task.status.as_str()}))
     }
 
     async fn write(&self, name: &str, args: &Value) -> Result<Value, ToolError> {
@@ -1024,7 +1011,7 @@ impl Gateway {
             self.record_done(name, Some(e.code)).await;
             Err(e)
         };
-        let f = self.feature().await?;
+        let f = self.load().await?;
         if f.status.is_terminal() {
             return refused(fail("not_ready", "the task is cancelled")).await;
         }
@@ -1047,7 +1034,7 @@ impl Gateway {
                 .map(|d| d.summary.clone())
                 .unwrap_or_default()
         };
-        use FeatureStatus as S;
+        use TaskStatus as S;
         let checked: Result<(Intent, Vec<Message>), ToolError> = match (name, f.status) {
             ("forward_to_agent", _) => self.chosen(args).map(|m| (Intent::Guide, m)),
             ("redirect_agent", _) => self.chosen(args).map(|m| (Intent::Redirect, m)),
@@ -1090,7 +1077,7 @@ impl Gateway {
         let by_otter = authority.is_none();
         // Written before the change: a change that never finished is known.
         self.record(
-            FeatureEvent::ToolCalled {
+            TaskEvent::ToolCalled {
                 tool: name.into(),
                 origin: origin.name().into(),
                 authority: authority.clone(),
@@ -1102,38 +1089,34 @@ impl Gateway {
         let d = &self.inner.daemon;
         let mut stop = false;
         let mut not_done: Option<String> = None;
-        let applied = d
-            .features
-            .lock()
-            .await
-            .apply(&f.id, Some(&command), |f, now| {
-                let (mut changes, stops) = if by_otter {
-                    // Only pausing gets here without the developer's word.
-                    let c = f
-                        .transition(FeatureStatus::Paused, Some("Paused by Otter".into()), now)
-                        .map_err(RpcError::conflict)?;
-                    (vec![Change::new(c)], true)
-                } else {
-                    intent_step(f, effective, authority.as_deref().unwrap_or(&command), now)
-                };
-                stop = stops;
-                if effective == Intent::Finish && f.status != FeatureStatus::Done {
-                    not_done = Some(
-                        f.rationale
-                            .last()
-                            .cloned()
-                            .unwrap_or_else(|| "it wasn't accepted".into()),
-                    );
-                }
-                changes.push(
-                    Change::new(FeatureEvent::ToolDone {
-                        tool: name.into(),
-                        error: not_done.as_ref().map(|_| "not_ready".into()),
-                    })
-                    .because(&command),
+        let applied = d.tasks.lock().await.apply(&f.id, Some(&command), |f, now| {
+            let (mut changes, stops) = if by_otter {
+                // Only pausing gets here without the developer's word.
+                let c = f
+                    .transition(TaskStatus::Paused, Some("Paused by Otter".into()), now)
+                    .map_err(RpcError::conflict)?;
+                (vec![Change::new(c)], true)
+            } else {
+                intent_step(f, effective, authority.as_deref().unwrap_or(&command), now)
+            };
+            stop = stops;
+            if effective == Intent::Finish && f.status != TaskStatus::Done {
+                not_done = Some(
+                    f.rationale
+                        .last()
+                        .cloned()
+                        .unwrap_or_else(|| "it wasn't accepted".into()),
                 );
-                Ok(changes)
-            });
+            }
+            changes.push(
+                Change::new(TaskEvent::ToolDone {
+                    tool: name.into(),
+                    error: not_done.as_ref().map(|_| "not_ready".into()),
+                })
+                .because(&command),
+            );
+            Ok(changes)
+        });
         let applied = match applied {
             Ok(a) => a,
             Err(e) => {
@@ -1142,7 +1125,7 @@ impl Gateway {
                 return Err(e);
             }
         };
-        d.feature_changed(&applied);
+        d.task_changed(&applied);
         crash_point("applied", name);
         let redirect: String = messages
             .iter()
@@ -1156,7 +1139,7 @@ impl Gateway {
                 d.after_intent(&f, effective, &messages, &redirect, false, None)
                     .await?;
             }
-            return Ok(json!({"done": "already", "status": applied.feature.status.as_str()}));
+            return Ok(json!({"done": "already", "status": applied.task.status.as_str()}));
         }
         let approve = (name == "approve_plan").then_some(plan).flatten();
         d.after_intent(&f, effective, &messages, &redirect, stop, approve)
@@ -1179,7 +1162,7 @@ impl Gateway {
             .lock()
             .unwrap()
             .push(format!("{name}: {did}"));
-        let status = d.feature_get(f.id.as_str()).await?.status;
+        let status = d.task_get(f.id.as_str()).await?.status;
         Ok(json!({"done": did, "status": status.as_str()}))
     }
 }
@@ -1247,7 +1230,7 @@ mod tests {
     fn a_change_is_applied_under_the_developers_message() {
         let m = Message {
             id: otter_core::MessageId::from("msg_1"),
-            role: otter_core::feature::MessageRole::User,
+            role: otter_core::task::MessageRole::User,
             text: "ship it".into(),
             at: chrono::Utc::now(),
             correlation_id: None,

@@ -1,10 +1,10 @@
-//! The Control Agent's engine (D-045): owns a feature from plan to review.
+//! The Control Agent's engine (D-045): owns a task from plan to review.
 //!
-//! An event-driven loop in the daemon — woken whenever a feature changes,
-//! and on a tick that enforces time limits — steps each active feature:
+//! An event-driven loop in the daemon — woken whenever a task changes,
+//! and on a tick that enforces time limits — steps each active task:
 //!
 //! - **planning** → the coding agent reads the code and answers a question
-//!   (the feature is done) or proposes requirements, acceptance criteria,
+//!   (the task is done) or proposes requirements, acceptance criteria,
 //!   steps and a check command (which policy must allow, or someone
 //!   approves); the brain reviews the plan and doesn't rewrite it (D-084);
 //! - **implementing** → the next step whose dependencies are done goes to a
@@ -18,8 +18,8 @@
 //!
 //! Deterministic code enforces what a model must not decide: the lifecycle,
 //! the attempt and time budgets, per-run timeouts, loop detection, and what
-//! may run. The feature document is the checkpoint: a restarted daemon picks
-//! up where the last one stopped. One feature, one run at a time (MVP). No
+//! may run. The task document is the checkpoint: a restarted daemon picks
+//! up where the last one stopped. One task, one run at a time (MVP). No
 //! lock is held across a model call, a run or a check.
 
 use std::collections::HashSet;
@@ -28,22 +28,21 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use chrono::Utc;
-use otter_core::feature::{
+use otter_core::task::{
     Criterion, Decider, DecisionKind, DecisionRequest, DecisionStatus, Evidence, EvidenceKind,
-    Feature, FeatureEvent, FeatureStatus, MessageRole, Risk, RunState, Step, StepStatus,
-    VerificationMark,
+    MessageRole, Risk, RunState, Step, StepStatus, Task, TaskEvent, TaskStatus, VerificationMark,
 };
-use otter_core::{DecisionId, EvidenceId, FeatureId, StepId};
+use otter_core::{DecisionId, EvidenceId, StepId, TaskId};
 use otter_protocol::RpcError;
 
 use crate::brain::{self, Context, Verdict as BrainVerdict};
 use crate::daemon::{Daemon, RpcResult, workspace_not_found};
 use crate::env::EnvMap;
-use crate::features::{Change, message};
 use crate::runtime::ToolCall;
 use crate::runtime::policy::{self, Verdict};
+use crate::tasks::{Change, message};
 
-/// Attempts at one step before the feature fails.
+/// Attempts at one step before the task fails.
 const MAX_TASK_ATTEMPTS: u32 = 3;
 /// The same failure this many runs in a row is a loop.
 const LOOP_REPEATS: usize = 3;
@@ -94,7 +93,7 @@ pub(crate) fn plan_turn() -> bool {
     std::env::var("OTTER_PLAN_TURN").map_or(true, |v| v != "0")
 }
 
-/// How a feature waiting for its workspace says so (D-079).
+/// How a task waiting for its workspace says so (D-079).
 const WAITING: &str = "Waiting for ";
 
 /// The planning step's title.
@@ -102,9 +101,9 @@ const PLANNING: &str = "Look at the code and plan the work";
 /// The step CI's failure becomes, and what is said when a fix didn't change it.
 const CI_FIX: &str = "Fix what CI found";
 const SAME_CI: &str = "CI failed the same way after the fix";
-/// What Otter asks when a feature starts with nothing to do (D-067).
-const GOAL_QUESTION: &str = "What should this feature do?";
-/// Why a feature is done when its request was a question (D-084).
+/// What Otter asks when a task starts with nothing to do (D-067).
+const GOAL_QUESTION: &str = "What should this task do?";
+/// Why a task is done when its request was a question (D-084).
 const ANSWERED: &str = "Answered: no change was asked for. Say so if you want one.";
 /// What Otter asks when a revised plan still has problems (D-084).
 const PLAN_QUESTION: &str = "Go ahead with the coding agent's plan?";
@@ -116,7 +115,7 @@ fn looked_and_failed(why: &str) -> String {
 
 /// The developer's word on the plan the planning turn last came back with:
 /// asked after that turn began (D-084).
-fn plan_decision<'a>(f: &'a Feature, step: &StepId) -> Option<&'a DecisionRequest> {
+fn plan_decision<'a>(f: &'a Task, step: &StepId) -> Option<&'a DecisionRequest> {
     let since = f
         .runs
         .iter()
@@ -148,12 +147,12 @@ fn check_timeout() -> Duration {
 /// restart only means asking the brain again).
 #[derive(Default)]
 pub(crate) struct ControllerState {
-    /// Features being stepped right now.
-    inflight: HashSet<FeatureId>,
+    /// Tasks being stepped right now.
+    inflight: HashSet<TaskId>,
     /// Decisions the brain has already been asked about.
     asked: HashSet<DecisionId>,
-    /// When each feature's CI was last read.
-    ci_polled: std::collections::HashMap<FeatureId, std::time::Instant>,
+    /// When each task's CI was last read.
+    ci_polled: std::collections::HashMap<TaskId, std::time::Instant>,
     /// A turn in Otter's conversation on the host is running (D-093).
     host_turn: bool,
 }
@@ -165,7 +164,7 @@ impl Daemon {
         let mut clocks = (std::time::Instant::now(), Utc::now());
         loop {
             tokio::select! {
-                _ = self.feature_wake.notified() => {}
+                _ = self.task_wake.notified() => {}
                 _ = tokio::time::sleep(tick()) => {}
                 _ = shutdown.changed() => return,
             }
@@ -185,12 +184,12 @@ impl Daemon {
                 let daemon = self.clone();
                 tokio::spawn(async move { daemon.put_away_workspace(&id).await });
             }
-            // Off: features stay where they are until the developer acts.
+            // Off: tasks stay where they are until the developer acts.
             if self.brain_choice().controller.as_deref() == Some("off") {
                 continue;
             }
-            let ids: Vec<FeatureId> = self
-                .features
+            let ids: Vec<TaskId> = self
+                .tasks
                 .lock()
                 .await
                 .list()
@@ -198,10 +197,10 @@ impl Daemon {
                 .filter(|f| {
                     !unanswered(f).is_empty()
                         || f.status.is_active()
-                        || f.status == FeatureStatus::Review
+                        || f.status == TaskStatus::Review
                         // Blocked: on a decision the brain hasn't seen yet,
                         // or on nothing any more (see `unblock`).
-                        || (f.status == FeatureStatus::Blocked && f.workspace_id.is_some())
+                        || (f.status == TaskStatus::Blocked && f.workspace_id.is_some())
                 })
                 .map(|f| f.id)
                 .collect();
@@ -212,7 +211,7 @@ impl Daemon {
                 let daemon = self.clone();
                 tokio::spawn(async move {
                     if let Err(e) = daemon.step(&id).await {
-                        tracing::warn!(feature = %id, "controller: {}", e.message);
+                        tracing::warn!(task = %id, "controller: {}", e.message);
                         daemon
                             .fail(&id, &format!("Otter stopped: {}", e.message), None)
                             .await;
@@ -234,7 +233,7 @@ impl Daemon {
                     let done = daemon.follow_up(task, key).await;
                     daemon.controller.lock().unwrap().host_turn = false;
                     match done {
-                        Ok(()) => daemon.feature_wake.notify_one(),
+                        Ok(()) => daemon.task_wake.notify_one(),
                         Err(e) => tracing::warn!("Otter's follow-up: {}", e.message),
                     }
                 });
@@ -246,7 +245,7 @@ impl Daemon {
                     daemon.controller.lock().unwrap().host_turn = false;
                     match answered {
                         // What came in meanwhile is answered next.
-                        Ok(()) => daemon.feature_wake.notify_one(),
+                        Ok(()) => daemon.task_wake.notify_one(),
                         // Tried again on the next tick, not at once.
                         Err(e) => tracing::warn!("Otter's turn on the host: {}", e.message),
                     }
@@ -255,8 +254,8 @@ impl Daemon {
         }
     }
 
-    async fn step(self: &Arc<Self>, id: &FeatureId) -> RpcResult<()> {
-        let mut f = self.feature_get(id.as_str()).await?;
+    async fn step(self: &Arc<Self>, id: &TaskId) -> RpcResult<()> {
+        let mut f = self.task_get(id.as_str()).await?;
         // The developer said something: answer first (it may pause or go on)
         // — with Otter's tools where it has them (D-089).
         if !unanswered(&f).is_empty() {
@@ -264,18 +263,18 @@ impl Daemon {
                 Some(backend) => self.otter_turn(&f, backend).await?,
                 None => self.converse(&f).await?,
             }
-            f = self.feature_get(id.as_str()).await?;
+            f = self.task_get(id.as_str()).await?;
         }
         // Unattended work doesn't wait for ever on the developer (D-083).
         if self.waited_too_long(&f).await? {
             return Ok(());
         }
         match f.status {
-            FeatureStatus::Planning => self.plan_step(&f).await,
-            FeatureStatus::Implementing => self.implement_step(&f).await,
-            FeatureStatus::Verifying => self.verify_step(&f).await,
-            FeatureStatus::Review => self.review_step(&f).await,
-            FeatureStatus::Blocked => {
+            TaskStatus::Planning => self.plan_step(&f).await,
+            TaskStatus::Implementing => self.implement_step(&f).await,
+            TaskStatus::Verifying => self.verify_step(&f).await,
+            TaskStatus::Review => self.review_step(&f).await,
+            TaskStatus::Blocked => {
                 if f.pending_decisions().next().is_some() {
                     self.decide_open(&f).await
                 } else {
@@ -286,10 +285,10 @@ impl Daemon {
         }
     }
 
-    /// A triggered feature whose developer-only decision has waited past its
+    /// A triggered task whose developer-only decision has waited past its
     /// trigger's limit is paused (D-083): its agent stops, it says why, and
     /// resuming asks again. Nothing is decided in the developer's name.
-    async fn waited_too_long(self: &Arc<Self>, f: &Feature) -> RpcResult<bool> {
+    async fn waited_too_long(self: &Arc<Self>, f: &Task) -> RpcResult<bool> {
         let Some(limit) = f.started_by.as_ref().and_then(|s| s.policy.wait_limit_secs) else {
             return Ok(false);
         };
@@ -302,7 +301,7 @@ impl Daemon {
         else {
             return Ok(false);
         };
-        if !f.status.can_become(FeatureStatus::Paused) {
+        if !f.status.can_become(TaskStatus::Paused) {
             return Ok(false);
         }
         let mins = (now - d.created_at).num_minutes().max(1);
@@ -314,7 +313,7 @@ impl Daemon {
         self.hold_runs(&f.id, false, "Paused: waited too long for the developer")
             .await;
         let did = d.id.clone();
-        let applied = self.features.lock().await.apply(&f.id, None, |f, now| {
+        let applied = self.tasks.lock().await.apply(&f.id, None, |f, now| {
             let mut changes = Vec::new();
             // What it waited on goes with the run (a decision of its own, like
             // publishing, is cancelled here): asked again on resume.
@@ -325,22 +324,22 @@ impl Daemon {
                 d.decided_at = Some(now);
             }
             f.rationale.push(why.clone());
-            if f.status.can_become(FeatureStatus::Paused) {
+            if f.status.can_become(TaskStatus::Paused) {
                 changes.push(Change::new(
-                    f.transition(FeatureStatus::Paused, Some(why.clone()), now)
+                    f.transition(TaskStatus::Paused, Some(why.clone()), now)
                         .map_err(RpcError::conflict)?,
                 ));
             }
             Ok(changes)
         })?;
-        self.feature_changed(&applied);
+        self.task_changed(&applied);
         Ok(true)
     }
 
     /// Answer the developer's latest messages (D-049), and act on what they
     /// ask: go on (resume, unblock, start, retry) or pause. Instructions for
     /// the work reach the coding agent with its next turn.
-    async fn converse(self: &Arc<Self>, f: &Feature) -> RpcResult<()> {
+    async fn converse(self: &Arc<Self>, f: &Task) -> RpcResult<()> {
         let open = unanswered(f);
         let Some(last) = open.last().cloned() else {
             return Ok(());
@@ -351,7 +350,7 @@ impl Daemon {
             .collect::<Vec<_>>()
             .join("\n");
         let stream_id = format!("reply-{}", last.id);
-        let reply = match self.feature_workspace(f).await {
+        let reply = match self.task_workspace(f).await {
             Ok((root, env)) => {
                 let brain = brain::select(&env, &self.brain_choice());
                 // Streamed to the app as it's written (D-051).
@@ -365,7 +364,7 @@ impl Daemon {
                 brain
                     .reply(
                         &Context {
-                            feature: f,
+                            task: f,
                             root: &root,
                             env: &env,
                         },
@@ -377,7 +376,7 @@ impl Daemon {
             Err(e) => Err(anyhow::anyhow!(e.message)),
         };
         let reply = reply.unwrap_or_else(|e| {
-            tracing::warn!(feature = %f.id, "replying: {e:#}");
+            tracing::warn!(task = %f.id, "replying: {e:#}");
             crate::brain::Reply {
                 text: crate::brain::status_text(f),
                 intent: crate::brain::Intent::None,
@@ -391,7 +390,7 @@ impl Daemon {
             reply.text
         };
         let mut stop = false;
-        let applied = self.features.lock().await.apply(&f.id, None, |f, now| {
+        let applied = self.tasks.lock().await.apply(&f.id, None, |f, now| {
             let (m, c) = message(
                 MessageRole::Controller,
                 reply_text.clone(),
@@ -404,7 +403,7 @@ impl Daemon {
             changes.extend(step);
             Ok(changes)
         })?;
-        self.feature_changed(&applied);
+        self.task_changed(&applied);
         self.stream(
             &f.id,
             &stream_id,
@@ -416,7 +415,7 @@ impl Daemon {
             .await
     }
 
-    /// What follows an intent once the feature has changed (`converse`, and
+    /// What follows an intent once the task has changed (`converse`, and
     /// Otter's tools, D-089). What reaches the coding agent (D-059):
     /// guidance as turns of their own (each message's id is its command id,
     /// so it is queued once); a redirect stops the current turn first, with
@@ -425,9 +424,9 @@ impl Daemon {
     /// question waits approves the plan, as the developer said.
     pub(crate) async fn after_intent(
         self: &Arc<Self>,
-        f: &Feature,
+        f: &Task,
         intent: crate::brain::Intent,
-        messages: &[otter_core::feature::Message],
+        messages: &[otter_core::task::Message],
         redirect: &str,
         stop: bool,
         plan_asked: Option<DecisionId>,
@@ -464,14 +463,14 @@ impl Daemon {
         Ok(())
     }
 
-    /// A feature blocked on nothing that is still open (a decision that
+    /// A task blocked on nothing that is still open (a decision that
     /// became moot, an interrupted run) picks up where its work stands.
-    async fn unblock(&self, f: &Feature) -> RpcResult<()> {
-        self.controller_apply(&f.id, FeatureStatus::Blocked, |f, now| {
+    async fn unblock(&self, f: &Task) -> RpcResult<()> {
+        self.controller_apply(&f.id, TaskStatus::Blocked, |f, now| {
             if f.workspace_id.is_none() || f.pending_decisions().next().is_some() {
                 return Ok(vec![]);
             }
-            let next = crate::features::resume_status(f);
+            let next = crate::tasks::resume_status(f);
             Ok(vec![Change::new(
                 f.transition(next, Some("Nothing is waiting on you any more".into()), now)
                     .map_err(RpcError::conflict)?,
@@ -495,12 +494,12 @@ impl Daemon {
         }
     }
 
-    /// The workspace root and environment the feature works in.
-    pub(crate) async fn feature_workspace(&self, f: &Feature) -> RpcResult<(PathBuf, EnvMap)> {
+    /// The workspace root and environment the task works in.
+    pub(crate) async fn task_workspace(&self, f: &Task) -> RpcResult<(PathBuf, EnvMap)> {
         let ws_id = f
             .workspace_id
             .clone()
-            .ok_or_else(|| RpcError::conflict("the feature has no workspace"))?;
+            .ok_or_else(|| RpcError::conflict("the task has no workspace"))?;
         let ws = self
             .store
             .lock()
@@ -512,15 +511,15 @@ impl Daemon {
         Ok((PathBuf::from(&ws.root), env))
     }
 
-    /// Change a feature on behalf of the controller, if it is still `expect`.
+    /// Change a task on behalf of the controller, if it is still `expect`.
     async fn controller_apply(
         &self,
-        id: &FeatureId,
-        expect: FeatureStatus,
-        step: impl FnOnce(&mut Feature, chrono::DateTime<Utc>) -> RpcResult<Vec<Change>>,
+        id: &TaskId,
+        expect: TaskStatus,
+        step: impl FnOnce(&mut Task, chrono::DateTime<Utc>) -> RpcResult<Vec<Change>>,
     ) -> RpcResult<bool> {
         let mut moved = false;
-        let applied = self.features.lock().await.apply(id, None, |f, now| {
+        let applied = self.tasks.lock().await.apply(id, None, |f, now| {
             // The developer may have paused or cancelled meanwhile.
             if f.status != expect {
                 moved = true;
@@ -528,24 +527,24 @@ impl Daemon {
             }
             step(f, now)
         })?;
-        self.feature_changed(&applied);
+        self.task_changed(&applied);
         Ok(!moved)
     }
 
-    /// Stop the feature with a reason (a limit, or an error), keeping the plan.
-    pub(crate) async fn fail(&self, id: &FeatureId, reason: &str, limit: Option<&str>) {
+    /// Stop the task with a reason (a limit, or an error), keeping the plan.
+    pub(crate) async fn fail(&self, id: &TaskId, reason: &str, limit: Option<&str>) {
         let reason = reason.to_owned();
         let limit = limit.map(String::from);
-        let applied = self.features.lock().await.apply(id, None, |f, now| {
-            if !f.status.can_become(FeatureStatus::Failed) {
+        let applied = self.tasks.lock().await.apply(id, None, |f, now| {
+            if !f.status.can_become(TaskStatus::Failed) {
                 return Ok(vec![]);
             }
             let mut changes = Vec::new();
             if let Some(l) = limit {
-                changes.push(Change::new(FeatureEvent::LimitReached { limit: l }));
+                changes.push(Change::new(TaskEvent::LimitReached { limit: l }));
             }
             changes.push(Change::new(
-                f.transition(FeatureStatus::Failed, Some(reason.clone()), now)
+                f.transition(TaskStatus::Failed, Some(reason.clone()), now)
                     .map_err(RpcError::conflict)?,
             ));
             let (m, c) = message(MessageRole::Controller, reason, None);
@@ -554,18 +553,18 @@ impl Daemon {
             Ok(changes)
         });
         match applied {
-            Ok(a) => self.feature_changed(&a),
-            Err(e) => tracing::warn!(feature = %id, "failing: {e:?}"),
+            Ok(a) => self.task_changed(&a),
+            Err(e) => tracing::warn!(task = %id, "failing: {e:?}"),
         }
     }
 
-    async fn plan_step(self: &Arc<Self>, f: &Feature) -> RpcResult<()> {
+    async fn plan_step(self: &Arc<Self>, f: &Task) -> RpcResult<()> {
         if f.workspace_id.is_none() {
-            self.controller_apply(&f.id, FeatureStatus::Planning, |f, now| {
+            self.controller_apply(&f.id, TaskStatus::Planning, |f, now| {
                 let e = f
                     .transition(
-                        FeatureStatus::Blocked,
-                        Some("Choose a workspace for this feature".into()),
+                        TaskStatus::Blocked,
+                        Some("Choose a workspace for this task".into()),
                         now,
                     )
                     .map_err(RpcError::conflict)?;
@@ -576,8 +575,8 @@ impl Daemon {
         }
         if f.steps.iter().any(|t| !t.planning) && !f.replan {
             // Back from a pause before any plan step was lost: carry on.
-            self.controller_apply(&f.id, FeatureStatus::Planning, |f, now| {
-                let next = crate::features::resume_status(f);
+            self.controller_apply(&f.id, TaskStatus::Planning, |f, now| {
+                let next = crate::tasks::resume_status(f);
                 Ok(vec![Change::new(
                     f.transition(next, None, now).map_err(RpcError::conflict)?,
                 )])
@@ -599,7 +598,7 @@ impl Daemon {
             }
             match f.steps.iter().find(|t| t.planning) {
                 None => {
-                    self.controller_apply(&f.id, FeatureStatus::Planning, |f, _| {
+                    self.controller_apply(&f.id, TaskStatus::Planning, |f, _| {
                         let step_id = StepId::generate();
                         f.steps.push(Step {
                             id: step_id.clone(),
@@ -613,7 +612,7 @@ impl Daemon {
                             last_error: None,
                             planning: true,
                         });
-                        Ok(vec![Change::new(FeatureEvent::StepChanged {
+                        Ok(vec![Change::new(TaskEvent::StepChanged {
                             step_id,
                             status: StepStatus::Pending,
                         })])
@@ -638,11 +637,11 @@ impl Daemon {
                 Some(_) => {}
             }
         }
-        let (root, env) = self.feature_workspace(f).await?;
+        let (root, env) = self.task_workspace(f).await?;
         let brain = brain::select(&env, &self.brain_choice());
         let plan = brain
             .plan(&Context {
-                feature: f,
+                task: f,
                 root: &root,
                 env: &env,
             })
@@ -654,13 +653,13 @@ impl Daemon {
     /// The coding agent's look at the code is over (D-084). A plan in its
     /// report is reviewed — the brain's points go back to the agent once,
     /// and to the developer after that — and set. Anything else is its
-    /// answer: the request asked no change, and the feature is done.
-    async fn after_the_look(self: &Arc<Self>, f: &Feature, step: &Step) -> RpcResult<()> {
+    /// answer: the request asked no change, and the task is done.
+    async fn after_the_look(self: &Arc<Self>, f: &Task, step: &Step) -> RpcResult<()> {
         let report = brain::proposal(f).unwrap_or_default().trim().to_owned();
         let Some(proposed) = brain::parse_proposal(&report) else {
             return self.answered(f, step, report).await;
         };
-        let (root, env) = self.feature_workspace(f).await?;
+        let (root, env) = self.task_workspace(f).await?;
         let plan = brain::complete_proposal(proposed, f, &root);
         // Only an answer was wanted (D-092): a plan to change things is the
         // developer's to allow.
@@ -692,7 +691,7 @@ impl Daemon {
         }
         let brain = brain::select(&env, &self.brain_choice());
         let cx = Context {
-            feature: f,
+            task: f,
             root: &root,
             env: &env,
         };
@@ -700,7 +699,7 @@ impl Daemon {
             Ok(issues) => issues,
             // The agent's plan stands: it is the one that saw the code.
             Err(e) => {
-                tracing::warn!(feature = %f.id, "reviewing the plan: {e:#}");
+                tracing::warn!(task = %f.id, "reviewing the plan: {e:#}");
                 vec![]
             }
         };
@@ -725,7 +724,7 @@ impl Daemon {
     /// is set; turned down, the plan is the answer and the task is done.
     async fn plan_for_an_answer(
         &self,
-        f: &Feature,
+        f: &Task,
         step: &Step,
         plan: brain::Plan,
         root: &std::path::Path,
@@ -738,7 +737,7 @@ impl Daemon {
                     DecisionStatus::Approved | DecisionStatus::Answered
                 ) =>
             {
-                self.controller_apply(&f.id, FeatureStatus::Planning, |f, _| {
+                self.controller_apply(&f.id, TaskStatus::Planning, |f, _| {
                     f.answer_only = false;
                     f.rationale.push(
                         "You let it change the code: the task is no longer answer-only.".into(),
@@ -763,7 +762,7 @@ impl Daemon {
                     "This task only answers, but the coding agent proposes changes:\n{}\nApprove to let it change the code; turn it down and this plan stands as the answer.",
                     plan_text(&plan)
                 );
-                self.controller_apply(&f.id, FeatureStatus::Planning, move |f, now| {
+                self.controller_apply(&f.id, TaskStatus::Planning, move |f, now| {
                     let id = DecisionId::generate();
                     f.decisions.push(DecisionRequest {
                         id: id.clone(),
@@ -786,14 +785,14 @@ impl Daemon {
                     let (m, c) = message(MessageRole::Controller, text, Some(id.to_string()));
                     f.messages.push(m);
                     Ok(vec![
-                        Change::new(FeatureEvent::DecisionRequested {
+                        Change::new(TaskEvent::DecisionRequested {
                             decision_id: id,
                             kind: DecisionKind::PlanApproval,
                             risk: Risk::Medium,
                         }),
                         c,
                         Change::new(
-                            f.transition(FeatureStatus::Blocked, Some(PLAN_QUESTION.into()), now)
+                            f.transition(TaskStatus::Blocked, Some(PLAN_QUESTION.into()), now)
                                 .map_err(RpcError::conflict)?,
                         ),
                     ])
@@ -805,15 +804,15 @@ impl Daemon {
     }
 
     /// The planning turn's report was no plan: it is the answer (D-084).
-    async fn answered(&self, f: &Feature, step: &Step, report: String) -> RpcResult<()> {
+    async fn answered(&self, f: &Task, step: &Step, report: String) -> RpcResult<()> {
         let id = step.id.clone();
         if report.is_empty() {
             let why = "it ended without a plan or an answer";
-            self.controller_apply(&f.id, FeatureStatus::Planning, |f, _| {
+            self.controller_apply(&f.id, TaskStatus::Planning, |f, _| {
                 let t = f.step_mut(&id).expect("found");
                 t.status = StepStatus::Failed;
                 t.last_error = Some(why.into());
-                Ok(vec![Change::new(FeatureEvent::StepChanged {
+                Ok(vec![Change::new(TaskEvent::StepChanged {
                     step_id: id.clone(),
                     status: StepStatus::Failed,
                 })])
@@ -828,7 +827,7 @@ impl Daemon {
             .rev()
             .find(|r| r.step_id == id && r.state == RunState::Completed)
             .map(|r| r.id.to_string());
-        self.controller_apply(&f.id, FeatureStatus::Planning, move |f, now| {
+        self.controller_apply(&f.id, TaskStatus::Planning, move |f, now| {
             let (m, c) = message(MessageRole::Agent, report, run);
             f.messages.push(m);
             f.rationale.push(
@@ -838,7 +837,7 @@ impl Daemon {
             Ok(vec![
                 c,
                 Change::new(
-                    f.transition(FeatureStatus::Done, Some(ANSWERED.into()), now)
+                    f.transition(TaskStatus::Done, Some(ANSWERED.into()), now)
                         .map_err(RpcError::conflict)?,
                 ),
             ])
@@ -848,9 +847,9 @@ impl Daemon {
     }
 
     /// The planning turn again, with what is wrong with its plan (D-084).
-    async fn send_plan_back(&self, f: &Feature, step: &Step, issues: String) -> RpcResult<()> {
+    async fn send_plan_back(&self, f: &Task, step: &Step, issues: String) -> RpcResult<()> {
         let id = step.id.clone();
-        self.controller_apply(&f.id, FeatureStatus::Planning, move |f, _| {
+        self.controller_apply(&f.id, TaskStatus::Planning, move |f, _| {
             f.rationale.push(format!(
                 "Sent the plan back to the coding agent:\n{}",
                 issues.trim_end()
@@ -858,7 +857,7 @@ impl Daemon {
             let t = f.step_mut(&id).expect("found");
             t.status = StepStatus::Pending;
             t.detail = Some(issues);
-            Ok(vec![Change::new(FeatureEvent::StepChanged {
+            Ok(vec![Change::new(TaskEvent::StepChanged {
                 step_id: id.clone(),
                 status: StepStatus::Pending,
             })])
@@ -871,7 +870,7 @@ impl Daemon {
     /// whether it goes ahead (D-084). Nothing is set until they do.
     async fn ask_about_the_plan(
         &self,
-        f: &Feature,
+        f: &Task,
         step: &Step,
         plan: &brain::Plan,
         issues: String,
@@ -897,7 +896,7 @@ impl Daemon {
         text.push_str(
             "\nApprove it to go ahead as it is, turn it down to have it planned again, or tell me what to change.",
         );
-        self.controller_apply(&f.id, FeatureStatus::Planning, move |f, now| {
+        self.controller_apply(&f.id, TaskStatus::Planning, move |f, now| {
             let id = DecisionId::generate();
             f.decisions.push(DecisionRequest {
                 id: id.clone(),
@@ -920,14 +919,14 @@ impl Daemon {
             let (m, c) = message(MessageRole::Controller, text, Some(id.to_string()));
             f.messages.push(m);
             Ok(vec![
-                Change::new(FeatureEvent::DecisionRequested {
+                Change::new(TaskEvent::DecisionRequested {
                     decision_id: id,
                     kind: DecisionKind::PlanApproval,
                     risk: Risk::Low,
                 }),
                 c,
                 Change::new(
-                    f.transition(FeatureStatus::Blocked, Some(PLAN_QUESTION.into()), now)
+                    f.transition(TaskStatus::Blocked, Some(PLAN_QUESTION.into()), now)
                         .map_err(RpcError::conflict)?,
                 ),
             ])
@@ -936,10 +935,10 @@ impl Daemon {
         Ok(())
     }
 
-    /// Set `plan` as the feature's plan, `by` whom it says.
+    /// Set `plan` as the task's plan, `by` whom it says.
     async fn set_plan(
         &self,
-        f: &Feature,
+        f: &Task,
         plan: brain::Plan,
         by: &str,
         root: &std::path::Path,
@@ -949,7 +948,7 @@ impl Daemon {
             .as_ref()
             .map(|c| policy::classify(&ToolCall::Command { line: c.clone() }, root));
         let by = by.to_owned();
-        self.controller_apply(&f.id, FeatureStatus::Planning, move |f, now| {
+        self.controller_apply(&f.id, TaskStatus::Planning, move |f, now| {
             f.requirements = plan.requirements.clone();
             f.acceptance = plan
                 .criteria
@@ -998,7 +997,7 @@ impl Daemon {
             f.steps = kept.into_iter().chain(fresh).collect();
             f.verify_command = verify.clone();
             f.rationale.push(format!("Plan ({by}): {}", plan.rationale));
-            let mut changes = vec![Change::new(FeatureEvent::PlanSet {
+            let mut changes = vec![Change::new(TaskEvent::PlanSet {
                 steps: f.steps.len(),
                 criteria: f.acceptance.len(),
             })];
@@ -1034,7 +1033,7 @@ impl Daemon {
                         grant: None,
                     });
                     f.verify_decision = Some(id.clone());
-                    changes.push(Change::new(FeatureEvent::DecisionRequested {
+                    changes.push(Change::new(TaskEvent::DecisionRequested {
                         decision_id: id,
                         kind: DecisionKind::ToolPermission,
                         risk: *risk,
@@ -1067,7 +1066,7 @@ impl Daemon {
             f.messages.push(m);
             changes.push(c);
             changes.push(Change::new(
-                f.transition(FeatureStatus::Implementing, None, now)
+                f.transition(TaskStatus::Implementing, None, now)
                     .map_err(RpcError::conflict)?,
             ));
             Ok(changes)
@@ -1077,10 +1076,10 @@ impl Daemon {
     }
 
     /// Ask the brain about open decisions; escalate what it won't take.
-    /// A feature started with no request: take the developer's first
+    /// A task started with no request: take the developer's first
     /// message, or their answer to Otter's question; else ask, once, and
     /// wait (D-067). Planning doesn't start without a goal.
-    async fn find_the_goal(self: &Arc<Self>, f: &Feature) -> RpcResult<()> {
+    async fn find_the_goal(self: &Arc<Self>, f: &Task) -> RpcResult<()> {
         let said = f
             .messages
             .iter()
@@ -1093,7 +1092,7 @@ impl Daemon {
             .find(|d| d.summary == GOAL_QUESTION && d.status == DecisionStatus::Answered)
             .and_then(|d| d.answer.clone());
         if let Some(goal) = said.or(answered).filter(|g| !g.trim().is_empty()) {
-            self.controller_apply(&f.id, FeatureStatus::Planning, move |f, _| {
+            self.controller_apply(&f.id, TaskStatus::Planning, move |f, _| {
                 f.request = goal.trim().to_owned();
                 f.rationale
                     .push("The request is what you said: planning from it.".into());
@@ -1105,7 +1104,7 @@ impl Daemon {
         if f.pending_decisions().any(|d| d.summary == GOAL_QUESTION) {
             return Ok(());
         }
-        self.controller_apply(&f.id, FeatureStatus::Planning, |f, now| {
+        self.controller_apply(&f.id, TaskStatus::Planning, |f, now| {
             let id = DecisionId::generate();
             f.decisions.push(DecisionRequest {
                 id: id.clone(),
@@ -1114,7 +1113,7 @@ impl Daemon {
                 kind: DecisionKind::Question,
                 risk: Risk::Low,
                 summary: GOAL_QUESTION.into(),
-                detail: Some("The feature was started without a request.".into()),
+                detail: Some("The task was started without a request.".into()),
                 options: vec![],
                 status: DecisionStatus::Pending,
                 decided_by: None,
@@ -1134,7 +1133,7 @@ impl Daemon {
             );
             f.messages.push(m);
             Ok(vec![
-                Change::new(FeatureEvent::DecisionRequested {
+                Change::new(TaskEvent::DecisionRequested {
                     decision_id: id,
                     kind: DecisionKind::Question,
                     risk: Risk::Low,
@@ -1142,8 +1141,8 @@ impl Daemon {
                 c,
                 Change::new(
                     f.transition(
-                        FeatureStatus::Blocked,
-                        Some("Waiting for what this feature should do".into()),
+                        TaskStatus::Blocked,
+                        Some("Waiting for what this task should do".into()),
                         now,
                     )
                     .map_err(RpcError::conflict)?,
@@ -1154,8 +1153,8 @@ impl Daemon {
         Ok(())
     }
 
-    async fn decide_open(self: &Arc<Self>, f: &Feature) -> RpcResult<()> {
-        // Asked what the feature should do: a message is an answer too.
+    async fn decide_open(self: &Arc<Self>, f: &Task) -> RpcResult<()> {
+        // Asked what the task should do: a message is an answer too.
         if let Some(d) = f.pending_decisions().find(|d| d.summary == GOAL_QUESTION)
             && let Some(m) = f
                 .messages
@@ -1186,7 +1185,7 @@ impl Daemon {
         if open.is_empty() {
             return Ok(());
         }
-        let (root, env) = self.feature_workspace(f).await?;
+        let (root, env) = self.task_workspace(f).await?;
         let brain = brain::select(&env, &self.brain_choice());
         for d in open {
             // Whether to start cut-off work over is the developer's (D-061).
@@ -1198,7 +1197,7 @@ impl Daemon {
             let verdict = brain
                 .decide(
                     &Context {
-                        feature: f,
+                        task: f,
                         root: &root,
                         env: &env,
                     },
@@ -1232,7 +1231,7 @@ impl Daemon {
                 // to escalate. Still open: policy kept it from the model, so
                 // it's the developer's.
                 let still_open = self
-                    .feature_get(f.id.as_str())
+                    .task_get(f.id.as_str())
                     .await
                     .is_ok_and(|now| now.pending_decisions().any(|x| x.id == d.id));
                 if still_open {
@@ -1248,10 +1247,10 @@ impl Daemon {
         Ok(())
     }
 
-    async fn escalate(&self, id: &FeatureId, d: &DecisionRequest, why: &str) {
+    async fn escalate(&self, id: &TaskId, d: &DecisionRequest, why: &str) {
         let line = format!("Needs your decision: {} — {why}", d.summary);
         let did = d.id.clone();
-        let applied = self.features.lock().await.apply(id, None, |f, now| {
+        let applied = self.tasks.lock().await.apply(id, None, |f, now| {
             // Decided meanwhile (the run ended, the developer answered):
             // nothing to block on, which would only unblock again (D-066).
             if !f.pending_decisions().any(|x| x.id == did) {
@@ -1259,16 +1258,16 @@ impl Daemon {
             }
             f.rationale.push(line.clone());
             let mut changes = Vec::new();
-            if f.status.can_become(FeatureStatus::Blocked) {
+            if f.status.can_become(TaskStatus::Blocked) {
                 changes.push(Change::new(
-                    f.transition(FeatureStatus::Blocked, Some(line.clone()), now)
+                    f.transition(TaskStatus::Blocked, Some(line.clone()), now)
                         .map_err(RpcError::conflict)?,
                 ));
             }
             Ok(changes)
         });
         if let Ok(a) = applied {
-            self.feature_changed(&a);
+            self.task_changed(&a);
         }
     }
 
@@ -1281,8 +1280,8 @@ impl Daemon {
             secs = gap.num_seconds(),
             "the host slept; not counted as work"
         );
-        let ids: Vec<FeatureId> = self
-            .features
+        let ids: Vec<TaskId> = self
+            .tasks
             .lock()
             .await
             .list()
@@ -1291,21 +1290,21 @@ impl Daemon {
             .map(|f| f.id)
             .collect();
         for id in ids {
-            let applied = self.features.lock().await.apply(&id, None, |f, now| {
+            let applied = self.tasks.lock().await.apply(&id, None, |f, now| {
                 for r in f.runs.iter_mut().filter(|r| !r.state.is_over()) {
                     r.skip(gap, now);
                 }
                 Ok(vec![])
             });
             if let Ok(a) = applied {
-                self.feature_changed(&a);
+                self.task_changed(&a);
             }
         }
     }
 
     /// A run at work, or decisions open: keep the run within its limits and
     /// get the decisions made. True when that's all there is to do now.
-    async fn supervise(self: &Arc<Self>, f: &Feature) -> RpcResult<bool> {
+    async fn supervise(self: &Arc<Self>, f: &Task) -> RpcResult<bool> {
         let now = Utc::now();
         if let Some(run) = f.live_run() {
             // Out of time, or silent too long: the turn is cut off, and the
@@ -1337,7 +1336,7 @@ impl Daemon {
         Ok(false)
     }
 
-    async fn implement_step(self: &Arc<Self>, f: &Feature) -> RpcResult<()> {
+    async fn implement_step(self: &Arc<Self>, f: &Task) -> RpcResult<()> {
         let now = Utc::now();
         if self.supervise(f).await? {
             return Ok(());
@@ -1383,9 +1382,9 @@ impl Daemon {
                 .iter()
                 .all(|t| matches!(t.status, StepStatus::Done | StepStatus::Skipped))
             {
-                self.controller_apply(&f.id, FeatureStatus::Implementing, |f, now| {
+                self.controller_apply(&f.id, TaskStatus::Implementing, |f, now| {
                     Ok(vec![Change::new(
-                        f.transition(FeatureStatus::Verifying, None, now)
+                        f.transition(TaskStatus::Verifying, None, now)
                             .map_err(RpcError::conflict)?,
                     )])
                 })
@@ -1412,10 +1411,10 @@ impl Daemon {
         self.start_turn(f, &step).await
     }
 
-    /// Why the feature's workspace can't be worked in now, if it can't
-    /// (D-079): another feature's run is there, or an agent the developer
+    /// Why the task's workspace can't be worked in now, if it can't
+    /// (D-079): another task's run is there, or an agent the developer
     /// started is at work there.
-    async fn workspace_taken(self: &Arc<Self>, f: &Feature) -> Option<String> {
+    async fn workspace_taken(self: &Arc<Self>, f: &Task) -> Option<String> {
         let ws_id = f.workspace_id.as_ref()?;
         let (name, busy_session) = {
             let store = self.store.lock().await;
@@ -1423,7 +1422,7 @@ impl Daemon {
             // Put away when it ended (D-105): its own comes back; another
             // is the developer's to bring back.
             if ws.state == otter_core::WorkspaceState::Archived {
-                if ws.feature_id.as_ref() != Some(&f.id) {
+                if ws.task_id.as_ref() != Some(&f.id) {
                     return Some(format!(
                         "{WAITING}{}: it's archived; unarchive it to go on",
                         ws.name
@@ -1459,7 +1458,7 @@ impl Daemon {
         };
         if let Some(other) = self.workspace_holder(ws_id).filter(|o| o != &f.id) {
             let title = self
-                .feature_get(other.as_str())
+                .task_get(other.as_str())
                 .await
                 .map(|o| o.title)
                 .unwrap_or_else(|_| other.to_string());
@@ -1469,9 +1468,9 @@ impl Daemon {
             .map(|s| format!("{WAITING}{name}: {s}, an agent you started, is working there"))
     }
 
-    /// The feature waits for its workspace (D-079): said once, on the
-    /// feature; it starts by itself when the workspace is free.
-    async fn wait_for_workspace(self: &Arc<Self>, f: &Feature, why: String) -> RpcResult<()> {
+    /// The task waits for its workspace (D-079): said once, on the
+    /// task; it starts by itself when the workspace is free.
+    async fn wait_for_workspace(self: &Arc<Self>, f: &Task, why: String) -> RpcResult<()> {
         if f.status_reason.as_deref() == Some(why.as_str()) {
             return Ok(());
         }
@@ -1484,13 +1483,13 @@ impl Daemon {
         Ok(())
     }
 
-    /// Give `step` to the coding agent: a turn in the feature's conversation.
-    async fn start_turn(self: &Arc<Self>, f: &Feature, step: &Step) -> RpcResult<()> {
+    /// Give `step` to the coding agent: a turn in the task's conversation.
+    async fn start_turn(self: &Arc<Self>, f: &Task, step: &Step) -> RpcResult<()> {
         let step = step.clone();
         if let Some(why) = self.workspace_taken(f).await {
             return self.wait_for_workspace(f, why).await;
         }
-        // One conversation per feature (D-064): the next step, a fix and a
+        // One conversation per task (D-064): the next step, a fix and a
         // retry are turns in the session the work began in. A turn of this
         // step that was cut off (restart, a lost process, pause, a limit,
         // takeover) carries on; anything else is new work, which is what
@@ -1505,7 +1504,7 @@ impl Daemon {
                 )
             })
             .is_some_and(|r| r.provider_session_id.is_some());
-        let session = self.feature_session(f);
+        let session = self.task_session(f);
         let counts = !continuing && !step.planning;
         if counts && f.budget.iterations_used >= f.budget.max_iterations {
             let reason = format!(
@@ -1575,11 +1574,11 @@ impl Daemon {
         Ok(())
     }
 
-    async fn verify_step(self: &Arc<Self>, f: &Feature) -> RpcResult<()> {
+    async fn verify_step(self: &Arc<Self>, f: &Task) -> RpcResult<()> {
         if f.pending_decisions().next().is_some() {
             return self.decide_open(f).await;
         }
-        let (root, env) = self.feature_workspace(f).await?;
+        let (root, env) = self.task_workspace(f).await?;
         // The check command: run if allowed (or asked to run again once it
         // can); a denial, or going on without it, drops it.
         if let (Some(_), false, Some(did)) =
@@ -1590,7 +1589,7 @@ impl Daemon {
                 .iter()
                 .find(|d| &d.id == did)
                 .map(|d| (d.status, d.answer.clone()));
-            self.controller_apply(&f.id, FeatureStatus::Verifying, |f, _| {
+            self.controller_apply(&f.id, TaskStatus::Verifying, |f, _| {
                 match decided {
                     Some((DecisionStatus::Answered, Some(a))) if a == WITHOUT_CHECK => {
                         f.verify_command = None;
@@ -1646,10 +1645,10 @@ impl Daemon {
         if !evidence.is_empty() {
             let ev = evidence.clone();
             if !self
-                .controller_apply(&f.id, FeatureStatus::Verifying, move |f, _| {
+                .controller_apply(&f.id, TaskStatus::Verifying, move |f, _| {
                     let mut changes = Vec::new();
                     for e in ev {
-                        changes.push(Change::new(FeatureEvent::EvidenceAdded {
+                        changes.push(Change::new(TaskEvent::EvidenceAdded {
                             evidence_id: e.id.clone(),
                             kind: e.kind,
                             ok: e.ok,
@@ -1663,7 +1662,7 @@ impl Daemon {
                 return Ok(());
             }
         }
-        let f = self.feature_get(f.id.as_str()).await?;
+        let f = self.task_get(f.id.as_str()).await?;
         // The check decides check-typed criteria in code; the brain judges
         // the rest (and isn't asked when there is nothing left to judge).
         let check = evidence.iter().find(|e| e.kind == EvidenceKind::Test);
@@ -1678,7 +1677,7 @@ impl Daemon {
             let brain = brain::select(&env, &self.brain_choice());
             brain
                 .judge(&Context {
-                    feature: &f,
+                    task: &f,
                     root: &root,
                     env: &env,
                 })
@@ -1700,7 +1699,7 @@ impl Daemon {
         });
         let fresh: Vec<EvidenceId> = evidence.iter().map(|e| e.id.clone()).collect();
         let any_failed = evidence.iter().any(|e| e.ok == Some(false) && !e.uncertain);
-        self.controller_apply(&f.id, FeatureStatus::Verifying, move |f, now| {
+        self.controller_apply(&f.id, TaskStatus::Verifying, move |f, now| {
             for c in &mut f.acceptance {
                 c.evidence = fresh.clone();
                 c.met = if by_check.contains(&c.id) {
@@ -1741,7 +1740,7 @@ impl Daemon {
                 changes.push(c);
                 changes.push(Change::new(
                     f.transition(
-                        FeatureStatus::Review,
+                        TaskStatus::Review,
                         Some("Ready for your review".into()),
                         now,
                     )
@@ -1769,7 +1768,7 @@ impl Daemon {
                 changes.push(c);
                 changes.push(Change::new(
                     f.transition(
-                        FeatureStatus::Review,
+                        TaskStatus::Review,
                         Some("Not verified: nothing changed after a fix".into()),
                         now,
                     )
@@ -1805,13 +1804,13 @@ impl Daemon {
                 );
                 f.messages.push(m);
                 changes.push(c);
-                changes.push(Change::new(FeatureEvent::StepChanged {
+                changes.push(Change::new(TaskEvent::StepChanged {
                     step_id: id,
                     status: StepStatus::Pending,
                 }));
                 changes.push(Change::new(
                     f.transition(
-                        FeatureStatus::Implementing,
+                        TaskStatus::Implementing,
                         Some("Fixing what verification found".into()),
                         now,
                     )
@@ -1829,14 +1828,14 @@ impl Daemon {
     /// step: the work isn't what's wrong (D-062).
     async fn check_cant_run(
         &self,
-        f: &Feature,
+        f: &Task,
         cmd: &str,
         check: Evidence,
         why: &str,
     ) -> RpcResult<()> {
         let (cmd, why) = (cmd.to_owned(), why.to_owned());
-        self.controller_apply(&f.id, FeatureStatus::Verifying, move |f, now| {
-            let mut changes = vec![Change::new(FeatureEvent::EvidenceAdded {
+        self.controller_apply(&f.id, TaskStatus::Verifying, move |f, now| {
+            let mut changes = vec![Change::new(TaskEvent::EvidenceAdded {
                 evidence_id: check.id.clone(),
                 kind: check.kind,
                 ok: check.ok,
@@ -1866,7 +1865,7 @@ impl Daemon {
             });
             f.verify_decision = Some(id.clone());
             f.verify_approved = false;
-            changes.push(Change::new(FeatureEvent::DecisionRequested {
+            changes.push(Change::new(TaskEvent::DecisionRequested {
                 decision_id: id,
                 kind: DecisionKind::Question,
                 risk: Risk::Low,
@@ -1882,7 +1881,7 @@ impl Daemon {
             changes.push(c);
             changes.push(Change::new(
                 f.transition(
-                    FeatureStatus::Blocked,
+                    TaskStatus::Blocked,
                     Some(format!("`{cmd}` can't run here: {why}")),
                     now,
                 )
@@ -1894,11 +1893,11 @@ impl Daemon {
         Ok(())
     }
 
-    /// Whether `cmd` may run for this feature: policy, or someone approved
+    /// Whether `cmd` may run for this task: policy, or someone approved
     /// it (asked once, as a decision).
     pub(crate) async fn allowance(
         &self,
-        f: &Feature,
+        f: &Task,
         cmd: &str,
         purpose: &str,
         root: &std::path::Path,
@@ -1927,13 +1926,13 @@ impl Daemon {
         let (cmd, sum) = (cmd.to_owned(), summary.clone());
         let allowance = match decided {
             Some(DecisionStatus::Approved | DecisionStatus::Answered) => {
-                let applied = self.features.lock().await.apply(&f.id, None, |f, _| {
+                let applied = self.tasks.lock().await.apply(&f.id, None, |f, _| {
                     if !f.allowed_commands.contains(&cmd) {
                         f.allowed_commands.push(cmd.clone());
                     }
                     Ok(vec![])
                 })?;
-                self.feature_changed(&applied);
+                self.task_changed(&applied);
                 Allowance::Allowed
             }
             Some(DecisionStatus::Pending) => Allowance::Pending,
@@ -1941,53 +1940,49 @@ impl Daemon {
             // too long, D-083): asked again.
             Some(DecisionStatus::Denied) => Allowance::Denied("not allowed".into()),
             Some(_) | None => {
-                let applied = self
-                    .features
-                    .lock()
-                    .await
-                    .apply(&f.id, None, move |f, now| {
-                        let id = DecisionId::generate();
-                        f.decisions.push(DecisionRequest {
-                            id: id.clone(),
-                            step_id: None,
-                            run_id: None,
-                            kind: DecisionKind::ToolPermission,
-                            risk,
-                            summary: sum,
-                            detail: Some(why),
-                            options: vec![],
-                            status: DecisionStatus::Pending,
-                            decided_by: None,
-                            answer: None,
-                            rationale: None,
-                            created_at: now,
-                            decided_at: None,
-                            user_only,
-                            grant: None,
-                        });
-                        Ok(vec![Change::new(FeatureEvent::DecisionRequested {
-                            decision_id: id,
-                            kind: DecisionKind::ToolPermission,
-                            risk,
-                        })])
-                    })?;
-                self.feature_changed(&applied);
+                let applied = self.tasks.lock().await.apply(&f.id, None, move |f, now| {
+                    let id = DecisionId::generate();
+                    f.decisions.push(DecisionRequest {
+                        id: id.clone(),
+                        step_id: None,
+                        run_id: None,
+                        kind: DecisionKind::ToolPermission,
+                        risk,
+                        summary: sum,
+                        detail: Some(why),
+                        options: vec![],
+                        status: DecisionStatus::Pending,
+                        decided_by: None,
+                        answer: None,
+                        rationale: None,
+                        created_at: now,
+                        decided_at: None,
+                        user_only,
+                        grant: None,
+                    });
+                    Ok(vec![Change::new(TaskEvent::DecisionRequested {
+                        decision_id: id,
+                        kind: DecisionKind::ToolPermission,
+                        risk,
+                    })])
+                })?;
+                self.task_changed(&applied);
                 Allowance::Pending
             }
         };
         Ok(allowance)
     }
 
-    /// Where a feature's checks keep their files (screenshots).
-    pub(crate) fn artifacts_dir(&self, id: &FeatureId) -> PathBuf {
-        self.paths.features_dir.join(id.as_str()).join("artifacts")
+    /// Where a task's checks keep their files (screenshots).
+    pub(crate) fn artifacts_dir(&self, id: &TaskId) -> PathBuf {
+        self.paths.tasks_dir.join(id.as_str()).join("artifacts")
     }
 
     /// The project's browser checks (D-046), run in a real headless browser.
     /// `None` while a preview command waits to be allowed.
     async fn browser_checks(
         &self,
-        f: &Feature,
+        f: &Task,
         root: &std::path::Path,
         env: &EnvMap,
     ) -> RpcResult<Option<Vec<Evidence>>> {
@@ -2069,15 +2064,7 @@ impl Daemon {
             // A model's look at the result: supplementary, and labelled so.
             if let Some(shot) = &last
                 && let Ok(Some((looks_right, notes))) = brain
-                    .review(
-                        &Context {
-                            feature: f,
-                            root,
-                            env,
-                        },
-                        &check.name,
-                        shot,
-                    )
+                    .review(&Context { task: f, root, env }, &check.name, shot)
                     .await
             {
                 evidence.push(Evidence {
@@ -2100,12 +2087,12 @@ impl Daemon {
     /// Review (D-047): publish the change (once the developer allows it),
     /// follow CI, keep the gates current, write the report. The developer
     /// accepts; Otter never merges or deploys.
-    async fn review_step(self: &Arc<Self>, f: &Feature) -> RpcResult<()> {
+    async fn review_step(self: &Arc<Self>, f: &Task) -> RpcResult<()> {
         use crate::delivery::{self, Git, GitHub};
         if f.pending_decisions().any(|d| !d.user_only) {
             return self.decide_open(f).await;
         }
-        let (root, env) = self.feature_workspace(f).await?;
+        let (root, env) = self.task_workspace(f).await?;
         let git = Git {
             root: &root,
             env: &env,
@@ -2140,7 +2127,7 @@ impl Daemon {
                 {
                     Allowance::Pending => {}
                     Allowance::Denied(_) => {
-                        d = Some(otter_core::feature::Delivery {
+                        d = Some(otter_core::task::Delivery {
                             branch: branch.clone(),
                             base: None,
                             head,
@@ -2192,7 +2179,7 @@ impl Daemon {
                                 RpcError::internal(format!("opening the pull request: {e:#}"))
                             })?;
                         let first = !published;
-                        d = Some(otter_core::feature::Delivery {
+                        d = Some(otter_core::task::Delivery {
                             branch: branch.clone(),
                             base: base.clone(),
                             head,
@@ -2247,7 +2234,7 @@ impl Daemon {
             {
                 match gh.checks(n).await {
                     Ok(ci) => dl.ci = ci,
-                    Err(e) => tracing::warn!(feature = %f.id, "reading CI: {e:#}"),
+                    Err(e) => tracing::warn!(task = %f.id, "reading CI: {e:#}"),
                 }
                 let failed: Vec<_> = dl
                     .ci
@@ -2383,11 +2370,11 @@ impl Daemon {
             return Ok(());
         }
         let mut posted = None;
-        self.controller_apply(&f.id, FeatureStatus::Review, |f, now| {
+        self.controller_apply(&f.id, TaskStatus::Review, |f, now| {
             let mut changes = Vec::new();
             f.delivery = d.clone();
             for e in evidence.clone() {
-                changes.push(Change::new(FeatureEvent::EvidenceAdded {
+                changes.push(Change::new(TaskEvent::EvidenceAdded {
                     evidence_id: e.id.clone(),
                     kind: e.kind,
                     ok: e.ok,
@@ -2418,9 +2405,9 @@ impl Daemon {
                 });
                 f.report = None;
                 f.rationale.push("CI failed: back to implementing.".into());
-                changes.push(Change::new(FeatureEvent::StepChanged { step_id: id, status: StepStatus::Pending }));
+                changes.push(Change::new(TaskEvent::StepChanged { step_id: id, status: StepStatus::Pending }));
                 changes.push(Change::new(
-                    f.transition(FeatureStatus::Implementing, Some("CI failed".into()), now)
+                    f.transition(TaskStatus::Implementing, Some("CI failed".into()), now)
                         .map_err(RpcError::conflict)?,
                 ));
                 return Ok(changes);
@@ -2450,7 +2437,7 @@ impl Daemon {
     }
 
     /// The branch a Git workspace was made from, as the PR's base (`main`).
-    async fn workspace_base(&self, f: &Feature) -> Option<String> {
+    async fn workspace_base(&self, f: &Task) -> Option<String> {
         let ws = f.workspace_id.as_ref()?;
         let store = self.store.lock().await;
         let w = store.workspace(ws.as_str())?;
@@ -2464,7 +2451,7 @@ impl Daemon {
     }
 
     /// Whether it's time to look at CI again (`OTTER_CI_POLL_MS`, 15 s).
-    fn ci_due(&self, id: &FeatureId) -> bool {
+    fn ci_due(&self, id: &TaskId) -> bool {
         let every = env_ms("OTTER_CI_POLL_MS", 15_000);
         let mut st = self.controller.lock().unwrap();
         let now = std::time::Instant::now();
@@ -2494,7 +2481,7 @@ fn evidence_item(kind: EvidenceKind, title: &str, detail: Option<String>) -> Evi
 }
 
 /// The pull request's description.
-fn pr_body(f: &Feature) -> String {
+fn pr_body(f: &Task) -> String {
     let mut b = format!("{}\n\n### Acceptance criteria\n", f.request);
     for c in &f.acceptance {
         b.push_str(&format!(
@@ -2525,8 +2512,8 @@ fn pr_body(f: &Feature) -> String {
 }
 
 /// The developer's messages since the Control Agent last answered one
-/// (the request that created the feature isn't one).
-pub(crate) fn unanswered(f: &Feature) -> Vec<otter_core::feature::Message> {
+/// (the request that created the task isn't one).
+pub(crate) fn unanswered(f: &Task) -> Vec<otter_core::task::Message> {
     let answered = f.messages.iter().rposition(|m| {
         m.role == MessageRole::Controller
             && m.correlation_id
@@ -2558,7 +2545,7 @@ fn file_name(p: &std::path::Path) -> String {
 }
 
 /// Evidence from a browser check; screenshots are referred to by name
-/// (`artifact:<name>`, served by `feature.artifact`).
+/// (`artifact:<name>`, served by `task.artifact`).
 fn browser_evidence(
     title: &str,
     ok: Option<bool>,
@@ -2581,7 +2568,7 @@ fn browser_evidence(
 
 /// The last runs of one step all failed the same way, since the work last
 /// (re)started — a retry starts counting afresh.
-fn repeating_failure(f: &Feature) -> Option<String> {
+fn repeating_failure(f: &Task) -> Option<String> {
     let last: Vec<_> = f
         .runs
         .iter()
@@ -2613,16 +2600,16 @@ fn carried_by(c: &otter_core::conversation::Conversation) -> std::collections::H
 }
 
 impl Daemon {
-    /// The feature's conversation, to go on in (D-064): the latest run with
+    /// The task's conversation, to go on in (D-064): the latest run with
     /// an agent session, and its conversation — unless that session is gone
     /// (the agent said so) or the conversation was closed, when the next
     /// turn starts a new one. Nor after a run that needed recovery (D-061):
     /// the developer said to start over, so it starts in a new session.
-    fn feature_session(
+    fn task_session(
         &self,
-        f: &Feature,
+        f: &Task,
     ) -> Option<(
-        otter_core::feature::Run,
+        otter_core::task::Run,
         otter_core::conversation::Conversation,
     )> {
         use otter_core::conversation::{ErrorCategory, Lifecycle};
@@ -2642,8 +2629,8 @@ impl Daemon {
         (!gone).then(|| (run.clone(), c))
     }
 
-    /// The messages the feature's live runs' conversations already carry.
-    pub(crate) fn carried(&self, f: &Feature) -> std::collections::HashSet<String> {
+    /// The messages the task's live runs' conversations already carry.
+    pub(crate) fn carried(&self, f: &Task) -> std::collections::HashSet<String> {
         f.runs
             .iter()
             .filter(|r| !r.state.is_over())
@@ -2677,43 +2664,41 @@ fn plan_text(plan: &brain::Plan) -> String {
 }
 
 /// The plan question waiting on the developer, if one is (D-084).
-pub(crate) fn plan_question(f: &Feature) -> Option<DecisionId> {
+pub(crate) fn plan_question(f: &Task) -> Option<DecisionId> {
     f.pending_decisions()
         .find(|d| d.summary == PLAN_QUESTION)
         .map(|d| d.id.clone())
 }
 
-/// What a message's intent does, given where the feature stands. Done (a
+/// What a message's intent does, given where the task stands. Done (a
 /// question answered, work accepted), there is no current work to guide or
 /// go on with: asking for more moves the goal (D-050). Asked whether a plan
 /// goes ahead, instructions are what to change (D-084), and going on says
 /// yes ([`Daemon::after_intent`]).
 pub(crate) fn effective_intent(
     intent: crate::brain::Intent,
-    status: FeatureStatus,
+    status: TaskStatus,
     plan_asked: bool,
 ) -> crate::brain::Intent {
     use crate::brain::Intent;
     match (intent, status) {
-        (Intent::Guide | Intent::Redirect | Intent::Continue, FeatureStatus::Done) => {
-            Intent::Revise
-        }
+        (Intent::Guide | Intent::Redirect | Intent::Continue, TaskStatus::Done) => Intent::Revise,
         (Intent::Guide | Intent::Redirect, _) if plan_asked => Intent::Revise,
         (intent, _) => intent,
     }
 }
 
-/// The change an intent makes to the feature (`converse`, and Otter's tools,
+/// The change an intent makes to the task (`converse`, and Otter's tools,
 /// D-089), and whether the work in progress stops. `authority` is the
 /// developer's message that asked for it: accepting is recorded under it.
 pub(crate) fn intent_step(
-    f: &mut Feature,
+    f: &mut Task,
     intent: crate::brain::Intent,
     authority: &str,
     now: otter_core::Timestamp,
 ) -> (Vec<Change>, bool) {
     use crate::brain::Intent;
-    let move_to = |f: &mut Feature, to: FeatureStatus, why: &str| {
+    let move_to = |f: &mut Task, to: TaskStatus, why: &str| {
         f.transition(to, Some(why.into()), now)
             .ok()
             .map(Change::new)
@@ -2721,18 +2706,16 @@ pub(crate) fn intent_step(
     let mut changes = Vec::new();
     let mut stop = false;
     let step = match (intent, f.status) {
-        (Intent::Continue, FeatureStatus::Draft) => {
-            move_to(f, FeatureStatus::Planning, "You said go on")
-        }
-        (Intent::Continue, FeatureStatus::Paused) => {
-            let next = crate::features::resume_status(f);
+        (Intent::Continue, TaskStatus::Draft) => move_to(f, TaskStatus::Planning, "You said go on"),
+        (Intent::Continue, TaskStatus::Paused) => {
+            let next = crate::tasks::resume_status(f);
             move_to(f, next, "You said go on")
         }
-        (Intent::Continue, FeatureStatus::Blocked) if f.pending_decisions().next().is_none() => {
-            let next = crate::features::resume_status(f);
+        (Intent::Continue, TaskStatus::Blocked) if f.pending_decisions().next().is_none() => {
+            let next = crate::tasks::resume_status(f);
             move_to(f, next, "You said go on")
         }
-        (Intent::Continue, FeatureStatus::Failed) => {
+        (Intent::Continue, TaskStatus::Failed) => {
             f.budget.iterations_used = 0;
             for t in &mut f.steps {
                 if t.status == StepStatus::Failed {
@@ -2740,19 +2723,19 @@ pub(crate) fn intent_step(
                     t.attempts = 0;
                 }
             }
-            let next = crate::features::resume_status(f);
+            let next = crate::tasks::resume_status(f);
             move_to(f, next, "You said go on: retrying with a fresh budget")
         }
         (Intent::Pause, s)
-            if s.is_active() || s == FeatureStatus::Blocked || s == FeatureStatus::Review =>
+            if s.is_active() || s == TaskStatus::Blocked || s == TaskStatus::Review =>
         {
             stop = true;
-            move_to(f, FeatureStatus::Paused, "Paused: you asked")
+            move_to(f, TaskStatus::Paused, "Paused: you asked")
         }
         // The goal moved (D-050): plan again, keeping what is done.
         (Intent::Revise, s) if !s.is_terminal() => {
             stop = true;
-            changes.extend(crate::features::replan(
+            changes.extend(crate::tasks::replan(
                 f,
                 "You changed the goal: planning again",
                 now,
@@ -2761,19 +2744,19 @@ pub(crate) fn intent_step(
         }
         // Satisfied: accept what's in review (its gates still apply), or
         // stop work in progress.
-        (Intent::Finish, FeatureStatus::Review) => {
-            let accept = otter_core::feature::FeatureAction::Accept {
+        (Intent::Finish, TaskStatus::Review) => {
+            let accept = otter_core::task::TaskAction::Accept {
                 override_gates: false,
             };
-            match crate::features::apply_action(f, &accept, authority, now) {
+            match crate::tasks::apply_action(f, &accept, authority, now) {
                 Ok(c) => changes.extend(c),
                 Err(e) => f.rationale.push(format!("Not done yet: {}", e.message)),
             }
             None
         }
-        (Intent::Finish, s) if s.is_active() || s == FeatureStatus::Blocked => {
+        (Intent::Finish, s) if s.is_active() || s == TaskStatus::Blocked => {
             stop = true;
-            move_to(f, FeatureStatus::Paused, "Stopped: you said that's enough")
+            move_to(f, TaskStatus::Paused, "Stopped: you said that's enough")
         }
         _ => None,
     };
@@ -2802,7 +2785,7 @@ pub(crate) fn routing(intent: crate::brain::Intent) -> Routing {
 /// conversation already carries (`carried`: queued, sent or delivered) —
 /// they reach the agent that way, once (D-059).
 fn developer_notes(
-    f: &Feature,
+    f: &Task,
     since: Option<chrono::DateTime<Utc>>,
     carried: &std::collections::HashSet<String>,
 ) -> Vec<String> {
@@ -2827,9 +2810,9 @@ fn notes_text(notes: &[String]) -> String {
 }
 
 /// What a coding agent is told to start `step`, with the developer's
-/// `notes` it hasn't had yet. In the feature's conversation (`warm`) the
+/// `notes` it hasn't had yet. In the task's conversation (`warm`) the
 /// request and requirements are already said (D-064).
-pub fn step_prompt(f: &Feature, step: &Step, notes: Vec<String>, warm: bool) -> String {
+pub fn step_prompt(f: &Task, step: &Step, notes: Vec<String>, warm: bool) -> String {
     let work: Vec<&Step> = f.steps.iter().filter(|t| !t.planning).collect();
     let n = work
         .iter()
@@ -2838,7 +2821,7 @@ pub fn step_prompt(f: &Feature, step: &Step, notes: Vec<String>, warm: bool) -> 
     let mut p = String::new();
     if !warm {
         p.push_str(&format!(
-            "Feature: {}\n\nRequest:\n{}\n",
+            "Task: {}\n\nRequest:\n{}\n",
             f.title,
             if f.request.is_empty() {
                 &f.title
@@ -2899,9 +2882,9 @@ const PLAN_FORMAT: &str = "{\"summary\": \"one sentence: the approach\", \
 
 /// The planning turn (D-064, D-084): read the code, then answer a question,
 /// or propose the plan for a change as JSON, changing nothing yet. In the
-/// feature's conversation (`warm`: planning again) the request is already
+/// task's conversation (`warm`: planning again) the request is already
 /// said; a plan sent back by Otter's review gets its points instead.
-fn planning_prompt(f: &Feature, step: &Step, notes: Vec<String>, warm: bool) -> String {
+fn planning_prompt(f: &Task, step: &Step, notes: Vec<String>, warm: bool) -> String {
     if let Some(issues) = &step.detail {
         return format!(
             "Otter reviewed your plan and sees these problems:\n{issues}{notes}\n\
@@ -2938,7 +2921,7 @@ fn planning_prompt(f: &Feature, step: &Step, notes: Vec<String>, warm: bool) -> 
         )
     } else {
         format!(
-            "Feature: {}\n\nRequest:\n{}\n{}",
+            "Task: {}\n\nRequest:\n{}\n{}",
             f.title,
             if f.request.trim().is_empty() {
                 &f.title
@@ -2964,9 +2947,9 @@ fn planning_prompt(f: &Feature, step: &Step, notes: Vec<String>, warm: bool) -> 
 
 /// What a resumed run is told: carry on, plus anything new from the developer.
 fn continue_prompt(
-    f: &Feature,
+    f: &Task,
     step: &Step,
-    last: Option<&otter_core::feature::Run>,
+    last: Option<&otter_core::task::Run>,
     carried: &std::collections::HashSet<String>,
 ) -> String {
     // A turn cut off says so (D-063): by a limit, what to do about it.
@@ -3112,7 +3095,7 @@ mod tests {
         use crate::brain::Intent;
         assert_eq!(routing(Intent::Guide), Routing::Queue);
         assert_eq!(routing(Intent::Redirect), Routing::Redirect);
-        // A question, or a message about the feature itself, is Otter's.
+        // A question, or a message about the task itself, is Otter's.
         for i in [
             Intent::None,
             Intent::Continue,
@@ -3124,10 +3107,10 @@ mod tests {
         }
     }
     use otter_core::RunId;
-    use otter_core::feature::Run;
+    use otter_core::task::Run;
 
-    fn feature_with_runs(summaries: &[(&str, RunState)]) -> Feature {
-        let mut f = Feature::new("t".into(), "r".into(), Utc::now());
+    fn task_with_runs(summaries: &[(&str, RunState)]) -> Task {
+        let mut f = Task::new("t".into(), "r".into(), Utc::now());
         let step = StepId::generate();
         for (s, state) in summaries {
             f.runs.push(Run {
@@ -3169,7 +3152,7 @@ mod tests {
     /// says what is done; a plan sent back gets the review's points.
     #[test]
     fn the_planning_turn_answers_or_plans() {
-        let mut f = Feature::new(
+        let mut f = Task::new(
             "Backport".into(),
             "How does the backport tag work?".into(),
             Utc::now(),
@@ -3218,7 +3201,7 @@ mod tests {
         };
         let none = HashSet::new();
         let prompt = |summary: &str, state| {
-            let f = feature_with_runs(&[(summary, state)]);
+            let f = task_with_runs(&[(summary, state)]);
             continue_prompt(&f, &step, f.runs.last(), &none)
         };
         let p = prompt("Out of time after 30 min of work", RunState::Cancelled);
@@ -3258,9 +3241,9 @@ mod tests {
     #[test]
     fn the_same_failure_three_times_is_a_loop() {
         use RunState::*;
-        assert!(repeating_failure(&feature_with_runs(&[("x", Failed), ("x", Failed)])).is_none());
+        assert!(repeating_failure(&task_with_runs(&[("x", Failed), ("x", Failed)])).is_none());
         assert_eq!(
-            repeating_failure(&feature_with_runs(&[
+            repeating_failure(&task_with_runs(&[
                 ("x", Failed),
                 ("x", Failed),
                 ("x", Failed)
@@ -3268,7 +3251,7 @@ mod tests {
             Some("x".into())
         );
         assert!(
-            repeating_failure(&feature_with_runs(&[
+            repeating_failure(&task_with_runs(&[
                 ("x", Failed),
                 ("y", Failed),
                 ("x", Failed)
@@ -3276,7 +3259,7 @@ mod tests {
             .is_none()
         );
         assert!(
-            repeating_failure(&feature_with_runs(&[
+            repeating_failure(&task_with_runs(&[
                 ("x", Failed),
                 ("x", Completed),
                 ("x", Failed)
@@ -3327,14 +3310,14 @@ mod tests {
 
     #[test]
     fn a_task_prompt_carries_the_plan_and_what_went_wrong() {
-        let mut f = Feature::new("CSV".into(), "Export it".into(), Utc::now());
+        let mut f = Task::new("CSV".into(), "Export it".into(), Utc::now());
         f.verify_command = Some("make test".into());
         f.acceptance.push(Criterion {
             id: "ac_1".into(),
             text: "has a header".into(),
             met: None,
             evidence: vec![],
-            how: otter_core::feature::Proof::Diff,
+            how: otter_core::task::Proof::Diff,
         });
         let t = Step {
             id: StepId::generate(),
@@ -3359,7 +3342,7 @@ mod tests {
         ] {
             assert!(p.contains(want), "{want} in {p}");
         }
-        // In the feature's conversation, the request was said already.
+        // In the task's conversation, the request was said already.
         let warm = step_prompt(&f, &t, vec![], true);
         assert!(!warm.contains("Export it"), "{warm}");
         assert!(

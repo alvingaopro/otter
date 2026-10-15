@@ -4,12 +4,12 @@
 //! port mappings (`forwards`) and the menu bar item (`tray`).
 
 mod attach;
-mod features;
 mod files;
 mod forwards;
 mod hosts;
 mod pins;
 mod settings;
+mod tasks;
 mod tray;
 mod view;
 
@@ -81,17 +81,17 @@ pub fn run() {
             forwards::forward_add,
             forwards::forward_remove,
             forwards::forward_pin,
-            features::features_list,
-            features::feature_create,
-            features::otter_get,
-            features::otter_send,
-            features::feature_send,
-            features::feature_act,
-            features::feature_events,
-            features::feature_artifact,
-            features::feature_delete,
-            features::conversations,
-            features::runtime_capabilities,
+            tasks::tasks_list,
+            tasks::task_create,
+            tasks::otter_get,
+            tasks::otter_send,
+            tasks::task_send,
+            tasks::task_act,
+            tasks::task_events,
+            tasks::task_artifact,
+            tasks::task_delete,
+            tasks::conversations,
+            tasks::runtime_capabilities,
             settings::settings_get,
             settings::settings_set,
             settings::settings_models,

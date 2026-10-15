@@ -11,17 +11,17 @@ use crate::target::connect;
 
 #[derive(Subcommand)]
 pub enum TriggerCommand {
-    /// Start a feature in a workspace on a schedule (or by hand), unattended.
+    /// Start a task in a workspace on a schedule (or by hand), unattended.
     Add {
         /// A name for it.
         name: String,
-        /// The workspace its features work in.
+        /// The workspace its tasks work in.
         #[arg(long)]
         workspace: String,
-        /// What each feature should do.
+        /// What each task should do.
         #[arg(long)]
         request: String,
-        /// The features' title (default: the trigger's name).
+        /// The tasks' title (default: the trigger's name).
         #[arg(long)]
         title: Option<String>,
         /// Every so long: `30m`, `6h`.
@@ -30,19 +30,19 @@ pub enum TriggerCommand {
         /// Every day at `HH:MM` (UTC).
         #[arg(long)]
         daily: Option<String>,
-        /// Allow its features to publish — push the workspace's branch and
+        /// Allow its tasks to publish — push the workspace's branch and
         /// open the pull request — without asking. Nothing else is allowed
         /// in advance.
         #[arg(long)]
         publish: bool,
-        /// Pause a feature whose decision has waited this long for you
+        /// Pause a task whose decision has waited this long for you
         /// (`90s`, `30m`, `2h`), instead of letting it wait.
         #[arg(long)]
         wait_limit: Option<String>,
-        /// Attempts per feature.
+        /// Attempts per task.
         #[arg(long)]
         max_attempts: Option<u32>,
-        /// Minutes of agent work per feature.
+        /// Minutes of agent work per task.
         #[arg(long)]
         max_minutes: Option<u32>,
         #[arg(long)]
@@ -54,7 +54,7 @@ pub enum TriggerCommand {
         #[arg(long)]
         host: Option<String>,
     },
-    /// Remove a trigger (the features it started stay).
+    /// Remove a trigger (the tasks it started stay).
     #[command(visible_alias = "rm")]
     Remove {
         name: String,
@@ -62,7 +62,7 @@ pub enum TriggerCommand {
         host: Option<String>,
     },
     /// Fire a trigger now. With `--occurrence`, a retry of the same one
-    /// starts no second feature.
+    /// starts no second task.
     Run {
         name: String,
         /// Which occurrence (RFC 3339), for a script that may retry.
@@ -177,7 +177,7 @@ pub async fn command(config: &Config, cmd: TriggerCommand, json: bool) -> Result
         TriggerCommand::Remove { name, host: h } => {
             let entry = host(config, h.as_deref())?;
             connect(config, &entry).await?.trigger_delete(&name).await?;
-            println!("trigger {name} removed (the features it started stay)");
+            println!("trigger {name} removed (the tasks it started stay)");
             Ok(())
         }
         TriggerCommand::Run {
@@ -201,8 +201,8 @@ pub async fn command(config: &Config, cmd: TriggerCommand, json: bool) -> Result
                 return output::print_json(&t);
             }
             match t.history.last() {
-                Some(f) => match (&f.feature_id, &f.skipped) {
-                    (Some(id), _) => println!("{}: started feature {id}", t.name),
+                Some(f) => match (&f.task_id, &f.skipped) {
+                    (Some(id), _) => println!("{}: started task {id}", t.name),
                     (None, Some(why)) => println!("{}: skipped — {why}", t.name),
                     _ => println!("{}: fired", t.name),
                 },
@@ -238,7 +238,7 @@ fn show(t: &Trigger) {
         t.title
     );
     if let Some(f) = t.history.last() {
-        match (&f.feature_id, &f.skipped) {
+        match (&f.task_id, &f.skipped) {
             (Some(id), _) => println!("    last: {} → {id}", f.at.format("%m-%d %H:%M")),
             (None, Some(why)) => {
                 println!("    last: {} skipped — {why}", f.at.format("%m-%d %H:%M"))

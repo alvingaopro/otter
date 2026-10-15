@@ -29,7 +29,7 @@
 
 use std::path::Path;
 
-use otter_core::feature::{Decider, DecisionKind, Risk};
+use otter_core::task::{Decider, DecisionKind, Risk};
 
 use super::ToolCall;
 
@@ -635,7 +635,7 @@ pub fn classify(call: &ToolCall, root: &Path) -> Verdict {
 }
 
 /// What the developer's approval of `call` may let through for the rest of
-/// the feature (D-066), as a key: the same command line, edits in the same
+/// the task (D-066), as a key: the same command line, edits in the same
 /// directory outside the workspace, the same tool. Only for what is asked
 /// about for where it reaches, never for what it does: deleting,
 /// credentials, pushing and deploying, root are asked every time.

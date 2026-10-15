@@ -52,7 +52,7 @@ pub fn setup(app: &AppHandle) -> tauri::Result<()> {
 
 fn build_menu(app: &AppHandle, waiting: &[Waiting]) -> tauri::Result<Menu<Wry>> {
     let menu = Menu::new(app)?;
-    // Workspaces and features (D-073).
+    // Workspaces and tasks (D-073).
     let header = match waiting.len() {
         0 => "Nothing needs you".to_owned(),
         1 => "1 thing needs you".to_owned(),

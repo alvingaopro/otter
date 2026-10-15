@@ -24,19 +24,19 @@ use crate::backend::ExecutionBackend;
 use crate::env::{EnvMap, ResolvedEnv, which};
 use crate::environment::EnvironmentManager;
 use crate::events::EventLog;
-use crate::features::FeatureStore;
 use crate::git::GitManager;
 use crate::paths::Paths;
 use crate::store::Store;
+use crate::tasks::TaskStore;
 
 pub type RpcResult<T> = Result<T, RpcError>;
 
 pub struct Daemon {
     /// Triggers (D-083): what starts unattended work.
     pub(crate) triggers: Mutex<crate::triggers::TriggerStore>,
-    /// Workspaces claimed by a run that is starting, and by which feature (D-079).
+    /// Workspaces claimed by a run that is starting, and by which task (D-079).
     pub(crate) starting:
-        std::sync::Mutex<std::collections::HashMap<otter_core::WorkspaceId, otter_core::FeatureId>>,
+        std::sync::Mutex<std::collections::HashMap<otter_core::WorkspaceId, otter_core::TaskId>>,
     /// Processes seen dead, and since when: their end is taken a moment
     /// later, once the backend has their last output (D-076).
     pub(crate) dying: std::sync::Mutex<std::collections::HashMap<String, std::time::Instant>>,
@@ -48,15 +48,15 @@ pub struct Daemon {
         std::sync::Mutex<std::collections::BTreeMap<&'static str, otter_core::Problem>>,
     pub paths: Paths,
     pub store: Mutex<Store>,
-    /// Features (D-043): kept apart from workspace state, with their own lock.
-    pub features: Mutex<FeatureStore>,
+    /// Tasks (D-043): kept apart from workspace state, with their own lock.
+    pub tasks: Mutex<TaskStore>,
     /// Otter's conversation on this host (D-093).
     pub(crate) chat: Mutex<crate::chat::ChatStore>,
-    /// Woken whenever a feature changes, for the controller.
-    pub(crate) feature_wake: tokio::sync::Notify,
-    /// Features that just ended, whose own workspaces the controller puts
+    /// Woken whenever a task changes, for the controller.
+    pub(crate) task_wake: tokio::sync::Notify,
+    /// Tasks that just ended, whose own workspaces the controller puts
     /// away (D-105).
-    pub(crate) finished: std::sync::Mutex<Vec<otter_core::FeatureId>>,
+    pub(crate) finished: std::sync::Mutex<Vec<otter_core::TaskId>>,
     /// Managed agent runs in progress (runs.rs).
     pub(crate) runs: crate::runs::Runs,
     /// Runtime conversations (D-055): what the coding agents did, turn by turn.
@@ -92,7 +92,7 @@ impl Daemon {
     pub fn new(
         paths: Paths,
         store: Store,
-        features: FeatureStore,
+        tasks: TaskStore,
         backend: Arc<dyn ExecutionBackend>,
         events: EventLog,
         env: ResolvedEnv,
@@ -166,9 +166,9 @@ impl Daemon {
             env_source: env.source,
             paths,
             store: Mutex::new(store),
-            features: Mutex::new(features),
+            tasks: Mutex::new(tasks),
             chat: Mutex::new(chat),
-            feature_wake: tokio::sync::Notify::new(),
+            task_wake: tokio::sync::Notify::new(),
             finished: Default::default(),
             runs: Default::default(),
             conversations: Arc::new(conversations),
@@ -296,31 +296,27 @@ impl Daemon {
             Request::SettingsGet => json(self.settings_get()),
             Request::SettingsModels(q) => json(self.settings_models(&q.controller).await?),
             Request::SettingsSet(u) => json(self.settings_set(u)?),
-            Request::FeatureList => json(
-                self.feature_list()
+            Request::TaskList => json(
+                self.task_list()
                     .await
                     .into_iter()
                     .map(|f| self.with_live_activity(f))
                     .collect::<Vec<_>>(),
             ),
-            Request::FeatureGet(r) => {
-                json(self.with_live_activity(self.feature_get(&r.feature).await?))
-            }
-            Request::FeatureCreate(p) => json(self.feature_create(p).await?),
-            Request::FeatureSend(p) => json(self.with_live_activity(self.feature_send(p).await?)),
-            Request::FeatureAct(p) => {
-                json(self.with_live_activity(self.clone().feature_act(p).await?))
-            }
-            Request::FeatureEvents(p) => json(self.feature_events(&p).await?),
+            Request::TaskGet(r) => json(self.with_live_activity(self.task_get(&r.task).await?)),
+            Request::TaskCreate(p) => json(self.task_create(p).await?),
+            Request::TaskSend(p) => json(self.with_live_activity(self.task_send(p).await?)),
+            Request::TaskAct(p) => json(self.with_live_activity(self.clone().task_act(p).await?)),
+            Request::TaskEvents(p) => json(self.task_events(&p).await?),
             Request::OtterGet => json(self.otter_get().await),
             Request::OtterSend(p) => json(self.otter_send(p).await?),
             Request::OtterEvents(p) => json(self.otter_events(&p).await?),
-            Request::FeatureArtifact(p) => json(self.feature_artifact(&p).await?),
+            Request::TaskArtifact(p) => json(self.task_artifact(&p).await?),
             Request::TriggerCreate(p) => json(self.trigger_create(p).await?),
             Request::TriggerList => json(self.trigger_list().await),
             Request::TriggerDelete(r) => json(self.trigger_delete(&r.trigger).await?),
             Request::TriggerRun(r) => json(self.trigger_run(&r.trigger, r.occurrence).await?),
-            Request::FeatureDelete(r) => json(self.feature_delete(&r.feature).await?),
+            Request::TaskDelete(r) => json(self.task_delete(&r.task).await?),
             // Contracts first (D-055); served once runs go through conversations.
             Request::RuntimeCapabilities => {
                 let backend = self.settings.read().unwrap().coding_backend();
@@ -332,7 +328,7 @@ impl Daemon {
             }
             Request::ConversationList(q) => json(
                 self.conversations
-                    .list(q.feature.as_deref())
+                    .list(q.task.as_deref())
                     .iter()
                     .map(|c| self.conversation_view(c))
                     .collect::<Vec<_>>(),
@@ -485,9 +481,7 @@ impl Daemon {
             let caps = rt.capabilities(self.environments.base());
             if !caps.available {
                 out.push(Problem {
-                    what: format!(
-                        "The coding runtime ({backend}) isn't ready: features can't run."
-                    ),
+                    what: format!("The coding runtime ({backend}) isn't ready: tasks can't run."),
                     next: if caps.notes.is_empty() {
                         "`otter runtime status` says why.".into()
                     } else {
@@ -510,7 +504,7 @@ impl Daemon {
                     read_only.len(),
                     read_only.join(", ")
                 ),
-                next: "What they recorded is still readable (`otter conversation show`); check the disk under ~/.otter/state/conversations. Their features carry on in new conversations.".into(),
+                next: "What they recorded is still readable (`otter conversation show`); check the disk under ~/.otter/state/conversations. Their tasks carry on in new conversations.".into(),
             });
         }
         out

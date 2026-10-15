@@ -30,7 +30,7 @@ pub struct RuntimeCapabilities {
     pub features: RuntimeFeatures,
 }
 
-/// What a runtime supports. A missing feature is reported, never simulated
+/// What a runtime supports. A missing task is reported, never simulated
 /// (e.g. pausing by killing the process).
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RuntimeFeatures {
@@ -57,11 +57,11 @@ pub struct ConversationRef {
     pub conversation: String,
 }
 
-/// `conversation.list`: every conversation, or a feature's.
+/// `conversation.list`: every conversation, or a task's.
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ConversationQuery {
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub feature: Option<String>,
+    pub task: Option<String>,
 }
 
 /// A conversation as a client sees it: the provider's own session id stays

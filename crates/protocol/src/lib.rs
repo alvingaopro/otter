@@ -18,11 +18,11 @@
 
 pub mod conversation;
 pub mod events;
-pub mod feature;
 pub mod frame;
 pub mod fs;
 pub mod host;
 pub mod otter;
+pub mod task;
 pub mod wire;
 pub mod work;
 
@@ -32,8 +32,9 @@ use serde::{Deserialize, Serialize};
 
 pub use events::{Event, EventRecord};
 
-/// Bumped on incompatible protocol changes only (`docs/protocol.md`).
-pub const PROTOCOL_VERSION: u32 = 2;
+/// Bumped on incompatible protocol changes only (`docs/protocol.md`). v3:
+/// features are tasks, on the wire too (D-107).
+pub const PROTOCOL_VERSION: u32 = 3;
 
 /// A request with its correlation id.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -198,49 +199,49 @@ pub enum Request {
     #[serde(rename = "settings.models")]
     SettingsModels(host::ModelsQuery),
 
-    /// Every feature on this host, newest first. Result:
-    /// `Vec<`[`otter_core::feature::Feature`]`>`.
+    /// Every task on this host, newest first. Result:
+    /// `Vec<`[`otter_core::task::Task`]`>`.
     /// Otter's conversation on this host (D-093). Result:
-    /// [`otter_core::feature::OtterChat`].
+    /// [`otter_core::task::OtterChat`].
     #[serde(rename = "otter.get")]
     OtterGet,
     /// The developer's message to Otter on this host; answered as a turn
-    /// with Otter's tools. Result: [`otter_core::feature::OtterChat`].
+    /// with Otter's tools. Result: [`otter_core::task::OtterChat`].
     #[serde(rename = "otter.send")]
     OtterSend(otter::OtterSend),
     /// The conversation's history after a cursor, oldest first. Result:
-    /// `Vec<`[`otter_core::feature::FeatureEventRecord`]`>`.
+    /// `Vec<`[`otter_core::task::TaskEventRecord`]`>`.
     #[serde(rename = "otter.events")]
     OtterEvents(otter::OtterEvents),
 
-    #[serde(rename = "feature.list")]
-    FeatureList,
-    /// Result: [`otter_core::feature::Feature`].
-    #[serde(rename = "feature.get")]
-    FeatureGet(feature::FeatureRef),
-    /// Create a draft feature. Result: [`otter_core::feature::Feature`].
-    #[serde(rename = "feature.create")]
-    FeatureCreate(feature::FeatureCreate),
+    #[serde(rename = "task.list")]
+    TaskList,
+    /// Result: [`otter_core::task::Task`].
+    #[serde(rename = "task.get")]
+    TaskGet(task::TaskRef),
+    /// Create a draft task. Result: [`otter_core::task::Task`].
+    #[serde(rename = "task.create")]
+    TaskCreate(task::TaskCreate),
     /// Add the developer's message to the conversation. Result:
-    /// [`otter_core::feature::Feature`].
-    #[serde(rename = "feature.send")]
-    FeatureSend(feature::FeatureSend),
+    /// [`otter_core::task::Task`].
+    #[serde(rename = "task.send")]
+    TaskSend(task::TaskSend),
     /// Start, pause, resume, cancel, retry, decide, accept or send back.
-    /// Result: [`otter_core::feature::Feature`].
-    #[serde(rename = "feature.act")]
-    FeatureAct(feature::FeatureAct),
-    /// A feature's own history after a cursor, oldest first. Result:
-    /// `Vec<`[`otter_core::feature::FeatureEventRecord`]`>`.
-    #[serde(rename = "feature.events")]
-    FeatureEvents(feature::FeatureEvents),
-    /// A screenshot (or other file) a feature's checks produced. Result:
+    /// Result: [`otter_core::task::Task`].
+    #[serde(rename = "task.act")]
+    TaskAct(task::TaskAct),
+    /// A task's own history after a cursor, oldest first. Result:
+    /// `Vec<`[`otter_core::task::TaskEventRecord`]`>`.
+    #[serde(rename = "task.events")]
+    TaskEvents(task::TaskEvents),
+    /// A screenshot (or other file) a task's checks produced. Result:
     /// [`fs::FileChunk`] with the whole file (at most 8 MiB).
-    #[serde(rename = "feature.artifact")]
-    FeatureArtifact(feature::FeatureArtifact),
-    /// Remove a feature that isn't running, with its history and artifacts
+    #[serde(rename = "task.artifact")]
+    TaskArtifact(task::TaskArtifact),
+    /// Remove a task that isn't running, with its history and artifacts
     /// (its workspace stays). Result: `null`.
-    #[serde(rename = "feature.delete")]
-    FeatureDelete(feature::FeatureRef),
+    #[serde(rename = "task.delete")]
+    TaskDelete(task::TaskRef),
 
     /// Triggers (D-083): what starts unattended work on this host. Result:
     /// [`otter_core::trigger::Trigger`].
@@ -249,7 +250,7 @@ pub enum Request {
     /// Result: `Vec<`[`otter_core::trigger::Trigger`]`>`.
     #[serde(rename = "trigger.list")]
     TriggerList,
-    /// Remove a trigger (the features it started stay). Result: `null`.
+    /// Remove a trigger (the tasks it started stay). Result: `null`.
     #[serde(rename = "trigger.delete")]
     TriggerDelete(TriggerRef),
     /// Fire a trigger now, by hand (its occurrence: now). Result: the
@@ -323,14 +324,14 @@ impl Request {
             Request::OtterGet => "otter.get",
             Request::OtterSend(_) => "otter.send",
             Request::OtterEvents(_) => "otter.events",
-            Request::FeatureList => "feature.list",
-            Request::FeatureGet(_) => "feature.get",
-            Request::FeatureCreate(_) => "feature.create",
-            Request::FeatureSend(_) => "feature.send",
-            Request::FeatureAct(_) => "feature.act",
-            Request::FeatureEvents(_) => "feature.events",
-            Request::FeatureArtifact(_) => "feature.artifact",
-            Request::FeatureDelete(_) => "feature.delete",
+            Request::TaskList => "task.list",
+            Request::TaskGet(_) => "task.get",
+            Request::TaskCreate(_) => "task.create",
+            Request::TaskSend(_) => "task.send",
+            Request::TaskAct(_) => "task.act",
+            Request::TaskEvents(_) => "task.events",
+            Request::TaskArtifact(_) => "task.artifact",
+            Request::TaskDelete(_) => "task.delete",
             Request::TriggerCreate(_) => "trigger.create",
             Request::TriggerList => "trigger.list",
             Request::TriggerDelete(_) => "trigger.delete",
@@ -347,9 +348,9 @@ impl Request {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct TriggerCreate {
     pub name: String,
-    /// The workspace (id or name) its features work in.
+    /// The workspace (id or name) its tasks work in.
     pub workspace: String,
-    /// The feature's title (default: the trigger's name).
+    /// The task's title (default: the trigger's name).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
     pub request: String,
@@ -359,7 +360,7 @@ pub struct TriggerCreate {
 }
 
 /// `trigger.run`: fire a trigger by hand, for `occurrence` (default: now) —
-/// a script that names its occurrence can retry safely: one feature each.
+/// a script that names its occurrence can retry safely: one task each.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct TriggerRun {
     pub trigger: String,
