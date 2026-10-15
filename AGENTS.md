@@ -17,7 +17,7 @@ must keep, with the tests that guard them.
 | the desktop app                                        | `apps/desktop/README.md` · decisions D-018, D-085 · invariants 11, 12       |
 | the wire protocol, events or client                    | [`docs/protocol.md`](docs/protocol.md) · decisions D-004, D-016 · invariant 12 |
 | features, the controller, delivery                     | [`docs/feature-states.md`](docs/feature-states.md) · decisions D-045, D-047, D-062–D-068 |
-| Otter's conversation, the brain's tools                | [`docs/plans/brain-runtime-v2.md`](docs/plans/brain-runtime-v2.md) · decisions D-084, D-089 |
+| Otter's conversation, the brain's tools                | [`docs/plans/brain-runtime-v2.md`](docs/plans/brain-runtime-v2.md) · decisions D-084, D-089, D-090 |
 | transport, daemon lifecycle, persistence               | decisions D-003, D-005, D-008 · invariants 4, 8, 11, 12                    |
 | the architecture itself                                | [`docs/design.md`](docs/design.md), [`docs/decisions.md`](docs/decisions.md), [`docs/architecture-lessons.md`](docs/architecture-lessons.md) |
 
@@ -50,8 +50,9 @@ Inside the daemon (`crates/daemon/src`):
   engine that steps features, and the model calls it makes (`OTTER_CONTROLLER`);
   `work_state.rs` reads the work's diff, status and fingerprint for
   verification (D-062)
-- `turn.rs` + `gateway.rs` — Otter's tool-using turn (D-089, behind
-  `OTTER_BRAIN_V2=1`): the bounded turn that answers the developer, and the
+- `turn.rs` + `gateway.rs` — Otter's tool-using turn (D-089; the host
+  setting *Otter's tools*, off by default, D-090): the bounded turn that
+  answers the developer, and the
   tools it may call — checked by what started the turn, applied once, written
   to the feature's history; `agents/claude_otter.rs` runs Claude's turn
   through the worker's `otter` profile (no Claude Code tools, only Otter's)

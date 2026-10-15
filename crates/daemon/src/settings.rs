@@ -40,6 +40,15 @@ fn secret_names() -> impl Iterator<Item = (&'static str, String)> {
 }
 
 /// Controller choices (`None`: automatic), in the order they're offered.
+/// `OTTER_BRAIN_V2` in otterd's environment, if set (it overrides the
+/// setting).
+pub fn otter_tools_from_env() -> Option<String> {
+    std::env::var("OTTER_BRAIN_V2")
+        .ok()
+        .map(|v| v.trim().to_owned())
+        .filter(|v| !v.is_empty())
+}
+
 pub fn controllers() -> Vec<ControllerInfo> {
     let fixed = |id: &str, label: &str, models: bool| ControllerInfo {
         id: id.into(),
@@ -82,6 +91,9 @@ struct Stored {
     coding_backend: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     coding_model: Option<String>,
+    /// Otter answers with its tools (D-089).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    otter_tools: Option<bool>,
 }
 
 #[derive(Debug, Default)]
@@ -158,6 +170,16 @@ impl HostSettings {
             .unwrap_or_else(|| "legacy_cli".into())
     }
 
+    /// Whether Otter answers with its tools (D-089): `OTTER_BRAIN_V2` (`1`
+    /// on, `0` off), else the setting; off by default while it's tried out.
+    pub fn otter_tools(&self) -> bool {
+        match otter_tools_from_env().as_deref() {
+            Some("1") => true,
+            Some(_) => false,
+            None => self.stored.otter_tools.unwrap_or(false),
+        }
+    }
+
     /// The coding agent's model (`None`: the provider's default).
     pub fn coding_model(&self) -> Option<String> {
         self.stored.coding_model.clone()
@@ -189,6 +211,9 @@ impl HostSettings {
                 backend: Some(self.coding_backend()),
                 model: self.stored.coding_model.clone(),
             },
+            otter_tools: Some(self.otter_tools()),
+            otter_tools_from_env: otter_tools_from_env(),
+            otter_answers: None,
         }
     }
 
@@ -232,6 +257,9 @@ impl HostSettings {
                 stored.coding_model = Some(m).filter(|m| !m.is_empty());
             }
         }
+        if let Some(on) = u.otter_tools {
+            stored.otter_tools = Some(on);
+        }
         let mut secrets = self.secrets.clone();
         for (name, value) in u.secrets {
             if !secret_names().any(|(n, _)| n == name) {
@@ -272,6 +300,9 @@ impl Daemon {
         let mut view = self.settings.read().unwrap().view();
         let brain = crate::brain::select(self.environments.base(), &self.brain_choice());
         view.active = Some(brain.name().to_owned());
+        view.otter_answers = Some(match self.how_otter_answers() {
+            Ok(how) | Err(how) => how,
+        });
         view
     }
 
@@ -305,11 +336,11 @@ impl Daemon {
         let mut s = self.settings.write().unwrap();
         s.update(u).map_err(RpcError::invalid)?;
         tracing::info!("settings changed");
-        let view = s.view();
         drop(s);
         // A new controller or key: let it look again.
         self.feature_wake.notify_one();
-        Ok(view)
+        // As `settings.get` has it: what runs now, and how Otter answers.
+        Ok(self.settings_get())
     }
 }
 
@@ -326,7 +357,32 @@ mod tests {
                 .map(|k| BTreeMap::from([("OPENROUTER_API_KEY".to_owned(), k.map(String::from))]))
                 .unwrap_or_default(),
             coding: None,
+            otter_tools: None,
         }
+    }
+
+    /// Otter's tools (D-089): off until turned on, then kept. (Where
+    /// `OTTER_BRAIN_V2` is set, it decides: nothing to check here.)
+    #[test]
+    fn otters_tools_are_off_until_turned_on_and_stay_on() {
+        if otter_tools_from_env().is_some() {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let mut s = HostSettings::load(dir.path()).unwrap();
+        assert!(!s.otter_tools());
+        assert_eq!(s.view().otter_tools, Some(false));
+        s.update(SettingsUpdate {
+            otter_tools: Some(true),
+            ..Default::default()
+        })
+        .unwrap();
+        assert!(s.otter_tools());
+        // Another update leaves it as it is.
+        s.update(update(Some("claude"), None)).unwrap();
+        let again = HostSettings::load(dir.path()).unwrap();
+        assert!(again.otter_tools());
+        assert_eq!(again.view().otter_tools, Some(true));
     }
 
     #[test]

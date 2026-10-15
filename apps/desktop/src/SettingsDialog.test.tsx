@@ -3,7 +3,13 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const calls = vi.hoisted(() => [] as { cmd: string; args: Record<string, unknown> }[]);
-const state = vi.hoisted(() => ({ set: false, controller: undefined as string | undefined, modern: false, backend: undefined as string | undefined }));
+const state = vi.hoisted(() => ({
+  set: false,
+  controller: undefined as string | undefined,
+  modern: false,
+  backend: undefined as string | undefined,
+  otterTools: undefined as boolean | undefined,
+}));
 
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: vi.fn(async (cmd: string, args: Record<string, unknown>) => {
@@ -26,6 +32,8 @@ vi.mock("@tauri-apps/api/core", () => ({
       const coding = (args.update as { coding?: { backend?: string } }).coding;
       if (coding?.backend && state.backend) state.backend = coding.backend;
       if (u.secrets && "OPENROUTER_API_KEY" in u.secrets) state.set = u.secrets.OPENROUTER_API_KEY !== null;
+      const tools = (args.update as { otter_tools?: boolean }).otter_tools;
+      if (tools !== undefined && state.otterTools !== undefined) state.otterTools = tools;
     }
     return {
       controller: state.controller,
@@ -34,6 +42,12 @@ vi.mock("@tauri-apps/api/core", () => ({
         ...(state.modern ? [{ name: "OPENAI_API_KEY", purpose: "Lets Otter use OpenAI", set: false }] : []),
       ],
       ...(state.backend ? { coding: { backend: state.backend } } : {}),
+      ...(state.otterTools !== undefined
+        ? {
+            otter_tools: state.otterTools,
+            otter_answers: state.otterTools ? "with tools (claude)" : "without tools (off in Settings)",
+          }
+        : {}),
       ...(state.modern
         ? {
             active: "openrouter",
@@ -68,6 +82,7 @@ describe("Settings", () => {
     state.controller = undefined;
     state.modern = expect.getState().currentTestName?.includes("models") ?? false;
     state.backend = expect.getState().currentTestName?.includes("coding agent") ? "legacy_cli" : undefined;
+    state.otterTools = expect.getState().currentTestName?.includes("Otter's tools") ? false : undefined;
     host = document.createElement("div");
     document.body.appendChild(host);
     root = createRoot(host);
@@ -163,6 +178,26 @@ describe("Settings", () => {
     expect((set.args.update as { coding: object }).coding).toEqual({ backend: "sdk", model: "sonnet" });
     // Rechecked after the save: the SDK worker isn't ready, and why.
     expect(dialog().textContent).toContain("Not ready on this host. Node.js wasn't found.");
+  });
+
+  it("turns Otter's tools on for a host, and says how Otter answers there", async () => {
+    expect(dialog().textContent).toContain("Now Otter answers without tools (off in Settings).");
+    const box = dialog().querySelector<HTMLInputElement>('input[aria-label="Otter answers with tools"]')!;
+    expect(box.checked).toBe(false);
+    await act(async () => box.click());
+    await act(async () => button("Save").click());
+    await flush();
+    const set = calls.find((c) => c.cmd === "settings_set")!;
+    expect((set.args.update as { otter_tools: boolean }).otter_tools).toBe(true);
+    expect(dialog().textContent).toContain("Now Otter answers with tools (claude).");
+  });
+
+  it("shows no tools toggle for an older host", async () => {
+    expect(dialog().querySelector('input[aria-label="Otter answers with tools"]')).toBeNull();
+    await act(async () => button("Save").click());
+    await flush();
+    const set = calls.find((c) => c.cmd === "settings_set")!;
+    expect(set.args.update).not.toHaveProperty("otter_tools");
   });
 
   it("shows nothing about coding for an older host", async () => {

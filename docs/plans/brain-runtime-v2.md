@@ -5,12 +5,16 @@
 corrections are folded in — among them, that what Otter does on the
 developer's word draws its authority from the developer's own message.
 **Status:** M0 done but for what needs real use (`runtime-validation.md`
-V2-0b, V2-0c). M1 done behind `OTTER_BRAIN_V2=1` (env only so far): the
-gateway, the turn, the `scripted` backend, and Claude's turn through the
-worker's Otter profile (live: V2-1a, V2-1b; `otter doctor` says which path
-a host has). Not done in M1: the reply isn't streamed while Claude writes
-it (it arrives whole); V2-1c. M2 is next. **Branch:** one per step, from
-`main`.
+V2-0b, V2-0c). M1 done: the gateway, the turn, the `scripted` backend,
+and Claude's turn through the worker's Otter profile (live: V2-1a, V2-1b;
+`otter doctor` says which path a host has). M2 reordered (D-090): the
+default stays off until the reply streams and the transcripts exist;
+first a host setting (*Otter's tools (preview)* in Settings — done), then
+streaming, then the crash and replay tests. **To make the default
+possible, the developer:** turns the setting on for a host whose Otter is
+Claude Code, works real tasks with it, and records 5–10 transcripts
+(V2-0c); and, on a host with an API key, runs the spike with it (V2-0b).
+**Branch:** one per step, from `main`.
 
 > **Core decision:** Otter's replies become a bounded, tool-using turn. Every
 > change the turn makes goes through the controller's existing in-process
@@ -373,10 +377,12 @@ on the feature, added through `migrate()`.
 
 ### 9.2 Entry point
 
-M1 runs behind `OTTER_BRAIN_V2=1` (env, or the matching host setting). When
-it is set and the backend is V2-capable (§6), the task conversation's turn is
-V2. M2 makes it the default for V2-capable backends, and the flag then turns
-it **off**.
+M1 runs behind `OTTER_BRAIN_V2=1`; since M2a, also the host setting
+*Otter's tools (preview)* (`otter_tools`; the environment overrides it, `1`
+on, `0` off). When it is on and the backend is V2-capable (§6), the task
+conversation's turn is V2. The default stays off until the reply streams
+and the M0 transcripts exist (D-090); making it the default is a decision
+of its own.
 
 ### 9.3 Test backend
 
@@ -542,3 +548,6 @@ support table for the rest.
   must cost no attempt (D-064: only a turn that starts new work costs one).
   This hasn't been checked yet (§7).
 - The §2 limits are right for real transcripts.
+- That Otter's worker never sees the project's `.envrc` (it gets the
+  host's base environment): no test shows it, since the fake host has no
+  direnv.

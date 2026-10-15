@@ -2769,3 +2769,30 @@ recorded; this decision rests on those two.
   the controller's authority, the stores. Not built: a scheduler, a new
   store, several tasks run to compare, anything across hosts, a model
   cancel or delete.
+
+## D-090 — Otter's tools are a host setting, off until tried out (2026-10-15)
+
+Plan `brain-runtime-v2` M2 had Otter's tool-using turn (D-089) become the
+default for Claude once M1 passed. Two things stand in the way, so the
+default waits — a deliberate deviation from the plan:
+
+- **No evidence yet.** M2's exit measures it against dogfooding
+  transcripts (`runtime-validation.md` V2-0c), and none exist: only the
+  developer, at work on real tasks, can make them. D-089 itself rests on
+  dogfooding, and changing every Claude user's reply before any comes in
+  would invert that.
+- **A worse reply while it's written.** The turn's reply doesn't stream yet
+  (D-051): it arrives whole, where `converse`'s is written as it comes.
+
+What lands instead:
+
+- **A setting per host:** *Otter's tools (preview)* in Settings
+  (`otter_tools` in `settings.get`/`settings.set`), off by default, kept
+  in the host's `settings.json`. `OTTER_BRAIN_V2` in otterd's environment
+  overrides it (`1` on, `0` off), as `OTTER_CONTROLLER` does its setting.
+  Settings and `otter doctor` say how Otter answers on the host now ("with
+  tools (claude)", "without tools (off in Settings)", or why not).
+- `settings.set` answers as `settings.get` does (what runs now, how Otter
+  answers), not with the bare stored view.
+- The default changes in a decision of its own, after streaming and the
+  transcripts.

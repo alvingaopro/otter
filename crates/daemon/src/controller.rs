@@ -450,7 +450,7 @@ impl Daemon {
                 .iter()
                 .filter_map(|p| Some((p.key.to_owned(), s.secret(p.key)?)))
                 .collect(),
-            v2: std::env::var("OTTER_BRAIN_V2").is_ok_and(|v| v == "1"),
+            v2: s.otter_tools(),
         }
     }
 

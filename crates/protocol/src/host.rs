@@ -132,6 +132,17 @@ pub struct Settings {
     /// environment's).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub active: Option<String>,
+    /// Otter answers with its tools (D-089) — on, off; absent from an otterd
+    /// before it. Off by default while it's being tried out.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub otter_tools: Option<bool>,
+    /// `OTTER_BRAIN_V2` in otterd's environment, which overrides the setting.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub otter_tools_from_env: Option<String>,
+    /// How Otter answers on this host now: "with tools (…)", or "without
+    /// tools…" and why.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub otter_answers: Option<String>,
 }
 
 /// One choice of Control Agent: a model provider, Claude Code, or none.
@@ -185,6 +196,9 @@ pub struct SettingsUpdate {
     /// The coding agent's settings (D-057); fields left out stay.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub coding: Option<CodingSettings>,
+    /// Otter answers with its tools (D-089); left out: stays.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub otter_tools: Option<bool>,
 }
 
 /// How the coding agent runs on this host (D-057) — apart from Otter's own

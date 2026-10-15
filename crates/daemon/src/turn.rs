@@ -133,7 +133,10 @@ impl Daemon {
     pub(crate) fn how_otter_answers(&self) -> Result<String, String> {
         let choice = self.brain_choice();
         if !choice.v2 {
-            return Err("without tools (OTTER_BRAIN_V2 isn't set)".into());
+            return Err(match crate::settings::otter_tools_from_env() {
+                Some(v) => format!("without tools (OTTER_BRAIN_V2={v})"),
+                None => "without tools (off in Settings)".into(),
+            });
         }
         let env = self.environments.base();
         let brain = crate::brain::select(env, &choice);

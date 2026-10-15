@@ -390,7 +390,7 @@ impl Daemon {
         {
             problems.push(otter_core::Problem {
                 what: format!("Otter answers {why}."),
-                next: "Choose Claude Code as Otter's model in Settings and install the Claude worker (`otter host install`), or unset OTTER_BRAIN_V2.".into(),
+                next: "Choose Claude Code as Otter's model in Settings and install the Claude worker (`otter host install`), or turn Otter's tools off in Settings.".into(),
             });
         }
         HostStatus {
