@@ -239,6 +239,37 @@ pub async fn listening_ports() -> Vec<ListeningPort> {
     ports
 }
 
+/// Each process's parent, to tell which session a listening port belongs to
+/// (D-104). Read on request only, never in the reconcile loop.
+pub fn parent_pids() -> HashMap<u32, u32> {
+    let mut sys = System::new();
+    sys.refresh_processes_specifics(ProcessesToUpdate::All, true, ProcessRefreshKind::nothing());
+    sys.processes()
+        .iter()
+        .filter_map(|(pid, p)| Some((pid.as_u32(), p.parent()?.as_u32())))
+        .collect()
+}
+
+/// The session whose process tree `pid` is in: walk up its parents until a
+/// session's process (`roots`), at most a few dozen levels.
+pub fn owner_of<T: Clone>(
+    pid: u32,
+    roots: &HashMap<u32, T>,
+    parents: &HashMap<u32, u32>,
+) -> Option<T> {
+    let mut p = pid;
+    for _ in 0..64 {
+        if let Some(owner) = roots.get(&p) {
+            return Some(owner.clone());
+        }
+        p = *parents.get(&p)?;
+        if p <= 1 {
+            return None;
+        }
+    }
+    None
+}
+
 async fn run(program: &str, args: &[&str]) -> Option<String> {
     let out = tokio::time::timeout(
         Duration::from_secs(5),

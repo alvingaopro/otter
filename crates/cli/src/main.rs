@@ -209,6 +209,10 @@ enum WorkspaceCommand {
     /// Show or edit why a workspace exists: its title, description,
     /// constraints, references and decisions.
     Brief(BriefArgs),
+    /// Give a workspace another name. Its directory, branch and sessions
+    /// stay as they are.
+    #[command(visible_alias = "mv")]
+    Rename { target: String, name: String },
     /// Stop all sessions and delete the workspace and its directory. Git
     /// branches are kept.
     #[command(visible_alias = "rm")]
@@ -340,6 +344,13 @@ enum SessionCommand {
     /// Stop a session and remove it from its workspace.
     #[command(visible_alias = "rm")]
     Delete { target: String },
+    /// Give a session another name; its process keeps running.
+    #[command(visible_alias = "mv")]
+    Rename {
+        /// `[host:]workspace/session`
+        target: String,
+        name: String,
+    },
 }
 
 #[derive(Args)]
@@ -625,6 +636,21 @@ async fn workspace_command(config: &Config, cmd: WorkspaceCommand, json: bool) -
             }
             report_prepared(&found.host.name, &ws)
         }
+        WorkspaceCommand::Rename { target, name } => {
+            let mut found = find(config, &Target::parse(&target)?).await?;
+            let ws = found
+                .conn
+                .workspace_rename(found.workspace.id.as_str(), &name)
+                .await?;
+            if json {
+                return output::print_json(&ws);
+            }
+            println!(
+                "renamed workspace {} to {} on {}",
+                found.workspace.name, ws.name, found.host.name
+            );
+            Ok(())
+        }
         WorkspaceCommand::Archive { target } => {
             let mut found = find(config, &Target::parse(&target)?).await?;
             let ws = found
@@ -892,6 +918,27 @@ async fn session_command(config: &Config, cmd: SessionCommand, json: bool) -> Re
                 conn.session_restart(&ws, &s).await
             })
             .await
+        }
+        SessionCommand::Rename { target, name } => {
+            let target = Target::parse(&target)?;
+            if target.session.is_none() {
+                bail!("name the session to rename: workspace/session");
+            }
+            let mut found = find(config, &target).await?;
+            let session = found.session(target.session.as_deref())?;
+            let renamed = found
+                .conn
+                .session_rename(found.workspace.id.as_str(), session.id.as_str(), &name)
+                .await?;
+            if json {
+                return output::print_json(&renamed);
+            }
+            println!(
+                "renamed session {} to {}",
+                found.label(&session),
+                renamed.name
+            );
+            Ok(())
         }
         SessionCommand::Delete { target } => {
             let target = Target::parse(&target)?;

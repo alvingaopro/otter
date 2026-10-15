@@ -28,7 +28,8 @@ use otter_core::{
     validate_name,
 };
 use otter_protocol::{
-    ErrorCode, Event, RpcError, WorkspaceCreate, WorkspaceDelete, WorkspaceSetBrief,
+    ErrorCode, Event, RpcError, WorkspaceCreate, WorkspaceDelete, WorkspaceRename,
+    WorkspaceSetBrief,
 };
 
 use crate::attention;
@@ -114,6 +115,7 @@ impl Daemon {
                 updated_at: now,
                 sessions: Vec::new(),
                 attention: Vec::new(),
+                feature_id: None,
             });
             save(&store)?;
             self.events.emit(Event::WorkspaceCreated {
@@ -281,6 +283,42 @@ impl Daemon {
         save(&store)?;
         self.events.emit(Event::WorkspaceBriefChanged {
             workspace_id: ws.id.clone(),
+        });
+        Ok(ws)
+    }
+
+    /// Another name (D-101). Only what people read changes: the id, the
+    /// directory, the branch and the processes stay as they are.
+    pub(crate) async fn workspace_rename(&self, p: WorkspaceRename) -> RpcResult<Workspace> {
+        let name = p.name.trim().to_owned();
+        validate_name("workspace", &name).map_err(RpcError::invalid)?;
+        let mut store = self.store.lock().await;
+        let id = store
+            .workspace(&p.workspace)
+            .map(|w| w.id.clone())
+            .ok_or_else(|| workspace_not_found(&p.workspace))?;
+        if store
+            .state
+            .workspaces
+            .iter()
+            .any(|w| w.name == name && w.id != id)
+        {
+            return Err(RpcError::new(
+                ErrorCode::AlreadyExists,
+                format!("a workspace named `{name}` already exists"),
+            ));
+        }
+        let ws = store.workspace_mut(id.as_str()).expect("exists");
+        if ws.name == name {
+            return Ok(ws.clone());
+        }
+        ws.name = name.clone();
+        ws.updated_at = Utc::now();
+        let ws = ws.clone();
+        save(&store)?;
+        self.events.emit(Event::WorkspaceRenamed {
+            workspace_id: ws.id.clone(),
+            name,
         });
         Ok(ws)
     }

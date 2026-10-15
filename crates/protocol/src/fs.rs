@@ -83,6 +83,15 @@ pub struct FsWrite {
     pub overwrite: bool,
 }
 
+/// A new name for a file or directory, in the same directory.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct FsRename {
+    #[serde(flatten)]
+    pub at: FsPath,
+    /// A name, not a path.
+    pub name: String,
+}
+
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct PasteImage {
     pub workspace: String,

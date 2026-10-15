@@ -75,6 +75,8 @@ pub struct Applied {
     pub feature: Feature,
     /// A repeat of a command already applied: nothing changed.
     pub duplicate: bool,
+    /// Its status before; `None` for a new feature.
+    pub from: Option<FeatureStatus>,
 }
 
 pub struct FeatureStore {
@@ -192,13 +194,19 @@ impl FeatureStore {
             return Ok(Applied {
                 feature: doc.feature.clone(),
                 duplicate: true,
+                from: Some(doc.feature.status),
             });
         }
         let mut doc = doc.clone();
+        let from = doc.feature.status;
         let now = Utc::now();
         let changes = step(&mut doc.feature, now)?;
         doc.feature.updated_at = now;
         self.commit(doc, command_id, changes)
+            .map(|a| Applied {
+                from: Some(from),
+                ..a
+            })
             .map_err(|e| RpcError::internal(format!("saving feature: {e:#}")))
     }
 
@@ -239,6 +247,7 @@ impl FeatureStore {
         Ok(Applied {
             feature,
             duplicate: false,
+            from: None,
         })
     }
 
@@ -865,24 +874,77 @@ impl Daemon {
             new_name = format!("{name}-{slug}-{n}");
             n += 1;
         }
-        self.workspace_create(otter_protocol::WorkspaceCreate {
-            name: new_name,
-            brief: Some(otter_core::Brief {
-                title: Some(f.title.clone()),
-                description: Some(format!(
-                    "The feature “{}”, in a worktree of its own",
-                    f.title
-                )),
-                ..Default::default()
-            }),
-            source: otter_protocol::SourceSpec::Git {
-                repository,
-                branch: Some(format!("otter/{slug}-{short}")),
-                base,
-            },
-            sessions: Some(vec![]),
-        })
-        .await
+        let ws = self
+            .workspace_create(otter_protocol::WorkspaceCreate {
+                name: new_name,
+                brief: Some(otter_core::Brief {
+                    title: Some(f.title.clone()),
+                    description: Some(format!(
+                        "The feature “{}”, in a worktree of its own",
+                        f.title
+                    )),
+                    ..Default::default()
+                }),
+                source: otter_protocol::SourceSpec::Git {
+                    repository,
+                    branch: Some(format!("otter/{slug}-{short}")),
+                    base,
+                },
+                sessions: Some(vec![]),
+            })
+            .await?;
+        // Made for it: put away when it ends (D-105).
+        let mut store = self.store.lock().await;
+        let w = store.workspace_mut(ws.id.as_str()).expect("just made");
+        w.feature_id = Some(f.id.clone());
+        let ws = w.clone();
+        crate::daemon::save(&store)?;
+        Ok(ws)
+    }
+
+    /// When a task ends (done or cancelled), the workspace made for it
+    /// (D-080) is archived (D-105): files, branch and conversations kept,
+    /// nothing left running. Not while something the developer may be using
+    /// runs there — a shell, a service, a command, an agent at work or
+    /// waiting on them; then it stays as it is.
+    pub(crate) async fn put_away_workspace(self: &std::sync::Arc<Self>, id: &FeatureId) {
+        let Ok(f) = self.feature_get(id.as_str()).await else {
+            return;
+        };
+        let Some(ws_id) = f.workspace_id.clone() else {
+            return;
+        };
+        let name = {
+            let store = self.store.lock().await;
+            let Some(ws) = store.workspace(ws_id.as_str()) else {
+                return;
+            };
+            if ws.feature_id.as_ref() != Some(id)
+                || ws.state == otter_core::WorkspaceState::Archived
+            {
+                return;
+            }
+            if let Some(s) = ws.sessions.iter().find(|s| in_use(s)) {
+                tracing::info!(workspace = %ws.name, session = %s.name, "task ended; its workspace stays: in use");
+                return;
+            }
+            ws.name.clone()
+        };
+        if let Err(e) = self.workspace_archive(ws_id.as_str()).await {
+            tracing::warn!(workspace = %name, "archiving a finished task's workspace: {}", e.message);
+            return;
+        }
+        let text = format!(
+            "Its workspace {name} is archived now that the task is over: its files and branch are kept. Unarchive it to look at the work."
+        );
+        let applied = self.features.lock().await.apply(id, None, |f, _| {
+            let (m, c) = message(MessageRole::Controller, text, None);
+            f.messages.push(m);
+            Ok(vec![c])
+        });
+        if let Ok(a) = applied {
+            self.feature_changed(&a);
+        }
     }
 
     pub(crate) async fn feature_act(
@@ -1119,6 +1181,18 @@ impl Daemon {
         if applied.duplicate {
             return;
         }
+        // Just ended: the controller puts its own workspace away (D-105).
+        if applied.from.is_some_and(|s| s != applied.feature.status)
+            && matches!(
+                applied.feature.status,
+                FeatureStatus::Done | FeatureStatus::Cancelled
+            )
+        {
+            self.finished
+                .lock()
+                .unwrap()
+                .push(applied.feature.id.clone());
+        }
         self.events.emit(Event::FeatureChanged {
             feature_id: applied.feature.id.clone(),
             history_seq: applied.feature.history_seq,
@@ -1126,6 +1200,20 @@ impl Daemon {
         });
         self.feature_wake.notify_one();
     }
+}
+
+/// Something the developer may be using: a shell, a service or a command
+/// running, or an agent at work or waiting on them.
+fn in_use(s: &otter_core::Session) -> bool {
+    s.current_execution().is_some_and(|e| e.is_running())
+        && s.agent.as_ref().is_none_or(|a| {
+            matches!(
+                a.state,
+                otter_core::AgentState::Working
+                    | otter_core::AgentState::Starting
+                    | otter_core::AgentState::Blocked
+            )
+        })
 }
 
 #[cfg(test)]

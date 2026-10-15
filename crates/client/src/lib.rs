@@ -20,8 +20,8 @@ use otter_protocol::wire::{read_json, write_json};
 use otter_protocol::{
     AttachReady, AttentionResolve, ClientMessage, Cursor, EventRecord, EventsList, EventsSubscribe,
     PROTOCOL_VERSION, Request, RpcError, ServerMessage, SessionAttach, SessionCreate,
-    SessionOutput, SessionRead, SessionRef, SessionWrite, StateSnapshot, Subscribed,
-    WorkspaceCreate, WorkspaceDelete, WorkspaceRef, WorkspaceSetBrief,
+    SessionOutput, SessionRead, SessionRef, SessionRename, SessionWrite, StateSnapshot, Subscribed,
+    WorkspaceCreate, WorkspaceDelete, WorkspaceRef, WorkspaceRename, WorkspaceSetBrief,
 };
 use serde::de::DeserializeOwned;
 use tokio::io::{AsyncReadExt, BufReader};
@@ -703,6 +703,87 @@ impl Connection {
     pub async fn session_restart(&mut self, workspace: &str, session: &str) -> Result<Session> {
         self.call(Request::SessionRestart(session_ref(workspace, session)))
             .await
+    }
+
+    /// Another name for a workspace (D-101).
+    pub async fn workspace_rename(&mut self, workspace: &str, name: &str) -> Result<Workspace> {
+        self.call(Request::WorkspaceRename(WorkspaceRename {
+            workspace: workspace.to_owned(),
+            name: name.to_owned(),
+        }))
+        .await
+    }
+
+    /// Another name for a session (D-101).
+    pub async fn session_rename(
+        &mut self,
+        workspace: &str,
+        session: &str,
+        name: &str,
+    ) -> Result<Session> {
+        self.call(Request::SessionRename(SessionRename {
+            session: session_ref(workspace, session),
+            name: name.to_owned(),
+        }))
+        .await
+    }
+
+    /// The workspace's Git work (D-102).
+    pub async fn workspace_changes(
+        &mut self,
+        workspace: &str,
+    ) -> Result<otter_protocol::work::WorkspaceChanges> {
+        self.call(Request::WorkspaceChanges(WorkspaceRef {
+            workspace: workspace.to_owned(),
+        }))
+        .await
+    }
+
+    /// One changed file's diff (D-102).
+    pub async fn workspace_diff(
+        &mut self,
+        workspace: &str,
+        path: &str,
+    ) -> Result<otter_protocol::work::FileDiff> {
+        self.call(Request::WorkspaceDiff(
+            otter_protocol::work::WorkspaceDiff {
+                workspace: workspace.to_owned(),
+                path: path.to_owned(),
+            },
+        ))
+        .await
+    }
+
+    /// Ports its sessions listen on (D-104).
+    pub async fn workspace_ports(
+        &mut self,
+        workspace: &str,
+    ) -> Result<Vec<otter_protocol::work::SessionPort>> {
+        self.call(Request::WorkspacePorts(WorkspaceRef {
+            workspace: workspace.to_owned(),
+        }))
+        .await
+    }
+
+    /// Remove a file or folder inside the workspace (D-103).
+    pub async fn fs_remove(&mut self, workspace: &str, path: &str) -> Result<()> {
+        self.call(Request::FsRemove(otter_protocol::fs::FsPath {
+            workspace: workspace.to_owned(),
+            path: path.to_owned(),
+        }))
+        .await
+    }
+
+    /// Rename a file or folder in place, inside the workspace (D-103).
+    pub async fn fs_rename(&mut self, workspace: &str, path: &str, name: &str) -> Result<()> {
+        self.call(Request::FsRename(otter_protocol::fs::FsRename {
+            at: otter_protocol::fs::FsPath {
+                workspace: workspace.to_owned(),
+                path: path.to_owned(),
+            },
+            name: name.to_owned(),
+        }))
+        .await
     }
 
     pub async fn session_delete(&mut self, workspace: &str, session: &str) -> Result<()> {

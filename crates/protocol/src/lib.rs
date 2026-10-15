@@ -24,6 +24,7 @@ pub mod fs;
 pub mod host;
 pub mod otter;
 pub mod wire;
+pub mod work;
 
 use otter_core::Brief;
 pub use otter_core::{SessionSpec, SourceSpec};
@@ -67,6 +68,14 @@ pub enum Request {
     /// Write part of a file. Result: `null`.
     #[serde(rename = "fs.write")]
     FsWrite(fs::FsWrite),
+    /// Remove a file, a link, or a directory with everything in it — only
+    /// inside the workspace, never its root (D-103). Result: `null`.
+    #[serde(rename = "fs.remove")]
+    FsRemove(fs::FsPath),
+    /// Give a file or directory another name in the same directory, inside
+    /// the workspace; never over an existing one (D-103). Result: `null`.
+    #[serde(rename = "fs.rename")]
+    FsRename(fs::FsRename),
     /// Hand an image to a session's clipboard stand-in, for Ctrl+V in Claude
     /// Code and other tools that read images with `wl-paste`. Result: `null`.
     #[serde(rename = "session.paste_image")]
@@ -116,6 +125,21 @@ pub enum Request {
     /// [`otter_core::Workspace`].
     #[serde(rename = "workspace.set_brief")]
     WorkspaceSetBrief(WorkspaceSetBrief),
+    /// Give the workspace another name (D-101). Result:
+    /// [`otter_core::Workspace`].
+    #[serde(rename = "workspace.rename")]
+    WorkspaceRename(WorkspaceRename),
+    /// Its Git work: branch, commits ahead and behind its base, changed
+    /// files (D-102). Result: [`work::WorkspaceChanges`].
+    #[serde(rename = "workspace.changes")]
+    WorkspaceChanges(WorkspaceRef),
+    /// One changed file's diff since the base. Result: [`work::FileDiff`].
+    #[serde(rename = "workspace.diff")]
+    WorkspaceDiff(work::WorkspaceDiff),
+    /// TCP ports its sessions' processes listen on (D-104). Result:
+    /// `Vec<`[`work::SessionPort`]`>`.
+    #[serde(rename = "workspace.ports")]
+    WorkspacePorts(WorkspaceRef),
 
     /// Create and start a session. Result: [`otter_core::Session`].
     #[serde(rename = "session.create")]
@@ -129,6 +153,10 @@ pub enum Request {
     /// Stop the session and remove it from the workspace. Result: `null`.
     #[serde(rename = "session.delete")]
     SessionDelete(SessionRef),
+    /// Give the session another name (D-101). Result:
+    /// [`otter_core::Session`].
+    #[serde(rename = "session.rename")]
+    SessionRename(SessionRename),
     /// Read the session's screen + scrollback. Result: [`SessionOutput`].
     #[serde(rename = "session.read")]
     SessionRead(SessionRead),
@@ -261,6 +289,8 @@ impl Request {
             Request::FsList(_) => "fs.list",
             Request::FsRead(_) => "fs.read",
             Request::FsWrite(_) => "fs.write",
+            Request::FsRemove(_) => "fs.remove",
+            Request::FsRename(_) => "fs.rename",
             Request::SessionPasteImage(_) => "session.paste_image",
             Request::Shutdown => "daemon.shutdown",
             Request::WorkspaceCreate(_) => "workspace.create",
@@ -271,10 +301,15 @@ impl Request {
             Request::WorkspaceArchive(_) => "workspace.archive",
             Request::WorkspaceUnarchive(_) => "workspace.unarchive",
             Request::WorkspaceSetBrief(_) => "workspace.set_brief",
+            Request::WorkspaceRename(_) => "workspace.rename",
+            Request::WorkspaceChanges(_) => "workspace.changes",
+            Request::WorkspaceDiff(_) => "workspace.diff",
+            Request::WorkspacePorts(_) => "workspace.ports",
             Request::SessionCreate(_) => "session.create",
             Request::SessionStop(_) => "session.stop",
             Request::SessionRestart(_) => "session.restart",
             Request::SessionDelete(_) => "session.delete",
+            Request::SessionRename(_) => "session.rename",
             Request::SessionRead(_) => "session.read",
             Request::SessionWrite(_) => "session.write",
             Request::SessionAttach(_) => "session.attach",
@@ -366,6 +401,19 @@ pub struct WorkspaceRef {
 pub struct WorkspaceSetBrief {
     pub workspace: String,
     pub brief: Brief,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct WorkspaceRename {
+    pub workspace: String,
+    pub name: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SessionRename {
+    #[serde(flatten)]
+    pub session: SessionRef,
+    pub name: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]

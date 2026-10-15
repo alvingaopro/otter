@@ -11,7 +11,7 @@ use otter_core::{
 };
 use otter_protocol::{
     AttachReady, ErrorCode, Event, RpcError, SessionCreate, SessionOutput, SessionRead, SessionRef,
-    SessionWrite,
+    SessionRename, SessionWrite,
 };
 
 use crate::agents;
@@ -114,6 +114,41 @@ impl Daemon {
         let events = attention::resolve_session(ws, &session.id);
         self.emit_all(events);
         self.launch(&mut store, &ws_id, &session.id, &env).await?;
+        Ok(session_snapshot(&store, &ws_id, &session.id))
+    }
+
+    /// Another name (D-101); the process and its attach don't notice.
+    pub(crate) async fn session_rename(&self, p: &SessionRename) -> RpcResult<Session> {
+        let name = p.name.trim().to_owned();
+        validate_name("session", &name).map_err(RpcError::invalid)?;
+        let mut store = self.store.lock().await;
+        let (ws_id, session) = find_session(&store, &p.session)?;
+        if session.name == name {
+            return Ok(session);
+        }
+        let ws = store.workspace_mut(ws_id.as_str()).expect("exists");
+        if ws.sessions.iter().any(|s| s.name == name) {
+            return Err(RpcError::new(
+                ErrorCode::AlreadyExists,
+                format!(
+                    "workspace `{}` already has a session named `{name}`",
+                    ws.name
+                ),
+            ));
+        }
+        let s = ws
+            .sessions
+            .iter_mut()
+            .find(|s| s.id == session.id)
+            .expect("exists");
+        s.name = name.clone();
+        ws.updated_at = Utc::now();
+        save(&store)?;
+        self.events.emit(Event::SessionRenamed {
+            workspace_id: ws_id.clone(),
+            session_id: session.id.clone(),
+            name,
+        });
         Ok(session_snapshot(&store, &ws_id, &session.id))
     }
 
