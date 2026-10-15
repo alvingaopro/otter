@@ -796,6 +796,18 @@ impl Gateway {
                     .await?
                     .status;
             }
+            // Otter follows what it made (D-094), from where it stands now.
+            let now = d.feature_get(f.id.as_str()).await?;
+            let applied = d.chat.lock().await.apply(None, |chat, _| {
+                if !chat.follows.iter().any(|x| x.task_id == now.id) {
+                    chat.follows.push(otter_core::feature::Follow {
+                        task_id: now.id.clone(),
+                        seen: now.follow_key().unwrap_or_default(),
+                    });
+                }
+                Ok(vec![])
+            })?;
+            d.chat_changed(&applied);
             self.record(
                 FeatureEvent::ToolDone {
                     tool: name.into(),
@@ -1176,7 +1188,7 @@ impl Gateway {
 /// crash would — `called` once a change is written down, `applied` once it
 /// is made and before anything reaches the agent — to show what the next
 /// start makes of it (plan §8).
-fn crash_point(point: &str, tool: &str) {
+pub(crate) fn crash_point(point: &str, tool: &str) {
     if std::env::var("OTTER_TEST_CRASH").is_ok_and(|v| v == format!("{point}:{tool}")) {
         std::process::abort();
     }

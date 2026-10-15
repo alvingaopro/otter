@@ -18,7 +18,8 @@ M2.5: a question for the agent at work is a turn that only reads (D-091;
 live: V2-2), and answer-only tasks (D-092; live: V2-3). The developer asked
 for every milestone before the dogfooding; what is decided without it says
 so in its decision. M3 done: Otter's conversation on the host (D-093;
-`otter chat`; the app's Otter view; live: V2-4). Next: M4. **To make the default
+`otter chat`; the app's Otter view; live: V2-4). M4 done: follow-ups on the
+tasks Otter made (D-094; live: V2-5). Next: M5. **To make the default
 possible, the developer:** turns the setting on for a host whose Otter is
 Claude Code, works real tasks with it, and records 5–10 transcripts
 (V2-0c); and, on a host with an API key, runs the spike with it (V2-0b).

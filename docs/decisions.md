@@ -2886,3 +2886,30 @@ the dogfooding (V2-0c): the choices here are defaults, to revisit with it.
   rather than as a D-058 journal, as the plan had it: a conversation of
   messages and tool records, with no turns to deliver, gains nothing from
   the journal's ops and needs what the feature store already does.
+
+## D-094 — Otter follows up the tasks it made (2026-10-15)
+
+Plan `brain-runtime-v2` M4. A default chosen at the developer's direction
+before the dogfooding (V2-0c), to revisit with it.
+
+- **What it follows:** the tasks Otter made from its conversation on the
+  host (`create_task`), kept with that conversation (`follows`). Nothing
+  else: a task made in the app or the terminal is the developer's to watch,
+  in the Inbox (D-072).
+- **What a follow-up is for:** a change that may need the developer — done,
+  failed, in review, or waiting on them (`Feature::follow_key`: the status
+  and when it was reached, so each change is its own).
+- **How:** the controller loop sees the change and runs a turn no message
+  started (`Origin::Event`): the host's tools to look, and pausing at most —
+  nothing on the developer's word. Its answer goes into the host
+  conversation, one message, tied to the change (`follow:<task>:<change>`).
+  Without Otter's tools, a line says what changed. The developer's messages
+  come first; one turn at a time.
+- **Once:** the message and the change it is about are written together.
+  A crash before leaves the change to be followed up after the restart; a
+  change already followed up never is again. A change that happened while
+  otterd was down is followed up once, as it stands now; changes it went
+  through meanwhile aren't.
+- **One narrator per task stays** (D-069): the task's own conversation
+  keeps the controller's messages; the follow-up is in the host's
+  conversation, about the task.
