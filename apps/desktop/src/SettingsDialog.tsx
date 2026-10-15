@@ -27,6 +27,12 @@ export interface HostSettings {
   active?: string;
   /** How the coding agent runs (D-057); without a backend from older daemons. */
   coding?: { backend?: string; model?: string };
+  /** Otter answers with its tools (D-089); absent from older daemons. */
+  otter_tools?: boolean;
+  /** `OTTER_BRAIN_V2` in otterd's environment, which overrides the setting. */
+  otter_tools_from_env?: string;
+  /** How Otter answers on the host now: "with tools (…)", or "without tools…" and why. */
+  otter_answers?: string;
 }
 
 /** How the coding agent can run on a host (D-057). */
@@ -72,6 +78,8 @@ export function SettingsDialog({ hosts, defaultHost, onClose }: { hosts: string[
   const [backend, setBackend] = useState("");
   const [codingModel, setCodingModel] = useState("");
   const [caps, setCaps] = useState<RuntimeCapabilities | null>(null);
+  // Otter answers with its tools (D-089): tried out per host.
+  const [otterTools, setOtterTools] = useState(false);
 
   useEffect(() => {
     if (!host) return;
@@ -87,6 +95,7 @@ export function SettingsDialog({ hosts, defaultHost, onClose }: { hosts: string[
         setModel(s.model ?? "");
         setBackend(s.coding?.backend ?? "");
         setCodingModel(s.coding?.model ?? "");
+        setOtterTools(s.otter_tools ?? false);
       })
       .catch((e) => live && setError(`${e} (an otterd older than this app has no settings)`));
     return () => {
@@ -133,6 +142,7 @@ export function SettingsDialog({ hosts, defaultHost, onClose }: { hosts: string[
     model?: string;
     secrets?: Record<string, string | null>;
     coding?: { backend?: string; model?: string };
+    otter_tools?: boolean;
   }) {
     setBusy(true);
     setError(null);
@@ -167,6 +177,8 @@ export function SettingsDialog({ hosts, defaultHost, onClose }: { hosts: string[
       model,
       secrets,
       ...(settings?.coding?.backend ? { coding: { backend, model: codingModel } } : {}),
+      // Only where the host has it, and the environment doesn't decide.
+      ...(settings?.otter_tools !== undefined && !settings.otter_tools_from_env ? { otter_tools: otterTools } : {}),
     });
   }
 
@@ -288,6 +300,36 @@ export function SettingsDialog({ hosts, defaultHost, onClose }: { hosts: string[
               </div>
             )}
             {needsModel && <p className="notice small">{info?.label} has no default model: choose one.</p>}
+            {settings.otter_tools !== undefined && (
+              <fieldset className="field coding">
+                <legend>Otter's tools (preview)</legend>
+                <label className="check">
+                  <input
+                    type="checkbox"
+                    aria-label="Otter answers with tools"
+                    checked={otterTools}
+                    disabled={!!settings.otter_tools_from_env}
+                    onChange={(e) => setOtterTools(e.target.checked)}
+                  />
+                  Otter answers with tools
+                </label>
+                <span className="muted small">
+                  Before it answers, Otter looks at the task, its runs and what waits on you, and acts on what you ask
+                  through its own tools — never a shell or your files. Needs Claude Code as Otter's model and the Claude
+                  worker on {host}. Off: Otter answers as before.
+                </span>
+                {settings.otter_tools_from_env && (
+                  <span className="muted small">
+                    Set by OTTER_BRAIN_V2={settings.otter_tools_from_env} in otterd's environment.
+                  </span>
+                )}
+                {settings.otter_answers && (
+                  <p className="muted small" role="status">
+                    Now Otter answers {settings.otter_answers}.
+                  </p>
+                )}
+              </fieldset>
+            )}
             {settings.coding?.backend && (
               <fieldset className="field coding">
                 <legend>Coding agent</legend>

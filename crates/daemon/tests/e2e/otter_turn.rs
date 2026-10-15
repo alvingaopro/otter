@@ -598,3 +598,38 @@ async fn a_provider_without_a_turn_answers_as_before_and_says_so() {
         "converse uses no tools"
     );
 }
+
+/// Otter's tools are a host setting (D-089 M2a), off by default: turned on
+/// from Settings, they answer the next message, and stay on across a restart.
+#[tokio::test]
+async fn otters_tools_are_a_host_setting() {
+    use otter_protocol::host::SettingsUpdate;
+    let mut fake = fake_agent_host("ok", "scripted").await;
+    let host = &fake.host;
+    let s = host.conn().await.settings_get().await.unwrap();
+    assert_eq!(s.otter_tools, Some(false));
+    assert_eq!(s.otter_tools_from_env, None);
+    assert_eq!(
+        s.otter_answers.as_deref(),
+        Some("without tools (off in Settings)")
+    );
+    let id = at_work(host, "Add CSV export HANG").await;
+    let (_, answers) = run(host, &id, "set-1", "Look\nCALL: get_task {}").await;
+    assert!(answers.is_empty(), "off: no tools: {answers:?}");
+    let s = host
+        .conn()
+        .await
+        .settings_set(SettingsUpdate {
+            otter_tools: Some(true),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert_eq!(s.otter_tools, Some(true));
+    assert_eq!(s.otter_answers.as_deref(), Some("with tools (scripted)"));
+    let (_, answers) = run(host, &id, "set-2", "Look again\nCALL: get_task {}").await;
+    assert_eq!(code(&answers[0]), "ok", "{answers:?}");
+    fake.host.restart().await;
+    let s = fake.host.conn().await.settings_get().await.unwrap();
+    assert_eq!(s.otter_tools, Some(true));
+}

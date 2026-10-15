@@ -5381,6 +5381,7 @@ async fn settings_take_keys_write_only_and_keep_them() {
             )]
             .into(),
             coding: None,
+            otter_tools: None,
         })
         .await
         .unwrap();
