@@ -6,7 +6,7 @@
 //! state/otter/history.jsonl  Otter's tool calls, appended
 //! ```
 //!
-//! Kept the way a feature is (`features.rs`: a private temporary file,
+//! Kept the way a task is (`tasks.rs`: a private temporary file,
 //! synced, renamed; history appended and synced) rather than as a D-058
 //! journal — D-093 says why. Commands are applied once.
 
@@ -18,15 +18,13 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use chrono::Utc;
 use otter_core::Timestamp;
-use otter_core::feature::{
-    FEATURE_EVENT_SCHEMA, FeatureEventRecord, Message, MessageRole, OtterChat,
-};
+use otter_core::task::{Message, MessageRole, OtterChat, TASK_EVENT_SCHEMA, TaskEventRecord};
 use otter_protocol::otter::{OtterEvents, OtterSend};
 use otter_protocol::{Event, RpcError};
 use serde::{Deserialize, Serialize};
 
 use crate::daemon::{Daemon, RpcResult};
-use crate::features::{
+use crate::tasks::{
     Change, MAX_TEXT, append_history, check_command_id, check_text, last_seq, message, write_doc,
 };
 
@@ -110,10 +108,10 @@ impl ChatStore {
         let mut records = Vec::with_capacity(changes.len());
         for c in changes {
             doc.chat.history_seq += 1;
-            records.push(FeatureEventRecord {
+            records.push(TaskEventRecord {
                 seq: doc.chat.history_seq,
                 ts: now,
-                v: FEATURE_EVENT_SCHEMA,
+                v: TASK_EVENT_SCHEMA,
                 correlation_id: c.correlation_id,
                 text: c.event.text(),
                 event: c.event,
@@ -136,7 +134,7 @@ impl ChatStore {
     }
 
     /// The history with `seq > after`, oldest first.
-    pub fn history(&self, after: u64, limit: usize) -> Result<Vec<FeatureEventRecord>> {
+    pub fn history(&self, after: u64, limit: usize) -> Result<Vec<TaskEventRecord>> {
         let path = self.dir.join("history.jsonl");
         let file = match std::fs::File::open(&path) {
             Ok(f) => f,
@@ -145,7 +143,7 @@ impl ChatStore {
         };
         let mut out = Vec::new();
         for line in std::io::BufReader::new(file).lines() {
-            let Ok(rec) = serde_json::from_str::<FeatureEventRecord>(&line?) else {
+            let Ok(rec) = serde_json::from_str::<TaskEventRecord>(&line?) else {
                 continue;
             };
             if rec.seq > after {
@@ -185,7 +183,7 @@ impl Daemon {
         self.events.emit(Event::OtterChanged {
             history_seq: applied.chat.history_seq,
         });
-        self.feature_wake.notify_one();
+        self.task_wake.notify_one();
     }
 
     pub(crate) async fn otter_get(&self) -> OtterChat {
@@ -217,7 +215,7 @@ impl Daemon {
         Ok(self.otter_get().await)
     }
 
-    pub(crate) async fn otter_events(&self, p: &OtterEvents) -> RpcResult<Vec<FeatureEventRecord>> {
+    pub(crate) async fn otter_events(&self, p: &OtterEvents) -> RpcResult<Vec<TaskEventRecord>> {
         let limit = p.limit.map_or(1000, |l| l as usize);
         self.chat
             .lock()

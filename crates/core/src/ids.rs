@@ -85,8 +85,8 @@ id_type!(
     "att_"
 );
 id_type!(
-    /// Identifies a [`crate::feature::Feature`] — a piece of product work.
-    FeatureId,
+    /// Identifies a [`crate::task::Task`] — a piece of product work.
+    TaskId,
     "ft_"
 );
 id_type!(
@@ -96,27 +96,28 @@ id_type!(
     "trg_"
 );
 id_type!(
-    /// Identifies a [`crate::feature::Task`] within a feature's plan.
-    TaskId,
+    /// Identifies a [`crate::task::Step`] of a plan. Keeps the `tk_`
+    /// prefix it had as a plan's "task" (D-107).
+    StepId,
     "tk_"
 );
 id_type!(
-    /// Identifies a [`crate::feature::Run`] — one agent run working on a task.
+    /// Identifies a [`crate::task::Run`] — one agent run working on a task.
     RunId,
     "run_"
 );
 id_type!(
-    /// Identifies a [`crate::feature::Message`] in a feature's conversation.
+    /// Identifies a [`crate::task::Message`] in a task's conversation.
     MessageId,
     "msg_"
 );
 id_type!(
-    /// Identifies a [`crate::feature::DecisionRequest`].
+    /// Identifies a [`crate::task::DecisionRequest`].
     DecisionId,
     "dec_"
 );
 id_type!(
-    /// Identifies a piece of [`crate::feature::Evidence`].
+    /// Identifies a piece of [`crate::task::Evidence`].
     EvidenceId,
     "ev_"
 );

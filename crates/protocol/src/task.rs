@@ -1,22 +1,22 @@
-//! Feature requests (D-043). Results are [`otter_core::feature::Feature`]s
-//! and their history ([`otter_core::feature::FeatureEventRecord`]).
+//! Task requests (D-043). Results are [`otter_core::task::Task`]s
+//! and their history ([`otter_core::task::TaskEventRecord`]).
 //!
 //! Every request that changes something carries a `command_id` chosen by
 //! the client (unique per intent, e.g. a random string). The daemon applies
 //! a command once: a repeat — a retry after a dropped connection — gets the
-//! feature as it is, without applying anything again.
+//! task as it is, without applying anything again.
 
-use otter_core::feature::FeatureAction;
+use otter_core::task::TaskAction;
 use serde::{Deserialize, Serialize};
 
-/// Identifies a feature by id.
+/// Identifies a task by id.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-pub struct FeatureRef {
-    pub feature: String,
+pub struct TaskRef {
+    pub task: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-pub struct FeatureCreate {
+pub struct TaskCreate {
     pub command_id: String,
     pub title: String,
     /// What should be built, as the developer puts it. Becomes the first
@@ -24,8 +24,8 @@ pub struct FeatureCreate {
     #[serde(default)]
     pub request: String,
     /// A workspace (id or name) on this host to do the work in. Without
-    /// one, the feature blocks when it starts until one is chosen
-    /// (`feature.act` `set_workspace`).
+    /// one, the task blocks when it starts until one is chosen
+    /// (`task.act` `set_workspace`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workspace: Option<String>,
     /// Only an answer is wanted: the coding agent only reads (D-092). Needs
@@ -34,34 +34,34 @@ pub struct FeatureCreate {
     pub answer_only: bool,
 }
 
-/// A message from the developer to the feature's Control Agent.
+/// A message from the developer to the task's Control Agent.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-pub struct FeatureSend {
+pub struct TaskSend {
     pub command_id: String,
-    pub feature: String,
+    pub task: String,
     pub text: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
-pub struct FeatureAct {
+pub struct TaskAct {
     pub command_id: String,
-    pub feature: String,
+    pub task: String,
     #[serde(flatten)]
-    pub action: FeatureAction,
+    pub action: TaskAction,
 }
 
-/// A file the feature's checks produced (a screenshot), by name.
+/// A file the task's checks produced (a screenshot), by name.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-pub struct FeatureArtifact {
-    pub feature: String,
-    /// The file's name in the feature's artifacts (no directories).
+pub struct TaskArtifact {
+    pub task: String,
+    /// The file's name in the task's artifacts (no directories).
     pub name: String,
 }
 
-/// A feature's history after a cursor.
+/// A task's history after a cursor.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-pub struct FeatureEvents {
-    pub feature: String,
+pub struct TaskEvents {
+    pub task: String,
     /// Return entries with `seq > after` (all when absent).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub after: Option<u64>,

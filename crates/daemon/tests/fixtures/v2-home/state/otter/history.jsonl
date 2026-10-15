@@ -1,0 +1,2 @@
+{"seq":1,"ts":"2026-10-15T18:58:58.991770161Z","v":1,"correlation_id":"hello-otter","text":"You sent a message","type":"MessageAdded","message_id":"msg_9apbk1mj0b","role":"user"}
+{"seq":2,"ts":"2026-10-15T18:58:59.004369281Z","v":1,"correlation_id":"msg_9apbk1mj0b","text":"Otter replied","type":"MessageAdded","message_id":"msg_5epfrarak9","role":"controller"}

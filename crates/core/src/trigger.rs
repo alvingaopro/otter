@@ -5,10 +5,10 @@
 use chrono::{Duration, NaiveTime, TimeZone, Utc};
 use serde::{Deserialize, Serialize};
 
-use crate::ids::{FeatureId, TriggerId, WorkspaceId};
+use crate::ids::{TaskId, TriggerId, WorkspaceId};
 use crate::model::Timestamp;
 
-/// How a triggered feature that waited too long for the developer says so,
+/// How a triggered task that waited too long for the developer says so,
 /// paused (D-083).
 pub const WAITED: &str = "Waited ";
 
@@ -63,13 +63,13 @@ pub struct Policy {
     /// request — is allowed without asking. Nothing else is granted.
     #[serde(default)]
     pub publish: bool,
-    /// Attempts and minutes of agent work per feature (`None`: the defaults).
+    /// Attempts and minutes of agent work per task (`None`: the defaults).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_iterations: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_minutes: Option<u32>,
     /// How long a decision only the developer can make may wait before the
-    /// feature pauses, its agent stopped (`None`: as long as it takes).
+    /// task pauses, its agent stopped (`None`: as long as it takes).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub wait_limit_secs: Option<u64>,
 }
@@ -79,7 +79,7 @@ pub struct Trigger {
     pub id: TriggerId,
     pub name: String,
     pub workspace_id: WorkspaceId,
-    /// The feature each occurrence starts.
+    /// The task each occurrence starts.
     pub title: String,
     pub request: String,
     pub schedule: Schedule,
@@ -106,22 +106,22 @@ pub struct Firing {
     /// Which occurrence: its scheduled time, or when it was fired by hand.
     pub occurrence: Timestamp,
     pub at: Timestamp,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub feature_id: Option<FeatureId>,
+    #[serde(default, alias = "feature_id", skip_serializing_if = "Option::is_none")]
+    pub task_id: Option<TaskId>,
     /// Why nothing started, when nothing did.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub skipped: Option<String>,
 }
 
 impl Trigger {
-    /// The command id an occurrence's feature is created with: one feature
+    /// The command id an occurrence's task is created with: one task
     /// per occurrence, however often it's fired (D-083).
     pub fn command_id(&self, occurrence: Timestamp) -> String {
         format!("trigger:{}:{}", self.id, occurrence.timestamp_millis())
     }
 }
 
-/// What started a feature, when a trigger did.
+/// What started a task, when a trigger did.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct Started {
     pub trigger_id: TriggerId,

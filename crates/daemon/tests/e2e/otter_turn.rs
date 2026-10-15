@@ -4,9 +4,7 @@
 //! the model's tool calls, `AS: event` runs the turn as an event's would.
 
 use super::*;
-use otter_core::feature::{
-    DecisionStatus, Feature, FeatureEvent, FeatureStatus, MessageRole, RunState,
-};
+use otter_core::task::{DecisionStatus, MessageRole, RunState, Task, TaskEvent, TaskStatus};
 use serde_json::Value;
 
 async fn host_with(more: Vec<(&'static str, String)>) -> FakeCodex {
@@ -19,12 +17,12 @@ async fn host_with(more: Vec<(&'static str, String)>) -> FakeCodex {
 }
 
 /// Send `script` as the developer; wait for the one reply to it. Returns
-/// the feature then and each call's answer, in order.
-async fn run(host: &TestHost, id: &str, command_id: &str, script: &str) -> (Feature, Vec<Value>) {
+/// the task then and each call's answer, in order.
+async fn run(host: &TestHost, id: &str, command_id: &str, script: &str) -> (Task, Vec<Value>) {
     let f = host
         .conn()
         .await
-        .feature_send(command_id, id, script)
+        .task_send(command_id, id, script)
         .await
         .unwrap();
     let msg = f
@@ -35,7 +33,7 @@ async fn run(host: &TestHost, id: &str, command_id: &str, script: &str) -> (Feat
         .unwrap()
         .id
         .to_string();
-    let replies = |f: &Feature| -> Vec<String> {
+    let replies = |f: &Task| -> Vec<String> {
         f.messages
             .iter()
             .filter(|m| {
@@ -44,9 +42,9 @@ async fn run(host: &TestHost, id: &str, command_id: &str, script: &str) -> (Feat
             .map(|m| m.text.clone())
             .collect()
     };
-    wait_feature(host, id, "Otter's answer", |f| !replies(f).is_empty()).await;
+    wait_task(host, id, "Otter's answer", |f| !replies(f).is_empty()).await;
     tokio::time::sleep(Duration::from_millis(600)).await;
-    let f = host.conn().await.feature_get(id).await.unwrap();
+    let f = host.conn().await.task_get(id).await.unwrap();
     let all = replies(&f);
     assert_eq!(all.len(), 1, "one reply: {all:#?}");
     let answers = all[0]
@@ -63,25 +61,25 @@ fn code(answer: &Value) -> &str {
     answer["error"]["code"].as_str().unwrap_or("ok")
 }
 
-/// The feature's history records, oldest first.
-async fn records(host: &TestHost, id: &str) -> Vec<otter_core::feature::FeatureEventRecord> {
-    host.conn().await.feature_events(id, None).await.unwrap()
+/// The task's history records, oldest first.
+async fn records(host: &TestHost, id: &str) -> Vec<otter_core::task::TaskEventRecord> {
+    host.conn().await.task_events(id, None).await.unwrap()
 }
 
 async fn in_review(host: &TestHost) -> String {
-    let id = started_feature(host, "Add CSV export").await;
+    let id = started_task(host, "Add CSV export").await;
     // Its gates checked too: accepting before they are is refused.
-    wait_feature(host, &id, "in review, gates checked", |f| {
-        f.status == FeatureStatus::Review && !f.gates.is_empty()
+    wait_task(host, &id, "in review, gates checked", |f| {
+        f.status == TaskStatus::Review && !f.gates.is_empty()
     })
     .await;
     id
 }
 
 async fn at_work(host: &TestHost, request: &str) -> String {
-    let id = started_feature(host, request).await;
-    wait_feature(host, &id, "the agent at work", |f| {
-        f.status == FeatureStatus::Implementing
+    let id = started_task(host, request).await;
+    wait_task(host, &id, "the agent at work", |f| {
+        f.status == TaskStatus::Implementing
             && f.runs.last().is_some_and(|r| r.state == RunState::Running)
     })
     .await;
@@ -100,12 +98,12 @@ async fn a_turn_an_event_started_cant_act_on_the_developers_word() {
         assert_eq!(code(a), "not_allowed_in_this_turn", "{a}");
         assert!(a["error"]["next"].is_string(), "{a}");
     }
-    assert_eq!(f.status, FeatureStatus::Review);
+    assert_eq!(f.status, TaskStatus::Review);
     // The developer's own word does it.
     let (f, answers) = run(host, &id, "dev-1", "Ship it\nCALL: accept_task {}").await;
     assert_eq!(code(&answers[0]), "ok", "{answers:#?}");
     assert_eq!(answers[0]["data"]["done"], "accepted");
-    assert_eq!(f.status, FeatureStatus::Done);
+    assert_eq!(f.status, TaskStatus::Done);
 }
 
 #[tokio::test]
@@ -115,8 +113,8 @@ async fn a_turn_an_event_started_may_pause() {
     let id = at_work(host, "Add CSV export HANG").await;
     let (_, answers) = run(host, &id, "ev-pause", "AS: event\nCALL: pause_task {}").await;
     assert_eq!(code(&answers[0]), "ok", "{answers:#?}");
-    let f = wait_feature(host, &id, "paused, its run over", |f| {
-        f.status == FeatureStatus::Paused && f.runs.iter().all(|r| r.state.is_over())
+    let f = wait_task(host, &id, "paused, its run over", |f| {
+        f.status == TaskStatus::Paused && f.runs.iter().all(|r| r.state.is_over())
     })
     .await;
     assert_eq!(f.status_reason.as_deref(), Some("Paused by Otter"));
@@ -125,7 +123,7 @@ async fn a_turn_an_event_started_may_pause() {
         .await
         .into_iter()
         .find_map(|r| match r.event {
-            FeatureEvent::ToolCalled {
+            TaskEvent::ToolCalled {
                 tool,
                 origin,
                 authority,
@@ -180,7 +178,7 @@ async fn only_this_turns_messages_go_to_the_agent_as_written() {
         "{given:#?}"
     );
     // No message was added in the developer's name.
-    let mine = |f: &Feature| {
+    let mine = |f: &Task| {
         f.messages
             .iter()
             .filter(|m| m.role == MessageRole::User)
@@ -248,7 +246,7 @@ async fn a_turn_out_of_time_answers_once_and_says_what_it_did() {
         "{}",
         reply.text
     );
-    assert_eq!(f.status, FeatureStatus::Paused);
+    assert_eq!(f.status, TaskStatus::Paused);
 }
 
 #[tokio::test]
@@ -272,23 +270,21 @@ async fn a_change_is_made_once_and_written_down_before() {
         .count();
     assert_eq!(replans, 1);
     // The change: its intent, then the change with its outcome.
-    let seq = |want: &dyn Fn(&FeatureEvent) -> bool| {
+    let seq = |want: &dyn Fn(&TaskEvent) -> bool| {
         recs.iter().find(|r| want(&r.event)).map(|r| r.seq).unwrap()
     };
-    let called =
-        seq(&|e| matches!(e, FeatureEvent::ToolCalled { tool, .. } if tool == "revise_task"));
-    let done = seq(
-        &|e| matches!(e, FeatureEvent::ToolDone { tool, error: None } if tool == "revise_task"),
-    );
+    let called = seq(&|e| matches!(e, TaskEvent::ToolCalled { tool, .. } if tool == "revise_task"));
+    let done =
+        seq(&|e| matches!(e, TaskEvent::ToolDone { tool, error: None } if tool == "revise_task"));
     assert!(called < done, "{called} < {done}");
     // A look changes nothing and is written once, after.
     assert!(
-        !recs.iter().any(
-            |r| matches!(&r.event, FeatureEvent::ToolCalled { tool, .. } if tool == "get_task")
-        )
+        !recs
+            .iter()
+            .any(|r| matches!(&r.event, TaskEvent::ToolCalled { tool, .. } if tool == "get_task"))
     );
     assert!(recs.iter().any(
-        |r| matches!(&r.event, FeatureEvent::ToolDone { tool, error: None } if tool == "get_task")
+        |r| matches!(&r.event, TaskEvent::ToolDone { tool, error: None } if tool == "get_task")
     ));
 }
 
@@ -312,8 +308,8 @@ async fn a_turn_has_so_many_calls() {
 async fn otter_sees_what_waits_on_the_developer_and_cant_settle_it() {
     let fake = host_with(vec![]).await;
     let host = &fake.host;
-    let id = started_feature(host, "Clean up ASK_RM").await;
-    wait_feature(host, &id, "asking about rm", |f| {
+    let id = started_task(host, "Clean up ASK_RM").await;
+    wait_task(host, &id, "asking about rm", |f| {
         f.pending_decisions().any(|d| d.user_only)
     })
     .await;
@@ -339,15 +335,15 @@ async fn otter_sees_what_waits_on_the_developer_and_cant_settle_it() {
             .iter()
             .any(|d| d.user_only && d.status == DecisionStatus::Pending)
     );
-    assert_eq!(f.status, FeatureStatus::Blocked);
+    assert_eq!(f.status, TaskStatus::Blocked);
 }
 
 #[tokio::test]
 async fn otter_sees_no_secrets() {
     let fake = host_with(vec![]).await;
     let host = &fake.host;
-    let id = started_feature(host, "Deploy it LEAK").await;
-    wait_feature(host, &id, "its run over", |f| {
+    let id = started_task(host, "Deploy it LEAK").await;
+    wait_task(host, &id, "its run over", |f| {
         f.runs.first().is_some_and(|r| r.state.is_over())
     })
     .await;
@@ -387,7 +383,7 @@ async fn claude_host(worker_mode: &str) -> FakeCodex {
     .await
 }
 
-/// A draft feature in a workspace of its own: nothing plans it.
+/// A draft task in a workspace of its own: nothing plans it.
 async fn draft(host: &TestHost) -> String {
     let dir = host.home().join("draft");
     std::fs::create_dir_all(&dir).unwrap();
@@ -402,7 +398,7 @@ async fn draft(host: &TestHost) -> String {
     })
     .await
     .unwrap();
-    conn.feature_create(otter_protocol::feature::FeatureCreate {
+    conn.task_create(otter_protocol::task::TaskCreate {
         command_id: "create-draft".into(),
         title: "CSV export".into(),
         request: "Add CSV export".into(),
@@ -428,12 +424,7 @@ async fn claude_answers_through_the_worker_with_otters_tools() {
     );
     let id = draft(host).await;
     let text = "Where is it? FORWARD";
-    let f = host
-        .conn()
-        .await
-        .feature_send("w-1", &id, text)
-        .await
-        .unwrap();
+    let f = host.conn().await.task_send("w-1", &id, text).await.unwrap();
     let msg = f
         .messages
         .iter()
@@ -442,7 +433,7 @@ async fn claude_answers_through_the_worker_with_otters_tools() {
         .unwrap()
         .id
         .clone();
-    let f = wait_feature(host, &id, "Otter's answer", |f| {
+    let f = wait_task(host, &id, "Otter's answer", |f| {
         f.messages
             .iter()
             .any(|m| m.correlation_id.as_deref() == Some(msg.as_str()))
@@ -457,14 +448,14 @@ async fn claude_answers_through_the_worker_with_otters_tools() {
     assert_eq!(reply.text, "The task is draft; your message: passed on.");
     let recs = records(host, &id).await;
     let forwarded = recs.iter().find_map(|r| match &r.event {
-        FeatureEvent::ToolCalled {
+        TaskEvent::ToolCalled {
             tool, authority, ..
         } if tool == "forward_to_agent" => Some(authority.clone()),
         _ => None,
     });
     assert_eq!(forwarded, Some(Some(msg.to_string())));
     assert!(recs.iter().any(
-        |r| matches!(&r.event, FeatureEvent::ToolDone { tool, error: None } if tool == "get_task")
+        |r| matches!(&r.event, TaskEvent::ToolDone { tool, error: None } if tool == "get_task")
     ));
 }
 
@@ -492,7 +483,7 @@ async fn a_worker_without_otters_profile_leaves_otter_without_tools_and_says_so(
 #[tokio::test]
 #[ignore = "calls Claude; needs the built worker and a signed-in Claude Code"]
 async fn live_otter_says_why_a_task_is_blocked() {
-    use otter_core::feature::FeatureAction;
+    use otter_core::task::TaskAction;
     let worker = std::env::var("OTTER_CLAUDE_WORKER").expect("OTTER_CLAUDE_WORKER");
     let node = String::from_utf8(
         Command::new("sh")
@@ -525,7 +516,7 @@ async fn live_otter_says_why_a_task_is_blocked() {
     );
     let mut conn = host.conn().await;
     let f = conn
-        .feature_create(otter_protocol::feature::FeatureCreate {
+        .task_create(otter_protocol::task::TaskCreate {
             command_id: "create-live".into(),
             title: "CSV export".into(),
             request: "Add CSV export".into(),
@@ -535,13 +526,10 @@ async fn live_otter_says_why_a_task_is_blocked() {
         .await
         .unwrap();
     let id = f.id.to_string();
-    conn.feature_act("start", &id, FeatureAction::Start)
+    conn.task_act("start", &id, TaskAction::Start)
         .await
         .unwrap();
-    let f = wait_feature(&host, &id, "blocked", |f| {
-        f.status == FeatureStatus::Blocked
-    })
-    .await;
+    let f = wait_task(&host, &id, "blocked", |f| f.status == TaskStatus::Blocked).await;
     println!("status: {:?} — {:?}", f.status, f.status_reason);
     let (f, _) = run(&host, &id, "live-why", "Why is this task blocked?").await;
     let reply = f
@@ -555,7 +543,7 @@ async fn live_otter_says_why_a_task_is_blocked() {
         .await
         .into_iter()
         .filter_map(|r| match r.event {
-            FeatureEvent::ToolDone { tool, .. } => Some(tool),
+            TaskEvent::ToolDone { tool, .. } => Some(tool),
             _ => None,
         })
         .collect();
@@ -567,7 +555,7 @@ async fn live_otter_says_why_a_task_is_blocked() {
         reply.text
     );
     assert!(!reply.text.contains("INTENT:"), "{}", reply.text);
-    assert_eq!(f.status, FeatureStatus::Blocked, "nothing changed");
+    assert_eq!(f.status, TaskStatus::Blocked, "nothing changed");
 }
 
 /// A provider without its API key has no tool-using turn (D-095): it
@@ -656,14 +644,14 @@ async fn otters_reply_streams_as_it_is_written() {
     let mut events = host.conn().await.subscribe(None).await.unwrap();
     host.conn()
         .await
-        .feature_send("stream-1", &id, "Where is it?")
+        .task_send("stream-1", &id, "Where is it?")
         .await
         .unwrap();
     let mut pieces = Vec::new();
     let last = tokio::time::timeout(Duration::from_secs(20), async {
         loop {
             let rec = events.next().await.unwrap().unwrap();
-            if let Event::FeatureStream {
+            if let Event::TaskStream {
                 role: MessageRole::Controller,
                 text,
                 done,
@@ -694,11 +682,11 @@ async fn tool_records(host: &TestHost, id: &str, name: &str) -> (usize, usize) {
     let recs = records(host, id).await;
     let called = recs
         .iter()
-        .filter(|r| matches!(&r.event, FeatureEvent::ToolCalled { tool, .. } if tool == name))
+        .filter(|r| matches!(&r.event, TaskEvent::ToolCalled { tool, .. } if tool == name))
         .count();
     let done = recs
         .iter()
-        .filter(|r| matches!(&r.event, FeatureEvent::ToolDone { tool, .. } if tool == name))
+        .filter(|r| matches!(&r.event, TaskEvent::ToolDone { tool, .. } if tool == name))
         .count();
     (called, done)
 }
@@ -714,7 +702,7 @@ async fn a_crash_before_a_change_makes_it_once_after() {
     fake.host
         .conn()
         .await
-        .feature_send("crash-1", &id, text)
+        .task_send("crash-1", &id, text)
         .await
         .unwrap();
     eventually("otterd dies", || {
@@ -731,7 +719,7 @@ async fn a_crash_before_a_change_makes_it_once_after() {
     .await;
     fake.host.revive_without("OTTER_TEST_CRASH").await;
     let host = &fake.host;
-    let f = wait_feature(host, &id, "answered after the restart", |f| {
+    let f = wait_task(host, &id, "answered after the restart", |f| {
         f.messages
             .iter()
             .any(|m| m.role == MessageRole::Controller && m.text.contains("revise_task"))
@@ -769,7 +757,7 @@ async fn a_crash_after_a_forward_still_delivers_it_once() {
     fake.host
         .conn()
         .await
-        .feature_send("crash-2", &id, text)
+        .task_send("crash-2", &id, text)
         .await
         .unwrap();
     eventually("otterd dies", || {
@@ -786,7 +774,7 @@ async fn a_crash_after_a_forward_still_delivers_it_once() {
     .await;
     fake.host.revive_without("OTTER_TEST_CRASH").await;
     let host = &fake.host;
-    let f = wait_feature(host, &id, "answered after the restart", |f| {
+    let f = wait_task(host, &id, "answered after the restart", |f| {
         f.messages
             .iter()
             .any(|m| m.role == MessageRole::Controller && m.text.contains("forward_to_agent"))
@@ -838,7 +826,7 @@ async fn a_message_sent_twice_is_answered_once() {
     for _ in 0..2 {
         host.conn()
             .await
-            .feature_send("twice-1", &id, text)
+            .task_send("twice-1", &id, text)
             .await
             .unwrap();
     }
@@ -884,7 +872,7 @@ async fn a_question_at_work_is_answered_by_the_agent_reading_only() {
     let (_, answers) = run(host, &id, "ask-1", "Where is the export?\nASK").await;
     assert_eq!(answers[0]["data"]["done"], "asked", "{answers:?}");
     assert_eq!(answers[0]["data"]["turns"], 1, "{answers:?}");
-    let f = wait_feature(host, &id, "the agent's answer", |f| {
+    let f = wait_task(host, &id, "the agent's answer", |f| {
         f.messages
             .iter()
             .any(|m| m.role == MessageRole::Agent && m.text.contains("src/export.rs:12"))
@@ -913,7 +901,7 @@ async fn a_question_at_work_is_answered_by_the_agent_reading_only() {
     assert_eq!(asked.len(), 1, "{:#?}", c.turns);
     assert!(asked[0].text().contains("Where is the export?"));
     // The run's result is the work's, and the question cost no attempt.
-    let f = wait_feature(host, &id, "the run over", |f| {
+    let f = wait_task(host, &id, "the run over", |f| {
         f.runs.first().is_some_and(|r| r.state.is_over())
     })
     .await;
@@ -961,7 +949,7 @@ async fn a_question_turn_stays_read_only_after_a_restart() {
     let id = at_work(&fake.host, "Add CSV export").await;
     run(&fake.host, &id, "ask-hang", "Where is it?\nASK").await;
     fake.host.restart().await;
-    let f = fake.host.conn().await.feature_get(&id).await.unwrap();
+    let f = fake.host.conn().await.task_get(&id).await.unwrap();
     let c = fake
         .host
         .conn()
@@ -1030,7 +1018,7 @@ async fn live_a_question_is_answered_reading_only() {
         "Work only in the current working directory. Use the Bash tool to run exactly `sleep 20`, then create ./done.txt containing the word ok. Nothing else.",
     )
     .await;
-    wait_feature(&host, &id, "the agent at work", |f| {
+    wait_task(&host, &id, "the agent at work", |f| {
         f.runs.last().is_some_and(|r| r.state == RunState::Running)
     })
     .await;
@@ -1043,7 +1031,7 @@ async fn live_a_question_is_answered_reading_only() {
     .await;
     let deadline = std::time::Instant::now() + Duration::from_secs(240);
     let f = loop {
-        let f = host.conn().await.feature_get(&id).await.unwrap();
+        let f = host.conn().await.task_get(&id).await.unwrap();
         let answered = f
             .messages
             .iter()
@@ -1085,7 +1073,7 @@ async fn answer_only_task(host: &TestHost, request: &str) -> Result<String, Stri
     .await
     .unwrap();
     let f = conn
-        .feature_create(otter_protocol::feature::FeatureCreate {
+        .task_create(otter_protocol::task::TaskCreate {
             command_id: "create-ao".into(),
             title: "CSV export".into(),
             request: request.into(),
@@ -1095,10 +1083,10 @@ async fn answer_only_task(host: &TestHost, request: &str) -> Result<String, Stri
         .await
         .map_err(|e| e.to_string())?;
     assert!(f.answer_only);
-    conn.feature_act(
+    conn.task_act(
         "start-ao",
         f.id.as_str(),
-        otter_core::feature::FeatureAction::Start,
+        otter_core::task::TaskAction::Start,
     )
     .await
     .unwrap();
@@ -1114,7 +1102,7 @@ async fn an_answer_only_task_reads_and_answers() {
     let id = answer_only_task(host, "How does the export work? NOPLAN")
         .await
         .unwrap();
-    let f = wait_feature(host, &id, "answered", |f| f.status == FeatureStatus::Done).await;
+    let f = wait_task(host, &id, "answered", |f| f.status == TaskStatus::Done).await;
     let answer = f
         .messages
         .iter()
@@ -1131,11 +1119,11 @@ async fn an_answer_only_task_reads_and_answers() {
 /// the task may change code and the plan is set.
 #[tokio::test]
 async fn a_plan_under_answer_only_waits_for_the_developer() {
-    use otter_core::feature::{DecisionKind, FeatureAction};
+    use otter_core::task::{DecisionKind, TaskAction};
     let fake = sdk_host_with("ok", vec![("OTTER_PLAN_TURN", "1".into())]).await;
     let host = &fake.host;
     let id = answer_only_task(host, "Add CSV export").await.unwrap();
-    let f = wait_feature(host, &id, "asking about the plan", |f| {
+    let f = wait_task(host, &id, "asking about the plan", |f| {
         f.pending_decisions()
             .any(|d| d.kind == DecisionKind::PlanApproval)
     })
@@ -1146,7 +1134,7 @@ async fn a_plan_under_answer_only_waits_for_the_developer() {
         d.detail.as_deref().unwrap().contains("only answers"),
         "{d:?}"
     );
-    assert!(f.tasks.iter().all(|t| t.planning), "nothing set yet");
+    assert!(f.steps.iter().all(|t| t.planning), "nothing set yet");
     let asked = f
         .messages
         .iter()
@@ -1159,10 +1147,10 @@ async fn a_plan_under_answer_only_waits_for_the_developer() {
     );
     host.conn()
         .await
-        .feature_act(
+        .task_act(
             "allow-changes",
             &id,
-            FeatureAction::Decide {
+            TaskAction::Decide {
                 decision_id: d.id.clone(),
                 approve: true,
                 answer: None,
@@ -1171,8 +1159,8 @@ async fn a_plan_under_answer_only_waits_for_the_developer() {
         )
         .await
         .unwrap();
-    let f = wait_feature(host, &id, "planned", |f| {
-        f.tasks.iter().any(|t| t.title == "Write the exporter")
+    let f = wait_task(host, &id, "planned", |f| {
+        f.steps.iter().any(|t| t.title == "Write the exporter")
     })
     .await;
     assert!(!f.answer_only);
@@ -1188,11 +1176,11 @@ async fn a_plan_under_answer_only_waits_for_the_developer() {
 /// Turned down, the plan is the answer, and nothing is built (D-092).
 #[tokio::test]
 async fn a_plan_turned_down_under_answer_only_is_the_answer() {
-    use otter_core::feature::{DecisionKind, FeatureAction};
+    use otter_core::task::{DecisionKind, TaskAction};
     let fake = sdk_host_with("ok", vec![("OTTER_PLAN_TURN", "1".into())]).await;
     let host = &fake.host;
     let id = answer_only_task(host, "Add CSV export").await.unwrap();
-    let f = wait_feature(host, &id, "asking about the plan", |f| {
+    let f = wait_task(host, &id, "asking about the plan", |f| {
         f.pending_decisions()
             .any(|d| d.kind == DecisionKind::PlanApproval)
     })
@@ -1200,10 +1188,10 @@ async fn a_plan_turned_down_under_answer_only_is_the_answer() {
     let d = f.pending_decisions().next().unwrap().id.clone();
     host.conn()
         .await
-        .feature_act(
+        .task_act(
             "keep-answer",
             &id,
-            FeatureAction::Decide {
+            TaskAction::Decide {
                 decision_id: d,
                 approve: false,
                 answer: None,
@@ -1212,7 +1200,7 @@ async fn a_plan_turned_down_under_answer_only_is_the_answer() {
         )
         .await
         .unwrap();
-    let f = wait_feature(host, &id, "answered", |f| f.status == FeatureStatus::Done).await;
+    let f = wait_task(host, &id, "answered", |f| f.status == TaskStatus::Done).await;
     assert!(f.answer_only);
     let answer = f
         .messages
@@ -1227,9 +1215,9 @@ async fn a_plan_turned_down_under_answer_only_is_the_answer() {
     );
     assert!(answer.text.contains("Not carried out"), "{}", answer.text);
     assert!(
-        f.tasks.iter().all(|t| t.planning),
+        f.steps.iter().all(|t| t.planning),
         "nothing planned: {:?}",
-        f.tasks
+        f.steps
     );
     assert_eq!(f.budget.iterations_used, 0);
 }
@@ -1318,8 +1306,8 @@ async fn live_an_answer_only_task_writes_nothing() {
     )
     .await
     .unwrap();
-    let f = wait_feature(&host, &id, "answered or asking", |f| {
-        f.status == FeatureStatus::Done || f.pending_decisions().next().is_some()
+    let f = wait_task(&host, &id, "answered or asking", |f| {
+        f.status == TaskStatus::Done || f.pending_decisions().next().is_some()
     })
     .await;
     for m in &f.messages {

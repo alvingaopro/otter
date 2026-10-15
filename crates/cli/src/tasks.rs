@@ -1,7 +1,7 @@
-//! Features and the coding agent's conversations, from the terminal (D-043,
+//! Tasks and the coding agent's conversations, from the terminal (D-043,
 //! D-055–D-059): the same commands and state the desktop app uses.
 //!
-//! Features are addressed like workspaces: `[host:]feature`, where `feature`
+//! Tasks are addressed like workspaces: `[host:]task`, where `task`
 //! is an id (`ft_…`), a title, or the start of one title.
 
 use std::collections::BTreeMap;
@@ -10,9 +10,9 @@ use anyhow::{Context, Result, bail};
 use clap::Subcommand;
 use otter_client::Connection;
 use otter_core::conversation::{Delivery, Turn, TurnState};
-use otter_core::feature::{DecisionStatus, Feature, FeatureAction};
+use otter_core::task::{DecisionStatus, Task, TaskAction};
 use otter_protocol::conversation::{ConversationView, HistoryCursor, HistoryQuery};
-use otter_protocol::feature::FeatureCreate;
+use otter_protocol::task::TaskCreate;
 use tokio::task::JoinSet;
 
 use crate::config::{Config, HostEntry};
@@ -20,15 +20,15 @@ use crate::output;
 use crate::target::connect;
 
 #[derive(Subcommand)]
-pub enum FeatureCommand {
-    /// Features on every host, newest first.
+pub enum TaskCommand {
+    /// Tasks on every host, newest first.
     #[command(visible_alias = "ls")]
     List,
-    /// A feature: where it stands, what waits on you, the latest messages.
+    /// A task: where it stands, what waits on you, the latest messages.
     Show {
-        feature: String,
+        task: String,
     },
-    /// Write down a feature (a draft until `otter feature start`).
+    /// Write down a task (a draft until `otter task start`).
     New {
         title: String,
         /// What should be built, in your words (default: the title).
@@ -48,74 +48,74 @@ pub enum FeatureCommand {
     },
     /// Hand a draft to Otter.
     Start {
-        feature: String,
+        task: String,
     },
     /// A message to Otter, which passes on to the coding agent what it should
     /// know — when it's useful, not necessarily now.
     #[command(visible_alias = "send")]
     Message {
-        feature: String,
+        task: String,
         text: String,
     },
     /// Stop the coding agent's current work now and have it do this next.
     Redirect {
-        feature: String,
+        task: String,
         text: String,
     },
     /// Stop the coding agent's current work, and wait for you.
     Interrupt {
-        feature: String,
+        task: String,
     },
     /// Let the current work finish, then hold.
     Pause {
-        /// The feature; or `--all`.
+        /// The task; or `--all`.
         #[arg(required_unless_present = "all")]
-        feature: Option<String>,
-        /// Every feature at work, on every host (or `--host`'s): what's
+        task: Option<String>,
+        /// Every task at work, on every host (or `--host`'s): what's
         /// running is held at once (D-081).
-        #[arg(long, conflicts_with = "feature")]
+        #[arg(long, conflicts_with = "task")]
         all: bool,
         #[arg(long, requires = "all")]
         host: Option<String>,
     },
     Resume {
-        /// The feature; or `--all`.
+        /// The task; or `--all`.
         #[arg(required_unless_present = "all")]
-        feature: Option<String>,
-        /// Every paused feature, on every host (or `--host`'s).
-        #[arg(long, conflicts_with = "feature")]
+        task: Option<String>,
+        /// Every paused task, on every host (or `--host`'s).
+        #[arg(long, conflicts_with = "task")]
         all: bool,
         #[arg(long, requires = "all")]
         host: Option<String>,
     },
     Cancel {
-        feature: String,
+        task: String,
     },
-    /// Give a feature a workspace of its own — a worktree of its Git
-    /// workspace's repository, on a branch for it — when another feature's
+    /// Give a task a workspace of its own — a worktree of its Git
+    /// workspace's repository, on a branch for it — when another task's
     /// agent is working in the one it has.
     OwnWorkspace {
-        feature: String,
+        task: String,
     },
-    /// What happened to a feature, oldest first: its history, a line each.
+    /// What happened to a task, oldest first: its history, a line each.
     History {
-        feature: String,
+        task: String,
         /// Only the last N lines.
         #[arg(short = 'n', long)]
         limit: Option<usize>,
     },
-    /// Accept a feature in review: it's done. Refused while a gate (the
+    /// Accept a task in review: it's done. Refused while a gate (the
     /// pull request, CI, the checks) hasn't passed, unless `--anyway`.
     Accept {
-        feature: String,
+        task: String,
         /// Accept with gates not met (on record in the report).
         #[arg(long)]
         anyway: bool,
     },
-    /// Answer what a feature waits on you for: approve (default) or deny, or
+    /// Answer what a task waits on you for: approve (default) or deny, or
     /// answer a question.
     Decide {
-        feature: String,
+        task: String,
         /// The decision (`dec_…`, or the start of one).
         decision: String,
         #[arg(long, conflicts_with = "answer")]
@@ -136,12 +136,12 @@ pub enum FeatureCommand {
 
 #[derive(Subcommand)]
 pub enum ConversationCommand {
-    /// The coding agent's conversations (a feature's, if given).
+    /// The coding agent's conversations (a task's, if given).
     #[command(visible_alias = "ls")]
     List {
-        /// `[host:]feature`
-        #[arg(long)]
-        feature: Option<String>,
+        /// `[host:]task`
+        #[arg(long, alias = "feature")]
+        task: Option<String>,
         #[arg(long)]
         host: Option<String>,
     },
@@ -188,18 +188,18 @@ fn hosts(config: &Config, host: Option<&str>) -> Result<Vec<HostEntry>> {
     }
 }
 
-/// Every host's features (skipping hosts that can't be reached, said so).
-async fn all_features(
+/// Every host's tasks (skipping hosts that can't be reached, said so).
+async fn all_tasks(
     config: &Config,
     host: Option<&str>,
-) -> Result<(Vec<(HostEntry, Connection, Vec<Feature>)>, Vec<String>)> {
-    let mut tasks = JoinSet::new();
+) -> Result<(Vec<(HostEntry, Connection, Vec<Task>)>, Vec<String>)> {
+    let mut jobs = JoinSet::new();
     for host in hosts(config, host)? {
         let transport = config.transport(&host);
-        tasks.spawn(async move {
+        jobs.spawn(async move {
             let result = async {
                 let mut conn = Connection::connect(&transport).await?;
-                let list = conn.feature_list().await?;
+                let list = conn.task_list().await?;
                 Ok::<_, otter_client::ClientError>((conn, list))
             }
             .await;
@@ -208,7 +208,7 @@ async fn all_features(
     }
     let mut found = Vec::new();
     let mut failures = Vec::new();
-    while let Some(joined) = tasks.join_next().await {
+    while let Some(joined) = jobs.join_next().await {
         let (host, result) = joined?;
         match result {
             Ok((conn, list)) => found.push((host, conn, list)),
@@ -219,16 +219,16 @@ async fn all_features(
     Ok((found, failures))
 }
 
-/// A feature with a connection to its host.
-pub struct FoundFeature {
+/// A task with a connection to its host.
+pub struct FoundTask {
     pub host: HostEntry,
     pub conn: Connection,
-    pub feature: Feature,
+    pub task: Task,
 }
 
 /// Which of `list` `name` means: its id, its title, or the start of one
 /// title (ignoring case).
-fn pick<'a>(list: &'a [Feature], name: &str) -> Vec<&'a Feature> {
+fn pick<'a>(list: &'a [Task], name: &str) -> Vec<&'a Task> {
     if let Some(f) = list.iter().find(|f| f.id.as_str() == name) {
         return vec![f];
     }
@@ -242,29 +242,25 @@ fn pick<'a>(list: &'a [Feature], name: &str) -> Vec<&'a Feature> {
         .collect()
 }
 
-pub async fn find_feature(config: &Config, target: &str) -> Result<FoundFeature> {
+pub async fn find_task(config: &Config, target: &str) -> Result<FoundTask> {
     let (host, name) = split(config, target);
     if name.is_empty() {
-        bail!("expected [host:]feature, got `{target}`");
+        bail!("expected [host:]task, got `{target}`");
     }
-    let (found, failures) = all_features(config, host).await?;
+    let (found, failures) = all_tasks(config, host).await?;
     let mut matches = Vec::new();
     for (host, conn, list) in found {
-        let picked: Vec<Feature> = pick(&list, name).into_iter().cloned().collect();
+        let picked: Vec<Task> = pick(&list, name).into_iter().cloned().collect();
         if picked.len() == 1 {
-            let feature = picked.into_iter().next().unwrap();
-            matches.push(FoundFeature {
-                host,
-                conn,
-                feature,
-            });
+            let task = picked.into_iter().next().unwrap();
+            matches.push(FoundTask { host, conn, task });
         } else if picked.len() > 1 {
             let names: Vec<String> = picked
                 .iter()
                 .map(|f| format!("{} ({})", f.title, f.id))
                 .collect();
             bail!(
-                "`{name}` matches several features on {}: {}",
+                "`{name}` matches several tasks on {}: {}",
                 host.name,
                 names.join(", ")
             );
@@ -273,7 +269,7 @@ pub async fn find_feature(config: &Config, target: &str) -> Result<FoundFeature>
     match matches.len() {
         1 => Ok(matches.pop().unwrap()),
         0 => {
-            let mut msg = format!("no feature `{name}`");
+            let mut msg = format!("no task `{name}`");
             if !failures.is_empty() {
                 msg.push_str(&format!(" (could not reach: {})", failures.join("; ")));
             }
@@ -282,10 +278,10 @@ pub async fn find_feature(config: &Config, target: &str) -> Result<FoundFeature>
         _ => {
             let options: Vec<String> = matches
                 .iter()
-                .map(|m| format!("{}:{}", m.host.name, m.feature.id))
+                .map(|m| format!("{}:{}", m.host.name, m.task.id))
                 .collect();
             bail!(
-                "`{name}` is a feature on several hosts; use one of: {}",
+                "`{name}` is a task on several hosts; use one of: {}",
                 options.join(", ")
             )
         }
@@ -355,21 +351,21 @@ fn one_line(s: &str, max: usize) -> String {
 }
 
 // ---------------------------------------------------------------------------
-// Features
+// Tasks
 // ---------------------------------------------------------------------------
 
-pub async fn feature_command(config: &Config, cmd: FeatureCommand, json: bool) -> Result<()> {
+pub async fn task_command(config: &Config, cmd: TaskCommand, json: bool) -> Result<()> {
     match cmd {
-        FeatureCommand::List => list(config, json).await,
-        FeatureCommand::Show { feature } => {
-            let found = find_feature(config, &feature).await?;
+        TaskCommand::List => list(config, json).await,
+        TaskCommand::Show { task } => {
+            let found = find_task(config, &task).await?;
             if json {
-                return output::print_json(&found.feature);
+                return output::print_json(&found.task);
             }
-            show(&found.host.name, &found.feature);
+            show(&found.host.name, &found.task);
             Ok(())
         }
-        FeatureCommand::New {
+        TaskCommand::New {
             title,
             request,
             workspace,
@@ -389,7 +385,7 @@ pub async fn feature_command(config: &Config, cmd: FeatureCommand, json: bool) -
             };
             let mut conn = connect(config, &entry).await?;
             let f = conn
-                .feature_create(FeatureCreate {
+                .task_create(TaskCreate {
                     command_id: command_id(),
                     request: request.unwrap_or_else(|| title.clone()),
                     title,
@@ -401,67 +397,61 @@ pub async fn feature_command(config: &Config, cmd: FeatureCommand, json: bool) -
                 return output::print_json(&f);
             }
             println!(
-                "feature {} ({}) on {} — a draft; `otter feature start {}` hands it to Otter",
+                "task {} ({}) on {} — a draft; `otter task start {}` hands it to Otter",
                 f.title, f.id, entry.name, f.id
             );
             Ok(())
         }
-        FeatureCommand::Message { feature, text } => {
-            let mut found = find_feature(config, &feature).await?;
-            let id = found.feature.id.to_string();
-            let f = found.conn.feature_send(&command_id(), &id, &text).await?;
+        TaskCommand::Message { task, text } => {
+            let mut found = find_task(config, &task).await?;
+            let id = found.task.id.to_string();
+            let f = found.conn.task_send(&command_id(), &id, &text).await?;
             if json {
                 return output::print_json(&f);
             }
             println!(
                 "Otter has your message for {}. It passes on to the coding agent what it should \
-                 know, when it's useful; `otter conversation list --feature {}` shows when it's \
+                 know, when it's useful; `otter conversation list --task {}` shows when it's \
                  delivered.",
                 f.title, f.id
             );
             Ok(())
         }
-        FeatureCommand::Redirect { feature, text } => {
-            act(
-                config,
-                &feature,
-                FeatureAction::Redirect { text },
-                json,
-                |f| {
-                    format!(
-                        "{}: the coding agent's current work is stopping; yours goes next ({})",
-                        f.title,
-                        word(&f.status)
-                    )
-                },
-            )
+        TaskCommand::Redirect { task, text } => {
+            act(config, &task, TaskAction::Redirect { text }, json, |f| {
+                format!(
+                    "{}: the coding agent's current work is stopping; yours goes next ({})",
+                    f.title,
+                    word(&f.status)
+                )
+            })
             .await
         }
-        FeatureCommand::Interrupt { feature } => {
-            act(config, &feature, FeatureAction::Interrupt, json, |f| {
+        TaskCommand::Interrupt { task } => {
+            act(config, &task, TaskAction::Interrupt, json, |f| {
                 format!(
                     "{}: the coding agent's current work is stopping; then it waits for you \
-                     (`otter feature resume`)",
+                     (`otter task resume`)",
                     f.title
                 )
             })
             .await
         }
-        FeatureCommand::Start { feature } => {
-            act(config, &feature, FeatureAction::Start, json, |f| {
+        TaskCommand::Start { task } => {
+            act(config, &task, TaskAction::Start, json, |f| {
                 format!("{}: {}", f.title, word(&f.status))
             })
             .await
         }
-        FeatureCommand::Pause {
+        TaskCommand::Pause {
             all: true, host, ..
-        } => every(config, host.as_deref(), FeatureAction::Pause, json).await,
-        FeatureCommand::Resume {
+        } => every(config, host.as_deref(), TaskAction::Pause, json).await,
+        TaskCommand::Resume {
             all: true, host, ..
-        } => every(config, host.as_deref(), FeatureAction::Resume, json).await,
-        FeatureCommand::Pause { feature, .. } => {
-            let feature = feature.expect("clap requires it");
-            act(config, &feature, FeatureAction::Pause, json, |f| {
+        } => every(config, host.as_deref(), TaskAction::Resume, json).await,
+        TaskCommand::Pause { task, .. } => {
+            let task = task.expect("clap requires it");
+            act(config, &task, TaskAction::Pause, json, |f| {
                 format!(
                     "{}: {} — what's running finishes, nothing new starts",
                     f.title,
@@ -470,21 +460,21 @@ pub async fn feature_command(config: &Config, cmd: FeatureCommand, json: bool) -
             })
             .await
         }
-        FeatureCommand::Resume { feature, .. } => {
-            let feature = feature.expect("clap requires it");
-            act(config, &feature, FeatureAction::Resume, json, |f| {
+        TaskCommand::Resume { task, .. } => {
+            let task = task.expect("clap requires it");
+            act(config, &task, TaskAction::Resume, json, |f| {
                 format!("{}: {}", f.title, word(&f.status))
             })
             .await
         }
-        FeatureCommand::Cancel { feature } => {
-            act(config, &feature, FeatureAction::Cancel, json, |f| {
+        TaskCommand::Cancel { task } => {
+            act(config, &task, TaskAction::Cancel, json, |f| {
                 format!("{}: {}", f.title, word(&f.status))
             })
             .await
         }
-        FeatureCommand::OwnWorkspace { feature } => {
-            act(config, &feature, FeatureAction::OwnWorkspace, json, |f| {
+        TaskCommand::OwnWorkspace { task } => {
+            act(config, &task, TaskAction::OwnWorkspace, json, |f| {
                 format!(
                     "{}: a workspace of its own ({}), being prepared",
                     f.title,
@@ -496,12 +486,9 @@ pub async fn feature_command(config: &Config, cmd: FeatureCommand, json: bool) -
             })
             .await
         }
-        FeatureCommand::History { feature, limit } => {
-            let mut found = find_feature(config, &feature).await?;
-            let records = found
-                .conn
-                .feature_events(found.feature.id.as_str(), None)
-                .await?;
+        TaskCommand::History { task, limit } => {
+            let mut found = find_task(config, &task).await?;
+            let records = found.conn.task_events(found.task.id.as_str(), None).await?;
             let skip = limit.map_or(0, |n| records.len().saturating_sub(n));
             if json {
                 return output::print_json(&records[skip..]);
@@ -515,11 +502,11 @@ pub async fn feature_command(config: &Config, cmd: FeatureCommand, json: bool) -
             }
             Ok(())
         }
-        FeatureCommand::Accept { feature, anyway } => {
+        TaskCommand::Accept { task, anyway } => {
             act(
                 config,
-                &feature,
-                FeatureAction::Accept {
+                &task,
+                TaskAction::Accept {
                     override_gates: anyway,
                 },
                 json,
@@ -527,26 +514,26 @@ pub async fn feature_command(config: &Config, cmd: FeatureCommand, json: bool) -
             )
             .await
         }
-        FeatureCommand::Decide {
-            feature,
+        TaskCommand::Decide {
+            task,
             decision,
             deny,
             answer,
             answers,
         } => {
-            let found = find_feature(config, &feature).await?;
+            let found = find_task(config, &task).await?;
             let d = {
                 let hits: Vec<_> = found
-                    .feature
+                    .task
                     .decisions
                     .iter()
                     .filter(|d| d.id.as_str() == decision)
-                    .chain(found.feature.decisions.iter().filter(|d| {
+                    .chain(found.task.decisions.iter().filter(|d| {
                         d.id.as_str() != decision && d.id.as_str().starts_with(&decision)
                     }))
                     .collect();
                 match hits.as_slice() {
-                    [] => bail!("{} has no decision `{decision}`", found.feature.title),
+                    [] => bail!("{} has no decision `{decision}`", found.task.title),
                     [d, ..] if d.id.as_str() == decision => (*d).clone(),
                     [d] => (*d).clone(),
                     _ => bail!("`{decision}` matches several decisions; give more of its id"),
@@ -567,7 +554,7 @@ pub async fn feature_command(config: &Config, cmd: FeatureCommand, json: bool) -
                 }
                 Some(map)
             };
-            let action = FeatureAction::Decide {
+            let action = TaskAction::Decide {
                 decision_id: d.id.clone(),
                 approve: !deny,
                 answer,
@@ -584,40 +571,35 @@ pub async fn feature_command(config: &Config, cmd: FeatureCommand, json: bool) -
 
 async fn act(
     config: &Config,
-    feature: &str,
-    action: FeatureAction,
+    task: &str,
+    action: TaskAction,
     json: bool,
-    say: impl FnOnce(&Feature) -> String,
+    say: impl FnOnce(&Task) -> String,
 ) -> Result<()> {
-    let found = find_feature(config, feature).await?;
+    let found = find_task(config, task).await?;
     act_found(found, action, json, say).await
 }
 
-/// Pause every feature at work, or resume every paused one, on every host
+/// Pause every task at work, or resume every paused one, on every host
 /// (or one): one control for all the agents at once (D-081).
-async fn every(
-    config: &Config,
-    host: Option<&str>,
-    action: FeatureAction,
-    json: bool,
-) -> Result<()> {
-    use otter_core::feature::FeatureStatus;
-    let pausing = action == FeatureAction::Pause;
-    let (found, failures) = all_features(config, host).await?;
+async fn every(config: &Config, host: Option<&str>, action: TaskAction, json: bool) -> Result<()> {
+    use otter_core::task::TaskStatus;
+    let pausing = action == TaskAction::Pause;
+    let (found, failures) = all_tasks(config, host).await?;
     let mut done = Vec::new();
     let mut errors = Vec::new();
     for (host, mut conn, list) in found {
         for f in list {
             let wanted = if pausing {
-                f.status.is_active() || f.status == FeatureStatus::Blocked
+                f.status.is_active() || f.status == TaskStatus::Blocked
             } else {
-                f.status == FeatureStatus::Paused
+                f.status == TaskStatus::Paused
             };
             if !wanted {
                 continue;
             }
             match conn
-                .feature_act(&command_id(), f.id.as_str(), action.clone())
+                .task_act(&command_id(), f.id.as_str(), action.clone())
                 .await
             {
                 Ok(after) => done.push((host.name.clone(), after)),
@@ -628,7 +610,7 @@ async fn every(
     if json {
         let v: Vec<_> = done
             .iter()
-            .map(|(h, f)| serde_json::json!({"host": h, "feature": f.id, "status": f.status}))
+            .map(|(h, f)| serde_json::json!({"host": h, "task": f.id, "status": f.status}))
             .collect();
         output::print_json(&v)?;
     } else if done.is_empty() {
@@ -650,7 +632,7 @@ async fn every(
     }
     if !errors.is_empty() {
         bail!(
-            "{} feature(s) couldn't be {}",
+            "{} task(s) couldn't be {}",
             errors.len(),
             if pausing { "paused" } else { "resumed" }
         );
@@ -659,13 +641,13 @@ async fn every(
 }
 
 async fn act_found(
-    mut found: FoundFeature,
-    action: FeatureAction,
+    mut found: FoundTask,
+    action: TaskAction,
     json: bool,
-    say: impl FnOnce(&Feature) -> String,
+    say: impl FnOnce(&Task) -> String,
 ) -> Result<()> {
-    let id = found.feature.id.to_string();
-    let f = found.conn.feature_act(&command_id(), &id, action).await?;
+    let id = found.task.id.to_string();
+    let f = found.conn.task_act(&command_id(), &id, action).await?;
     if json {
         return output::print_json(&f);
     }
@@ -674,7 +656,7 @@ async fn act_found(
 }
 
 async fn list(config: &Config, json: bool) -> Result<()> {
-    let (found, failures) = all_features(config, None).await?;
+    let (found, failures) = all_tasks(config, None).await?;
     if json {
         let all: Vec<serde_json::Value> = found
             .iter()
@@ -713,10 +695,10 @@ async fn list(config: &Config, json: bool) -> Result<()> {
     }
     rows.sort_by_key(|r| std::cmp::Reverse(r.0));
     if rows.is_empty() {
-        println!("no features yet; `otter feature new <title>` writes one down");
+        println!("no tasks yet; `otter task new <title>` writes one down");
     } else {
         output::table(
-            &["FEATURE", "TITLE", "STATUS", "UPDATED"],
+            &["TASK", "TITLE", "STATUS", "UPDATED"],
             rows.into_iter().map(|(_, r)| r).collect(),
         );
     }
@@ -726,7 +708,7 @@ async fn list(config: &Config, json: bool) -> Result<()> {
     Ok(())
 }
 
-fn show(host: &str, f: &Feature) {
+fn show(host: &str, f: &Task) {
     println!("{}  ({host}:{})", f.title, f.id);
     let mut status = word(&f.status);
     if let Some(r) = &f.status_reason {
@@ -750,16 +732,16 @@ fn show(host: &str, f: &Feature) {
             }
         }
         println!(
-            "  answer with `otter feature decide {} <decision> [--deny | --answer …]`",
+            "  answer with `otter task decide {} <decision> [--deny | --answer …]`",
             f.id
         );
     }
-    if !f.tasks.is_empty() {
+    if !f.steps.is_empty() {
         println!("\nTasks:");
-        for t in &f.tasks {
+        for t in &f.steps {
             println!("  [{}] {}", word(&t.status), one_line(&t.title, 70));
             // Why it failed (D-076).
-            if let (otter_core::feature::TaskStatus::Failed, Some(e)) = (t.status, &t.last_error) {
+            if let (otter_core::task::StepStatus::Failed, Some(e)) = (t.status, &t.last_error) {
                 println!("      last error: {}", one_line(e, 90));
             }
         }
@@ -856,13 +838,13 @@ pub async fn conversation_command(
     json: bool,
 ) -> Result<()> {
     match cmd {
-        ConversationCommand::List { feature, host } => {
+        ConversationCommand::List { task, host } => {
             let mut rows = Vec::new();
             let mut all = Vec::new();
-            let sources: Vec<(HostEntry, Connection, Option<String>)> = match feature {
+            let sources: Vec<(HostEntry, Connection, Option<String>)> = match task {
                 Some(f) => {
-                    let found = find_feature(config, &f).await?;
-                    let id = found.feature.id.to_string();
+                    let found = find_task(config, &f).await?;
+                    let id = found.task.id.to_string();
                     vec![(found.host, found.conn, Some(id))]
                 }
                 None => {
@@ -874,12 +856,12 @@ pub async fn conversation_command(
                     v
                 }
             };
-            for (entry, mut conn, feature) in sources {
-                for c in conn.conversation_list(feature.as_deref()).await? {
+            for (entry, mut conn, task) in sources {
+                for c in conn.conversation_list(task.as_deref()).await? {
                     let conv = &c.conversation;
                     rows.push(vec![
                         format!("{}:{}", entry.name, conv.id),
-                        conv.feature_id
+                        conv.task_id
                             .as_ref()
                             .map(|f| f.to_string())
                             .unwrap_or_default(),
@@ -905,7 +887,7 @@ pub async fn conversation_command(
                 println!("no conversations yet");
             } else {
                 output::table(
-                    &["CONVERSATION", "FEATURE", "STATUS", "TURNS", "UPDATED"],
+                    &["CONVERSATION", "TASK", "STATUS", "TURNS", "UPDATED"],
                     rows,
                 );
             }
@@ -1070,10 +1052,7 @@ fn show_conversation(host: &str, c: &ConversationView) {
         .filter(|i| word(&i.status) == "pending")
         .collect();
     if !waiting.is_empty() {
-        println!(
-            "\n{} waiting on you — see `otter feature show`",
-            waiting.len()
-        );
+        println!("\n{} waiting on you — see `otter task show`", waiting.len());
     }
 }
 

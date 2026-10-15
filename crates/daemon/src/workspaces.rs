@@ -115,7 +115,7 @@ impl Daemon {
                 updated_at: now,
                 sessions: Vec::new(),
                 attention: Vec::new(),
-                feature_id: None,
+                task_id: None,
             });
             save(&store)?;
             self.events.emit(Event::WorkspaceCreated {
@@ -127,8 +127,8 @@ impl Daemon {
             }
         }
 
-        let task = self.spawn_preparation(id.clone());
-        let _ = tokio::time::timeout(CREATE_WAIT, task).await;
+        let prep = self.spawn_preparation(id.clone());
+        let _ = tokio::time::timeout(CREATE_WAIT, prep).await;
         self.workspace_get(id.as_str()).await
     }
 
@@ -166,8 +166,8 @@ impl Daemon {
             id
         };
         self.workspace_env.lock().unwrap().remove(&id);
-        let task = self.spawn_preparation(id.clone());
-        let _ = tokio::time::timeout(CREATE_WAIT, task).await;
+        let prep = self.spawn_preparation(id.clone());
+        let _ = tokio::time::timeout(CREATE_WAIT, prep).await;
         self.workspace_get(id.as_str()).await
     }
 
@@ -261,8 +261,8 @@ impl Daemon {
             id
         };
         self.workspace_env.lock().unwrap().remove(&id);
-        let task = self.spawn_preparation(id.clone());
-        let _ = tokio::time::timeout(CREATE_WAIT, task).await;
+        let prep = self.spawn_preparation(id.clone());
+        let _ = tokio::time::timeout(CREATE_WAIT, prep).await;
         self.workspace_get(id.as_str()).await
     }
 
@@ -326,8 +326,8 @@ impl Daemon {
     pub(crate) async fn workspace_delete(&self, p: &WorkspaceDelete) -> RpcResult<()> {
         let ws = self.workspace_get(&p.workspace).await?;
 
-        if let Some(task) = self.preparing.lock().unwrap().remove(&ws.id) {
-            task.abort();
+        if let Some(prep) = self.preparing.lock().unwrap().remove(&ws.id) {
+            prep.abort();
         }
 
         if let WorkspaceSource::Git(_) = &ws.source
@@ -406,8 +406,8 @@ impl Daemon {
 
     fn spawn_preparation(self: &Arc<Self>, id: WorkspaceId) -> tokio::task::JoinHandle<()> {
         let daemon = self.clone();
-        let task_id = id.clone();
-        let handle = tokio::spawn(async move { daemon.prepare(task_id).await });
+        let prep_id = id.clone();
+        let handle = tokio::spawn(async move { daemon.prepare(prep_id).await });
         self.preparing
             .lock()
             .unwrap()

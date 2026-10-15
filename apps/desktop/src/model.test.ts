@@ -19,7 +19,7 @@ describe("menu bar glance", () => {
   });
 
   it("names the host only when there are several", () => {
-    expect(trayLabel("feature", "agent finished", "code", false)).toBe("feature · agent finished");
-    expect(trayLabel("feature", "agent finished", "code", true)).toBe("feature · agent finished  (code)");
+    expect(trayLabel("task", "agent finished", "code", false)).toBe("task · agent finished");
+    expect(trayLabel("task", "agent finished", "code", true)).toBe("task · agent finished  (code)");
   });
 });

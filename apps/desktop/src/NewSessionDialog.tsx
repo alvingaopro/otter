@@ -3,14 +3,14 @@ import { invoke } from "@tauri-apps/api/core";
 import { Dialog } from "./Dialog";
 import type { HostView } from "./types";
 
-type Kind = "terminal" | "codex" | "claude" | "service" | "task";
+type Kind = "terminal" | "codex" | "claude" | "service" | "command";
 
 const KINDS: [Kind, string, string][] = [
   ["terminal", "Shell", "An interactive shell (or a command you run interactively)."],
   ["codex", "Codex", "A Codex session; it remembers its conversation across restarts."],
   ["claude", "Claude Code", "A Claude Code session; it remembers its conversation across restarts."],
   ["service", "Service", "A long-running command, like a dev server."],
-  ["task", "Command", "A command that runs to completion, like tests; you’re told if it fails."],
+  ["command", "Command", "A command that runs to completion, like tests; you’re told if it fails."],
 ];
 
 /** Start another session in a workspace. */
@@ -33,7 +33,7 @@ export function NewSessionDialog({
   const [error, setError] = useState<string | null>(null);
   const isAgent = kind === "codex" || kind === "claude";
   const agent = isAgent ? host.agents.find((a) => a.provider === kind) : undefined;
-  const needsCommand = kind === "service" || kind === "task";
+  const needsCommand = kind === "service" || kind === "command";
 
   async function submit(e: FormEvent) {
     e.preventDefault();

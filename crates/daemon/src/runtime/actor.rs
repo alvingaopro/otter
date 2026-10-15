@@ -4,9 +4,9 @@
 //! mailbox (deliver what's queued, answer an interaction, interrupt a turn,
 //! stop) and events from the runtime, applies both to the conversation's
 //! state ([`Conversations`]) with their generation checked, and reports
-//! what happened, with Otter ids, on a channel. It never touches features:
-//! whoever started it (the feature bridge in `runs.rs`) listens and does
-//! that, so a slow feature store never holds up the runtime.
+//! what happened, with Otter ids, on a channel. It never touches tasks:
+//! whoever started it (the task bridge in `runs.rs`) listens and does
+//! that, so a slow task store never holds up the runtime.
 //!
 //! One turn at a time: the next queued turn is delivered only after the
 //! current one settled successfully. A turn that didn't (interrupted,
@@ -22,7 +22,7 @@ use otter_core::conversation::{
     InteractionStatus, NativeBinding, Op, Rejection, ToolRecord, ToolResult, ToolStatus,
     TurnOutcome,
 };
-use otter_core::feature::Decider;
+use otter_core::task::Decider;
 use otter_core::{BlockId, ConversationId, DecisionId, MessageId, RunId, ToolCallId, TurnId};
 use tokio::sync::{mpsc, oneshot};
 
@@ -113,7 +113,7 @@ struct Held {
 }
 
 /// What happened, with Otter's ids. Listeners use what they need (the
-/// feature bridge needs fewer ids than a conversation view would).
+/// task bridge needs fewer ids than a conversation view would).
 #[derive(Debug)]
 #[allow(dead_code)]
 pub enum ActorEvent {

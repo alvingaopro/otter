@@ -7,7 +7,7 @@
 Run coding agents, shells, dev servers and tests on your dev boxes, and keep
 track of all of them from one Mac app. Work lives in **workspaces** on your
 hosts and keeps running when your laptop sleeps; Otter tells you when
-something needs you. Or hand Otter a **feature**: a coding agent on the host
+something needs you. Or hand Otter a **task**: a coding agent on the host
 answers it if it's a question, builds it if it's a change, and Otter checks
 the work, opens the pull request and brings you only the decisions that are
 yours.
@@ -16,28 +16,28 @@ yours.
 
 ### Hand over the work
 
-- **Features.** Say what you want, in a workspace. The coding agent reads the
+- **Tasks.** Say what you want, in a workspace. The coding agent reads the
   code first. A question ("how does the backport tag work?") gets its answer,
   pointing to the code, and nothing changes; say "then change it" to have it
-  built. A change gets a plan — tasks, acceptance criteria, the check that
-  proves them — which Otter reviews. The agent then works through the tasks
+  built. A change gets a plan — steps, acceptance criteria, the check that
+  proves them — which Otter reviews. The agent then works through the steps
   in one conversation; Otter runs the check, judges each criterion from the
   diff, pushes the branch, opens the pull request and follows CI. You accept
   it; Otter never merges or deploys.
-- **You stay in charge.** Talk to Otter in the feature's conversation at any
+- **You stay in charge.** Talk to Otter in the task's conversation at any
   time: it passes on what the agent should know, stops it to redirect it,
   pauses, or plans again when the goal changes. What runs on its own is
   policy; anything that's yours — a destructive command, publishing, a plan
   Otter still has doubts about — waits for you. In **Settings** choose what
   Otter thinks with: a model provider's key, Claude Code's own sign-in on the
   host, or no model at all.
-- **The Inbox.** Everything that needs you — features and workspaces, on
+- **The Inbox.** Everything that needs you — tasks and workspaces, on
   every host — longest-waiting first, then what's working and what's done.
   Approve, answer, accept or retry right from the list.
-- **Agents side by side.** When another feature's agent is busy in a
-  workspace, a feature can get a worktree of its own. **Pause all features**
+- **Agents side by side.** When another task's agent is busy in a
+  workspace, a task can get a worktree of its own. **Pause all tasks**
   holds everything at once.
-- **Unattended work.** `otter trigger` starts a feature on a schedule (or on
+- **Unattended work.** `otter trigger` starts a task on a schedule (or on
   demand from a script), under a policy you set in advance: whether it may
   publish, how long a decision may wait for you, its budget.
 - **Diagnostics.** A failure says why without its terminal and without your
@@ -50,7 +50,7 @@ yours.
   folder) and its sessions — Claude Code, Codex, shells, dev servers, tests.
 - **What needs you, first.** The Workspaces view groups every workspace on
   every host into **Needs you**, **Working**, **Completed** and **Idle**. An
-  agent that finished its turn or is waiting for approval, or a task that
+  agent that finished its turn or is waiting for approval, or a command that
   failed, moves to the top.
 - **Notifications and the menu bar.** A macOS notification when something
   needs you; the menu bar shows how many, and clicking one opens it. Closing
@@ -112,7 +112,7 @@ runtime status` says whether it's ready.
    an existing folder. Pick **Claude Code** or **Codex**, optionally with a
    prompt, and a shell. **Create**.
 3. **Work in it.** Each session is a tab with a live terminal. **+** adds
-   another (a shell, an agent, a dev server, a test task); **Files** opens the
+   another (a shell, an agent, a dev server, a test command); **Files** opens the
    file panel.
 4. **Leave it running.** Switch to another workspace, close the window, or
    close the laptop. When an agent finishes or asks for approval, you get a
@@ -125,12 +125,12 @@ runtime status` says whether it's ready.
 Paste a screenshot into Claude Code with **Ctrl+V** (⌘V pastes text as
 usual). Restarting an agent session resumes its conversation.
 
-### Hand over a feature
+### Hand over a task
 
-1. **New feature** → a title, what you want in your words, and the workspace
+1. **New task** → a title, what you want in your words, and the workspace
    to do it in (a Git repository workspace, for a pull request). **Start**.
 2. The coding agent reads the code. Asked a question, it answers in the
-   feature's conversation and the feature is done — say "then change it" to
+   task's conversation and the task is done — say "then change it" to
    have it built. Otherwise Otter posts the plan and the agent gets to work.
 3. Say what you like in the conversation along the way. What's yours to
    decide shows up in the **Inbox** (⌘1) and as a notification.
@@ -147,11 +147,11 @@ otter ls --watch                                      # NEEDS YOU / WORKING / �
 otter attach billing/claude                           # Ctrl-] detaches; it keeps running
 otter ack billing                                     # mark what it asked for as handled
 
-otter feature new "CSV export" --request "Export the timeline as CSV" --workspace billing
-otter feature start csv                               # a feature: its id, title, or the start of one
-otter feature show csv                                # where it stands, what waits on you
-otter feature decide csv dec_…                        # approve (or --deny, --answer A)
-otter feature accept csv
+otter task new "CSV export" --request "Export the timeline as CSV" --workspace billing
+otter task start csv                               # a task: its id, title, or the start of one
+otter task show csv                                # where it stands, what waits on you
+otter task decide csv dec_…                        # approve (or --deny, --answer A)
+otter task accept csv
 ```
 
 <details>
@@ -170,7 +170,7 @@ otter workspace rename <ws> <name>                  # the name only: directory, 
 otter workspace brief <ws> [--title T] [--description D]
                      [--constraint C] [--reference R] [--decision D] [--clear]   # why it exists
 otter workspace delete <ws> [--yes] [--force]       # --force: discard uncommitted work
-otter start <ws> [--name N] [--kind terminal|service|task] [-- command]
+otter start <ws> [--name N] [--kind terminal|service|command] [-- command]
 otter start <ws> --agent [codex|claude] [--prompt P]
 otter session stop|restart|delete <ws/session>      # restart resumes an agent's conversation
 otter session rename <ws/session> <name>
@@ -178,19 +178,19 @@ otter attach <[host:]ws[/session]>
 otter logs <ws/session> [-n LINES]
 otter send <ws/session> <text> [--no-enter]
 otter events [-n N] [-f]
-otter feature new <title> [--request R] [--workspace WS] [--host H]
-otter feature ls | show <[host:]feature> | history <feature> | start <feature>
-otter feature message <feature> <text>              # to Otter; it passes on what the coding agent needs
-otter feature redirect <feature> <text>             # stop the agent's current work; this goes next
-otter feature interrupt|cancel <feature>
-otter feature pause|resume <feature> | --all [--host H]
-otter feature own-workspace <feature>               # a worktree of its own, when another agent has the workspace
-otter feature decide <feature> <decision> [--deny | --answer A | --answer-for "Q=A" …]
-otter feature accept <feature> [--anyway]           # done; --anyway past a gate that hasn't passed
+otter task new <title> [--request R] [--workspace WS] [--host H]
+otter task ls | show <[host:]task> | history <task> | start <task>
+otter task message <task> <text>              # to Otter; it passes on what the coding agent needs
+otter task redirect <task> <text>             # stop the agent's current work; this goes next
+otter task interrupt|cancel <task>
+otter task pause|resume <task> | --all [--host H]
+otter task own-workspace <task>               # a worktree of its own, when another agent has the workspace
+otter task decide <task> <decision> [--deny | --answer A | --answer-for "Q=A" …]
+otter task accept <task> [--anyway]           # done; --anyway past a gate that hasn't passed
 otter trigger add <name> --workspace WS --request R [--every 6h | --daily HH:MM] [--publish]
                   [--wait-limit 30m] [--max-attempts N] [--max-minutes N]
 otter trigger ls | rm <name> | run <name> [--occurrence T]
-otter conversation ls [--feature F] | show <[host:]conv> | history <conv> [--after CURSOR]
+otter conversation ls [--task F] | show <[host:]conv> | history <conv> [--after CURSOR]
 otter runtime status [--host H]                     # how the coding agent runs, and what it can do
 ```
 
@@ -209,11 +209,11 @@ The app and the CLI are thin clients of the same Rust library. Everything
 runs on the host under `otterd`, reached over your own SSH (`ssh host otterd
 dial`); the daemon is the source of truth, so clients can come and go.
 
-Features run there too. `otterd`'s controller is deterministic code that owns
-each feature's lifecycle, budgets and what may run; the coding agent (Claude
+Tasks run there too. `otterd`'s controller is deterministic code that owns
+each task's lifecycle, budgets and what may run; the coding agent (Claude
 Code) reads the code, plans and does the work; a model you choose reviews
 plans, decides what policy leaves open and judges the evidence. A model never
-moves a feature itself, and never decides what is yours.
+moves a task itself, and never decides what is yours.
 
 ## Developing
 

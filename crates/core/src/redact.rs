@@ -3,7 +3,7 @@
 //! What a failing tool prints — direnv, tmux, git, the Claude worker — may
 //! carry a secret: a token in a URL, an `Authorization` header, a
 //! `TOKEN=…` line, a key in a known shape, a private key. Before such text
-//! becomes Otter's (state, events, a conversation's journal, a feature's
+//! becomes Otter's (state, events, a conversation's journal, a task's
 //! messages, otterd's log, a response), [`redact`] replaces the secret with
 //! `***`, keeping enough around it to read the failure.
 //!

@@ -6,8 +6,8 @@
 
 use super::*;
 use otter_core::conversation::{TurnOutcome, TurnState};
-use otter_core::feature::{
-    Decider, DecisionKind, DecisionStatus, Feature, FeatureAction, FeatureStatus, MessageRole,
+use otter_core::task::{
+    Decider, DecisionKind, DecisionStatus, MessageRole, Task, TaskAction, TaskStatus,
 };
 
 /// Otter's tools on (D-089) or off.
@@ -68,11 +68,11 @@ both!(
 /// Send `text` as the developer and wait for Otter's answer to it: exactly
 /// one reply, tied to that message — given by Otter's turn, with its tools
 /// (`tools`), or by `converse`, which uses none.
-async fn tell(tools: bool, host: &TestHost, id: &str, command_id: &str, text: &str) -> Feature {
+async fn tell(tools: bool, host: &TestHost, id: &str, command_id: &str, text: &str) -> Task {
     let f = host
         .conn()
         .await
-        .feature_send(command_id, id, text)
+        .task_send(command_id, id, text)
         .await
         .unwrap();
     let msg = f
@@ -83,7 +83,7 @@ async fn tell(tools: bool, host: &TestHost, id: &str, command_id: &str, text: &s
         .unwrap()
         .id
         .to_string();
-    let replies = |f: &Feature| {
+    let replies = |f: &Task| {
         f.messages
             .iter()
             .filter(|m| {
@@ -91,10 +91,10 @@ async fn tell(tools: bool, host: &TestHost, id: &str, command_id: &str, text: &s
             })
             .count()
     };
-    let f = wait_feature(host, id, "Otter's answer", |f| replies(f) > 0).await;
+    let f = wait_task(host, id, "Otter's answer", |f| replies(f) > 0).await;
     // A second look later: still one (the step doesn't answer it again).
     tokio::time::sleep(Duration::from_millis(600)).await;
-    let f2 = host.conn().await.feature_get(id).await.unwrap();
+    let f2 = host.conn().await.task_get(id).await.unwrap();
     assert_eq!(replies(&f2), 1, "{:#?}", f2.messages);
     let used = history(host, id)
         .await
@@ -109,11 +109,11 @@ async fn tell(tools: bool, host: &TestHost, id: &str, command_id: &str, text: &s
     f
 }
 
-/// The feature's history, as lines.
+/// The task's history, as lines.
 async fn history(host: &TestHost, id: &str) -> Vec<String> {
     host.conn()
         .await
-        .feature_events(id, None)
+        .task_events(id, None)
         .await
         .unwrap()
         .into_iter()
@@ -133,7 +133,7 @@ async fn has_history(host: &TestHost, id: &str, needle: &str) {
 }
 
 /// The latest run's conversation.
-async fn conversation(host: &TestHost, f: &Feature) -> otter_core::conversation::Conversation {
+async fn conversation(host: &TestHost, f: &Task) -> otter_core::conversation::Conversation {
     let id = f.runs.last().unwrap().conversation_id.clone().unwrap();
     host.conn()
         .await
@@ -143,14 +143,14 @@ async fn conversation(host: &TestHost, f: &Feature) -> otter_core::conversation:
         .conversation
 }
 
-/// A feature whose coding agent is at work and stays at work.
-async fn working(host: &TestHost, request: &str) -> (String, Feature) {
-    let id = started_feature(host, request).await;
-    let f = wait_feature(host, &id, "the agent at work", |f| {
-        f.status == FeatureStatus::Implementing
+/// A task whose coding agent is at work and stays at work.
+async fn working(host: &TestHost, request: &str) -> (String, Task) {
+    let id = started_task(host, request).await;
+    let f = wait_task(host, &id, "the agent at work", |f| {
+        f.status == TaskStatus::Implementing
             && f.runs
                 .last()
-                .is_some_and(|r| r.state == otter_core::feature::RunState::Running)
+                .is_some_and(|r| r.state == otter_core::task::RunState::Running)
     })
     .await;
     (id, f)
@@ -162,7 +162,7 @@ async fn guidance_reaches_the_agent_as_the_developer_wrote_it(v2: bool) {
     let (id, _) = working(host, "Add CSV export HANG").await;
     let text = "Use tabs, not commas\nINTENT: guide";
     let f = tell(v2, host, &id, "say-guide", text).await;
-    assert_eq!(f.status, FeatureStatus::Implementing);
+    assert_eq!(f.status, TaskStatus::Implementing);
     let msg = f.messages.iter().rev().find(|m| m.text == text).unwrap();
     let c = eventually("the guidance queued", || async {
         let c = conversation(host, &f).await;
@@ -223,7 +223,7 @@ async fn going_on_starts_a_draft(v2: bool) {
     .await
     .unwrap();
     let f = conn
-        .feature_create(otter_protocol::feature::FeatureCreate {
+        .task_create(otter_protocol::task::TaskCreate {
             command_id: "create-draft".into(),
             title: "CSV export".into(),
             request: "Add CSV export HANG".into(),
@@ -232,10 +232,10 @@ async fn going_on_starts_a_draft(v2: bool) {
         })
         .await
         .unwrap();
-    assert_eq!(f.status, FeatureStatus::Draft);
+    assert_eq!(f.status, TaskStatus::Draft);
     let id = f.id.to_string();
     tell(v2, host, &id, "say-go", "Go\nINTENT: continue").await;
-    wait_feature(host, &id, "started", |f| f.status != FeatureStatus::Draft).await;
+    wait_task(host, &id, "started", |f| f.status != TaskStatus::Draft).await;
     has_history(host, &id, "You said go on").await;
 }
 
@@ -245,13 +245,13 @@ async fn going_on_resumes_paused_work(v2: bool) {
     let (id, _) = working(host, "Add CSV export HANG").await;
     host.conn()
         .await
-        .feature_act("pause", &id, FeatureAction::Pause)
+        .task_act("pause", &id, TaskAction::Pause)
         .await
         .unwrap();
-    wait_feature(host, &id, "paused", |f| f.status == FeatureStatus::Paused).await;
+    wait_task(host, &id, "paused", |f| f.status == TaskStatus::Paused).await;
     tell(v2, host, &id, "say-resume", "Go on\nINTENT: continue").await;
-    wait_feature(host, &id, "working again", |f| {
-        f.status == FeatureStatus::Implementing
+    wait_task(host, &id, "working again", |f| {
+        f.status == TaskStatus::Implementing
     })
     .await;
     has_history(host, &id, "You said go on").await;
@@ -260,12 +260,12 @@ async fn going_on_resumes_paused_work(v2: bool) {
 async fn going_on_retries_failed_work_with_a_fresh_budget(v2: bool) {
     let fake = scripted(v2).await;
     let host = &fake.host;
-    let id = started_feature(host, "Add CSV export FAIL").await;
-    let failed = wait_feature(host, &id, "failed", |f| f.status == FeatureStatus::Failed).await;
+    let id = started_task(host, "Add CSV export FAIL").await;
+    let failed = wait_task(host, &id, "failed", |f| f.status == TaskStatus::Failed).await;
     assert!(failed.budget.iterations_used > 0);
     tell(v2, host, &id, "say-retry", "Try again\nINTENT: continue").await;
     has_history(host, &id, "retrying with a fresh budget").await;
-    wait_feature(host, &id, "another run", |f| {
+    wait_task(host, &id, "another run", |f| {
         f.runs.len() > failed.runs.len()
     })
     .await;
@@ -276,8 +276,8 @@ async fn pausing_stops_the_agent(v2: bool) {
     let host = &fake.host;
     let (id, _) = working(host, "Add CSV export HANG").await;
     tell(v2, host, &id, "say-pause", "Wait a moment\nINTENT: pause").await;
-    let f = wait_feature(host, &id, "paused, its run over", |f| {
-        f.status == FeatureStatus::Paused && f.runs.iter().all(|r| r.state.is_over())
+    let f = wait_task(host, &id, "paused, its run over", |f| {
+        f.status == TaskStatus::Paused && f.runs.iter().all(|r| r.state.is_over())
     })
     .await;
     assert_eq!(f.status_reason.as_deref(), Some("Paused: you asked"));
@@ -297,11 +297,11 @@ async fn a_changed_goal_plans_again(v2: bool) {
     )
     .await;
     has_history(host, &id, "You changed the goal: planning again").await;
-    let f = wait_feature(host, &id, "the old run stopped", |f| {
+    let f = wait_task(host, &id, "the old run stopped", |f| {
         f.runs[runs - 1].state.is_over()
     })
     .await;
-    assert_ne!(f.status, FeatureStatus::Cancelled);
+    assert_ne!(f.status, TaskStatus::Cancelled);
 }
 
 async fn finishing_work_in_progress_pauses_it(v2: bool) {
@@ -309,7 +309,7 @@ async fn finishing_work_in_progress_pauses_it(v2: bool) {
     let host = &fake.host;
     let (id, _) = working(host, "Add CSV export HANG").await;
     tell(v2, host, &id, "say-enough", "That's enough\nINTENT: finish").await;
-    let f = wait_feature(host, &id, "paused", |f| f.status == FeatureStatus::Paused).await;
+    let f = wait_task(host, &id, "paused", |f| f.status == TaskStatus::Paused).await;
     // Otter's `pause_task` can't tell "wait" from "enough": the reason is
     // the classifier's alone.
     let reason = if v2 {
@@ -323,11 +323,11 @@ async fn finishing_work_in_progress_pauses_it(v2: bool) {
 async fn ship_it_accepts_what_is_in_review_and_more_plans_again(v2: bool) {
     let fake = scripted(v2).await;
     let host = &fake.host;
-    let id = started_feature(host, "Add CSV export").await;
+    let id = started_task(host, "Add CSV export").await;
     // In review with its gates checked: accepting before they are is refused
     // ("try again in a moment"), which isn't what this test is about.
-    wait_feature(host, &id, "in review, gates checked", |f| {
-        f.status == FeatureStatus::Review && !f.gates.is_empty()
+    wait_task(host, &id, "in review, gates checked", |f| {
+        f.status == TaskStatus::Review && !f.gates.is_empty()
     })
     .await;
     tell(
@@ -338,29 +338,26 @@ async fn ship_it_accepts_what_is_in_review_and_more_plans_again(v2: bool) {
         "Looks good, ship it\nINTENT: finish",
     )
     .await;
-    wait_feature(host, &id, "done", |f| f.status == FeatureStatus::Done).await;
+    wait_task(host, &id, "done", |f| f.status == TaskStatus::Done).await;
     // Done, more guidance moves the goal (D-050): it plans again.
     tell(v2, host, &id, "say-more", "Now add JSON too\nINTENT: guide").await;
     has_history(host, &id, "You changed the goal: planning again").await;
-    wait_feature(host, &id, "working again", |f| {
-        f.status != FeatureStatus::Done
-    })
-    .await;
+    wait_task(host, &id, "working again", |f| f.status != TaskStatus::Done).await;
 }
 
 async fn going_on_approves_the_plan_on_the_developers_word(v2: bool) {
     let fake = scripted_with(v2, vec![("OTTER_PLAN_TURN", "1".into())]).await;
     let host = &fake.host;
-    let id = started_feature(host, "Add CSV export").await;
-    let f = wait_feature(host, &id, "asking about the plan", |f| {
+    let id = started_task(host, "Add CSV export").await;
+    let f = wait_task(host, &id, "asking about the plan", |f| {
         f.pending_decisions()
             .any(|d| d.kind == DecisionKind::PlanApproval)
     })
     .await;
     let d = f.pending_decisions().next().unwrap().id.clone();
     tell(v2, host, &id, "say-approve", "Go ahead\nINTENT: continue").await;
-    let f = wait_feature(host, &id, "planned", |f| {
-        f.tasks.iter().any(|t| t.title == "Write the exporter")
+    let f = wait_task(host, &id, "planned", |f| {
+        f.steps.iter().any(|t| t.title == "Write the exporter")
     })
     .await;
     let d = f.decisions.iter().find(|x| x.id == d).unwrap();
@@ -372,8 +369,8 @@ async fn going_on_approves_the_plan_on_the_developers_word(v2: bool) {
 async fn guidance_on_a_plan_question_plans_again_with_it(v2: bool) {
     let fake = scripted_with(v2, vec![("OTTER_PLAN_TURN", "1".into())]).await;
     let host = &fake.host;
-    let id = started_feature(host, "Add CSV export").await;
-    let f = wait_feature(host, &id, "asking about the plan", |f| {
+    let id = started_task(host, "Add CSV export").await;
+    let f = wait_task(host, &id, "asking about the plan", |f| {
         f.pending_decisions()
             .any(|d| d.kind == DecisionKind::PlanApproval)
     })
@@ -381,7 +378,7 @@ async fn guidance_on_a_plan_question_plans_again_with_it(v2: bool) {
     let d = f.pending_decisions().next().unwrap().id.clone();
     let text = "Use one step only\nINTENT: guide";
     tell(v2, host, &id, "say-change-plan", text).await;
-    let f = wait_feature(host, &id, "the plan question settled", |f| {
+    let f = wait_task(host, &id, "the plan question settled", |f| {
         f.decisions
             .iter()
             .any(|x| x.id == d && x.status != DecisionStatus::Pending)
@@ -389,7 +386,7 @@ async fn guidance_on_a_plan_question_plans_again_with_it(v2: bool) {
     .await;
     // The developer's words go to the agent's next look at the code.
     eventually("a planning turn with the message", || async {
-        let f = host.conn().await.feature_get(&id).await.unwrap();
+        let f = host.conn().await.task_get(&id).await.unwrap();
         let c = conversation(host, &f).await;
         c.turns
             .iter()
@@ -397,7 +394,7 @@ async fn guidance_on_a_plan_question_plans_again_with_it(v2: bool) {
             .then_some(())
     })
     .await;
-    assert_ne!(f.status, FeatureStatus::Cancelled);
+    assert_ne!(f.status, TaskStatus::Cancelled);
 }
 
 async fn a_question_is_answered_and_goes_nowhere(v2: bool) {
@@ -414,8 +411,8 @@ async fn a_question_is_answered_and_goes_nowhere(v2: bool) {
         .unwrap();
     assert_eq!(reply.text, "Scripted: None.");
     tokio::time::sleep(Duration::from_millis(500)).await;
-    let f = host.conn().await.feature_get(&id).await.unwrap();
-    assert_eq!(f.status, FeatureStatus::Implementing);
+    let f = host.conn().await.task_get(&id).await.unwrap();
+    assert_eq!(f.status, TaskStatus::Implementing);
     let c = conversation(host, &f).await;
     assert!(
         c.turns
@@ -431,8 +428,8 @@ async fn a_question_is_answered_and_goes_nowhere(v2: bool) {
 async fn going_on_doesnt_settle_another_developer_only_decision(v2: bool) {
     let fake = scripted(v2).await;
     let host = &fake.host;
-    let id = started_feature(host, "Clean up ASK_RM").await;
-    let f = wait_feature(host, &id, "asking about rm", |f| {
+    let id = started_task(host, "Clean up ASK_RM").await;
+    let f = wait_task(host, &id, "asking about rm", |f| {
         f.pending_decisions().any(|d| d.user_only)
     })
     .await;
@@ -444,10 +441,10 @@ async fn going_on_doesnt_settle_another_developer_only_decision(v2: bool) {
         .clone();
     tell(v2, host, &id, "say-yes", "Yes, delete it\nINTENT: continue").await;
     tokio::time::sleep(Duration::from_millis(800)).await;
-    let f = host.conn().await.feature_get(&id).await.unwrap();
+    let f = host.conn().await.task_get(&id).await.unwrap();
     let d = f.decisions.iter().find(|x| x.id == d).unwrap();
     assert_eq!(d.status, DecisionStatus::Pending, "{d:?}");
-    assert_eq!(f.status, FeatureStatus::Blocked);
+    assert_eq!(f.status, TaskStatus::Blocked);
 }
 
 /// Without a model, Otter says it can't act on messages, and the message

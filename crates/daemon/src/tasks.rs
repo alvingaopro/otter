@@ -1,16 +1,16 @@
-//! Features (D-043): durable product work, owned by this daemon so it
+//! Tasks (D-043): durable product work, owned by this daemon so it
 //! survives any client — the desktop app may be closed for days.
 //!
 //! Kept apart from workspace state (`state.json`):
 //!
 //! ```text
-//! state/features/<feature-id>/feature.json    the feature, rewritten atomically
-//! state/features/<feature-id>/history.jsonl   what happened, append-only
+//! state/tasks/<task-id>/task.json          the task, rewritten atomically
+//! state/tasks/<task-id>/history.jsonl      what happened, append-only
 //! ```
 //!
-//! Every change goes through [`FeatureStore::apply`]: on a copy, then the
+//! Every change goes through [`TaskStore::apply`]: on a copy, then the
 //! document is saved (atomically, with the id of the command that caused it),
-//! then the new history lines are appended, then `FeatureChanged` goes out on
+//! then the new history lines are appended, then `TaskChanged` goes out on
 //! the event log. A command id already in the document is not applied again,
 //! which makes a retried delivery harmless. A crash between the save and the
 //! append loses history lines, never state; loading notices and says so.
@@ -22,42 +22,41 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use chrono::Utc;
-use otter_core::feature::{
-    Decider, DecisionKind, DecisionStatus, FEATURE_EVENT_SCHEMA, FEATURE_SCHEMA, Feature,
-    FeatureAction, FeatureEvent, FeatureEventRecord, FeatureStatus, Message, MessageRole,
-    TaskStatus,
+use otter_core::task::{
+    Decider, DecisionKind, DecisionStatus, Message, MessageRole, StepStatus, TASK_EVENT_SCHEMA,
+    TASK_SCHEMA, Task, TaskAction, TaskEvent, TaskEventRecord, TaskStatus,
 };
-use otter_core::{FeatureId, MessageId, Timestamp, WorkspaceId};
-use otter_protocol::feature::{FeatureAct, FeatureCreate, FeatureEvents, FeatureSend};
+use otter_core::{MessageId, TaskId, Timestamp, WorkspaceId};
+use otter_protocol::task::{TaskAct, TaskCreate, TaskEvents, TaskSend};
 use otter_protocol::{Event, RpcError};
 use serde::{Deserialize, Serialize};
 
 use crate::daemon::{Daemon, RpcResult, workspace_not_found};
 
-/// Command ids remembered per feature (a retry comes soon after the original).
+/// Command ids remembered per task (a retry comes soon after the original).
 const REMEMBERED_COMMANDS: usize = 256;
 const MAX_TITLE: usize = 200;
 pub(crate) const MAX_TEXT: usize = 20_000;
 const DEFAULT_HISTORY_LIMIT: usize = 1000;
 
-/// `feature.json`: the feature plus the daemon's bookkeeping.
+/// `task.json`: the task plus the daemon's bookkeeping.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct Doc {
     #[serde(flatten)]
-    feature: Feature,
+    task: Task,
     /// Commands already applied, oldest first.
     #[serde(default)]
     commands: VecDeque<String>,
 }
 
-/// One change, as a step of [`FeatureStore::apply`] records it.
+/// One change, as a step of [`TaskStore::apply`] records it.
 pub struct Change {
-    pub event: FeatureEvent,
+    pub event: TaskEvent,
     pub correlation_id: Option<String>,
 }
 
 impl Change {
-    pub fn new(event: FeatureEvent) -> Self {
+    pub fn new(event: TaskEvent) -> Self {
         Change {
             event,
             correlation_id: None,
@@ -72,22 +71,69 @@ impl Change {
 
 /// What an applied command produced.
 pub struct Applied {
-    pub feature: Feature,
+    pub task: Task,
     /// A repeat of a command already applied: nothing changed.
     pub duplicate: bool,
-    /// Its status before; `None` for a new feature.
-    pub from: Option<FeatureStatus>,
+    /// Its status before; `None` for a new task.
+    pub from: Option<TaskStatus>,
 }
 
-pub struct FeatureStore {
+pub struct TaskStore {
     dir: PathBuf,
-    docs: BTreeMap<FeatureId, Doc>,
+    docs: BTreeMap<TaskId, Doc>,
 }
 
-impl FeatureStore {
-    /// Load every feature under `dir`. One that can't be read (a newer
+/// A task's document, in its directory under `state/tasks/`.
+const DOC: &str = "task.json";
+
+/// Tasks were features before D-107: `state/features/<id>/feature.json`.
+/// Moved once, at start, to `state/tasks/<id>/task.json`; history and
+/// artifacts go with their directory. A task already under `state/tasks`
+/// (an older otterd was started on this host after a newer one) keeps
+/// what's there; the older copy stays under `state/tasks`, said in the
+/// log.
+pub fn move_from_features(state_dir: &Path) {
+    let old = state_dir.join("features");
+    let new = state_dir.join("tasks");
+    if old.is_dir() {
+        if !new.exists() {
+            if let Err(e) = std::fs::rename(&old, &new) {
+                tracing::warn!("moving {} to {}: {e}", old.display(), new.display());
+            }
+        } else if let Ok(entries) = std::fs::read_dir(&old) {
+            for entry in entries.flatten() {
+                let to = new.join(entry.file_name());
+                if to.exists() {
+                    tracing::warn!(
+                        "{} is also under {}: kept there, this one left",
+                        entry.path().display(),
+                        new.display()
+                    );
+                } else if let Err(e) = std::fs::rename(entry.path(), &to) {
+                    tracing::warn!("moving {}: {e}", entry.path().display());
+                }
+            }
+            let _ = std::fs::remove_dir(&old);
+        }
+    }
+    let Ok(entries) = std::fs::read_dir(&new) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let (from, to) = (entry.path().join("feature.json"), entry.path().join(DOC));
+        if from.exists()
+            && !to.exists()
+            && let Err(e) = std::fs::rename(&from, &to)
+        {
+            tracing::warn!("moving {}: {e}", from.display());
+        }
+    }
+}
+
+impl TaskStore {
+    /// Load every task under `dir`. One that can't be read (a newer
     /// schema, a broken file) is left on disk untouched and skipped.
-    pub fn load(dir: &Path) -> Result<FeatureStore> {
+    pub fn load(dir: &Path) -> Result<TaskStore> {
         std::fs::DirBuilder::new()
             .recursive(true)
             .mode(0o700)
@@ -95,55 +141,55 @@ impl FeatureStore {
             .with_context(|| format!("creating {}", dir.display()))?;
         let mut docs = BTreeMap::new();
         for entry in std::fs::read_dir(dir)? {
-            let path = entry?.path().join("feature.json");
+            let path = entry?.path().join(DOC);
             if !path.exists() {
                 continue;
             }
             match read_doc(&path) {
                 Ok(mut doc) => {
-                    let logged = last_seq(&history_path(dir, &doc.feature.id));
-                    if logged < doc.feature.history_seq {
+                    let logged = last_seq(&history_path(dir, &doc.task.id));
+                    if logged < doc.task.history_seq {
                         tracing::warn!(
-                            feature = %doc.feature.id,
+                            task = %doc.task.id,
                             "history ends at {logged}, state at {}: lines were lost in a crash",
-                            doc.feature.history_seq
+                            doc.task.history_seq
                         );
                     }
-                    doc.feature.history_seq = doc.feature.history_seq.max(logged);
-                    docs.insert(doc.feature.id.clone(), doc);
+                    doc.task.history_seq = doc.task.history_seq.max(logged);
+                    docs.insert(doc.task.id.clone(), doc);
                 }
                 Err(e) => tracing::warn!("skipping {}: {e:#}", path.display()),
             }
         }
-        Ok(FeatureStore {
+        Ok(TaskStore {
             dir: dir.to_path_buf(),
             docs,
         })
     }
 
     /// Newest activity first.
-    pub fn list(&self) -> Vec<Feature> {
-        let mut out: Vec<Feature> = self.docs.values().map(|d| d.feature.clone()).collect();
+    pub fn list(&self) -> Vec<Task> {
+        let mut out: Vec<Task> = self.docs.values().map(|d| d.task.clone()).collect();
         out.sort_by_key(|f| std::cmp::Reverse(f.updated_at));
         out
     }
 
-    pub fn get(&self, id: &str) -> Option<&Feature> {
-        self.docs.get(&FeatureId::from(id)).map(|d| &d.feature)
+    pub fn get(&self, id: &str) -> Option<&Task> {
+        self.docs.get(&TaskId::from(id)).map(|d| &d.task)
     }
 
-    /// The feature a command was applied to, if it was.
-    pub fn applied(&self, command_id: &str) -> Option<&Feature> {
+    /// The task a command was applied to, if it was.
+    pub fn applied(&self, command_id: &str) -> Option<&Task> {
         self.docs
             .values()
             .find(|d| d.commands.iter().any(|c| c == command_id))
-            .map(|d| &d.feature)
+            .map(|d| &d.task)
     }
 
-    /// Remove a feature and everything kept for it (history, artifacts).
+    /// Remove a task and everything kept for it (history, artifacts).
     /// Its directory is renamed away first, so a crash halfway leaves no
-    /// half-feature behind (`load` skips what has no `feature.json`).
-    pub fn remove(&mut self, id: &FeatureId) -> Result<Option<Feature>> {
+    /// half-task behind (`load` skips what has no `task.json`).
+    pub fn remove(&mut self, id: &TaskId) -> Result<Option<Task>> {
         let Some(doc) = self.docs.remove(id) else {
             return Ok(None);
         };
@@ -158,56 +204,56 @@ impl FeatureStore {
                 return Err(e).with_context(|| format!("removing {}", dir.display()));
             }
         }
-        Ok(Some(doc.feature))
+        Ok(Some(doc.task))
     }
 
-    /// Add a new feature.
+    /// Add a new task.
     pub fn insert(
         &mut self,
-        feature: Feature,
+        task: Task,
         command_id: Option<&str>,
         changes: Vec<Change>,
     ) -> Result<Applied> {
         let doc = Doc {
-            feature,
+            task,
             commands: VecDeque::new(),
         };
         self.commit(doc, command_id, changes)
     }
 
-    /// Change a feature: `step` works on a copy and returns what happened; an
+    /// Change a task: `step` works on a copy and returns what happened; an
     /// error leaves everything as it was. A `command_id` already applied to
-    /// this feature returns it unchanged.
+    /// this task returns it unchanged.
     pub fn apply(
         &mut self,
-        id: &FeatureId,
+        id: &TaskId,
         command_id: Option<&str>,
-        step: impl FnOnce(&mut Feature, Timestamp) -> RpcResult<Vec<Change>>,
+        step: impl FnOnce(&mut Task, Timestamp) -> RpcResult<Vec<Change>>,
     ) -> RpcResult<Applied> {
         let doc = self
             .docs
             .get(id)
-            .ok_or_else(|| feature_not_found(id.as_str()))?;
+            .ok_or_else(|| task_not_found(id.as_str()))?;
         if let Some(cmd) = command_id
             && doc.commands.iter().any(|c| c == cmd)
         {
             return Ok(Applied {
-                feature: doc.feature.clone(),
+                task: doc.task.clone(),
                 duplicate: true,
-                from: Some(doc.feature.status),
+                from: Some(doc.task.status),
             });
         }
         let mut doc = doc.clone();
-        let from = doc.feature.status;
+        let from = doc.task.status;
         let now = Utc::now();
-        let changes = step(&mut doc.feature, now)?;
-        doc.feature.updated_at = now;
+        let changes = step(&mut doc.task, now)?;
+        doc.task.updated_at = now;
         self.commit(doc, command_id, changes)
             .map(|a| Applied {
                 from: Some(from),
                 ..a
             })
-            .map_err(|e| RpcError::internal(format!("saving feature: {e:#}")))
+            .map_err(|e| RpcError::internal(format!("saving task: {e:#}")))
     }
 
     fn commit(
@@ -219,11 +265,11 @@ impl FeatureStore {
         let now = Utc::now();
         let mut records = Vec::with_capacity(changes.len());
         for c in changes {
-            doc.feature.history_seq += 1;
-            records.push(FeatureEventRecord {
-                seq: doc.feature.history_seq,
+            doc.task.history_seq += 1;
+            records.push(TaskEventRecord {
+                seq: doc.task.history_seq,
                 ts: now,
-                v: FEATURE_EVENT_SCHEMA,
+                v: TASK_EVENT_SCHEMA,
                 correlation_id: c.correlation_id,
                 text: c.event.text(),
                 event: c.event,
@@ -235,29 +281,24 @@ impl FeatureStore {
                 doc.commands.pop_front();
             }
         }
-        let dir = self.dir.join(doc.feature.id.as_str());
+        let dir = self.dir.join(doc.task.id.as_str());
         std::fs::DirBuilder::new()
             .recursive(true)
             .mode(0o700)
             .create(&dir)?;
-        write_doc(&dir.join("feature.json"), &doc)?;
+        write_doc(&dir.join(DOC), &doc)?;
         append_history(&dir.join("history.jsonl"), &records)?;
-        let feature = doc.feature.clone();
-        self.docs.insert(feature.id.clone(), doc);
+        let task = doc.task.clone();
+        self.docs.insert(task.id.clone(), doc);
         Ok(Applied {
-            feature,
+            task,
             duplicate: false,
             from: None,
         })
     }
 
-    /// A feature's history with `seq > after`, oldest first.
-    pub fn history(
-        &self,
-        id: &FeatureId,
-        after: u64,
-        limit: usize,
-    ) -> Result<Vec<FeatureEventRecord>> {
+    /// A task's history with `seq > after`, oldest first.
+    pub fn history(&self, id: &TaskId, after: u64, limit: usize) -> Result<Vec<TaskEventRecord>> {
         let path = history_path(&self.dir, id);
         let file = match std::fs::File::open(&path) {
             Ok(f) => f,
@@ -268,7 +309,7 @@ impl FeatureStore {
         for line in std::io::BufReader::new(file).lines() {
             let line = line?;
             // A torn last line (crash mid-append) is skipped.
-            let Ok(rec) = serde_json::from_str::<FeatureEventRecord>(&line) else {
+            let Ok(rec) = serde_json::from_str::<TaskEventRecord>(&line) else {
                 continue;
             };
             if rec.seq > after {
@@ -282,7 +323,7 @@ impl FeatureStore {
     }
 }
 
-fn history_path(dir: &Path, id: &FeatureId) -> PathBuf {
+fn history_path(dir: &Path, id: &TaskId) -> PathBuf {
     dir.join(id.as_str()).join("history.jsonl")
 }
 
@@ -290,15 +331,15 @@ fn read_doc(path: &Path) -> Result<Doc> {
     let bytes = std::fs::read(path)?;
     let value: serde_json::Value = serde_json::from_slice(&bytes)?;
     let schema = value["schema"].as_u64().unwrap_or(1) as u32;
-    if schema > FEATURE_SCHEMA {
-        anyhow::bail!("written by a newer otterd (feature schema {schema})");
+    if schema > TASK_SCHEMA {
+        anyhow::bail!("written by a newer otterd (task schema {schema})");
     }
     let mut doc: Doc = serde_json::from_value(migrate(value, schema))?;
-    doc.feature.schema = FEATURE_SCHEMA;
+    doc.task.schema = TASK_SCHEMA;
     Ok(doc)
 }
 
-/// Bring an older document up to [`FEATURE_SCHEMA`]. Schema 1 is the first;
+/// Bring an older document up to [`TASK_SCHEMA`]. Schema 1 is the first;
 /// later versions add their steps here (`if schema < 2 { … }`).
 fn migrate(value: serde_json::Value, _schema: u32) -> serde_json::Value {
     value
@@ -322,7 +363,7 @@ pub(crate) fn write_doc<T: Serialize>(path: &Path, doc: &T) -> Result<()> {
 }
 
 /// Append history records, synced.
-pub(crate) fn append_history(path: &Path, records: &[FeatureEventRecord]) -> Result<()> {
+pub(crate) fn append_history(path: &Path, records: &[TaskEventRecord]) -> Result<()> {
     if records.is_empty() {
         return Ok(());
     }
@@ -350,14 +391,14 @@ pub(crate) fn last_seq(path: &Path) -> u64 {
     std::io::BufReader::new(file)
         .lines()
         .map_while(|l| l.ok())
-        .filter_map(|l| serde_json::from_str::<FeatureEventRecord>(&l).ok())
+        .filter_map(|l| serde_json::from_str::<TaskEventRecord>(&l).ok())
         .map(|r| r.seq)
         .max()
         .unwrap_or(0)
 }
 
-pub(crate) fn feature_not_found(r: &str) -> RpcError {
-    RpcError::not_found(format!("no feature `{r}`"))
+pub(crate) fn task_not_found(r: &str) -> RpcError {
+    RpcError::not_found(format!("no task `{r}`"))
 }
 
 pub(crate) fn check_command_id(id: &str) -> RpcResult<()> {
@@ -378,21 +419,21 @@ pub(crate) fn check_text(what: &str, text: &str, max: usize) -> RpcResult<()> {
     Ok(())
 }
 
-/// Where a paused, failed or unblocked feature picks up: planning until
-/// there is a plan, verifying once every task is done, else implementing.
-pub fn resume_status(f: &Feature) -> FeatureStatus {
+/// Where a paused, failed or unblocked task picks up: planning until
+/// there is a plan, verifying once every step is done, else implementing.
+pub fn resume_status(f: &Task) -> TaskStatus {
     // Only the planning turn (D-064), or planning again (D-084): still
     // planning — the work there is was planned for the old goal.
-    if f.replan || f.tasks.iter().all(|t| t.planning) {
-        FeatureStatus::Planning
+    if f.replan || f.steps.iter().all(|t| t.planning) {
+        TaskStatus::Planning
     } else if f
-        .tasks
+        .steps
         .iter()
-        .all(|t| matches!(t.status, TaskStatus::Done | TaskStatus::Skipped))
+        .all(|t| matches!(t.status, StepStatus::Done | StepStatus::Skipped))
     {
-        FeatureStatus::Verifying
+        TaskStatus::Verifying
     } else {
-        FeatureStatus::Implementing
+        TaskStatus::Implementing
     }
 }
 
@@ -405,7 +446,7 @@ pub fn message(role: MessageRole, text: String, correlation: Option<String>) -> 
         correlation_id: correlation.clone(),
     };
     let change = Change {
-        event: FeatureEvent::MessageAdded {
+        event: TaskEvent::MessageAdded {
             message_id: m.id.clone(),
             role,
         },
@@ -414,56 +455,54 @@ pub fn message(role: MessageRole, text: String, correlation: Option<String>) -> 
     (m, change)
 }
 
-/// Apply a developer's action to a feature (the deterministic part; the
+/// Apply a developer's action to a task (the deterministic part; the
 /// controller reacts to the new state).
 pub fn apply_action(
-    f: &mut Feature,
-    action: &FeatureAction,
+    f: &mut Task,
+    action: &TaskAction,
     command_id: &str,
     now: Timestamp,
 ) -> RpcResult<Vec<Change>> {
     let mut changes = vec![
-        Change::new(FeatureEvent::CommandAccepted {
+        Change::new(TaskEvent::CommandAccepted {
             command_id: command_id.to_owned(),
             action: action.name().to_owned(),
         })
         .because(command_id),
     ];
-    let to = |f: &mut Feature, status: FeatureStatus, reason: Option<String>| {
+    let to = |f: &mut Task, status: TaskStatus, reason: Option<String>| {
         f.transition(status, reason, now)
             .map(|e| Change::new(e).because(command_id))
             .map_err(RpcError::conflict)
     };
     match action {
-        FeatureAction::Start => changes.push(to(f, FeatureStatus::Planning, None)?),
-        FeatureAction::Pause => {
-            changes.push(to(f, FeatureStatus::Paused, Some("Paused by you".into()))?)
-        }
-        FeatureAction::Resume => {
-            if f.status != FeatureStatus::Paused {
-                return Err(RpcError::conflict("only a paused feature can be resumed"));
+        TaskAction::Start => changes.push(to(f, TaskStatus::Planning, None)?),
+        TaskAction::Pause => changes.push(to(f, TaskStatus::Paused, Some("Paused by you".into()))?),
+        TaskAction::Resume => {
+            if f.status != TaskStatus::Paused {
+                return Err(RpcError::conflict("only a paused task can be resumed"));
             }
             let next = resume_status(f);
             changes.push(to(f, next, None)?);
         }
-        FeatureAction::Retry => {
-            if f.status != FeatureStatus::Failed {
-                return Err(RpcError::conflict("only a failed feature can be retried"));
+        TaskAction::Retry => {
+            if f.status != TaskStatus::Failed {
+                return Err(RpcError::conflict("only a failed task can be retried"));
             }
             f.budget.iterations_used = 0;
-            for t in &mut f.tasks {
-                if t.status == TaskStatus::Failed {
-                    t.status = TaskStatus::Pending;
+            for t in &mut f.steps {
+                if t.status == StepStatus::Failed {
+                    t.status = StepStatus::Pending;
                     t.attempts = 0;
                 }
             }
             let next = resume_status(f);
             changes.push(to(f, next, Some("Retrying with a fresh budget".into()))?);
         }
-        FeatureAction::Cancel => {
+        TaskAction::Cancel => {
             changes.push(to(
                 f,
-                FeatureStatus::Cancelled,
+                TaskStatus::Cancelled,
                 Some("Cancelled by you".into()),
             )?);
             // What stays (D-068): Otter removes nothing of the work.
@@ -486,7 +525,7 @@ pub fn apply_action(
                     d.status = DecisionStatus::Cancelled;
                     d.decided_at = Some(now);
                     changes.push(
-                        Change::new(FeatureEvent::DecisionResolved {
+                        Change::new(TaskEvent::DecisionResolved {
                             decision_id: d.id.clone(),
                             status: DecisionStatus::Cancelled,
                             by: Decider::User,
@@ -496,7 +535,7 @@ pub fn apply_action(
                 }
             }
         }
-        FeatureAction::Decide {
+        TaskAction::Decide {
             decision_id,
             approve,
             answer,
@@ -527,14 +566,14 @@ pub fn apply_action(
             d.answer = answer.clone();
             d.decided_by = Some(Decider::User);
             d.decided_at = Some(now);
-            // Allowed once, allowed for the rest of the feature (D-066).
+            // Allowed once, allowed for the rest of the task (D-066).
             let grant = d
                 .grant
                 .clone()
                 .filter(|_| d.status == DecisionStatus::Approved);
-            let (kind, task, status) = (d.kind, d.task_id.clone(), d.status);
+            let (kind, step, status) = (d.kind, d.step_id.clone(), d.status);
             changes.push(
-                Change::new(FeatureEvent::DecisionResolved {
+                Change::new(TaskEvent::DecisionResolved {
                     decision_id: decision_id.clone(),
                     status: d.status,
                     by: Decider::User,
@@ -547,37 +586,35 @@ pub fn apply_action(
                 f.grants.push(g);
             }
             changes.extend(f.resume_waiting_runs(now).into_iter().map(Change::new));
-            // Cut-off work (D-061): either way its task is ready again, and
+            // Cut-off work (D-061): either way its step is ready again, and
             // its next run starts over. Declined, nothing starts until the
             // developer resumes.
             if kind == DecisionKind::Recovery {
-                if let Some(t) = task.as_ref().and_then(|t| f.task_mut(t))
-                    && t.status == TaskStatus::Blocked
+                if let Some(t) = step.as_ref().and_then(|t| f.step_mut(t))
+                    && t.status == StepStatus::Blocked
                 {
-                    t.status = TaskStatus::Pending;
+                    t.status = StepStatus::Pending;
                     changes.push(
-                        Change::new(FeatureEvent::TaskChanged {
-                            task_id: t.id.clone(),
-                            status: TaskStatus::Pending,
+                        Change::new(TaskEvent::StepChanged {
+                            step_id: t.id.clone(),
+                            status: StepStatus::Pending,
                         })
                         .because(command_id),
                     );
                 }
-                if status == DecisionStatus::Denied && f.status.can_become(FeatureStatus::Paused) {
+                if status == DecisionStatus::Denied && f.status.can_become(TaskStatus::Paused) {
                     let why = "Not started over: resume when you're ready";
-                    changes.push(to(f, FeatureStatus::Paused, Some(why.into()))?);
+                    changes.push(to(f, TaskStatus::Paused, Some(why.into()))?);
                 }
             }
-            if f.status == FeatureStatus::Blocked && f.pending_decisions().next().is_none() {
+            if f.status == TaskStatus::Blocked && f.pending_decisions().next().is_none() {
                 let next = resume_status(f);
                 changes.push(to(f, next, None)?);
             }
         }
-        FeatureAction::Accept { override_gates } => {
-            if f.status != FeatureStatus::Review {
-                return Err(RpcError::conflict(
-                    "only a feature in review can be accepted",
-                ));
+        TaskAction::Accept { override_gates } => {
+            if f.status != TaskStatus::Review {
+                return Err(RpcError::conflict("only a task in review can be accepted"));
             }
             // Done needs its gates (D-047); the developer may override, on record.
             if f.gates.is_empty() && !override_gates {
@@ -603,33 +640,33 @@ pub fn apply_action(
             }
             for g in &mut f.gates {
                 if g.name == crate::delivery::ACCEPTANCE_GATE {
-                    g.status = otter_core::feature::GateStatus::Passed;
+                    g.status = otter_core::task::GateStatus::Passed;
                 }
             }
-            changes.push(to(f, FeatureStatus::Done, Some("Accepted by you".into()))?);
+            changes.push(to(f, TaskStatus::Done, Some("Accepted by you".into()))?);
         }
-        FeatureAction::SetWorkspace { workspace } => {
-            // `workspace` is an id by now (resolved in `feature_act`).
+        TaskAction::SetWorkspace { workspace } => {
+            // `workspace` is an id by now (resolved in `task_act`).
             if f.live_run().is_some() {
                 return Err(RpcError::conflict(
                     "an agent is working in the current workspace; pause first",
                 ));
             }
             f.workspace_id = Some(WorkspaceId::from(workspace.as_str()));
-            if f.status == FeatureStatus::Blocked && f.pending_decisions().next().is_none() {
+            if f.status == TaskStatus::Blocked && f.pending_decisions().next().is_none() {
                 let next = resume_status(f);
                 changes.push(to(f, next, None)?);
             }
         }
-        // The preview's session is started by `feature_act`.
-        FeatureAction::Preview => {}
-        // Made into `SetWorkspace` by `feature_act`.
-        FeatureAction::OwnWorkspace => {
+        // The preview's session is started by `task_act`.
+        TaskAction::Preview => {}
+        // Made into `SetWorkspace` by `task_act`.
+        TaskAction::OwnWorkspace => {
             return Err(RpcError::invalid(
                 "own_workspace is resolved before it applies",
             ));
         }
-        FeatureAction::Interrupt => {
+        TaskAction::Interrupt => {
             if f.live_run().is_none() {
                 return Err(RpcError::conflict(
                     "the coding agent isn't working on anything",
@@ -637,11 +674,11 @@ pub fn apply_action(
             }
             changes.push(to(
                 f,
-                FeatureStatus::Paused,
+                TaskStatus::Paused,
                 Some("Interrupted by you: say what to do next".into()),
             )?);
         }
-        FeatureAction::Redirect { text } => {
+        TaskAction::Redirect { text } => {
             let text = text.trim();
             if text.is_empty() {
                 return Err(RpcError::invalid("say what to do instead"));
@@ -660,7 +697,7 @@ pub fn apply_action(
             f.messages.push(m);
             changes.push(c);
         }
-        FeatureAction::RequestChanges { note } => {
+        TaskAction::RequestChanges { note } => {
             if let Some(note) = note.as_ref().filter(|n| !n.trim().is_empty()) {
                 check_text("note", note, MAX_TEXT)?;
                 let (m, c) = message(MessageRole::User, note.clone(), Some(command_id.to_owned()));
@@ -674,31 +711,31 @@ pub fn apply_action(
 }
 
 /// The goal moved (D-050): plan again from where the work stands — what is
-/// done stays done. Nothing to do for a cancelled feature. The coding agent
+/// done stays done. Nothing to do for a cancelled task. The coding agent
 /// plans again, in its conversation (D-084): the planning turn is due again,
 /// and a plan waiting for the developer's OK is moot.
-pub fn replan(f: &mut Feature, why: &str, now: Timestamp) -> Vec<Change> {
+pub fn replan(f: &mut Task, why: &str, now: Timestamp) -> Vec<Change> {
     if f.status.is_terminal() {
         return vec![];
     }
     // Revising a plan: there is work planned (an answered question had none).
-    f.replan = f.tasks.iter().any(|t| !t.planning);
+    f.replan = f.steps.iter().any(|t| !t.planning);
     let mut changes = Vec::new();
     // A plan sent back but not yet looked at again (`Pending` with the
     // review's points) is a fresh look now, at the new goal.
     if crate::controller::plan_turn()
-        && let Some(t) = f.tasks.iter_mut().find(|t| t.planning)
+        && let Some(t) = f.steps.iter_mut().find(|t| t.planning)
         && matches!(
             t.status,
-            TaskStatus::Done | TaskStatus::Failed | TaskStatus::Skipped | TaskStatus::Pending
+            StepStatus::Done | StepStatus::Failed | StepStatus::Skipped | StepStatus::Pending
         )
     {
-        t.status = TaskStatus::Pending;
+        t.status = StepStatus::Pending;
         t.detail = None;
         t.last_error = None;
-        changes.push(Change::new(FeatureEvent::TaskChanged {
-            task_id: t.id.clone(),
-            status: TaskStatus::Pending,
+        changes.push(Change::new(TaskEvent::StepChanged {
+            step_id: t.id.clone(),
+            status: StepStatus::Pending,
         }));
     }
     for d in f.decisions.iter_mut().filter(|d| {
@@ -713,8 +750,8 @@ pub fn replan(f: &mut Feature, why: &str, now: Timestamp) -> Vec<Change> {
     f.report = None;
     f.gates.clear();
     f.last_verification = None;
-    if f.status != FeatureStatus::Planning
-        && let Ok(e) = f.transition(FeatureStatus::Planning, Some(why.into()), now)
+    if f.status != TaskStatus::Planning
+        && let Ok(e) = f.transition(TaskStatus::Planning, Some(why.into()), now)
     {
         changes.push(Change::new(e));
     }
@@ -722,24 +759,24 @@ pub fn replan(f: &mut Feature, why: &str, now: Timestamp) -> Vec<Change> {
 }
 
 impl Daemon {
-    pub(crate) async fn feature_list(&self) -> Vec<Feature> {
-        self.features.lock().await.list()
+    pub(crate) async fn task_list(&self) -> Vec<Task> {
+        self.tasks.lock().await.list()
     }
 
-    pub(crate) async fn feature_get(&self, id: &str) -> RpcResult<Feature> {
-        self.features
+    pub(crate) async fn task_get(&self, id: &str) -> RpcResult<Task> {
+        self.tasks
             .lock()
             .await
             .get(id)
             .cloned()
-            .ok_or_else(|| feature_not_found(id))
+            .ok_or_else(|| task_not_found(id))
     }
 
-    pub(crate) async fn feature_create(&self, p: FeatureCreate) -> RpcResult<Feature> {
+    pub(crate) async fn task_create(&self, p: TaskCreate) -> RpcResult<Task> {
         check_command_id(&p.command_id)?;
         let title = p.title.trim().to_owned();
         if title.is_empty() {
-            return Err(RpcError::invalid("a feature needs a title"));
+            return Err(RpcError::invalid("a task needs a title"));
         }
         check_text("title", &title, MAX_TITLE)?;
         check_text("request", &p.request, MAX_TEXT)?;
@@ -757,15 +794,15 @@ impl Daemon {
         if p.answer_only {
             self.can_answer_only()?;
         }
-        let mut features = self.features.lock().await;
-        if let Some(f) = features.applied(&p.command_id) {
+        let mut tasks = self.tasks.lock().await;
+        if let Some(f) = tasks.applied(&p.command_id) {
             return Ok(f.clone());
         }
-        let mut f = Feature::new(title.clone(), p.request.trim().to_owned(), Utc::now());
+        let mut f = Task::new(title.clone(), p.request.trim().to_owned(), Utc::now());
         f.workspace_id = workspace_id;
         f.answer_only = p.answer_only;
         let mut changes =
-            vec![Change::new(FeatureEvent::FeatureCreated { title }).because(&p.command_id)];
+            vec![Change::new(TaskEvent::TaskCreated { title }).because(&p.command_id)];
         if !f.request.is_empty() {
             let (m, c) = message(
                 MessageRole::User,
@@ -775,12 +812,12 @@ impl Daemon {
             f.messages.push(m);
             changes.push(c);
         }
-        let applied = features
+        let applied = tasks
             .insert(f, Some(&p.command_id), changes)
-            .map_err(|e| RpcError::internal(format!("saving feature: {e:#}")))?;
-        drop(features);
-        self.feature_changed(&applied);
-        Ok(applied.feature)
+            .map_err(|e| RpcError::internal(format!("saving task: {e:#}")))?;
+        drop(tasks);
+        self.task_changed(&applied);
+        Ok(applied.task)
     }
 
     /// Whether a task here can be answer-only (D-092): its coding agent
@@ -797,7 +834,7 @@ impl Daemon {
         }
     }
 
-    pub(crate) async fn feature_send(&self, p: FeatureSend) -> RpcResult<Feature> {
+    pub(crate) async fn task_send(&self, p: TaskSend) -> RpcResult<Task> {
         check_command_id(&p.command_id)?;
         let text = p.text.trim().to_owned();
         if text.is_empty() {
@@ -805,11 +842,11 @@ impl Daemon {
         }
         check_text("message", &text, MAX_TEXT)?;
         let cmd = p.command_id.clone();
-        let id = FeatureId::from(p.feature.as_str());
-        let applied = self.features.lock().await.apply(&id, Some(&cmd), |f, _| {
+        let id = TaskId::from(p.task.as_str());
+        let applied = self.tasks.lock().await.apply(&id, Some(&cmd), |f, _| {
             if f.status.is_terminal() {
                 return Err(RpcError::conflict(format!(
-                    "the feature is {}",
+                    "the task is {}",
                     f.status.as_str()
                 )));
             }
@@ -817,19 +854,19 @@ impl Daemon {
             f.messages.push(m);
             Ok(vec![c])
         })?;
-        self.feature_changed(&applied);
+        self.task_changed(&applied);
         // Otter reads it first and decides what reaches the coding agent
         // (controller.rs, D-059).
-        Ok(applied.feature)
+        Ok(applied.task)
     }
 
-    /// A worktree of the feature's Git workspace's repository, on a branch
-    /// of the feature's own, from the same base (D-080).
+    /// A worktree of the task's Git workspace's repository, on a branch
+    /// of the task's own, from the same base (D-080).
     async fn own_workspace(
         self: &std::sync::Arc<Self>,
-        id: &FeatureId,
+        id: &TaskId,
     ) -> RpcResult<otter_core::Workspace> {
-        let f = self.feature_get(id.as_str()).await?;
+        let f = self.task_get(id.as_str()).await?;
         // Its work so far would stay behind: only before it has any.
         if !f.runs.is_empty() {
             return Err(RpcError::conflict(
@@ -839,7 +876,7 @@ impl Daemon {
         let ws_id = f
             .workspace_id
             .clone()
-            .ok_or_else(|| RpcError::conflict("the feature has no workspace yet"))?;
+            .ok_or_else(|| RpcError::conflict("the task has no workspace yet"))?;
         let (name, repository, base, taken) = {
             let store = self.store.lock().await;
             let ws = store
@@ -847,7 +884,7 @@ impl Daemon {
                 .ok_or_else(|| workspace_not_found(ws_id.as_str()))?;
             let otter_core::WorkspaceSource::Git(g) = &ws.source else {
                 return Err(RpcError::conflict(
-                    "only a Git workspace can be given to a feature of its own (a worktree of its repository)",
+                    "only a Git workspace can be given to a task of its own (a worktree of its repository)",
                 ));
             };
             let taken: Vec<String> = store
@@ -879,10 +916,7 @@ impl Daemon {
                 name: new_name,
                 brief: Some(otter_core::Brief {
                     title: Some(f.title.clone()),
-                    description: Some(format!(
-                        "The feature “{}”, in a worktree of its own",
-                        f.title
-                    )),
+                    description: Some(format!("The task “{}”, in a worktree of its own", f.title)),
                     ..Default::default()
                 }),
                 source: otter_protocol::SourceSpec::Git {
@@ -896,7 +930,7 @@ impl Daemon {
         // Made for it: put away when it ends (D-105).
         let mut store = self.store.lock().await;
         let w = store.workspace_mut(ws.id.as_str()).expect("just made");
-        w.feature_id = Some(f.id.clone());
+        w.task_id = Some(f.id.clone());
         let ws = w.clone();
         crate::daemon::save(&store)?;
         Ok(ws)
@@ -908,8 +942,8 @@ impl Daemon {
     /// push to allow, say: answering it tries again), nor while something
     /// the developer may be using runs there — a shell, a service, a
     /// command, an agent at work or waiting on them; then it stays.
-    pub(crate) async fn put_away_workspace(self: &std::sync::Arc<Self>, id: &FeatureId) {
-        let Ok(f) = self.feature_get(id.as_str()).await else {
+    pub(crate) async fn put_away_workspace(self: &std::sync::Arc<Self>, id: &TaskId) {
+        let Ok(f) = self.task_get(id.as_str()).await else {
             return;
         };
         if f.pending_decisions().next().is_some() {
@@ -923,9 +957,7 @@ impl Daemon {
             let Some(ws) = store.workspace(ws_id.as_str()) else {
                 return;
             };
-            if ws.feature_id.as_ref() != Some(id)
-                || ws.state == otter_core::WorkspaceState::Archived
-            {
+            if ws.task_id.as_ref() != Some(id) || ws.state == otter_core::WorkspaceState::Archived {
                 return;
             }
             if let Some(s) = ws.sessions.iter().find(|s| in_use(s)) {
@@ -941,78 +973,75 @@ impl Daemon {
         let text = format!(
             "Its workspace {name} is archived now that the task is over: its files and branch are kept. Unarchive it to look at the work."
         );
-        let applied = self.features.lock().await.apply(id, None, |f, _| {
+        let applied = self.tasks.lock().await.apply(id, None, |f, _| {
             let (m, c) = message(MessageRole::Controller, text, None);
             f.messages.push(m);
             Ok(vec![c])
         });
         if let Ok(a) = applied {
-            self.feature_changed(&a);
+            self.task_changed(&a);
         }
     }
 
-    pub(crate) async fn feature_act(
-        self: std::sync::Arc<Self>,
-        p: FeatureAct,
-    ) -> RpcResult<Feature> {
+    pub(crate) async fn task_act(self: std::sync::Arc<Self>, p: TaskAct) -> RpcResult<Task> {
         check_command_id(&p.command_id)?;
-        let id = FeatureId::from(p.feature.as_str());
+        let id = TaskId::from(p.task.as_str());
         let mut p = p;
         // A workspace of its own (D-080): made now, then chosen like any.
-        if p.action == FeatureAction::OwnWorkspace {
-            if let Some(f) = self.features.lock().await.applied(&p.command_id) {
+        if p.action == TaskAction::OwnWorkspace {
+            if let Some(f) = self.tasks.lock().await.applied(&p.command_id) {
                 return Ok(f.clone());
             }
             let ws = self.own_workspace(&id).await?;
-            p.action = FeatureAction::SetWorkspace {
+            p.action = TaskAction::SetWorkspace {
                 workspace: ws.id.to_string(),
             };
         }
-        if let FeatureAction::SetWorkspace { workspace } = &mut p.action {
+        if let TaskAction::SetWorkspace { workspace } = &mut p.action {
             let store = self.store.lock().await;
             let ws = store
                 .workspace(workspace)
                 .ok_or_else(|| workspace_not_found(workspace))?;
             *workspace = ws.id.to_string();
         }
-        if p.action == FeatureAction::Preview {
-            if let Some(f) = self.features.lock().await.applied(&p.command_id) {
+        if p.action == TaskAction::Preview {
+            if let Some(f) = self.tasks.lock().await.applied(&p.command_id) {
                 return Ok(f.clone());
             }
             self.start_preview(&id).await?;
         }
         let applied = self
-            .features
+            .tasks
             .lock()
             .await
             .apply(&id, Some(&p.command_id), |f, now| {
                 apply_action(f, &p.action, &p.command_id, now)
             })?;
-        self.feature_changed(&applied);
+        self.task_changed(&applied);
         if applied.duplicate {
-            return Ok(applied.feature);
+            return Ok(applied.task);
         }
         // Answered what an ended task still asked: its own workspace may be
         // put away now (D-105).
-        if matches!(p.action, FeatureAction::Decide { .. })
+        if matches!(p.action, TaskAction::Decide { .. })
             && matches!(
-                applied.feature.status,
-                FeatureStatus::Done | FeatureStatus::Cancelled
+                applied.task.status,
+                TaskStatus::Done | TaskStatus::Cancelled
             )
         {
             self.finished.lock().unwrap().push(id.clone());
-            self.feature_wake.notify_one();
+            self.task_wake.notify_one();
         }
         // What the action means for a run in progress.
-        use otter_core::feature::RunState;
+        use otter_core::task::RunState;
         match &p.action {
-            FeatureAction::Decide {
+            TaskAction::Decide {
                 decision_id,
                 approve,
                 answer,
                 answers,
             } => {
-                let by = otter_core::feature::Decider::User;
+                let by = otter_core::task::Decider::User;
                 let reply = crate::runs::decision_reply(
                     *approve,
                     answer.clone(),
@@ -1024,14 +1053,14 @@ impl Daemon {
             }
             // The coding agent's turn is interrupted and the run ends; its
             // conversation is held (pause) or closed (cancel) (D-059).
-            FeatureAction::Pause => self.hold_runs(&id, false, "Paused").await,
-            FeatureAction::Cancel => self.hold_runs(&id, true, "Cancelled").await,
-            FeatureAction::Interrupt => self.interrupt_runs(&id).await,
-            FeatureAction::Redirect { text } => {
+            TaskAction::Pause => self.hold_runs(&id, false, "Paused").await,
+            TaskAction::Cancel => self.hold_runs(&id, true, "Cancelled").await,
+            TaskAction::Interrupt => self.interrupt_runs(&id).await,
+            TaskAction::Redirect { text } => {
                 // The turn carries the message's own id, as guidance would
                 // (D-059): passed on once, whichever way it goes.
                 let message = applied
-                    .feature
+                    .task
                     .messages
                     .iter()
                     .rev()
@@ -1040,23 +1069,23 @@ impl Daemon {
                     .unwrap_or_else(|| p.command_id.clone());
                 self.redirect_runs(&id, &message, text.trim()).await
             }
-            // The plan is about to change: the task in progress may not be in it.
-            FeatureAction::RequestChanges { .. } => {
+            // The plan is about to change: the step in progress may not be in it.
+            TaskAction::RequestChanges { .. } => {
                 self.stop_runs(&id, RunState::Cancelled, "The goal changed")
                     .await
             }
-            _ => return Ok(applied.feature),
+            _ => return Ok(applied.task),
         }
-        self.feature_get(id.as_str()).await
+        self.task_get(id.as_str()).await
     }
 
     /// Start (or restart) the app's preview for the developer: the first
     /// browser check's preview command, as a service session on a free
     /// port. A client reaches it by forwarding that one port (D-046).
-    async fn start_preview(self: &std::sync::Arc<Self>, id: &FeatureId) -> RpcResult<()> {
+    async fn start_preview(self: &std::sync::Arc<Self>, id: &TaskId) -> RpcResult<()> {
         use otter_core::{SessionKind, SessionSpec};
-        let f = self.feature_get(id.as_str()).await?;
-        let (root, _) = self.feature_workspace(&f).await?;
+        let f = self.task_get(id.as_str()).await?;
+        let (root, _) = self.task_workspace(&f).await?;
         let check = crate::browser::load_checks(&root)
             .map_err(|e| RpcError::invalid(format!("{e:#}")))?
             .into_iter()
@@ -1084,10 +1113,7 @@ impl Daemon {
                 )));
             }
         }
-        let ws = f
-            .workspace_id
-            .clone()
-            .expect("checked by feature_workspace");
+        let ws = f.workspace_id.clone().expect("checked by task_workspace");
         // One preview at a time: replace the last one.
         if let Some(old) = &f.preview {
             let _ = self
@@ -1112,27 +1138,27 @@ impl Daemon {
                 },
             })
             .await?;
-        let link = otter_core::feature::PreviewLink {
+        let link = otter_core::task::PreviewLink {
             session_id: session.id,
             port,
             path: check.preview.ready_path.clone(),
         };
-        let applied = self.features.lock().await.apply(id, None, move |f, _| {
+        let applied = self.tasks.lock().await.apply(id, None, move |f, _| {
             f.preview = Some(link);
             Ok(vec![])
         })?;
-        self.feature_changed(&applied);
+        self.task_changed(&applied);
         Ok(())
     }
 
-    /// A file a feature's checks produced, by name, from its artifacts.
-    pub(crate) async fn feature_artifact(
+    /// A file a task's checks produced, by name, from its artifacts.
+    pub(crate) async fn task_artifact(
         &self,
-        p: &otter_protocol::feature::FeatureArtifact,
+        p: &otter_protocol::task::TaskArtifact,
     ) -> RpcResult<otter_protocol::fs::FileChunk> {
         use base64::Engine;
         const MAX: u64 = 8 << 20;
-        let f = self.feature_get(&p.feature).await?;
+        let f = self.task_get(&p.task).await?;
         let name = p.name.trim_start_matches("artifact:");
         if name.is_empty() || name.contains('/') || name.contains("..") {
             return Err(RpcError::invalid("not an artifact name"));
@@ -1151,69 +1177,63 @@ impl Daemon {
         })
     }
 
-    pub(crate) async fn feature_events(
-        &self,
-        p: &FeatureEvents,
-    ) -> RpcResult<Vec<FeatureEventRecord>> {
-        let features = self.features.lock().await;
-        let id = FeatureId::from(p.feature.as_str());
-        if features.get(id.as_str()).is_none() {
-            return Err(feature_not_found(&p.feature));
+    pub(crate) async fn task_events(&self, p: &TaskEvents) -> RpcResult<Vec<TaskEventRecord>> {
+        let tasks = self.tasks.lock().await;
+        let id = TaskId::from(p.task.as_str());
+        if tasks.get(id.as_str()).is_none() {
+            return Err(task_not_found(&p.task));
         }
         let limit = p.limit.map_or(DEFAULT_HISTORY_LIMIT, |l| l as usize);
-        features
+        tasks
             .history(&id, p.after.unwrap_or(0), limit)
             .map_err(|e| RpcError::internal(format!("reading history: {e:#}")))
     }
 
-    /// Delete a feature that isn't running. A feature being worked on
+    /// Delete a task that isn't running. A task being worked on
     /// (planning, implementing, verifying, or with a run still going) must
     /// be paused or cancelled first. The workspace it used stays.
-    pub(crate) async fn feature_delete(&self, id: &str) -> RpcResult<()> {
-        let id = FeatureId::from(id);
-        let mut features = self.features.lock().await;
-        let f = features
+    pub(crate) async fn task_delete(&self, id: &str) -> RpcResult<()> {
+        let id = TaskId::from(id);
+        let mut tasks = self.tasks.lock().await;
+        let f = tasks
             .get(id.as_str())
-            .ok_or_else(|| feature_not_found(id.as_str()))?;
+            .ok_or_else(|| task_not_found(id.as_str()))?;
         if f.status.is_active() || f.live_run().is_some() {
             return Err(RpcError::conflict(format!(
-                "the feature is {}: pause or cancel it first",
+                "the task is {}: pause or cancel it first",
                 f.status.as_str()
             )));
         }
-        features
+        tasks
             .remove(&id)
-            .map_err(|e| RpcError::internal(format!("deleting feature: {e:#}")))?;
-        drop(features);
-        self.conversations.remove_for_feature(&id);
-        tracing::info!(feature = %id, "feature deleted");
-        self.events.emit(Event::FeatureDeleted { feature_id: id });
+            .map_err(|e| RpcError::internal(format!("deleting task: {e:#}")))?;
+        drop(tasks);
+        self.conversations.remove_for_task(&id);
+        tracing::info!(task = %id, "task deleted");
+        self.events.emit(Event::TaskDeleted { task_id: id });
         Ok(())
     }
 
-    /// Tell subscribers (and the controller) that a feature changed.
-    pub(crate) fn feature_changed(&self, applied: &Applied) {
+    /// Tell subscribers (and the controller) that a task changed.
+    pub(crate) fn task_changed(&self, applied: &Applied) {
         if applied.duplicate {
             return;
         }
         // Just ended: the controller puts its own workspace away (D-105).
-        if applied.from.is_some_and(|s| s != applied.feature.status)
+        if applied.from.is_some_and(|s| s != applied.task.status)
             && matches!(
-                applied.feature.status,
-                FeatureStatus::Done | FeatureStatus::Cancelled
+                applied.task.status,
+                TaskStatus::Done | TaskStatus::Cancelled
             )
         {
-            self.finished
-                .lock()
-                .unwrap()
-                .push(applied.feature.id.clone());
+            self.finished.lock().unwrap().push(applied.task.id.clone());
         }
-        self.events.emit(Event::FeatureChanged {
-            feature_id: applied.feature.id.clone(),
-            history_seq: applied.feature.history_seq,
-            status: applied.feature.status,
+        self.events.emit(Event::TaskChanged {
+            task_id: applied.task.id.clone(),
+            history_seq: applied.task.history_seq,
+            status: applied.task.status,
         });
-        self.feature_wake.notify_one();
+        self.task_wake.notify_one();
     }
 }
 
@@ -1234,31 +1254,31 @@ fn in_use(s: &otter_core::Session) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use otter_core::feature::{DecisionKind, DecisionRequest, Risk, Task};
-    use otter_core::{DecisionId, TaskId};
+    use otter_core::task::{DecisionKind, DecisionRequest, Risk, Step};
+    use otter_core::{DecisionId, StepId};
 
-    fn store() -> (tempfile::TempDir, FeatureStore) {
+    fn store() -> (tempfile::TempDir, TaskStore) {
         let dir = tempfile::tempdir().unwrap();
-        let s = FeatureStore::load(&dir.path().join("features")).unwrap();
+        let s = TaskStore::load(&dir.path().join("tasks")).unwrap();
         (dir, s)
     }
 
-    fn new_feature(s: &mut FeatureStore, cmd: &str) -> Feature {
-        let f = Feature::new("Export CSV".into(), "please".into(), Utc::now());
+    fn new_task(s: &mut TaskStore, cmd: &str) -> Task {
+        let f = Task::new("Export CSV".into(), "please".into(), Utc::now());
         s.insert(
             f,
             Some(cmd),
-            vec![Change::new(FeatureEvent::FeatureCreated {
+            vec![Change::new(TaskEvent::TaskCreated {
                 title: "Export CSV".into(),
             })],
         )
         .unwrap()
-        .feature
+        .task
     }
 
-    fn task(title: &str, status: TaskStatus, planning: bool) -> Task {
-        Task {
-            id: TaskId::generate(),
+    fn step(title: &str, status: StepStatus, planning: bool) -> Step {
+        Step {
+            id: StepId::generate(),
             title: title.into(),
             detail: None,
             status,
@@ -1273,27 +1293,27 @@ mod tests {
 
     /// Planning again goes back to the coding agent (D-084): its planning
     /// turn is due again, a plan waiting for the developer's OK is moot, and
-    /// the feature plans — even resumed or retried — until a plan is set.
+    /// the task plans — even resumed or retried — until a plan is set.
     #[test]
     fn planning_again_is_the_agents_turn_again() {
         let now = Utc::now();
         // An answered question: nothing was planned, so nothing is revised.
-        let mut f = Feature::new("t".into(), "r".into(), now);
-        f.status = FeatureStatus::Done;
-        f.tasks = vec![task("Look", TaskStatus::Done, true)];
+        let mut f = Task::new("t".into(), "r".into(), now);
+        f.status = TaskStatus::Done;
+        f.steps = vec![step("Look", StepStatus::Done, true)];
         replan(&mut f, "more", now);
-        assert_eq!(f.status, FeatureStatus::Planning);
+        assert_eq!(f.status, TaskStatus::Planning);
         assert!(!f.replan);
-        assert_eq!(f.tasks[0].status, TaskStatus::Pending);
+        assert_eq!(f.steps[0].status, StepStatus::Pending);
         // Work planned, a revised plan waiting on the developer.
-        let mut f = Feature::new("t".into(), "r".into(), now);
-        f.status = FeatureStatus::Blocked;
-        let mut look = task("Look", TaskStatus::Done, true);
+        let mut f = Task::new("t".into(), "r".into(), now);
+        f.status = TaskStatus::Blocked;
+        let mut look = step("Look", StepStatus::Done, true);
         look.detail = Some("- vague\n".into());
-        f.tasks = vec![look, task("Build", TaskStatus::Done, false)];
+        f.steps = vec![look, step("Build", StepStatus::Done, false)];
         f.decisions.push(DecisionRequest {
             id: DecisionId::generate(),
-            task_id: Some(f.tasks[0].id.clone()),
+            step_id: Some(f.steps[0].id.clone()),
             run_id: None,
             kind: DecisionKind::PlanApproval,
             risk: Risk::Low,
@@ -1311,28 +1331,28 @@ mod tests {
         });
         replan(&mut f, "changed", now);
         assert!(f.replan);
-        assert_eq!(f.tasks[0].status, TaskStatus::Pending);
-        assert_eq!(f.tasks[0].detail, None, "a fresh look, not a revision");
+        assert_eq!(f.steps[0].status, StepStatus::Pending);
+        assert_eq!(f.steps[0].detail, None, "a fresh look, not a revision");
         assert_eq!(f.decisions[0].status, DecisionStatus::Cancelled);
         // All the work done, but planning again: still planning.
-        assert_eq!(resume_status(&f), FeatureStatus::Planning);
+        assert_eq!(resume_status(&f), TaskStatus::Planning);
         f.replan = false;
-        f.tasks[0].status = TaskStatus::Done;
-        assert_eq!(resume_status(&f), FeatureStatus::Verifying);
+        f.steps[0].status = StepStatus::Done;
+        assert_eq!(resume_status(&f), TaskStatus::Verifying);
         // Sent back by the review, then the goal changed before the agent
         // looked again: a fresh look, not the old points.
-        f.tasks[0].status = TaskStatus::Pending;
-        f.tasks[0].detail = Some("- vague\n".into());
+        f.steps[0].status = StepStatus::Pending;
+        f.steps[0].detail = Some("- vague\n".into());
         replan(&mut f, "changed again", now);
-        assert_eq!(f.tasks[0].detail, None);
+        assert_eq!(f.steps[0].detail, None);
     }
 
     #[test]
     fn state_and_history_survive_a_reload() {
         let (dir, mut s) = store();
-        let f = new_feature(&mut s, "c1");
+        let f = new_task(&mut s, "c1");
         s.apply(&f.id, Some("c2"), |f, now| {
-            apply_action(f, &FeatureAction::Start, "c2", now)
+            apply_action(f, &TaskAction::Start, "c2", now)
         })
         .unwrap();
         s.apply(&f.id, Some("c3"), |f, _| {
@@ -1342,15 +1362,15 @@ mod tests {
         })
         .unwrap();
 
-        let again = FeatureStore::load(&dir.path().join("features")).unwrap();
+        let again = TaskStore::load(&dir.path().join("tasks")).unwrap();
         let g = again.get(f.id.as_str()).unwrap();
-        assert_eq!(g.status, FeatureStatus::Planning);
+        assert_eq!(g.status, TaskStatus::Planning);
         assert_eq!(g.messages.last().unwrap().text, "hello");
         let h = again.history(&f.id, 0, 100).unwrap();
         let seqs: Vec<u64> = h.iter().map(|r| r.seq).collect();
         assert_eq!(seqs, vec![1, 2, 3, 4]);
         assert_eq!(g.history_seq, 4);
-        assert!(h.iter().all(|r| r.v == FEATURE_EVENT_SCHEMA));
+        assert!(h.iter().all(|r| r.v == TASK_EVENT_SCHEMA));
         assert_eq!(h[3].correlation_id.as_deref(), Some("c3"));
         // Cursor replay: only what came after.
         assert_eq!(again.history(&f.id, 2, 100).unwrap().len(), 2);
@@ -1360,8 +1380,8 @@ mod tests {
     #[test]
     fn a_repeated_command_is_applied_once() {
         let (_dir, mut s) = store();
-        let f = new_feature(&mut s, "c1");
-        let send = |s: &mut FeatureStore| {
+        let f = new_task(&mut s, "c1");
+        let send = |s: &mut TaskStore| {
             s.apply(&f.id, Some("c2"), |f, _| {
                 let (m, c) = message(MessageRole::User, "once".into(), Some("c2".into()));
                 f.messages.push(m);
@@ -1372,7 +1392,7 @@ mod tests {
         assert!(!send(&mut s).duplicate);
         let second = send(&mut s);
         assert!(second.duplicate);
-        assert_eq!(second.feature.history_seq, 2);
+        assert_eq!(second.task.history_seq, 2);
         let g = s.get(f.id.as_str()).unwrap();
         assert_eq!(g.messages.iter().filter(|m| m.text == "once").count(), 1);
         assert_eq!(s.applied("c1").unwrap().id, f.id);
@@ -1381,12 +1401,12 @@ mod tests {
     #[test]
     fn a_failed_step_changes_nothing() {
         let (_dir, mut s) = store();
-        let f = new_feature(&mut s, "c1");
+        let f = new_task(&mut s, "c1");
         let err = s
             .apply(&f.id, Some("c2"), |f, now| {
                 apply_action(
                     f,
-                    &FeatureAction::Accept {
+                    &TaskAction::Accept {
                         override_gates: false,
                     },
                     "c2",
@@ -1397,7 +1417,7 @@ mod tests {
             .unwrap();
         assert_eq!(err.code, otter_protocol::ErrorCode::Conflict);
         let g = s.get(f.id.as_str()).unwrap();
-        assert_eq!(g.status, FeatureStatus::Draft);
+        assert_eq!(g.status, TaskStatus::Draft);
         assert_eq!(g.history_seq, 1);
         // Not remembered as applied: a corrected retry may use it.
         assert!(s.applied("c2").is_none());
@@ -1406,16 +1426,16 @@ mod tests {
     #[test]
     fn deciding_the_last_pending_decision_unblocks() {
         let (_dir, mut s) = store();
-        let f = new_feature(&mut s, "c1");
+        let f = new_task(&mut s, "c1");
         let dec = DecisionId::generate();
         let d2 = dec.clone();
         s.apply(&f.id, None, move |f, now| {
-            f.transition(FeatureStatus::Planning, None, now).unwrap();
-            f.tasks.push(Task {
-                id: TaskId::generate(),
+            f.transition(TaskStatus::Planning, None, now).unwrap();
+            f.steps.push(Step {
+                id: StepId::generate(),
                 title: "t".into(),
                 detail: None,
-                status: TaskStatus::Running,
+                status: StepStatus::Running,
                 depends_on: vec![],
                 workspace_id: None,
                 session_id: None,
@@ -1423,12 +1443,11 @@ mod tests {
                 last_error: None,
                 planning: false,
             });
-            f.transition(FeatureStatus::Implementing, None, now)
-                .unwrap();
-            f.transition(FeatureStatus::Blocked, None, now).unwrap();
+            f.transition(TaskStatus::Implementing, None, now).unwrap();
+            f.transition(TaskStatus::Blocked, None, now).unwrap();
             f.decisions.push(DecisionRequest {
                 id: d2,
-                task_id: None,
+                step_id: None,
                 run_id: None,
                 kind: DecisionKind::ToolPermission,
                 risk: Risk::High,
@@ -1447,7 +1466,7 @@ mod tests {
             Ok(vec![])
         })
         .unwrap();
-        let action = FeatureAction::Decide {
+        let action = TaskAction::Decide {
             decision_id: dec.clone(),
             approve: false,
             answer: None,
@@ -1458,9 +1477,9 @@ mod tests {
                 apply_action(f, &action, "c9", now)
             })
             .unwrap();
-        assert_eq!(out.feature.status, FeatureStatus::Implementing);
-        assert_eq!(out.feature.decisions[0].status, DecisionStatus::Denied);
-        assert_eq!(out.feature.decisions[0].decided_by, Some(Decider::User));
+        assert_eq!(out.task.status, TaskStatus::Implementing);
+        assert_eq!(out.task.decisions[0].status, DecisionStatus::Denied);
+        assert_eq!(out.task.decisions[0].decided_by, Some(Decider::User));
         // Deciding again conflicts.
         let again = s.apply(&f.id, Some("c10"), |f, now| {
             apply_action(f, &action, "c10", now)
@@ -1468,20 +1487,20 @@ mod tests {
         assert!(again.is_err());
     }
 
-    /// A feature blocked on a recovery decision for its blocked task.
-    fn awaiting_recovery(s: &mut FeatureStore, cmd: &str) -> (Feature, DecisionId) {
-        let f = new_feature(s, cmd);
+    /// A task blocked on a recovery decision for its blocked step.
+    fn awaiting_recovery(s: &mut TaskStore, cmd: &str) -> (Task, DecisionId) {
+        let f = new_task(s, cmd);
         let dec = DecisionId::generate();
         let d2 = dec.clone();
         let f = s
             .apply(&f.id, None, move |f, now| {
-                f.transition(FeatureStatus::Planning, None, now).unwrap();
-                let task = TaskId::generate();
-                f.tasks.push(Task {
-                    id: task.clone(),
+                f.transition(TaskStatus::Planning, None, now).unwrap();
+                let step = StepId::generate();
+                f.steps.push(Step {
+                    id: step.clone(),
                     title: "t".into(),
                     detail: None,
-                    status: TaskStatus::Blocked,
+                    status: StepStatus::Blocked,
                     depends_on: vec![],
                     workspace_id: None,
                     session_id: None,
@@ -1489,12 +1508,11 @@ mod tests {
                     last_error: Some("otterd restarted".into()),
                     planning: false,
                 });
-                f.transition(FeatureStatus::Implementing, None, now)
-                    .unwrap();
-                f.transition(FeatureStatus::Blocked, None, now).unwrap();
+                f.transition(TaskStatus::Implementing, None, now).unwrap();
+                f.transition(TaskStatus::Blocked, None, now).unwrap();
                 f.decisions.push(DecisionRequest {
                     id: d2,
-                    task_id: Some(task),
+                    step_id: Some(step),
                     run_id: None,
                     kind: DecisionKind::Recovery,
                     risk: Risk::High,
@@ -1513,12 +1531,12 @@ mod tests {
                 Ok(vec![])
             })
             .unwrap()
-            .feature;
+            .task;
         (f, dec)
     }
 
-    fn decide(s: &mut FeatureStore, f: &Feature, dec: &DecisionId, approve: bool) -> Feature {
-        let action = FeatureAction::Decide {
+    fn decide(s: &mut TaskStore, f: &Task, dec: &DecisionId, approve: bool) -> Task {
+        let action = TaskAction::Decide {
             decision_id: dec.clone(),
             approve,
             answer: None,
@@ -1528,7 +1546,7 @@ mod tests {
             apply_action(f, &action, "c9", now)
         })
         .unwrap()
-        .feature
+        .task
     }
 
     #[test]
@@ -1538,8 +1556,8 @@ mod tests {
         let out = decide(&mut s, &f, &dec, true);
         assert_eq!(out.decisions[0].status, DecisionStatus::Approved);
         assert_eq!(out.decisions[0].decided_by, Some(Decider::User));
-        assert_eq!(out.tasks[0].status, TaskStatus::Pending);
-        assert_eq!(out.status, FeatureStatus::Implementing);
+        assert_eq!(out.steps[0].status, StepStatus::Pending);
+        assert_eq!(out.status, TaskStatus::Implementing);
     }
 
     #[test]
@@ -1549,32 +1567,28 @@ mod tests {
         let out = decide(&mut s, &f, &dec, false);
         assert_eq!(out.decisions[0].status, DecisionStatus::Denied);
         // Ready again, but nothing starts on its own.
-        assert_eq!(out.tasks[0].status, TaskStatus::Pending);
-        assert_eq!(out.status, FeatureStatus::Paused);
-        // Resuming carries on with the task.
+        assert_eq!(out.steps[0].status, StepStatus::Pending);
+        assert_eq!(out.status, TaskStatus::Paused);
+        // Resuming carries on with the step.
         let out = s
             .apply(&f.id, Some("c10"), |f, now| {
-                apply_action(f, &FeatureAction::Resume, "c10", now)
+                apply_action(f, &TaskAction::Resume, "c10", now)
             })
             .unwrap()
-            .feature;
-        assert_eq!(out.status, FeatureStatus::Implementing);
+            .task;
+        assert_eq!(out.status, TaskStatus::Implementing);
     }
 
     #[test]
     fn a_newer_schema_is_skipped_not_clobbered() {
         let (dir, mut s) = store();
-        let f = new_feature(&mut s, "c1");
-        let path = dir
-            .path()
-            .join("features")
-            .join(f.id.as_str())
-            .join("feature.json");
+        let f = new_task(&mut s, "c1");
+        let path = dir.path().join("tasks").join(f.id.as_str()).join(DOC);
         let mut v: serde_json::Value =
             serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
-        v["schema"] = serde_json::json!(FEATURE_SCHEMA + 1);
+        v["schema"] = serde_json::json!(TASK_SCHEMA + 1);
         std::fs::write(&path, serde_json::to_vec(&v).unwrap()).unwrap();
-        let again = FeatureStore::load(&dir.path().join("features")).unwrap();
+        let again = TaskStore::load(&dir.path().join("tasks")).unwrap();
         assert!(again.get(f.id.as_str()).is_none());
         // Still on disk for the newer otterd.
         assert!(path.exists());
@@ -1583,14 +1597,14 @@ mod tests {
     #[test]
     fn a_torn_history_line_is_ignored() {
         let (dir, mut s) = store();
-        let f = new_feature(&mut s, "c1");
-        let path = history_path(&dir.path().join("features"), &f.id);
+        let f = new_task(&mut s, "c1");
+        let path = history_path(&dir.path().join("tasks"), &f.id);
         let mut file = std::fs::OpenOptions::new()
             .append(true)
             .open(&path)
             .unwrap();
         file.write_all(br#"{"seq":2,"ts":"2026"#).unwrap();
-        let again = FeatureStore::load(&dir.path().join("features")).unwrap();
+        let again = TaskStore::load(&dir.path().join("tasks")).unwrap();
         assert_eq!(again.history(&f.id, 0, 10).unwrap().len(), 1);
         assert_eq!(again.get(f.id.as_str()).unwrap().history_seq, 1);
     }

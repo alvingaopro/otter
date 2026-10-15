@@ -83,7 +83,7 @@ function ViewIcon({ view }: { view: View }) {
       </svg>
     );
   }
-  if (view === "features") {
+  if (view === "tasks") {
     // A flag: a goal to reach.
     return (
       <svg width="18" height="18" viewBox="0 0 18 18" aria-hidden="true">

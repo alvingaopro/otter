@@ -47,7 +47,7 @@ record it in [`decisions.md`](decisions.md) first.
   the daemon but not managed processes, and a new daemon adopts them
   (`reconcile`).
 - Test: `daemon_restart_adopts_running_sessions_and_records_changes`.
-- Exception (D-044): a feature's *managed* agent run talks to `otterd` over
+- Exception (D-044): a task's *managed* agent run talks to `otterd` over
   its stdin/stdout, so it ends when the daemon does. Its conversation
   doesn't: it is journaled (D-058), the run's agent session id is kept, a
   new daemon records the run's end (outcome unknown, never "completed")
@@ -143,7 +143,7 @@ record it in [`decisions.md`](decisions.md) first.
   `set: bool`.
 - Text from outside — what direnv, tmux, Git, the Claude worker, the
   coding agent and its tools print — passes `otter_core::redact` before it
-  becomes Otter's: state, events, conversation journals, feature
+  becomes Otter's: state, events, conversation journals, task
   documents and messages, otterd's log, responses (D-075). A repository
   URL is kept as given in its workspace's record (Git needs it) and shown
   without credentials.

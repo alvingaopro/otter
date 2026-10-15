@@ -52,7 +52,7 @@ interface Props {
   /** Open a port of this host in the browser (forwarded if remote). */
   onOpenPort: (port: number) => void;
   /** Show the task this workspace was made for (D-105). */
-  onOpenTask: (featureId: string) => void;
+  onOpenTask: (taskId: string) => void;
 }
 
 type Open = "brief" | "new-session" | "archive-workspace" | "delete-workspace" | "delete-session" | "rename-session" | null;
@@ -276,8 +276,8 @@ export function WorkspacePane({
               {changesLine(changes.changes)}
             </button>
           )}
-          {ws.featureId && (
-            <button className="chip changes-chip" title="The task this workspace was made for" onClick={() => onOpenTask(ws.featureId!)}>
+          {ws.taskId && (
+            <button className="chip changes-chip" title="The task this workspace was made for" onClick={() => onOpenTask(ws.taskId!)}>
               Task ↗
             </button>
           )}

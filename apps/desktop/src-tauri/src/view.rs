@@ -63,7 +63,7 @@ pub struct WorkspaceView {
     pub repository: Option<String>,
     /// The task it was made for (D-105).
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub feature_id: Option<String>,
+    pub task_id: Option<String>,
     pub sessions: Vec<SessionView>,
     pub attention: Vec<AttentionView>,
     pub updated_at: Timestamp,
@@ -147,7 +147,7 @@ impl From<&Workspace> for WorkspaceView {
                 WorkspaceSource::Git(g) => Some(otter_core::redact::url_credentials(&g.repository)),
                 _ => None,
             },
-            feature_id: ws.feature_id.as_ref().map(|f| f.to_string()),
+            task_id: ws.task_id.as_ref().map(|f| f.to_string()),
             sessions: ws.sessions.iter().map(|s| session_view(ws, s)).collect(),
             attention: ws.attention.iter().map(AttentionView::from).collect(),
             updated_at: ws.updated_at,

@@ -15,7 +15,6 @@ mod dial;
 mod env;
 mod environment;
 mod events;
-mod features;
 mod files;
 mod gateway;
 mod git;
@@ -31,6 +30,7 @@ mod server;
 mod sessions;
 mod settings;
 mod store;
+mod tasks;
 mod triggers;
 mod turn;
 mod work_state;
@@ -171,11 +171,12 @@ async fn serve(paths: Paths) -> Result<()> {
     }
     let store = Store::load(&paths.state_file)?;
     let events = EventLog::open_with(&paths.events_file, events::Limits::from_env())?;
-    let features = features::FeatureStore::load(&paths.features_dir)?;
+    tasks::move_from_features(&paths.state_dir);
+    let tasks = tasks::TaskStore::load(&paths.tasks_dir)?;
     let daemon = Arc::new(Daemon::new(
         paths.clone(),
         store,
-        features,
+        tasks,
         backend,
         events,
         resolved,
@@ -193,18 +194,18 @@ async fn serve(paths: Paths) -> Result<()> {
     let weak = Arc::downgrade(&daemon);
     daemon
         .conversations
-        .on_change(Box::new(move |id, revision, feature| {
+        .on_change(Box::new(move |id, revision, task| {
             if let Some(d) = weak.upgrade() {
                 d.events.emit(otter_protocol::Event::ConversationChanged {
                     conversation_id: id.clone(),
                     revision,
-                    feature_id: feature.cloned(),
+                    task_id: task.cloned(),
                 });
             }
         }));
     // Managed runs ended with the old daemon; their conversations resume.
     daemon.recover_runs().await;
-    // The Control Agent steps features from here on (D-045).
+    // The Control Agent steps tasks from here on (D-045).
     tokio::spawn(daemon.clone().run_controller());
     tokio::spawn(daemon.clone().run_triggers());
 

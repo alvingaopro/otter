@@ -460,43 +460,43 @@ fn same_name_on_two_hosts_needs_the_host() {
 }
 
 #[test]
-fn features_and_the_coding_runtime_from_the_terminal() {
+fn tasks_and_the_coding_runtime_from_the_terminal() {
     let home = Home::new();
     let cli = Cli::new();
     cli.add_local_host("here", &home);
 
     let out = cli.ok(&[
-        "feature",
+        "task",
         "new",
         "Export: timeline as CSV",
         "--request",
         "Add a CSV export",
     ]);
-    assert!(out.contains("a draft; `otter feature start ft_"), "{out}");
-    let ls = cli.ok(&["feature", "ls"]);
+    assert!(out.contains("a draft; `otter task start ft_"), "{out}");
+    // Its name before D-107 still works.
+    let ls = cli.ok(&["task", "ls"]);
     assert!(
         ls.contains("Export: timeline as CSV") && ls.contains("draft"),
         "{ls}"
     );
-    let all: serde_json::Value =
-        serde_json::from_str(&cli.ok(&["feature", "ls", "--json"])).unwrap();
+    let all: serde_json::Value = serde_json::from_str(&cli.ok(&["task", "ls", "--json"])).unwrap();
     assert_eq!(all[0]["host"], "here");
     let id = all[0]["id"].as_str().unwrap().to_owned();
 
     // By id, by host and title start (a title's own colon is no host), any case.
-    let out = cli.ok(&["feature", "message", "here:export", "Use commas"]);
+    let out = cli.ok(&["task", "message", "here:export", "Use commas"]);
     assert!(out.contains("Otter has your message"), "{out}");
-    let show = cli.ok(&["feature", "show", &id]);
+    let show = cli.ok(&["task", "show", &id]);
     assert!(
         show.contains("status: draft") && show.contains("Use commas"),
         "{show}"
     );
     // Its history, from the terminal (D-076).
-    let history = cli.ok(&["feature", "history", "export"]);
+    let history = cli.ok(&["task", "history", "export"]);
     assert!(history.contains("You sent a message"), "{history}");
-    let err = cli.fails(&["feature", "show", "Nothing like it"]);
-    assert!(err.contains("no feature `Nothing like it`"), "{err}");
-    let err = cli.fails(&["feature", "decide", "export", "dec_x"]);
+    let err = cli.fails(&["task", "show", "Nothing like it"]);
+    assert!(err.contains("no task `Nothing like it`"), "{err}");
+    let err = cli.fails(&["task", "decide", "export", "dec_x"]);
     assert!(err.contains("has no decision `dec_x`"), "{err}");
 
     let status = cli.ok(&["runtime", "status"]);
@@ -514,25 +514,22 @@ fn features_and_the_coding_runtime_from_the_terminal() {
     let err = cli.fails(&["conv", "show", "conv_nope"]);
     assert!(err.contains("no conversation `conv_nope`"), "{err}");
 
-    assert!(
-        cli.ok(&["feature", "start", "export"])
-            .contains(": planning")
-    );
+    assert!(cli.ok(&["task", "start", "export"]).contains(": planning"));
     // Everything at work, held and let go at once (D-081).
-    let out = cli.ok(&["feature", "pause", "--all"]);
+    let out = cli.ok(&["task", "pause", "--all"]);
     assert!(
         out.contains("here:Export: timeline as CSV: paused"),
         "{out}"
     );
     assert!(
-        cli.ok(&["feature", "pause", "--all"])
+        cli.ok(&["task", "pause", "--all"])
             .contains("nothing is at work")
     );
-    let out = cli.ok(&["feature", "resume", "--all", "--host", "here"]);
+    let out = cli.ok(&["task", "resume", "--all", "--host", "here"]);
     assert!(out.contains(": planning"), "{out}");
-    assert!(cli.ok(&["feature", "pause", "export"]).contains(": paused"));
+    assert!(cli.ok(&["task", "pause", "export"]).contains(": paused"));
     assert!(
-        cli.ok(&["feature", "cancel", "export"])
+        cli.ok(&["task", "cancel", "export"])
             .contains(": cancelled")
     );
 }
@@ -624,12 +621,12 @@ fn ssh_host_normal_flow() {
     eprintln!("ssh e2e: passed over ssh localhost");
 }
 
-/// The M2 golden path from the terminal (D-068): a feature written and
+/// The M2 golden path from the terminal (D-068): a task written and
 /// started with `otter`, worked on by a coding agent (a fake one), checked,
 /// published as a pull request (a real Git remote, a fake `gh`), followed
 /// through CI and accepted — in a disposable repository.
 #[test]
-fn a_feature_goes_from_the_terminal_to_an_accepted_pull_request() {
+fn a_task_goes_from_the_terminal_to_an_accepted_pull_request() {
     use std::os::unix::fs::PermissionsExt;
     let scratch = tempfile::Builder::new().prefix("wg").tempdir().unwrap();
     let dir = scratch.path();
@@ -718,7 +715,7 @@ fn a_feature_goes_from_the_terminal_to_an_accepted_pull_request() {
         "--no-shell",
     ]);
     let out = cli.ok(&[
-        "feature",
+        "task",
         "new",
         "CSV export",
         "--request",
@@ -727,10 +724,10 @@ fn a_feature_goes_from_the_terminal_to_an_accepted_pull_request() {
         "csv",
     ]);
     assert!(out.contains("a draft"), "{out}");
-    cli.ok(&["feature", "start", "csv export"]);
+    cli.ok(&["task", "start", "csv export"]);
 
     let show = |cli: &Cli| -> serde_json::Value {
-        serde_json::from_str(&cli.ok(&["feature", "show", "csv export", "--json"])).unwrap()
+        serde_json::from_str(&cli.ok(&["task", "show", "csv export", "--json"])).unwrap()
     };
     let wait = |what: &str, done: &dyn Fn(&serde_json::Value) -> bool| -> serde_json::Value {
         let deadline = Instant::now() + Duration::from_secs(30);
@@ -770,7 +767,7 @@ fn a_feature_goes_from_the_terminal_to_an_accepted_pull_request() {
         "echo id\n",
     )
     .unwrap();
-    cli.ok(&["feature", "decide", "csv export", &decision]);
+    cli.ok(&["task", "decide", "csv export", &decision]);
     wait("the pull request", &|f| f["delivery"]["pr_url"].is_string());
     std::fs::write(
         gh.join("checks.json"),
@@ -778,7 +775,7 @@ fn a_feature_goes_from_the_terminal_to_an_accepted_pull_request() {
     )
     .unwrap();
     wait("the report", &|f| f["report"].is_string());
-    let out = cli.ok(&["feature", "accept", "csv export"]);
+    let out = cli.ok(&["task", "accept", "csv export"]);
     assert!(out.contains(": done"), "{out}");
     // On the remote: the branch, with the work.
     let pushed = git(&["show", "--stat", "--format=%s", "feature/csv"]);

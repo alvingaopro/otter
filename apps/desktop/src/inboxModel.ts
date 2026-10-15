@@ -1,16 +1,16 @@
 // The Inbox (design §26, D-072): everything going on, on every connected
-// host — features and workspaces — in one list. What needs the developer
+// host — tasks and workspaces — in one list. What needs the developer
 // comes first, longest-waiting first; then what is working; then what is
 // done. Pure: grouping, order and wording only.
 
-import { featureActivity, needOf, STATUS_LABEL, statusDetail, type Need, type PlacedFeature } from "./features";
+import { taskActivity, needOf, STATUS_LABEL, statusDetail, type Need, type PlacedTask } from "./tasks";
 import { headline } from "./model";
 import type { Activity, Placed } from "./types";
 
 export type InboxGroupId = "needs" | "working" | "done";
 
 export interface InboxItem {
-  /** `feature:host/id` or `workspace:host/id`. */
+  /** `task:host/id` or `workspace:host/id`. */
   id: string;
   host: string;
   title: string;
@@ -18,7 +18,7 @@ export interface InboxItem {
   /** Since when it waits (needs), or its latest activity. */
   since?: string;
   activity: Activity;
-  feature?: PlacedFeature;
+  task?: PlacedTask;
   workspace?: Placed;
   need?: Need;
 }
@@ -40,17 +40,17 @@ const GROUP: Partial<Record<Activity, InboxGroupId>> = {
   completed: "done",
 };
 
-export function inboxItems(features: PlacedFeature[], workspaces: Placed[]): InboxItem[] {
-  const fromFeatures = features.map((p): InboxItem => {
-    const need = needOf(p.feature);
+export function inboxItems(tasks: PlacedTask[], workspaces: Placed[]): InboxItem[] {
+  const fromTasks = tasks.map((p): InboxItem => {
+    const need = needOf(p.task);
     return {
-      id: `feature:${p.key}`,
+      id: `task:${p.key}`,
       host: p.host,
-      title: p.feature.title,
-      summary: need?.summary ?? statusDetail(p.feature) ?? STATUS_LABEL[p.feature.status],
-      since: need?.since ?? p.feature.updated_at,
-      activity: featureActivity(p.feature),
-      feature: p,
+      title: p.task.title,
+      summary: need?.summary ?? statusDetail(p.task) ?? STATUS_LABEL[p.task.status],
+      since: need?.since ?? p.task.updated_at,
+      activity: taskActivity(p.task),
+      task: p,
       need,
     };
   });
@@ -66,7 +66,7 @@ export function inboxItems(features: PlacedFeature[], workspaces: Placed[]): Inb
       workspace: p,
     };
   });
-  return [...fromFeatures, ...fromWorkspaces];
+  return [...fromTasks, ...fromWorkspaces];
 }
 
 /** NEEDS YOU (longest-waiting first), WORKING and DONE (newest first); idle and archived work isn't in the inbox. */
@@ -106,28 +106,28 @@ export interface NewNeed {
 }
 
 /**
- * What features newly need the developer, since `seen` (feature key → the
- * need it had, `null` for none). A feature seen for the first time is the
+ * What tasks newly need the developer, since `seen` (task key → the
+ * need it had, `null` for none). A task seen for the first time is the
  * baseline — what waited before the app looked isn't news.
  */
-export function newNeeds(seen: Map<string, string | null>, list: PlacedFeature[]): NewNeed[] {
+export function newNeeds(seen: Map<string, string | null>, list: PlacedTask[]): NewNeed[] {
   const out: NewNeed[] = [];
   for (const p of list) {
-    const need = needOf(p.feature);
+    const need = needOf(p.task);
     const id = need ? needId(need) : null;
     if (seen.has(p.key) && need && id !== seen.get(p.key)) {
-      out.push({ key: p.key, host: p.host, title: p.feature.title, need });
+      out.push({ key: p.key, host: p.host, title: p.task.title, need });
     }
     seen.set(p.key, id);
   }
   return out;
 }
 
-/** Features in the menu bar item: what waits, longest first (keys `feature:host/id`). */
-export function trayFeatures(list: PlacedFeature[], label: (title: string, what: string, host: string) => string): { key: string; label: string }[] {
+/** Tasks in the menu bar item: what waits, longest first (keys `task:host/id`). */
+export function trayTasks(list: PlacedTask[], label: (title: string, what: string, host: string) => string): { key: string; label: string }[] {
   return list
-    .map((p) => ({ p, need: needOf(p.feature) }))
-    .filter((x): x is { p: PlacedFeature; need: Need } => x.need !== undefined)
+    .map((p) => ({ p, need: needOf(p.task) }))
+    .filter((x): x is { p: PlacedTask; need: Need } => x.need !== undefined)
     .sort((a, b) => a.need.since.localeCompare(b.need.since))
-    .map(({ p, need }) => ({ key: `feature:${p.key}`, label: label(p.feature.title, need.summary, p.host) }));
+    .map(({ p, need }) => ({ key: `task:${p.key}`, label: label(p.task.title, need.summary, p.host) }));
 }

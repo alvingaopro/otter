@@ -77,7 +77,7 @@ pub fn controllers() -> Vec<ControllerInfo> {
         "No model: every decision goes to you",
         false,
     ));
-    c.push(fixed("off", "Off: features don't run on their own", false));
+    c.push(fixed("off", "Off: tasks don't run on their own", false));
     c
 }
 
@@ -338,7 +338,7 @@ impl Daemon {
         tracing::info!("settings changed");
         drop(s);
         // A new controller or key: let it look again.
-        self.feature_wake.notify_one();
+        self.task_wake.notify_one();
         // As `settings.get` has it: what runs now, and how Otter answers.
         Ok(self.settings_get())
     }

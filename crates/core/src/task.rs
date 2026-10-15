@@ -1,40 +1,40 @@
-//! Features: product work — what should be built — as opposed to a
+//! Tasks: product work — what should be built — as opposed to a
 //! [`crate::Workspace`], which is where work runs (D-042, D-043).
 //!
-//! A feature is owned by one host's daemon. It links to workspaces and
+//! A task is owned by one host's daemon. It links to workspaces and
 //! sessions on that host by id and never embeds them, and no workspace knows
-//! about features. Three things are kept apart:
+//! about tasks. Three things are kept apart:
 //!
 //! - **messages** — the conversation between the developer, the Control
 //!   Agent and the coding agent (what was *said*);
 //! - **commands** — what a client *asks* the daemon to do
-//!   ([`FeatureAction`], carrying a client-chosen id so a repeated delivery
+//!   ([`TaskAction`], carrying a client-chosen id so a repeated delivery
 //!   is applied once);
-//! - **events** — what *happened*, appended to the feature's own ordered
-//!   history ([`FeatureEventRecord`]).
+//! - **events** — what *happened*, appended to the task's own ordered
+//!   history ([`TaskEventRecord`]).
 
 use serde::{Deserialize, Serialize};
 
 use crate::ids::{
-    ConversationId, DecisionId, EvidenceId, FeatureId, MessageId, RunId, SessionId, TaskId, TurnId,
+    ConversationId, DecisionId, EvidenceId, MessageId, RunId, SessionId, StepId, TaskId, TurnId,
     WorkspaceId,
 };
 use crate::model::{Activity, Timestamp};
 
-/// Version of the persisted [`Feature`] document. Bump with a migration in
-/// the daemon's feature store.
-pub const FEATURE_SCHEMA: u32 = 1;
-/// Version of a [`FeatureEventRecord`] line.
-pub const FEATURE_EVENT_SCHEMA: u32 = 1;
+/// Version of the persisted [`Task`] document. Bump with a migration in
+/// the daemon's task store.
+pub const TASK_SCHEMA: u32 = 1;
+/// Version of a [`TaskEventRecord`] line.
+pub const TASK_EVENT_SCHEMA: u32 = 1;
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "snake_case")]
-pub enum FeatureStatus {
+pub enum TaskStatus {
     /// Written down, not started.
     Draft,
-    /// The Control Agent is writing requirements, acceptance criteria and tasks.
+    /// The Control Agent is writing requirements, acceptance criteria and steps.
     Planning,
-    /// A coding agent works on the tasks.
+    /// A coding agent works on the steps.
     Implementing,
     /// Checking the result against the acceptance criteria.
     Verifying,
@@ -50,33 +50,33 @@ pub enum FeatureStatus {
     Cancelled,
 }
 
-impl FeatureStatus {
+impl TaskStatus {
     pub fn as_str(self) -> &'static str {
         match self {
-            FeatureStatus::Draft => "draft",
-            FeatureStatus::Planning => "planning",
-            FeatureStatus::Implementing => "implementing",
-            FeatureStatus::Verifying => "verifying",
-            FeatureStatus::Review => "review",
-            FeatureStatus::Done => "done",
-            FeatureStatus::Blocked => "blocked",
-            FeatureStatus::Paused => "paused",
-            FeatureStatus::Failed => "failed",
-            FeatureStatus::Cancelled => "cancelled",
+            TaskStatus::Draft => "draft",
+            TaskStatus::Planning => "planning",
+            TaskStatus::Implementing => "implementing",
+            TaskStatus::Verifying => "verifying",
+            TaskStatus::Review => "review",
+            TaskStatus::Done => "done",
+            TaskStatus::Blocked => "blocked",
+            TaskStatus::Paused => "paused",
+            TaskStatus::Failed => "failed",
+            TaskStatus::Cancelled => "cancelled",
         }
     }
 
     /// Nothing more will happen. (Done isn't final: the developer can
     /// always change the goal and the work picks up again, D-050.)
     pub fn is_terminal(self) -> bool {
-        matches!(self, FeatureStatus::Cancelled)
+        matches!(self, TaskStatus::Cancelled)
     }
 
     /// The controller is (or should be) driving it.
     pub fn is_active(self) -> bool {
         matches!(
             self,
-            FeatureStatus::Planning | FeatureStatus::Implementing | FeatureStatus::Verifying
+            TaskStatus::Planning | TaskStatus::Implementing | TaskStatus::Verifying
         )
     }
 
@@ -85,8 +85,8 @@ impl FeatureStatus {
     /// change the goal at any point (even after done), which plans again
     /// from where the work stands. Blocked, paused and failed are side exits;
     /// only cancelled is final.
-    pub fn can_become(self, to: FeatureStatus) -> bool {
-        use FeatureStatus::*;
+    pub fn can_become(self, to: TaskStatus) -> bool {
+        use TaskStatus::*;
         if self == to || self.is_terminal() {
             return false;
         }
@@ -113,7 +113,7 @@ impl FeatureStatus {
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-pub enum TaskStatus {
+pub enum StepStatus {
     Pending,
     Running,
     Blocked,
@@ -201,7 +201,7 @@ pub enum DecisionKind {
     Merge,
     /// Deploying (an irreversible external action).
     Deploy,
-    /// A run ended [`RunState::RecoveryRequired`]: start its task over, or
+    /// A run ended [`RunState::RecoveryRequired`]: start its step over, or
     /// not yet. The developer's only (D-061).
     Recovery,
 }
@@ -286,14 +286,14 @@ pub struct VerificationMark {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
-pub struct Task {
-    pub id: TaskId,
+pub struct Step {
+    pub id: StepId,
     pub title: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub detail: Option<String>,
-    pub status: TaskStatus,
+    pub status: StepStatus,
     #[serde(default)]
-    pub depends_on: Vec<TaskId>,
+    pub depends_on: Vec<StepId>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workspace_id: Option<WorkspaceId>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -310,7 +310,8 @@ pub struct Task {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct Run {
     pub id: RunId,
-    pub task_id: TaskId,
+    #[serde(alias = "task_id")]
+    pub step_id: StepId,
     /// The agent runtime, e.g. `claude`.
     pub runtime: String,
     pub state: RunState,
@@ -410,8 +411,8 @@ pub struct OtterChat {
 /// last change it said something about.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct Follow {
-    pub task_id: FeatureId,
-    /// The last change followed up ([`Feature::follow_key`]); empty: none.
+    pub task_id: TaskId,
+    /// The last change followed up ([`Task::follow_key`]); empty: none.
     #[serde(default)]
     pub seen: String,
 }
@@ -419,8 +420,8 @@ pub struct Follow {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct DecisionRequest {
     pub id: DecisionId,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub task_id: Option<TaskId>,
+    #[serde(default, alias = "task_id", skip_serializing_if = "Option::is_none")]
+    pub step_id: Option<StepId>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub run_id: Option<RunId>,
     pub kind: DecisionKind,
@@ -445,7 +446,7 @@ pub struct DecisionRequest {
     #[serde(default)]
     pub user_only: bool,
     /// What the developer's approval lets through for the rest of the
-    /// feature, when policy says it may (D-066): opaque to all but policy.
+    /// task, when policy says it may (D-066): opaque to all but policy.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub grant: Option<String>,
 }
@@ -453,8 +454,8 @@ pub struct DecisionRequest {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct Evidence {
     pub id: EvidenceId,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub task_id: Option<TaskId>,
+    #[serde(default, alias = "task_id", skip_serializing_if = "Option::is_none")]
+    pub step_id: Option<StepId>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub criterion_id: Option<String>,
     pub kind: EvidenceKind,
@@ -494,10 +495,10 @@ impl Default for Budget {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
-pub struct Feature {
+pub struct Task {
     #[serde(default = "schema_one")]
     pub schema: u32,
-    pub id: FeatureId,
+    pub id: TaskId,
     pub title: String,
     /// What the developer asked for, as written.
     #[serde(default)]
@@ -506,7 +507,7 @@ pub struct Feature {
     /// only reads, and a plan to change things goes to the developer first.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub answer_only: bool,
-    pub status: FeatureStatus,
+    pub status: TaskStatus,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub status_reason: Option<String>,
     /// When it took its status (absent in documents from before D-071).
@@ -520,7 +521,8 @@ pub struct Feature {
     #[serde(default)]
     pub acceptance: Vec<Criterion>,
     #[serde(default)]
-    pub tasks: Vec<Task>,
+    #[serde(alias = "tasks")]
+    pub steps: Vec<Step>,
     #[serde(default)]
     pub runs: Vec<Run>,
     #[serde(default)]
@@ -555,19 +557,19 @@ pub struct Feature {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_verification: Option<VerificationMark>,
     /// What the developer allowed once and isn't asked about again in this
-    /// feature (D-066): `DecisionRequest::grant`s they approved.
+    /// task (D-066): `DecisionRequest::grant`s they approved.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub grants: Vec<String>,
     /// Why the Control Agent did what it did, newest last (short lines).
     #[serde(default)]
     pub rationale: Vec<String>,
-    /// Commands someone approved for this feature's checks (previews).
+    /// Commands someone approved for this task's checks (previews).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub allowed_commands: Vec<String>,
     /// The developer's preview of the app, if running (D-046).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub preview: Option<PreviewLink>,
-    /// What must hold before the feature is done (D-047), as last evaluated.
+    /// What must hold before the task is done (D-047), as last evaluated.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub gates: Vec<Gate>,
     /// The change as published: branch, pull request, CI (D-047).
@@ -578,7 +580,7 @@ pub struct Feature {
     pub report: Option<String>,
     pub created_at: Timestamp,
     pub updated_at: Timestamp,
-    /// The last entry of this feature's history.
+    /// The last entry of this task's history.
     #[serde(default)]
     pub history_seq: u64,
 }
@@ -587,21 +589,21 @@ fn schema_one() -> u32 {
     1
 }
 
-impl Feature {
-    pub fn new(title: String, request: String, now: Timestamp) -> Feature {
-        Feature {
-            schema: FEATURE_SCHEMA,
-            id: FeatureId::generate(),
+impl Task {
+    pub fn new(title: String, request: String, now: Timestamp) -> Task {
+        Task {
+            schema: TASK_SCHEMA,
+            id: TaskId::generate(),
             title,
             request,
             answer_only: false,
-            status: FeatureStatus::Draft,
+            status: TaskStatus::Draft,
             status_since: Some(now),
             started_by: None,
             status_reason: None,
             requirements: Vec::new(),
             acceptance: Vec::new(),
-            tasks: Vec::new(),
+            steps: Vec::new(),
             runs: Vec::new(),
             messages: Vec::new(),
             decisions: Vec::new(),
@@ -627,12 +629,12 @@ impl Feature {
         }
     }
 
-    pub fn task(&self, id: &TaskId) -> Option<&Task> {
-        self.tasks.iter().find(|t| &t.id == id)
+    pub fn step(&self, id: &StepId) -> Option<&Step> {
+        self.steps.iter().find(|t| &t.id == id)
     }
 
-    pub fn task_mut(&mut self, id: &TaskId) -> Option<&mut Task> {
-        self.tasks.iter_mut().find(|t| &t.id == id)
+    pub fn step_mut(&mut self, id: &StepId) -> Option<&mut Step> {
+        self.steps.iter_mut().find(|t| &t.id == id)
     }
 
     pub fn run_mut(&mut self, id: &RunId) -> Option<&mut Run> {
@@ -649,7 +651,7 @@ impl Feature {
             .filter(|d| d.status == DecisionStatus::Pending)
     }
 
-    /// What the feature waits on the developer for, if anything (D-071).
+    /// What the task waits on the developer for, if anything (D-071).
     /// A decision comes first (the oldest); then review once it's ready to
     /// accept (or a gate failed), blocked, failed. Review still publishing
     /// or waiting for CI isn't waiting on them.
@@ -659,8 +661,8 @@ impl Feature {
     pub fn follow_key(&self) -> Option<String> {
         let notable = matches!(
             self.status,
-            FeatureStatus::Done | FeatureStatus::Failed | FeatureStatus::Review
-        ) || (self.status == FeatureStatus::Blocked && self.needs().is_some());
+            TaskStatus::Done | TaskStatus::Failed | TaskStatus::Review
+        ) || (self.status == TaskStatus::Blocked && self.needs().is_some());
         notable.then(|| {
             format!(
                 "{}:{}",
@@ -704,15 +706,15 @@ impl Feature {
             })
         };
         match self.status {
-            FeatureStatus::Review
+            TaskStatus::Review
                 if self.report.is_some()
                     || self.gates.iter().any(|g| g.status == GateStatus::Failed) =>
             {
                 need(NeedKind::Review, reason("Ready for your review"))
             }
-            FeatureStatus::Blocked => need(NeedKind::Blocked, reason("Waiting on you")),
+            TaskStatus::Blocked => need(NeedKind::Blocked, reason("Waiting on you")),
             // Unattended work that waited too long for the developer (D-083).
-            FeatureStatus::Paused
+            TaskStatus::Paused
                 if self
                     .status_reason
                     .as_deref()
@@ -720,7 +722,7 @@ impl Feature {
             {
                 need(NeedKind::Blocked, reason("Waiting on you"))
             }
-            FeatureStatus::Failed => need(NeedKind::Failed, reason("Stopped")),
+            TaskStatus::Failed => need(NeedKind::Failed, reason("Stopped")),
             _ => None,
         }
     }
@@ -730,9 +732,9 @@ impl Feature {
         match (self.needs(), self.status) {
             (Some(n), _) if n.kind == NeedKind::Failed => Activity::Failed,
             (Some(_), _) => Activity::NeedsYou,
-            (None, FeatureStatus::Done) => Activity::Completed,
-            (None, FeatureStatus::Cancelled) => Activity::Archived,
-            (None, FeatureStatus::Draft | FeatureStatus::Paused) => Activity::Idle,
+            (None, TaskStatus::Done) => Activity::Completed,
+            (None, TaskStatus::Cancelled) => Activity::Archived,
+            (None, TaskStatus::Draft | TaskStatus::Paused) => Activity::Idle,
             (None, _) => Activity::Working,
         }
     }
@@ -752,7 +754,7 @@ impl Feature {
 
     /// Runs that waited on decisions which are all made now work again: their
     /// state and clock run (D-063). The events to record.
-    pub fn resume_waiting_runs(&mut self, now: Timestamp) -> Vec<FeatureEvent> {
+    pub fn resume_waiting_runs(&mut self, now: Timestamp) -> Vec<TaskEvent> {
         let pending: Vec<RunId> = self
             .pending_decisions()
             .filter_map(|d| d.run_id.clone())
@@ -762,7 +764,7 @@ impl Feature {
             if r.state == RunState::Waiting && !pending.contains(&r.id) {
                 r.state = RunState::Running;
                 r.start_clock(now);
-                events.push(FeatureEvent::RunChanged {
+                events.push(TaskEvent::RunChanged {
                     run_id: r.id.clone(),
                     state: RunState::Running,
                 });
@@ -774,14 +776,14 @@ impl Feature {
     /// Change status if the lifecycle allows it; the event to record.
     pub fn transition(
         &mut self,
-        to: FeatureStatus,
+        to: TaskStatus,
         reason: Option<String>,
         now: Timestamp,
-    ) -> Result<FeatureEvent, String> {
+    ) -> Result<TaskEvent, String> {
         let from = self.status;
         if !from.can_become(to) {
             return Err(format!(
-                "a {} feature can't become {}",
+                "a {} task can't become {}",
                 from.as_str(),
                 to.as_str()
             ));
@@ -793,11 +795,11 @@ impl Feature {
         if to.is_active() && !from.is_active() {
             self.active_since = Some(now);
         }
-        Ok(FeatureEvent::StatusChanged { from, to, reason })
+        Ok(TaskEvent::StatusChanged { from, to, reason })
     }
 }
 
-/// What a feature waits on the developer for (D-071): one rule, here, for
+/// What a task waits on the developer for (D-071): one rule, here, for
 /// the app, its notifications and `otter ls`.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct Need {
@@ -828,16 +830,16 @@ pub enum NeedKind {
     Failed,
 }
 
-/// What a client tells a feature to do (`feature.act`).
+/// What a client tells a task to do (`task.act`).
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "action", rename_all = "snake_case")]
-pub enum FeatureAction {
+pub enum TaskAction {
     /// Draft → planning: hand it to the Control Agent.
     Start,
     Pause,
     Resume,
     Cancel,
-    /// A failed feature: try again with a fresh budget of attempts.
+    /// A failed task: try again with a fresh budget of attempts.
     Retry,
     /// Answer a decision: approve/deny, or answer a question.
     Decide {
@@ -850,7 +852,7 @@ pub enum FeatureAction {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         answers: Option<std::collections::BTreeMap<String, String>>,
     },
-    /// The developer signs off a feature in review. Refused while a gate
+    /// The developer signs off a task in review. Refused while a gate
     /// fails or waits, unless `override_gates` (recorded).
     Accept {
         #[serde(default)]
@@ -867,13 +869,13 @@ pub enum FeatureAction {
         workspace: String,
     },
     /// Work in a workspace of its own (D-080): a worktree of its Git
-    /// workspace's repository, on a branch for the feature — when another
-    /// feature holds that workspace.
+    /// workspace's repository, on a branch for the task — when another
+    /// task holds that workspace.
     OwnWorkspace,
     /// Start (or restart) the app's preview for the developer to look at.
     Preview,
     /// Stop what the coding agent is doing now (its current turn only) and
-    /// wait: the feature pauses (D-059).
+    /// wait: the task pauses (D-059).
     Interrupt,
     /// Guidance that can't wait: the coding agent's current turn stops and
     /// this goes next, in the same run (D-059).
@@ -889,7 +891,7 @@ pub enum GateStatus {
     Failed,
     /// Not decided yet (CI running, waiting for approval, …).
     Pending,
-    /// Doesn't apply to this feature (no browser checks, no CI, …).
+    /// Doesn't apply to this task (no browser checks, no CI, …).
     NotApplicable,
 }
 
@@ -948,7 +950,7 @@ pub struct Delivery {
     pub declined: bool,
 }
 
-/// A preview of the app running in the feature's workspace (D-046): a
+/// A preview of the app running in the task's workspace (D-046): a
 /// service session listening on `port` on the host. A client reaches it by
 /// forwarding that one port.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -959,37 +961,38 @@ pub struct PreviewLink {
     pub path: String,
 }
 
-impl FeatureAction {
+impl TaskAction {
     pub fn name(&self) -> &'static str {
         match self {
-            FeatureAction::Start => "start",
-            FeatureAction::Pause => "pause",
-            FeatureAction::Resume => "resume",
-            FeatureAction::Cancel => "cancel",
-            FeatureAction::Retry => "retry",
-            FeatureAction::Decide { .. } => "decide",
-            FeatureAction::Accept { .. } => "accept",
-            FeatureAction::RequestChanges { .. } => "request_changes",
-            FeatureAction::SetWorkspace { .. } => "set_workspace",
-            FeatureAction::OwnWorkspace => "own_workspace",
-            FeatureAction::Preview => "preview",
-            FeatureAction::Interrupt => "interrupt",
-            FeatureAction::Redirect { .. } => "redirect",
+            TaskAction::Start => "start",
+            TaskAction::Pause => "pause",
+            TaskAction::Resume => "resume",
+            TaskAction::Cancel => "cancel",
+            TaskAction::Retry => "retry",
+            TaskAction::Decide { .. } => "decide",
+            TaskAction::Accept { .. } => "accept",
+            TaskAction::RequestChanges { .. } => "request_changes",
+            TaskAction::SetWorkspace { .. } => "set_workspace",
+            TaskAction::OwnWorkspace => "own_workspace",
+            TaskAction::Preview => "preview",
+            TaskAction::Interrupt => "interrupt",
+            TaskAction::Redirect { .. } => "redirect",
         }
     }
 }
 
-/// Something that happened to a feature. Carries ids and short labels; the
-/// content (messages, evidence details) is in the feature itself.
+/// Something that happened to a task. Carries ids and short labels; the
+/// content (messages, evidence details) is in the task itself.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "type")]
-pub enum FeatureEvent {
-    FeatureCreated {
+pub enum TaskEvent {
+    #[serde(alias = "FeatureCreated")]
+    TaskCreated {
         title: String,
     },
     StatusChanged {
-        from: FeatureStatus,
-        to: FeatureStatus,
+        from: TaskStatus,
+        to: TaskStatus,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         reason: Option<String>,
     },
@@ -1003,16 +1006,20 @@ pub enum FeatureEvent {
         action: String,
     },
     PlanSet {
-        tasks: usize,
+        #[serde(alias = "tasks")]
+        steps: usize,
         criteria: usize,
     },
-    TaskChanged {
-        task_id: TaskId,
-        status: TaskStatus,
+    #[serde(alias = "TaskChanged")]
+    StepChanged {
+        #[serde(alias = "task_id")]
+        step_id: StepId,
+        status: StepStatus,
     },
     RunStarted {
         run_id: RunId,
-        task_id: TaskId,
+        #[serde(alias = "task_id")]
+        step_id: StepId,
         runtime: String,
     },
     RunChanged {
@@ -1061,39 +1068,39 @@ pub enum FeatureEvent {
     Unknown,
 }
 
-impl FeatureEvent {
+impl TaskEvent {
     /// One line for a timeline.
     pub fn text(&self) -> String {
         match self {
-            FeatureEvent::FeatureCreated { title } => format!("Created “{title}”"),
-            FeatureEvent::StatusChanged { to, reason, .. } => match reason {
+            TaskEvent::TaskCreated { title } => format!("Created “{title}”"),
+            TaskEvent::StatusChanged { to, reason, .. } => match reason {
                 Some(r) => format!("{} — {r}", capital(to.as_str())),
                 None => capital(to.as_str()),
             },
-            FeatureEvent::MessageAdded { role, .. } => match role {
+            TaskEvent::MessageAdded { role, .. } => match role {
                 MessageRole::User => "You sent a message".into(),
                 MessageRole::Controller => "Otter replied".into(),
                 MessageRole::Agent => "The coding agent reported".into(),
                 MessageRole::System => "Otter noted something".into(),
             },
-            FeatureEvent::CommandAccepted { action, .. } => format!("Command: {action}"),
-            FeatureEvent::PlanSet { tasks, criteria } => {
-                format!("Plan: {tasks} task(s), {criteria} acceptance criteria")
+            TaskEvent::CommandAccepted { action, .. } => format!("Command: {action}"),
+            TaskEvent::PlanSet { steps, criteria } => {
+                format!("Plan: {steps} step(s), {criteria} acceptance criteria")
             }
-            FeatureEvent::TaskChanged { task_id, status } => {
-                format!("Task {task_id}: {status:?}").to_lowercase()
+            TaskEvent::StepChanged { step_id, status } => {
+                format!("Step {step_id}: {status:?}").to_lowercase()
             }
-            FeatureEvent::RunStarted { runtime, .. } => format!("A {runtime} run started"),
-            FeatureEvent::RunChanged { state, .. } => {
+            TaskEvent::RunStarted { runtime, .. } => format!("A {runtime} run started"),
+            TaskEvent::RunChanged { state, .. } => {
                 format!("Run {}", state.as_str().replace('_', " "))
             }
-            FeatureEvent::DecisionRequested { kind, risk, .. } => {
+            TaskEvent::DecisionRequested { kind, risk, .. } => {
                 format!("Decision needed ({kind:?}, {risk:?} risk)").to_lowercase()
             }
-            FeatureEvent::DecisionResolved { status, by, .. } => {
+            TaskEvent::DecisionResolved { status, by, .. } => {
                 format!("Decision {status:?} by {by:?}").to_lowercase()
             }
-            FeatureEvent::EvidenceAdded { kind, ok, .. } => {
+            TaskEvent::EvidenceAdded { kind, ok, .. } => {
                 let verdict = match ok {
                     Some(true) => " (passed)",
                     Some(false) => " (failed)",
@@ -1101,13 +1108,13 @@ impl FeatureEvent {
                 };
                 format!("Evidence: {kind:?}{verdict}").to_lowercase()
             }
-            FeatureEvent::LimitReached { limit } => format!("Stopped: {limit}"),
-            FeatureEvent::ToolCalled { tool, .. } => format!("Otter: {tool}"),
-            FeatureEvent::ToolDone { tool, error } => match error {
+            TaskEvent::LimitReached { limit } => format!("Stopped: {limit}"),
+            TaskEvent::ToolCalled { tool, .. } => format!("Otter: {tool}"),
+            TaskEvent::ToolDone { tool, error } => match error {
                 Some(code) => format!("Otter: {tool} — {}", code.replace('_', " ")),
                 None => format!("Otter: {tool} — done"),
             },
-            FeatureEvent::Unknown => "Something happened".into(),
+            TaskEvent::Unknown => "Something happened".into(),
         }
     }
 }
@@ -1120,13 +1127,13 @@ fn capital(s: &str) -> String {
     }
 }
 
-/// One line of a feature's append-only history.
+/// One line of a task's append-only history.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
-pub struct FeatureEventRecord {
-    /// Per-feature, strictly increasing from 1.
+pub struct TaskEventRecord {
+    /// Per-task, strictly increasing from 1.
     pub seq: u64,
     pub ts: Timestamp,
-    /// [`FEATURE_EVENT_SCHEMA`] when written.
+    /// [`TASK_EVENT_SCHEMA`] when written.
     pub v: u32,
     /// The command (or decision, or run) this happened because of.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1135,13 +1142,13 @@ pub struct FeatureEventRecord {
     /// same after the wording changes).
     pub text: String,
     #[serde(flatten)]
-    pub event: FeatureEvent,
+    pub event: TaskEvent,
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use FeatureStatus::*;
+    use TaskStatus::*;
 
     #[test]
     fn a_run_ending_reads_plainly_and_round_trips() {
@@ -1150,7 +1157,7 @@ mod tests {
             (RunState::RecoveryRequired, "Run recovery required"),
             (RunState::HandedOff, "Run handed off"),
         ] {
-            let e = FeatureEvent::RunChanged {
+            let e = TaskEvent::RunChanged {
                 run_id: RunId::from("run_1"),
                 state,
             };
@@ -1239,12 +1246,12 @@ mod tests {
     #[test]
     fn transition_records_the_change_and_starts_the_clock() {
         let now = chrono::Utc::now();
-        let mut f = Feature::new("t".into(), "r".into(), now);
+        let mut f = Task::new("t".into(), "r".into(), now);
         assert!(f.transition(Done, None, now).is_err());
         let ev = f.transition(Planning, Some("go".into()), now).unwrap();
         assert_eq!(
             ev,
-            FeatureEvent::StatusChanged {
+            TaskEvent::StatusChanged {
                 from: Draft,
                 to: Planning,
                 reason: Some("go".into())
@@ -1256,7 +1263,7 @@ mod tests {
     fn run_at(now: Timestamp) -> Run {
         Run {
             id: RunId::generate(),
-            task_id: TaskId::generate(),
+            step_id: StepId::generate(),
             runtime: "claude".into(),
             state: RunState::Running,
             started_at: now,
@@ -1303,7 +1310,7 @@ mod tests {
     #[test]
     fn a_run_works_again_once_its_decisions_are_made() {
         let now = chrono::Utc::now();
-        let mut f = Feature::new("t".into(), "r".into(), now);
+        let mut f = Task::new("t".into(), "r".into(), now);
         let mut r = run_at(now);
         r.state = RunState::Waiting;
         r.working_since = None;
@@ -1311,7 +1318,7 @@ mod tests {
         f.runs.push(r);
         f.decisions.push(DecisionRequest {
             id: DecisionId::generate(),
-            task_id: None,
+            step_id: None,
             run_id: Some(run.clone()),
             kind: DecisionKind::ToolPermission,
             risk: Risk::High,
@@ -1332,7 +1339,7 @@ mod tests {
         let later = now + chrono::Duration::seconds(5);
         assert_eq!(
             f.resume_waiting_runs(later),
-            [FeatureEvent::RunChanged {
+            [TaskEvent::RunChanged {
                 run_id: run,
                 state: RunState::Running
             }]
@@ -1350,9 +1357,9 @@ mod tests {
             at: now,
             correlation_id: None,
         };
-        let mut f = Feature::new("t".into(), String::new(), now);
+        let mut f = Task::new("t".into(), String::new(), now);
         f.messages
-            .push(msg(MessageRole::Controller, "What should this feature do?"));
+            .push(msg(MessageRole::Controller, "What should this task do?"));
         f.messages.push(msg(MessageRole::User, "Add CSV export"));
         assert_eq!(
             f.request_message(),
@@ -1368,7 +1375,7 @@ mod tests {
     fn decision(kind: DecisionKind, summary: &str, at: Timestamp) -> DecisionRequest {
         DecisionRequest {
             id: DecisionId::generate(),
-            task_id: None,
+            step_id: None,
             run_id: None,
             kind,
             risk: Risk::High,
@@ -1387,10 +1394,10 @@ mod tests {
     }
 
     #[test]
-    fn what_a_feature_needs_is_one_rule() {
+    fn what_a_task_needs_is_one_rule() {
         let t0 = chrono::Utc::now();
         let later = t0 + chrono::Duration::minutes(5);
-        let mut f = Feature::new("t".into(), "r".into(), t0);
+        let mut f = Task::new("t".into(), "r".into(), t0);
         assert_eq!((f.needs(), f.activity()), (None, Activity::Idle));
         f.transition(Planning, None, t0).unwrap();
         f.transition(Implementing, None, t0).unwrap();
@@ -1460,44 +1467,41 @@ mod tests {
 
     #[test]
     fn records_are_flat_and_unknown_kinds_parse() {
-        let rec = FeatureEventRecord {
+        let rec = TaskEventRecord {
             seq: 2,
             ts: chrono::Utc::now(),
-            v: FEATURE_EVENT_SCHEMA,
+            v: TASK_EVENT_SCHEMA,
             correlation_id: Some("cmd_1".into()),
             text: "x".into(),
-            event: FeatureEvent::CommandAccepted {
+            event: TaskEvent::CommandAccepted {
                 command_id: "cmd_1".into(),
                 action: "start".into(),
             },
         };
         let json = serde_json::to_string(&rec).unwrap();
         assert!(json.contains(r#""type":"CommandAccepted""#), "{json}");
-        assert_eq!(
-            serde_json::from_str::<FeatureEventRecord>(&json).unwrap(),
-            rec
-        );
-        let future: FeatureEventRecord = serde_json::from_str(
+        assert_eq!(serde_json::from_str::<TaskEventRecord>(&json).unwrap(), rec);
+        let future: TaskEventRecord = serde_json::from_str(
             r#"{"seq":3,"ts":"2026-10-09T00:00:00Z","v":9,"text":"?","type":"Teleported"}"#,
         )
         .unwrap();
-        assert_eq!(future.event, FeatureEvent::Unknown);
+        assert_eq!(future.event, TaskEvent::Unknown);
     }
 
     /// Otter's tool calls (D-089) are history like the rest; a build from
     /// before them reads them as `Unknown`, with their text (the test above).
     #[test]
     fn otters_tool_records_read_back_and_say_what_happened() {
-        let called = FeatureEvent::ToolCalled {
+        let called = TaskEvent::ToolCalled {
             tool: "pause_task".into(),
             origin: "developer".into(),
             authority: Some("msg_1".into()),
         };
         let json = serde_json::to_string(&called).unwrap();
         assert!(json.contains(r#""type":"ToolCalled""#), "{json}");
-        assert_eq!(serde_json::from_str::<FeatureEvent>(&json).unwrap(), called);
+        assert_eq!(serde_json::from_str::<TaskEvent>(&json).unwrap(), called);
         assert_eq!(called.text(), "Otter: pause_task");
-        let refused = FeatureEvent::ToolDone {
+        let refused = TaskEvent::ToolDone {
             tool: "accept_task".into(),
             error: Some("not_allowed_in_this_turn".into()),
         };
@@ -1505,7 +1509,7 @@ mod tests {
             refused.text(),
             "Otter: accept_task — not allowed in this turn"
         );
-        let done = FeatureEvent::ToolDone {
+        let done = TaskEvent::ToolDone {
             tool: "get_task".into(),
             error: None,
         };
@@ -1516,23 +1520,23 @@ mod tests {
     #[test]
     fn a_minimal_document_loads_with_defaults() {
         // What an early writer (or a hand edit) might leave: no schema, no lists.
-        let f: Feature = serde_json::from_str(
+        let f: Task = serde_json::from_str(
             r#"{"id":"ft_x","title":"t","status":"draft","created_at":"2026-10-09T00:00:00Z","updated_at":"2026-10-09T00:00:00Z"}"#,
         )
         .unwrap();
         assert_eq!(f.schema, 1);
-        assert!(f.tasks.is_empty());
+        assert!(f.steps.is_empty());
         assert_eq!(f.budget, Budget::default());
     }
 
     #[test]
     fn actions_are_tagged() {
-        let a: FeatureAction =
+        let a: TaskAction =
             serde_json::from_str(r#"{"action":"decide","decision_id":"dec_1","approve":false}"#)
                 .unwrap();
         assert_eq!(a.name(), "decide");
         assert_eq!(
-            serde_json::to_value(FeatureAction::Pause).unwrap(),
+            serde_json::to_value(TaskAction::Pause).unwrap(),
             serde_json::json!({"action":"pause"})
         );
     }

@@ -1,0 +1,87 @@
+{
+  "version": 1,
+  "workspaces": [
+    {
+      "id": "ws_jh1b097bsd",
+      "name": "app",
+      "root": "/tmp/wdMgHbwM/workspaces/ws_jh1b097bsd/repo",
+      "brief": {},
+      "source": {
+        "type": "git",
+        "repository": "/tmp/wdMgHbwM/origin",
+        "repo_id": "origin-ba492c28",
+        "branch": "feature/a",
+        "base": "origin/main",
+        "base_commit": "28ce82cb91eea93a7a8d2f776b347d8711e48264",
+        "requested_branch": "feature/a"
+      },
+      "environment": {
+        "kind": "none",
+        "status": "ready"
+      },
+      "state": "ready",
+      "created_at": "2026-10-15T18:58:56.961718643Z",
+      "updated_at": "2026-10-15T18:58:58.994632393Z",
+      "sessions": [
+        {
+          "id": "ses_hhkgpb2kq2",
+          "workspace_id": "ws_jh1b097bsd",
+          "name": "check",
+          "kind": "task",
+          "command": "echo checked",
+          "created_at": "2026-10-15T18:58:56.973241176Z",
+          "executions": [
+            {
+              "id": "exec_26xht2kbee",
+              "backend": "tmux",
+              "backend_ref": "exec_26xht2kbee",
+              "pid": 1149109,
+              "state": "exited",
+              "exit_code": 0,
+              "started_at": "2026-10-15T18:58:57.965319691Z",
+              "ended_at": "2026-10-15T18:58:58.994632393Z",
+              "tail": "checked"
+            }
+          ]
+        }
+      ],
+      "attention": [
+        {
+          "id": "att_7csbe1t46a",
+          "workspace_id": "ws_jh1b097bsd",
+          "session_id": "ses_hhkgpb2kq2",
+          "kind": "completion",
+          "summary": "check completed",
+          "created_at": "2026-10-15T18:58:58.997329528Z"
+        }
+      ]
+    },
+    {
+      "id": "ws_jmys2qfcbh",
+      "name": "app-own",
+      "root": "/tmp/wdMgHbwM/workspaces/ws_jmys2qfcbh/repo",
+      "brief": {
+        "title": "Own",
+        "description": "The feature “Own”, in a worktree of its own"
+      },
+      "source": {
+        "type": "git",
+        "repository": "/tmp/wdMgHbwM/origin",
+        "repo_id": "origin-ba492c28",
+        "branch": "otter/own-swv1",
+        "base": "origin/main",
+        "base_commit": "28ce82cb91eea93a7a8d2f776b347d8711e48264",
+        "requested_branch": "otter/own-swv1"
+      },
+      "environment": {
+        "kind": "none",
+        "status": "ready"
+      },
+      "state": "ready",
+      "created_at": "2026-10-15T18:58:58.891731188Z",
+      "updated_at": "2026-10-15T18:58:58.962838470Z",
+      "sessions": [],
+      "feature_id": "ft_rgr097swv1"
+    }
+  ]
+}

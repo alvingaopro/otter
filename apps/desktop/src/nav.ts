@@ -2,7 +2,7 @@
 // Switching views only changes what is in front: nothing here may stop,
 // detach or restart anything.
 
-export type View = "inbox" | "features" | "workspaces" | "otter";
+export type View = "inbox" | "tasks" | "workspaces" | "otter";
 
 export interface ViewEntry {
   id: View;
@@ -14,7 +14,7 @@ export interface ViewEntry {
 /** Top to bottom: the Inbox is the primary entry (design §26, D-072). */
 export const VIEWS: ViewEntry[] = [
   { id: "inbox", label: "Inbox", digit: "1" },
-  { id: "features", label: "Tasks", digit: "2" },
+  { id: "tasks", label: "Tasks", digit: "2" },
   { id: "workspaces", label: "Workspaces", digit: "3" },
   // Otter's conversation on a host (D-093): last, so the others keep their keys.
   { id: "otter", label: "Otter", digit: "4" },
@@ -23,6 +23,8 @@ export const VIEWS: ViewEntry[] = [
 const KEY = "otter.view";
 
 export function parseView(v: string | null | undefined): View | undefined {
+  // Remembered before D-107, when tasks were features.
+  if (v === "features") return "tasks";
   return VIEWS.some((e) => e.id === v) ? (v as View) : undefined;
 }
 

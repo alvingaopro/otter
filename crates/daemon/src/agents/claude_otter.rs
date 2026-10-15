@@ -388,7 +388,7 @@ mod tests {
             .iter()
             .map(|t| json!({"name": t.name, "description": t.description, "input_schema": t.input}))
             .collect();
-        let prompt = "Feature: CSV export\nStatus: Blocked: waiting on you.\n\nThe developer's messages to answer, oldest first (forward_to_agent and redirect_agent take these ids):\n[msg_live1] Why is this task blocked?";
+        let prompt = "Task: CSV export\nStatus: Blocked: waiting on you.\n\nThe developer's messages to answer, oldest first (forward_to_agent and redirect_agent take these ids):\n[msg_live1] Why is this task blocked?";
         let reply = run(
             OtterRun {
                 env: &env,

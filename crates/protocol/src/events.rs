@@ -3,10 +3,10 @@
 //! Events carry identifiers, names, kinds and exit codes only — never commands,
 //! environment variables or other potentially secret data (design §19).
 
-use otter_core::feature::{FeatureStatus, MessageRole};
+use otter_core::task::{MessageRole, TaskStatus};
 use otter_core::{
-    AgentState, AttentionId, AttentionKind, ExecutionId, FeatureId, SessionId, SessionKind,
-    Timestamp, WorkspaceId,
+    AgentState, AttentionId, AttentionKind, ExecutionId, SessionId, SessionKind, TaskId, Timestamp,
+    WorkspaceId,
 };
 use serde::{Deserialize, Serialize};
 
@@ -140,12 +140,14 @@ pub enum Event {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         workspace_id: Option<WorkspaceId>,
     },
-    /// A feature changed: its history grew to `history_seq`. What happened
-    /// is in the feature's own history (`feature.events`).
-    FeatureChanged {
-        feature_id: FeatureId,
+    /// A task changed: its history grew to `history_seq`. What happened
+    /// is in the task's own history (`task.events`).
+    #[serde(alias = "FeatureChanged")]
+    TaskChanged {
+        #[serde(alias = "feature_id")]
+        task_id: TaskId,
         history_seq: u64,
-        status: FeatureStatus,
+        status: TaskStatus,
     },
     /// Otter's conversation on this host changed (D-093): a message, or a
     /// tool call in its history.
@@ -153,31 +155,35 @@ pub enum Event {
         history_seq: u64,
     },
     /// Otter's reply on this host as it is written. **Transient**, like
-    /// [`Event::FeatureStream`]; `done`: the message is in the conversation.
+    /// [`Event::TaskStream`]; `done`: the message is in the conversation.
     OtterStream {
         stream_id: String,
         text: String,
         #[serde(default)]
         done: bool,
     },
-    /// A feature was deleted (`feature.delete`): it is gone, history and all.
-    FeatureDeleted {
-        feature_id: FeatureId,
+    /// A task was deleted (`task.delete`): it is gone, history and all.
+    #[serde(alias = "FeatureDeleted")]
+    TaskDeleted {
+        #[serde(alias = "feature_id")]
+        task_id: TaskId,
     },
     /// A runtime conversation changed (D-055): read it with
     /// `conversation.get`. Ids only, never content.
     ConversationChanged {
         conversation_id: otter_core::ConversationId,
         revision: u64,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        feature_id: Option<FeatureId>,
+        #[serde(default, alias = "feature_id", skip_serializing_if = "Option::is_none")]
+        task_id: Option<TaskId>,
     },
     /// A message being written right now (D-051): the text so far, sent as
     /// it grows. **Transient**: not in the log, not replayed, and its `seq`
     /// is the latest logged one (it doesn't advance a cursor). `done`: the
-    /// message is complete and in the feature (read it there).
-    FeatureStream {
-        feature_id: FeatureId,
+    /// message is complete and in the task (read it there).
+    #[serde(alias = "FeatureStream")]
+    TaskStream {
+        #[serde(alias = "feature_id")]
+        task_id: TaskId,
         /// Identifies this message while it streams.
         stream_id: String,
         role: MessageRole,
@@ -185,11 +191,13 @@ pub enum Event {
         #[serde(default)]
         done: bool,
     },
-    /// What a feature's coding agent just did (a tool it used), one line
-    /// (D-069). **Transient**, like [`Event::FeatureStream`]: the run's
-    /// latest lines are in the feature while it runs, and kept when it ends.
-    FeatureActivity {
-        feature_id: FeatureId,
+    /// What a task's coding agent just did (a tool it used), one line
+    /// (D-069). **Transient**, like [`Event::TaskStream`]: the run's
+    /// latest lines are in the task while it runs, and kept when it ends.
+    #[serde(alias = "FeatureActivity")]
+    TaskActivity {
+        #[serde(alias = "feature_id")]
+        task_id: TaskId,
         run_id: otter_core::RunId,
         line: String,
     },
@@ -226,13 +234,13 @@ impl Event {
             Event::AttentionCreated { .. } => "AttentionCreated",
             Event::AttentionResolved { .. } => "AttentionResolved",
             Event::BrowserOpenRequested { .. } => "BrowserOpenRequested",
-            Event::FeatureChanged { .. } => "FeatureChanged",
+            Event::TaskChanged { .. } => "TaskChanged",
             Event::OtterChanged { .. } => "OtterChanged",
             Event::OtterStream { .. } => "OtterStream",
-            Event::FeatureDeleted { .. } => "FeatureDeleted",
+            Event::TaskDeleted { .. } => "TaskDeleted",
             Event::ConversationChanged { .. } => "ConversationChanged",
-            Event::FeatureStream { .. } => "FeatureStream",
-            Event::FeatureActivity { .. } => "FeatureActivity",
+            Event::TaskStream { .. } => "TaskStream",
+            Event::TaskActivity { .. } => "TaskActivity",
             Event::Unknown => "Unknown",
         }
     }
@@ -240,13 +248,13 @@ impl Event {
     pub fn workspace_id(&self) -> Option<&WorkspaceId> {
         match self {
             Event::DaemonStarted { .. }
-            | Event::FeatureChanged { .. }
+            | Event::TaskChanged { .. }
             | Event::OtterChanged { .. }
             | Event::OtterStream { .. }
-            | Event::FeatureDeleted { .. }
+            | Event::TaskDeleted { .. }
             | Event::ConversationChanged { .. }
-            | Event::FeatureStream { .. }
-            | Event::FeatureActivity { .. }
+            | Event::TaskStream { .. }
+            | Event::TaskActivity { .. }
             | Event::Unknown => None,
             Event::WorkspaceCreated { workspace_id, .. }
             | Event::WorkspaceDeleted { workspace_id, .. }

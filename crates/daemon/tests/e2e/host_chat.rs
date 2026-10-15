@@ -3,7 +3,7 @@
 //! them — answered once per message, and kept across a restart.
 
 use super::*;
-use otter_core::feature::{FeatureEvent, FeatureStatus, MessageRole, OtterChat};
+use otter_core::task::{MessageRole, OtterChat, TaskEvent, TaskStatus};
 use serde_json::Value;
 
 async fn chat_host(v2: bool) -> FakeCodex {
@@ -69,9 +69,9 @@ fn code(answer: &Value) -> &str {
 async fn otter_on_the_host_looks_across_tasks_and_makes_one() {
     let mut fake = chat_host(true).await;
     let host = &fake.host;
-    let first = started_feature(host, "Add CSV export HANG").await;
-    wait_feature(host, &first, "at work", |f| {
-        f.status == FeatureStatus::Implementing
+    let first = started_task(host, "Add CSV export HANG").await;
+    wait_task(host, &first, "at work", |f| {
+        f.status == TaskStatus::Implementing
     })
     .await;
     let (_, _, answers) = say(
@@ -92,12 +92,12 @@ async fn otter_on_the_host_looks_across_tasks_and_makes_one() {
     let (chat, _, answers) = say(host, "h-2", text).await;
     assert_eq!(answers[0]["data"]["done"], "created", "{answers:?}");
     let made = answers[0]["data"]["task_id"].as_str().unwrap().to_owned();
-    let f = host.conn().await.feature_get(&made).await.unwrap();
+    let f = host.conn().await.task_get(&made).await.unwrap();
     // The request is the developer's words, as written; the title Otter's.
     assert_eq!(f.request, text);
     assert_eq!(f.title, "Fix the login form");
     assert!(f.workspace_id.is_some());
-    assert_ne!(f.status, FeatureStatus::Draft, "started");
+    assert_ne!(f.status, TaskStatus::Draft, "started");
     // Written down in the conversation's history, under the message.
     let msg = chat
         .messages
@@ -110,7 +110,7 @@ async fn otter_on_the_host_looks_across_tasks_and_makes_one() {
     let history = host.conn().await.otter_events(None).await.unwrap();
     assert!(history.iter().any(|r| matches!(
         &r.event,
-        FeatureEvent::ToolCalled { tool, authority, .. }
+        TaskEvent::ToolCalled { tool, authority, .. }
             if tool == "create_task" && authority.as_deref() == Some(msg.as_str())
     )));
     // Kept across a restart.
@@ -125,9 +125,9 @@ async fn otter_on_the_host_looks_across_tasks_and_makes_one() {
 async fn otter_on_the_host_acts_on_the_developers_word_only() {
     let fake = chat_host(true).await;
     let host = &fake.host;
-    let first = started_feature(host, "Add CSV export HANG").await;
-    wait_feature(host, &first, "at work", |f| {
-        f.status == FeatureStatus::Implementing
+    let first = started_task(host, "Add CSV export HANG").await;
+    wait_task(host, &first, "at work", |f| {
+        f.status == TaskStatus::Implementing
     })
     .await;
     let (_, _, answers) = say(
@@ -140,11 +140,8 @@ async fn otter_on_the_host_acts_on_the_developers_word_only() {
     .await;
     assert_eq!(code(&answers[0]), "not_allowed_in_this_turn", "{answers:?}");
     assert_eq!(code(&answers[1]), "ok", "{answers:?}");
-    wait_feature(host, &first, "paused", |f| {
-        f.status == FeatureStatus::Paused
-    })
-    .await;
-    assert_eq!(host.conn().await.feature_list().await.unwrap().len(), 1);
+    wait_task(host, &first, "paused", |f| f.status == TaskStatus::Paused).await;
+    assert_eq!(host.conn().await.task_list().await.unwrap().len(), 1);
     // A task Otter can't find is said so.
     let (_, _, answers) = say(host, "h-none", "CALL: get_task {\"task_id\": \"ft_nope\"}").await;
     assert_eq!(code(&answers[0]), "not_found", "{answers:?}");
@@ -205,12 +202,12 @@ async fn live_otter_on_the_host_makes_a_task() {
         "Make a task in the notes workspace: add a README that says hello. Don't start it yet.";
     let (_, reply, _) = say(&host, "live-1", text).await;
     println!("reply: {reply}");
-    let tasks = host.conn().await.feature_list().await.unwrap();
+    let tasks = host.conn().await.task_list().await.unwrap();
     assert_eq!(tasks.len(), 1, "{tasks:#?}");
     let f = &tasks[0];
     println!("task: {} — {:?}", f.title, f.status);
     assert_eq!(f.request, text, "the developer's words");
-    assert_eq!(f.status, FeatureStatus::Draft, "not started");
+    assert_eq!(f.status, TaskStatus::Draft, "not started");
     assert!(f.workspace_id.is_some(), "in the workspace they named");
     let (_, reply, _) = say(&host, "live-2", "Which tasks are here?").await;
     println!("reply: {reply}");
@@ -257,11 +254,11 @@ fn follow_ups(chat: &OtterChat) -> Vec<String> {
 /// done. A task it didn't make, it doesn't.
 #[tokio::test]
 async fn otter_follows_up_the_tasks_it_made_once_per_change() {
-    use otter_core::feature::FeatureAction;
+    use otter_core::task::TaskAction;
     let fake = chat_host(true).await;
     let host = &fake.host;
     project(host, "app").await;
-    let other = started_feature(host, "Add a footer").await;
+    let other = started_task(host, "Add a footer").await;
     let (_, _, answers) = say(
         host,
         "f-1",
@@ -294,13 +291,13 @@ async fn otter_follows_up_the_tasks_it_made_once_per_change() {
         1
     );
     // The next change has its own.
-    wait_feature(host, &made, "gates checked", |f| !f.gates.is_empty()).await;
+    wait_task(host, &made, "gates checked", |f| !f.gates.is_empty()).await;
     host.conn()
         .await
-        .feature_act(
+        .task_act(
             "accept-made",
             &made,
-            FeatureAction::Accept {
+            TaskAction::Accept {
                 override_gates: false,
             },
         )
@@ -317,8 +314,8 @@ async fn otter_follows_up_the_tasks_it_made_once_per_change() {
         follow_ups(&chat)
     );
     // The task it didn't make reached review too, unremarked.
-    wait_feature(host, &other, "in review", |f| {
-        f.status == FeatureStatus::Review
+    wait_task(host, &other, "in review", |f| {
+        f.status == TaskStatus::Review
     })
     .await;
     tokio::time::sleep(Duration::from_millis(800)).await;
@@ -435,14 +432,14 @@ async fn live_otter_follows_up_a_task_it_made() {
         assert!(
             std::time::Instant::now() < deadline,
             "no follow-up: {:#?}",
-            host.conn().await.feature_list().await.unwrap()
+            host.conn().await.task_list().await.unwrap()
         );
         tokio::time::sleep(Duration::from_secs(1)).await;
     };
     for f in follow_ups(&chat) {
         println!("follow-up: {f}");
     }
-    let tasks = host.conn().await.feature_list().await.unwrap();
+    let tasks = host.conn().await.task_list().await.unwrap();
     println!(
         "task: {} — {:?} ({:?})",
         tasks[0].title, tasks[0].status, tasks[0].status_reason

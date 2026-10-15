@@ -128,9 +128,9 @@ describe("Activity Bar navigation", () => {
     expect(tabs.map((t) => t.getAttribute("aria-label")?.split(",")[0])).toEqual(["Inbox", "Tasks", "Workspaces", "Otter"]);
     expect(tab("inbox").getAttribute("aria-selected")).toBe("true");
     expect(tab("inbox").tabIndex).toBe(0);
-    expect(tab("features").tabIndex).toBe(-1);
+    expect(tab("tasks").tabIndex).toBe(-1);
     expect(panel("inbox").hidden).toBe(false);
-    expect(panel("features").hidden).toBe(true);
+    expect(panel("tasks").hidden).toBe(true);
     expect(panel("workspaces").hidden).toBe(true);
     expect(panel("workspaces").getAttribute("aria-labelledby")).toBe("view-tab-workspaces");
     expect(host.querySelector('[aria-label="Settings"]')).not.toBeNull();
@@ -141,11 +141,11 @@ describe("Activity Bar navigation", () => {
     expect(terminal.mounts).toBe(1);
     await act(async () => tab("workspaces").click());
     expect(panel("workspaces").hidden).toBe(false);
-    expect(panel("features").hidden).toBe(true);
+    expect(panel("tasks").hidden).toBe(true);
     const node = panel("workspaces").querySelector('[data-testid="terminal"]');
     expect(node).not.toBeNull();
 
-    await act(async () => tab("features").click());
+    await act(async () => tab("tasks").click());
     await act(async () => tab("workspaces").click());
     expect(panel("workspaces").querySelector('[data-testid="terminal"]')).toBe(node);
     expect(terminal.mounts).toBe(1);
@@ -159,7 +159,7 @@ describe("Activity Bar navigation", () => {
     calls.mockClear();
     for (let i = 0; i < 3; i++) {
       await act(async () => tab("workspaces").click());
-      await act(async () => tab("features").click());
+      await act(async () => tab("tasks").click());
     }
     const changing = calls.mock.calls
       .map(([cmd]) => cmd)
@@ -215,8 +215,8 @@ describe("Activity Bar navigation", () => {
     await act(async () => {
       tab("inbox").dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
     });
-    expect(tab("features").getAttribute("aria-selected")).toBe("true");
-    expect(document.activeElement).toBe(tab("features"));
+    expect(tab("tasks").getAttribute("aria-selected")).toBe("true");
+    expect(document.activeElement).toBe(tab("tasks"));
 
     await act(async () => {
       window.dispatchEvent(new KeyboardEvent("keydown", { key: "3", metaKey: true, bubbles: true }));

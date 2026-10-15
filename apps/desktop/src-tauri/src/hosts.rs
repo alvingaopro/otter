@@ -292,15 +292,15 @@ async fn follow(app: &AppHandle, name: &str, transport: &Transport) -> Result<Ne
                             record: &rec,
                         },
                     );
-                    // Features load on their own (featureSource.ts): their
+                    // Tasks load on their own (taskSource.ts): their
                     // events, and the text streaming in many times a second
                     // (D-051), don't need a fresh snapshot of the workspaces.
                     if matches!(
                         rec.event,
-                        otter_protocol::Event::FeatureStream { .. }
-                            | otter_protocol::Event::FeatureActivity { .. }
-                            | otter_protocol::Event::FeatureChanged { .. }
-                            | otter_protocol::Event::FeatureDeleted { .. }
+                        otter_protocol::Event::TaskStream { .. }
+                            | otter_protocol::Event::TaskActivity { .. }
+                            | otter_protocol::Event::TaskChanged { .. }
+                            | otter_protocol::Event::TaskDeleted { .. }
                             | otter_protocol::Event::ConversationChanged { .. }
                             | otter_protocol::Event::OtterChanged { .. }
                             | otter_protocol::Event::OtterStream { .. }
@@ -1018,7 +1018,7 @@ mod tests {
         assert!(matches!(dir, SourceSpec::Directory { .. }));
 
         let sessions: Vec<SessionSpec> = serde_json::from_str(
-            r#"[{"kind":"agent","provider":"codex","prompt":"fix it"},{"kind":"terminal"},{"kind":"task","name":"tests","command":"cargo test"}]"#,
+            r#"[{"kind":"agent","provider":"codex","prompt":"fix it"},{"kind":"terminal"},{"kind":"command","name":"tests","command":"cargo test"}]"#,
         )
         .unwrap();
         assert_eq!(sessions[0].kind, SessionKind::Agent);

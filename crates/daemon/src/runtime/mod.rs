@@ -90,7 +90,7 @@ pub enum ToolCall {
     /// Starts another agent (a subagent) on part of the work.
     Delegate { description: String },
     /// Reaches beyond the run: scheduling work, notifying people, other
-    /// worktrees, the host app's own features (D-066).
+    /// worktrees, the host app's own tasks (D-066).
     Outside { name: String },
     /// Anything else (e.g. an MCP tool), by name.
     Other { name: String },

@@ -492,7 +492,7 @@ pub(crate) fn validate_spec(spec: &SessionSpec) -> RpcResult<()> {
                 "provider, prompt and resume only apply to agent sessions",
             ));
         }
-        SessionKind::Service | SessionKind::Task if spec.command.is_none() => {
+        SessionKind::Service | SessionKind::Command if spec.command.is_none() => {
             return Err(RpcError::invalid(format!(
                 "a {} session needs a command",
                 spec.kind.as_str()

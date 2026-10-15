@@ -101,7 +101,7 @@ export function sessionGlyph(s: SessionView): Glyph {
   if (s.attention?.kind === "failure" || s.status === "failed" || s.status === "lost") return "failed";
   if (s.status === "running") {
     if (s.agent) return s.agent.state === "working" || s.agent.state === "starting" ? "working" : "idle";
-    if (s.kind === "service" || s.kind === "task") return "working";
+    if (s.kind === "service" || s.kind === "command") return "working";
     return "idle";
   }
   if (s.status === "completed" || s.attention?.kind === "completion") return "done";

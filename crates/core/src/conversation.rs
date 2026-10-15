@@ -1,5 +1,5 @@
 //! Runtime conversations (D-055): the coding agent's side of the work, with
-//! its own identity, apart from the feature it serves.
+//! its own identity, apart from the task it serves.
 //!
 //! A [`Conversation`] is one durable coding-agent context in one workspace
 //! (Claude's native session, behind an opaque [`NativeBinding`]). It is made
@@ -13,7 +13,7 @@
 //! Kept apart, on purpose:
 //!
 //! - a turn **completed** means the provider finished executing it; whether
-//!   the feature's work is **done** is the controller's call, from evidence;
+//!   the task's work is **done** is the controller's call, from evidence;
 //! - an input **accepted** by Otter (a receipt) is not an input **delivered**
 //!   to the provider ([`Delivery`]);
 //! - a tool **started** is not a tool that **succeeded**: no result is
@@ -27,12 +27,12 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::feature::{Decider, MessageRole};
 use crate::ids::{
-    BlockId, ConversationId, DecisionId, FeatureId, MessageId, RunId, TaskId, ToolCallId, TurnId,
+    BlockId, ConversationId, DecisionId, MessageId, RunId, StepId, TaskId, ToolCallId, TurnId,
     WorkspaceId,
 };
 use crate::model::Timestamp;
+use crate::task::{Decider, MessageRole};
 
 /// Version of a persisted [`Conversation`].
 /// 2: kept as a journal of [`Op`]s with snapshots (D-058); 1: snapshots only.
@@ -58,6 +58,7 @@ pub enum Lifecycle {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(remote = "Self")]
 pub struct Conversation {
     #[serde(default = "schema")]
     pub schema: u32,
@@ -68,9 +69,9 @@ pub struct Conversation {
     pub backend: String,
     pub workspace_id: WorkspaceId,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub feature_id: Option<FeatureId>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub task_id: Option<TaskId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub step_id: Option<StepId>,
     /// Bumped by every accepted change.
     pub revision: u64,
     #[serde(default)]
@@ -109,6 +110,29 @@ pub struct Conversation {
     /// Commands accepted, by client id, for idempotency.
     #[serde(default)]
     pub receipts: Vec<Receipt>,
+}
+
+// Before D-107 a conversation named its task `feature_id` and its plan's
+// step `task_id`; a journal or snapshot from then reads as it meant.
+impl Serialize for Conversation {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        Conversation::serialize(self, s)
+    }
+}
+
+impl<'de> Deserialize<'de> for Conversation {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let mut v = serde_json::Value::deserialize(d)?;
+        if let Some(m) = v.as_object_mut()
+            && let Some(task) = m.remove("feature_id")
+        {
+            if let Some(step) = m.remove("task_id") {
+                m.insert("step_id".into(), step);
+            }
+            m.insert("task_id".into(), task);
+        }
+        Conversation::deserialize(v).map_err(serde::de::Error::custom)
+    }
 }
 
 fn schema() -> u32 {
@@ -227,7 +251,7 @@ impl ErrorCategory {
             ),
             ErrorCategory::ProviderUnavailable => (
                 "Claude's service didn't answer.",
-                "Try again in a few minutes: resume the feature.",
+                "Try again in a few minutes: resume the task.",
             ),
             ErrorCategory::RateLimited => (
                 "Claude's rate limit was reached.",
@@ -687,8 +711,8 @@ impl Conversation {
             provider: provider.into(),
             backend: backend.into(),
             workspace_id,
-            feature_id: None,
             task_id: None,
+            step_id: None,
             revision: 0,
             lifecycle: Lifecycle::Open,
             active_run: None,
@@ -1520,6 +1544,21 @@ impl Conversation {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_conversation_from_before_d107_reads_as_it_meant() {
+        let old = r#"{"schema":2,"id":"conv_1","provider":"claude","backend":"legacy_cli","workspace_id":"ws_1","feature_id":"ft_1","task_id":"tk_1","revision":0,"generation":0,"created_at":"2026-10-15T00:00:00Z","updated_at":"2026-10-15T00:00:00Z"}"#;
+        let c: Conversation = serde_json::from_str(old).unwrap();
+        assert_eq!(c.task_id.as_ref().map(|t| t.as_str()), Some("ft_1"));
+        assert_eq!(c.step_id.as_ref().map(|t| t.as_str()), Some("tk_1"));
+        let now = serde_json::to_string(&c).unwrap();
+        assert!(
+            now.contains(r#""task_id":"ft_1","step_id":"tk_1""#),
+            "{now}"
+        );
+        let again: Conversation = serde_json::from_str(&now).unwrap();
+        assert_eq!(again, c);
+    }
 
     fn now() -> Timestamp {
         chrono::Utc::now()

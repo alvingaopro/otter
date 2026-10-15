@@ -2,7 +2,7 @@
 //! looks and acts through Otter's tools ([`crate::gateway`]), where
 //! `converse` answered with one classified intent.
 //!
-//! It runs where `converse` does — in the feature's step — so it is bounded:
+//! It runs where `converse` does — in the task's step — so it is bounded:
 //! a deadline, a number of tool calls, a number of model round trips
 //! (`OTTER_TURN_DEADLINE_MS`, `OTTER_TURN_MAX_CALLS`,
 //! `OTTER_TURN_ROUND_TRIPS`; 60 s, 12, 6). Whatever happens — an answer, a
@@ -18,14 +18,14 @@ use std::time::Duration;
 
 use anyhow::Result;
 use async_trait::async_trait;
-use otter_core::feature::{Feature, Message, MessageRole};
+use otter_core::task::{Message, MessageRole, Task};
 use serde_json::Value;
 
 use crate::brain::Say;
 use crate::controller::unanswered;
 use crate::daemon::{Daemon, RpcResult};
-use crate::features::message;
 use crate::gateway::{Gateway, Origin, Scope, ToolSpec, host_tools, tools};
+use crate::tasks::message;
 
 /// How far one turn may go. (The scripted turn makes no round trips.)
 #[derive(Clone, Debug)]
@@ -55,12 +55,12 @@ impl Limits {
 /// What a turn starts with.
 pub struct Turn<'a> {
     /// The task, in a task's conversation; none in Otter's on the host.
-    pub feature: Option<&'a Feature>,
+    pub task: Option<&'a Task>,
     /// What Otter is told ([`INSTRUCTIONS`], [`HOST_INSTRUCTIONS`]).
     pub instructions: &'static str,
     /// A follow-up's turn (D-094): the task that changed, and how. No
     /// developer's message started it.
-    pub event: Option<(otter_core::FeatureId, String)>,
+    pub event: Option<(otter_core::TaskId, String)>,
     /// The developer's unanswered messages, oldest first.
     pub messages: &'a [Message],
     /// What `reply` gave the model: the brief, the status, the steps and
@@ -86,7 +86,7 @@ pub trait TurnBackend: Send + Sync {
 }
 
 /// The context `reply` builds, for a turn (D-089 §2).
-pub fn context(f: &Feature) -> String {
+pub fn context(f: &Task) -> String {
     let recent: Vec<String> = f
         .messages
         .iter()
@@ -96,7 +96,7 @@ pub fn context(f: &Feature) -> String {
         .map(|m| format!("{:?}: {}", m.role, crate::agents::excerpt(&m.text, 600)))
         .collect();
     let steps: Vec<String> = f
-        .tasks
+        .steps
         .iter()
         .enumerate()
         .map(|(i, t)| format!("{}. {} — {:?}", i + 1, t.title, t.status))
@@ -120,7 +120,7 @@ impl Daemon {
         }
         // Otter's turn never touches the workspace: it runs in an empty
         // directory of otterd's with the host's own environment, not the
-        // project's (`.envrc`) — and a feature still without a workspace
+        // project's (`.envrc`) — and a task still without a workspace
         // ("Choose a workspace") gets its answer too.
         let dir = self.otter_dir();
         let env = self.environments.base();
@@ -168,7 +168,7 @@ impl Daemon {
     /// Answer the developer's unanswered messages with a turn of `backend`.
     pub(crate) async fn otter_turn(
         self: &Arc<Self>,
-        f: &Feature,
+        f: &Task,
         backend: Box<dyn TurnBackend>,
     ) -> RpcResult<()> {
         let open = unanswered(f);
@@ -200,7 +200,7 @@ impl Daemon {
             }
         };
         let turn = Turn {
-            feature: Some(f),
+            task: Some(f),
             instructions: INSTRUCTIONS,
             event: None,
             messages: &open,
@@ -218,14 +218,14 @@ impl Daemon {
             // No answer: where the work stands now, why Otter couldn't look,
             // and what this turn did.
             None => {
-                tracing::warn!(feature = %f.id, backend = backend.name(), "Otter's turn: {why}");
+                tracing::warn!(task = %f.id, backend = backend.name(), "Otter's turn: {why}");
                 self.note_problem(
                     "otter_turn",
                     format!("Otter couldn't answer on “{}”: {why}.", f.title),
                     "`otter doctor` says how Otter answers on this host; Otter's model and its sign-in are in Settings.".into(),
                 );
                 let now = self
-                    .feature_get(f.id.as_str())
+                    .task_get(f.id.as_str())
                     .await
                     .unwrap_or_else(|_| f.clone());
                 let mut text = format!(
@@ -239,7 +239,7 @@ impl Daemon {
                 text
             }
         };
-        let applied = self.features.lock().await.apply(&f.id, None, |f, _| {
+        let applied = self.tasks.lock().await.apply(&f.id, None, |f, _| {
             let (m, c) = message(
                 MessageRole::Controller,
                 reply.clone(),
@@ -248,7 +248,7 @@ impl Daemon {
             f.messages.push(m);
             Ok(vec![c])
         })?;
-        self.feature_changed(&applied);
+        self.task_changed(&applied);
         self.stream(&f.id, &stream_id, MessageRole::Controller, reply, true);
         Ok(())
     }
@@ -293,7 +293,7 @@ impl Daemon {
             }
         };
         let turn = Turn {
-            feature: None,
+            task: None,
             instructions: HOST_INSTRUCTIONS,
             event: None,
             messages: &open,
@@ -335,9 +335,9 @@ impl Daemon {
 
     /// What a turn on the host starts with: the host's tasks, and the
     /// conversation lately.
-    async fn host_context(&self, chat: &otter_core::feature::OtterChat) -> String {
+    async fn host_context(&self, chat: &otter_core::task::OtterChat) -> String {
         let tasks: Vec<String> = self
-            .features
+            .tasks
             .lock()
             .await
             .list()
@@ -385,10 +385,10 @@ impl Daemon {
     /// be followed up after the restart; never twice.
     pub(crate) async fn follow_up(
         self: &Arc<Self>,
-        task: otter_core::FeatureId,
+        task: otter_core::TaskId,
         key: String,
     ) -> RpcResult<()> {
-        let f = self.feature_get(task.as_str()).await?;
+        let f = self.task_get(task.as_str()).await?;
         let what = format!(
             "[{}] {} is now {}{}",
             f.id,
@@ -414,7 +414,7 @@ impl Daemon {
                 );
                 let say = |_: &str| {};
                 let turn = Turn {
-                    feature: None,
+                    task: None,
                     instructions: HOST_INSTRUCTIONS,
                     event: Some((f.id.clone(), what.clone())),
                     messages: &[],
@@ -456,16 +456,16 @@ impl Daemon {
     /// The next change to follow up on the host, if one is due: a followed
     /// task at a change it hasn't said anything about. Tasks gone are no
     /// longer followed.
-    pub(crate) async fn due_follow_up(&self) -> Option<(otter_core::FeatureId, String)> {
+    pub(crate) async fn due_follow_up(&self) -> Option<(otter_core::TaskId, String)> {
         let follows = self.chat.lock().await.get().follows.clone();
         if follows.is_empty() {
             return None;
         }
-        let features = self.features.lock().await;
+        let tasks = self.tasks.lock().await;
         let mut gone = vec![];
         let mut due = None;
         for follow in &follows {
-            match features.get(follow.task_id.as_str()) {
+            match tasks.get(follow.task_id.as_str()) {
                 None => gone.push(follow.task_id.clone()),
                 Some(f) => {
                     if let Some(key) = f.follow_key()
@@ -477,7 +477,7 @@ impl Daemon {
                 }
             }
         }
-        drop(features);
+        drop(tasks);
         if !gone.is_empty() {
             let applied = self.chat.lock().await.apply(None, |chat, _| {
                 chat.follows.retain(|x| !gone.contains(&x.task_id));
@@ -680,10 +680,10 @@ impl Scripted {
             .collect()
     }
 
-    /// The call an intent becomes, where the feature stands.
+    /// The call an intent becomes, where the task stands.
     fn from_intent(turn: &Turn<'_>) -> Vec<(String, Value)> {
         use crate::brain::Intent;
-        use otter_core::feature::FeatureStatus as S;
+        use otter_core::task::TaskStatus as S;
         let text: String = turn
             .messages
             .iter()
@@ -692,7 +692,7 @@ impl Scripted {
             .join("\n");
         let (_, intent) = crate::brain::split_intent(&text);
         let ids: Vec<&str> = turn.messages.iter().map(|m| m.id.as_str()).collect();
-        let Some(f) = turn.feature else {
+        let Some(f) = turn.task else {
             return vec![];
         };
         let call = |name: &str| vec![(name.to_owned(), serde_json::json!({}))];

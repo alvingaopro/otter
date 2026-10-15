@@ -6,33 +6,33 @@ import { Markdown } from "./Markdown";
 import { ago } from "./model";
 import otterIcon from "./assets/otter.png";
 import type { CodingConversation, Interaction, RuntimeCapabilities } from "./conversation";
-import type { FeatureSource } from "./featureSource";
+import type { TaskSource } from "./taskSource";
 import { QuestionForm, Work } from "./Work";
 import {
   FILTERS,
   STATUS_LABEL,
-  featureGlyph,
+  taskGlyph,
   matches,
   pendingDecisions,
-  sortFeatures,
+  sortTasks,
   statusDetail,
   type DecisionRequest,
-  type Feature,
-  type FeatureAction,
-  type FeatureEventRecord,
-  type FeatureFilter,
-  type PlacedFeature,
+  type Task,
+  type TaskAction,
+  type TaskEventRecord,
+  type TaskFilter,
+  type PlacedTask,
   type WorkspaceChoice,
-} from "./features";
+} from "./tasks";
 
 interface Props {
-  source: FeatureSource;
-  /** Hosts a feature can be created on. */
+  source: TaskSource;
+  /** Hosts a task can be created on. */
   hosts: string[];
   /** Workspaces per host, to work in. */
   workspaces: Record<string, WorkspaceChoice[]>;
   now: number;
-  /** A feature to show, asked for from elsewhere (the Inbox); `at` makes asking again count. */
+  /** A task to show, asked for from elsewhere (the Inbox); `at` makes asking again count. */
   focus?: { key: string; at: number };
   /** Show a workspace (and session) in the Workspaces view. */
   onOpenWorkspace: (host: string, workspaceId: string, sessionId?: string) => void;
@@ -42,10 +42,10 @@ interface Props {
   grip?: ReactNode;
 }
 
-/** The Features view (D-041, D-042): product work, independent of the Workspace view. */
-export function FeaturesView({ source, hosts, workspaces, now, focus, onOpenWorkspace, onOpenPreview, grip }: Props) {
-  const [list, setList] = useState<PlacedFeature[]>(() => source.list());
-  const [filter, setFilter] = useState<FeatureFilter>("all");
+/** The Tasks view (D-041, D-042): product work, independent of the Workspace view. */
+export function TasksView({ source, hosts, workspaces, now, focus, onOpenWorkspace, onOpenPreview, grip }: Props) {
+  const [list, setList] = useState<PlacedTask[]>(() => source.list());
+  const [filter, setFilter] = useState<TaskFilter>("all");
   const [selected, setSelected] = useState<string | undefined>();
   const [creating, setCreating] = useState(false);
   // Opened from elsewhere (the Inbox): show that one.
@@ -60,8 +60,8 @@ export function FeaturesView({ source, hosts, workspaces, now, focus, onOpenWork
     return source.subscribe(setList);
   }, [source]);
 
-  const sorted = useMemo(() => sortFeatures(list), [list]);
-  const shown = sorted.filter((p) => matches(p.feature, filter));
+  const sorted = useMemo(() => sortTasks(list), [list]);
+  const shown = sorted.filter((p) => matches(p.task, filter));
   const current = list.find((p) => p.key === selected) ?? shown[0];
 
   return (
@@ -76,9 +76,9 @@ export function FeaturesView({ source, hosts, workspaces, now, focus, onOpenWork
             </svg>
           </button>
         </div>
-        <div className="feature-filters" role="group" aria-label="Filter tasks">
+        <div className="task-filters" role="group" aria-label="Filter tasks">
           {FILTERS.map((f) => {
-            const count = sorted.filter((p) => matches(p.feature, f.id)).length;
+            const count = sorted.filter((p) => matches(p.task, f.id)).length;
             return (
               <button
                 key={f.id}
@@ -94,7 +94,7 @@ export function FeaturesView({ source, hosts, workspaces, now, focus, onOpenWork
         </div>
         <div className="sidebar-groups">
           {shown.length === 0 ? (
-            <p className="muted small feature-none">{list.length === 0 ? "No tasks yet." : "Nothing matches this filter."}</p>
+            <p className="muted small task-none">{list.length === 0 ? "No tasks yet." : "Nothing matches this filter."}</p>
           ) : (
             <div className="group" role="list">
               {shown.map((p) => (
@@ -106,16 +106,16 @@ export function FeaturesView({ source, hosts, workspaces, now, focus, onOpenWork
                   onClick={() => setSelected(p.key)}
                 >
                   <span className="ws-glyph">
-                    <Glyph kind={featureGlyph(p.feature)} />
+                    <Glyph kind={taskGlyph(p.task)} />
                   </span>
                   <span className="ws-text">
                     <span className="ws-line">
-                      <span className="ws-name">{p.feature.title}</span>
+                      <span className="ws-name">{p.task.title}</span>
                       <span className="ws-host">{p.host}</span>
                     </span>
                     <span className="ws-line sub">
-                      <span className="ws-summary">{rowSummary(p.feature)}</span>
-                      <span className="ws-age">{ago(p.feature.updated_at, now)}</span>
+                      <span className="ws-summary">{rowSummary(p.task)}</span>
+                      <span className="ws-age">{ago(p.task.updated_at, now)}</span>
                     </span>
                   </span>
                 </button>
@@ -126,7 +126,7 @@ export function FeaturesView({ source, hosts, workspaces, now, focus, onOpenWork
       </nav>
       {grip}
       {current ? (
-        <FeaturePane
+        <TaskPane
           key={current.key}
           placed={current}
           source={source}
@@ -139,7 +139,7 @@ export function FeaturesView({ source, hosts, workspaces, now, focus, onOpenWork
         <main className="pane empty">
           <div className="drag-strip" data-tauri-drag-region />
           <h1 className="empty-title">Describe a task</h1>
-          <p className="muted">Say what you want: a feature, a fix or an answer. Otter plans it, directs a coding agent in a workspace and verifies the result.</p>
+          <p className="muted">Say what you want: a task, a fix or an answer. Otter plans it, directs a coding agent in a workspace and verifies the result.</p>
           <div className="empty-actions">
             <button className="btn primary" onClick={() => setCreating(true)}>
               New task
@@ -148,7 +148,7 @@ export function FeaturesView({ source, hosts, workspaces, now, focus, onOpenWork
         </main>
       )}
       {creating && (
-        <NewFeatureDialog
+        <NewTaskDialog
           hosts={hosts.length > 0 ? hosts : ["preview"]}
           workspaces={workspaces}
           onClose={() => setCreating(false)}
@@ -164,18 +164,18 @@ export function FeaturesView({ source, hosts, workspaces, now, focus, onOpenWork
   );
 }
 
-function rowSummary(f: Feature): string {
+function rowSummary(f: Task): string {
   const pending = pendingDecisions(f).length;
   if (pending > 0) return `${pending} decision${pending > 1 ? "s" : ""} waiting`;
   if (f.status_reason) return f.status_reason;
-  const done = f.tasks.filter((t) => t.status === "done").length;
-  if (f.tasks.length > 0) return `${STATUS_LABEL[f.status]} · ${done}/${f.tasks.length} steps`;
+  const done = f.steps.filter((t) => t.status === "done").length;
+  if (f.steps.length > 0) return `${STATUS_LABEL[f.status]} · ${done}/${f.steps.length} steps`;
   return STATUS_LABEL[f.status];
 }
 
-type Tab = "plan" | "work" | "tasks" | "approvals" | "evidence" | "delivery" | "timeline";
+type Tab = "plan" | "work" | "steps" | "approvals" | "evidence" | "delivery" | "timeline";
 
-function FeaturePane({
+function TaskPane({
   placed,
   source,
   now,
@@ -183,14 +183,14 @@ function FeaturePane({
   onOpenWorkspace,
   onOpenPreview,
 }: {
-  placed: PlacedFeature;
-  source: FeatureSource;
+  placed: PlacedTask;
+  source: TaskSource;
   now: number;
   workspaces: WorkspaceChoice[];
   onOpenWorkspace: Props["onOpenWorkspace"];
   onOpenPreview: Props["onOpenPreview"];
 }) {
-  const f = placed.feature;
+  const f = placed.task;
   const wsName = workspaces.find((w) => w.id === f.workspace_id)?.name;
   const [deleting, setDeleting] = useState(false);
   const pending = pendingDecisions(f);
@@ -222,7 +222,7 @@ function FeaturePane({
     [conversations],
   );
 
-  const act = (action: FeatureAction) => {
+  const act = (action: TaskAction) => {
     setError(null);
     source.act(placed.key, action).catch((e) => setError(String(e)));
   };
@@ -230,7 +230,7 @@ function FeaturePane({
   const tabs: { id: Tab; label: string; count?: number }[] = [
     { id: "plan", label: "Plan" },
     { id: "work", label: "Work" },
-    { id: "tasks", label: "Steps", count: f.tasks.length },
+    { id: "steps", label: "Steps", count: f.steps.length },
     { id: "approvals", label: "Approvals", count: pending.length },
     { id: "evidence", label: "Evidence", count: f.evidence.length },
     { id: "delivery", label: "Delivery" },
@@ -238,11 +238,11 @@ function FeaturePane({
   ];
 
   return (
-    <main className="pane feature-pane" aria-label={f.title}>
+    <main className="pane task-pane" aria-label={f.title}>
       <header className="pane-head" data-tauri-drag-region>
-        <Glyph kind={featureGlyph(f)} />
-        <h1 className="feature-title">{f.title}</h1>
-        <span className={`status-pill ${featureGlyph(f)}`}>{STATUS_LABEL[f.status]}</span>
+        <Glyph kind={taskGlyph(f)} />
+        <h1 className="task-title">{f.title}</h1>
+        <span className={`status-pill ${taskGlyph(f)}`}>{STATUS_LABEL[f.status]}</span>
         {statusDetail(f) && <span className="status-detail">{statusDetail(f)}</span>}
         <span className="chips">
           {f.answer_only && (
@@ -266,7 +266,7 @@ function FeaturePane({
               setError(null);
               try {
                 if (!f.preview) await source.act(placed.key, { action: "preview" });
-                const p = source.list().find((x) => x.key === placed.key)?.feature.preview ?? f.preview;
+                const p = source.list().find((x) => x.key === placed.key)?.task.preview ?? f.preview;
                 if (p) await onOpenPreview(placed.host, p.port, p.path);
               } catch (e) {
                 setError(String(e));
@@ -276,7 +276,7 @@ function FeaturePane({
             {f.preview ? "Open preview" : "Preview"}
           </button>
         )}
-        <FeatureActions f={f} act={act} caps={caps} />
+        <TaskActions f={f} act={act} caps={caps} />
         {deletable(f) && (
           <button className="btn outline" title="Delete this task" onClick={() => setDeleting(true)}>
             Delete
@@ -284,7 +284,7 @@ function FeaturePane({
         )}
       </header>
       {deleting && (
-        <DeleteFeatureDialog
+        <DeleteTaskDialog
           placed={placed}
           workspace={wsName ?? f.workspace_id}
           onDelete={() => source.remove(placed.key)}
@@ -319,9 +319,9 @@ function FeaturePane({
         </div>
       )}
       {error && <p className="notice error-text">{error}</p>}
-      <div className="feature-body">
+      <div className="task-body">
         <Conversation placed={placed} source={source} now={now} caps={caps} onError={setError} />
-        <section className="feature-detail" aria-label="Details">
+        <section className="task-detail" aria-label="Details">
           <div className="detail-tabs" role="tablist" aria-label="Task details">
             {tabs.map((t) => (
               <button
@@ -340,7 +340,7 @@ function FeaturePane({
           </div>
           <div className="detail-body" role="tabpanel" id={`fpanel-${tab}`} aria-labelledby={`ftab-${tab}`}>
             {tab === "plan" && <Plan f={f} />}
-            {tab === "tasks" && <Tasks placed={placed} onOpenWorkspace={onOpenWorkspace} />}
+            {tab === "steps" && <Steps placed={placed} onOpenWorkspace={onOpenWorkspace} />}
             {tab === "work" && <Work conversations={conversations} now={now} />}
             {tab === "approvals" && <Approvals f={f} act={act} now={now} interactions={interactions} />}
             {tab === "evidence" && <EvidenceList f={f} now={now} shot={(name) => source.artifact(placed.key, name)} />}
@@ -354,20 +354,20 @@ function FeaturePane({
 }
 
 /** Not being worked on: nothing is planning, implementing, verifying or running. */
-export function deletable(f: Feature): boolean {
+export function deletable(f: Task): boolean {
   return (
     !["planning", "implementing", "verifying"].includes(f.status) &&
     !f.runs.some((r) => ["starting", "running", "waiting"].includes(r.state))
   );
 }
 
-function DeleteFeatureDialog({
+function DeleteTaskDialog({
   placed,
   workspace,
   onDelete,
   onClose,
 }: {
-  placed: PlacedFeature;
+  placed: PlacedTask;
   workspace?: string;
   onDelete: () => Promise<void>;
   onClose: () => void;
@@ -377,7 +377,7 @@ function DeleteFeatureDialog({
   return (
     <Dialog title="Delete task" onClose={onClose}>
       <p>
-        Delete <strong>{placed.feature.title}</strong> from {placed.host}? Its conversation, plan, history and
+        Delete <strong>{placed.task.title}</strong> from {placed.host}? Its conversation, plan, history and
         screenshots are removed for good.
       </p>
       {workspace && <p className="muted small">The workspace {workspace} and its files stay as they are.</p>}
@@ -409,19 +409,19 @@ function DeleteFeatureDialog({
   );
 }
 
-function FeatureActions({
+function TaskActions({
   f,
   act,
   caps,
 }: {
-  f: Feature;
-  act: (a: FeatureAction) => void;
+  f: Task;
+  act: (a: TaskAction) => void;
   caps?: RuntimeCapabilities | null;
 }) {
   const live = ["planning", "implementing", "verifying", "blocked"].includes(f.status);
   const running = f.runs.some((r) => ["starting", "running", "waiting"].includes(r.state));
   return (
-    <span className="feature-actions">
+    <span className="task-actions">
       {running && caps?.features.interrupt_turn && (
         <button
           className="btn"
@@ -477,7 +477,7 @@ function FeatureActions({
   );
 }
 
-function StatusBanner({ f, onApprovals, act }: { f: Feature; onApprovals: () => void; act: (a: FeatureAction) => void }) {
+function StatusBanner({ f, onApprovals, act }: { f: Task; onApprovals: () => void; act: (a: TaskAction) => void }) {
   const pending = pendingDecisions(f).length;
   if (pending > 0 || f.status === "blocked") {
     return (
@@ -576,8 +576,8 @@ function Conversation({
   caps,
   onError,
 }: {
-  placed: PlacedFeature;
-  source: FeatureSource;
+  placed: PlacedTask;
+  source: TaskSource;
   now: number;
   caps?: RuntimeCapabilities | null;
   onError?: (e: string) => void;
@@ -586,8 +586,8 @@ function Conversation({
   const [busy, setBusy] = useState(false);
   const [inputHeight, setInputHeight] = useComposerHeight();
   const end = useRef<HTMLDivElement>(null);
-  const messages = placed.feature.messages;
-  const live = placed.feature.runs.find((r) => ["starting", "running", "waiting"].includes(r.state));
+  const messages = placed.task.messages;
+  const live = placed.task.runs.find((r) => ["starting", "running", "waiting"].includes(r.state));
   // Being written right now (D-051); a written one shows until its message loads.
   const drafts = (source.drafts?.(placed.key) ?? []).filter(
     (d) => !(d.done && messages.some((m) => m.role === d.role && m.text.trim() === d.text.trim())),
@@ -598,7 +598,7 @@ function Conversation({
   const last = messages[messages.length - 1];
   const replying = drafts.some((d) => d.role === "controller");
   const awaitingReply =
-    !replying && last?.role === "user" && messages.length > 1 && !["done", "cancelled"].includes(placed.feature.status);
+    !replying && last?.role === "user" && messages.length > 1 && !["done", "cancelled"].includes(placed.task.status);
   useEffect(
     () => end.current?.scrollIntoView?.({ block: "end" }),
     [messages.length, activity.length, awaitingReply, draftText.length],
@@ -665,7 +665,7 @@ function Conversation({
           aria-label="Message to Otter"
           style={{ height: inputHeight }}
           placeholder={
-            placed.feature.status === "review" || placed.feature.status === "done"
+            placed.task.status === "review" || placed.task.status === "done"
               ? "Happy with it? Or say what to change…"
               : "Tell Otter what you want…"
           }
@@ -711,7 +711,7 @@ function Conversation({
   );
 }
 
-function Plan({ f }: { f: Feature }) {
+function Plan({ f }: { f: Task }) {
   return (
     <div className="plan">
       <h2 className="sub-title">Request</h2>
@@ -768,20 +768,20 @@ function Plan({ f }: { f: Feature }) {
 
 const TASK_GLYPH = { pending: "idle", running: "working", blocked: "needs", done: "done", failed: "failed", skipped: "idle" } as const;
 
-function Tasks({ placed, onOpenWorkspace }: { placed: PlacedFeature; onOpenWorkspace: Props["onOpenWorkspace"] }) {
-  const f = placed.feature;
-  if (f.tasks.length === 0) return <p className="muted small">No steps yet: the plan comes first.</p>;
+function Steps({ placed, onOpenWorkspace }: { placed: PlacedTask; onOpenWorkspace: Props["onOpenWorkspace"] }) {
+  const f = placed.task;
+  if (f.steps.length === 0) return <p className="muted small">No steps yet: the plan comes first.</p>;
   return (
-    <ul className="plain-list tasks">
-      {f.tasks.map((t) => (
-        <li key={t.id} className="task">
+    <ul className="plain-list steps">
+      {f.steps.map((t) => (
+        <li key={t.id} className="step">
           <Glyph kind={TASK_GLYPH[t.status]} />
-          <span className="task-text">
-            <span className="task-title">{t.title}</span>
+          <span className="step-text">
+            <span className="step-title">{t.title}</span>
             <span className="muted small">
               {t.status}
               {t.attempts > 1 && ` · attempt ${t.attempts}`}
-              {t.depends_on.length > 0 && ` · after ${t.depends_on.map((d) => f.tasks.findIndex((x) => x.id === d) + 1).join(", ")}`}
+              {t.depends_on.length > 0 && ` · after ${t.depends_on.map((d) => f.steps.findIndex((x) => x.id === d) + 1).join(", ")}`}
             </span>
             {t.last_error && <span className="error-text small">{t.last_error}</span>}
           </span>
@@ -802,8 +802,8 @@ function Approvals({
   now,
   interactions,
 }: {
-  f: Feature;
-  act: (a: FeatureAction) => void;
+  f: Task;
+  act: (a: TaskAction) => void;
   now: number;
   interactions?: Map<string, Interaction>;
 }) {
@@ -825,7 +825,7 @@ export function Decision({
   interaction,
 }: {
   d: DecisionRequest;
-  act: (a: FeatureAction) => void;
+  act: (a: TaskAction) => void;
   now: number;
   interaction?: Interaction;
 }) {
@@ -892,14 +892,14 @@ export function Decision({
   );
 }
 
-function EvidenceList({ f, now, shot }: { f: Feature; now: number; shot: (name: string) => Promise<string> }) {
+function EvidenceList({ f, now, shot }: { f: Task; now: number; shot: (name: string) => Promise<string> }) {
   if (f.evidence.length === 0) return <p className="muted small">No evidence yet: tests, browser checks and CI results land here.</p>;
   return (
     <ul className="plain-list evidence">
       {f.evidence.map((e) => (
         <li key={e.id} className="evidence-item">
           <Glyph kind={e.ok === true ? "done" : e.ok === false ? "failed" : "idle"} />
-          <span className="task-text">
+          <span className="step-text">
             <span>
               {e.uri ? (
                 <a href={e.uri} target="_blank" rel="noreferrer">
@@ -923,7 +923,7 @@ function EvidenceList({ f, now, shot }: { f: Feature; now: number; shot: (name: 
 }
 
 /** Every gate but the developer's own acceptance passed (or doesn't apply). */
-function gatesClear(f: Feature): boolean {
+function gatesClear(f: Task): boolean {
   const gates = f.gates ?? [];
   return gates.length > 0 && gates.filter((g) => g.name !== "Your acceptance").every((g) => g.status === "passed" || g.status === "not_applicable");
 }
@@ -931,7 +931,7 @@ function gatesClear(f: Feature): boolean {
 const GATE_GLYPH = { passed: "done", failed: "failed", pending: "working", not_applicable: "idle" } as const;
 
 /** The gates, the pull request and its CI, and the final report (D-047). */
-function DeliveryPanel({ f }: { f: Feature }) {
+function DeliveryPanel({ f }: { f: Task }) {
   const gates = f.gates ?? [];
   const d = f.delivery;
   return (
@@ -999,9 +999,9 @@ function Shot({ load, alt }: { load: () => Promise<string>; alt: string }) {
   return src ? <img className="evidence-shot" src={src} alt={alt} /> : null;
 }
 
-function Timeline({ placed, source, now }: { placed: PlacedFeature; source: FeatureSource; now: number }) {
-  const [events, setEvents] = useState<FeatureEventRecord[] | null>(null);
-  const updated = placed.feature.updated_at;
+function Timeline({ placed, source, now }: { placed: PlacedTask; source: TaskSource; now: number }) {
+  const [events, setEvents] = useState<TaskEventRecord[] | null>(null);
+  const updated = placed.task.updated_at;
   useEffect(() => {
     let live = true;
     source
@@ -1015,7 +1015,7 @@ function Timeline({ placed, source, now }: { placed: PlacedFeature; source: Feat
   if (!events) return <p className="muted small">Loading…</p>;
   if (events.length === 0) return <p className="muted small">No history yet.</p>;
   return (
-    <ol className="plain-list feature-timeline">
+    <ol className="plain-list task-timeline">
       {[...events].reverse().map((e) => (
         <li key={e.seq}>
           <span className="muted small">{ago(e.ts, now)}</span>
@@ -1026,7 +1026,7 @@ function Timeline({ placed, source, now }: { placed: PlacedFeature; source: Feat
   );
 }
 
-function NewFeatureDialog({
+function NewTaskDialog({
   hosts,
   workspaces,
   onCreate,

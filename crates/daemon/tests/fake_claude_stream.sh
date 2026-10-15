@@ -9,7 +9,7 @@
 # up by itself, as Claude Code does), DIE_MIDTOOL (the process dies mid-tool; a
 # resumed run finishes, logging what it was told), DIE_ALWAYS (dies every
 # time); anything else finishes the turn. Asked to plan the work, it proposes
-# two tasks as JSON (NOPLAN: it answers in prose instead; PLANFAIL: the turn
+# two steps as JSON (NOPLAN: it answers in prose instead; PLANFAIL: the turn
 # fails). A `skip-init` file
 # next to the log keeps the session id back (as if it died before saying it).
 [ -n "$FAKE_CODEX_LOG" ] && echo "claude-stream $*" >> "$FAKE_CODEX_LOG"
@@ -20,7 +20,7 @@ while [ $# -gt 0 ]; do
   shift
 done
 # A conversation remembers the work it is on (where the log lives, if any):
-# told to continue, it carries on with that; a new task replaces it.
+# told to continue, it carries on with that; a new step replaces it.
 memory=
 [ -n "$FAKE_CODEX_LOG" ] && memory="$(dirname "$FAKE_CODEX_LOG")/conversation-$sid"
 out() { printf '%s\n' "$1"; }
@@ -51,9 +51,9 @@ while read -r line; do
     *'"type":"user"'*)
       if [ -n "$memory" ]; then
         case "$line" in
-          *'ontinue the task'*|*'ontinue where you left off'*)
+          *'ontinue the step'*|*'ontinue where you left off'*)
             [ -n "$resumed" ] && [ -f "$memory" ] && line="$(cat "$memory") $line" ;;
-          *'Your task ('*) printf '%s' "$line" > "$memory" ;;
+          *'Your step ('*) printf '%s' "$line" > "$memory" ;;
         esac
       fi
       case "$line" in
@@ -65,7 +65,7 @@ while read -r line; do
         *'plan the work'*PLANFAIL*|*PLANFAIL*'plan the work'*)
           result error_during_execution true "it broke while planning" ;;
         *'plan the work'*)
-          result success false '```json\n{\"summary\": \"Add an exporter, then cover it\", \"tasks\": [{\"title\": \"Write the exporter\", \"detail\": \"in export.sh\"}, {\"title\": \"Cover it with a test\", \"detail\": \"in the Makefile\"}], \"criteria\": [{\"text\": \"Rows export as CSV with a header\", \"how\": \"diff\"}, {\"text\": \"make test passes\", \"how\": \"check\"}], \"check\": \"make test\"}\n```' ;;
+          result success false '```json\n{\"summary\": \"Add an exporter, then cover it\", \"steps\": [{\"title\": \"Write the exporter\", \"detail\": \"in export.sh\"}, {\"title\": \"Cover it with a test\", \"detail\": \"in the Makefile\"}], \"criteria\": [{\"text\": \"Rows export as CSV with a header\", \"how\": \"diff\"}, {\"text\": \"make test passes\", \"how\": \"check\"}], \"check\": \"make test\"}\n```' ;;
         *BGWAIT*)
           out '{"type":"system","subtype":"background_tasks_changed","tasks":[{"task_id":"b1","task_type":"local_bash","description":"sleep 1 && echo done"}]}'
           text "It runs in the background; I will wait for it."

@@ -6,7 +6,7 @@
 //! Google Gemini, DeepSeek, xAI, Mistral, Groq); Anthropic speaks its own
 //! Messages API. Each takes an API key, set in the host's Settings (D-048) or
 //! in otterd's environment under the provider's variable. A key never goes on
-//! a command line, into an event, or into a feature: requests go through
+//! a command line, into an event, or into a task: requests go through
 //! `curl` with the key in its config on stdin and the body in a private
 //! temporary file. The model comes from Settings or `OTTER_CONTROLLER_MODEL`,
 //! else the provider's default (some have none: pick one in Settings).

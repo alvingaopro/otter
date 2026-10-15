@@ -1,0 +1,22 @@
+{
+  "messages": [
+    {
+      "id": "msg_9apbk1mj0b",
+      "role": "user",
+      "text": "What needs me?",
+      "at": "2026-10-15T18:58:58.991776593Z",
+      "correlation_id": "hello-otter"
+    },
+    {
+      "id": "msg_5epfrarak9",
+      "role": "controller",
+      "text": "Here I answer only with my tools, and on this host I'm without tools: `rules` has no tool-using turn. Turn on *Otter's tools* in Settings, with Claude Code as my model; or talk to me in a task.",
+      "at": "2026-10-15T18:58:59.004374781Z",
+      "correlation_id": "msg_9apbk1mj0b"
+    }
+  ],
+  "history_seq": 2,
+  "commands": [
+    "hello-otter"
+  ]
+}

@@ -1,50 +1,50 @@
-//! Features (D-043): pass-throughs to a host's daemon, which owns them. The
-//! UI follows `FeatureChanged` in `host-event` and reloads what changed.
+//! Tasks (D-043): pass-throughs to a host's daemon, which owns them. The
+//! UI follows `TaskChanged` in `host-event` and reloads what changed.
 
 use otter_core::Activity;
-use otter_core::feature::{Feature, FeatureAction, FeatureEventRecord, Need};
-use otter_protocol::feature::FeatureCreate;
+use otter_core::task::{Need, Task, TaskAction, TaskEventRecord};
+use otter_protocol::task::TaskCreate;
 use serde::Serialize;
 use tauri::AppHandle;
 
 use crate::hosts::rpc;
 
-/// A feature as the UI gets it: with what it needs from the developer and
+/// A task as the UI gets it: with what it needs from the developer and
 /// where it stands computed by `otter-core` (D-071), as `view.rs` does for
 /// workspaces, so the frontend never re-implements them.
 #[derive(Serialize)]
-pub struct FeatureView {
+pub struct TaskView {
     #[serde(flatten)]
-    feature: Feature,
+    task: Task,
     activity: Activity,
     #[serde(skip_serializing_if = "Option::is_none")]
     needs: Option<Need>,
 }
 
-impl From<Feature> for FeatureView {
-    fn from(feature: Feature) -> Self {
-        FeatureView {
-            activity: feature.activity(),
-            needs: feature.needs(),
-            feature,
+impl From<Task> for TaskView {
+    fn from(task: Task) -> Self {
+        TaskView {
+            activity: task.activity(),
+            needs: task.needs(),
+            task,
         }
     }
 }
 
-/// A host's features, newest first. An `otterd` too old to know features
+/// A host's tasks, newest first. An `otterd` too old to know tasks
 /// answers with an error, which the UI treats as "none here".
 #[tauri::command]
-pub async fn features_list(app: AppHandle, host: String) -> Result<Vec<FeatureView>, String> {
+pub async fn tasks_list(app: AppHandle, host: String) -> Result<Vec<TaskView>, String> {
     rpc(&app, &host)
         .await?
-        .feature_list()
+        .task_list()
         .await
-        .map(|l| l.into_iter().map(FeatureView::from).collect())
+        .map(|l| l.into_iter().map(TaskView::from).collect())
         .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-pub async fn feature_create(
+pub async fn task_create(
     app: AppHandle,
     host: String,
     command_id: String,
@@ -52,10 +52,10 @@ pub async fn feature_create(
     request: String,
     workspace: Option<String>,
     answer_only: Option<bool>,
-) -> Result<FeatureView, String> {
+) -> Result<TaskView, String> {
     rpc(&app, &host)
         .await?
-        .feature_create(FeatureCreate {
+        .task_create(TaskCreate {
             command_id,
             title,
             request,
@@ -63,92 +63,92 @@ pub async fn feature_create(
             answer_only: answer_only.unwrap_or(false),
         })
         .await
-        .map(FeatureView::from)
+        .map(TaskView::from)
         .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-pub async fn feature_send(
+pub async fn task_send(
     app: AppHandle,
     host: String,
     command_id: String,
-    feature: String,
+    task: String,
     text: String,
-) -> Result<FeatureView, String> {
+) -> Result<TaskView, String> {
     rpc(&app, &host)
         .await?
-        .feature_send(&command_id, &feature, &text)
+        .task_send(&command_id, &task, &text)
         .await
-        .map(FeatureView::from)
+        .map(TaskView::from)
         .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-pub async fn feature_act(
+pub async fn task_act(
     app: AppHandle,
     host: String,
     command_id: String,
-    feature: String,
-    action: FeatureAction,
-) -> Result<FeatureView, String> {
+    task: String,
+    action: TaskAction,
+) -> Result<TaskView, String> {
     rpc(&app, &host)
         .await?
-        .feature_act(&command_id, &feature, action)
+        .task_act(&command_id, &task, action)
         .await
-        .map(FeatureView::from)
+        .map(TaskView::from)
         .map_err(|e| e.to_string())
 }
 
-/// Delete a feature that isn't running; its workspace stays.
+/// Delete a task that isn't running; its workspace stays.
 #[tauri::command]
-pub async fn feature_delete(app: AppHandle, host: String, feature: String) -> Result<(), String> {
+pub async fn task_delete(app: AppHandle, host: String, task: String) -> Result<(), String> {
     rpc(&app, &host)
         .await?
-        .feature_delete(&feature)
+        .task_delete(&task)
         .await
         .map_err(|e| e.to_string())
 }
 
-/// A screenshot (or other file) a feature's checks produced, base64.
+/// A screenshot (or other file) a task's checks produced, base64.
 #[tauri::command]
-pub async fn feature_artifact(
+pub async fn task_artifact(
     app: AppHandle,
     host: String,
-    feature: String,
+    task: String,
     name: String,
 ) -> Result<String, String> {
     rpc(&app, &host)
         .await?
-        .feature_artifact(&feature, &name)
+        .task_artifact(&task, &name)
         .await
         .map(|f| f.data)
         .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-pub async fn feature_events(
+pub async fn task_events(
     app: AppHandle,
     host: String,
-    feature: String,
+    task: String,
     after: Option<u64>,
-) -> Result<Vec<FeatureEventRecord>, String> {
+) -> Result<Vec<TaskEventRecord>, String> {
     rpc(&app, &host)
         .await?
-        .feature_events(&feature, after)
+        .task_events(&task, after)
         .await
         .map_err(|e| e.to_string())
 }
 
-/// The coding agent's conversations for a feature, newest first (D-055).
+/// The coding agent's conversations for a task, newest first (D-055).
 #[tauri::command]
 pub async fn conversations(
     app: AppHandle,
     host: String,
-    feature: String,
+    task: String,
 ) -> Result<Vec<otter_protocol::conversation::ConversationView>, String> {
     rpc(&app, &host)
         .await?
-        .conversation_list(Some(&feature))
+        .conversation_list(Some(&task))
         .await
         .map_err(|e| e.to_string())
 }
@@ -172,7 +172,7 @@ pub async fn runtime_capabilities(
 pub async fn otter_get(
     app: AppHandle,
     host: String,
-) -> Result<otter_core::feature::OtterChat, String> {
+) -> Result<otter_core::task::OtterChat, String> {
     rpc(&app, &host)
         .await?
         .otter_get()
@@ -186,7 +186,7 @@ pub async fn otter_send(
     host: String,
     command_id: String,
     text: String,
-) -> Result<otter_core::feature::OtterChat, String> {
+) -> Result<otter_core::task::OtterChat, String> {
     rpc(&app, &host)
         .await?
         .otter_send(&command_id, &text)

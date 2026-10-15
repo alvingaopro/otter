@@ -6,7 +6,7 @@
 //! (committed or not, new files included), never touching the index — no
 //! `git add -N`, it's the agent's. Files that may hold secrets (`.env`, keys,
 //! credentials) count towards the fingerprint but their content is never
-//! shown: the report is kept in the feature and read by the judge's model.
+//! shown: the report is kept in the task and read by the judge's model.
 //! Outside Git: only a fingerprint of the files (path, size, modification
 //! time).
 

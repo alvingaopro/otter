@@ -3,7 +3,7 @@
 //! Anthropic-style), with the same gateway as Claude's turn.
 
 use super::*;
-use otter_core::feature::{FeatureEvent, MessageRole};
+use otter_core::task::{MessageRole, TaskEvent};
 use serde_json::{Value, json};
 use std::sync::{Arc, Mutex};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -179,7 +179,7 @@ async fn draft(host: &TestHost) -> String {
     })
     .await
     .unwrap();
-    conn.feature_create(otter_protocol::feature::FeatureCreate {
+    conn.task_create(otter_protocol::task::TaskCreate {
         command_id: "create-draft".into(),
         title: "CSV export".into(),
         request: "Add CSV export".into(),
@@ -216,7 +216,7 @@ async fn provider_answers_with_otters_tools(controller: &'static str, key_var: &
     let f = host
         .conn()
         .await
-        .feature_send("api-1", &id, text)
+        .task_send("api-1", &id, text)
         .await
         .unwrap();
     let msg = f
@@ -227,7 +227,7 @@ async fn provider_answers_with_otters_tools(controller: &'static str, key_var: &
         .unwrap()
         .id
         .clone();
-    let f = wait_feature(host, &id, "Otter's answer", |f| {
+    let f = wait_task(host, &id, "Otter's answer", |f| {
         f.messages
             .iter()
             .any(|m| m.correlation_id.as_deref() == Some(msg.as_str()))
@@ -241,9 +241,9 @@ async fn provider_answers_with_otters_tools(controller: &'static str, key_var: &
         })
         .unwrap();
     assert_eq!(reply.text, "The task is draft; your message: passed on.");
-    let recs = host.conn().await.feature_events(&id, None).await.unwrap();
+    let recs = host.conn().await.task_events(&id, None).await.unwrap();
     let forwarded = recs.iter().find_map(|r| match &r.event {
-        FeatureEvent::ToolCalled {
+        TaskEvent::ToolCalled {
             tool, authority, ..
         } if tool == "forward_to_agent" => Some(authority.clone()),
         _ => None,
@@ -300,7 +300,7 @@ async fn live_an_api_provider_answers_with_otters_tools() {
     let f = host
         .conn()
         .await
-        .feature_send("live-api", &id, text)
+        .task_send("live-api", &id, text)
         .await
         .unwrap();
     let msg = f
@@ -311,7 +311,7 @@ async fn live_an_api_provider_answers_with_otters_tools() {
         .unwrap()
         .id
         .clone();
-    let f = wait_feature(&host, &id, "Otter's answer", |f| {
+    let f = wait_task(&host, &id, "Otter's answer", |f| {
         f.messages
             .iter()
             .any(|m| m.correlation_id.as_deref() == Some(msg.as_str()))
@@ -328,12 +328,12 @@ async fn live_an_api_provider_answers_with_otters_tools() {
     let looked: Vec<String> = host
         .conn()
         .await
-        .feature_events(&id, None)
+        .task_events(&id, None)
         .await
         .unwrap()
         .into_iter()
         .filter_map(|r| match r.event {
-            FeatureEvent::ToolDone { tool, .. } => Some(tool),
+            TaskEvent::ToolDone { tool, .. } => Some(tool),
             _ => None,
         })
         .collect();
