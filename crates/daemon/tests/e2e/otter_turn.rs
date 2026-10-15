@@ -615,32 +615,34 @@ async fn otters_tools_are_a_host_setting() {
     use otter_protocol::host::SettingsUpdate;
     let mut fake = fake_agent_host("ok", "scripted").await;
     let host = &fake.host;
+    // On by default (D-096).
     let s = host.conn().await.settings_get().await.unwrap();
-    assert_eq!(s.otter_tools, Some(false));
+    assert_eq!(s.otter_tools, Some(true));
     assert_eq!(s.otter_tools_from_env, None);
-    assert_eq!(
-        s.otter_answers.as_deref(),
-        Some("without tools (off in Settings)")
-    );
+    assert_eq!(s.otter_answers.as_deref(), Some("with tools (scripted)"));
     let id = at_work(host, "Add CSV export HANG").await;
     let (_, answers) = run(host, &id, "set-1", "Look\nCALL: get_task {}").await;
-    assert!(answers.is_empty(), "off: no tools: {answers:?}");
+    assert_eq!(code(&answers[0]), "ok", "{answers:?}");
+    // Turned off from Settings: Otter answers as it did before its tools.
     let s = host
         .conn()
         .await
         .settings_set(SettingsUpdate {
-            otter_tools: Some(true),
+            otter_tools: Some(false),
             ..Default::default()
         })
         .await
         .unwrap();
-    assert_eq!(s.otter_tools, Some(true));
-    assert_eq!(s.otter_answers.as_deref(), Some("with tools (scripted)"));
+    assert_eq!(s.otter_tools, Some(false));
+    assert_eq!(
+        s.otter_answers.as_deref(),
+        Some("without tools (off in Settings)")
+    );
     let (_, answers) = run(host, &id, "set-2", "Look again\nCALL: get_task {}").await;
-    assert_eq!(code(&answers[0]), "ok", "{answers:?}");
+    assert!(answers.is_empty(), "off: no tools: {answers:?}");
     fake.host.restart().await;
     let s = fake.host.conn().await.settings_get().await.unwrap();
-    assert_eq!(s.otter_tools, Some(true));
+    assert_eq!(s.otter_tools, Some(false));
 }
 
 /// Otter's reply streams as Claude writes it (D-051, plan M2b): what it says

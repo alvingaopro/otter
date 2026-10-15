@@ -171,12 +171,12 @@ impl HostSettings {
     }
 
     /// Whether Otter answers with its tools (D-089): `OTTER_BRAIN_V2` (`1`
-    /// on, `0` off), else the setting; off by default while it's tried out.
+    /// on, `0` off), else the setting; on by default (D-096).
     pub fn otter_tools(&self) -> bool {
         match otter_tools_from_env().as_deref() {
             Some("1") => true,
             Some(_) => false,
-            None => self.stored.otter_tools.unwrap_or(false),
+            None => self.stored.otter_tools.unwrap_or(true),
         }
     }
 
@@ -361,28 +361,29 @@ mod tests {
         }
     }
 
-    /// Otter's tools (D-089): off until turned on, then kept. (Where
-    /// `OTTER_BRAIN_V2` is set, it decides: nothing to check here.)
+    /// Otter's tools (D-089): on by default (D-096), off when turned off,
+    /// and kept. (Where `OTTER_BRAIN_V2` is set, it decides: nothing to
+    /// check here.)
     #[test]
-    fn otters_tools_are_off_until_turned_on_and_stay_on() {
+    fn otters_tools_are_on_until_turned_off_and_stay_off() {
         if otter_tools_from_env().is_some() {
             return;
         }
         let dir = tempfile::tempdir().unwrap();
         let mut s = HostSettings::load(dir.path()).unwrap();
-        assert!(!s.otter_tools());
-        assert_eq!(s.view().otter_tools, Some(false));
+        assert!(s.otter_tools());
+        assert_eq!(s.view().otter_tools, Some(true));
         s.update(SettingsUpdate {
-            otter_tools: Some(true),
+            otter_tools: Some(false),
             ..Default::default()
         })
         .unwrap();
-        assert!(s.otter_tools());
+        assert!(!s.otter_tools());
         // Another update leaves it as it is.
         s.update(update(Some("claude"), None)).unwrap();
         let again = HostSettings::load(dir.path()).unwrap();
-        assert!(again.otter_tools());
-        assert_eq!(again.view().otter_tools, Some(true));
+        assert!(!again.otter_tools());
+        assert_eq!(again.view().otter_tools, Some(false));
     }
 
     #[test]

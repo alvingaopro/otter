@@ -302,7 +302,7 @@ export function SettingsDialog({ hosts, defaultHost, onClose }: { hosts: string[
             {needsModel && <p className="notice small">{info?.label} has no default model: choose one.</p>}
             {settings.otter_tools !== undefined && (
               <fieldset className="field coding">
-                <legend>Otter's tools (preview)</legend>
+                <legend>Otter's tools</legend>
                 <label className="check">
                   <input
                     type="checkbox"

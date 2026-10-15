@@ -8,11 +8,7 @@ use serde_json::Value;
 
 async fn chat_host(v2: bool) -> FakeCodex {
     fake_agent_host_with("ok", "scripted", move |_| {
-        if v2 {
-            vec![("OTTER_BRAIN_V2", "1".into())]
-        } else {
-            vec![]
-        }
+        vec![("OTTER_BRAIN_V2", if v2 { "1" } else { "0" }.into())]
     })
     .await
 }
@@ -160,7 +156,7 @@ async fn otter_on_the_host_without_tools_says_so() {
     let fake = chat_host(false).await;
     let (_, reply, _) = say(&fake.host, "h-off", "What's going on?").await;
     assert!(reply.contains("Otter's tools"), "{reply}");
-    assert!(reply.contains("off in Settings"), "{reply}");
+    assert!(reply.contains("OTTER_BRAIN_V2=0"), "{reply}");
 }
 
 /// Real Claude as Otter on the host, through the built worker (D-093): asked

@@ -133,7 +133,7 @@ pub struct Settings {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub active: Option<String>,
     /// Otter answers with its tools (D-089) — on, off; absent from an otterd
-    /// before it. Off by default while it's being tried out.
+    /// before it. On by default (D-096).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub otter_tools: Option<bool>,
     /// `OTTER_BRAIN_V2` in otterd's environment, which overrides the setting.

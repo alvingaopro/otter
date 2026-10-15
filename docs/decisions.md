@@ -2934,3 +2934,22 @@ Plan `brain-runtime-v2` M5, at the developer's direction (before V2-0c).
   retiring it is a decision of its own.
 - Tried: OpenRouter, live (V2-6); both API styles offline. The other
   OpenAI-style providers share the code; their own quirks are untried.
+
+## D-096 — Otter's tools are the default (2026-10-15)
+
+Plan `brain-runtime-v2` M2's last step. D-090 held it back until the reply
+streamed (done, M2b) and the dogfooding transcripts existed (V2-0c: still
+none). **The developer asked for every milestone to be done, so it is
+turned on now, before the transcripts** — a deliberate deviation from
+D-090's gate, recorded as such.
+
+- `otter_tools` is on unless a host's setting turns it off; `OTTER_BRAIN_V2`
+  still overrides it (`0` off, `1` on). The setting is now *Otter's tools*,
+  no longer "(preview)".
+- Where a brain has no tool-using turn (`claude` without the worker, a
+  provider without a key, `rules`), Otter answers as before (`INTENT:`), and
+  Settings and `otter doctor` say why.
+- It reaches a host only with a release, and every change since D-089 was
+  merged without one: when to release stays the developer's.
+- The transcripts (V2-0c) are still what tells whether it is better; the
+  off switch is there for what they show.
