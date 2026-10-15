@@ -1,0 +1,3 @@
+{"seq":1,"ts":"2026-10-15T18:58:58.879342023Z","v":1,"correlation_id":"create-Own","text":"Created “Own”","type":"FeatureCreated","title":"Own"}
+{"seq":2,"ts":"2026-10-15T18:58:58.879342023Z","v":1,"correlation_id":"create-Own","text":"You sent a message","type":"MessageAdded","message_id":"msg_1edrxrkndj","role":"user"}
+{"seq":3,"ts":"2026-10-15T18:58:58.979531795Z","v":1,"correlation_id":"own","text":"Command: set_workspace","type":"CommandAccepted","command_id":"own","action":"set_workspace"}

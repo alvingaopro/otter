@@ -1,0 +1,18 @@
+{"seq":1,"ts":"2026-10-15T18:58:58.412371325Z","v":1,"correlation_id":"create-First","text":"Created “First”","type":"FeatureCreated","title":"First"}
+{"seq":2,"ts":"2026-10-15T18:58:58.412371325Z","v":1,"correlation_id":"create-First","text":"You sent a message","type":"MessageAdded","message_id":"msg_by3gc649ha","role":"user"}
+{"seq":3,"ts":"2026-10-15T18:58:58.424494048Z","v":1,"correlation_id":"start-first","text":"Command: start","type":"CommandAccepted","command_id":"start-first","action":"start"}
+{"seq":4,"ts":"2026-10-15T18:58:58.424494048Z","v":1,"correlation_id":"start-first","text":"Planning","type":"StatusChanged","from":"draft","to":"planning"}
+{"seq":5,"ts":"2026-10-15T18:58:58.436185861Z","v":1,"text":"Plan: 1 task(s), 2 acceptance criteria","type":"PlanSet","tasks":1,"criteria":2}
+{"seq":6,"ts":"2026-10-15T18:58:58.436185861Z","v":1,"text":"Otter replied","type":"MessageAdded","message_id":"msg_f07b0ykf5s","role":"controller"}
+{"seq":7,"ts":"2026-10-15T18:58:58.436185861Z","v":1,"text":"Implementing","type":"StatusChanged","from":"planning","to":"implementing"}
+{"seq":8,"ts":"2026-10-15T18:58:58.476038344Z","v":1,"text":"task tk_gpnwx19sd1: running","type":"TaskChanged","task_id":"tk_gpnwx19sd1","status":"running"}
+{"seq":9,"ts":"2026-10-15T18:58:58.476038344Z","v":1,"correlation_id":"run_3c216ywje7","text":"A claude run started","type":"RunStarted","run_id":"run_3c216ywje7","task_id":"tk_gpnwx19sd1","runtime":"claude"}
+{"seq":10,"ts":"2026-10-15T18:58:58.715740292Z","v":1,"text":"Run completed","type":"RunChanged","run_id":"run_3c216ywje7","state":"completed"}
+{"seq":11,"ts":"2026-10-15T18:58:58.715740292Z","v":1,"correlation_id":"run_3c216ywje7","text":"The coding agent reported","type":"MessageAdded","message_id":"msg_zfzhtj3243","role":"agent"}
+{"seq":12,"ts":"2026-10-15T18:58:58.715740292Z","v":1,"text":"task tk_gpnwx19sd1: done","type":"TaskChanged","task_id":"tk_gpnwx19sd1","status":"done"}
+{"seq":13,"ts":"2026-10-15T18:58:58.728010554Z","v":1,"text":"Verifying","type":"StatusChanged","from":"implementing","to":"verifying"}
+{"seq":14,"ts":"2026-10-15T18:58:58.759273552Z","v":1,"text":"evidence: test (passed)","type":"EvidenceAdded","evidence_id":"ev_kcvkwamwnm","kind":"test","ok":true}
+{"seq":15,"ts":"2026-10-15T18:58:58.759273552Z","v":1,"text":"evidence: diff","type":"EvidenceAdded","evidence_id":"ev_cvbhqeykw1","kind":"diff"}
+{"seq":16,"ts":"2026-10-15T18:58:58.772686629Z","v":1,"text":"Otter replied","type":"MessageAdded","message_id":"msg_qwb7pdrer0","role":"controller"}
+{"seq":17,"ts":"2026-10-15T18:58:58.772686629Z","v":1,"text":"Review — Ready for your review","type":"StatusChanged","from":"verifying","to":"review","reason":"Ready for your review"}
+{"seq":18,"ts":"2026-10-15T18:58:58.792607348Z","v":1,"text":"decision needed (toolpermission, high risk)","type":"DecisionRequested","decision_id":"dec_st4cq9bwbh","kind":"tool_permission","risk":"high"}

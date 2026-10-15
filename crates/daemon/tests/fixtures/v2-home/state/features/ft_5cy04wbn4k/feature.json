@@ -1,0 +1,175 @@
+{
+  "schema": 1,
+  "id": "ft_5cy04wbn4k",
+  "title": "First",
+  "request": "Add a README",
+  "status": "review",
+  "status_reason": "Ready for your review",
+  "status_since": "2026-10-15T18:58:58.772637887Z",
+  "requirements": [
+    "Add a README"
+  ],
+  "acceptance": [
+    {
+      "id": "ac_1",
+      "text": "Done: First",
+      "met": true,
+      "evidence": [
+        "ev_kcvkwamwnm",
+        "ev_cvbhqeykw1"
+      ],
+      "how": "diff"
+    },
+    {
+      "id": "ac_2",
+      "text": "`make test` passes",
+      "met": true,
+      "evidence": [
+        "ev_kcvkwamwnm",
+        "ev_cvbhqeykw1"
+      ],
+      "how": "check"
+    }
+  ],
+  "tasks": [
+    {
+      "id": "tk_gpnwx19sd1",
+      "title": "First",
+      "detail": "Add a README",
+      "status": "done",
+      "depends_on": [],
+      "workspace_id": "ws_jh1b097bsd",
+      "attempts": 1
+    }
+  ],
+  "runs": [
+    {
+      "id": "run_3c216ywje7",
+      "task_id": "tk_gpnwx19sd1",
+      "runtime": "claude",
+      "state": "completed",
+      "started_at": "2026-10-15T18:58:58.476032954Z",
+      "ended_at": "2026-10-15T18:58:58.715722368Z",
+      "summary": "done in fake-session-1149154",
+      "provider_session_id": "fake-session-1149154",
+      "activity": [
+        "$ make test"
+      ],
+      "conversation_id": "conv_h8szgabeqv",
+      "turn_id": "turn_g4srfjmrb0",
+      "worked_ms": 239
+    }
+  ],
+  "messages": [
+    {
+      "id": "msg_by3gc649ha",
+      "role": "user",
+      "text": "Add a README",
+      "at": "2026-10-15T18:58:58.412369070Z",
+      "correlation_id": "create-First"
+    },
+    {
+      "id": "msg_f07b0ykf5s",
+      "role": "controller",
+      "text": "Plan: 1 task(s).\n1. First\nAcceptance criteria:\n- Done: First\n- `make test` passes\nI'll check the work with `make test`.",
+      "at": "2026-10-15T18:58:58.436181973Z"
+    },
+    {
+      "id": "msg_zfzhtj3243",
+      "role": "agent",
+      "text": "done in fake-session-1149154",
+      "at": "2026-10-15T18:58:58.715738318Z",
+      "correlation_id": "run_3c216ywje7"
+    },
+    {
+      "id": "msg_qwb7pdrer0",
+      "role": "controller",
+      "text": "Verified.\n✓ Done: First\n✓ `make test` passes",
+      "at": "2026-10-15T18:58:58.772681048Z"
+    }
+  ],
+  "decisions": [
+    {
+      "id": "dec_st4cq9bwbh",
+      "kind": "tool_permission",
+      "risk": "high",
+      "summary": "Run `git push origin feature/a` and open a pull request",
+      "detail": "pushes, publishes or deploys (`git push`)",
+      "options": [],
+      "status": "pending",
+      "created_at": "2026-10-15T18:58:58.792568465Z",
+      "user_only": true
+    }
+  ],
+  "evidence": [
+    {
+      "id": "ev_kcvkwamwnm",
+      "kind": "test",
+      "title": "`make test` (exit 0)",
+      "ok": true,
+      "detail": "all good\n",
+      "uncertain": false,
+      "at": "2026-10-15T18:58:58.740170848Z"
+    },
+    {
+      "id": "ev_cvbhqeykw1",
+      "kind": "diff",
+      "title": "Working tree: no changes",
+      "detail": "HEAD 28ce82cb91; changes since origin/main (merge base 28ce82cb91)\n\n$ git status --short\n(clean)\n",
+      "uncertain": false,
+      "at": "2026-10-15T18:58:58.759256811Z"
+    }
+  ],
+  "budget": {
+    "max_iterations": 6,
+    "max_minutes": 120,
+    "iterations_used": 1
+  },
+  "workspace_id": "ws_jh1b097bsd",
+  "active_since": "2026-10-15T18:58:58.424487005Z",
+  "verify_command": "make test",
+  "replan": false,
+  "verify_approved": true,
+  "rationale": [
+    "Plan (rules): One task for the whole request (no model configured).",
+    "Verified: every criterion is met."
+  ],
+  "gates": [
+    {
+      "name": "Requirements met",
+      "status": "passed",
+      "detail": "2 criteria"
+    },
+    {
+      "name": "Local tests",
+      "status": "passed",
+      "detail": "`make test` (exit 0)"
+    },
+    {
+      "name": "Browser evidence",
+      "status": "not_applicable",
+      "detail": "no browser checks declared"
+    },
+    {
+      "name": "Pull request",
+      "status": "pending",
+      "detail": "waiting to publish"
+    },
+    {
+      "name": "CI",
+      "status": "pending",
+      "detail": "after the pull request"
+    },
+    {
+      "name": "Your acceptance",
+      "status": "pending"
+    }
+  ],
+  "created_at": "2026-10-15T18:58:58.412306122Z",
+  "updated_at": "2026-10-15T18:58:58.804755730Z",
+  "history_seq": 18,
+  "commands": [
+    "create-First",
+    "start-first"
+  ]
+}

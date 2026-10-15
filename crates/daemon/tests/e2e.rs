@@ -7166,3 +7166,73 @@ async fn missed_occurrences_fire_once_after_a_restart() {
     );
     assert!(ts[0].next_at.unwrap() > now);
 }
+
+/// Writes a v2 host's state — before the rename of features to tasks
+/// (D-107) — to `OTTER_CAPTURE_DIR`, for `tests/fixtures/v2-home`. Kept,
+/// ignored, so the next on-disk change can capture its own.
+#[tokio::test]
+#[ignore]
+async fn capture_v2_state() {
+    use otter_core::feature::{FeatureAction, FeatureStatus};
+    let out = std::path::PathBuf::from(std::env::var("OTTER_CAPTURE_DIR").expect("OTTER_CAPTURE_DIR"));
+    let fake = fake_agent_host("ok", "rules").await;
+    let host = &fake.host;
+    let src = host.home().join("origin");
+    std::fs::create_dir_all(&src).unwrap();
+    git(&src, &["init", "-q", "-b", "main"]);
+    std::fs::write(src.join("Makefile"), "test:\n\t@echo all good\n").unwrap();
+    git(&src, &["add", "-A"]);
+    git(&src, &["commit", "-q", "-m", "init"]);
+    let mut conn = host.conn().await;
+    conn.workspace_create(git_ws(
+        "app",
+        &src,
+        Some("feature/a"),
+        vec![spec(SessionKind::Task, "check", "echo checked")],
+    ))
+    .await
+    .unwrap();
+    eventually("workspace ready", || async {
+        let ws = host.conn().await.workspace_get("app").await.unwrap();
+        (ws.state == WorkspaceState::Ready).then_some(())
+    })
+    .await;
+    let new = |title: &str, request: &str| otter_protocol::feature::FeatureCreate {
+        command_id: format!("create-{title}"),
+        title: title.into(),
+        request: request.into(),
+        workspace: Some("app".into()),
+        answer_only: false,
+    };
+    // One through review, with its plan, run and evidence.
+    let first = conn
+        .feature_create(new("First", "Add a README"))
+        .await
+        .unwrap()
+        .id
+        .to_string();
+    conn.feature_act("start-first", &first, FeatureAction::Start)
+        .await
+        .unwrap();
+    wait_feature(host, &first, "in review", |f| f.status == FeatureStatus::Review).await;
+    // One given a workspace of its own (`feature_id` on the workspace).
+    let own = conn
+        .feature_create(new("Own", "Add a LICENSE"))
+        .await
+        .unwrap()
+        .id
+        .to_string();
+    conn.feature_act("own", &own, FeatureAction::OwnWorkspace)
+        .await
+        .unwrap();
+    let _ = conn.otter_send("hello-otter", "What needs me?").await;
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    let state = host.home().join("state");
+    let copy = |from: &Path, to: &Path| {
+        let ok = Command::new("cp").arg("-R").arg(from).arg(to).status().unwrap();
+        assert!(ok.success());
+    };
+    std::fs::create_dir_all(&out).unwrap();
+    copy(&state, &out.join("state"));
+    let _ = std::fs::remove_dir_all(out.join("state/metrics"));
+}
