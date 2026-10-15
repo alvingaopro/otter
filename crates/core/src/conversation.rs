@@ -326,6 +326,9 @@ pub struct Turn {
     /// Asked for with [`Command::Redirect`]: delivered before other queued turns.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub redirect: bool,
+    /// A question's turn: the agent may only read (D-089 M2.5).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub read_only: bool,
 }
 
 impl Turn {
@@ -597,6 +600,10 @@ pub enum Command {
     SendTurn {
         initiator: Initiator,
         input: Vec<InputBlock>,
+        /// A question's turn (D-089 M2.5): the agent may only read; Otter's
+        /// policy denies the rest. Absent in records from before it.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        read_only: bool,
     },
     /// Stop this turn (only this one).
     Interrupt {
@@ -788,7 +795,16 @@ impl Conversation {
         match command {
             Command::SendTurn { .. } | Command::Redirect { .. } => {
                 let redirect = matches!(command, Command::Redirect { .. });
-                let (Command::SendTurn { initiator, input }
+                let read_only = matches!(
+                    command,
+                    Command::SendTurn {
+                        read_only: true,
+                        ..
+                    }
+                );
+                let (Command::SendTurn {
+                    initiator, input, ..
+                }
                 | Command::Redirect { initiator, input }) = command
                 else {
                     unreachable!()
@@ -820,6 +836,7 @@ impl Conversation {
                     ended_at: None,
                     usage: None,
                     redirect,
+                    read_only,
                 });
                 receipt.turn_id = Some(id);
             }
@@ -1523,6 +1540,7 @@ mod tests {
             Command::SendTurn {
                 initiator: Initiator::Controller,
                 input: text(s),
+                read_only: false,
             },
             now(),
         )
@@ -1873,6 +1891,7 @@ mod tests {
                 command: Command::SendTurn {
                     initiator: Initiator::Controller,
                     input: text("a"),
+                    read_only: false,
                 },
                 turn_id: Some(t.clone()),
                 at,

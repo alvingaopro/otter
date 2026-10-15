@@ -13,7 +13,9 @@ default stays off until the transcripts exist. Done: a host setting
 writes them, a new paragraph per message, the reply replacing them at the
 end), and the crash and replay tests of §8 (a crash before a change: made
 once after; after a forward: delivered once; a message sent twice:
-answered once). M2 is done but for the default, which waits on V2-0c. **To make the default
+answered once). M2 is done but for the default, which waits on V2-0c.
+M2.5: a question for the agent at work is a turn that only reads (D-091;
+live: V2-2); `AnswerOnly` is next. **To make the default
 possible, the developer:** turns the setting on for a host whose Otter is
 Claude Code, works real tasks with it, and records 5–10 transcripts
 (V2-0c); and, on a host with an API key, runs the spike with it (V2-0b).
@@ -286,6 +288,11 @@ tests:
 This answers golden scenario 1, a **code** question in the middle of a task.
 "Why is this task blocked?" is **not** in this category: the Observe tools
 answer it in M1.
+
+Built in M2.5 as D-091 records. Two changes from this section: the question
+is asked only while a run is at work (with none, it is a task of its own,
+D-084), and coding runs ask for Glob and Grep, which the native Claude Code
+leaves out unless asked — without them a question's turn couldn't search.
 
 ### 7.1 Shape
 

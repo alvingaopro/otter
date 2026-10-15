@@ -2497,7 +2497,7 @@ impl Daemon {
     }
 
     /// The messages the feature's live runs' conversations already carry.
-    fn carried(&self, f: &Feature) -> std::collections::HashSet<String> {
+    pub(crate) fn carried(&self, f: &Feature) -> std::collections::HashSet<String> {
         f.runs
             .iter()
             .filter(|r| !r.state.is_over())

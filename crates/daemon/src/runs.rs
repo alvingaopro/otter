@@ -229,6 +229,7 @@ impl Daemon {
                         input: vec![InputBlock::Text {
                             text: prompt.clone(),
                         }],
+                        read_only: false,
                     },
                     turn_id: Some(turn_id.clone()),
                     at: now,
@@ -454,6 +455,15 @@ impl Daemon {
         let mut last_text: Option<String> = None;
         // How the run ends once its last turn is over.
         let mut ending: Option<(RunState, Option<String>, bool)> = None;
+        // Its conversation: a question's turn there only reads (D-089 M2.5),
+        // and how the work's last turn ended stays the run's result.
+        let conversation = self
+            .runs
+            .lock()
+            .unwrap()
+            .get(&run)
+            .map(|r| r.conversation.clone());
+        let mut work_ending: Option<(RunState, Option<String>, bool)> = None;
         while let Some(ev) = events.recv().await {
             match ev {
                 ActorEvent::Bound { session_id } => {
@@ -488,7 +498,11 @@ impl Daemon {
                         .await;
                 }
                 ActorEvent::Ask { interaction, ask } => {
-                    let verdict = policy::classify(&ask.call, &root);
+                    let verdict = self
+                        .reads_only(conversation.as_ref(), None)
+                        .then(|| policy::read_only(&ask.call))
+                        .flatten()
+                        .unwrap_or_else(|| policy::classify(&ask.call, &root));
                     let grant = policy::grant(&ask.call, &root);
                     // Routine work goes on, recorded as the tool it is (in
                     // the conversation), not as a decision (D-069).
@@ -519,7 +533,11 @@ impl Daemon {
                     call,
                     ..
                 } => {
-                    let verdict = policy::classify(&call, &root);
+                    let verdict = self
+                        .reads_only(conversation.as_ref(), None)
+                        .then(|| policy::read_only(&call))
+                        .flatten()
+                        .unwrap_or_else(|| policy::classify(&call, &root));
                     let decision = match &verdict {
                         Verdict::Allow => CheckDecision::Allow,
                         Verdict::Deny { why } => {
@@ -556,10 +574,10 @@ impl Daemon {
                     let _ = actor.send(ActorCmd::Check { check_id, decision }).await;
                 }
                 ActorEvent::TurnFinished {
+                    turn,
                     outcome,
                     summary,
                     next,
-                    ..
                 } => {
                     tracing::debug!(?outcome, "run finished its turn");
                     let summary = summary
@@ -567,21 +585,37 @@ impl Daemon {
                         .or(last_text.take());
                     last_text = None;
                     let announce = summary.is_some();
-                    if next.is_some() {
-                        // The developer wrote meanwhile: the conversation goes on.
-                        if announce && let Some(s) = summary.filter(|s| !s.trim().is_empty()) {
+                    // Interrupted or cancelled isn't failed: the task can pick
+                    // up again (D-059).
+                    let state = match outcome {
+                        TurnOutcome::Completed => RunState::Completed,
+                        TurnOutcome::Interrupted | TurnOutcome::Cancelled => RunState::Cancelled,
+                        _ => RunState::Failed,
+                    };
+                    if self.reads_only(conversation.as_ref(), Some(&turn)) {
+                        // A question's answer is the agent's message, never
+                        // the run's result: that stays the work's (D-089 M2.5).
+                        if let Some(s) = summary {
                             self.agent_said(&feature, &run, s).await;
                         }
+                        if next.is_none() {
+                            ending = Some(work_ending.take().unwrap_or((
+                                RunState::Completed,
+                                None,
+                                false,
+                            )));
+                        }
+                    } else if next.is_some() {
+                        // The developer wrote meanwhile: the conversation goes on.
+                        if announce
+                            && let Some(s) = summary.clone().filter(|s| !s.trim().is_empty())
+                        {
+                            self.agent_said(&feature, &run, s).await;
+                        }
+                        // Said already: if a question's turn ends the run,
+                        // this is still its result.
+                        work_ending = Some((state, summary, false));
                     } else {
-                        // Interrupted or cancelled isn't failed: the task
-                        // can pick up again (D-059).
-                        let state = match outcome {
-                            TurnOutcome::Completed => RunState::Completed,
-                            TurnOutcome::Interrupted | TurnOutcome::Cancelled => {
-                                RunState::Cancelled
-                            }
-                            _ => RunState::Failed,
-                        };
                         ending = Some((state, summary, announce));
                     }
                 }
@@ -1059,6 +1093,50 @@ impl Daemon {
     /// own, delivered after the current one (never merged with another).
     /// `command_id` is the message's own, so a repeat is queued once.
     pub(crate) async fn tell_runs(&self, feature_id: &FeatureId, command_id: &str, text: &str) {
+        let input = format!("From the developer:\n{text}");
+        self.queue_turn(feature_id, command_id, input, false).await;
+    }
+
+    /// Ask a run in progress the developer's question (D-089 M2.5): a turn
+    /// of its own after the current one, in which the agent may only read
+    /// ([`policy::read_only`]); its answer is its message, not the run's
+    /// result. Only runs on the SDK runtime, where Otter's policy sees every
+    /// tool call; how many it went to.
+    pub(crate) async fn ask_runs(
+        &self,
+        feature_id: &FeatureId,
+        command_id: &str,
+        text: &str,
+    ) -> usize {
+        let input = format!(
+            "From the developer, a question. This turn can only read: Read, Grep and Glob work; writing files and running commands are refused. Answer what you can, pointing to the code (path:line); if part of it asks for a change, say that needs a turn of its own:\n{text}"
+        );
+        self.queue_turn(feature_id, command_id, input, true).await
+    }
+
+    /// The runtime backend of the feature's run in progress, if one is.
+    pub(crate) fn live_backend(&self, feature_id: &FeatureId) -> Option<String> {
+        let conversation = self
+            .runs
+            .lock()
+            .unwrap()
+            .values()
+            .find(|r| &r.feature == feature_id)
+            .map(|r| r.conversation.clone())?;
+        self.conversations
+            .get(conversation.as_str())
+            .map(|c| c.backend)
+    }
+
+    /// Queue a turn in each run of the feature (read-only: SDK runs only);
+    /// how many it was queued in.
+    async fn queue_turn(
+        &self,
+        feature_id: &FeatureId,
+        command_id: &str,
+        input: String,
+        read_only: bool,
+    ) -> usize {
         let live: Vec<_> = self
             .runs
             .lock()
@@ -1066,8 +1144,15 @@ impl Daemon {
             .values()
             .filter(|r| &r.feature == feature_id)
             .map(|r| (r.conversation.clone(), r.tx.clone()))
+            .filter(|(c, _)| {
+                !read_only
+                    || self
+                        .conversations
+                        .get(c.as_str())
+                        .is_some_and(|c| c.backend == "sdk")
+            })
             .collect();
-        let input = format!("From the developer:\n{text}");
+        let mut queued_in = 0;
         for (conversation, tx) in live {
             let queued = self.conversations.apply(
                 &conversation,
@@ -1079,6 +1164,7 @@ impl Daemon {
                         input: vec![InputBlock::Text {
                             text: input.clone(),
                         }],
+                        read_only,
                     },
                     turn_id: Some(otter_core::TurnId::generate()),
                     at: Utc::now(),
@@ -1086,11 +1172,28 @@ impl Daemon {
             );
             match queued {
                 Some(Ok(_)) => {
+                    queued_in += 1;
                     let _ = tx.send(ActorCmd::Wake).await;
                 }
                 Some(Err(e)) => tracing::debug!(%conversation, "queueing the message: {e}"),
                 None => {}
             }
+        }
+        queued_in
+    }
+
+    /// Whether the run's turn in progress (or `turn`) is a question's.
+    fn reads_only(
+        &self,
+        conversation: Option<&ConversationId>,
+        turn: Option<&otter_core::TurnId>,
+    ) -> bool {
+        let Some(c) = conversation.and_then(|c| self.conversations.get(c.as_str())) else {
+            return false;
+        };
+        match turn {
+            Some(id) => c.turns.iter().any(|t| &t.id == id && t.read_only),
+            None => c.active_turn().is_some_and(|t| t.read_only),
         }
     }
 
@@ -1753,6 +1856,7 @@ mod tests {
             command: Command::SendTurn {
                 initiator: Initiator::Controller,
                 input: vec![InputBlock::Text { text: "do".into() }],
+                read_only: false,
             },
             turn_id: Some(turn.clone()),
             at,
@@ -1807,6 +1911,7 @@ mod tests {
             command: Command::SendTurn {
                 initiator: Initiator::Controller,
                 input: vec![InputBlock::Text { text: id.into() }],
+                read_only: false,
             },
             turn_id: Some(turn.clone()),
             at,

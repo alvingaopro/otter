@@ -19,7 +19,8 @@ otterd ──stdin: initialize, send_turn, interrupt, policy_reply,
 
 - **`coding`** — the coding agent (D-057): Claude Code's tools, each call
   checked by Otter's policy (`policy_check` → `policy_reply`), the project's
-  settings.
+  settings. It asks for Glob and Grep, which the native Claude Code leaves
+  out unless asked (D-091).
 - **`otter`** — Otter's own turn (D-089): `otter_tools` (each a name, a
   description and a JSON schema) served from an in-process MCP server and
   nothing else — no Claude Code tools (`tools: []`), no settings, no other

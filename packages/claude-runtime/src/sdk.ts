@@ -67,6 +67,9 @@ export class InputQueue implements AsyncIterable<SDKUserMessage> {
 /** Tools held back for now (subagents). */
 export const DISALLOWED_TOOLS = ["Task", "Agent"];
 
+/** Search tools a coding run asks for: the native build has them only then. */
+export const SEARCH_TOOLS = ["Glob", "Grep"];
+
 /** The in-process server Otter's tools are served from (an `otter` run). */
 export const OTTER_SERVER = "otter";
 
@@ -142,6 +145,11 @@ export class Session {
       maxBudgetUsd: i.max_budget_usd,
       permissionMode: "default",
       disallowedTools: DISALLOWED_TOOLS,
+      // The native Claude Code leaves out its own search tools unless asked
+      // (it searches through Bash); a question's turn, which can't run
+      // commands (D-089), would find nothing. Otter's policy still checks
+      // each call.
+      allowedTools: SEARCH_TOOLS,
       // An interrupt stops the turn, not the background work the agent
       // started on purpose (D-065); shutting the run down still ends it.
       perTaskStopAffordance: true,

@@ -169,6 +169,12 @@ pub fn tools() -> Vec<ToolSpec> {
             message_ids(),
         ),
         t(
+            "ask_agent",
+            DeveloperWord,
+            "Ask the coding agent the developer's question about the code (their messages, by id): a turn of its own after its current one, in which it can only read; its answer comes as its own message.",
+            message_ids(),
+        ),
+        t(
             "redirect_agent",
             DeveloperWord,
             "Stop what the coding agent is doing now and give it the developer's messages (by id) instead.",
@@ -541,6 +547,70 @@ impl Gateway {
             .collect())
     }
 
+    /// A question for the coding agent at work (D-089 M2.5): a read-only
+    /// turn of its own, on the SDK runtime only (where Otter's policy sees
+    /// every tool call). Without a run at work, a question of its own is a
+    /// task of its own (D-084).
+    async fn ask(&self, f: &Feature, args: &Value) -> Result<Value, ToolError> {
+        let messages = self.chosen(args)?;
+        let d = &self.inner.daemon;
+        match d.live_backend(&f.id).as_deref() {
+            None => {
+                return Err(fail("not_ready", "the coding agent isn't at work on this task").next(
+                    "a question on its own is answered as a task of its own: the developer can start one",
+                ));
+            }
+            Some("sdk") => {}
+            Some(_) => {
+                return Err(fail(
+                    "not_allowed_in_this_turn",
+                    "code questions need the coding agent on the SDK runtime, where Otter can keep it to reading",
+                )
+                .next("in Settings, run the coding agent through the Claude Agent SDK worker"));
+            }
+        }
+        let origin = &self.inner.origin;
+        let command = origin.command("ask_agent");
+        self.record(
+            FeatureEvent::ToolCalled {
+                tool: "ask_agent".into(),
+                origin: origin.name().into(),
+                authority: origin.authority().map(|m| m.id.to_string()),
+            },
+            Some(&command),
+        )
+        .await;
+        let applied = d
+            .features
+            .lock()
+            .await
+            .apply(&f.id, Some(&command), |_, _| {
+                Ok(vec![
+                    Change::new(FeatureEvent::ToolDone {
+                        tool: "ask_agent".into(),
+                        error: None,
+                    })
+                    .because(&command),
+                ])
+            })?;
+        d.feature_changed(&applied);
+        // Each message once, by its own id (D-059): asked again (a turn run
+        // again), it isn't queued twice.
+        let carried = d.carried(f);
+        let mut asked = 0;
+        for m in messages.iter().filter(|m| !carried.contains(m.id.as_str())) {
+            asked += d.ask_runs(&f.id, m.id.as_str(), &m.text).await;
+        }
+        if !applied.duplicate {
+            self.inner
+                .done
+                .lock()
+                .unwrap()
+                .push("ask_agent: asked".into());
+        }
+        Ok(json!({"done": "asked", "turns": asked, "status": f.status.as_str()}))
+    }
+
     async fn write(&self, name: &str, args: &Value) -> Result<Value, ToolError> {
         let refused = |e: ToolError| async move {
             self.record_done(name, Some(e.code)).await;
@@ -549,6 +619,12 @@ impl Gateway {
         let f = self.feature().await?;
         if f.status.is_terminal() {
             return refused(fail("not_ready", "the task is cancelled")).await;
+        }
+        if name == "ask_agent" {
+            return match self.ask(&f, args).await {
+                Err(e) => refused(e).await,
+                ok => ok,
+            };
         }
         let plan = plan_question(&f);
         let waiting_on = || {
@@ -729,6 +805,7 @@ mod tests {
         assert_eq!(routine, ["pause_task"]);
         for n in [
             "forward_to_agent",
+            "ask_agent",
             "redirect_agent",
             "start_task",
             "resume_task",

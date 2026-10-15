@@ -10,6 +10,11 @@
 # (get_task); when the prompt says FORWARD, it passes on the developer's
 # last message by the id the prompt gives it (forward_to_agent); then it
 # answers with what it was told.
+#
+# A coding turn that is a question ("a question." in it, D-089 M2.5) tries
+# to write a file and to run a command, then answers, saying what Otter's
+# policy said to each. Modes for the work turn: slow (finishes after 2 s),
+# hang (never finishes).
 mode="${FAKE_WORKER_MODE:-ok}"
 out() { printf '%s\n' "$1"; }
 profiles='"profiles":["coding","otter"],'
@@ -23,8 +28,27 @@ forward=
 msg=
 status=
 turn=
+question=
+q1=
 while IFS= read -r line; do
   [ -n "$FAKE_WORKER_LOG" ] && printf '%s\n' "$line" >> "$FAKE_WORKER_LOG"
+  if [ -n "$question" ]; then
+    case "$line" in
+      *'"type":"policy_reply"'*)
+        d=$(printf '%s' "$line" | grep -o '"decision":"[a-z]*"' | sed 's/.*:"//; s/"//')
+        if [ -z "$q1" ]; then
+          q1=$d
+          out '{"type":"policy_check","check_id":"chk-q2","tool":"Bash","input":{"command":"make test"},"tool_use_id":"tu_q2"}'
+          continue
+        fi
+        out '{"type":"text","message":"mq","block":0,"text":"It is in src/export.rs:12."}'
+        out '{"type":"turn_finished","turn_id":"'"$turn"'","outcome":"completed","summary":"It is in src/export.rs:12. (Write: '"$q1"'; Bash: '"$d"'.)","error":null,"session_cost_usd":0.01}'
+        question=
+        q1=
+        continue
+        ;;
+    esac
+  fi
   case "$line" in
     *'"type":"initialize"'*)
       case "$mode" in
@@ -53,6 +77,22 @@ while IFS= read -r line; do
       turn=$(printf '%s' "$line" | sed 's/.*"turn_id":"\([^"]*\)".*/\1/')
       out '{"type":"session","session_id":"s-1","model":"fake","claude_code_version":"0","auth_source":"none"}'
       out '{"type":"delivered","turn_id":"'"$turn"'"}'
+      case "$line" in
+        *'a question.'*)
+          question=1
+          out '{"type":"policy_check","check_id":"chk-q1","tool":"Write","input":{"file_path":"src/a.rs","content":"x"},"tool_use_id":"tu_q1"}'
+          continue
+          ;;
+      esac
+      case "$mode" in
+        slow)
+          sleep 2
+          out '{"type":"text","message":"mw","block":0,"text":"Did the work."}'
+          out '{"type":"turn_finished","turn_id":"'"$turn"'","outcome":"completed","summary":"Did the work.","error":null,"session_cost_usd":0.01}'
+          continue
+          ;;
+        hang) continue ;;
+      esac
       if [ "$mode" = noisy ]; then
 
         head -c 3000000 /dev/zero | tr '\0' x >&2

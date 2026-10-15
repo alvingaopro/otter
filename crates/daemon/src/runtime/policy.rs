@@ -564,6 +564,26 @@ fn inside(root: &Path, path: &str) -> bool {
 }
 
 /// What policy says about a tool call in a workspace rooted at `root`.
+/// In a question's turn (D-089 M2.5) the agent may only read: reading and
+/// fetching go as usual, a question to the developer too; everything else
+/// is denied — whatever policy would say, and whoever asks. Commands are
+/// denied outright: reading a command line is lexical (above), not a
+/// guarantee that it only reads.
+pub fn read_only(call: &ToolCall) -> Option<Verdict> {
+    match call {
+        ToolCall::Read | ToolCall::Fetch { .. } | ToolCall::Question { .. } => None,
+        ToolCall::Edit { .. }
+        | ToolCall::Command { .. }
+        | ToolCall::Delegate { .. }
+        | ToolCall::Outside { .. }
+        | ToolCall::Other { .. }
+        | ToolCall::PlanApproval { .. } => Some(Verdict::Deny {
+            why: "This turn only reads: it answers the developer's question, changing nothing."
+                .into(),
+        }),
+    }
+}
+
 pub fn classify(call: &ToolCall, root: &Path) -> Verdict {
     match call {
         ToolCall::Read => Verdict::Allow,

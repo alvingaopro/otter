@@ -2796,3 +2796,34 @@ What lands instead:
   answers), not with the bare stored view.
 - The default changes in a decision of its own, after streaming and the
   transcripts.
+
+## D-091 — A question for the agent at work is a turn that only reads (2026-10-15)
+
+Plan `brain-runtime-v2` M2.5, for D-084's gap: a question in the middle of
+a feature was answered by the brain, which can't see the code.
+
+- **`ask_agent`**, one of Otter's tools on the developer's word: their
+  message goes to the coding agent at work as a turn of its own, after its
+  current one (D-056), in which it may **only read**. In that turn Otter's
+  policy reads, fetches and lets questions to the developer go as usual,
+  and denies everything else — edits, commands (all of them: reading a
+  command line is lexical, not a guarantee), subagents, other tools —
+  whatever policy would otherwise say (`policy::read_only`). The turn's
+  mode is its own (`Turn.read_only`), so a restart keeps it.
+- **Its answer is the agent's message, not the run's result.** The run
+  ends with the work's last turn's result; the question costs no attempt.
+- **Only on the SDK runtime**, where every tool call reaches Otter's policy
+  (the mandatory hook). On Claude Code's stream, which runs what it thinks
+  read-only without asking, `ask_agent` refuses and says to switch.
+- **Only while the agent is at work.** With nothing at work, a question of
+  its own is answered as a task of its own (D-084); Otter says so. A run
+  started for a question alone, outside the task's work, is not built.
+- **Coding runs get the search tools.** Live, the agent couldn't list a
+  directory in a question's turn: the native Claude Code leaves out Glob and
+  Grep unless asked for (it searches through Bash). The worker now asks for
+  them in every coding run; Otter's policy still checks each call.
+- An older otterd ignores the mode: one started on a journal with a queued
+  question's turn would run it unrestricted. No schema bump for that edge —
+  a bump would shut an older otterd out of every conversation.
+- Not done: `DeliveryMode::AnswerOnly` (every turn of a task read-only),
+  which the plan pairs with this — next, on the same rule.
