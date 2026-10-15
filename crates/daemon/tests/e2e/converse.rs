@@ -12,11 +12,8 @@ use otter_core::feature::{
 
 /// Otter's tools on (D-089) or off.
 fn flag(v2: bool) -> Vec<(&'static str, String)> {
-    if v2 {
-        vec![("OTTER_BRAIN_V2", "1".into())]
-    } else {
-        vec![]
-    }
+    // On by default (D-096): `converse` answers only with them off.
+    vec![("OTTER_BRAIN_V2", if v2 { "1" } else { "0" }.into())]
 }
 
 /// A host with the `scripted` brain: with Otter's tools, a message's

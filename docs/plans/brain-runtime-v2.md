@@ -4,7 +4,7 @@
 **Reviewed** twice on 2026-10-14 (a first draft, then a revision); the
 corrections are folded in — among them, that what Otter does on the
 developer's word draws its authority from the developer's own message.
-**Status:** M0 done but for what needs real use (`runtime-validation.md`
+**Status:** Every milestone done (D-089–D-096). M0 done but for what needs real use (`runtime-validation.md`
 V2-0b, V2-0c). M1 done: the gateway, the turn, the `scripted` backend,
 and Claude's turn through the worker's Otter profile (live: V2-1a, V2-1b;
 `otter doctor` says which path a host has). M2 reordered (D-090): the
@@ -23,7 +23,10 @@ tasks Otter made (D-094; live: V2-5). M5 done: the API providers answer with
 Otter's tools (D-095; live with OpenRouter: V2-6; §6 has the matrix).
 `INTENT:` stays for what has no turn (`claude` without the worker, a
 provider without a key, `rules`) until a decision of its own retires it.
-What remains of the plan is making the turn the default (D-090). **To make the default
+And the turn is the default (D-096), at the developer's direction before
+the transcripts: every milestone of the plan is done. Still to be had from
+real use: V2-0b (the worker under an API key), V2-0c (the transcripts), the
+API providers other than OpenRouter live, and V2-1c. **To make the default
 possible, the developer:** turns the setting on for a host whose Otter is
 Claude Code, works real tasks with it, and records 5–10 transcripts
 (V2-0c); and, on a host with an API key, runs the spike with it (V2-0b).
