@@ -1,20 +1,20 @@
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { FeaturesView } from "./FeaturesView";
-import { mockSource, sampleFeatures, type FeatureSource } from "./featureSource";
-import { STATUS_LABEL, matches, needsYou, sortFeatures, statusDetail, type Feature, type PlacedFeature } from "./features";
+import { TasksView } from "./TasksView";
+import { mockSource, sampleTasks, type TaskSource } from "./taskSource";
+import { STATUS_LABEL, matches, needsYou, sortTasks, statusDetail, type Task, type PlacedTask } from "./tasks";
 
-describe("feature contract helpers", () => {
-  const [active, blocked, failed, done, draft] = sampleFeatures(Date.parse("2026-10-09T12:00:00Z"));
+describe("task contract helpers", () => {
+  const [active, blocked, failed, done, draft] = sampleTasks(Date.parse("2026-10-09T12:00:00Z"));
 
-  it("knows which features need the developer", () => {
+  it("knows which tasks need the developer", () => {
     expect(needsYou(blocked)).toBe(true);
     expect(needsYou(active)).toBe(false);
     // Review needs you once it's ready to accept, not while CI runs (D-071).
     expect(needsYou({ ...done, status: "review", report: "## Report" })).toBe(true);
     expect(needsYou({ ...done, status: "review", report: undefined })).toBe(false);
-    // A stopped feature waits on your retry.
+    // A stopped task waits on your retry.
     expect(needsYou(failed)).toBe(true);
     // What otter-core served wins.
     expect(needsYou({ ...blocked, activity: "working", needs: undefined })).toBe(false);
@@ -39,14 +39,14 @@ describe("feature contract helpers", () => {
   });
 
   it("sorts what needs you first, longest-waiting first, then newest", () => {
-    const placed: PlacedFeature[] = [active, blocked, done, failed].map((f) => ({ host: "h", feature: f, key: f.id }));
-    expect(sortFeatures(placed).map((p) => p.feature.title)).toEqual([failed.title, blocked.title, active.title, done.title]);
+    const placed: PlacedTask[] = [active, blocked, done, failed].map((f) => ({ host: "h", task: f, key: f.id }));
+    expect(sortTasks(placed).map((p) => p.task.title)).toEqual([failed.title, blocked.title, active.title, done.title]);
   });
 });
 
 let root: Root;
 let host: HTMLDivElement;
-let source: FeatureSource;
+let source: TaskSource;
 const onOpenWorkspace = vi.fn();
 
 const q = <T extends Element = HTMLElement>(sel: string) => host.querySelector<T & HTMLElement>(sel);
@@ -60,11 +60,11 @@ function type(el: HTMLInputElement | HTMLTextAreaElement, value: string) {
   el.dispatchEvent(new Event("input", { bubbles: true }));
 }
 
-async function render(s: FeatureSource) {
+async function render(s: TaskSource) {
   source = s;
   await act(async () =>
     root.render(
-      <FeaturesView
+      <TasksView
         source={s}
         hosts={["mac"]}
         workspaces={{ mac: [{ id: "ws_demo", name: "demo" }] }}
@@ -76,7 +76,7 @@ async function render(s: FeatureSource) {
   );
 }
 
-describe("Features view", () => {
+describe("Tasks view", () => {
   beforeEach(() => {
     (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
     host = document.createElement("div");
@@ -92,26 +92,26 @@ describe("Features view", () => {
   it("shows an empty state with a create action", async () => {
     const empty = mockSource("mac");
     // Start from nothing.
-    const s: FeatureSource = { ...empty, list: () => [], subscribe: () => () => {} };
+    const s: TaskSource = { ...empty, list: () => [], subscribe: () => () => {} };
     await render(s);
     expect(host.textContent).toContain("Describe a task");
     expect(byText("button", "New task")).toBeTruthy();
   });
 
-  it("lists features with what needs you first and says it is a preview", async () => {
+  it("lists tasks with what needs you first and says it is a preview", async () => {
     await render(mockSource("mac"));
     const rows = [...host.querySelectorAll('[role="listitem"]')].map((r) => r.querySelector(".ws-name")?.textContent);
     // Waiting on you longest: the stopped one, then the blocked one.
     expect(rows.slice(0, 2)).toEqual(["Upgrade xterm to v7", "Rotate the staging database password"]);
     expect(rows).toHaveLength(5);
     expect(q('[role="note"]')?.textContent).toContain("Preview");
-    // A blocked feature opens on its approvals.
+    // A blocked task opens on its approvals.
     await act(async () => byText('[role="listitem"]', "Rotate the staging")!.click());
     expect(q('[role="tab"][aria-selected="true"]')?.textContent).toContain("Approvals");
     expect(q(".banner.needs")).not.toBeNull();
   });
 
-  it("deletes a feature that isn't running, after asking", async () => {
+  it("deletes a task that isn't running, after asking", async () => {
     await render(mockSource("mac"));
     const open = async (title: string) => act(async () => byText("button", title)!.click());
     // Being worked on: no Delete.
@@ -136,7 +136,7 @@ describe("Features view", () => {
     type(dialog.querySelector("textarea")!, "Export timelines as CSV");
     await act(async () => byText("button", "Create draft")!.click());
 
-    expect(q(".feature-title")?.textContent).toBe("CSV export");
+    expect(q(".task-title")?.textContent).toBe("CSV export");
     expect(q(".status-pill")?.textContent).toBe("Draft");
     expect(host.querySelector(".message.user")?.textContent).toContain("Export timelines as CSV");
 
@@ -157,7 +157,7 @@ describe("Features view", () => {
   it("creates an answer-only task, and says so on it", async () => {
     const base = mockSource("mac");
     const made: unknown[] = [];
-    const s: FeatureSource = {
+    const s: TaskSource = {
       ...base,
       create: async (h, title, request, workspace, answerOnly) => {
         made.push({ title, answerOnly });
@@ -177,7 +177,7 @@ describe("Features view", () => {
   it("shows the coding agent's work and offers interrupt and redirect while it runs", async () => {
     const base = mockSource("mac");
     const acts: unknown[] = [];
-    const s: FeatureSource = { ...base, act: async (_key, action) => void acts.push(action) };
+    const s: TaskSource = { ...base, act: async (_key, action) => void acts.push(action) };
     await render(s);
     await act(async () => byText("button", "Export workspace timeline as CSV")!.click());
     await act(async () => byText('[role="tab"]', "Work")!.click());
@@ -201,7 +201,7 @@ describe("Features view", () => {
     expect(byText("button", "Redirect now")).toBeUndefined();
   });
 
-  it("creates a feature in a chosen workspace", async () => {
+  it("creates a task in a chosen workspace", async () => {
     await render(mockSource("mac"));
     await act(async () => q('[aria-label="New task"]')!.click());
     const dialog = document.querySelector('[role="dialog"]')!;
@@ -211,25 +211,25 @@ describe("Features view", () => {
     select.value = "ws_demo";
     await act(async () => select.dispatchEvent(new Event("change", { bubbles: true })));
     await act(async () => byText("button", "Create draft")!.click());
-    const created = source.list().find((p) => p.feature.title === "In a workspace")!;
-    expect(created.feature.workspace_id).toBe("ws_demo");
+    const created = source.list().find((p) => p.task.title === "In a workspace")!;
+    expect(created.task.workspace_id).toBe("ws_demo");
     // The header links to it; no "choose a workspace" prompt.
     expect(byText("button.chip", "demo")).toBeTruthy();
     expect(q('[aria-label="Workspace"][role="group"]')).toBeNull();
   });
 
-  it("answers an approval and the feature moves on", async () => {
+  it("answers an approval and the task moves on", async () => {
     await render(mockSource("mac"));
     await act(async () => byText('[role="listitem"]', "Rotate the staging")!.click());
     await act(async () => byText(".decision button", "Approve")!.click());
-    const blocked = source.list().find((p) => p.feature.title.startsWith("Rotate"))!;
-    expect(blocked.feature.decisions[0].status).toBe("approved");
-    expect(blocked.feature.decisions[0].decided_by).toBe("user");
-    expect(blocked.feature.status).toBe("implementing");
+    const blocked = source.list().find((p) => p.task.title.startsWith("Rotate"))!;
+    expect(blocked.task.decisions[0].status).toBe("approved");
+    expect(blocked.task.decisions[0].decided_by).toBe("user");
+    expect(blocked.task.status).toBe("implementing");
     expect(q(".banner.needs")).toBeNull();
   });
 
-  it("filters, and handles failed and completed features", async () => {
+  it("filters, and handles failed and completed tasks", async () => {
     await render(mockSource("mac"));
     await act(async () => byText(".filter-chip", "Failed")!.click());
     expect(host.querySelectorAll('[role="listitem"]')).toHaveLength(1);
@@ -245,8 +245,8 @@ describe("Features view", () => {
 
   it("shows the gates and only offers a plain Accept when they pass", async () => {
     const base = mockSource("mac");
-    const [done] = sampleFeatures().filter((f) => f.status === "done");
-    const review: Feature = {
+    const [done] = sampleTasks().filter((f) => f.status === "done");
+    const review: Task = {
       ...done,
       status: "review",
       gates: [
@@ -257,9 +257,9 @@ describe("Features view", () => {
       delivery: { branch: "feature/x", pr_url: "https://github.com/o/r/pull/7", pr_number: 7, ci: [{ name: "test", state: "pending" }], reruns: 0, declined: false },
       report: undefined,
     };
-    let list: PlacedFeature[] = [{ host: "mac", feature: review, key: "mac/" + review.id }];
+    let list: PlacedTask[] = [{ host: "mac", task: review, key: "mac/" + review.id }];
     const acts: unknown[] = [];
-    const s: FeatureSource = { ...base, list: () => list, subscribe: () => () => {}, act: async (_k, a) => void acts.push(a) };
+    const s: TaskSource = { ...base, list: () => list, subscribe: () => () => {}, act: async (_k, a) => void acts.push(a) };
     await render(s);
     expect(byText("button", "Accept anyway")).toBeTruthy();
     await act(async () => byText('[role="tab"]', "Delivery")!.click());
@@ -268,7 +268,7 @@ describe("Features view", () => {
     await act(async () => byText("button", "Accept anyway")!.click());
     expect(acts).toEqual([{ action: "accept", override_gates: true }]);
 
-    list = [{ ...list[0], feature: { ...review, gates: review.gates!.map((g) => ({ ...g, status: g.name === "Your acceptance" ? g.status : "passed" })) } }];
+    list = [{ ...list[0], task: { ...review, gates: review.gates!.map((g) => ({ ...g, status: g.name === "Your acceptance" ? g.status : "passed" })) } }];
     act(() => root.unmount());
     root = createRoot(host);
     await render(s);

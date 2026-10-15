@@ -223,7 +223,7 @@ export function SettingsDialog({ hosts, defaultHost, onClose }: { hosts: string[
     <Dialog title="Settings" onClose={onClose}>
       <form className="form" onSubmit={submit}>
         <p className="muted small settings-intro">
-          <strong>Otter</strong> runs each feature for you: it plans the work, directs a coding agent, answers its
+          <strong>Otter</strong> runs each task for you: it plans the work, directs a coding agent, answers its
           questions, and checks the result before handing it to you. It runs on the host, so it keeps working while
           this app is closed.
         </p>
@@ -239,7 +239,7 @@ export function SettingsDialog({ hosts, defaultHost, onClose }: { hosts: string[
             <span className="settings-host">{host}</span>
           )}
           <span className="muted small">
-            Otter runs on each host with that host's model and keys: features on {host} use these.
+            Otter runs on each host with that host's model and keys: tasks on {host} use these.
           </span>
         </label>
         {!settings && !error && <p className="muted small">Loading…</p>}

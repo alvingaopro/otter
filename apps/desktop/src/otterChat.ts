@@ -4,10 +4,10 @@
 
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { commandId } from "./featureSource";
-import type { Message } from "./features";
+import { commandId } from "./taskSource";
+import type { Message } from "./tasks";
 
-/** Mirrors `otter_core::feature::OtterChat`. */
+/** Mirrors `otter_core::task::OtterChat`. */
 export interface OtterChat {
   messages: Message[];
   history_seq: number;

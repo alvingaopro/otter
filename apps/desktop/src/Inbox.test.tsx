@@ -1,14 +1,14 @@
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { mockSource, type FeatureSource } from "./featureSource";
+import { mockSource, type TaskSource } from "./taskSource";
 import { Inbox } from "./Inbox";
 import { workspace } from "./inboxFixtures";
 
 let root: Root;
 let host: HTMLDivElement;
-let source: FeatureSource;
-const onOpenFeature = vi.fn();
+let source: TaskSource;
+const onOpenTask = vi.fn();
 const onOpenWorkspace = vi.fn();
 
 const section = (label: string) => host.querySelector<HTMLElement>(`section[aria-label="${label}"]`);
@@ -24,7 +24,7 @@ async function render() {
         source={source}
         workspaces={[workspace("api", "needs_you", 5), workspace("web", "working", 1)]}
         now={Date.parse("2026-10-09T12:00:00Z")}
-        onOpenFeature={onOpenFeature}
+        onOpenTask={onOpenTask}
         onOpenWorkspace={onOpenWorkspace}
       />,
     ),
@@ -36,7 +36,7 @@ describe("Inbox", () => {
     host = document.createElement("div");
     document.body.appendChild(host);
     root = createRoot(host);
-    onOpenFeature.mockClear();
+    onOpenTask.mockClear();
     onOpenWorkspace.mockClear();
   });
   afterEach(() => {
@@ -44,18 +44,18 @@ describe("Inbox", () => {
     host.remove();
   });
 
-  it("answers a decision right there, and the feature goes back to work", async () => {
+  it("answers a decision right there, and the task goes back to work", async () => {
     await render();
     const row = item("Rotate the staging database password");
     expect(section("NEEDS YOU")?.contains(row)).toBe(true);
     await act(async () => button(row, "Approve")!.click());
     const after = item("Rotate the staging database password");
     expect(section("WORKING")?.contains(after)).toBe(true);
-    const f = source.list().find((p) => p.feature.title.startsWith("Rotate"))!;
-    expect(f.feature.decisions[0]).toMatchObject({ status: "approved", decided_by: "user" });
+    const f = source.list().find((p) => p.task.title.startsWith("Rotate"))!;
+    expect(f.task.decisions[0]).toMatchObject({ status: "approved", decided_by: "user" });
   });
 
-  it("retries a stopped feature, and opens features and workspaces", async () => {
+  it("retries a stopped task, and opens tasks and workspaces", async () => {
     await render();
     const stopped = item("Upgrade xterm to v7");
     expect(stopped?.textContent).toContain("Stopped after 6 of 6 attempts");
@@ -63,16 +63,16 @@ describe("Inbox", () => {
     expect(section("WORKING")?.contains(item("Upgrade xterm to v7"))).toBe(true);
 
     await act(async () => button(item("Rotate the staging database password"), "Open")!.click());
-    expect(onOpenFeature).toHaveBeenCalledWith(source.list().find((p) => p.feature.title.startsWith("Rotate"))!.key);
+    expect(onOpenTask).toHaveBeenCalledWith(source.list().find((p) => p.task.title.startsWith("Rotate"))!.key);
     await act(async () => button(item("api"), "Open")!.click());
     expect(onOpenWorkspace).toHaveBeenCalledWith("mac/ws_api");
   });
 
-  it("pauses every feature at work at once", async () => {
+  it("pauses every task at work at once", async () => {
     await render();
-    await act(async () => button(section("WORKING"), "Pause all features")!.click());
-    const working = source.list().filter((p) => ["planning", "implementing", "verifying"].includes(p.feature.status));
+    await act(async () => button(section("WORKING"), "Pause all tasks")!.click());
+    const working = source.list().filter((p) => ["planning", "implementing", "verifying"].includes(p.task.status));
     expect(working).toEqual([]);
-    expect(source.list().some((p) => p.feature.status === "paused")).toBe(true);
+    expect(source.list().some((p) => p.task.status === "paused")).toBe(true);
   });
 });

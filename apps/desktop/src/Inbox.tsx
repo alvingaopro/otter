@@ -1,18 +1,18 @@
 import { useEffect, useState } from "react";
-import { Decision } from "./FeaturesView";
-import { featureGlyph, type FeatureAction, type PlacedFeature } from "./features";
-import type { FeatureSource } from "./featureSource";
+import { Decision } from "./TasksView";
+import { taskGlyph, type TaskAction, type PlacedTask } from "./tasks";
+import type { TaskSource } from "./taskSource";
 import { Glyph } from "./Glyph";
 import { inboxGroups, inboxItems, type InboxItem } from "./inboxModel";
 import { ago, workspaceGlyph } from "./model";
 import type { Placed } from "./types";
 
 interface Props {
-  source: FeatureSource;
+  source: TaskSource;
   /** Workspaces on every host, as the Workspaces view gets them. */
   workspaces: Placed[];
   now: number;
-  onOpenFeature: (key: string) => void;
+  onOpenTask: (key: string) => void;
   onOpenWorkspace: (key: string) => void;
 }
 
@@ -21,13 +21,13 @@ interface Props {
  * longest-waiting first, with what to do right there; then what is working;
  * then what is done.
  */
-export function Inbox({ source, workspaces, now, onOpenFeature, onOpenWorkspace }: Props) {
-  const [features, setFeatures] = useState<PlacedFeature[]>(() => source.list());
+export function Inbox({ source, workspaces, now, onOpenTask, onOpenWorkspace }: Props) {
+  const [tasks, setTasks] = useState<PlacedTask[]>(() => source.list());
   useEffect(() => {
-    setFeatures(source.list());
-    return source.subscribe(setFeatures);
+    setTasks(source.list());
+    return source.subscribe(setTasks);
   }, [source]);
-  const groups = inboxGroups(inboxItems(features, workspaces));
+  const groups = inboxGroups(inboxItems(tasks, workspaces));
 
   return (
     <main className="pane inbox" aria-label="Inbox">
@@ -43,7 +43,7 @@ export function Inbox({ source, workspaces, now, onOpenFeature, onOpenWorkspace 
                 <span>{g.label}</span>
                 <span className="count">{g.items.length}</span>
               </h2>
-              {g.id === "working" && g.items.some((i) => i.feature) && <PauseAll source={source} items={g.items} />}
+              {g.id === "working" && g.items.some((i) => i.task) && <PauseAll source={source} items={g.items} />}
               <ul className="plain-list inbox-items">
                 {g.items.map((item) => (
                   <InboxRow
@@ -51,7 +51,7 @@ export function Inbox({ source, workspaces, now, onOpenFeature, onOpenWorkspace 
                     item={item}
                     source={source}
                     now={now}
-                    onOpen={() => (item.feature ? onOpenFeature(item.feature.key) : onOpenWorkspace(item.workspace!.key))}
+                    onOpen={() => (item.task ? onOpenTask(item.task.key) : onOpenWorkspace(item.workspace!.key))}
                   />
                 ))}
               </ul>
@@ -63,8 +63,8 @@ export function Inbox({ source, workspaces, now, onOpenFeature, onOpenWorkspace 
   );
 }
 
-/** Hold every feature at work at once (D-081): one control for all the agents. */
-function PauseAll({ source, items }: { source: FeatureSource; items: InboxItem[] }) {
+/** Hold every task at work at once (D-081): one control for all the agents. */
+function PauseAll({ source, items }: { source: TaskSource; items: InboxItem[] }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const pause = async () => {
@@ -72,8 +72,8 @@ function PauseAll({ source, items }: { source: FeatureSource; items: InboxItem[]
     setError(null);
     const failed: string[] = [];
     for (const i of items) {
-      if (!i.feature) continue;
-      await source.act(i.feature.key, { action: "pause" }).catch((e) => failed.push(`${i.title}: ${String(e)}`));
+      if (!i.task) continue;
+      await source.act(i.task.key, { action: "pause" }).catch((e) => failed.push(`${i.title}: ${String(e)}`));
     }
     if (failed.length > 0) setError(failed.join("; "));
     setBusy(false);
@@ -81,7 +81,7 @@ function PauseAll({ source, items }: { source: FeatureSource; items: InboxItem[]
   return (
     <div className="inbox-group-actions">
       <button className="btn outline small-btn" disabled={busy} onClick={() => void pause()} title="Hold every task at work: what runs is interrupted, nothing new starts">
-        Pause all features
+        Pause all tasks
       </button>
       {error && (
         <span className="error-text small" role="alert">
@@ -92,22 +92,22 @@ function PauseAll({ source, items }: { source: FeatureSource; items: InboxItem[]
   );
 }
 
-function InboxRow({ item, source, now, onOpen }: { item: InboxItem; source: FeatureSource; now: number; onOpen: () => void }) {
+function InboxRow({ item, source, now, onOpen }: { item: InboxItem; source: TaskSource; now: number; onOpen: () => void }) {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const act = (a: FeatureAction) => {
-    if (!item.feature || busy) return;
+  const act = (a: TaskAction) => {
+    if (!item.task || busy) return;
     setBusy(true);
     setError(null);
     source
-      .act(item.feature.key, a)
+      .act(item.task.key, a)
       .catch((e) => setError(String(e)))
       .finally(() => setBusy(false));
   };
-  const glyph = item.feature ? featureGlyph(item.feature.feature) : workspaceGlyph(item.workspace!.ws);
+  const glyph = item.task ? taskGlyph(item.task.task) : workspaceGlyph(item.workspace!.ws);
   const decision =
     item.need?.decision_id !== undefined
-      ? item.feature?.feature.decisions.find((d) => d.id === item.need!.decision_id && d.status === "pending")
+      ? item.task?.task.decisions.find((d) => d.id === item.need!.decision_id && d.status === "pending")
       : undefined;
   return (
     <li className="inbox-item" aria-label={item.title}>
@@ -116,7 +116,7 @@ function InboxRow({ item, source, now, onOpen }: { item: InboxItem; source: Feat
           <Glyph kind={glyph} />
         </span>
         <span className="inbox-name">{item.title}</span>
-        <span className="tag">{item.feature ? "Task" : "Workspace"}</span>
+        <span className="tag">{item.task ? "Task" : "Workspace"}</span>
         <span className="ws-host">{item.host}</span>
         <span className="spacer" />
         <span className="ws-age" title={item.since}>

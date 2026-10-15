@@ -1,11 +1,11 @@
-// The Features contract (D-042): mirrors `otter_core::feature` on the wire
-// (snake_case, as `otterd` sends it). Features are product work — what should
+// The Tasks contract (D-042): mirrors `otter_core::task` on the wire
+// (snake_case, as `otterd` sends it). Tasks are product work — what should
 // be built — owned by a host's daemon and linked to Workspaces and Sessions
 // by id, never embedded in them.
 
 import type { Activity } from "./types";
 
-export type FeatureStatus =
+export type TaskStatus =
   | "draft"
   | "planning"
   | "implementing"
@@ -16,7 +16,7 @@ export type FeatureStatus =
   | "paused"
   | "failed"
   | "cancelled";
-export type TaskStatus = "pending" | "running" | "blocked" | "done" | "failed" | "skipped";
+export type StepStatus = "pending" | "running" | "blocked" | "done" | "failed" | "skipped";
 export type RunState =
   | "starting"
   | "running"
@@ -45,11 +45,12 @@ export interface Criterion {
   how?: "check" | "diff";
 }
 
-export interface Task {
+/** A step of a task's plan. */
+export interface Step {
   id: string;
   title: string;
   detail?: string;
-  status: TaskStatus;
+  status: StepStatus;
   depends_on: string[];
   /** Where it runs: a workspace on the same host, and the session doing it. */
   workspace_id?: string;
@@ -62,7 +63,7 @@ export interface Task {
 
 export interface Run {
   id: string;
-  task_id: string;
+  step_id: string;
   /** The agent runtime, e.g. `claude`. */
   runtime: string;
   state: RunState;
@@ -90,7 +91,7 @@ export interface Message {
 
 export interface DecisionRequest {
   id: string;
-  task_id?: string;
+  step_id?: string;
   run_id?: string;
   kind: DecisionKind;
   risk: Risk;
@@ -106,13 +107,13 @@ export interface DecisionRequest {
   decided_at?: string;
   /** Only the developer may decide this one (policy). */
   user_only?: boolean;
-  /** What approving it allows for the rest of the feature (opaque). */
+  /** What approving it allows for the rest of the task (opaque). */
   grant?: string;
 }
 
 export interface Evidence {
   id: string;
-  task_id?: string;
+  step_id?: string;
   criterion_id?: string;
   kind: EvidenceKind;
   title: string;
@@ -132,28 +133,28 @@ export interface Budget {
   iterations_used: number;
 }
 
-export interface Feature {
+export interface Task {
   id: string;
   title: string;
   /** What the developer asked for, as written. */
   request: string;
   /** Only an answer is wanted: the coding agent only reads (D-092). */
   answer_only?: boolean;
-  status: FeatureStatus;
+  status: TaskStatus;
   status_reason?: string;
   requirements: string[];
   acceptance: Criterion[];
-  tasks: Task[];
+  steps: Step[];
   runs: Run[];
   messages: Message[];
   decisions: DecisionRequest[];
   evidence: Evidence[];
   budget: Budget;
-  /** The workspace the feature's work happens in, once chosen. */
+  /** The workspace the task's work happens in, once chosen. */
   workspace_id?: string;
   created_at: string;
   updated_at: string;
-  /** The last entry of the feature's own history (`feature.events`). */
+  /** The last entry of the task's own history (`task.events`). */
   history_seq?: number;
   /** The command that checks the work, from the plan. */
   verify_command?: string;
@@ -171,7 +172,7 @@ export interface Feature {
   report?: string;
   /** When it took its status. */
   status_since?: string;
-  /** Computed by otter-core where the app gets features (D-071). */
+  /** Computed by otter-core where the app gets tasks (D-071). */
   activity?: Activity;
   /** What it waits on you for, computed by otter-core (D-071). */
   needs?: Need;
@@ -207,13 +208,13 @@ export interface Delivery {
   declined: boolean;
 }
 
-/** A workspace a feature can work in. */
+/** A workspace a task can work in. */
 export interface WorkspaceChoice {
   id: string;
   name: string;
 }
 
-/** A message being written right now (`FeatureStream`, D-051). */
+/** A message being written right now (`TaskStream`, D-051). */
 export interface Draft {
   stream_id: string;
   role: MessageRole;
@@ -223,8 +224,8 @@ export interface Draft {
   done: boolean;
 }
 
-/** One entry of a feature's own append-only history (`feature.events`). */
-export interface FeatureEventRecord {
+/** One entry of a task's own append-only history (`task.events`). */
+export interface TaskEventRecord {
   seq: number;
   ts: string;
   /** Schema version of this record. */
@@ -235,16 +236,16 @@ export interface FeatureEventRecord {
   text: string;
 }
 
-/** A feature as the app lists it: on a host. */
-export interface PlacedFeature {
+/** A task as the app lists it: on a host. */
+export interface PlacedTask {
   host: string;
-  feature: Feature;
-  /** `host/feature-id`. */
+  task: Task;
+  /** `host/task-id`. */
   key: string;
 }
 
-/** What the developer can tell a feature to do (`feature.act`). */
-export type FeatureAction =
+/** What the developer can tell a task to do (`task.act`). */
+export type TaskAction =
   | { action: "start" }
   | { action: "pause" }
   | { action: "resume" }
@@ -261,9 +262,9 @@ export type FeatureAction =
 
 // --- Wording and grouping (no runtime state) ---
 
-export type FeatureFilter = "all" | "active" | "needs" | "done" | "failed";
+export type TaskFilter = "all" | "active" | "needs" | "done" | "failed";
 
-export const FILTERS: { id: FeatureFilter; label: string }[] = [
+export const FILTERS: { id: TaskFilter; label: string }[] = [
   { id: "all", label: "All" },
   { id: "needs", label: "Needs you" },
   { id: "active", label: "Active" },
@@ -271,17 +272,17 @@ export const FILTERS: { id: FeatureFilter; label: string }[] = [
   { id: "failed", label: "Failed" },
 ];
 
-const ACTIVE: FeatureStatus[] = ["planning", "implementing", "verifying", "review"];
+const ACTIVE: TaskStatus[] = ["planning", "implementing", "verifying", "review"];
 
-export function pendingDecisions(f: Feature): DecisionRequest[] {
+export function pendingDecisions(f: Task): DecisionRequest[] {
   return f.decisions.filter((d) => d.status === "pending");
 }
 
 /**
  * What it waits on you for. otter-core decides (D-071) and the app is
- * served the answer; preview features without it get a rough stand-in.
+ * served the answer; preview tasks without it get a rough stand-in.
  */
-export function needOf(f: Feature): Need | undefined {
+export function needOf(f: Task): Need | undefined {
   if (f.activity !== undefined) return f.needs;
   const d = pendingDecisions(f)[0];
   if (d) return { kind: d.kind === "question" ? "question" : "decision", summary: d.summary, since: d.created_at, decision_id: d.id, decisions: pendingDecisions(f).length };
@@ -293,7 +294,7 @@ export function needOf(f: Feature): Need | undefined {
 }
 
 /** Where it stands on the workspaces' scale: served by otter-core (D-071); derived for preview data. */
-export function featureActivity(f: Feature): Activity {
+export function taskActivity(f: Task): Activity {
   if (f.activity !== undefined) return f.activity;
   const n = needOf(f);
   if (n) return n.kind === "failed" ? "failed" : "needs_you";
@@ -304,11 +305,11 @@ export function featureActivity(f: Feature): Activity {
 }
 
 /** The developer has to act: a decision, review, a block, a stop. */
-export function needsYou(f: Feature): boolean {
+export function needsYou(f: Task): boolean {
   return needOf(f) !== undefined;
 }
 
-export function matches(f: Feature, filter: FeatureFilter): boolean {
+export function matches(f: Task, filter: TaskFilter): boolean {
   switch (filter) {
     case "all":
       return true;
@@ -327,7 +328,7 @@ export function matches(f: Feature, filter: FeatureFilter): boolean {
  * What the developer sees (D-050): planning, implementing and verifying are
  * the Control Agent's own loop, all "Working".
  */
-export const STATUS_LABEL: Record<FeatureStatus, string> = {
+export const STATUS_LABEL: Record<TaskStatus, string> = {
   draft: "Draft",
   planning: "Working",
   implementing: "Working",
@@ -341,18 +342,18 @@ export const STATUS_LABEL: Record<FeatureStatus, string> = {
 };
 
 /** One line on what is going on right now. */
-export function statusDetail(f: Feature): string | undefined {
+export function statusDetail(f: Task): string | undefined {
   if (f.status === "planning") return "planning";
-  const i = f.tasks.findIndex((t) => t.status === "running");
+  const i = f.steps.findIndex((t) => t.status === "running");
   if ((f.status === "implementing" || f.status === "verifying") && f.status_reason === undefined) {
     if (f.status === "verifying") return "checking the work";
-    if (i >= 0) return `step ${i + 1} of ${f.tasks.length}: ${f.tasks[i].title}`;
+    if (i >= 0) return `step ${i + 1} of ${f.steps.length}: ${f.steps[i].title}`;
   }
   return f.status_reason;
 }
 
 /** The status mark shared with workspaces (shape, not only color). */
-export function featureGlyph(f: Feature): "needs" | "working" | "done" | "failed" | "idle" {
+export function taskGlyph(f: Task): "needs" | "working" | "done" | "failed" | "idle" {
   if (needOf(f)?.kind === "failed") return "failed";
   if (needsYou(f)) return "needs";
   if (f.status === "failed") return "failed";
@@ -361,14 +362,14 @@ export function featureGlyph(f: Feature): "needs" | "working" | "done" | "failed
   return "idle";
 }
 
-/** Features that need you on top, longest-waiting first; then newest activity first. */
-export function sortFeatures(list: PlacedFeature[]): PlacedFeature[] {
+/** Tasks that need you on top, longest-waiting first; then newest activity first. */
+export function sortTasks(list: PlacedTask[]): PlacedTask[] {
   return [...list].sort((a, b) => {
-    const na = needOf(a.feature);
-    const nb = needOf(b.feature);
+    const na = needOf(a.task);
+    const nb = needOf(b.task);
     if (na && nb) return na.since.localeCompare(nb.since);
     const n = Number(!!nb) - Number(!!na);
     if (n !== 0) return n;
-    return b.feature.updated_at.localeCompare(a.feature.updated_at);
+    return b.task.updated_at.localeCompare(a.task.updated_at);
   });
 }

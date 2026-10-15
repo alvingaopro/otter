@@ -1,4 +1,4 @@
-// The coding agent's side of a feature (D-055…D-059), as the daemon shows
+// The coding agent's side of a task (D-055…D-059), as the daemon shows
 // it: conversations of turns, messages, tool calls and interactions.
 // Mirrors `otter_protocol::conversation::ConversationView`; wording only —
 // no state of its own.

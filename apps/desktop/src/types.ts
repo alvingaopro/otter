@@ -2,7 +2,7 @@
 
 export type Activity = "needs_you" | "failed" | "working" | "completed" | "idle" | "preparing" | "archived";
 export type HostStatus = "connecting" | "connected" | "unreachable" | "incompatible" | "not_installed";
-export type SessionKind = "agent" | "terminal" | "service" | "task";
+export type SessionKind = "agent" | "terminal" | "service" | "command";
 export type SessionStatus = "pending" | "running" | "completed" | "failed" | "stopped" | "lost";
 export type AgentState = "starting" | "idle" | "working" | "blocked" | "waiting_for_input" | "exited";
 export type AttentionKind = "question" | "approval" | "failure" | "review" | "completion";
@@ -58,7 +58,7 @@ export interface WorkspaceView {
   /** A Git workspace's repository, without credentials. */
   repository?: string;
   /** The task it was made for (D-105). */
-  featureId?: string;
+  taskId?: string;
   sessions: SessionView[];
   attention: AttentionView[];
   updatedAt: string;

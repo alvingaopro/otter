@@ -15,10 +15,10 @@ import {
 } from "./conversation";
 
 /**
- * The coding agent's work on a feature, turn by turn (D-055…D-059): what it
+ * The coding agent's work on a task, turn by turn (D-055…D-059): what it
  * was asked, what it said, the tools it used and how each went, what it
  * asked. Tool results aren't the agent's words; a turn completing isn't the
- * feature being done — the feature's checks and your review decide that.
+ * task being done — the task's checks and your review decide that.
  */
 export function Work({ conversations, now }: { conversations: CodingConversation[]; now: number }) {
   if (conversations.length === 0) {

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import { ComposerGrip, useComposerHeight } from "./composerResize";
-import { MessageText, Speaker } from "./FeaturesView";
+import { MessageText, Speaker } from "./TasksView";
 import { ago } from "./model";
 import { tooOld, type OtterChat, type OtterDraft, type OtterSource } from "./otterChat";
 
@@ -115,7 +115,7 @@ export function OtterView({
   return (
     <main className="pane otter-pane" aria-label="Otter">
       <header className="pane-head" data-tauri-drag-region>
-        <h1 className="feature-title">Otter</h1>
+        <h1 className="task-title">Otter</h1>
         <label className="otter-host">
           <span className="muted small">on</span>
           <select aria-label="Host" value={host} onChange={(e) => choose(e.target.value)}>
