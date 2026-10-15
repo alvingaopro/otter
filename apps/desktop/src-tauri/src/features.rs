@@ -169,7 +169,10 @@ pub async fn runtime_capabilities(
 /// Otter's conversation on a host (D-093). An `otterd` too old for it
 /// answers with an error, which the view says plainly.
 #[tauri::command]
-pub async fn otter_get(app: AppHandle, host: String) -> Result<otter_core::feature::OtterChat, String> {
+pub async fn otter_get(
+    app: AppHandle,
+    host: String,
+) -> Result<otter_core::feature::OtterChat, String> {
     rpc(&app, &host)
         .await?
         .otter_get()
@@ -190,4 +193,3 @@ pub async fn otter_send(
         .await
         .map_err(|e| e.to_string())
 }
-
