@@ -217,6 +217,14 @@ describe("Activity Bar navigation", () => {
     expect(terminal.unmounts).toBe(unmounts + 1);
   });
 
+  it("opens Settings with ⌘,", async () => {
+    await act(async () => {
+      window.dispatchEvent(new KeyboardEvent("keydown", { key: ",", metaKey: true, bubbles: true }));
+    });
+    await flush();
+    expect(host.querySelector('[role="dialog"][aria-label="Settings"]')).not.toBeNull();
+  });
+
   it("goes to a workspace with ⌘K", async () => {
     await act(async () => {
       window.dispatchEvent(new KeyboardEvent("keydown", { key: "k", metaKey: true, bubbles: true }));

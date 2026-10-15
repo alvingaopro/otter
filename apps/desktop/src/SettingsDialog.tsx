@@ -119,7 +119,7 @@ export function SettingsDialog({ hosts, defaultHost, onClose }: { hosts: string[
   // The one the model and key below are for: the choice, else what automatic uses.
   const effective = controller || settings?.active || "";
   const info = controllers.find((c) => c.id === effective);
-  const keySet = !!settings?.secrets.find((s) => s.name === info?.secret)?.set;
+  const keySet = !!settings?.secrets?.find((s) => s.name === info?.secret)?.set;
   const listsModels = !!info?.models && !!settings?.controllers?.length;
 
   useEffect(() => {
@@ -215,8 +215,8 @@ export function SettingsDialog({ hosts, defaultHost, onClose }: { hosts: string[
       </div>
     </fieldset>
   );
-  const mainKey = settings?.secrets.find((s) => s.name === info?.secret);
-  const otherKeys = settings?.secrets.filter((s) => s !== mainKey) ?? [];
+  const mainKey = settings?.secrets?.find((s) => s.name === info?.secret);
+  const otherKeys = settings?.secrets?.filter((s) => s !== mainKey) ?? [];
   const chosen = models?.state === "ready" ? models.list.find((m) => m.id === model.trim()) : undefined;
 
   return (

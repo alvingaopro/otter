@@ -17,6 +17,7 @@ use tauri::Emitter;
 use tauri::menu::{Menu, MenuItem, MenuItemKind};
 
 const INSTALL_CLI: &str = "install-cli";
+const SETTINGS: &str = "settings";
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -29,10 +30,13 @@ pub fn run() {
         .manage(attach::Attaches::default())
         .manage(forwards::Forwards::default())
         .menu(|app| {
-            // The standard menu, plus "Install Command Line Tools…" in the app
-            // menu (the UI handles it).
+            // The standard menu, plus "Settings…" (⌘,) and "Install Command
+            // Line Tools…" in the app menu (the UI handles both).
             let menu = Menu::default(app)?;
             if let Some(MenuItemKind::Submenu(app_menu)) = menu.items()?.into_iter().next() {
+                let settings =
+                    MenuItem::with_id(app, SETTINGS, "Settings…", true, Some("CmdOrCtrl+,"))?;
+                app_menu.insert(&settings, 2)?;
                 let item = MenuItem::with_id(
                     app,
                     INSTALL_CLI,
@@ -40,13 +44,15 @@ pub fn run() {
                     true,
                     None::<&str>,
                 )?;
-                app_menu.insert(&item, 2)?;
+                app_menu.insert(&item, 3)?;
             }
             Ok(menu)
         })
         .on_menu_event(|app, event| {
             if event.id() == INSTALL_CLI {
                 let _ = app.emit("menu", INSTALL_CLI);
+            } else if event.id() == SETTINGS {
+                let _ = app.emit("menu", SETTINGS);
             }
         })
         .setup(|app| {
