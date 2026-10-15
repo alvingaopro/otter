@@ -450,6 +450,11 @@ export function WorkspacePane({
         <div className={`banner ${attention.kind === "failure" ? "failure" : attention.needsYou ? "needs" : "info"}`} role="status">
           <div className="banner-text">
             <Glyph kind={attention.kind === "failure" ? "failed" : attention.needsYou ? "needs" : "done"} />
+            {attention.inferred && (
+              <span className="banner-guess" title="A guess: the agent went quiet without saying what it waits for (D-109)">
+                possibly
+              </span>
+            )}
             <span className="banner-summary">{attention.summary}</span>
             <span className="banner-age">{ago(attention.createdAt, now)} ago</span>
           </div>
@@ -648,13 +653,13 @@ export function WorkspacePane({
             {ws.sourceKind === "directory"
               ? "The folder itself is kept."
               : ws.sourceKind === "git"
-                ? "Its worktree is removed; the branch stays in the repository."
+                ? `Its worktree and its branch ${ws.source} are removed, and the repository's copy on ${host.name} once no workspace uses it.`
                 : "Its files are deleted."}
           </p>
           {ws.sourceKind === "git" && (
             <label className="check">
               <input type="checkbox" checked={force} onChange={(e) => setForce(e.target.checked)} />
-              Discard uncommitted changes
+              Discard uncommitted changes and commits not pushed anywhere
             </label>
           )}
           {error && <div className="notice error">{error}</div>}

@@ -12,6 +12,8 @@ export interface AttentionView {
   sessionId?: string;
   kind: AttentionKind;
   needsYou: boolean;
+  /** A guess, not reported by the agent (D-109). */
+  inferred?: boolean;
   summary: string;
   createdAt: string;
 }

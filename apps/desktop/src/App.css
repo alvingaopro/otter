@@ -730,3 +730,6 @@ fieldset.field.coding legend { font-size: 13px; font-weight: 600; padding: 0 4px
 .find-line { flex: none; min-width: 42px; text-align: right; }
 .find-text mark { background: color-mix(in srgb, var(--needs) 40%, transparent); color: inherit; border-radius: 2px; }
 .find-more { margin: 0; padding: 0 20px 8px; }
+
+/* An attention item that is a guess, not reported (D-109). */
+.banner-guess { flex: none; font-size: 11px; padding: 1px 6px; border-radius: 5px; border: 1px dashed var(--line-strong); color: var(--muted); }

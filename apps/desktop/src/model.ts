@@ -1,7 +1,7 @@
 // Presentation rules: grouping, ordering and wording. Classification itself
 // (activity, session status) comes computed from otter-core via the backend.
 
-import type { Activity, Glyph, HostsPayload, Placed, SessionView, WorkspaceView } from "./types";
+import type { Activity, AttentionView, Glyph, HostsPayload, Placed, SessionView, WorkspaceView } from "./types";
 
 export interface Group {
   id: "needs" | "working" | "done" | "idle" | "archived";
@@ -42,11 +42,37 @@ export function groups(placed: Placed[]): Group[] {
     if (a.ws.activity === "idle" || a.ws.activity === "archived") {
       return lastActive(b.ws).localeCompare(lastActive(a.ws)) || a.ws.name.localeCompare(b.ws.name);
     }
+    // Needs you: what blocks an agent before a finished turn (D-109).
+    if (a.ws.activity === "needs_you") {
+      const u = urgency(a.ws) - urgency(b.ws);
+      if (u !== 0) return u;
+    }
     // Longest-waiting first, as in `otter ls`.
     return (oldestAttention(a.ws) ?? "").localeCompare(oldestAttention(b.ws) ?? "") || a.ws.name.localeCompare(b.ws.name);
   });
   for (const p of sorted) out.find((g) => g.id === GROUP_OF[p.ws.activity])!.items.push(p);
   return out.filter((g) => g.items.length > 0);
+}
+
+/**
+ * How much a workspace's attention blocks work (D-109): 0 an approval or a
+ * question an agent reported, 1 one it seems to wait on (a guess), 2 only a
+ * finished turn or less.
+ */
+export function urgency(ws: WorkspaceView): number {
+  const blocking = ws.attention.filter((a) => a.kind === "approval" || a.kind === "question");
+  if (blocking.some((a) => !a.inferred)) return 0;
+  return blocking.length > 0 ? 1 : 2;
+}
+
+/**
+ * A notification's title (D-109): an agent's prompt needs you; one it only
+ * seems to wait on may; a finished turn is news, not a call.
+ */
+export function noticeTitle(name: string, a: AttentionView): string {
+  if (a.kind === "failure") return `${name}: something failed`;
+  if (a.kind === "review" || a.kind === "completion") return `${name}: turn finished`;
+  return a.inferred ? `${name} may be waiting for you` : `${name} needs you`;
 }
 
 /** When a workspace was last active: its last change, an agent's last move, its newest attention. */

@@ -28,7 +28,7 @@ import { RenameDialog } from "./RenameDialog";
 import { explain, forgetHost } from "./newer";
 import { zoomKey } from "./terminalFont";
 import { useTheme } from "./theme";
-import { defaultSession, groups, headline, movePin, pinnedOf, placeAll, stalePins, togglePin, trayLabel } from "./model";
+import { defaultSession, groups, headline, movePin, noticeTitle, pinnedOf, placeAll, stalePins, togglePin, trayLabel } from "./model";
 import type { MenuItem } from "./Menu";
 import type { ForwardView, HostsPayload, Placed } from "./types";
 import "./App.css";
@@ -224,7 +224,8 @@ export default function App() {
   };
 
   // Notify on attention that is new since we last looked: needs-you items and
-  // failures, unless that workspace is already in front of the user.
+  // failures, unless the session it is about is already in front of the
+  // user — another session of the same workspace still notifies (D-109).
   useEffect(() => {
     if (!payload) return;
     for (const host of payload.hosts) {
@@ -241,12 +242,10 @@ export default function App() {
         if (known.has(a.id)) continue;
         known.add(a.id);
         const key = `${host.name}/${ws.id}`;
-        if (focused.current && viewRef.current === "workspaces" && selectedRef.current === key) continue;
+        const onScreen = !a.sessionId || a.sessionId === shownSession.current.get(key);
+        if (focused.current && viewRef.current === "workspaces" && selectedRef.current === key && onScreen) continue;
         jump.current = { key, session: a.sessionId, at: Date.now() };
-        sendNotification({
-          title: a.needsYou ? `${ws.name} needs you` : `${ws.name}: something failed`,
-          body: `${a.summary} · ${host.name}`,
-        });
+        sendNotification({ title: noticeTitle(ws.name, a), body: `${a.summary} · ${host.name}` });
       }
     }
   }, [payload]);

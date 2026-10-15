@@ -6,7 +6,7 @@ import { changesLine, diffLines } from "./changes";
 import { findLines } from "./FindPanel";
 import { shownPath, typedPath } from "./FilesPanel";
 import { logicalLine, urlAtColumn } from "./links";
-import { groups, lastActive, matchScore } from "./model";
+import { groups, lastActive, matchScore, noticeTitle } from "./model";
 import { quickMatches } from "./QuickOpen";
 import type { HostView, Placed, WorkspaceChanges, WorkspaceView } from "./types";
 
@@ -164,5 +164,35 @@ describe("text size", () => {
     expect(zoomKey({ metaKey: false, ctrlKey: false, altKey: false, key: "=" })).toBe(false);
     expect(seen).toEqual([DEFAULT_FONT + 1, DEFAULT_FONT, DEFAULT_FONT - 1, DEFAULT_FONT]);
     off();
+  });
+});
+
+describe("what needs you, and how loudly (D-109)", () => {
+  const item = (kind: "approval" | "question" | "review" | "failure" | "completion", inferred = false, at = "2026-10-15T08:00:00Z") => ({
+    id: `a_${kind}_${inferred}`,
+    sessionId: "s",
+    kind,
+    needsYou: kind !== "failure" && kind !== "completion",
+    inferred,
+    summary: kind,
+    createdAt: at,
+  });
+
+  it("says a guess is a guess and a finished turn is news", () => {
+    expect(noticeTitle("api", item("approval"))).toBe("api needs you");
+    expect(noticeTitle("api", item("question"))).toBe("api needs you");
+    expect(noticeTitle("api", item("approval", true))).toBe("api may be waiting for you");
+    expect(noticeTitle("api", item("review"))).toBe("api: turn finished");
+    expect(noticeTitle("api", item("failure"))).toBe("api: something failed");
+  });
+
+  it("puts a reported prompt before a guess, and both before a finished turn", () => {
+    const needs = (name: string, a: ReturnType<typeof item>) =>
+      placed(ws(name, { activity: "needs_you", attention: [a] }));
+    // The finished turn waited longest, yet comes last.
+    const done = needs("done", item("review", false, "2026-10-15T07:00:00Z"));
+    const guess = needs("guess", item("approval", true, "2026-10-15T07:30:00Z"));
+    const asks = needs("asks", item("question", false, "2026-10-15T09:00:00Z"));
+    expect(groups([done, guess, asks])[0].items.map((p) => p.ws.name)).toEqual(["asks", "guess", "done"]);
   });
 });

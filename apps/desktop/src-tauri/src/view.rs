@@ -109,6 +109,9 @@ pub struct AttentionView {
     pub kind: AttentionKind,
     /// Waiting on the developer (question, approval, review).
     pub needs_you: bool,
+    /// A guess, not reported by the agent (D-109).
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub inferred: bool,
     pub summary: String,
     pub created_at: Timestamp,
 }
@@ -120,6 +123,7 @@ impl From<&Attention> for AttentionView {
             session_id: a.session_id.as_ref().map(|s| s.to_string()),
             kind: a.kind,
             needs_you: a.kind.needs_you(),
+            inferred: a.inferred,
             summary: a.summary.clone(),
             created_at: a.created_at,
         }
