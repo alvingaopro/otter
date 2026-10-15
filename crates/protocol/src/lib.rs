@@ -22,6 +22,7 @@ pub mod feature;
 pub mod frame;
 pub mod fs;
 pub mod host;
+pub mod otter;
 pub mod wire;
 
 use otter_core::Brief;
@@ -171,6 +172,19 @@ pub enum Request {
 
     /// Every feature on this host, newest first. Result:
     /// `Vec<`[`otter_core::feature::Feature`]`>`.
+    /// Otter's conversation on this host (D-093). Result:
+    /// [`otter_core::feature::OtterChat`].
+    #[serde(rename = "otter.get")]
+    OtterGet,
+    /// The developer's message to Otter on this host; answered as a turn
+    /// with Otter's tools. Result: [`otter_core::feature::OtterChat`].
+    #[serde(rename = "otter.send")]
+    OtterSend(otter::OtterSend),
+    /// The conversation's history after a cursor, oldest first. Result:
+    /// `Vec<`[`otter_core::feature::FeatureEventRecord`]`>`.
+    #[serde(rename = "otter.events")]
+    OtterEvents(otter::OtterEvents),
+
     #[serde(rename = "feature.list")]
     FeatureList,
     /// Result: [`otter_core::feature::Feature`].
@@ -271,6 +285,9 @@ impl Request {
             Request::SettingsGet => "settings.get",
             Request::SettingsSet(_) => "settings.set",
             Request::SettingsModels(_) => "settings.models",
+            Request::OtterGet => "otter.get",
+            Request::OtterSend(_) => "otter.send",
+            Request::OtterEvents(_) => "otter.events",
             Request::FeatureList => "feature.list",
             Request::FeatureGet(_) => "feature.get",
             Request::FeatureCreate(_) => "feature.create",

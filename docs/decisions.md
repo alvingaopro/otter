@@ -2854,3 +2854,33 @@ decided here by default, to revisit with the transcripts.
   and the task is done ("Not carried out: this task only answers"). The
   brain doesn't review such a plan: nothing is built unless it's allowed.
 - `answer_only` is a new field with a default: no schema bump (D-061).
+
+## D-093 — Otter on the host: a conversation of its own (2026-10-15)
+
+Plan `brain-runtime-v2` M3. The developer asked for every milestone before
+the dogfooding (V2-0c): the choices here are defaults, to revisit with it.
+
+- **One conversation per host, with Otter**, about any task there, apart
+  from each task's own (`otter.get`/`otter.send`/`otter.events`; events
+  `OtterChanged`, `OtterStream`). `otter chat` in the terminal; the app's
+  Otter view next.
+- **Answered as a turn with Otter's tools — the host's:** `list_tasks`,
+  `list_workspaces`, a task's `get_task`/`get_pending_decisions`/
+  `get_run_events`, and, on the developer's word, `create_task`,
+  `start_task`, `resume_task`; `pause_task` in any turn. What belongs to a
+  task — guidance, questions about its code, its decisions — is said in
+  that task's conversation, and Otter says so. Without Otter's tools it
+  answers with how to turn them on. One turn at a time, one reply per
+  message, the limits of a task's turn (D-089).
+- **A task Otter makes has the developer's words as its request** — their
+  message(s), by id, as written — and a title of Otter's: Otter's words are
+  never recorded as theirs.
+- **Its changes go the way a client's do** (`feature.create`,
+  `feature.act`, with command ids made of the developer's message, the
+  tool and the task), not through a task's step: a host turn runs outside
+  every task's step, and those paths are already safe beside it.
+- **Kept the way a feature is** — `state/otter/chat.json` rewritten
+  atomically (synced, renamed), `history.jsonl` appended and synced —
+  rather than as a D-058 journal, as the plan had it: a conversation of
+  messages and tool records, with no turns to deliver, gains nothing from
+  the journal's ops and needs what the feature store already does.

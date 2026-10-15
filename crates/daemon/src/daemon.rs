@@ -50,6 +50,8 @@ pub struct Daemon {
     pub store: Mutex<Store>,
     /// Features (D-043): kept apart from workspace state, with their own lock.
     pub features: Mutex<FeatureStore>,
+    /// Otter's conversation on this host (D-093).
+    pub(crate) chat: Mutex<crate::chat::ChatStore>,
     /// Woken whenever a feature changes, for the controller.
     pub(crate) feature_wake: tokio::sync::Notify,
     /// Managed agent runs in progress (runs.rs).
@@ -94,6 +96,13 @@ impl Daemon {
         shell: String,
     ) -> Self {
         let metrics = crate::metrics::Sampler::start(paths.state_dir.join("metrics"));
+        let chat = {
+            let dir = paths.state_dir.join("otter");
+            crate::chat::ChatStore::load(&dir).unwrap_or_else(|e| {
+                tracing::warn!("Otter's conversation: {e:#}; starting with none");
+                crate::chat::ChatStore::empty(&dir)
+            })
+        };
         let mut problems = std::collections::BTreeMap::new();
         // A broken settings file mustn't keep the daemon down — but it's said (D-077).
         let settings = crate::settings::HostSettings::load(&paths.state_dir).unwrap_or_else(|e| {
@@ -155,6 +164,7 @@ impl Daemon {
             paths,
             store: Mutex::new(store),
             features: Mutex::new(features),
+            chat: Mutex::new(chat),
             feature_wake: tokio::sync::Notify::new(),
             runs: Default::default(),
             conversations: Arc::new(conversations),
@@ -291,6 +301,9 @@ impl Daemon {
                 json(self.with_live_activity(self.clone().feature_act(p).await?))
             }
             Request::FeatureEvents(p) => json(self.feature_events(&p).await?),
+            Request::OtterGet => json(self.otter_get().await),
+            Request::OtterSend(p) => json(self.otter_send(p).await?),
+            Request::OtterEvents(p) => json(self.otter_events(&p).await?),
             Request::FeatureArtifact(p) => json(self.feature_artifact(&p).await?),
             Request::TriggerCreate(p) => json(self.trigger_create(p).await?),
             Request::TriggerList => json(self.trigger_list().await),
@@ -559,7 +572,7 @@ async fn detect(name: &str, version_args: &[&str], env: &EnvMap) -> Capability {
     }
 }
 
-fn hostname() -> String {
+pub(crate) fn hostname() -> String {
     let mut buf = [0u8; 256];
     // SAFETY: buf is valid for writes of buf.len() bytes.
     let rc = unsafe { libc::gethostname(buf.as_mut_ptr().cast(), buf.len()) };

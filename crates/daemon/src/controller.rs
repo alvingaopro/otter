@@ -154,6 +154,8 @@ pub(crate) struct ControllerState {
     asked: HashSet<DecisionId>,
     /// When each feature's CI was last read.
     ci_polled: std::collections::HashMap<FeatureId, std::time::Instant>,
+    /// A turn in Otter's conversation on the host is running (D-093).
+    host_turn: bool,
 }
 
 impl Daemon {
@@ -209,6 +211,21 @@ impl Daemon {
                             .await;
                     }
                     daemon.controller.lock().unwrap().inflight.remove(&id);
+                });
+            }
+            // Otter's conversation on the host (D-093): one turn at a time.
+            let waiting = !crate::chat::unanswered(self.chat.lock().await.get()).is_empty();
+            if waiting && !std::mem::replace(&mut self.controller.lock().unwrap().host_turn, true) {
+                let daemon = self.clone();
+                tokio::spawn(async move {
+                    let answered = daemon.host_turn().await;
+                    daemon.controller.lock().unwrap().host_turn = false;
+                    match answered {
+                        // What came in meanwhile is answered next.
+                        Ok(()) => daemon.feature_wake.notify_one(),
+                        // Tried again on the next tick, not at once.
+                        Err(e) => tracing::warn!("Otter's turn on the host: {}", e.message),
+                    }
                 });
             }
         }

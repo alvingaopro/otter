@@ -17,7 +17,8 @@ answered once). M2 is done but for the default, which waits on V2-0c.
 M2.5: a question for the agent at work is a turn that only reads (D-091;
 live: V2-2), and answer-only tasks (D-092; live: V2-3). The developer asked
 for every milestone before the dogfooding; what is decided without it says
-so in its decision. Next: M3. **To make the default
+so in its decision. M3: Otter's conversation on the host (D-093; `otter
+chat`; live: V2-4) — the app's Otter view next. **To make the default
 possible, the developer:** turns the setting on for a host whose Otter is
 Claude Code, works real tasks with it, and records 5–10 transcripts
 (V2-0c); and, on a host with an API key, runs the spike with it (V2-0b).

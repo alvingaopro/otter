@@ -4,6 +4,7 @@
 //! workspaces independently of where they run.
 
 mod attach;
+mod chat;
 mod dashboard;
 mod doctor;
 mod features;
@@ -107,6 +108,15 @@ enum Command {
         /// Don't press Enter after the text.
         #[arg(long)]
         no_enter: bool,
+    },
+    /// Talk to Otter on a host, about any task there: with a message, its
+    /// answer; without, the conversation lately.
+    Chat {
+        /// What to say (none: show the conversation).
+        text: Vec<String>,
+        /// The host (default: the default host, else the only one).
+        #[arg(long)]
+        host: Option<String>,
     },
     /// What's wrong with your hosts, and what to do about it (exit 1 if anything is).
     Doctor {
@@ -457,6 +467,7 @@ async fn run(cli: Cli) -> Result<()> {
                 .await?;
             Ok(())
         }
+        Command::Chat { text, host } => chat::run(&config, host, text, json).await,
         Command::Doctor { host } => doctor::run(&config, host, json).await,
         Command::Events {
             host,

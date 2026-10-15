@@ -327,8 +327,10 @@ async fn ship_it_accepts_what_is_in_review_and_more_plans_again(v2: bool) {
     let fake = scripted(v2).await;
     let host = &fake.host;
     let id = started_feature(host, "Add CSV export").await;
-    wait_feature(host, &id, "in review", |f| {
-        f.status == FeatureStatus::Review
+    // In review with its gates checked: accepting before they are is refused
+    // ("try again in a moment"), which isn't what this test is about.
+    wait_feature(host, &id, "in review, gates checked", |f| {
+        f.status == FeatureStatus::Review && !f.gates.is_empty()
     })
     .await;
     tell(
