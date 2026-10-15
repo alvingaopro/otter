@@ -1,0 +1,304 @@
+//! Otter's turn (D-089): the developer's messages answered by a model that
+//! looks and acts through Otter's tools ([`crate::gateway`]), where
+//! `converse` answered with one classified intent.
+//!
+//! It runs where `converse` does — in the feature's step — so it is bounded:
+//! a deadline, a number of tool calls, a number of model round trips
+//! (`OTTER_TURN_DEADLINE_MS`, `OTTER_TURN_MAX_CALLS`,
+//! `OTTER_TURN_ROUND_TRIPS`; 60 s, 12, 6). Whatever happens — an answer, a
+//! failure, the deadline — the developer's messages get exactly one reply,
+//! or the step would answer them again on every wake. A tool already
+//! called finishes; what the turn changed is said in the reply.
+//!
+//! Behind `OTTER_BRAIN_V2=1`, for a brain that has a turn; every other
+//! brain answers as before.
+
+use std::sync::Arc;
+use std::time::Duration;
+
+use anyhow::Result;
+use async_trait::async_trait;
+use otter_core::feature::{Feature, Message, MessageRole};
+use serde_json::Value;
+
+use crate::brain::Say;
+use crate::controller::unanswered;
+use crate::daemon::{Daemon, RpcResult};
+use crate::features::message;
+use crate::gateway::{Gateway, Origin, ToolSpec, tools};
+
+/// How far one turn may go. (Round trips bound M1b's Claude turn; the
+/// scripted one makes none.)
+#[derive(Clone, Debug)]
+#[allow(dead_code)]
+pub struct Limits {
+    pub deadline: Duration,
+    pub max_calls: usize,
+    pub max_round_trips: usize,
+}
+
+impl Limits {
+    pub fn from_env() -> Self {
+        let n = |var: &str, default: u64| {
+            std::env::var(var)
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .filter(|v| *v > 0)
+                .unwrap_or(default)
+        };
+        Limits {
+            deadline: Duration::from_millis(n("OTTER_TURN_DEADLINE_MS", 60_000)),
+            max_calls: n("OTTER_TURN_MAX_CALLS", 12) as usize,
+            max_round_trips: n("OTTER_TURN_ROUND_TRIPS", 6) as usize,
+        }
+    }
+}
+
+/// What a turn starts with. (`context`, `tools` and `limits` are for a
+/// model: M1b's Claude turn.)
+#[allow(dead_code)]
+pub struct Turn<'a> {
+    pub feature: &'a Feature,
+    /// The developer's unanswered messages, oldest first.
+    pub messages: &'a [Message],
+    /// What `reply` gave the model: the brief, the status, the steps and
+    /// the recent conversation. Details come through the tools.
+    pub context: String,
+    pub tools: Vec<ToolSpec>,
+    pub limits: &'a Limits,
+    /// Where the reply goes as it is written.
+    pub say: &'a Say<'a>,
+}
+
+/// A model that answers with tools.
+#[async_trait]
+pub trait TurnBackend: Send + Sync {
+    fn name(&self) -> &'static str;
+    /// Tests only: run a developer's turn as an event's — a downgrade,
+    /// never more authority.
+    fn as_event(&self, _messages: &[Message]) -> bool {
+        false
+    }
+    /// The model's loop: call tools through `gateway`, return the reply.
+    async fn run(&self, turn: &Turn<'_>, gateway: &Gateway) -> Result<String>;
+}
+
+/// The context `reply` builds, for a turn (D-089 §2).
+pub fn context(f: &Feature) -> String {
+    let recent: Vec<String> = f
+        .messages
+        .iter()
+        .rev()
+        .take(12)
+        .rev()
+        .map(|m| format!("{:?}: {}", m.role, crate::agents::excerpt(&m.text, 600)))
+        .collect();
+    let steps: Vec<String> = f
+        .tasks
+        .iter()
+        .enumerate()
+        .map(|(i, t)| format!("{}. {} — {:?}", i + 1, t.title, t.status))
+        .collect();
+    format!(
+        "{brief}\nStatus: {status}\nSteps:\n{steps}\nRecent conversation:\n{recent}",
+        brief = crate::brain::brief(f),
+        status = crate::brain::status_text(f),
+        steps = steps.join("\n"),
+        recent = recent.join("\n"),
+    )
+}
+
+impl Daemon {
+    /// The turn backend for this feature's conversation, if Otter answers
+    /// with tools here: the flag is on and the brain has one.
+    pub(crate) async fn turn_backend(&self, f: &Feature) -> Option<Box<dyn TurnBackend>> {
+        let choice = self.brain_choice();
+        if !choice.v2 {
+            return None;
+        }
+        let (_, env) = self.feature_workspace(f).await.ok()?;
+        crate::brain::select(&env, &choice).turn()
+    }
+
+    /// Answer the developer's unanswered messages with a turn of `backend`.
+    pub(crate) async fn otter_turn(
+        self: &Arc<Self>,
+        f: &Feature,
+        backend: Box<dyn TurnBackend>,
+    ) -> RpcResult<()> {
+        let open = unanswered(f);
+        let Some(last) = open.last().cloned() else {
+            return Ok(());
+        };
+        let origin = if backend.as_event(&open) {
+            Origin::Event {
+                event_id: format!("test-{}", last.id),
+            }
+        } else {
+            Origin::Developer {
+                messages: open.clone(),
+            }
+        };
+        let limits = Limits::from_env();
+        let gateway = Gateway::new(self.clone(), f.id.clone(), origin, limits.max_calls);
+        let stream_id = format!("reply-{}", last.id);
+        let draft = std::sync::Mutex::new(crate::runs::Draft::new(stream_id.clone()));
+        let say = |piece: &str| {
+            let mut d = draft.lock().unwrap();
+            if let Some(so_far) = d.push(piece) {
+                self.stream(&f.id, &d.id, MessageRole::Controller, so_far, false);
+            }
+        };
+        let turn = Turn {
+            feature: f,
+            messages: &open,
+            context: context(f),
+            tools: tools(),
+            limits: &limits,
+            say: &say,
+        };
+        let outcome = tokio::time::timeout(limits.deadline, backend.run(&turn, &gateway)).await;
+        let answer = match outcome {
+            Ok(Ok(text)) if !text.trim().is_empty() => Some(text),
+            Ok(Ok(_)) => None,
+            Ok(Err(e)) => {
+                tracing::warn!(feature = %f.id, backend = backend.name(), "Otter's turn: {e:#}");
+                None
+            }
+            Err(_) => {
+                tracing::warn!(feature = %f.id, backend = backend.name(), "Otter's turn ran out of time");
+                None
+            }
+        };
+        let reply = match answer {
+            Some(text) => text,
+            // No answer: where the work stands now, and what this turn did.
+            None => {
+                let now = self
+                    .feature_get(f.id.as_str())
+                    .await
+                    .unwrap_or_else(|_| f.clone());
+                let mut text = crate::brain::status_text(&now);
+                let done = gateway.done();
+                if !done.is_empty() {
+                    text.push_str(&format!("\n\nDone: {}.", done.join("; ")));
+                }
+                text
+            }
+        };
+        let applied = self.features.lock().await.apply(&f.id, None, |f, _| {
+            let (m, c) = message(
+                MessageRole::Controller,
+                reply.clone(),
+                Some(last.id.to_string()),
+            );
+            f.messages.push(m);
+            Ok(vec![c])
+        })?;
+        self.feature_changed(&applied);
+        self.stream(&f.id, &stream_id, MessageRole::Controller, reply, true);
+        Ok(())
+    }
+}
+
+/// Tests only (`OTTER_CONTROLLER=scripted` with `OTTER_BRAIN_V2=1`): a turn
+/// whose tool calls the developer's message spells out. Lines:
+/// `CALL: <tool> <json>` calls a tool; `AS: event` runs the turn as an
+/// event's; `SLEEP: <ms>` waits; `FAIL` fails the turn. Without `CALL:`
+/// lines, the message's `INTENT:` line is turned into the call the plan's
+/// table gives for it (D-089 §4.3), so `converse`'s tests run in both modes.
+/// The reply is each call's answer, a line each.
+pub struct Scripted;
+
+impl Scripted {
+    fn lines(messages: &[Message]) -> Vec<String> {
+        messages
+            .iter()
+            .flat_map(|m| m.text.lines().map(|l| l.trim().to_owned()))
+            .collect()
+    }
+
+    /// The call an intent becomes, where the feature stands.
+    fn from_intent(turn: &Turn<'_>) -> Vec<(String, Value)> {
+        use crate::brain::Intent;
+        use otter_core::feature::FeatureStatus as S;
+        let text: String = turn
+            .messages
+            .iter()
+            .map(|m| m.text.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        let (_, intent) = crate::brain::split_intent(&text);
+        let ids: Vec<&str> = turn.messages.iter().map(|m| m.id.as_str()).collect();
+        let f = turn.feature;
+        let call = |name: &str| vec![(name.to_owned(), serde_json::json!({}))];
+        match intent {
+            Intent::Guide => vec![(
+                "forward_to_agent".into(),
+                serde_json::json!({"message_ids": ids}),
+            )],
+            Intent::Redirect => vec![(
+                "redirect_agent".into(),
+                serde_json::json!({"message_ids": ids}),
+            )],
+            Intent::Continue if crate::controller::plan_question(f).is_some() => {
+                call("approve_plan")
+            }
+            Intent::Continue => match f.status {
+                S::Draft => call("start_task"),
+                S::Failed => call("retry_task"),
+                _ => call("resume_task"),
+            },
+            Intent::Pause => call("pause_task"),
+            Intent::Revise => call("revise_task"),
+            Intent::Finish if f.status == S::Review => call("accept_task"),
+            Intent::Finish => call("pause_task"),
+            Intent::None => vec![],
+        }
+    }
+}
+
+#[async_trait]
+impl TurnBackend for Scripted {
+    fn name(&self) -> &'static str {
+        "scripted"
+    }
+
+    fn as_event(&self, messages: &[Message]) -> bool {
+        Self::lines(messages).iter().any(|l| l == "AS: event")
+    }
+
+    async fn run(&self, turn: &Turn<'_>, gateway: &Gateway) -> Result<String> {
+        let lines = Self::lines(turn.messages);
+        let scripted = lines.iter().any(|l| l.starts_with("CALL:"));
+        let mut out = Vec::new();
+        let mut call = async |name: &str, args: Value| {
+            let answer = gateway.call(name, args).await;
+            out.push(format!("{name}: {answer}"));
+        };
+        // In order: a sleep after a call comes after it.
+        for l in &lines {
+            if let Some(ms) = l.strip_prefix("SLEEP:") {
+                tokio::time::sleep(Duration::from_millis(ms.trim().parse()?)).await;
+            } else if l == "FAIL" {
+                anyhow::bail!("scripted failure");
+            } else if let Some(rest) = l.strip_prefix("CALL:") {
+                let rest = rest.trim();
+                let (name, args) = rest.split_once(' ').unwrap_or((rest, "{}"));
+                call(name, serde_json::from_str(args.trim())?).await;
+            }
+        }
+        if !scripted {
+            for (name, args) in Self::from_intent(turn) {
+                call(&name, args).await;
+            }
+        }
+        let text = if out.is_empty() {
+            "Scripted: None.".to_owned()
+        } else {
+            out.join("\n")
+        };
+        (turn.say)(&text);
+        Ok(text)
+    }
+}
