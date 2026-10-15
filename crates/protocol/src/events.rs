@@ -55,6 +55,10 @@ pub enum Event {
     WorkspaceBriefChanged {
         workspace_id: WorkspaceId,
     },
+    WorkspaceRenamed {
+        workspace_id: WorkspaceId,
+        name: String,
+    },
     EnvironmentPreparing {
         workspace_id: WorkspaceId,
     },
@@ -78,6 +82,11 @@ pub enum Event {
     SessionDeleted {
         workspace_id: WorkspaceId,
         session_id: SessionId,
+    },
+    SessionRenamed {
+        workspace_id: WorkspaceId,
+        session_id: SessionId,
+        name: String,
     },
     ExecutionStarted {
         workspace_id: WorkspaceId,
@@ -201,12 +210,14 @@ impl Event {
             Event::WorkspaceArchived { .. } => "WorkspaceArchived",
             Event::WorkspaceUnarchived { .. } => "WorkspaceUnarchived",
             Event::WorkspaceBriefChanged { .. } => "WorkspaceBriefChanged",
+            Event::WorkspaceRenamed { .. } => "WorkspaceRenamed",
             Event::EnvironmentPreparing { .. } => "EnvironmentPreparing",
             Event::EnvironmentReady { .. } => "EnvironmentReady",
             Event::EnvironmentFailed { .. } => "EnvironmentFailed",
             Event::SessionCreated { .. } => "SessionCreated",
             Event::SessionStopped { .. } => "SessionStopped",
             Event::SessionDeleted { .. } => "SessionDeleted",
+            Event::SessionRenamed { .. } => "SessionRenamed",
             Event::ExecutionStarted { .. } => "ExecutionStarted",
             Event::ExecutionExited { .. } => "ExecutionExited",
             Event::ExecutionLost { .. } => "ExecutionLost",
@@ -244,11 +255,13 @@ impl Event {
             | Event::WorkspaceArchived { workspace_id, .. }
             | Event::WorkspaceUnarchived { workspace_id }
             | Event::WorkspaceBriefChanged { workspace_id }
+            | Event::WorkspaceRenamed { workspace_id, .. }
             | Event::EnvironmentPreparing { workspace_id }
             | Event::EnvironmentReady { workspace_id }
             | Event::EnvironmentFailed { workspace_id, .. }
             | Event::SessionCreated { workspace_id, .. }
             | Event::SessionStopped { workspace_id, .. }
+            | Event::SessionRenamed { workspace_id, .. }
             | Event::SessionDeleted { workspace_id, .. }
             | Event::ExecutionStarted { workspace_id, .. }
             | Event::ExecutionExited { workspace_id, .. }

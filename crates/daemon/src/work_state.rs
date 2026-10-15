@@ -87,19 +87,10 @@ async fn git_state(root: &Path, env: &EnvMap, base: Option<&str>) -> Option<Work
     let head = has_head.then(|| head.trim().to_owned());
     // Where the change starts: the merge base with the work's base branch,
     // else HEAD (only what isn't committed), else nothing (no commits yet).
-    let mut from = None;
-    if head.is_some() {
-        for b in base
-            .into_iter()
-            .flat_map(|b| [format!("origin/{b}"), b.to_owned()])
-        {
-            let (ok, mb) = g(s(&["merge-base", &b, "HEAD"])).await;
-            if ok {
-                from = Some((b, mb.trim().to_owned()));
-                break;
-            }
-        }
-    }
+    let from = match head {
+        Some(_) => merge_base(&git, root, env, base).await,
+        None => None,
+    };
     let from = from.or_else(|| head.clone().map(|h| ("HEAD".to_owned(), h)));
     let (_, status) = g(s(&["status", "--porcelain=v1", "--", "."])).await;
     let (_, untracked) = g(s(&[
@@ -215,6 +206,26 @@ async fn git_state(root: &Path, env: &EnvMap, base: Option<&str>) -> Option<Work
         report: Some(report),
         summary,
     })
+}
+
+/// Where the work's changes start: the merge base of HEAD with its base
+/// branch, tried as `origin/<base>`, then `<base>`; with the name that
+/// worked. `None` without a base, or one this repository doesn't know.
+pub(crate) async fn merge_base(
+    git: &Path,
+    root: &Path,
+    env: &EnvMap,
+    base: Option<&str>,
+) -> Option<(String, String)> {
+    for b in base
+        .into_iter()
+        .flat_map(|b| [format!("origin/{b}"), b.to_owned()])
+    {
+        if let Ok((true, mb, _)) = run(git, &["merge-base", &b, "HEAD"], root, env, None).await {
+            return Some((b, mb.trim().to_owned()));
+        }
+    }
+    None
 }
 
 /// A path whose content may be a secret (by its file name).

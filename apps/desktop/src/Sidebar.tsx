@@ -1,7 +1,7 @@
 import { useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 import { Glyph } from "./Glyph";
 import { ContextMenu, type MenuItem } from "./Menu";
-import { ago, groups, headline, pinnedOf, workspaceGlyph } from "./model";
+import { ago, groups, headline, matchScore, pinnedOf, workspaceGlyph } from "./model";
 import type { HostView, Placed } from "./types";
 import otterIcon from "./assets/otter.png";
 
@@ -64,14 +64,17 @@ export function Sidebar(props: Props) {
   };
 
   const [menu, setMenu] = useState<{ key: string; x: number; y: number } | null>(null);
+  // Only the workspaces matching what's typed (D-106).
+  const [filter, setFilter] = useState("");
+  const visible = filter.trim() ? placed.filter((p) => matchScore(p, filter) > 0) : placed;
   // Reordering pins with the pointer (HTML5 drag-and-drop is taken by file drops).
   const [drag, setDrag] = useState<{ key: string; to: number } | null>(null);
   const dragged = useRef(false);
   const pinRows = useRef(new Map<string, HTMLElement>());
 
-  const pinned = pinnedOf(placed, props.pins);
+  const pinned = pinnedOf(visible, props.pins);
   const pinnedKeys = pinned.map((p) => p.key);
-  const rest = placed.filter((p) => !props.pins.includes(p.key));
+  const rest = visible.filter((p) => !props.pins.includes(p.key));
   const grouped = groups(rest);
   // The badges count every workspace, pinned or not.
   const all = groups(placed);
@@ -181,7 +184,30 @@ export function Sidebar(props: Props) {
         <CountBadge kind="working" count={working.length} label="working" onClick={() => onSelect(working[0].key)} />
       </div>
 
+      <div className="sidebar-filter">
+        <input
+          type="search"
+          aria-label="Filter workspaces"
+          placeholder="Filter workspaces"
+          title="Name, host, branch or session; ⌘K to go to one"
+          value={filter}
+          onChange={(e) => setFilter(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Escape") {
+              setFilter("");
+              e.currentTarget.blur();
+            } else if (e.key === "Enter" && visible[0]) {
+              onSelect((pinned[0] ?? groups(rest)[0]?.items[0] ?? visible[0]).key);
+            }
+          }}
+          autoCapitalize="off"
+          autoCorrect="off"
+          spellCheck={false}
+        />
+      </div>
+
       <div className="sidebar-groups">
+        {filter.trim() && visible.length === 0 && <p className="muted small sidebar-none">No workspace matches.</p>}
         {pinned.length > 0 && (
           <section className="group" aria-label="Pinned">
             <h2 className="group-label pinned">
@@ -192,7 +218,7 @@ export function Sidebar(props: Props) {
           </section>
         )}
         {grouped.map((g) => {
-          const collapsed = g.id === "archived" && !showArchived;
+          const collapsed = g.id === "archived" && !showArchived && !filter.trim();
           return (
             <section key={g.id} className="group">
               {g.id === "archived" ? (

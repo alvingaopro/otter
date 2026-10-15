@@ -1504,7 +1504,9 @@ fn tmux_dir() -> String {
 /// 2.1.295 does (event JSON on stdin), and plays a scripted turn.
 /// `--resume <id>` continues that file. Modes: `approval` / `question` stop
 /// at a permission prompt / AskUserQuestion until a line is typed;
-/// `nohooks` ignores the settings (hooks disabled) and stops at a prompt.
+/// `twoprompts` asks again, for another command, right after the first is
+/// answered; `nohooks` ignores the settings (hooks disabled) and stops at a
+/// prompt.
 const FAKE_CLAUDE: &str = r#"#!/bin/sh
 if [ "$1" = --version ]; then echo "2.0.0-fake (Claude Code)"; exit 0; fi
 # Managed runs (`claude -p`, stream-json): fake_claude_stream.sh.
@@ -1549,6 +1551,19 @@ case "$FAKE_CODEX_MODE" in
     hook PreToolUse ',"tool_name":"Bash","tool_input":{"command":"touch z","description":"Create empty file z"}'
     hook PermissionRequest ',"tool_name":"Bash","tool_input":{"command":"touch z","description":"Create empty file z"}'
     echo "Do you want to proceed?"
+    read answer
+    hook PostToolUse ',"tool_name":"Bash","tool_response":{"stdout":""}'
+    ;;
+  twoprompts)
+    rec '{"type":"assistant","timestamp":"'$(now)'","message":{"role":"assistant","stop_reason":"tool_use","content":[{"type":"tool_use","name":"Bash"}]}}'
+    hook PreToolUse ',"tool_name":"Bash","tool_input":{"command":"touch z","description":"Create empty file z"}'
+    hook PermissionRequest ',"tool_name":"Bash","tool_input":{"command":"touch z","description":"Create empty file z"}'
+    echo "Do you want to proceed?"
+    read answer
+    hook PostToolUse ',"tool_name":"Bash","tool_response":{"stdout":""}'
+    hook PreToolUse ',"tool_name":"Bash","tool_input":{"command":"rm y","description":"Remove file y"}'
+    hook PermissionRequest ',"tool_name":"Bash","tool_input":{"command":"rm y","description":"Remove file y"}'
+    echo "Do you want to proceed again?"
     read answer
     hook PostToolUse ',"tool_name":"Bash","tool_response":{"stdout":""}'
     ;;
@@ -1923,6 +1938,70 @@ async fn claude_code_prompts_come_from_its_hooks() {
     wait_agent(host, "ask", "claude", AgentState::WaitingForInput).await;
 }
 
+/// Looking at a session doesn't answer it (D-099): an approval stays open
+/// while attached and after; answered in the terminal, the next prompt is
+/// what needs the developer, even when no reconcile saw the agent at work in
+/// between. A finished turn is settled by looking.
+#[tokio::test]
+async fn looking_at_a_prompt_does_not_answer_it() {
+    use otter_core::{AgentState, AttentionKind};
+    let fake = fake_codex_host("twoprompts").await;
+    let host = &fake.host;
+    create(host, "look", Some(vec![SessionSpec::agent("claude")])).await;
+    wait_agent(host, "look", "claude", AgentState::Blocked).await;
+    let summaries = || async {
+        let w = host.conn().await.workspace_get("look").await.unwrap();
+        w.attention
+            .iter()
+            .map(|a| a.summary.clone())
+            .collect::<Vec<_>>()
+    };
+    let first = "claude needs your approval: Bash: Create empty file z";
+    eventually("the first prompt needs the developer", || async {
+        (summaries().await == [first]).then_some(())
+    })
+    .await;
+
+    let (mut reader, mut writer) = attach(host, "look", "claude").await;
+    read_until(&mut reader, "proceed?").await;
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    assert_eq!(
+        summaries().await,
+        [first],
+        "attaching is looking, not answering"
+    );
+
+    // Answered in the terminal (not `session.write`): the second prompt.
+    send(&mut writer, "1\r").await;
+    read_until(&mut reader, "proceed again?").await;
+    eventually("the second prompt needs the developer", || async {
+        (summaries().await == ["claude needs your approval: Bash: Remove file y"]).then_some(())
+    })
+    .await;
+    writer.send(&Frame::Detach).await.unwrap();
+    read_exit(&mut reader).await;
+    let ws = host.conn().await.workspace_get("look").await.unwrap();
+    assert_eq!(ws.attention.len(), 1, "detaching leaves it too");
+    assert_eq!(ws.attention[0].kind, AttentionKind::Approval);
+
+    // The turn ends: looking at it settles the review.
+    host.conn()
+        .await
+        .session_write("look", "claude", "1", true)
+        .await
+        .unwrap();
+    let ws = wait_agent(host, "look", "claude", AgentState::WaitingForInput).await;
+    assert_eq!(ws.attention[0].kind, AttentionKind::Review);
+    let (mut reader, mut writer) = attach(host, "look", "claude").await;
+    read_until(&mut reader, "done").await;
+    eventually("looking settles the review", || async {
+        summaries().await.is_empty().then_some(())
+    })
+    .await;
+    writer.send(&Frame::Detach).await.unwrap();
+    read_exit(&mut reader).await;
+}
+
 #[tokio::test]
 async fn claude_code_without_hooks_falls_back_to_the_quiet_turn() {
     use otter_core::{AgentState, AttentionKind};
@@ -2088,6 +2167,285 @@ async fn a_waiting_feature_gets_a_worktree_of_its_own() {
         format!("{err:#}").contains("has worked in its workspace already"),
         "{err:#}"
     );
+
+    // Accepted, it's over: the workspace made for it is put away (D-105),
+    // and its conversation says so. The one it was given stays.
+    assert_eq!(
+        ws.feature_id.as_ref().map(|f| f.as_str()),
+        Some(second.as_str())
+    );
+    conn.feature_act(
+        "accept-second",
+        &second,
+        FeatureAction::Accept {
+            override_gates: true,
+        },
+    )
+    .await
+    .unwrap();
+    // A push it still asks to be allowed (raised as review ended) holds the
+    // workspace until it's answered.
+    let pending = eventually("archived, or held by a question", || async {
+        let ws = host.conn().await.workspace_get(own.as_str()).await.unwrap();
+        let f = host.conn().await.feature_get(&second).await.unwrap();
+        let asks: Vec<_> = f.pending_decisions().cloned().collect();
+        match ws.state {
+            WorkspaceState::Archived => Some(Vec::new()),
+            _ if !asks.is_empty() => Some(asks),
+            _ => None,
+        }
+    })
+    .await;
+    if !pending.is_empty() {
+        tokio::time::sleep(Duration::from_millis(1500)).await;
+        let ws = conn.workspace_get(own.as_str()).await.unwrap();
+        assert_eq!(ws.state, WorkspaceState::Ready, "held while it asks");
+        for d in pending {
+            conn.feature_act(
+                &format!("deny-{}", d.id),
+                &second,
+                FeatureAction::Decide {
+                    decision_id: d.id.clone(),
+                    approve: false,
+                    answer: None,
+                    answers: None,
+                },
+            )
+            .await
+            .unwrap();
+        }
+    }
+    eventually("its own workspace is archived", || async {
+        let ws = host.conn().await.workspace_get(own.as_str()).await.unwrap();
+        (ws.state == WorkspaceState::Archived).then_some(())
+    })
+    .await;
+    let f = wait_feature(host, &second, "it says so", |f| {
+        f.messages
+            .last()
+            .is_some_and(|m| m.text.contains("app-second is archived"))
+    })
+    .await;
+    assert_eq!(f.status, FeatureStatus::Done);
+    assert_eq!(
+        conn.workspace_get("app").await.unwrap().state,
+        WorkspaceState::Ready
+    );
+    // More asked of it: its workspace comes back, and the work goes on there.
+    let runs = f.runs.len();
+    conn.feature_act(
+        "more-second",
+        &second,
+        FeatureAction::RequestChanges {
+            note: Some("And a LICENSE".into()),
+        },
+    )
+    .await
+    .unwrap();
+    wait_feature(host, &second, "it works again", |f| {
+        f.runs.len() > runs
+            && f.runs
+                .last()
+                .is_some_and(|r| r.state == RunState::Completed)
+    })
+    .await;
+    let ws = conn.workspace_get(own.as_str()).await.unwrap();
+    assert_eq!(ws.state, WorkspaceState::Ready);
+}
+
+/// Workspaces and sessions take another name (D-101): the id, the directory
+/// and the running process stay; a name already taken is refused.
+#[tokio::test]
+async fn workspaces_and_sessions_are_renamed() {
+    let host = TestHost::new();
+    sh_session(&host, "old").await;
+    create(&host, "other", Some(vec![])).await;
+    let mut conn = host.conn().await;
+    let before = conn.workspace_get("old").await.unwrap();
+    let ws = conn.workspace_rename("old", " fresh name ").await.unwrap();
+    assert_eq!(ws.name, "fresh name");
+    assert_eq!((&ws.id, &ws.root), (&before.id, &before.root));
+    assert!(conn.workspace_get("old").await.is_err());
+    let err = conn
+        .workspace_rename("other", "fresh name")
+        .await
+        .unwrap_err();
+    assert!(format!("{err:#}").contains("already exists"), "{err:#}");
+    let err = conn.workspace_rename("other", "a/b").await.unwrap_err();
+    assert!(format!("{err:#}").contains("must not contain"), "{err:#}");
+
+    let s = conn
+        .session_rename("fresh name", "sh", "build shell")
+        .await
+        .unwrap();
+    assert_eq!(s.name, "build shell");
+    assert_eq!(s.id, before.sessions[0].id);
+    assert_eq!(s.status(), SessionStatus::Running);
+    conn.session_write("fresh name", "build shell", "echo still-$((6*7))", true)
+        .await
+        .unwrap();
+    eventually("the same process answers", || async {
+        let out = host
+            .conn()
+            .await
+            .session_read("fresh name", "build shell", None)
+            .await
+            .unwrap();
+        out.contains("still-42").then_some(())
+    })
+    .await;
+    let log = std::fs::read_to_string(host.home().join("state/events.jsonl")).unwrap();
+    assert!(log.contains("WorkspaceRenamed") && log.contains("SessionRenamed"));
+}
+
+/// A workspace's Git work for the developer (D-102): its branch, commits
+/// ahead of its base, every changed file — committed or not, new ones too —
+/// with its lines, and one file's diff.
+#[tokio::test]
+async fn a_workspace_shows_its_changes() {
+    use otter_protocol::work::ChangeKind;
+    let host = TestHost::new();
+    let repo = make_repo(
+        &host,
+        "origin",
+        &[("a.txt", "one\ntwo\n"), ("b.txt", "keep\n")],
+    );
+    let mut conn = host.conn().await;
+    conn.workspace_create(git_ws("work", &repo, Some("feature/x"), vec![]))
+        .await
+        .unwrap();
+    let ws = eventually("workspace ready", || async {
+        let ws = host.conn().await.workspace_get("work").await.unwrap();
+        (ws.state == WorkspaceState::Ready).then_some(ws)
+    })
+    .await;
+    let c = conn.workspace_changes("work").await.unwrap();
+    assert!(c.git);
+    assert_eq!(c.branch.as_deref(), Some("feature/x"));
+    assert_eq!((c.ahead, c.behind, c.files.len()), (0, 0, 0));
+
+    let root = Path::new(&ws.root);
+    std::fs::write(root.join("a.txt"), "one\n2\nthree\n").unwrap();
+    git(root, &["commit", "-qam", "edit a"]);
+    std::fs::write(root.join("b.txt"), "keep\nmore\n").unwrap();
+    std::fs::write(root.join("new.md"), "# new\nline\n").unwrap();
+    let c = conn.workspace_changes("work").await.unwrap();
+    assert_eq!(c.base.as_deref(), Some("origin/main"));
+    assert_eq!(c.ahead, 1);
+    let files: Vec<_> = c
+        .files
+        .iter()
+        .map(|f| {
+            (
+                f.path.as_str(),
+                f.change,
+                f.insertions,
+                f.deletions,
+                f.uncommitted,
+            )
+        })
+        .collect();
+    assert_eq!(
+        files,
+        [
+            ("a.txt", ChangeKind::Modified, Some(2), Some(1), false),
+            ("b.txt", ChangeKind::Modified, Some(1), Some(0), true),
+            ("new.md", ChangeKind::Untracked, Some(2), Some(0), true),
+        ]
+    );
+    assert_eq!((c.insertions, c.deletions), (5, 1));
+    let d = conn.workspace_diff("work", "a.txt").await.unwrap();
+    assert!(
+        d.text.contains("-two") && d.text.contains("+three"),
+        "{}",
+        d.text
+    );
+    let d = conn.workspace_diff("work", "new.md").await.unwrap();
+    assert!(d.text.contains("+# new"), "{}", d.text);
+
+    create(&host, "plain", Some(vec![])).await;
+    assert!(!conn.workspace_changes("plain").await.unwrap().git);
+}
+
+/// Files are removed and renamed inside the workspace only (D-103): never
+/// its root or anything outside it, a link rather than what it points to,
+/// and never over another file.
+#[tokio::test]
+async fn files_are_removed_and_renamed_inside_the_workspace() {
+    let host = TestHost::new();
+    let ws = create(&host, "files", Some(vec![])).await;
+    let root = Path::new(&ws.root);
+    std::fs::create_dir_all(root.join("dir/sub")).unwrap();
+    std::fs::write(root.join("dir/sub/f"), "x").unwrap();
+    std::fs::write(root.join("a.txt"), "a").unwrap();
+    std::fs::write(root.join("b.txt"), "b").unwrap();
+    let outside = host.home().join("outside");
+    std::fs::create_dir_all(&outside).unwrap();
+    std::fs::write(outside.join("keep"), "k").unwrap();
+    std::os::unix::fs::symlink(&outside, root.join("link")).unwrap();
+    let mut conn = host.conn().await;
+
+    conn.fs_rename("files", "a.txt", "c.txt").await.unwrap();
+    assert!(root.join("c.txt").exists() && !root.join("a.txt").exists());
+    let err = conn.fs_rename("files", "c.txt", "b.txt").await.unwrap_err();
+    assert!(format!("{err:#}").contains("already exists"), "{err:#}");
+    let err = conn
+        .fs_rename("files", "c.txt", "../c.txt")
+        .await
+        .unwrap_err();
+    assert!(format!("{err:#}").contains("isn't a file name"), "{err:#}");
+
+    conn.fs_remove("files", "dir").await.unwrap();
+    assert!(!root.join("dir").exists());
+    conn.fs_remove("files", "link").await.unwrap();
+    assert!(!root.join("link").exists() && outside.join("keep").exists());
+    let abs = outside.join("keep").to_string_lossy().into_owned();
+    for bad in ["", ".", "..", "../outside", abs.as_str()] {
+        let err = conn.fs_remove("files", bad).await.unwrap_err();
+        assert!(
+            format!("{err:#}").contains("inside the workspace"),
+            "{bad}: {err:#}"
+        );
+    }
+    assert!(root.exists() && outside.join("keep").exists());
+}
+
+/// The ports a workspace's sessions listen on, by session (D-104): a
+/// service bound to a port the system chose is found under that session.
+#[tokio::test]
+async fn a_workspace_knows_its_sessions_ports() {
+    let host = TestHost::new();
+    let listen = "python3 -c \"import socket,time; s=socket.socket(); s.bind(('127.0.0.1',0)); s.listen(); print('port', s.getsockname()[1], flush=True); time.sleep(600)\"";
+    create(
+        &host,
+        "ports",
+        Some(vec![
+            spec(SessionKind::Service, "srv", listen),
+            spec(SessionKind::Terminal, "sh", "sh"),
+        ]),
+    )
+    .await;
+    let port: u16 = eventually("the service listens", || async {
+        let out = host
+            .conn()
+            .await
+            .session_read("ports", "srv", None)
+            .await
+            .ok()?;
+        out.split_whitespace()
+            .skip_while(|w| *w != "port")
+            .nth(1)
+            .and_then(|p| p.parse().ok())
+    })
+    .await;
+    let ws = host.conn().await.workspace_get("ports").await.unwrap();
+    let srv = ws.session("srv").unwrap().id.clone();
+    let ports = eventually("its port is found", || async {
+        let p = host.conn().await.workspace_ports("ports").await.unwrap();
+        p.iter().any(|p| p.port == port).then_some(p)
+    })
+    .await;
+    assert!(ports.iter().all(|p| p.session_id == srv), "{ports:?}");
 }
 
 /// A host says what's wrong with it, each with what to do (D-077): here,

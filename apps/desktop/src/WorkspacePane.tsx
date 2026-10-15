@@ -1,4 +1,4 @@
-import { useEffect, useState, type CSSProperties } from "react";
+import { useEffect, useRef, useState, type CSSProperties } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { Glyph } from "./Glyph";
 import { Dialog } from "./Dialog";
@@ -8,9 +8,32 @@ import { FilesPanel } from "./FilesPanel";
 import { TimelinePanel } from "./TimelinePanel";
 import { PanelGrip, SIDE_PANEL, usePanelWidth } from "./panelResize";
 import { BriefDialog, briefSummary } from "./BriefDialog";
+import { ChangesPanel, type Changes } from "./ChangesPanel";
+import { changesLine } from "./changes";
+import { FindPanel } from "./FindPanel";
 import { ago, kindLabel, sessionGlyph } from "./model";
+import { explain, invokeNewer } from "./newer";
+import { RenameDialog } from "./RenameDialog";
 import { Terminal, type Ending } from "./Terminal";
-import type { AttentionView, Placed } from "./types";
+import type { AttentionView, Placed, SessionPort, SessionView, WorkspaceChanges } from "./types";
+
+type Side = "files" | "timeline" | "changes";
+const SIDE_KEY = "otter.side";
+
+/** The side panel last open, for the next workspace shown (D-106). */
+function storedSide(): Side | null {
+  try {
+    const v = localStorage.getItem(SIDE_KEY);
+    return v === "files" || v === "timeline" || v === "changes" ? v : null;
+  } catch {
+    return null;
+  }
+}
+
+/** How often the ports of a workspace in front are looked at again. */
+const PORTS_EVERY_MS = 10_000;
+/** How often an open Changes panel looks again (an agent's edits make no event). */
+const CHANGES_EVERY_MS = 30_000;
 
 interface Props {
   placed: Placed;
@@ -20,13 +43,33 @@ interface Props {
   theme: "light" | "dark";
   /** This app's version: a host on another otterd version is offered an update. */
   appVersion?: string;
-  /** Pin, unpin and move items for the workspace menu. */
+  /** Pin, unpin, move and rename items for the workspace menu. */
   pinItems: MenuItem[];
+  /** The workspace shown in the Workspaces view (D-100): kept panes are mounted but hidden. */
+  shown: boolean;
+  /** Shown, and that view in front: only then does it look at its host or take keys. */
+  active: boolean;
+  /** Open a port of this host in the browser (forwarded if remote). */
+  onOpenPort: (port: number) => void;
+  /** Show the task this workspace was made for (D-105). */
+  onOpenTask: (featureId: string) => void;
 }
 
-type Open = "brief" | "new-session" | "archive-workspace" | "delete-workspace" | "delete-session" | null;
+type Open = "brief" | "new-session" | "archive-workspace" | "delete-workspace" | "delete-session" | "rename-session" | null;
 
-export function WorkspacePane({ placed, session, onSession, now, theme, appVersion, pinItems }: Props) {
+export function WorkspacePane({
+  placed,
+  session,
+  onSession,
+  now,
+  theme,
+  appVersion,
+  pinItems,
+  shown,
+  active,
+  onOpenPort,
+  onOpenTask,
+}: Props) {
   const { host, ws } = placed;
   const current = ws.sessions.find((s) => s.id === session) ?? ws.sessions[0];
   const [ending, setEnding] = useState<Ending | null>(null);
@@ -36,10 +79,68 @@ export function WorkspacePane({ placed, session, onSession, now, theme, appVersi
   const [open, setOpen] = useState<Open>(null);
   const [force, setForce] = useState(false);
   const [closing, setClosing] = useState<string | null>(null);
-  // The side panel: files or the timeline.
-  const [side, setSide] = useState<"files" | "timeline" | null>(null);
+  // The side panel: files, the timeline or the changes; the one last open
+  // opens with the next workspace too.
+  const [side, setSideState] = useState<Side | null>(storedSide);
+  const setSide = (next: Side | null) => {
+    setSideState(next);
+    try {
+      if (next) localStorage.setItem(SIDE_KEY, next);
+      else localStorage.removeItem(SIDE_KEY);
+    } catch {
+      // Not remembered; fine.
+    }
+  };
   const [sideWidth, setSideWidth] = usePanelWidth(SIDE_PANEL);
-  const toggle = (panel: "files" | "timeline") => setSide((s) => (s === panel ? null : panel));
+  const toggle = (panel: Side) => setSide(side === panel ? null : panel);
+  const [finding, setFinding] = useState(false);
+  const [renaming, setRenaming] = useState<SessionView | null>(null);
+
+  // Its Git work (D-102): looked at when it's in front and something
+  // happened in it, and now and then while the Changes panel is open.
+  const [changes, setChanges] = useState<Changes>({ state: "loading" });
+  const [changesTick, setChangesTick] = useState(0);
+  const moved = `${ws.updatedAt}|${ws.sessions.map((s) => `${s.status}:${s.agent?.state ?? ""}:${s.agent?.since ?? ""}`).join(",")}`;
+  useEffect(() => {
+    if (!active || host.status !== "connected") return;
+    let live = true;
+    const t = setTimeout(() => {
+      invokeNewer<WorkspaceChanges>(host.name, "workspace_changes", { host: host.name, workspace: ws.id })
+        .then((c) => live && setChanges(c ? { state: "ready", changes: c } : { state: "too_old" }))
+        .catch((e) => live && setChanges({ state: "error", error: String(e) }));
+    }, 300);
+    return () => {
+      live = false;
+      clearTimeout(t);
+    };
+  }, [active, host.name, host.status, ws.id, moved, changesTick]);
+  useEffect(() => {
+    if (!active || side !== "changes") return;
+    const t = setInterval(() => document.hasFocus() && setChangesTick((n) => n + 1), CHANGES_EVERY_MS);
+    return () => clearInterval(t);
+  }, [active, side]);
+
+  // Ports its sessions listen on (D-104), while it's in front and runs something.
+  const [ports, setPorts] = useState<SessionPort[]>([]);
+  const runningAny = ws.sessions.some((s) => s.status === "running");
+  useEffect(() => {
+    if (!active || host.status !== "connected" || !runningAny) {
+      setPorts([]);
+      return;
+    }
+    let live = true;
+    const look = () =>
+      invokeNewer<SessionPort[]>(host.name, "workspace_ports", { host: host.name, workspace: ws.id })
+        .then((p) => live && setPorts(p ?? []))
+        .catch(() => live && setPorts([]));
+    void look();
+    const t = setInterval(() => document.hasFocus() && void look(), PORTS_EVERY_MS);
+    return () => {
+      live = false;
+      clearInterval(t);
+    };
+  }, [active, host.name, host.status, ws.id, runningAny]);
+  const shownPorts = [...new Map(ports.map((p) => [p.port, p])).values()].sort((a, b) => a.port - b.port);
 
   // A new session, or a new execution of it, starts a fresh attach.
   const running = current?.status === "running";
@@ -86,6 +187,54 @@ export function WorkspacePane({ placed, session, onSession, now, theme, appVersi
   const brief = briefSummary(ws.brief);
   const unarchive = () => act("workspace_unarchive", { host: host.name, workspace: ws.id });
 
+  // Shown again after another workspace or a host's page (D-099, D-100):
+  // its terminal didn't attach again, so what attaching settles — a finished
+  // turn, a completed command — is settled here, item by item, for the
+  // session on screen. Switching views never did, and doesn't.
+  const wasShown = useRef(shown);
+  useEffect(() => {
+    if (shown && !wasShown.current && current) {
+      for (const a of ws.attention) {
+        if (a.sessionId === current.id && (a.kind === "review" || a.kind === "completion")) {
+          void invoke("attention_resolve", { host: host.name, workspace: ws.id, session: null, attention: a.id }).catch(() => {});
+        }
+      }
+    }
+    wasShown.current = shown;
+  }, [shown]);
+
+  // Its shortcuts, while it's in front and no dialog is open (D-106):
+  // ⌘T a new session, ⌘⇧[ / ⌘⇧] the session before / after, ⌘F find.
+  const sessionIds = ws.sessions.map((s) => s.id).join(",");
+  useEffect(() => {
+    if (!active || open !== null) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (!e.metaKey || e.ctrlKey || e.altKey) return;
+      // Not under another dialog (⌘K's, say).
+      if (document.querySelector('[aria-modal="true"]')) return;
+      const key = e.key.toLowerCase();
+      if (!e.shiftKey && key === "t" && !archived) {
+        e.preventDefault();
+        e.stopPropagation();
+        setOpen("new-session");
+      } else if (!e.shiftKey && key === "f" && current) {
+        e.preventDefault();
+        e.stopPropagation();
+        setFinding((f) => !f);
+      } else if (e.shiftKey && (e.code === "BracketLeft" || e.code === "BracketRight") && current) {
+        e.preventDefault();
+        e.stopPropagation();
+        const ids = ws.sessions.map((s) => s.id);
+        const at = ids.indexOf(current.id);
+        const next = ids[(at + (e.code === "BracketRight" ? 1 : ids.length - 1)) % ids.length];
+        if (next) onSession(next);
+      }
+    };
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, [active, open, archived, current?.id, sessionIds]);
+  useEffect(() => setFinding(false), [current?.id]);
+
   async function act(command: string, args: Record<string, unknown>): Promise<boolean> {
     setBusy(true);
     setError(null);
@@ -106,7 +255,7 @@ export function WorkspacePane({ placed, session, onSession, now, theme, appVersi
   const restart = () => current && act("session_restart", { host: host.name, workspace: ws.id, session: current.id });
 
   return (
-    <main className="pane ws-pane">
+    <main className="pane ws-pane" hidden={!shown}>
       <div className="pane-head" data-tauri-drag-region>
         <h1 data-tauri-drag-region>{ws.name}</h1>
         <span className="head-sep" aria-hidden="true" />
@@ -118,6 +267,20 @@ export function WorkspacePane({ placed, session, onSession, now, theme, appVersi
           {ws.sourceKind === "git" && <span className="chip mono">{ws.source}</span>}
           {ws.sourceKind === "directory" && <span className="chip">directory</span>}
           {ws.sourceKind === "empty" && <span className="chip">scratch</span>}
+          {changes.state === "ready" && changesLine(changes.changes) && (
+            <button
+              className="chip mono changes-chip"
+              title={`What changed${changes.changes.base ? ` since ${changes.changes.base}` : " and isn't committed"}: show the files`}
+              onClick={() => setSide("changes")}
+            >
+              {changesLine(changes.changes)}
+            </button>
+          )}
+          {ws.featureId && (
+            <button className="chip changes-chip" title="The task this workspace was made for" onClick={() => onOpenTask(ws.featureId!)}>
+              Task ↗
+            </button>
+          )}
           <span className="root mono">{ws.root}</span>
         </div>
         {brief.text && (
@@ -127,6 +290,14 @@ export function WorkspacePane({ placed, session, onSession, now, theme, appVersi
           </button>
         )}
         <span className="spacer" data-tauri-drag-region />
+        <button
+          className={side === "changes" ? "btn outline small-btn files-toggle on" : "btn outline small-btn files-toggle"}
+          aria-pressed={side === "changes"}
+          onClick={() => toggle("changes")}
+          title="What changed in its Git work"
+        >
+          Changes
+        </button>
         <button
           className={side === "timeline" ? "btn outline small-btn files-toggle on" : "btn outline small-btn files-toggle"}
           aria-pressed={side === "timeline"}
@@ -196,7 +367,17 @@ export function WorkspacePane({ placed, session, onSession, now, theme, appVersi
       <div className="tabs" role="tablist" aria-label="Sessions">
         {ws.sessions.map((s) => (
           <div key={s.id} className={s.id === current?.id ? "tab selected" : "tab"}>
-            <button role="tab" aria-selected={s.id === current?.id} className="tab-main" onClick={() => onSession(s.id)}>
+            <button
+              role="tab"
+              aria-selected={s.id === current?.id}
+              className="tab-main"
+              onClick={() => onSession(s.id)}
+              onDoubleClick={() => {
+                setRenaming(s);
+                setOpen("rename-session");
+              }}
+              title="Double-click to rename"
+            >
               <Glyph kind={sessionGlyph(s)} size={10} />
               <span className="tab-name">{s.name}</span>
               {s.agent && <span className="tab-kind">{kindLabel(s)}</span>}
@@ -224,12 +405,33 @@ export function WorkspacePane({ placed, session, onSession, now, theme, appVersi
           </button>
         )}
         <span className="spacer" />
+        {shownPorts.map((p) => {
+          const owner = ws.sessions.find((s) => s.id === p.session_id)?.name ?? "a session";
+          return (
+            <button
+              key={p.port}
+              className="chip mono port-chip"
+              title={`Open http://localhost:${p.port} — ${owner}${p.process ? `, ${p.process}` : ""} listens on it`}
+              onClick={() => onOpenPort(p.port)}
+            >
+              :{p.port} ↗
+            </button>
+          );
+        })}
         {current && !current.agent && <span className="tabs-kind">{current.kind}</span>}
         {current && !archived && (
           <Menu
             label={`${current.name} actions`}
             items={[
               { label: "Restart", onSelect: () => void act("session_restart", sessionArgs()) },
+              {
+                label: "Rename…",
+                onSelect: () => {
+                  setRenaming(current);
+                  setOpen("rename-session");
+                },
+              },
+              { label: "Find in its history… (⌘F)", onSelect: () => setFinding(true) },
               { label: "Stop", hidden: current.status !== "running", onSelect: () => void act("session_stop", sessionArgs()) },
               {
                 label: "Delete session…",
@@ -285,6 +487,15 @@ export function WorkspacePane({ placed, session, onSession, now, theme, appVersi
         </div>
       ) : current ? (
         <>
+          {finding && (
+            <FindPanel
+              host={host.name}
+              workspace={ws.id}
+              session={current.id}
+              name={current.name}
+              onClose={() => setFinding(false)}
+            />
+          )}
           <Terminal
             key={`${placed.key}/${current.id}`}
             host={host.name}
@@ -296,6 +507,7 @@ export function WorkspacePane({ placed, session, onSession, now, theme, appVersi
             where={host.name}
             dimmed={ending !== null || over !== null}
             theme={theme}
+            active={active && !finding}
           />
           {!ending && over && (
             <div className="ending">
@@ -351,13 +563,39 @@ export function WorkspacePane({ placed, session, onSession, now, theme, appVersi
             panel={SIDE_PANEL}
             width={sideWidth}
             onResize={setSideWidth}
-            label={side === "files" ? "Files width" : "Timeline width"}
+            label={`${side[0].toUpperCase()}${side.slice(1)} width`}
           />
         )}
-        {side === "files" && <FilesPanel host={host.name} workspace={ws.id} onClose={() => setSide(null)} />}
+        {side === "changes" && (
+          <ChangesPanel
+            host={host.name}
+            workspace={ws.id}
+            changes={changes}
+            onRefresh={() => setChangesTick((n) => n + 1)}
+            onClose={() => setSide(null)}
+          />
+        )}
+        {side === "files" && <FilesPanel host={host.name} workspace={ws.id} active={active} onClose={() => setSide(null)} />}
         {side === "timeline" && <TimelinePanel host={host.name} ws={ws} now={now} onClose={() => setSide(null)} />}
       </div>
 
+      {open === "rename-session" && renaming && (
+        <RenameDialog
+          title={`Rename ${renaming.name}`}
+          initial={renaming.name}
+          onRename={async (name) => {
+            try {
+              await invoke("session_rename", { host: host.name, workspace: ws.id, session: renaming.id, name });
+            } catch (e) {
+              throw explain(host.name, e);
+            }
+          }}
+          onClose={() => {
+            setOpen(null);
+            setRenaming(null);
+          }}
+        />
+      )}
       {open === "brief" && (
         <BriefDialog host={host.name} workspace={ws.id} name={ws.name} brief={ws.brief} onClose={() => setOpen(null)} />
       )}

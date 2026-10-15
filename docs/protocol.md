@@ -181,6 +181,39 @@ All additions (no protocol bump): daemons before them answer
 
 An addition (no protocol bump): daemons before it answer `invalid_request`.
 
+## Names
+
+- `workspace.rename {workspace, name}` → the workspace; `session.rename
+  {workspace, session, name}` → the session (D-101). Names follow the same
+  rules as at creation (no `/` or `:`, trimmed), unique among the host's
+  workspaces / the workspace's sessions (`already_exists`). Only the name
+  changes: ids, the directory, the branch and running processes stay, so an
+  attach or a reference by id carries on.
+- They emit `WorkspaceRenamed {workspace_id, name}` and `SessionRenamed
+  {workspace_id, session_id, name}`.
+
+## A workspace's work
+
+- `workspace.changes {workspace}` → `{git, branch?, base?, ahead, behind,
+  files, more, insertions, deletions}` (D-102). In a Git work tree: the
+  changes since the base — the workspace's base branch, else the branch's
+  upstream; with neither, what isn't committed — committed or not, new files
+  included, each `{path, change, insertions?, deletions?, uncommitted}`
+  (`change`: `added`, `modified`, `deleted`, `renamed`, `untracked`; no
+  counts for a binary file). Paths are relative to the workspace root and
+  limited to it. At most 500 files; `more` counts the rest. Outside Git only
+  `git: false`. Read-only: the index is never touched.
+- `workspace.diff {workspace, path}` → `{text, truncated}`: that file's
+  unified diff since the same base (a new file against nothing), at most
+  512 KiB.
+- `workspace.ports {workspace}` → `[{session_id, port, address, process?}]`
+  (D-104): the TCP ports listened on by a process in one of the workspace's
+  running sessions' process trees, found from `host.ports` and each
+  process's ancestry. Read when asked, never in the background.
+
+Additions (no protocol bump): daemons before them answer `invalid_request`
+(`unknown variant`), which clients take as "update this host".
+
 ## Host settings
 
 The Control Agent's model and API keys on this host (D-048).
@@ -366,6 +399,12 @@ policy}`. An addition (no protocol bump).
   most 1 MiB per call; `fs.write {workspace, path, offset, data, create,
   overwrite}` writes a chunk (`create` starts the file and fails if it exists
   unless `overwrite`).
+- `fs.remove {workspace, path}` removes a file, a link, or a directory with
+  everything in it; `fs.rename {workspace, path, name}` gives one another
+  name in the same directory, never over an existing one (`already_exists`)
+  (D-103). Both act only inside the workspace — never on its root, nor on
+  anything a path resolves to outside it — and on a link itself, not what it
+  points to. Additions: daemons before them answer `invalid_request`.
 - `session.paste_image {workspace, session, png}` → stores the PNG (≤ 20 MB)
   for that session; the session's stand-in `wl-paste` (first on its PATH)
   serves it for two minutes, so Claude Code's Ctrl+V picks it up.

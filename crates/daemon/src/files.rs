@@ -23,7 +23,8 @@ use std::sync::Arc;
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as B64;
 use otter_protocol::fs::{
-    DirEntry, DirListing, EntryKind, FileChunk, FsPath, FsRead, FsWrite, MAX_CHUNK, PasteImage,
+    DirEntry, DirListing, EntryKind, FileChunk, FsPath, FsRead, FsRename, FsWrite, MAX_CHUNK,
+    PasteImage,
 };
 use otter_protocol::{RpcError, SessionRef};
 
@@ -167,6 +168,60 @@ impl Daemon {
             root.join(&at.path)
         };
         Ok((root, path))
+    }
+
+    /// A path to change (D-103): inside the workspace, never its root. Its
+    /// parent is resolved, not the path, so a link is what is acted on, not
+    /// what it points to.
+    async fn inside(&self, at: &FsPath) -> RpcResult<PathBuf> {
+        let (root, path) = self.resolve(at).await?;
+        let root = std::fs::canonicalize(&root).map_err(|e| io_err(&root, e))?;
+        let outside = || {
+            RpcError::invalid(format!(
+                "{} is not a file or folder inside the workspace",
+                path.display()
+            ))
+        };
+        let name = path.file_name().ok_or_else(outside)?;
+        let parent = path.parent().ok_or_else(outside)?;
+        let parent = std::fs::canonicalize(parent).map_err(|e| io_err(parent, e))?;
+        let target = parent.join(name);
+        if !target.starts_with(&root) || target == root {
+            return Err(outside());
+        }
+        Ok(target)
+    }
+
+    pub(crate) async fn fs_remove(&self, at: &FsPath) -> RpcResult<()> {
+        let path = self.inside(at).await?;
+        let meta = std::fs::symlink_metadata(&path).map_err(|e| io_err(&path, e))?;
+        tokio::task::spawn_blocking(move || {
+            if meta.is_dir() {
+                std::fs::remove_dir_all(&path)
+            } else {
+                std::fs::remove_file(&path)
+            }
+            .map_err(|e| io_err(&path, e))
+        })
+        .await
+        .map_err(|e| RpcError::internal(format!("removing: {e}")))?
+    }
+
+    pub(crate) async fn fs_rename(&self, r: &FsRename) -> RpcResult<()> {
+        let name = r.name.trim();
+        if name.is_empty() || name == "." || name == ".." || name.contains(['/', '\0']) {
+            return Err(RpcError::invalid(format!("`{}` isn't a file name", r.name)));
+        }
+        let from = self.inside(&r.at).await?;
+        std::fs::symlink_metadata(&from).map_err(|e| io_err(&from, e))?;
+        let to = from.with_file_name(name);
+        if to == from {
+            return Ok(());
+        }
+        if std::fs::symlink_metadata(&to).is_ok() {
+            return Err(io_err(&to, std::io::ErrorKind::AlreadyExists.into()));
+        }
+        std::fs::rename(&from, &to).map_err(|e| io_err(&from, e))
     }
 
     pub(crate) async fn fs_list(&self, at: &FsPath) -> RpcResult<DirListing> {

@@ -54,6 +54,9 @@ pub struct Daemon {
     pub(crate) chat: Mutex<crate::chat::ChatStore>,
     /// Woken whenever a feature changes, for the controller.
     pub(crate) feature_wake: tokio::sync::Notify,
+    /// Features that just ended, whose own workspaces the controller puts
+    /// away (D-105).
+    pub(crate) finished: std::sync::Mutex<Vec<otter_core::FeatureId>>,
     /// Managed agent runs in progress (runs.rs).
     pub(crate) runs: crate::runs::Runs,
     /// Runtime conversations (D-055): what the coding agents did, turn by turn.
@@ -166,6 +169,7 @@ impl Daemon {
             features: Mutex::new(features),
             chat: Mutex::new(chat),
             feature_wake: tokio::sync::Notify::new(),
+            finished: Default::default(),
             runs: Default::default(),
             conversations: Arc::new(conversations),
             controller: Default::default(),
@@ -213,6 +217,8 @@ impl Daemon {
             },
             Request::HostPorts => json(crate::metrics::listening_ports().await),
             Request::FsList(p) => json(self.fs_list(&p).await?),
+            Request::FsRemove(p) => json(self.fs_remove(&p).await?),
+            Request::FsRename(p) => json(self.fs_rename(&p).await?),
             Request::FsRead(p) => json(self.fs_read(&p).await?),
             Request::FsWrite(p) => json(self.fs_write(&p).await?),
             Request::SessionPasteImage(p) => json(self.paste_image(&p).await?),
@@ -259,10 +265,15 @@ impl Daemon {
                 json(self.workspace_unarchive(&r.workspace).await?.shown())
             }
             Request::WorkspaceSetBrief(p) => json(self.workspace_set_brief(p).await?.shown()),
+            Request::WorkspaceRename(p) => json(self.workspace_rename(p).await?.shown()),
+            Request::WorkspaceChanges(r) => json(self.workspace_changes(&r.workspace).await?),
+            Request::WorkspaceDiff(p) => json(self.workspace_diff(&p.workspace, &p.path).await?),
+            Request::WorkspacePorts(r) => json(self.workspace_ports(&r.workspace).await?),
             Request::SessionCreate(p) => json(self.session_create(p).await?),
             Request::SessionStop(r) => json(self.session_stop(&r).await?),
             Request::SessionRestart(r) => json(self.session_restart(&r).await?),
             Request::SessionDelete(r) => json(self.session_delete(&r).await?),
+            Request::SessionRename(p) => json(self.session_rename(&p).await?),
             Request::SessionRead(p) => json(self.session_read(&p).await?),
             Request::SessionWrite(p) => json(self.session_write(&p).await?),
             Request::AttentionResolve(p) => json(self.attention_resolve(&p).await?),

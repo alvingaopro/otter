@@ -46,6 +46,84 @@ pub async fn fs_list(
         .map_err(|e| e.to_string())
 }
 
+/// Remove a file or folder inside the workspace (D-103).
+#[tauri::command]
+pub async fn fs_remove(
+    app: AppHandle,
+    host: String,
+    workspace: String,
+    path: String,
+) -> Result<(), String> {
+    conn(&app, &host)
+        .await?
+        .fs_remove(&workspace, &path)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Rename a file or folder in place (D-103).
+#[tauri::command]
+pub async fn fs_rename(
+    app: AppHandle,
+    host: String,
+    workspace: String,
+    path: String,
+    name: String,
+) -> Result<(), String> {
+    conn(&app, &host)
+        .await?
+        .fs_rename(&workspace, &path, &name)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// How much of a file the files panel shows.
+const PREVIEW_BYTES: u64 = 256 * 1024;
+
+/// The start of a file, to show in the files panel (D-103): its text, or
+/// none when it isn't text.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Preview {
+    text: Option<String>,
+    size: u64,
+    truncated: bool,
+}
+
+#[tauri::command]
+pub async fn file_preview(
+    app: AppHandle,
+    host: String,
+    workspace: String,
+    path: String,
+) -> Result<Preview, String> {
+    let chunk = conn(&app, &host)
+        .await?
+        .fs_read(&workspace, &path, 0, PREVIEW_BYTES)
+        .await
+        .map_err(|e| e.to_string())?;
+    let bytes = B64.decode(&chunk.data).map_err(|e| e.to_string())?;
+    Ok(Preview {
+        text: preview_text(&bytes, !chunk.eof),
+        size: chunk.size,
+        truncated: !chunk.eof,
+    })
+}
+
+/// Text if it reads as UTF-8 without NULs; a cut may end mid-character.
+fn preview_text(bytes: &[u8], cut: bool) -> Option<String> {
+    if bytes.contains(&0) {
+        return None;
+    }
+    match std::str::from_utf8(bytes) {
+        Ok(s) => Some(s.to_owned()),
+        Err(e) if cut && e.error_len().is_none() => {
+            Some(String::from_utf8_lossy(&bytes[..e.valid_up_to()]).into_owned())
+        }
+        Err(_) => None,
+    }
+}
+
 /// Download a file from the workspace to `dest` on this Mac.
 #[tauri::command]
 pub async fn file_download(

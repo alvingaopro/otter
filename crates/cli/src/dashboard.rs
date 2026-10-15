@@ -397,6 +397,7 @@ mod tests {
             updated_at: now,
             sessions: Vec::new(),
             attention: Vec::new(),
+            feature_id: None,
         }
     }
 

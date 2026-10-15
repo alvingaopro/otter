@@ -178,6 +178,13 @@ impl Daemon {
             if gap > SLEEP_GAP {
                 self.skip_sleep(gap).await;
             }
+            // Tasks that just ended put their own workspaces away (D-105),
+            // whatever drives the rest.
+            let finished = std::mem::take(&mut *self.finished.lock().unwrap());
+            for id in finished {
+                let daemon = self.clone();
+                tokio::spawn(async move { daemon.put_away_workspace(&id).await });
+            }
             // Off: features stay where they are until the developer acts.
             if self.brain_choice().controller.as_deref() == Some("off") {
                 continue;
@@ -1408,11 +1415,27 @@ impl Daemon {
     /// Why the feature's workspace can't be worked in now, if it can't
     /// (D-079): another feature's run is there, or an agent the developer
     /// started is at work there.
-    async fn workspace_taken(&self, f: &Feature) -> Option<String> {
+    async fn workspace_taken(self: &Arc<Self>, f: &Feature) -> Option<String> {
         let ws_id = f.workspace_id.as_ref()?;
         let (name, busy_session) = {
             let store = self.store.lock().await;
             let ws = store.workspace(ws_id.as_str())?;
+            // Put away when it ended (D-105): its own comes back; another
+            // is the developer's to bring back.
+            if ws.state == otter_core::WorkspaceState::Archived {
+                if ws.feature_id.as_ref() != Some(&f.id) {
+                    return Some(format!(
+                        "{WAITING}{}: it's archived; unarchive it to go on",
+                        ws.name
+                    ));
+                }
+                let name = ws.name.clone();
+                drop(store);
+                if let Err(e) = self.workspace_unarchive(ws_id.as_str()).await {
+                    return Some(format!("{WAITING}{name}: {}", e.message));
+                }
+                return Some(format!("{WAITING}{name}: it's being prepared"));
+            }
             // A workspace still being made (one of its own, D-080).
             if ws.state == otter_core::WorkspaceState::Preparing {
                 return Some(format!("{WAITING}{}: it's being prepared", ws.name));

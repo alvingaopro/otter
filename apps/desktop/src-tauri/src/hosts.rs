@@ -396,12 +396,15 @@ pub async fn attention_resolve(
     host: String,
     workspace: String,
     session: Option<String>,
+    attention: Option<String>,
 ) -> Result<usize, String> {
-    rpc(&app, &host)
-        .await?
-        .attention_resolve(&workspace, session.as_deref())
-        .await
-        .map_err(|e| e.to_string())
+    let mut conn = rpc(&app, &host).await?;
+    match attention {
+        // One item: what showing a workspace again settles (D-099).
+        Some(id) => conn.attention_resolve_item(&workspace, &id).await,
+        None => conn.attention_resolve(&workspace, session.as_deref()).await,
+    }
+    .map_err(|e| e.to_string())
 }
 
 /// Start a session again (a new execution of the same session).
@@ -728,6 +731,99 @@ pub async fn workspace_set_brief(
         .workspace_set_brief(&workspace, brief)
         .await
         .map(|_| ())
+        .map_err(err)
+}
+
+/// Another name for a workspace (D-101). The sidebar updates from the event.
+#[tauri::command]
+pub async fn workspace_rename(
+    app: AppHandle,
+    host: String,
+    workspace: String,
+    name: String,
+) -> Result<(), String> {
+    rpc(&app, &host)
+        .await?
+        .workspace_rename(&workspace, &name)
+        .await
+        .map(|_| ())
+        .map_err(err)
+}
+
+/// Another name for a session (D-101).
+#[tauri::command]
+pub async fn session_rename(
+    app: AppHandle,
+    host: String,
+    workspace: String,
+    session: String,
+    name: String,
+) -> Result<(), String> {
+    rpc(&app, &host)
+        .await?
+        .session_rename(&workspace, &session, &name)
+        .await
+        .map(|_| ())
+        .map_err(err)
+}
+
+/// A workspace's Git work (D-102).
+#[tauri::command]
+pub async fn workspace_changes(
+    app: AppHandle,
+    host: String,
+    workspace: String,
+) -> Result<otter_protocol::work::WorkspaceChanges, String> {
+    rpc(&app, &host)
+        .await?
+        .workspace_changes(&workspace)
+        .await
+        .map_err(err)
+}
+
+/// One changed file's diff (D-102).
+#[tauri::command]
+pub async fn workspace_diff(
+    app: AppHandle,
+    host: String,
+    workspace: String,
+    path: String,
+) -> Result<otter_protocol::work::FileDiff, String> {
+    rpc(&app, &host)
+        .await?
+        .workspace_diff(&workspace, &path)
+        .await
+        .map_err(err)
+}
+
+/// Ports a workspace's sessions listen on (D-104).
+#[tauri::command]
+pub async fn workspace_ports(
+    app: AppHandle,
+    host: String,
+    workspace: String,
+) -> Result<Vec<otter_protocol::work::SessionPort>, String> {
+    rpc(&app, &host)
+        .await?
+        .workspace_ports(&workspace)
+        .await
+        .map_err(err)
+}
+
+/// A session's text, its history included (up to `lines` above the
+/// screen), for finding something in it (D-106).
+#[tauri::command]
+pub async fn session_history(
+    app: AppHandle,
+    host: String,
+    workspace: String,
+    session: String,
+    lines: u32,
+) -> Result<String, String> {
+    rpc(&app, &host)
+        .await?
+        .session_read(&workspace, &session, Some(lines))
+        .await
         .map_err(err)
 }
 

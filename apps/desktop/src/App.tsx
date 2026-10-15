@@ -23,6 +23,10 @@ import { WorkspacePane } from "./WorkspacePane";
 import { NewWorkspaceDialog } from "./NewWorkspaceDialog";
 import { SettingsDialog } from "./SettingsDialog";
 import { PanelGrip, SIDEBAR, usePanelWidth } from "./panelResize";
+import { QuickOpen } from "./QuickOpen";
+import { RenameDialog } from "./RenameDialog";
+import { explain, forgetHost } from "./newer";
+import { zoomKey } from "./terminalFont";
 import { useTheme } from "./theme";
 import { defaultSession, groups, headline, movePin, pinnedOf, placeAll, stalePins, togglePin, trayLabel } from "./model";
 import type { MenuItem } from "./Menu";
@@ -34,7 +38,17 @@ const JUMP_WINDOW_MS = 2 * 60 * 1000;
 /** On macOS the header doubles as the title bar (overlay style, see tauri.conf.json). */
 const IS_MAC = navigator.userAgent.includes("Mac");
 
-type Open = { kind: "add" } | { kind: "cli" } | { kind: "new" } | { kind: "settings" } | null;
+type Open =
+  | { kind: "add" }
+  | { kind: "cli" }
+  | { kind: "new" }
+  | { kind: "settings" }
+  | { kind: "quick" }
+  | { kind: "rename"; key: string }
+  | null;
+
+/** How many workspaces keep their pane, and so their terminals, while not shown (D-100). */
+const KEPT_PANES = 5;
 
 interface Jump {
   key: string;
@@ -54,6 +68,10 @@ export default function App() {
     saveView(v);
   };
   const [sessions, setSessions] = useState<Record<string, string>>({});
+  /** Workspaces shown lately, the latest first: their panes stay mounted (D-100). */
+  const [kept, setKept] = useState<string[]>([]);
+  /** The session each kept pane showed when it was last in front. */
+  const shownSession = useRef(new Map<string, string>());
   // One width for the Tasks and Workspaces lists (D-097).
   const [sidebarWidth, setSidebarWidth] = usePanelWidth(SIDEBAR);
   const sidebarGrip = <PanelGrip panel={SIDEBAR} width={sidebarWidth} onResize={setSidebarWidth} label="Sidebar width" />;
@@ -118,6 +136,19 @@ export default function App() {
       if (e.metaKey && !e.shiftKey && !e.altKey && e.key.toLowerCase() === "n") {
         e.preventDefault();
         setOpen({ kind: "new" });
+        return;
+      }
+      // ⌘K: go to a workspace (D-106).
+      if (e.metaKey && !e.shiftKey && !e.altKey && !e.ctrlKey && e.key.toLowerCase() === "k") {
+        e.preventDefault();
+        e.stopPropagation();
+        setOpen((o) => (o?.kind === "quick" ? null : { kind: "quick" }));
+        return;
+      }
+      // ⌘= / ⌘- / ⌘0: the terminals' text size (D-106).
+      if (zoomKey(e)) {
+        e.preventDefault();
+        e.stopPropagation();
       }
     };
     window.addEventListener("keydown", onKey, true);
@@ -154,6 +185,14 @@ export default function App() {
   }, []);
 
   const placed = useMemo(() => (payload ? placeAll(payload) : []), [payload]);
+  // A host that comes back may have been updated: ask it again what it knows.
+  const connectedNow = (payload?.hosts ?? []).filter((h) => h.status === "connected").map((h) => `${h.name}@${h.version ?? ""}`).join("\n");
+  const connectedBefore = useRef("");
+  useEffect(() => {
+    const before = new Set(connectedBefore.current.split("\n"));
+    for (const h of connectedNow.split("\n")) if (h && !before.has(h)) forgetHost(h.slice(0, h.lastIndexOf("@")));
+    connectedBefore.current = connectedNow;
+  }, [connectedNow]);
   const connectedHosts = (payload?.hosts ?? []).filter((h) => h.status === "connected").map((h) => h.name);
   const connectedKey = connectedHosts.join("\n");
   useEffect(() => featureSource.setHosts?.(connectedKey ? connectedKey.split("\n") : []), [featureSource, connectedKey]);
@@ -173,6 +212,7 @@ export default function App() {
   const pinMenu = (key: string): MenuItem[] => {
     const at = shownPins.indexOf(key);
     return [
+      { label: "Rename…", onSelect: () => setOpen({ kind: "rename", key }) },
       { label: at < 0 ? "Pin" : "Unpin", onSelect: () => setPins(togglePin(pins, key)) },
       { label: "Move up", hidden: at <= 0, onSelect: () => setPins(movePin(pins, shownPins, key, at - 1)) },
       {
@@ -247,11 +287,39 @@ export default function App() {
   }, [placed, selected]);
 
   const current: Placed | undefined = placed.find((p) => p.key === selected);
-  const currentSession = current
-    ? current.ws.sessions.some((s) => s.id === sessions[current.key])
-      ? sessions[current.key]
-      : defaultSession(current.ws)
-    : undefined;
+  const sessionOf = (p: Placed) =>
+    p.ws.sessions.some((s) => s.id === sessions[p.key]) ? sessions[p.key] : defaultSession(p.ws);
+  const currentSession = current ? sessionOf(current) : undefined;
+  // The workspace in front joins the kept ones; one not shown keeps the
+  // session it showed, so nothing attaches behind the developer's back.
+  useEffect(() => {
+    if (!current) return;
+    setKept((k) => (k[0] === current.key ? k : [current.key, ...k.filter((x) => x !== current.key)].slice(0, KEPT_PANES)));
+  }, [current?.key]);
+  useEffect(() => {
+    if (current && currentSession) shownSession.current.set(current.key, currentSession);
+  }, [current?.key, currentSession]);
+  const keptKeys = current ? [current.key, ...kept.filter((k) => k !== current.key)].slice(0, KEPT_PANES) : kept;
+  const keptPanes = keptKeys.flatMap((k) => placed.find((p) => p.key === k) ?? []);
+  const workspacesInFront = view === "workspaces" && !hostPage;
+
+  // A port of a host, in the browser: a remote host's is forwarded first (D-046).
+  async function openPort(host: string, port: number, path = "/") {
+    const local = payload?.hosts.find((h) => h.name === host)?.describe === "this Mac";
+    if (!local) {
+      await invoke("forward_add", {
+        host,
+        direction: "to_local",
+        listenPort: port,
+        targetHost: null,
+        targetPort: port,
+        pinned: false,
+      }).catch((e) => {
+        if (!String(e).includes("already")) throw e;
+      });
+    }
+    await openUrl(`http://127.0.0.1:${port}${path}`);
+  }
 
   return (
     <div className={IS_MAC ? "app mac" : "app"} style={{ "--sidebar-width": `${sidebarWidth}px` } as CSSProperties}>
@@ -323,23 +391,7 @@ export default function App() {
               setView("workspaces");
             }}
             grip={sidebarGrip}
-            onOpenPreview={async (host, port, path) => {
-              // A remote host's preview: forward just that port (D-046).
-              const local = payload?.hosts.find((h) => h.name === host)?.describe === "this Mac";
-              if (!local) {
-                await invoke("forward_add", {
-                  host,
-                  direction: "to_local",
-                  listenPort: port,
-                  targetHost: null,
-                  targetPort: port,
-                  pinned: false,
-                }).catch((e) => {
-                  if (!String(e).includes("already")) throw e;
-                });
-              }
-              await openUrl(`http://127.0.0.1:${port}${path}`);
-            }}
+            onOpenPreview={openPort}
           />
         </div>
         <div className="view" id="view-workspaces" role="tabpanel" aria-labelledby="view-tab-workspaces" hidden={view !== "workspaces"}>
@@ -404,18 +456,7 @@ export default function App() {
             forwards={forwards}
             onRemoved={() => setHostPage(null)}
           />
-        ) : current ? (
-          <WorkspacePane
-            key={current.key}
-            placed={current}
-            session={currentSession}
-            onSession={(id) => setSessions((m) => ({ ...m, [current.key]: id }))}
-            now={now}
-            theme={theme}
-            appVersion={version}
-            pinItems={pinMenu(current.key)}
-          />
-        ) : (
+        ) : current ? null : (
           <main className="pane empty">
             <div className="drag-strip" data-tauri-drag-region />
             <h1 className="empty-title">Start your first workspace</h1>
@@ -427,8 +468,61 @@ export default function App() {
             </div>
           </main>
         )}
+        {payload &&
+          !payload.configError &&
+          keptPanes.map((p) => (
+            <WorkspacePane
+              key={p.key}
+              placed={p}
+              shown={!hostPage && p.key === current?.key}
+              active={workspacesInFront && p.key === current?.key}
+              session={p.key === current?.key ? currentSession : (shownSession.current.get(p.key) ?? sessionOf(p))}
+              onSession={(id) => setSessions((m) => ({ ...m, [p.key]: id }))}
+              now={now}
+              theme={theme}
+              appVersion={version}
+              pinItems={pinMenu(p.key)}
+              onOpenPort={(port) => void openPort(p.host.name, port).catch(() => {})}
+              onOpenTask={(id) => {
+                setFeatureFocus({ key: `${p.host.name}/${id}`, at: Date.now() });
+                setView("features");
+              }}
+            />
+          ))}
         </div>
       </div>
+      {open?.kind === "quick" && (
+        <QuickOpen
+          placed={placed}
+          onOpen={(key) => {
+            wanted.current = key;
+            setSelected(key);
+            setHostPage(null);
+            setView("workspaces");
+            setOpen(null);
+          }}
+          onClose={() => setOpen(null)}
+        />
+      )}
+      {open?.kind === "rename" &&
+        (() => {
+          const p = placed.find((x) => x.key === open.key);
+          if (!p) return null;
+          return (
+            <RenameDialog
+              title={`Rename ${p.ws.name}`}
+              initial={p.ws.name}
+              onRename={async (name) => {
+                try {
+                  await invoke("workspace_rename", { host: p.host.name, workspace: p.ws.id, name });
+                } catch (e) {
+                  throw explain(p.host.name, e);
+                }
+              }}
+              onClose={() => setOpen(null)}
+            />
+          );
+        })()}
       {open?.kind === "add" && <AddHostDialog version={version} onClose={() => setOpen(null)} />}
       {open?.kind === "settings" && (
         <SettingsDialog hosts={connectedHosts} defaultHost={current?.host.name} onClose={() => setOpen(null)} />

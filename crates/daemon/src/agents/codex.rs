@@ -459,6 +459,7 @@ mod tests {
             state_since: Utc::now(),
             last_message: None,
             prompt: prompt.map(Into::into),
+            blocker: None,
         }
     }
 

@@ -274,6 +274,27 @@ fn archive_hides_a_workspace_until_unarchived() {
     assert!(cli.ok(&["ls"]).contains("old"));
 }
 
+/// `otter ws rename` and `otter session rename` (D-101): the same workspace
+/// and session, under the new names.
+#[test]
+fn workspaces_and_sessions_are_renamed() {
+    let home = Home::new();
+    let cli = Cli::new();
+    cli.add_local_host("here", &home);
+    cli.ok(&["new", "before", "--no-agent"]);
+    let id = cli.workspace("before")["id"].clone();
+    let out = cli.ok(&["ws", "rename", "before", "after"]);
+    assert!(out.contains("renamed workspace before to after"), "{out}");
+    assert_eq!(cli.workspace("after")["id"], id);
+    let out = cli.ok(&["session", "rename", "after/shell", "build"]);
+    assert!(
+        out.contains("renamed session after/shell to build"),
+        "{out}"
+    );
+    let ws = cli.workspace("after");
+    assert_eq!(ws["sessions"][0]["name"], "build");
+}
+
 #[test]
 fn brief_is_set_shown_and_edited() {
     let home = Home::new();

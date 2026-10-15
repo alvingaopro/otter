@@ -37,7 +37,9 @@ record it in [`decisions.md`](decisions.md) first.
   `attach_is_disposable_across_daemon_restart`,
   `attach_ends_cleanly_when_the_session_restarts_or_is_deleted`,
   `attach_shows_existing_screen_and_survives_repeated_cycles`; manually
-  verified by freezing the remote sshd mid-attach (D-017).
+  verified by freezing the remote sshd mid-attach (D-017). An attach is
+  looking, not answering: it settles a finished turn, never an approval or
+  a question (D-099) — `looking_at_a_prompt_does_not_answer_it`.
 
 ### 4. The control plane does not own agent process lifetime.
 
