@@ -2999,3 +2999,35 @@ agents and Otter take a task's brief, never a workspace's.
 - A task's own worktree (`feature.start` in a workspace of its own) is
   described by the task's title, and "The feature … in a worktree of its
   own" moves to the description.
+
+## D-099 — Looking at a session doesn't answer it (2026-10-15)
+
+Amends D-014's "resolved by attaching". In the app, showing a session's
+terminal attaches, so selecting a workspace was enough to clear its "needs
+you": click the notification, glance, click away, and the approval was gone
+from the sidebar, the tray and the Inbox while the agent still waited.
+Attention is raised only on a transition, so nothing brought it back.
+Reproduced with an e2e test (the review of the notification plan).
+
+- **Attaching settles only what was there to be seen:** a finished turn
+  (`review`) and a completed command (`completion`). An approval, a question
+  and a failure stay until they are answered:
+  - the agent moves on (working again, idle, exited);
+  - the developer sends to the session (`session.write`: typing the answer
+    is answering);
+  - the session is restarted, stopped or deleted;
+  - it is marked handled (`otter ack`, the banner's button).
+- **A blocked agent on another prompt raises again.** While it stays
+  `Blocked`, a different blocker (a second approval that came before a
+  reconcile saw the agent at work in between) replaces the item. The same
+  blocker doesn't, so an item marked handled stays handled.
+  `AgentInfo.blocker` remembers what was raised (additive, serde default).
+  An inferred blocker that the agent's hooks then describe is replaced by the
+  description.
+- **The app's half:** its terminals stay attached across workspace switches
+  (D-100), so switching back to one no longer attaches. Showing a workspace
+  again settles its current session's `review`/`completion` the way attaching
+  does, by attention id.
+- Not done: the rest of the notification plan. That covers telling a
+  confirmed blocker from an inferred one, and suppressing alerts per session
+  rather than per workspace.

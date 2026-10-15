@@ -293,6 +293,8 @@ fn observe_agent(ws: &mut Workspace, i: usize, seen: &Seen<'_>, events: &mut Vec
         });
         let (id, name) = (session.id.clone(), session.name.clone());
         let message = info.last_message.clone();
+        info.blocker = (next == AgentState::Blocked)
+            .then(|| attention::blocked_item(&name, blocker.as_ref()).1);
         events.extend(attention::on_agent_state(
             ws,
             &id,
@@ -301,6 +303,16 @@ fn observe_agent(ws: &mut Workspace, i: usize, seen: &Seen<'_>, events: &mut Vec
             next,
             message.as_deref(),
         ));
+    } else if let (AgentState::Blocked, Some(b)) = (next, blocker.as_ref()) {
+        // Still blocked, on another prompt (D-099): the next approval came
+        // before a reconcile saw the agent at work in between.
+        let (kind, summary) = attention::blocked_item(&session.name, Some(b));
+        if info.blocker.as_deref() != Some(summary.as_str()) {
+            let id = session.id.clone();
+            info.blocker = Some(summary.clone());
+            changed = true;
+            events.extend(attention::raise(ws, Some(&id), kind, summary));
+        }
     }
     if changed {
         ws.sessions[i].agent = Some(info);

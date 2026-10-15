@@ -160,7 +160,8 @@ impl Daemon {
                 .map_err(internal)?;
             (ws_id, session)
         };
-        self.engage(&ws_id, &session.id).await;
+        self.engage(&ws_id, &session.id, attention::Engaged::Answered)
+            .await;
         Ok(())
     }
 
@@ -407,6 +408,7 @@ impl Daemon {
             state_since: Utc::now(),
             last_message: None,
             prompt: spec.prompt.clone(),
+            blocker: None,
         });
         let session = Session {
             id: SessionId::generate(),

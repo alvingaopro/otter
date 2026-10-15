@@ -2,10 +2,12 @@
 //!
 //! Attention items are raised from state transitions — an agent finishing a
 //! turn or waiting on an approval or a question, a task or service failing, preparation
-//! failing — and resolved when the developer engages with the session (attach,
-//! send, restart, stop), when the situation changes (the agent starts working
-//! again), or explicitly. Each session has at most one open item; a newer one
-//! replaces it.
+//! failing — and from a blocked agent moving on to another prompt. They are
+//! resolved when the situation changes (the agent starts working again), when
+//! the developer answers (sends to the session, restarts, stops it), or
+//! explicitly. Looking at a session (attaching) resolves only what looking
+//! settles — a finished turn, a completed command (D-099). Each session has at
+//! most one open item; a newer one replaces it.
 
 use std::sync::Arc;
 
@@ -112,6 +114,26 @@ pub fn on_execution_ended(ws: &mut Workspace, session: &Session) -> Vec<Event> {
     raise(ws, Some(&session.id), kind, summary)
 }
 
+/// The kind and summary of a blocked agent's item: what it said it waits for,
+/// or a guess from a still turn (agents::settle).
+pub fn blocked_item(name: &str, blocker: Option<&Blocker>) -> (AttentionKind, String) {
+    match blocker {
+        Some(b) => (
+            b.kind,
+            match (b.kind, &b.detail) {
+                (AttentionKind::Question, Some(q)) => format!("{name} asks: {q}"),
+                (AttentionKind::Question, None) => format!("{name} has a question"),
+                (_, Some(what)) => format!("{name} needs your approval: {what}"),
+                (_, None) => format!("{name} needs your approval"),
+            },
+        ),
+        None => (
+            AttentionKind::Approval,
+            format!("{name} seems to be waiting for you (approval or question?)"),
+        ),
+    }
+}
+
 /// Attention for an agent state transition.
 pub fn on_agent_state(
     ws: &mut Workspace,
@@ -130,29 +152,29 @@ pub fn on_agent_state(
             raise(ws, Some(session_id), AttentionKind::Review, summary)
         }
         AgentState::Blocked => {
-            let (kind, summary) = match blocker {
-                // The agent said what it waits for.
-                Some(b) => (
-                    b.kind,
-                    match (b.kind, &b.detail) {
-                        (AttentionKind::Question, Some(q)) => format!("{name} asks: {q}"),
-                        (AttentionKind::Question, None) => format!("{name} has a question"),
-                        (_, Some(what)) => format!("{name} needs your approval: {what}"),
-                        (_, None) => format!("{name} needs your approval"),
-                    },
-                ),
-                // Inferred from quiet (agents::settle).
-                None => (
-                    AttentionKind::Approval,
-                    format!("{name} seems to be waiting for you (approval or question?)"),
-                ),
-            };
+            let (kind, summary) = blocked_item(name, blocker);
             raise(ws, Some(session_id), kind, summary)
         }
         // Back at work, or the prompt was declined / the turn interrupted.
         AgentState::Working | AgentState::Idle => resolve_session(ws, session_id),
         AgentState::Starting | AgentState::Exited => Vec::new(),
     }
+}
+
+/// How the developer engaged with a session.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Engaged {
+    /// Attached: they saw it. That settles what was only to be seen.
+    Looked,
+    /// Sent it text: whatever it asked, they answered.
+    Answered,
+}
+
+/// Seeing it is all it asks (D-099): a finished turn, a completed command.
+/// An approval, a question or a failure waits for an answer — the agent
+/// moving on, the developer typing, restarting, or marking it handled.
+pub fn settled_by_looking(kind: AttentionKind) -> bool {
+    matches!(kind, AttentionKind::Review | AttentionKind::Completion)
 }
 
 impl Daemon {
@@ -182,18 +204,24 @@ impl Daemon {
         Ok(n)
     }
 
-    /// The developer engaged with a session (attached, typed into it…):
-    /// whatever it was asking for has been seen.
+    /// The developer engaged with a session: looked at it (attached) or
+    /// answered it (sent to it). See [`Engaged`].
     pub(crate) async fn engage(
         self: &Arc<Self>,
         ws_id: &otter_core::WorkspaceId,
         session_id: &SessionId,
+        how: Engaged,
     ) {
         let mut store = self.store.lock().await;
         let Some(ws) = store.workspace_mut(ws_id.as_str()) else {
             return;
         };
-        let events = resolve_session(ws, session_id);
+        let events = match how {
+            Engaged::Answered => resolve_session(ws, session_id),
+            Engaged::Looked => resolve(ws, |a| {
+                a.session_id.as_ref() == Some(session_id) && settled_by_looking(a.kind)
+            }),
+        };
         if events.is_empty() {
             return;
         }

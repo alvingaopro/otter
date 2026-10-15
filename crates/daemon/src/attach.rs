@@ -66,9 +66,13 @@ pub async fn run(
         }
     };
     respond(&mut w, id, Ok(serde_json::to_value(&target.ready)?)).await?;
-    // Looking at the session counts as seeing whatever it was asking for.
+    // Looking at the session settles what was only to be seen (D-099).
     daemon
-        .engage(&target.workspace_id, &target.ready.session_id)
+        .engage(
+            &target.workspace_id,
+            &target.ready.session_id,
+            crate::attention::Engaged::Looked,
+        )
         .await;
     tracing::info!(execution = %target.ready.execution_id, "attach started");
 

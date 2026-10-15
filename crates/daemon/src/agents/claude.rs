@@ -668,6 +668,7 @@ mod tests {
             state_since: Utc::now(),
             last_message: None,
             prompt: Some("fix it".into()),
+            blocker: None,
         };
         let settings = session_dir
             .join(SETTINGS_FILE)
@@ -796,6 +797,7 @@ mod tests {
             state_since: started,
             last_message: None,
             prompt: None,
+            blocker: None,
         };
         let seen = |since| {
             Some(Screen {
@@ -968,6 +970,7 @@ mod tests {
             state_since: started,
             last_message: None,
             prompt: None,
+            blocker: None,
         };
         let obs = ClaudeCode.observe(&ctx, &agent);
         assert_eq!(obs.state, Some(AgentState::Blocked));

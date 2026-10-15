@@ -1504,7 +1504,9 @@ fn tmux_dir() -> String {
 /// 2.1.295 does (event JSON on stdin), and plays a scripted turn.
 /// `--resume <id>` continues that file. Modes: `approval` / `question` stop
 /// at a permission prompt / AskUserQuestion until a line is typed;
-/// `nohooks` ignores the settings (hooks disabled) and stops at a prompt.
+/// `twoprompts` asks again, for another command, right after the first is
+/// answered; `nohooks` ignores the settings (hooks disabled) and stops at a
+/// prompt.
 const FAKE_CLAUDE: &str = r#"#!/bin/sh
 if [ "$1" = --version ]; then echo "2.0.0-fake (Claude Code)"; exit 0; fi
 # Managed runs (`claude -p`, stream-json): fake_claude_stream.sh.
@@ -1549,6 +1551,19 @@ case "$FAKE_CODEX_MODE" in
     hook PreToolUse ',"tool_name":"Bash","tool_input":{"command":"touch z","description":"Create empty file z"}'
     hook PermissionRequest ',"tool_name":"Bash","tool_input":{"command":"touch z","description":"Create empty file z"}'
     echo "Do you want to proceed?"
+    read answer
+    hook PostToolUse ',"tool_name":"Bash","tool_response":{"stdout":""}'
+    ;;
+  twoprompts)
+    rec '{"type":"assistant","timestamp":"'$(now)'","message":{"role":"assistant","stop_reason":"tool_use","content":[{"type":"tool_use","name":"Bash"}]}}'
+    hook PreToolUse ',"tool_name":"Bash","tool_input":{"command":"touch z","description":"Create empty file z"}'
+    hook PermissionRequest ',"tool_name":"Bash","tool_input":{"command":"touch z","description":"Create empty file z"}'
+    echo "Do you want to proceed?"
+    read answer
+    hook PostToolUse ',"tool_name":"Bash","tool_response":{"stdout":""}'
+    hook PreToolUse ',"tool_name":"Bash","tool_input":{"command":"rm y","description":"Remove file y"}'
+    hook PermissionRequest ',"tool_name":"Bash","tool_input":{"command":"rm y","description":"Remove file y"}'
+    echo "Do you want to proceed again?"
     read answer
     hook PostToolUse ',"tool_name":"Bash","tool_response":{"stdout":""}'
     ;;
@@ -1921,6 +1936,70 @@ async fn claude_code_prompts_come_from_its_hooks() {
         .await
         .unwrap();
     wait_agent(host, "ask", "claude", AgentState::WaitingForInput).await;
+}
+
+/// Looking at a session doesn't answer it (D-099): an approval stays open
+/// while attached and after; answered in the terminal, the next prompt is
+/// what needs the developer, even when no reconcile saw the agent at work in
+/// between. A finished turn is settled by looking.
+#[tokio::test]
+async fn looking_at_a_prompt_does_not_answer_it() {
+    use otter_core::{AgentState, AttentionKind};
+    let fake = fake_codex_host("twoprompts").await;
+    let host = &fake.host;
+    create(host, "look", Some(vec![SessionSpec::agent("claude")])).await;
+    wait_agent(host, "look", "claude", AgentState::Blocked).await;
+    let summaries = || async {
+        let w = host.conn().await.workspace_get("look").await.unwrap();
+        w.attention
+            .iter()
+            .map(|a| a.summary.clone())
+            .collect::<Vec<_>>()
+    };
+    let first = "claude needs your approval: Bash: Create empty file z";
+    eventually("the first prompt needs the developer", || async {
+        (summaries().await == [first]).then_some(())
+    })
+    .await;
+
+    let (mut reader, mut writer) = attach(host, "look", "claude").await;
+    read_until(&mut reader, "proceed?").await;
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    assert_eq!(
+        summaries().await,
+        [first],
+        "attaching is looking, not answering"
+    );
+
+    // Answered in the terminal (not `session.write`): the second prompt.
+    send(&mut writer, "1\r").await;
+    read_until(&mut reader, "proceed again?").await;
+    eventually("the second prompt needs the developer", || async {
+        (summaries().await == ["claude needs your approval: Bash: Remove file y"]).then_some(())
+    })
+    .await;
+    writer.send(&Frame::Detach).await.unwrap();
+    read_exit(&mut reader).await;
+    let ws = host.conn().await.workspace_get("look").await.unwrap();
+    assert_eq!(ws.attention.len(), 1, "detaching leaves it too");
+    assert_eq!(ws.attention[0].kind, AttentionKind::Approval);
+
+    // The turn ends: looking at it settles the review.
+    host.conn()
+        .await
+        .session_write("look", "claude", "1", true)
+        .await
+        .unwrap();
+    let ws = wait_agent(host, "look", "claude", AgentState::WaitingForInput).await;
+    assert_eq!(ws.attention[0].kind, AttentionKind::Review);
+    let (mut reader, mut writer) = attach(host, "look", "claude").await;
+    read_until(&mut reader, "done").await;
+    eventually("looking settles the review", || async {
+        summaries().await.is_empty().then_some(())
+    })
+    .await;
+    writer.send(&Frame::Detach).await.unwrap();
+    read_exit(&mut reader).await;
 }
 
 #[tokio::test]

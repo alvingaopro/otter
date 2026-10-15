@@ -505,6 +505,10 @@ pub struct AgentInfo {
     /// Initial prompt, used on the first start only.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prompt: Option<String>,
+    /// While `Blocked`: what attention was raised for (D-099), so another
+    /// prompt before the state moves raises again, and the same one doesn't.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub blocker: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
