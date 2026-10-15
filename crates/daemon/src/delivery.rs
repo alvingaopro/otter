@@ -663,7 +663,7 @@ mod tests {
         f.verify_command = Some("make test".into());
         f.evidence.push(Evidence {
             id: otter_core::EvidenceId::generate(),
-            task_id: None,
+            step_id: None,
             criterion_id: None,
             kind: EvidenceKind::Test,
             title: "`make test` (exit 0)".into(),

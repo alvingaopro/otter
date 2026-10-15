@@ -25,7 +25,7 @@ use chrono::Utc;
 use otter_core::feature::{
     Decider, DecisionKind, DecisionStatus, FEATURE_EVENT_SCHEMA, FEATURE_SCHEMA, Feature,
     FeatureAction, FeatureEvent, FeatureEventRecord, FeatureStatus, Message, MessageRole,
-    TaskStatus,
+    StepStatus,
 };
 use otter_core::{FeatureId, MessageId, Timestamp, WorkspaceId};
 use otter_protocol::feature::{FeatureAct, FeatureCreate, FeatureEvents, FeatureSend};
@@ -379,16 +379,16 @@ pub(crate) fn check_text(what: &str, text: &str, max: usize) -> RpcResult<()> {
 }
 
 /// Where a paused, failed or unblocked feature picks up: planning until
-/// there is a plan, verifying once every task is done, else implementing.
+/// there is a plan, verifying once every step is done, else implementing.
 pub fn resume_status(f: &Feature) -> FeatureStatus {
     // Only the planning turn (D-064), or planning again (D-084): still
     // planning — the work there is was planned for the old goal.
-    if f.replan || f.tasks.iter().all(|t| t.planning) {
+    if f.replan || f.steps.iter().all(|t| t.planning) {
         FeatureStatus::Planning
     } else if f
-        .tasks
+        .steps
         .iter()
-        .all(|t| matches!(t.status, TaskStatus::Done | TaskStatus::Skipped))
+        .all(|t| matches!(t.status, StepStatus::Done | StepStatus::Skipped))
     {
         FeatureStatus::Verifying
     } else {
@@ -451,9 +451,9 @@ pub fn apply_action(
                 return Err(RpcError::conflict("only a failed feature can be retried"));
             }
             f.budget.iterations_used = 0;
-            for t in &mut f.tasks {
-                if t.status == TaskStatus::Failed {
-                    t.status = TaskStatus::Pending;
+            for t in &mut f.steps {
+                if t.status == StepStatus::Failed {
+                    t.status = StepStatus::Pending;
                     t.attempts = 0;
                 }
             }
@@ -532,7 +532,7 @@ pub fn apply_action(
                 .grant
                 .clone()
                 .filter(|_| d.status == DecisionStatus::Approved);
-            let (kind, task, status) = (d.kind, d.task_id.clone(), d.status);
+            let (kind, step, status) = (d.kind, d.step_id.clone(), d.status);
             changes.push(
                 Change::new(FeatureEvent::DecisionResolved {
                     decision_id: decision_id.clone(),
@@ -547,18 +547,18 @@ pub fn apply_action(
                 f.grants.push(g);
             }
             changes.extend(f.resume_waiting_runs(now).into_iter().map(Change::new));
-            // Cut-off work (D-061): either way its task is ready again, and
+            // Cut-off work (D-061): either way its step is ready again, and
             // its next run starts over. Declined, nothing starts until the
             // developer resumes.
             if kind == DecisionKind::Recovery {
-                if let Some(t) = task.as_ref().and_then(|t| f.task_mut(t))
-                    && t.status == TaskStatus::Blocked
+                if let Some(t) = step.as_ref().and_then(|t| f.step_mut(t))
+                    && t.status == StepStatus::Blocked
                 {
-                    t.status = TaskStatus::Pending;
+                    t.status = StepStatus::Pending;
                     changes.push(
-                        Change::new(FeatureEvent::TaskChanged {
-                            task_id: t.id.clone(),
-                            status: TaskStatus::Pending,
+                        Change::new(FeatureEvent::StepChanged {
+                            step_id: t.id.clone(),
+                            status: StepStatus::Pending,
                         })
                         .because(command_id),
                     );
@@ -682,23 +682,23 @@ pub fn replan(f: &mut Feature, why: &str, now: Timestamp) -> Vec<Change> {
         return vec![];
     }
     // Revising a plan: there is work planned (an answered question had none).
-    f.replan = f.tasks.iter().any(|t| !t.planning);
+    f.replan = f.steps.iter().any(|t| !t.planning);
     let mut changes = Vec::new();
     // A plan sent back but not yet looked at again (`Pending` with the
     // review's points) is a fresh look now, at the new goal.
     if crate::controller::plan_turn()
-        && let Some(t) = f.tasks.iter_mut().find(|t| t.planning)
+        && let Some(t) = f.steps.iter_mut().find(|t| t.planning)
         && matches!(
             t.status,
-            TaskStatus::Done | TaskStatus::Failed | TaskStatus::Skipped | TaskStatus::Pending
+            StepStatus::Done | StepStatus::Failed | StepStatus::Skipped | StepStatus::Pending
         )
     {
-        t.status = TaskStatus::Pending;
+        t.status = StepStatus::Pending;
         t.detail = None;
         t.last_error = None;
-        changes.push(Change::new(FeatureEvent::TaskChanged {
-            task_id: t.id.clone(),
-            status: TaskStatus::Pending,
+        changes.push(Change::new(FeatureEvent::StepChanged {
+            step_id: t.id.clone(),
+            status: StepStatus::Pending,
         }));
     }
     for d in f.decisions.iter_mut().filter(|d| {
@@ -1040,7 +1040,7 @@ impl Daemon {
                     .unwrap_or_else(|| p.command_id.clone());
                 self.redirect_runs(&id, &message, text.trim()).await
             }
-            // The plan is about to change: the task in progress may not be in it.
+            // The plan is about to change: the step in progress may not be in it.
             FeatureAction::RequestChanges { .. } => {
                 self.stop_runs(&id, RunState::Cancelled, "The goal changed")
                     .await
@@ -1234,8 +1234,8 @@ fn in_use(s: &otter_core::Session) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use otter_core::feature::{DecisionKind, DecisionRequest, Risk, Task};
-    use otter_core::{DecisionId, TaskId};
+    use otter_core::feature::{DecisionKind, DecisionRequest, Risk, Step};
+    use otter_core::{DecisionId, StepId};
 
     fn store() -> (tempfile::TempDir, FeatureStore) {
         let dir = tempfile::tempdir().unwrap();
@@ -1256,9 +1256,9 @@ mod tests {
         .feature
     }
 
-    fn task(title: &str, status: TaskStatus, planning: bool) -> Task {
-        Task {
-            id: TaskId::generate(),
+    fn step(title: &str, status: StepStatus, planning: bool) -> Step {
+        Step {
+            id: StepId::generate(),
             title: title.into(),
             detail: None,
             status,
@@ -1280,20 +1280,20 @@ mod tests {
         // An answered question: nothing was planned, so nothing is revised.
         let mut f = Feature::new("t".into(), "r".into(), now);
         f.status = FeatureStatus::Done;
-        f.tasks = vec![task("Look", TaskStatus::Done, true)];
+        f.steps = vec![step("Look", StepStatus::Done, true)];
         replan(&mut f, "more", now);
         assert_eq!(f.status, FeatureStatus::Planning);
         assert!(!f.replan);
-        assert_eq!(f.tasks[0].status, TaskStatus::Pending);
+        assert_eq!(f.steps[0].status, StepStatus::Pending);
         // Work planned, a revised plan waiting on the developer.
         let mut f = Feature::new("t".into(), "r".into(), now);
         f.status = FeatureStatus::Blocked;
-        let mut look = task("Look", TaskStatus::Done, true);
+        let mut look = step("Look", StepStatus::Done, true);
         look.detail = Some("- vague\n".into());
-        f.tasks = vec![look, task("Build", TaskStatus::Done, false)];
+        f.steps = vec![look, step("Build", StepStatus::Done, false)];
         f.decisions.push(DecisionRequest {
             id: DecisionId::generate(),
-            task_id: Some(f.tasks[0].id.clone()),
+            step_id: Some(f.steps[0].id.clone()),
             run_id: None,
             kind: DecisionKind::PlanApproval,
             risk: Risk::Low,
@@ -1311,20 +1311,20 @@ mod tests {
         });
         replan(&mut f, "changed", now);
         assert!(f.replan);
-        assert_eq!(f.tasks[0].status, TaskStatus::Pending);
-        assert_eq!(f.tasks[0].detail, None, "a fresh look, not a revision");
+        assert_eq!(f.steps[0].status, StepStatus::Pending);
+        assert_eq!(f.steps[0].detail, None, "a fresh look, not a revision");
         assert_eq!(f.decisions[0].status, DecisionStatus::Cancelled);
         // All the work done, but planning again: still planning.
         assert_eq!(resume_status(&f), FeatureStatus::Planning);
         f.replan = false;
-        f.tasks[0].status = TaskStatus::Done;
+        f.steps[0].status = StepStatus::Done;
         assert_eq!(resume_status(&f), FeatureStatus::Verifying);
         // Sent back by the review, then the goal changed before the agent
         // looked again: a fresh look, not the old points.
-        f.tasks[0].status = TaskStatus::Pending;
-        f.tasks[0].detail = Some("- vague\n".into());
+        f.steps[0].status = StepStatus::Pending;
+        f.steps[0].detail = Some("- vague\n".into());
         replan(&mut f, "changed again", now);
-        assert_eq!(f.tasks[0].detail, None);
+        assert_eq!(f.steps[0].detail, None);
     }
 
     #[test]
@@ -1411,11 +1411,11 @@ mod tests {
         let d2 = dec.clone();
         s.apply(&f.id, None, move |f, now| {
             f.transition(FeatureStatus::Planning, None, now).unwrap();
-            f.tasks.push(Task {
-                id: TaskId::generate(),
+            f.steps.push(Step {
+                id: StepId::generate(),
                 title: "t".into(),
                 detail: None,
-                status: TaskStatus::Running,
+                status: StepStatus::Running,
                 depends_on: vec![],
                 workspace_id: None,
                 session_id: None,
@@ -1428,7 +1428,7 @@ mod tests {
             f.transition(FeatureStatus::Blocked, None, now).unwrap();
             f.decisions.push(DecisionRequest {
                 id: d2,
-                task_id: None,
+                step_id: None,
                 run_id: None,
                 kind: DecisionKind::ToolPermission,
                 risk: Risk::High,
@@ -1468,7 +1468,7 @@ mod tests {
         assert!(again.is_err());
     }
 
-    /// A feature blocked on a recovery decision for its blocked task.
+    /// A feature blocked on a recovery decision for its blocked step.
     fn awaiting_recovery(s: &mut FeatureStore, cmd: &str) -> (Feature, DecisionId) {
         let f = new_feature(s, cmd);
         let dec = DecisionId::generate();
@@ -1476,12 +1476,12 @@ mod tests {
         let f = s
             .apply(&f.id, None, move |f, now| {
                 f.transition(FeatureStatus::Planning, None, now).unwrap();
-                let task = TaskId::generate();
-                f.tasks.push(Task {
-                    id: task.clone(),
+                let step = StepId::generate();
+                f.steps.push(Step {
+                    id: step.clone(),
                     title: "t".into(),
                     detail: None,
-                    status: TaskStatus::Blocked,
+                    status: StepStatus::Blocked,
                     depends_on: vec![],
                     workspace_id: None,
                     session_id: None,
@@ -1494,7 +1494,7 @@ mod tests {
                 f.transition(FeatureStatus::Blocked, None, now).unwrap();
                 f.decisions.push(DecisionRequest {
                     id: d2,
-                    task_id: Some(task),
+                    step_id: Some(step),
                     run_id: None,
                     kind: DecisionKind::Recovery,
                     risk: Risk::High,
@@ -1538,7 +1538,7 @@ mod tests {
         let out = decide(&mut s, &f, &dec, true);
         assert_eq!(out.decisions[0].status, DecisionStatus::Approved);
         assert_eq!(out.decisions[0].decided_by, Some(Decider::User));
-        assert_eq!(out.tasks[0].status, TaskStatus::Pending);
+        assert_eq!(out.steps[0].status, StepStatus::Pending);
         assert_eq!(out.status, FeatureStatus::Implementing);
     }
 
@@ -1549,9 +1549,9 @@ mod tests {
         let out = decide(&mut s, &f, &dec, false);
         assert_eq!(out.decisions[0].status, DecisionStatus::Denied);
         // Ready again, but nothing starts on its own.
-        assert_eq!(out.tasks[0].status, TaskStatus::Pending);
+        assert_eq!(out.steps[0].status, StepStatus::Pending);
         assert_eq!(out.status, FeatureStatus::Paused);
-        // Resuming carries on with the task.
+        // Resuming carries on with the step.
         let out = s
             .apply(&f.id, Some("c10"), |f, now| {
                 apply_action(f, &FeatureAction::Resume, "c10", now)

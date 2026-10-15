@@ -96,8 +96,9 @@ id_type!(
     "trg_"
 );
 id_type!(
-    /// Identifies a [`crate::feature::Task`] within a feature's plan.
-    TaskId,
+    /// Identifies a [`crate::feature::Step`] of a plan. Keeps the `tk_`
+    /// prefix it had as a plan's "task" (D-107).
+    StepId,
     "tk_"
 );
 id_type!(

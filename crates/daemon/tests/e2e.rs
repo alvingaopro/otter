@@ -3462,7 +3462,7 @@ async fn a_feature_goes_from_request_to_review_with_evidence() {
     assert_eq!(gate("Local tests"), GateStatus::Passed);
     assert!(f.report.as_deref().unwrap().contains("## Unresolved risks"));
     // Planned, ran, reported, checked.
-    assert_eq!(f.tasks.len(), 1);
+    assert_eq!(f.steps.len(), 1);
     assert_eq!(f.verify_command.as_deref(), Some("make test"));
     assert!(
         f.verify_approved,
@@ -3568,19 +3568,19 @@ async fn a_feature_goes_from_request_to_review_with_evidence() {
         .await
         .unwrap();
     let f = wait_feature(&fake.host, &id, "back in review", |f| {
-        f.status == FeatureStatus::Review && f.tasks.len() == 2 && f.report.is_some()
+        f.status == FeatureStatus::Review && f.steps.len() == 2 && f.report.is_some()
     })
     .await;
-    assert_eq!(f.tasks[0].status, otter_core::feature::TaskStatus::Done);
+    assert_eq!(f.steps[0].status, otter_core::feature::StepStatus::Done);
     assert!(
-        f.tasks[1]
+        f.steps[1]
             .detail
             .as_deref()
             .unwrap()
             .contains("Also export JSON")
     );
-    assert_eq!(f.runs.len(), 2, "the done task wasn't redone");
-    // One conversation for the feature (D-064): the new task is a turn in it.
+    assert_eq!(f.runs.len(), 2, "the done step wasn't redone");
+    // One conversation for the feature (D-064): the new step is a turn in it.
     assert!(f.runs[0].provider_session_id.is_some());
     assert_eq!(f.runs[1].provider_session_id, f.runs[0].provider_session_id);
     assert_eq!(f.runs[1].conversation_id, f.runs[0].conversation_id);
@@ -3967,9 +3967,9 @@ async fn runs_survive_a_restart_and_follow_a_changing_goal() {
     })
     .await;
     assert_eq!(f.runs[2].state, RunState::Cancelled);
-    assert_eq!(f.tasks.len(), 1, "the unfinished task was replaced");
+    assert_eq!(f.steps.len(), 1, "the unfinished step was replaced");
     assert!(
-        f.tasks[0]
+        f.steps[0]
             .detail
             .as_deref()
             .unwrap()
@@ -4023,7 +4023,7 @@ async fn repeated_failures_stop_at_the_limit_and_the_plan_survives() {
             .any(|r| matches!(&r.event, FeatureEvent::LimitReached { limit } if limit == "loop"))
     );
     // The plan is kept: retrying starts from it with a fresh budget.
-    let tasks = f.tasks.clone();
+    let steps = f.steps.clone();
     let f = fake
         .host
         .conn()
@@ -4033,8 +4033,8 @@ async fn repeated_failures_stop_at_the_limit_and_the_plan_survives() {
         .unwrap();
     assert_eq!(f.status, FeatureStatus::Implementing);
     assert_eq!(
-        f.tasks.iter().map(|t| &t.id).collect::<Vec<_>>(),
-        tasks.iter().map(|t| &t.id).collect::<Vec<_>>()
+        f.steps.iter().map(|t| &t.id).collect::<Vec<_>>(),
+        steps.iter().map(|t| &t.id).collect::<Vec<_>>()
     );
     assert_eq!(f.budget.iterations_used, 0);
     // The earlier failures don't count against the retry: three new ones do.
@@ -4047,7 +4047,7 @@ async fn repeated_failures_stop_at_the_limit_and_the_plan_survives() {
 
 /// A check that can't run here (a missing command) is the environment's
 /// problem, not the work's (D-062): one verification, one message, blocked on
-/// the developer — no fix task, no more runs — until they fix it.
+/// the developer — no fix step, no more runs — until they fix it.
 #[tokio::test]
 async fn a_check_that_cant_run_blocks_on_the_developer_once() {
     use otter_core::feature::{
@@ -4082,7 +4082,7 @@ async fn a_check_that_cant_run_blocks_on_the_developer_once() {
     assert_eq!(f.runs.len(), 1);
     assert_eq!(f.budget.iterations_used, 1);
     assert!(
-        !f.tasks
+        !f.steps
             .iter()
             .any(|t| t.title == "Fix what verification found")
     );
@@ -4280,7 +4280,7 @@ async fn verification_stops_when_a_fix_changes_nothing() {
         f.status == FeatureStatus::Review && !f.gates.is_empty()
     })
     .await;
-    assert_eq!(f.runs.len(), 2, "the task, and one fix");
+    assert_eq!(f.runs.len(), 2, "the step, and one fix");
     // The fix is a turn in the same session (D-064).
     let sid = f.runs[0].provider_session_id.clone().unwrap();
     assert_eq!(f.runs[1].provider_session_id.as_deref(), Some(sid.as_str()));
@@ -4293,7 +4293,7 @@ async fn verification_stops_when_a_fix_changes_nothing() {
     assert!(!launches[0].contains("--resume"), "{log}");
     assert!(launches[1].contains(&format!("--resume {sid}")), "{log}");
     assert_eq!(
-        f.tasks
+        f.steps
             .iter()
             .filter(|t| t.title == "Fix what verification found")
             .count(),
@@ -4371,7 +4371,7 @@ async fn a_feature_without_a_request_takes_the_developers_word() {
         .unwrap();
     let f = wait_feature(host, &id, "review", |f| f.status == FeatureStatus::Review).await;
     assert_eq!(f.request, "Add CSV export of the orders");
-    assert!(f.tasks[0].detail.as_deref().unwrap().contains("orders"));
+    assert!(f.steps[0].detail.as_deref().unwrap().contains("orders"));
     let c = conn
         .conversation_get(f.runs[0].conversation_id.as_ref().unwrap().as_str())
         .await
@@ -4412,7 +4412,7 @@ async fn a_feature_without_a_request_takes_the_developers_word() {
             .count()
     };
     assert_eq!(asked(&f), 1);
-    assert!(f.runs.is_empty() && f.tasks.is_empty());
+    assert!(f.runs.is_empty() && f.steps.is_empty());
     // A plain message answers it.
     conn.feature_send("msg-late", &id, "Export the orders as CSV")
         .await
@@ -4450,16 +4450,16 @@ async fn a_run_waits_for_the_agents_background_work() {
 }
 
 /// Planning starts with the coding agent reading the code (D-064): its
-/// proposal is the plan (no model to review it here), and the tasks are
+/// proposal is the plan (no model to review it here), and the steps are
 /// turns in the same conversation after it.
 #[tokio::test]
 async fn the_coding_agent_plans_first_in_the_features_conversation() {
-    use otter_core::feature::{FeatureStatus, MessageRole, Proof, TaskStatus};
+    use otter_core::feature::{FeatureStatus, MessageRole, Proof, StepStatus};
     let fake = fake_agent_host_with("ok", "rules", |_| vec![("OTTER_PLAN_TURN", "1".into())]).await;
     let host = &fake.host;
     let id = started_feature(host, "Add CSV export").await;
     let f = wait_feature(host, &id, "review", |f| f.status == FeatureStatus::Review).await;
-    let titles: Vec<&str> = f.tasks.iter().map(|t| t.title.as_str()).collect();
+    let titles: Vec<&str> = f.steps.iter().map(|t| t.title.as_str()).collect();
     assert_eq!(
         titles,
         [
@@ -4468,8 +4468,8 @@ async fn the_coding_agent_plans_first_in_the_features_conversation() {
             "Cover it with a test"
         ]
     );
-    assert!(f.tasks[0].planning && !f.tasks[1].planning);
-    assert!(f.tasks.iter().all(|t| t.status == TaskStatus::Done));
+    assert!(f.steps[0].planning && !f.steps[1].planning);
+    assert!(f.steps.iter().all(|t| t.status == StepStatus::Done));
     let criteria: Vec<(&str, Proof)> = f
         .acceptance
         .iter()
@@ -4500,11 +4500,11 @@ async fn the_coding_agent_plans_first_in_the_features_conversation() {
     assert!(
         !f.messages
             .iter()
-            .any(|m| m.role == MessageRole::Agent && m.text.contains("\"tasks\"")),
+            .any(|m| m.role == MessageRole::Agent && m.text.contains("\"steps\"")),
         "{:?}",
         f.messages
     );
-    // The first task's turn doesn't restate the request: the planning turn had it.
+    // The first step's turn doesn't restate the request: the planning turn had it.
     let c = host
         .conn()
         .await
@@ -4515,7 +4515,7 @@ async fn the_coding_agent_plans_first_in_the_features_conversation() {
     let texts: Vec<String> = c.turns.iter().map(|t| t.text()).collect();
     assert!(texts[0].contains("plan the work"), "{texts:#?}");
     assert!(
-        texts[1].contains("Your task (1 of 2): Write the exporter"),
+        texts[1].contains("Your step (1 of 2): Write the exporter"),
         "{texts:#?}"
     );
     assert!(!texts[1].contains("Request:"), "{texts:#?}");
@@ -4567,7 +4567,7 @@ async fn a_question_is_answered_and_a_change_after_it_is_planned() {
         "{:?}",
         f.status_reason
     );
-    let titles: Vec<&str> = f.tasks.iter().map(|t| t.title.as_str()).collect();
+    let titles: Vec<&str> = f.steps.iter().map(|t| t.title.as_str()).collect();
     assert_eq!(titles, ["Look at the code and plan the work"]);
     assert_eq!(f.runs.len(), 1);
     assert_eq!(f.budget.iterations_used, 0);
@@ -4587,7 +4587,7 @@ async fn a_question_is_answered_and_a_change_after_it_is_planned() {
         .await
         .unwrap();
     let f = wait_feature(host, &id, "review", |f| f.status == FeatureStatus::Review).await;
-    let titles: Vec<&str> = f.tasks.iter().map(|t| t.title.as_str()).collect();
+    let titles: Vec<&str> = f.steps.iter().map(|t| t.title.as_str()).collect();
     assert_eq!(
         titles,
         [
@@ -4604,7 +4604,7 @@ async fn a_question_is_answered_and_a_change_after_it_is_planned() {
     assert!(
         f.messages
             .iter()
-            .any(|m| m.role == MessageRole::Controller && m.text.starts_with("Plan: 2 task(s)")),
+            .any(|m| m.role == MessageRole::Controller && m.text.starts_with("Plan: 2 step(s)")),
         "{:?}",
         f.messages
     );
@@ -4640,9 +4640,9 @@ async fn a_plan_the_brain_faults_goes_back_once_then_to_the_developer() {
     assert!(d.user_only && d.run_id.is_none());
     assert!(d.detail.as_deref().unwrap().contains("too vague"), "{d:?}");
     assert!(
-        f.tasks.iter().all(|t| t.planning),
+        f.steps.iter().all(|t| t.planning),
         "nothing is set before the developer says: {:?}",
-        f.tasks
+        f.steps
     );
     assert_eq!(f.runs.len(), 2);
     assert_eq!(f.runs[1].provider_session_id, f.runs[0].provider_session_id);
@@ -4671,7 +4671,7 @@ async fn a_plan_the_brain_faults_goes_back_once_then_to_the_developer() {
         .await
         .unwrap();
     let f = wait_feature(host, &id, "planned", |f| {
-        f.tasks.iter().any(|t| t.title == "Write the exporter")
+        f.steps.iter().any(|t| t.title == "Write the exporter")
     })
     .await;
     assert!(
@@ -4701,7 +4701,7 @@ async fn a_failed_look_at_the_code_stops_planning() {
         "{:?}",
         f.status_reason
     );
-    assert!(f.tasks.iter().all(|t| t.planning), "{:?}", f.tasks);
+    assert!(f.steps.iter().all(|t| t.planning), "{:?}", f.steps);
     assert!(f.acceptance.is_empty() && f.verify_command.is_none());
     assert_eq!(f.runs.len(), 1);
     host.conn()
@@ -4711,10 +4711,10 @@ async fn a_failed_look_at_the_code_stops_planning() {
         .unwrap();
     // The conversation has the request: the look again (no PLANFAIL in it) plans.
     let f = wait_feature(host, &id, "planned", |f| {
-        f.tasks.iter().any(|t| t.title == "Write the exporter")
+        f.steps.iter().any(|t| t.title == "Write the exporter")
     })
     .await;
-    assert_eq!(f.runs[1].task_id, f.tasks[0].id);
+    assert_eq!(f.runs[1].step_id, f.steps[0].id);
     assert_eq!(f.runs[1].provider_session_id, f.runs[0].provider_session_id);
 }
 
@@ -4779,7 +4779,7 @@ async fn a_message_reaches_the_agent_once_across_turns() {
     assert_eq!(turns(&c, "Use tabs"), 1, "{texts:#?}");
     let fix = texts.last().unwrap();
     assert!(
-        fix.contains("Your task (2 of 2): Fix what verification found"),
+        fix.contains("Your step (2 of 2): Fix what verification found"),
         "{fix}"
     );
     assert!(
@@ -4861,7 +4861,7 @@ async fn a_run_lost_mid_tool_resumes_without_claiming_the_step() {
 #[tokio::test]
 async fn a_run_that_keeps_getting_lost_waits_for_the_developer() {
     use otter_core::feature::{
-        Decider, DecisionKind, DecisionStatus, FeatureAction, FeatureStatus, RunState, TaskStatus,
+        Decider, DecisionKind, DecisionStatus, FeatureAction, FeatureStatus, RunState, StepStatus,
     };
     let mut fake = fake_agent_host("ok", "rules").await;
     let id = started_feature(&fake.host, "Ship the preview DIE_ALWAYS").await;
@@ -4882,7 +4882,7 @@ async fn a_run_that_keeps_getting_lost_waits_for_the_developer() {
     assert_eq!(d.kind, DecisionKind::Recovery);
     assert!(d.user_only);
     assert!(d.detail.as_deref().unwrap().contains("3 runs in a row"));
-    assert_eq!(f.tasks[0].status, TaskStatus::Blocked);
+    assert_eq!(f.steps[0].status, StepStatus::Blocked);
     let f = wait_feature(&fake.host, &id, "blocked on the developer", |f| {
         f.status == FeatureStatus::Blocked
     })
@@ -4919,7 +4919,7 @@ async fn a_run_that_keeps_getting_lost_waits_for_the_developer() {
         .await
         .unwrap();
     assert_eq!(f.status, FeatureStatus::Paused);
-    assert_eq!(f.tasks[0].status, TaskStatus::Pending);
+    assert_eq!(f.steps[0].status, StepStatus::Pending);
     let d = f.decisions.iter().find(|x| x.id == d.id).unwrap();
     assert_eq!(
         (d.status, d.decided_by),
@@ -5159,7 +5159,7 @@ async fn a_broken_ui_fails_verification() {
             f.evidence
                 .iter()
                 .any(|e| e.kind == EvidenceKind::Browser && e.ok == Some(false))
-                && f.tasks
+                && f.steps
                     .iter()
                     .any(|t| t.title == "Fix what verification found")
         },
@@ -5373,11 +5373,11 @@ async fn a_feature_ships_as_a_pull_request_once_ci_is_green() {
         ]),
     );
     let f = wait_feature(&fake.host, &id, "remediation after failed CI", |f| {
-        f.tasks.iter().any(|t| t.title == "Fix what CI found")
+        f.steps.iter().any(|t| t.title == "Fix what CI found")
     })
     .await;
     let fix = f
-        .tasks
+        .steps
         .iter()
         .find(|t| t.title == "Fix what CI found")
         .unwrap();
@@ -5507,7 +5507,7 @@ async fn the_same_ci_failure_after_a_fix_goes_to_the_developer() {
     assert_eq!(over(&f2), 1);
     assert_eq!(f2.status, FeatureStatus::Review);
     assert_eq!(
-        f2.tasks
+        f2.steps
             .iter()
             .filter(|t| t.title == "Fix what CI found")
             .count(),
@@ -5666,7 +5666,7 @@ async fn flaky_ci_is_rerun_not_blamed_on_the_code() {
     .await;
     assert_eq!(f.status, FeatureStatus::Review);
     assert!(
-        !f.tasks.iter().any(|t| t.title == "Fix what CI found"),
+        !f.steps.iter().any(|t| t.title == "Fix what CI found"),
         "no remediation for a flake"
     );
     assert_eq!(f.delivery.as_ref().unwrap().reruns, 1);
@@ -6683,7 +6683,7 @@ async fn guidance_reaches_the_agent_once_across_a_pause_and_a_restart() {
     assert!(
         continuation.text().starts_with(
             "Your last turn was interrupted before it finished. \
-             Continue the task where you left off."
+             Continue the step where you left off."
         ),
         "{}",
         continuation.text()
@@ -7174,7 +7174,8 @@ async fn missed_occurrences_fire_once_after_a_restart() {
 #[ignore]
 async fn capture_v2_state() {
     use otter_core::feature::{FeatureAction, FeatureStatus};
-    let out = std::path::PathBuf::from(std::env::var("OTTER_CAPTURE_DIR").expect("OTTER_CAPTURE_DIR"));
+    let out =
+        std::path::PathBuf::from(std::env::var("OTTER_CAPTURE_DIR").expect("OTTER_CAPTURE_DIR"));
     let fake = fake_agent_host("ok", "rules").await;
     let host = &fake.host;
     let src = host.home().join("origin");
@@ -7214,7 +7215,10 @@ async fn capture_v2_state() {
     conn.feature_act("start-first", &first, FeatureAction::Start)
         .await
         .unwrap();
-    wait_feature(host, &first, "in review", |f| f.status == FeatureStatus::Review).await;
+    wait_feature(host, &first, "in review", |f| {
+        f.status == FeatureStatus::Review
+    })
+    .await;
     // One given a workspace of its own (`feature_id` on the workspace).
     let own = conn
         .feature_create(new("Own", "Add a LICENSE"))
@@ -7229,7 +7233,12 @@ async fn capture_v2_state() {
     tokio::time::sleep(Duration::from_secs(2)).await;
     let state = host.home().join("state");
     let copy = |from: &Path, to: &Path| {
-        let ok = Command::new("cp").arg("-R").arg(from).arg(to).status().unwrap();
+        let ok = Command::new("cp")
+            .arg("-R")
+            .arg(from)
+            .arg(to)
+            .status()
+            .unwrap();
         assert!(ok.success());
     };
     std::fs::create_dir_all(&out).unwrap();

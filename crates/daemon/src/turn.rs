@@ -96,7 +96,7 @@ pub fn context(f: &Feature) -> String {
         .map(|m| format!("{:?}: {}", m.role, crate::agents::excerpt(&m.text, 600)))
         .collect();
     let steps: Vec<String> = f
-        .tasks
+        .steps
         .iter()
         .enumerate()
         .map(|(i, t)| format!("{}. {} — {:?}", i + 1, t.title, t.status))

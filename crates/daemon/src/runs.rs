@@ -1,12 +1,12 @@
 //! Managed runs (D-044, D-055): one coding-agent run working on one feature
-//! task, bridged to the feature — progress becomes history, permission
+//! step, bridged to the feature — progress becomes history, permission
 //! requests become [`DecisionRequest`]s decided by policy, the Control Agent
 //! or the developer.
 //!
 //! A run serves a runtime conversation (`runtime::conversations`): the
 //! [`Actor`] owns the agent and the conversation's state; the bridge here
 //! listens to it and is the only thing that touches the feature. The
-//! feature's conversation continues across runs and tasks (a resumed run is a
+//! feature's conversation continues across runs and steps (a resumed run is a
 //! new run, a new generation, of the same conversation, D-064); a new one
 //! starts only when there is none yet, or its session is gone.
 //!
@@ -25,9 +25,9 @@ use otter_core::conversation::{
 };
 use otter_core::feature::{
     Decider, DecisionKind, DecisionRequest, DecisionStatus, Feature, FeatureEvent, FeatureStatus,
-    MessageRole, Risk, Run, RunState, TaskStatus,
+    MessageRole, Risk, Run, RunState, StepStatus,
 };
-use otter_core::{ConversationId, DecisionId, FeatureId, RunId, TaskId};
+use otter_core::{ConversationId, DecisionId, FeatureId, RunId, StepId};
 use otter_protocol::RpcError;
 use tokio::sync::{mpsc, oneshot};
 
@@ -80,13 +80,13 @@ impl Drop for Claim<'_> {
 }
 
 impl Daemon {
-    /// Start a run of `task`: fresh (a new conversation), or continuing
+    /// Start a run of `step`: fresh (a new conversation), or continuing
     /// `resume` (the agent's own conversation id) in the feature's
     /// conversation. `counts` charges an attempt to the budget.
     pub(crate) async fn start_run(
         self: &Arc<Self>,
         feature_id: &FeatureId,
-        task_id: &TaskId,
+        task_id: &StepId,
         prompt: String,
         resume: Option<String>,
         counts: bool,
@@ -134,9 +134,9 @@ impl Daemon {
             }
         };
         // Never two drivers for one conversation: not while a developer has
-        // it. The feature's tasks share one (D-064).
+        // it. The feature's steps share one (D-064).
         if feature
-            .tasks
+            .steps
             .iter()
             .filter_map(|t| t.session_id.as_ref())
             .any(|sid| {
@@ -175,7 +175,7 @@ impl Daemon {
             None => {
                 let mut c = Conversation::new(DEFAULT_RUNTIME, &backend, ws.id.clone(), now);
                 c.feature_id = Some(feature_id.clone());
-                c.task_id = Some(task_id.clone());
+                c.step_id = Some(task_id.clone());
                 c.binding = resume
                     .clone()
                     .map(|session_id| NativeBinding { session_id });
@@ -289,23 +289,23 @@ impl Daemon {
             .lock()
             .await
             .apply(feature_id, None, move |f, now| {
-                let task = f
-                    .task_mut(&tid)
-                    .ok_or_else(|| RpcError::not_found(format!("no task `{tid}`")))?;
-                task.status = TaskStatus::Running;
+                let step = f
+                    .step_mut(&tid)
+                    .ok_or_else(|| RpcError::not_found(format!("no step `{tid}`")))?;
+                step.status = StepStatus::Running;
                 if counts {
-                    task.attempts += 1;
+                    step.attempts += 1;
                 }
-                let mut changes = vec![Change::new(FeatureEvent::TaskChanged {
-                    task_id: tid.clone(),
-                    status: TaskStatus::Running,
+                let mut changes = vec![Change::new(FeatureEvent::StepChanged {
+                    step_id: tid.clone(),
+                    status: StepStatus::Running,
                 })];
                 if counts {
                     f.budget.iterations_used += 1;
                 }
                 f.runs.push(Run {
                     id: rid.clone(),
-                    task_id: tid.clone(),
+                    step_id: tid.clone(),
                     runtime: DEFAULT_RUNTIME.into(),
                     state: RunState::Running,
                     started_at: now,
@@ -321,7 +321,7 @@ impl Daemon {
                 changes.push(
                     Change::new(FeatureEvent::RunStarted {
                         run_id: rid.clone(),
-                        task_id: tid.clone(),
+                        step_id: tid.clone(),
                         runtime: DEFAULT_RUNTIME.into(),
                     })
                     .because(rid.as_str()),
@@ -447,7 +447,7 @@ impl Daemon {
             f.runs
                 .iter()
                 .find(|r| r.id == run)
-                .and_then(|r| f.task(&r.task_id))
+                .and_then(|r| f.step(&r.step_id))
                 .is_some_and(|t| t.planning)
         });
         // What it is saying right now, streamed (D-051), by block.
@@ -585,7 +585,7 @@ impl Daemon {
                         .or(last_text.take());
                     last_text = None;
                     let announce = summary.is_some();
-                    // Interrupted or cancelled isn't failed: the task can pick
+                    // Interrupted or cancelled isn't failed: the step can pick
                     // up again (D-059).
                     let state = match outcome {
                         TurnOutcome::Completed => RunState::Completed,
@@ -769,10 +769,10 @@ impl Daemon {
                 .runs
                 .iter()
                 .find(|r| &r.id == run)
-                .map(|r| r.task_id.clone());
+                .map(|r| r.step_id.clone());
             f.decisions.push(DecisionRequest {
                 id: did.clone(),
-                task_id,
+                step_id: task_id,
                 run_id: Some(run.clone()),
                 kind,
                 risk,
@@ -890,7 +890,7 @@ impl Daemon {
             if let Some(a) = activity {
                 r.activity = a;
             }
-            let task_id = r.task_id.clone();
+            let task_id = r.step_id.clone();
             changes.push(Change::new(FeatureEvent::RunChanged {
                 run_id: run.clone(),
                 state,
@@ -904,7 +904,7 @@ impl Daemon {
             }
             // A planning turn's report is a plan for Otter to review, not
             // something to show as is (D-064).
-            let planning = f.task(&task_id).is_some_and(|t| t.planning);
+            let planning = f.step(&task_id).is_some_and(|t| t.planning);
             // Said already (the turn before ended the same way): once (D-069).
             let said = |text: &str| {
                 f.messages
@@ -928,19 +928,19 @@ impl Daemon {
                     summary.as_deref().unwrap_or_default(),
                     now,
                 ));
-            } else if let Some(t) = f.task_mut(&task_id) {
+            } else if let Some(t) = f.step_mut(&task_id) {
                 t.status = match state {
-                    RunState::Completed => TaskStatus::Done,
-                    RunState::Failed => TaskStatus::Failed,
+                    RunState::Completed => StepStatus::Done,
+                    RunState::Failed => StepStatus::Failed,
                     // Stopped, not finished: it runs again later.
-                    _ => TaskStatus::Pending,
+                    _ => StepStatus::Pending,
                 };
                 // One line: it is quoted in reasons and prompts.
                 if state == RunState::Failed {
                     t.last_error = summary.as_deref().map(|s| crate::agents::excerpt(s, 2000));
                 }
-                changes.push(Change::new(FeatureEvent::TaskChanged {
-                    task_id,
+                changes.push(Change::new(FeatureEvent::StepChanged {
+                    step_id: task_id,
                     status: t.status,
                 }));
             }
@@ -1357,7 +1357,7 @@ impl Daemon {
         for id in ids {
             let applied = self.features.lock().await.apply(&id, None, |f, now| {
                 let mut changes = Vec::new();
-                let mut tasks = Vec::new();
+                let mut steps = Vec::new();
                 let mut done = Vec::new();
                 let mut stuck = Vec::new();
                 let losses: Vec<(RunId, usize)> = f
@@ -1377,7 +1377,7 @@ impl Daemon {
                         Some(summary) => {
                             r.state = RunState::Completed;
                             r.summary = summary;
-                            done.push(r.task_id.clone());
+                            done.push(r.step_id.clone());
                         }
                         None => {
                             let broken = r
@@ -1398,9 +1398,9 @@ impl Daemon {
                             r.state = state;
                             r.summary = Some(why.clone());
                             if state == RunState::RecoveryRequired {
-                                stuck.push((r.task_id.clone(), why));
+                                stuck.push((r.step_id.clone(), why));
                             } else {
-                                tasks.push(r.task_id.clone());
+                                steps.push(r.step_id.clone());
                             }
                         }
                     }
@@ -1411,11 +1411,11 @@ impl Daemon {
                     }));
                 }
                 for t in done {
-                    if let Some(t) = f.task_mut(&t) {
-                        t.status = TaskStatus::Done;
-                        changes.push(Change::new(FeatureEvent::TaskChanged {
-                            task_id: t.id.clone(),
-                            status: TaskStatus::Done,
+                    if let Some(t) = f.step_mut(&t) {
+                        t.status = StepStatus::Done;
+                        changes.push(Change::new(FeatureEvent::StepChanged {
+                            step_id: t.id.clone(),
+                            status: StepStatus::Done,
                         }));
                     }
                 }
@@ -1425,9 +1425,9 @@ impl Daemon {
                         d.decided_at = Some(now);
                     }
                 }
-                for t in tasks {
-                    if let Some(t) = f.task_mut(&t) {
-                        t.status = TaskStatus::Pending;
+                for t in steps {
+                    if let Some(t) = f.step_mut(&t) {
+                        t.status = StepStatus::Pending;
                     }
                 }
                 // After the old run's decisions are moot: this one isn't.
@@ -1451,14 +1451,14 @@ impl Daemon {
     }
 }
 
-/// Runs of a task cut off in a row before Otter stops resuming it on its own.
+/// Runs of a step cut off in a row before Otter stops resuming it on its own.
 const MAX_LOSSES: usize = 3;
 
 /// How a run that ended without settling its turn — otterd restarted, or
 /// the agent's process was lost — is recorded (D-061). Interrupted when its
 /// conversation can carry on (or nothing had reached the agent yet, so
 /// starting over repeats nothing); recovery required when its record can't
-/// be trusted, when it keeps getting cut off, or when the agent had the task
+/// be trusted, when it keeps getting cut off, or when the agent had the step
 /// but there is no conversation to resume — starting over then could repeat
 /// what it did, so the developer decides.
 fn unsettled(
@@ -1494,18 +1494,18 @@ fn unsettled(
     } else {
         (
             RunState::Interrupted,
-            format!("Interrupted: {why} before the agent had the task; it starts again"),
+            format!("Interrupted: {why} before the agent had the step; it starts again"),
         )
     }
 }
 
-/// How many runs of `r`'s task, just before it, were cut off in a row.
+/// How many runs of `r`'s step, just before it, were cut off in a row.
 fn losses_before(f: &Feature, r: &Run) -> usize {
     let earlier: Vec<&Run> = f
         .runs
         .iter()
         .take_while(|x| x.id != r.id)
-        .filter(|x| x.task_id == r.task_id)
+        .filter(|x| x.step_id == r.step_id)
         .collect();
     earlier
         .iter()
@@ -1514,36 +1514,36 @@ fn losses_before(f: &Feature, r: &Run) -> usize {
         .count()
 }
 
-/// A run ended [`RunState::RecoveryRequired`]: its task waits for the
+/// A run ended [`RunState::RecoveryRequired`]: its step waits for the
 /// developer to say whether it starts over (a [`DecisionKind::Recovery`],
 /// theirs only), and the feature is blocked until then.
 fn require_recovery(
     f: &mut Feature,
-    task: &TaskId,
+    step: &StepId,
     why: &str,
     now: chrono::DateTime<Utc>,
 ) -> Vec<Change> {
     let mut changes = Vec::new();
-    let Some(t) = f.task_mut(task) else {
+    let Some(t) = f.step_mut(step) else {
         return changes;
     };
-    t.status = TaskStatus::Blocked;
+    t.status = StepStatus::Blocked;
     t.last_error = Some(why.to_owned());
     let title = t.title.clone();
-    changes.push(Change::new(FeatureEvent::TaskChanged {
-        task_id: task.clone(),
-        status: TaskStatus::Blocked,
+    changes.push(Change::new(FeatureEvent::StepChanged {
+        step_id: step.clone(),
+        status: StepStatus::Blocked,
     }));
     let open = f.decisions.iter().any(|d| {
         d.kind == DecisionKind::Recovery
             && d.status == DecisionStatus::Pending
-            && d.task_id.as_ref() == Some(task)
+            && d.step_id.as_ref() == Some(step)
     });
     if !open {
         let id = DecisionId::generate();
         f.decisions.push(DecisionRequest {
             id: id.clone(),
-            task_id: Some(task.clone()),
+            step_id: Some(step.clone()),
             run_id: None,
             kind: DecisionKind::Recovery,
             risk: Risk::High,
@@ -1601,8 +1601,8 @@ fn finished_run(c: &otter_core::conversation::Conversation, run: &RunId) -> Opti
 }
 
 /// Appended to the coding agent's system prompt for managed runs.
-const INSTRUCTIONS: &str = "You are working on a feature, one task per turn, managed by Otter. \
-Stay inside the working directory. Run the project's tests before you finish a task. \
+const INSTRUCTIONS: &str = "You are working on a feature, one step per turn, managed by Otter. \
+Stay inside the working directory. Run the project's tests before you finish a step. \
 End each turn with a short summary of what you changed and how you checked it.";
 
 /// The same text, give or take whitespace.
@@ -1690,10 +1690,10 @@ impl Draft {
 mod tests {
     use super::*;
 
-    fn run_of(task: &TaskId, state: RunState) -> Run {
+    fn run_of(step: &StepId, state: RunState) -> Run {
         Run {
             id: RunId::generate(),
-            task_id: task.clone(),
+            step_id: step.clone(),
             runtime: DEFAULT_RUNTIME.into(),
             state,
             started_at: Utc::now(),
@@ -1708,16 +1708,16 @@ mod tests {
         }
     }
 
-    fn implementing(task: &TaskId) -> Feature {
-        use otter_core::feature::Task;
+    fn implementing(step: &StepId) -> Feature {
+        use otter_core::feature::Step;
         let now = Utc::now();
         let mut f = Feature::new("CSV".into(), "Export it".into(), now);
         f.transition(FeatureStatus::Planning, None, now).unwrap();
-        f.tasks.push(Task {
-            id: task.clone(),
+        f.steps.push(Step {
+            id: step.clone(),
             title: "Write it".into(),
             detail: None,
-            status: TaskStatus::Running,
+            status: StepStatus::Running,
             depends_on: vec![],
             workspace_id: None,
             session_id: None,
@@ -1733,13 +1733,13 @@ mod tests {
     #[test]
     fn only_the_latest_cut_offs_of_the_same_task_count() {
         use RunState::*;
-        let (a, b) = (TaskId::from("a"), TaskId::from("b"));
+        let (a, b) = (StepId::from("a"), StepId::from("b"));
         let mut f = implementing(&a);
         for (t, s) in [
             (&a, Interrupted),
             (&a, Failed),
             (&a, Interrupted),
-            // Another task's run doesn't break the streak, nor count in it.
+            // Another step's run doesn't break the streak, nor count in it.
             (&b, Interrupted),
             (&a, Interrupted),
             (&a, Running),
@@ -1755,24 +1755,24 @@ mod tests {
             "a failure ends the streak"
         );
         assert_eq!(losses_before(&f, &f.runs[5]), 2);
-        assert_eq!(losses_before(&f, &f.runs[3]), 0, "the other task has none");
+        assert_eq!(losses_before(&f, &f.runs[3]), 0, "the other step has none");
     }
 
     #[test]
     fn a_run_needing_recovery_blocks_its_task_on_one_developer_decision() {
-        let task = TaskId::from("t1");
-        let mut f = implementing(&task);
+        let step = StepId::from("t1");
+        let mut f = implementing(&step);
         let now = Utc::now();
-        let changes = require_recovery(&mut f, &task, "otterd restarted", now);
+        let changes = require_recovery(&mut f, &step, "otterd restarted", now);
         assert!(!changes.is_empty());
         assert_eq!(f.status, FeatureStatus::Blocked);
-        assert_eq!(f.tasks[0].status, TaskStatus::Blocked);
-        assert_eq!(f.tasks[0].last_error.as_deref(), Some("otterd restarted"));
+        assert_eq!(f.steps[0].status, StepStatus::Blocked);
+        assert_eq!(f.steps[0].last_error.as_deref(), Some("otterd restarted"));
         let open: Vec<_> = f.pending_decisions().collect();
         assert_eq!(open.len(), 1);
         let d = open[0];
         assert_eq!(d.kind, DecisionKind::Recovery);
-        assert_eq!(d.task_id.as_ref(), Some(&task));
+        assert_eq!(d.step_id.as_ref(), Some(&step));
         assert!(d.user_only && d.run_id.is_none());
         assert_eq!(d.risk, Risk::High);
         assert!(d.summary.contains("Write it"), "{}", d.summary);
@@ -1785,17 +1785,17 @@ mod tests {
             d.detail
         );
         // Asked again while the first is open: still one decision.
-        require_recovery(&mut f, &task, "lost again", now);
+        require_recovery(&mut f, &step, "lost again", now);
         assert_eq!(f.pending_decisions().count(), 1);
-        assert_eq!(f.tasks[0].last_error.as_deref(), Some("lost again"));
-        // An unknown task changes nothing.
-        assert!(require_recovery(&mut f, &TaskId::from("nope"), "x", now).is_empty());
+        assert_eq!(f.steps[0].last_error.as_deref(), Some("lost again"));
+        // An unknown step changes nothing.
+        assert!(require_recovery(&mut f, &StepId::from("nope"), "x", now).is_empty());
     }
 
     #[test]
     fn a_run_cut_off_too_often_needs_recovery_even_with_a_session() {
-        let task = TaskId::from("t1");
-        let mut run = run_of(&task, RunState::Running);
+        let step = StepId::from("t1");
+        let mut run = run_of(&step, RunState::Running);
         run.provider_session_id = Some("native-1".into());
         let (s, why) = unsettled(&run, None, None, MAX_LOSSES - 1, "lost");
         assert_eq!(s, RunState::RecoveryRequired);
@@ -1840,11 +1840,11 @@ mod tests {
     #[test]
     fn a_run_cut_off_is_resumed_only_when_that_is_safe() {
         use otter_core::conversation::{Command, Op};
-        use otter_core::{TaskId, TurnId};
+        use otter_core::{StepId, TurnId};
         let at = Utc::now();
         let mut run = Run {
             id: RunId::from("run_1"),
-            task_id: TaskId::from("t1"),
+            step_id: StepId::from("t1"),
             runtime: DEFAULT_RUNTIME.into(),
             state: RunState::Running,
             started_at: at,
@@ -1888,7 +1888,7 @@ mod tests {
             at,
         })
         .unwrap();
-        // It had the task, with no conversation to resume: the developer's call.
+        // It had the step, with no conversation to resume: the developer's call.
         assert_eq!(state(&run, &c, None, 0), RunState::RecoveryRequired);
         // A record from before conversations: the same.
         assert_eq!(

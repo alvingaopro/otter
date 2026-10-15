@@ -43,7 +43,7 @@ while IFS= read -r line; do
         if [ -n "$noplan" ]; then
           out '{"type":"turn_finished","turn_id":"'"$turn"'","outcome":"completed","summary":"The export lives in export.sh:3. (Write: '"$d"'.)","error":null,"session_cost_usd":0.01}'
         else
-          out '{"type":"turn_finished","turn_id":"'"$turn"'","outcome":"completed","summary":"(Write: '"$d"'.)\n```json\n{\"summary\": \"Add an exporter, then cover it\", \"tasks\": [{\"title\": \"Write the exporter\", \"detail\": \"in export.sh\"}, {\"title\": \"Cover it with a test\", \"detail\": \"in the Makefile\"}], \"criteria\": [{\"text\": \"Rows export as CSV with a header\", \"how\": \"diff\"}, {\"text\": \"make test passes\", \"how\": \"check\"}], \"check\": \"make test\"}\n```","error":null,"session_cost_usd":0.01}'
+          out '{"type":"turn_finished","turn_id":"'"$turn"'","outcome":"completed","summary":"(Write: '"$d"'.)\n```json\n{\"summary\": \"Add an exporter, then cover it\", \"steps\": [{\"title\": \"Write the exporter\", \"detail\": \"in export.sh\"}, {\"title\": \"Cover it with a test\", \"detail\": \"in the Makefile\"}], \"criteria\": [{\"text\": \"Rows export as CSV with a header\", \"how\": \"diff\"}, {\"text\": \"make test passes\", \"how\": \"check\"}], \"check\": \"make test\"}\n```","error":null,"session_cost_usd":0.01}'
         fi
         planning=
         noplan=

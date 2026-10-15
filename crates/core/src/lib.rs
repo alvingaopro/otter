@@ -12,7 +12,7 @@ pub mod trigger;
 
 pub use ids::{
     AttentionId, BlockId, ConversationId, DecisionId, EvidenceId, ExecutionId, FeatureId,
-    MessageId, RunId, SessionId, TaskId, ToolCallId, TriggerId, TurnId, WorkspaceId,
+    MessageId, RunId, SessionId, StepId, ToolCallId, TriggerId, TurnId, WorkspaceId,
 };
 pub use model::*;
 

@@ -754,12 +754,12 @@ fn show(host: &str, f: &Feature) {
             f.id
         );
     }
-    if !f.tasks.is_empty() {
+    if !f.steps.is_empty() {
         println!("\nTasks:");
-        for t in &f.tasks {
+        for t in &f.steps {
             println!("  [{}] {}", word(&t.status), one_line(&t.title, 70));
             // Why it failed (D-076).
-            if let (otter_core::feature::TaskStatus::Failed, Some(e)) = (t.status, &t.last_error) {
+            if let (otter_core::feature::StepStatus::Failed, Some(e)) = (t.status, &t.last_error) {
                 println!("      last error: {}", one_line(e, 90));
             }
         }

@@ -360,7 +360,7 @@ async fn going_on_approves_the_plan_on_the_developers_word(v2: bool) {
     let d = f.pending_decisions().next().unwrap().id.clone();
     tell(v2, host, &id, "say-approve", "Go ahead\nINTENT: continue").await;
     let f = wait_feature(host, &id, "planned", |f| {
-        f.tasks.iter().any(|t| t.title == "Write the exporter")
+        f.steps.iter().any(|t| t.title == "Write the exporter")
     })
     .await;
     let d = f.decisions.iter().find(|x| x.id == d).unwrap();

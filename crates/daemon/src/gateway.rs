@@ -554,7 +554,7 @@ impl Gateway {
                 "request": short(&f.request, 2000),
                 "status": f.status.as_str(),
                 "status_reason": f.status_reason.as_deref().map(r),
-                "steps": f.tasks.iter().map(|t| json!({
+                "steps": f.steps.iter().map(|t| json!({
                     "title": r(&t.title),
                     "status": format!("{:?}", t.status).to_lowercase(),
                 })).collect::<Vec<_>>(),
@@ -606,7 +606,7 @@ impl Gateway {
                             .find(|m| !m.text().trim().is_empty())
                             .map(|m| short(&m.text(), 1500))
                     });
-                let step = f.tasks.iter().find(|t| t.id == run.task_id);
+                let step = f.steps.iter().find(|t| t.id == run.step_id);
                 Ok(json!({
                     "run": {
                         "id": run.id.as_str(),

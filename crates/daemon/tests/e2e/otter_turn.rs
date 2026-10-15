@@ -1146,7 +1146,7 @@ async fn a_plan_under_answer_only_waits_for_the_developer() {
         d.detail.as_deref().unwrap().contains("only answers"),
         "{d:?}"
     );
-    assert!(f.tasks.iter().all(|t| t.planning), "nothing set yet");
+    assert!(f.steps.iter().all(|t| t.planning), "nothing set yet");
     let asked = f
         .messages
         .iter()
@@ -1172,7 +1172,7 @@ async fn a_plan_under_answer_only_waits_for_the_developer() {
         .await
         .unwrap();
     let f = wait_feature(host, &id, "planned", |f| {
-        f.tasks.iter().any(|t| t.title == "Write the exporter")
+        f.steps.iter().any(|t| t.title == "Write the exporter")
     })
     .await;
     assert!(!f.answer_only);
@@ -1227,9 +1227,9 @@ async fn a_plan_turned_down_under_answer_only_is_the_answer() {
     );
     assert!(answer.text.contains("Not carried out"), "{}", answer.text);
     assert!(
-        f.tasks.iter().all(|t| t.planning),
+        f.steps.iter().all(|t| t.planning),
         "nothing planned: {:?}",
-        f.tasks
+        f.steps
     );
     assert_eq!(f.budget.iterations_used, 0);
 }

@@ -16,7 +16,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::ids::{
-    ConversationId, DecisionId, EvidenceId, FeatureId, MessageId, RunId, SessionId, TaskId, TurnId,
+    ConversationId, DecisionId, EvidenceId, FeatureId, MessageId, RunId, SessionId, StepId, TurnId,
     WorkspaceId,
 };
 use crate::model::{Activity, Timestamp};
@@ -32,9 +32,9 @@ pub const FEATURE_EVENT_SCHEMA: u32 = 1;
 pub enum FeatureStatus {
     /// Written down, not started.
     Draft,
-    /// The Control Agent is writing requirements, acceptance criteria and tasks.
+    /// The Control Agent is writing requirements, acceptance criteria and steps.
     Planning,
-    /// A coding agent works on the tasks.
+    /// A coding agent works on the steps.
     Implementing,
     /// Checking the result against the acceptance criteria.
     Verifying,
@@ -113,7 +113,7 @@ impl FeatureStatus {
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-pub enum TaskStatus {
+pub enum StepStatus {
     Pending,
     Running,
     Blocked,
@@ -201,7 +201,7 @@ pub enum DecisionKind {
     Merge,
     /// Deploying (an irreversible external action).
     Deploy,
-    /// A run ended [`RunState::RecoveryRequired`]: start its task over, or
+    /// A run ended [`RunState::RecoveryRequired`]: start its step over, or
     /// not yet. The developer's only (D-061).
     Recovery,
 }
@@ -286,14 +286,14 @@ pub struct VerificationMark {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
-pub struct Task {
-    pub id: TaskId,
+pub struct Step {
+    pub id: StepId,
     pub title: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub detail: Option<String>,
-    pub status: TaskStatus,
+    pub status: StepStatus,
     #[serde(default)]
-    pub depends_on: Vec<TaskId>,
+    pub depends_on: Vec<StepId>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workspace_id: Option<WorkspaceId>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -310,7 +310,8 @@ pub struct Task {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct Run {
     pub id: RunId,
-    pub task_id: TaskId,
+    #[serde(alias = "task_id")]
+    pub step_id: StepId,
     /// The agent runtime, e.g. `claude`.
     pub runtime: String,
     pub state: RunState,
@@ -419,8 +420,8 @@ pub struct Follow {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct DecisionRequest {
     pub id: DecisionId,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub task_id: Option<TaskId>,
+    #[serde(default, alias = "task_id", skip_serializing_if = "Option::is_none")]
+    pub step_id: Option<StepId>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub run_id: Option<RunId>,
     pub kind: DecisionKind,
@@ -453,8 +454,8 @@ pub struct DecisionRequest {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct Evidence {
     pub id: EvidenceId,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub task_id: Option<TaskId>,
+    #[serde(default, alias = "task_id", skip_serializing_if = "Option::is_none")]
+    pub step_id: Option<StepId>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub criterion_id: Option<String>,
     pub kind: EvidenceKind,
@@ -520,7 +521,8 @@ pub struct Feature {
     #[serde(default)]
     pub acceptance: Vec<Criterion>,
     #[serde(default)]
-    pub tasks: Vec<Task>,
+    #[serde(alias = "tasks")]
+    pub steps: Vec<Step>,
     #[serde(default)]
     pub runs: Vec<Run>,
     #[serde(default)]
@@ -601,7 +603,7 @@ impl Feature {
             status_reason: None,
             requirements: Vec::new(),
             acceptance: Vec::new(),
-            tasks: Vec::new(),
+            steps: Vec::new(),
             runs: Vec::new(),
             messages: Vec::new(),
             decisions: Vec::new(),
@@ -627,12 +629,12 @@ impl Feature {
         }
     }
 
-    pub fn task(&self, id: &TaskId) -> Option<&Task> {
-        self.tasks.iter().find(|t| &t.id == id)
+    pub fn step(&self, id: &StepId) -> Option<&Step> {
+        self.steps.iter().find(|t| &t.id == id)
     }
 
-    pub fn task_mut(&mut self, id: &TaskId) -> Option<&mut Task> {
-        self.tasks.iter_mut().find(|t| &t.id == id)
+    pub fn step_mut(&mut self, id: &StepId) -> Option<&mut Step> {
+        self.steps.iter_mut().find(|t| &t.id == id)
     }
 
     pub fn run_mut(&mut self, id: &RunId) -> Option<&mut Run> {
@@ -1003,16 +1005,20 @@ pub enum FeatureEvent {
         action: String,
     },
     PlanSet {
-        tasks: usize,
+        #[serde(alias = "tasks")]
+        steps: usize,
         criteria: usize,
     },
-    TaskChanged {
-        task_id: TaskId,
-        status: TaskStatus,
+    #[serde(alias = "TaskChanged")]
+    StepChanged {
+        #[serde(alias = "task_id")]
+        step_id: StepId,
+        status: StepStatus,
     },
     RunStarted {
         run_id: RunId,
-        task_id: TaskId,
+        #[serde(alias = "task_id")]
+        step_id: StepId,
         runtime: String,
     },
     RunChanged {
@@ -1077,11 +1083,11 @@ impl FeatureEvent {
                 MessageRole::System => "Otter noted something".into(),
             },
             FeatureEvent::CommandAccepted { action, .. } => format!("Command: {action}"),
-            FeatureEvent::PlanSet { tasks, criteria } => {
-                format!("Plan: {tasks} task(s), {criteria} acceptance criteria")
+            FeatureEvent::PlanSet { steps, criteria } => {
+                format!("Plan: {steps} step(s), {criteria} acceptance criteria")
             }
-            FeatureEvent::TaskChanged { task_id, status } => {
-                format!("Task {task_id}: {status:?}").to_lowercase()
+            FeatureEvent::StepChanged { step_id, status } => {
+                format!("Step {step_id}: {status:?}").to_lowercase()
             }
             FeatureEvent::RunStarted { runtime, .. } => format!("A {runtime} run started"),
             FeatureEvent::RunChanged { state, .. } => {
@@ -1256,7 +1262,7 @@ mod tests {
     fn run_at(now: Timestamp) -> Run {
         Run {
             id: RunId::generate(),
-            task_id: TaskId::generate(),
+            step_id: StepId::generate(),
             runtime: "claude".into(),
             state: RunState::Running,
             started_at: now,
@@ -1311,7 +1317,7 @@ mod tests {
         f.runs.push(r);
         f.decisions.push(DecisionRequest {
             id: DecisionId::generate(),
-            task_id: None,
+            step_id: None,
             run_id: Some(run.clone()),
             kind: DecisionKind::ToolPermission,
             risk: Risk::High,
@@ -1368,7 +1374,7 @@ mod tests {
     fn decision(kind: DecisionKind, summary: &str, at: Timestamp) -> DecisionRequest {
         DecisionRequest {
             id: DecisionId::generate(),
-            task_id: None,
+            step_id: None,
             run_id: None,
             kind,
             risk: Risk::High,
@@ -1521,7 +1527,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(f.schema, 1);
-        assert!(f.tasks.is_empty());
+        assert!(f.steps.is_empty());
         assert_eq!(f.budget, Budget::default());
     }
 

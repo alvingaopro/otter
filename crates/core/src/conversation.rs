@@ -29,7 +29,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::feature::{Decider, MessageRole};
 use crate::ids::{
-    BlockId, ConversationId, DecisionId, FeatureId, MessageId, RunId, TaskId, ToolCallId, TurnId,
+    BlockId, ConversationId, DecisionId, FeatureId, MessageId, RunId, StepId, ToolCallId, TurnId,
     WorkspaceId,
 };
 use crate::model::Timestamp;
@@ -69,8 +69,8 @@ pub struct Conversation {
     pub workspace_id: WorkspaceId,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub feature_id: Option<FeatureId>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub task_id: Option<TaskId>,
+    #[serde(default, alias = "task_id", skip_serializing_if = "Option::is_none")]
+    pub step_id: Option<StepId>,
     /// Bumped by every accepted change.
     pub revision: u64,
     #[serde(default)]
@@ -688,7 +688,7 @@ impl Conversation {
             backend: backend.into(),
             workspace_id,
             feature_id: None,
-            task_id: None,
+            step_id: None,
             revision: 0,
             lifecycle: Lifecycle::Open,
             active_run: None,

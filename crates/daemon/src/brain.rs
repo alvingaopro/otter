@@ -28,11 +28,11 @@ use crate::env::EnvMap;
 use crate::providers::Provider;
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct PlannedTask {
+pub struct PlannedStep {
     pub title: String,
     #[serde(default)]
     pub detail: String,
-    /// Indexes of tasks (in this plan) that must be done first.
+    /// Indexes of steps (in this plan) that must be done first.
     #[serde(default)]
     pub depends_on: Vec<usize>,
 }
@@ -82,7 +82,9 @@ impl PlannedCriterion {
 pub struct Plan {
     pub requirements: Vec<String>,
     pub criteria: Vec<PlannedCriterion>,
-    pub tasks: Vec<PlannedTask>,
+    /// The plan's steps (once its "tasks", D-107).
+    #[serde(alias = "tasks")]
+    pub steps: Vec<PlannedStep>,
     /// One shell command that checks the work, if the project has one.
     #[serde(default)]
     pub verify_command: Option<String>,
@@ -207,25 +209,25 @@ pub struct Reply {
 
 /// Where the feature stands, in a few lines (deterministic).
 pub fn status_text(f: &Feature) -> String {
-    use otter_core::feature::{FeatureStatus as S, TaskStatus};
+    use otter_core::feature::{FeatureStatus as S, StepStatus};
     let done = f
-        .tasks
+        .steps
         .iter()
-        .filter(|t| matches!(t.status, TaskStatus::Done | TaskStatus::Skipped))
+        .filter(|t| matches!(t.status, StepStatus::Done | StepStatus::Skipped))
         .count();
     let current = f
-        .tasks
+        .steps
         .iter()
-        .position(|t| t.status == TaskStatus::Running)
-        .map(|i| (i, &f.tasks[i]));
+        .position(|t| t.status == StepStatus::Running)
+        .map(|i| (i, &f.steps[i]));
     let mut lines = vec![match f.status {
         S::Draft => "This is a draft: say “start” (or press Start) and I'll plan it.".to_owned(),
-        S::Planning => "I'm planning: requirements, acceptance criteria and tasks.".to_owned(),
+        S::Planning => "I'm planning: requirements, acceptance criteria and steps.".to_owned(),
         S::Implementing => match current {
             Some((i, t)) => format!(
                 "A coding agent is working on task {} of {}: “{}”{}.",
                 i + 1,
-                f.tasks.len(),
+                f.steps.len(),
                 t.title,
                 if t.attempts > 1 {
                     format!(" (attempt {})", t.attempts)
@@ -234,8 +236,8 @@ pub fn status_text(f: &Feature) -> String {
                 }
             ),
             None => format!(
-                "Implementing: {done} of {} tasks done; the next one starts shortly.",
-                f.tasks.len()
+                "Implementing: {done} of {} steps done; the next one starts shortly.",
+                f.steps.len()
             ),
         },
         S::Verifying => "I'm checking the work against the acceptance criteria.".to_owned(),
@@ -348,11 +350,11 @@ pub fn detect_verify_command(root: &Path) -> Option<String> {
 /// What the coding agent proposed in its planning turn (D-064): the report
 /// of its planning run, once that finished.
 pub fn proposal(f: &Feature) -> Option<&str> {
-    let task = f.tasks.iter().find(|t| t.planning)?;
+    let task = f.steps.iter().find(|t| t.planning)?;
     f.runs
         .iter()
         .rev()
-        .find(|r| r.task_id == task.id && r.state == otter_core::feature::RunState::Completed)
+        .find(|r| r.step_id == task.id && r.state == otter_core::feature::RunState::Completed)
         .and_then(|r| r.summary.as_deref())
 }
 
@@ -362,7 +364,8 @@ struct Proposal {
     summary: String,
     #[serde(default)]
     requirements: Vec<String>,
-    tasks: Vec<ProposedTask>,
+    #[serde(alias = "tasks")]
+    steps: Vec<ProposedStep>,
     #[serde(default)]
     criteria: Vec<PlannedCriterion>,
     #[serde(default)]
@@ -370,28 +373,28 @@ struct Proposal {
 }
 
 #[derive(Deserialize)]
-struct ProposedTask {
+struct ProposedStep {
     title: String,
     #[serde(default)]
     detail: String,
 }
 
 /// The agent's proposal as a plan, if it is one: a JSON object in its reply
-/// (bare or in a fence) with at least one task.
+/// (bare or in a fence) with at least one step.
 pub fn parse_proposal(text: &str) -> Option<Plan> {
     let json = text.get(text.find('{')?..=text.rfind('}')?)?;
     let p: Proposal = serde_json::from_str(json).ok()?;
-    let tasks: Vec<PlannedTask> = p
-        .tasks
+    let steps: Vec<PlannedStep> = p
+        .steps
         .into_iter()
         .filter(|t| !t.title.trim().is_empty())
-        .map(|t| PlannedTask {
+        .map(|t| PlannedStep {
             title: t.title,
             detail: t.detail,
             depends_on: vec![],
         })
         .collect();
-    if tasks.is_empty() {
+    if steps.is_empty() {
         return None;
     }
     Some(Plan {
@@ -401,7 +404,7 @@ pub fn parse_proposal(text: &str) -> Option<Plan> {
             .into_iter()
             .filter(|c| !c.text.trim().is_empty())
             .collect(),
-        tasks,
+        steps,
         verify_command: p.check.filter(|c| !c.trim().is_empty()),
         rationale: p.summary,
     })
@@ -455,7 +458,7 @@ fn rules_plan(cx: &Context<'_>) -> Plan {
                 .iter()
                 .map(|c| PlannedCriterion::new(c.text.clone(), c.how))
                 .collect(),
-            tasks: vec![PlannedTask {
+            steps: vec![PlannedStep {
                 title: "Apply the developer's changes".into(),
                 detail: notes.join("\n"),
                 depends_on: vec![],
@@ -502,7 +505,7 @@ fn rules_plan(cx: &Context<'_>) -> Plan {
     Plan {
         requirements: vec![request.clone()],
         criteria,
-        tasks: vec![PlannedTask {
+        steps: vec![PlannedStep {
             title: f.title.clone(),
             detail: request,
             depends_on: vec![],
@@ -792,9 +795,9 @@ impl Brain for Model {
         // Planning again: what's done stays done; plan what's left.
         let done: Vec<String> = cx
             .feature
-            .tasks
+            .steps
             .iter()
-            .filter(|t| matches!(t.status, otter_core::feature::TaskStatus::Done))
+            .filter(|t| matches!(t.status, otter_core::feature::StepStatus::Done))
             .map(|t| format!("- {}", t.title))
             .collect();
         let again = if cx.feature.replan && !done.is_empty() {
@@ -810,8 +813,8 @@ impl Brain for Model {
         let prompt = format!(
             "You are Otter, the developer's tech lead, planning a software feature for a coding agent working in {root}.\n\
              {brief}\n\
-             Write: requirements (short), acceptance criteria that can be checked, and 1-5 tasks in order \
-             (depends_on = indexes of earlier tasks). verify_command: one shell command that checks the work \
+             Write: requirements (short), acceptance criteria that can be checked, and 1-5 steps in order \
+             (depends_on = indexes of earlier steps). verify_command: one shell command that checks the work \
              (the project's tests{hint}), or null. For each criterion, how: \"check\" when verify_command \
              passing proves it (the tests pass), \"diff\" when it is about what the change contains (judged \
              from the diff of the work). A criterion is a fact about the code or the check's result, never \
@@ -832,19 +835,19 @@ impl Brain for Model {
                 "criteria": {"type": "array", "items": {"type": "object", "properties": {
                     "text": {"type": "string"}, "how": {"enum": ["check", "diff"]}},
                     "required": ["text", "how"]}},
-                "tasks": {"type": "array", "items": {"type": "object", "properties": {
+                "steps": {"type": "array", "items": {"type": "object", "properties": {
                     "title": {"type": "string"}, "detail": {"type": "string"},
                     "depends_on": {"type": "array", "items": {"type": "integer"}}},
                     "required": ["title", "detail", "depends_on"]}},
                 "verify_command": {"type": ["string", "null"]},
                 "rationale": {"type": "string"}
             },
-            "required": ["requirements", "criteria", "tasks", "verify_command", "rationale"]
+            "required": ["requirements", "criteria", "steps", "verify_command", "rationale"]
         });
         let v = self.ask(cx, &prompt, &schema, None).await?;
         let plan: Plan = serde_json::from_value(v)?;
-        if plan.tasks.is_empty() {
-            bail!("the plan has no tasks");
+        if plan.steps.is_empty() {
+            bail!("the plan has no steps");
         }
         Ok(plan)
     }
@@ -971,8 +974,8 @@ impl Brain for Model {
             .rev()
             .map(|m| format!("{:?}: {}", m.role, super::agents::excerpt(&m.text, 600)))
             .collect();
-        let tasks: Vec<String> = f
-            .tasks
+        let steps: Vec<String> = f
+            .steps
             .iter()
             .enumerate()
             .map(|(i, t)| format!("{}. {} — {:?}", i + 1, t.title, t.status))
@@ -981,7 +984,7 @@ impl Brain for Model {
             "You are Otter, the developer's tech lead, running a software feature for the developer. Reply to their \
              latest message directly and briefly (2-5 sentences), in the language they wrote in. \
              Say what is happening and what happens next; if they give instructions, say how you'll \
-             act on them. Don't invent progress.\n{brief}\nStatus: {status}\nTasks:\n{tasks}\n\
+             act on them. Don't invent progress.\n{brief}\nStatus: {status}\nSteps:\n{steps}\n\
              Recent conversation:\n{recent}\n\nTheir message: {message}\n\n\
              Write your reply as plain text. Then, on a last line of its own, write `INTENT: <x>` where \
              <x> is: guide if they tell the coding agent how to do the current work (an instruction, a \
@@ -993,7 +996,7 @@ impl Brain for Model {
              wrapped up; else none (questions, chat — answered by you, not passed on).",
             brief = brief(f),
             status = status_text(f),
-            tasks = tasks.join("\n"),
+            steps = steps.join("\n"),
             recent = recent.join("\n"),
         );
         // The developer sees the reply as it's written, without the intent line.
@@ -1038,11 +1041,11 @@ impl Brain for Model {
 
 /// What the brain is asked about the coding agent's plan (D-084): only what
 /// it can tell without the code — whether the plan does what was asked, and
-/// whether its criteria and tasks are the kind Otter can work with.
+/// whether its criteria and steps are the kind Otter can work with.
 pub fn review_plan_prompt(f: &Feature, plan: &Plan) -> String {
     let plan = json!({
         "summary": plan.rationale,
-        "tasks": plan.tasks.iter().map(|t| json!({"title": t.title, "detail": t.detail})).collect::<Vec<_>>(),
+        "steps": plan.steps.iter().map(|t| json!({"title": t.title, "detail": t.detail})).collect::<Vec<_>>(),
         "criteria": plan.criteria.iter().map(|c| json!({"text": c.text, "how": c.how})).collect::<Vec<_>>(),
         "check": plan.verify_command,
     });
@@ -1197,11 +1200,11 @@ mod tests {
     }
 
     #[test]
-    fn a_proposal_is_read_fenced_or_bare_and_only_with_tasks() {
-        let fenced = "Here it is:\n```json\n{\"summary\": \"s\", \"tasks\": [{\"title\": \"A\", \"detail\": \"d\"}, {\"title\": \" \"}], \"criteria\": [{\"text\": \"x\", \"how\": \"check\"}, \"y\"], \"check\": \"make test\"}\n```";
+    fn a_proposal_is_read_fenced_or_bare_and_only_with_steps() {
+        let fenced = "Here it is:\n```json\n{\"summary\": \"s\", \"steps\": [{\"title\": \"A\", \"detail\": \"d\"}, {\"title\": \" \"}], \"criteria\": [{\"text\": \"x\", \"how\": \"check\"}, \"y\"], \"check\": \"make test\"}\n```";
         let plan = parse_proposal(fenced).unwrap();
-        assert_eq!(plan.tasks.len(), 1, "a task needs a title");
-        assert_eq!(plan.tasks[0].title, "A");
+        assert_eq!(plan.steps.len(), 1, "a step needs a title");
+        assert_eq!(plan.steps[0].title, "A");
         assert_eq!(
             plan.criteria,
             [
@@ -1211,13 +1214,14 @@ mod tests {
         );
         assert_eq!(plan.verify_command.as_deref(), Some("make test"));
         assert_eq!(plan.rationale, "s");
+        // The key before D-107 still reads.
         let bare = parse_proposal("{\"tasks\": [{\"title\": \"B\"}], \"check\": \" \"}").unwrap();
         assert_eq!(
-            (bare.tasks[0].title.as_str(), bare.verify_command),
+            (bare.steps[0].title.as_str(), bare.verify_command),
             ("B", None)
         );
         assert!(parse_proposal("I'd write it and test it.").is_none());
-        assert!(parse_proposal("{\"tasks\": []}").is_none());
+        assert!(parse_proposal("{\"steps\": []}").is_none());
         assert!(parse_proposal("{not json}").is_none());
     }
 
@@ -1236,7 +1240,7 @@ mod tests {
             root: dir.path(),
             env: &env,
         });
-        assert_eq!(plan.tasks.len(), 1);
+        assert_eq!(plan.steps.len(), 1);
         assert_eq!(plan.verify_command.as_deref(), Some("make test"));
         assert_eq!(
             plan.criteria,
@@ -1298,7 +1302,7 @@ mod tests {
         ];
         f.evidence.push(Evidence {
             id: otter_core::EvidenceId::generate(),
-            task_id: None,
+            step_id: None,
             criterion_id: None,
             kind: EvidenceKind::Diff,
             title: format!("{}: {}", crate::work_state::TITLE, state.summary),
@@ -1336,7 +1340,7 @@ mod tests {
         let root = Path::new("/w");
         let ev = |ok| Evidence {
             id: otter_core::EvidenceId::generate(),
-            task_id: None,
+            step_id: None,
             criterion_id: None,
             kind: EvidenceKind::Test,
             title: "make test".into(),
