@@ -13,7 +13,7 @@ must keep, with the tests that guard them.
 | workspace lifecycle, sources, Git, environments        | design §7–§18, §28 · decisions D-010–D-012 · invariants 1, 9, 10           |
 | sessions, executions, tmux, attach                     | design §10–§12 · decisions D-007, D-009 · invariants 2, 3, 7               |
 | an agent integration (Codex, Claude Code, or a new one) | `crates/daemon/src/agents/mod.rs` docs · decisions D-013, D-015, D-023 · invariants 5, 6 |
-| attention, the `otter ls` view                       | design §21, §26 · decision D-014                                           |
+| attention, the `otter ls` view                       | design §21, §26 · decisions D-014, D-099                                   |
 | the desktop app                                        | `apps/desktop/README.md` · decisions D-018, D-085 · invariants 11, 12       |
 | the wire protocol, events or client                    | [`docs/protocol.md`](docs/protocol.md) · decisions D-004, D-016 · invariant 12 |
 | features, the controller, delivery                     | [`docs/feature-states.md`](docs/feature-states.md) · decisions D-045, D-047, D-062–D-068 |

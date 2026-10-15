@@ -2999,6 +2999,10 @@ agents and Otter take a task's brief, never a workspace's.
 - A task's own worktree (`feature.start` in a workspace of its own) is
   described by the task's title, and "The feature … in a worktree of its
   own" moves to the description.
+- protocol.md lists removing a field as incompatible. An optional field
+  that old and new peers both treat as optional breaks neither, so there is
+  no bump: an older client's `goal` is ignored, and an older daemon's is
+  simply not shown.
 
 ## D-099 — Looking at a session doesn't answer it (2026-10-15)
 
@@ -3031,3 +3035,144 @@ Reproduced with an e2e test (the review of the notification plan).
 - Not done: the rest of the notification plan. That covers telling a
   confirmed blocker from an inferred one, and suppressing alerts per session
   rather than per workspace.
+
+## D-100 — A workspace's terminal stays attached while another is shown (2026-10-15)
+
+Dogfooding (the workspace review): every switch between workspaces
+unmounted the pane, so its terminal detached and attached again on the way
+back. Over SSH that is a wait and a redraw, the app's scrollback was lost,
+and each attach counted as looking (D-099).
+
+- **The five workspaces shown last keep their pane mounted**, hidden, with
+  its terminal attached. One shown again is just shown. Older ones are
+  unmounted (detached), as before.
+- **A kept pane keeps the session it showed**, so nothing switches or
+  attaches behind the developer's back. The one in front still opens on
+  whatever needs the developer, as before.
+- **Hidden means idle:** it never fits its terminal, so the session isn't
+  resized for a pane nobody sees (`window-size latest`, the hidden pane
+  sends nothing). It doesn't poll its host and takes no keys. Shown again,
+  its terminal takes the keyboard.
+- **D-099's half here:** showing a workspace again, after another one or a
+  host's page, settles its current session's `review`/`completion` by
+  attention id. That is what the re-attach used to do. Switching views
+  (⌘1–⌘4) never re-attached and still settles nothing.
+
+## D-101 — Workspaces and sessions can be renamed (2026-10-15)
+
+A task's workspace is named for it (`api-fix-login-bug-2`), and a session
+for its command, with no way to change either.
+
+- `workspace.rename` and `session.rename`, with `WorkspaceRenamed` /
+  `SessionRenamed` events (names, like `WorkspaceCreated`'s).
+- **Only the name changes.** Ids, the directory (`~/.otter/workspaces/<id>`),
+  the branch (still `otterd/<old name>` if it was made so) and the backend
+  (keyed by execution id) stay, so attaches and references by id carry on.
+  Names follow creation's rules and stay unique.
+- CLI: `otter ws rename <ws> <name>`, `otter session rename <ws/session>
+  <name>`. App: "Rename…" in the workspace's menus (the pane's, the
+  sidebar's right-click), and double-click a session's tab, or its menu.
+
+## D-102 — A workspace shows its Git work (2026-10-15)
+
+The pane showed a branch name and nothing of what an agent had changed;
+seeing it meant a shell and `git status`. Verification already read the work
+(`work_state`, D-062), but for the judge.
+
+- `workspace.changes`: the branch, commits ahead of and behind the base, and
+  every file changed since it, committed or not (new files too), with line
+  counts. `workspace.diff`: one file's diff. The base is the workspace's
+  base branch, else the branch's upstream; with neither, only what isn't
+  committed. Read-only, never touching the index, scoped to the workspace
+  root. Bounded: 500 files, 512 KiB of diff.
+- Unlike the judge's report, nothing is held back: secret-looking files are
+  listed and diffed. This is the developer's own workspace, which the Files
+  panel already downloads whole.
+- The merge-base lookup is shared with `work_state` (`merge_base`).
+- App: a chip beside the branch (`3 files · +120 −14 · ↑2`) opens a
+  **Changes** panel, next to Files and Timeline, listing the files and each
+  one's diff. It is read when the workspace is shown and something
+  happened in it (a session or agent moved). An agent's edits make no event,
+  so while the panel is open it reads again every 30 s, and on ↻.
+- Not done: staging, committing, or diffs of a single commit.
+
+## D-103 — Files can be previewed, renamed and deleted (2026-10-15)
+
+The Files panel only browsed, downloaded and uploaded: reading a log meant
+a download, and a stray file meant a shell.
+
+- **Preview:** clicking a file shows its first 256 KiB as text (UTF-8
+  without NULs); anything else says so and offers the download.
+- `fs.remove` (a file, a link, or a directory and everything in it) and
+  `fs.rename` (a new name in the same directory, never over another). Both
+  act **only inside the workspace**: the path's parent is resolved, so a link
+  is removed, not its target. A path resolving outside the root, or to the
+  root itself, is refused. Reading stays as it was (any path the
+  daemon's user can read).
+- The app asks before deleting, and says "and everything in it" for a
+  folder.
+- The path field takes a folder to go to (`~ws/…` is the workspace). A
+  dotfiles switch is remembered on this Mac; it starts on, as before. The
+  side panel last open opens with the next workspace too.
+
+## D-104 — A workspace knows its sessions' ports (2026-10-15)
+
+A dev server started in a session showed up only on the host's page, with
+no telling whose it was.
+
+- `workspace.ports`: the listening ports (`host.ports`) whose process
+  descends from one of the workspace's running sessions' processes, found by
+  walking up each process's parents (`sysinfo`, at most 64 levels). Read
+  when asked, never in the reconcile loop.
+- App: a chip per port in the session bar (`:5173 ↗`). One click opens it in
+  the browser, forwarding it first for a remote host (D-046's preview path,
+  now shared). The pane in front reads them every 10 s while the window has
+  focus and a session runs.
+
+## D-105 — A task's own workspace is put away when the task ends (2026-10-15)
+
+Each task given a worktree of its own (D-080) left a workspace behind,
+running its agent, after the task was done; D-036 had left auto-archiving
+for later.
+
+- **`Workspace.feature_id`** marks a workspace made for a task (additive).
+  A workspace the developer chose for a task is never touched.
+- **When the task becomes done or cancelled, its own workspace is
+  archived** (files, branch and conversations kept). It is skipped while the
+  task still asks something, such as a push to allow, which a review step
+  can raise just as the task is accepted; answering it tries again. It is
+  also skipped while anything the developer may be using runs there: a
+  shell, a service, a command, an agent at work or waiting on them. The
+  task's conversation says it was archived.
+- **Only on the transition:** a developer who unarchives it to look keeps
+  it.
+- **It comes back when the task needs it again:** asked for more after done
+  (D-050), the task unarchives its own workspace and waits while it
+  prepares. Another's archived workspace makes it wait with "unarchive it
+  to go on", instead of failing the run.
+- App: a task's workspace links to its task ("Task ↗").
+
+## D-106 — The workspace view's everyday tools (2026-10-15)
+
+From the same review, the small things a day of work in the view runs into.
+All app-side, kept on this Mac where remembered:
+
+- **⌘K** goes to a workspace by part of its name, host, branch, repository,
+  brief title or a session's name; the sidebar has the same filter.
+  **Idle and archived workspaces are listed the latest active first** (its
+  last change, an agent's last move, its newest attention), not by name.
+- **Shortcuts in a workspace:** ⌘T a new session; ⌘⇧[ / ⌘⇧] the session
+  before / after; ⌘F finds in the session's history.
+- **⌘F reads the session's history** (`session.read`, the last 10 000
+  lines) and searches it in the app. The history lives in the session
+  (tmux's alternate screen keeps it out of the app's terminal), so the
+  matches are listed, with line numbers, rather than scrolled to.
+- **Text size:** ⌘= / ⌘- / ⌘0, for every terminal at once, remembered.
+- **⌘-click a link** in a terminal opens it. The session has the mouse
+  (tmux), so the app reads the line under the pointer itself, joining the
+  rows a long line wrapped into, and keeps the click from the session.
+- **New workspace suggests the repositories** the host's workspaces came
+  from.
+- **Older hosts:** every request above is new. A host that answers
+  `unknown variant` is not asked that again until it reconnects (maybe
+  updated). Its chips stay hidden, and an action says to update it.

@@ -166,12 +166,14 @@ otter ls [--watch] [--table] [--archived]
 otter ack <ws[/session]>
 otter workspace show|prepare <ws>
 otter workspace archive|unarchive <ws>              # stop and put away, files kept
+otter workspace rename <ws> <name>                  # the name only: directory, branch, sessions stay
 otter workspace brief <ws> [--title T] [--description D]
                      [--constraint C] [--reference R] [--decision D] [--clear]   # why it exists
 otter workspace delete <ws> [--yes] [--force]       # --force: discard uncommitted work
 otter start <ws> [--name N] [--kind terminal|service|task] [-- command]
 otter start <ws> --agent [codex|claude] [--prompt P]
 otter session stop|restart|delete <ws/session>      # restart resumes an agent's conversation
+otter session rename <ws/session> <name>
 otter attach <[host:]ws[/session]>
 otter logs <ws/session> [-n LINES]
 otter send <ws/session> <text> [--no-enter]
