@@ -15,6 +15,8 @@ struct Report {
     host: String,
     problems: Vec<Problem>,
     log: Option<String>,
+    /// How Otter answers there (D-089).
+    otter: Option<String>,
 }
 
 /// Each host's problems; fails (exit 1) when there is any.
@@ -34,6 +36,7 @@ pub async fn run(config: &Config, host: Option<String>, json: bool) -> Result<()
                     host: h.name.clone(),
                     problems: s.problems,
                     log: s.log,
+                    otter: s.otter,
                 },
                 Err(e) => unreachable(&h, &e.to_string()),
             },
@@ -45,7 +48,7 @@ pub async fn run(config: &Config, host: Option<String>, json: bool) -> Result<()
     if json {
         let v: Vec<_> = reports
             .iter()
-            .map(|r| serde_json::json!({"host": r.host, "problems": r.problems, "log": r.log}))
+            .map(|r| serde_json::json!({"host": r.host, "problems": r.problems, "log": r.log, "otter": r.otter}))
             .collect();
         output::print_json(&v)?;
     } else {
@@ -63,6 +66,9 @@ pub async fn run(config: &Config, host: Option<String>, json: bool) -> Result<()
                     println!("  {} {}", paint("✗", "31", color), p.what);
                     println!("    → {}", p.next);
                 }
+            }
+            if let Some(how) = &r.otter {
+                println!("  {}", paint(&format!("Otter answers {how}"), "2", color));
             }
             if let Some(log) = &r.log {
                 println!("  {}", paint(&format!("otterd's log: {log}"), "2", color));
@@ -91,6 +97,7 @@ fn unreachable(h: &HostEntry, e: &str) -> Report {
             ),
         }],
         log: None,
+        otter: None,
     }
 }
 

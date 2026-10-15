@@ -13,7 +13,9 @@
 
 import { randomUUID } from "node:crypto";
 import {
+  createSdkMcpServer,
   query as sdkQuery,
+  tool,
   type CanUseTool,
   type HookCallback,
   type Options,
@@ -23,9 +25,11 @@ import {
   type SDKUserMessage,
 } from "@anthropic-ai/claude-agent-sdk";
 
+import { z } from "zod";
+
 import { Pending } from "./interactions.js";
 import { Mapper } from "./map.js";
-import type { Event, InitializePayload, PolicyReplyPayload, Resolution } from "./protocol.js";
+import type { Event, InitializePayload, OtterTool, PolicyReplyPayload, Resolution, ToolResultPayload } from "./protocol.js";
 
 export type QueryFn = (params: { prompt: AsyncIterable<SDKUserMessage>; options?: Options }) => Query;
 
@@ -63,6 +67,47 @@ export class InputQueue implements AsyncIterable<SDKUserMessage> {
 /** Tools held back for now (subagents). */
 export const DISALLOWED_TOOLS = ["Task", "Agent"];
 
+/** The in-process server Otter's tools are served from (an `otter` run). */
+export const OTTER_SERVER = "otter";
+
+/** The name the model calls one of Otter's tools by. */
+export const otterToolName = (name: string) => `mcp__${OTTER_SERVER}__${name}`;
+
+/**
+ * A JSON schema's properties as the SDK's tool shape. otterd checks the
+ * arguments again; this tells the model what to send.
+ */
+export function shapeOf(schema: Record<string, unknown>): Record<string, z.ZodType> {
+  const props = (schema.properties ?? {}) as Record<string, Record<string, unknown>>;
+  const required = new Set(Array.isArray(schema.required) ? (schema.required as string[]) : []);
+  const shape: Record<string, z.ZodType> = {};
+  for (const [name, p] of Object.entries(props)) {
+    let t: z.ZodType;
+    switch (p.type) {
+      case "integer":
+        t = z.number().int();
+        break;
+      case "number":
+        t = z.number();
+        break;
+      case "string":
+        t = z.string();
+        break;
+      case "boolean":
+        t = z.boolean();
+        break;
+      case "array":
+        t = z.array((p.items as Record<string, unknown> | undefined)?.type === "string" ? z.string() : z.unknown());
+        break;
+      default:
+        t = z.unknown();
+    }
+    if (typeof p.description === "string") t = t.describe(p.description);
+    shape[name] = required.has(name) ? t : t.optional();
+  }
+  return shape;
+}
+
 export class Session {
   readonly mapper = new Mapper();
   private q: Query | null = null;
@@ -70,6 +115,7 @@ export class Session {
   private abort = new AbortController();
   private checks = new Pending<PolicyReplyPayload>();
   private permissions = new Pending<Resolution>();
+  private toolResults = new Pending<string>();
   private n = 0;
   /** Resolves when the SDK's message stream ends. */
   done: Promise<void> = Promise.resolve();
@@ -83,6 +129,7 @@ export class Session {
   /** The SDK options for this run (exported for tests). */
   options(): Options {
     const i = this.init;
+    if (i.profile === "otter") return this.otterOptions(i.otter_tools ?? []);
     return {
       cwd: i.cwd,
       env: { ...process.env },
@@ -106,6 +153,59 @@ export class Session {
         process.stderr.write(data.length > 4000 ? `${data.slice(0, 4000)}…\n` : data);
       },
     };
+  }
+
+  /**
+   * Otter's own turn (D-089): none of Claude Code's tools, no settings, no
+   * MCP servers but Otter's; each tool call goes to otterd, which checks and
+   * answers it. Anything else the model asks for is denied.
+   */
+  private otterOptions(tools: OtterTool[]): Options {
+    const i = this.init;
+    const server = createSdkMcpServer({
+      name: OTTER_SERVER,
+      version: "1",
+      alwaysLoad: true,
+      tools: tools.map((t) => tool(t.name, t.description, shapeOf(t.input_schema), (args) => this.otterCall(t.name, args))),
+    });
+    return {
+      cwd: i.cwd,
+      env: { ...process.env },
+      model: i.model,
+      includePartialMessages: true,
+      tools: [],
+      mcpServers: { [OTTER_SERVER]: server },
+      strictMcpConfig: true,
+      allowedTools: tools.map((t) => otterToolName(t.name)),
+      disallowedTools: DISALLOWED_TOOLS,
+      settingSources: [],
+      systemPrompt: i.instructions ?? "",
+      maxTurns: i.max_turns,
+      maxBudgetUsd: i.max_budget_usd,
+      permissionMode: "default",
+      abortController: this.abort,
+      canUseTool: async () => ({ behavior: "deny", message: "Otter has only its own tools." }),
+      stderr: (data: string) => {
+        process.stderr.write(data.length > 4000 ? `${data.slice(0, 4000)}…\n` : data);
+      },
+    };
+  }
+
+  /** One of Otter's tools, called by the model: otterd answers (public for tests). */
+  async otterCall(name: string, args: unknown) {
+    const call_id = this.id("call-");
+    this.emit({ type: "tool_call", call_id, tool: name, input: args });
+    let output: string;
+    try {
+      output = await this.toolResults.wait(call_id, this.abort.signal);
+    } catch {
+      output = JSON.stringify({ ok: false, error: { code: "retryable", message: "the turn ended before Otter answered" } });
+    }
+    return { content: [{ type: "text" as const, text: output }] };
+  }
+
+  toolResult(p: ToolResultPayload): boolean {
+    return this.toolResults.resolve(p.call_id, p.output);
   }
 
   /** Start the SDK and wait until it is initialized (or `timeoutMs`). */
@@ -223,6 +323,7 @@ export class Session {
   async shutdown(graceMs: number) {
     this.checks.cancelAll("shutting down");
     this.permissions.cancelAll("shutting down");
+    this.toolResults.cancelAll("shutting down");
     this.input.end();
     const settled = await Promise.race([this.done.then(() => true), new Promise((r) => setTimeout(() => r(false), graceMs))]);
     if (!settled) {

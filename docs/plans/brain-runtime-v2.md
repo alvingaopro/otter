@@ -5,9 +5,12 @@
 corrections are folded in — among them, that what Otter does on the
 developer's word draws its authority from the developer's own message.
 **Status:** M0 done but for what needs real use (`runtime-validation.md`
-V2-0b, V2-0c). M1: the gateway, the turn and the `scripted` backend are in
-(behind `OTTER_BRAIN_V2=1`, env only so far); the Claude worker's turn is
-next. **Branch:** one per step, from `main`.
+V2-0b, V2-0c). M1 done behind `OTTER_BRAIN_V2=1` (env only so far): the
+gateway, the turn, the `scripted` backend, and Claude's turn through the
+worker's Otter profile (live: V2-1a, V2-1b; `otter doctor` says which path
+a host has). Not done in M1: the reply isn't streamed while Claude writes
+it (it arrives whole); V2-1c. M2 is next. **Branch:** one per step, from
+`main`.
 
 > **Core decision:** Otter's replies become a bounded, tool-using turn. Every
 > change the turn makes goes through the controller's existing in-process

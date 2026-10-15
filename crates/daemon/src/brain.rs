@@ -170,9 +170,9 @@ pub trait Brain: Send + Sync {
             intent: Intent::Guide,
         })
     }
-    /// Otter's tool-using turn (D-089), for a brain that has one; the rest
-    /// answer with [`Brain::reply`].
-    fn turn(&self) -> Option<Box<dyn crate::turn::TurnBackend>> {
+    /// Otter's tool-using turn (D-089), for a brain that has one here; the
+    /// rest answer with [`Brain::reply`].
+    fn turn(&self, _env: &EnvMap, _root: &Path) -> Option<Box<dyn crate::turn::TurnBackend>> {
         None
     }
 }
@@ -666,7 +666,7 @@ impl Brain for Scripted {
         say(&text);
         Ok(Reply { text, intent })
     }
-    fn turn(&self) -> Option<Box<dyn crate::turn::TurnBackend>> {
+    fn turn(&self, _env: &EnvMap, _root: &Path) -> Option<Box<dyn crate::turn::TurnBackend>> {
         Some(Box::new(crate::turn::Scripted))
     }
 }
@@ -762,6 +762,20 @@ impl Brain for Model {
         match self.backend {
             Backend::ClaudeCode => "claude",
             Backend::Api(p) => p.id,
+        }
+    }
+    /// Claude, through the worker's Otter profile, where the worker has it;
+    /// a provider's API has no tool-using turn yet (M5).
+    fn turn(&self, env: &EnvMap, root: &Path) -> Option<Box<dyn crate::turn::TurnBackend>> {
+        match self.backend {
+            Backend::ClaudeCode if crate::agents::claude_otter::ready(env).is_ok() => {
+                Some(Box::new(crate::turn::ClaudeTurn {
+                    model: self.model.clone(),
+                    env: env.clone(),
+                    root: root.to_owned(),
+                }))
+            }
+            _ => None,
         }
     }
 

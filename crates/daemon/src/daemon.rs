@@ -382,6 +382,17 @@ impl Daemon {
             detect("direnv", &["version"], env),
             crate::agents::detect_all(env),
         );
+        let otter = self.how_otter_answers();
+        let mut problems = self.problems_now(&git, &tmux).await;
+        // Asked for and not had: Otter answers without its tools here.
+        if let Err(why) = &otter
+            && self.brain_choice().v2
+        {
+            problems.push(otter_core::Problem {
+                what: format!("Otter answers {why}."),
+                next: "Choose Claude Code as Otter's model in Settings and install the Claude worker (`otter host install`), or unset OTTER_BRAIN_V2.".into(),
+            });
+        }
         HostStatus {
             hostname: hostname(),
             os: std::env::consts::OS.to_owned(),
@@ -393,10 +404,13 @@ impl Daemon {
             otterd_home: self.paths.home.to_string_lossy().into_owned(),
             shell: self.shell.clone(),
             environment_source: self.env_source.clone(),
-            problems: self.problems_now(&git, &tmux).await,
+            problems,
             log: Some(self.paths.log_file.to_string_lossy().into_owned()),
             capabilities: vec![git, tmux, nix, direnv],
             agents,
+            otter: Some(match otter {
+                Ok(how) | Err(how) => how,
+            }),
         }
     }
 
