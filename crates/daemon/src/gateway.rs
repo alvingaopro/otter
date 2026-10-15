@@ -608,6 +608,7 @@ impl Gateway {
             Some(&command),
         )
         .await;
+        crash_point("called", name);
         let d = &self.inner.daemon;
         let mut stop = false;
         let mut not_done: Option<String> = None;
@@ -652,6 +653,7 @@ impl Gateway {
             }
         };
         d.feature_changed(&applied);
+        crash_point("applied", name);
         let redirect: String = messages
             .iter()
             .map(|m| m.text.as_str())
@@ -689,6 +691,16 @@ impl Gateway {
             .push(format!("{name}: {did}"));
         let status = d.feature_get(f.id.as_str()).await?.status;
         Ok(json!({"done": did, "status": status.as_str()}))
+    }
+}
+
+/// Tests only (`OTTER_TEST_CRASH=<point>:<tool>`): otterd dies here, as a
+/// crash would — `called` once a change is written down, `applied` once it
+/// is made and before anything reaches the agent — to show what the next
+/// start makes of it (plan §8).
+fn crash_point(point: &str, tool: &str) {
+    if std::env::var("OTTER_TEST_CRASH").is_ok_and(|v| v == format!("{point}:{tool}")) {
+        std::process::abort();
     }
 }
 

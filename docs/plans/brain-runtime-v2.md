@@ -11,7 +11,9 @@ and Claude's turn through the worker's Otter profile (live: V2-1a, V2-1b;
 default stays off until the transcripts exist. Done: a host setting
 (*Otter's tools (preview)* in Settings) and streaming (Claude's words as it
 writes them, a new paragraph per message, the reply replacing them at the
-end). Next: the crash and replay tests. **To make the default
+end), and the crash and replay tests of §8 (a crash before a change: made
+once after; after a forward: delivered once; a message sent twice:
+answered once). M2 is done but for the default, which waits on V2-0c. **To make the default
 possible, the developer:** turns the setting on for a host whose Otter is
 Claude Code, works real tasks with it, and records 5–10 transcripts
 (V2-0c); and, on a host with an API key, runs the spike with it (V2-0b).

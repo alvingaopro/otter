@@ -677,3 +677,162 @@ async fn otters_reply_streams_as_it_is_written() {
     );
     assert_eq!(last, "The task is draft.");
 }
+
+/// The history records Otter's tool `name` left, as (called, done).
+async fn tool_records(host: &TestHost, id: &str, name: &str) -> (usize, usize) {
+    let recs = records(host, id).await;
+    let called = recs
+        .iter()
+        .filter(|r| matches!(&r.event, FeatureEvent::ToolCalled { tool, .. } if tool == name))
+        .count();
+    let done = recs
+        .iter()
+        .filter(|r| matches!(&r.event, FeatureEvent::ToolDone { tool, .. } if tool == name))
+        .count();
+    (called, done)
+}
+
+/// otterd dies once a change is written down and before it is made (plan
+/// §8): the next start answers the message again, and the change is made
+/// once.
+#[tokio::test]
+async fn a_crash_before_a_change_makes_it_once_after() {
+    let mut fake = host_with(vec![("OTTER_TEST_CRASH", "called:revise_task".into())]).await;
+    let id = at_work(&fake.host, "Add CSV export HANG").await;
+    let text = "Also export JSON\nCALL: revise_task {}";
+    fake.host
+        .conn()
+        .await
+        .feature_send("crash-1", &id, text)
+        .await
+        .unwrap();
+    eventually("otterd dies", || {
+        let gone = fake
+            .host
+            .daemon
+            .as_mut()
+            .unwrap()
+            .try_wait()
+            .unwrap()
+            .is_some();
+        async move { gone.then_some(()) }
+    })
+    .await;
+    fake.host.revive_without("OTTER_TEST_CRASH").await;
+    let host = &fake.host;
+    let f = wait_feature(host, &id, "answered after the restart", |f| {
+        f.messages
+            .iter()
+            .any(|m| m.role == MessageRole::Controller && m.text.contains("revise_task"))
+    })
+    .await;
+    let msg = f.messages.iter().find(|m| m.text == text).unwrap();
+    let replies = f
+        .messages
+        .iter()
+        .filter(|m| m.correlation_id.as_deref() == Some(msg.id.as_str()))
+        .count();
+    assert_eq!(replies, 1);
+    // Written down twice (before the crash, and again), made once.
+    assert_eq!(tool_records(host, &id, "revise_task").await, (2, 1));
+    let replans = records(host, &id)
+        .await
+        .iter()
+        .filter(|r| r.text.contains("You changed the goal: planning again"))
+        .count();
+    assert_eq!(replans, 1);
+}
+
+/// otterd dies once a forward is recorded as done, before the message
+/// reaches the agent (plan §8): after the restart it reaches the agent's
+/// conversation once — not lost, not twice.
+#[tokio::test]
+async fn a_crash_after_a_forward_still_delivers_it_once() {
+    let mut fake = host_with(vec![(
+        "OTTER_TEST_CRASH",
+        "applied:forward_to_agent".into(),
+    )])
+    .await;
+    let id = at_work(&fake.host, "Add CSV export HANG").await;
+    let text = "Use tabs, not commas\nINTENT: guide";
+    fake.host
+        .conn()
+        .await
+        .feature_send("crash-2", &id, text)
+        .await
+        .unwrap();
+    eventually("otterd dies", || {
+        let gone = fake
+            .host
+            .daemon
+            .as_mut()
+            .unwrap()
+            .try_wait()
+            .unwrap()
+            .is_some();
+        async move { gone.then_some(()) }
+    })
+    .await;
+    fake.host.revive_without("OTTER_TEST_CRASH").await;
+    let host = &fake.host;
+    let f = wait_feature(host, &id, "answered after the restart", |f| {
+        f.messages
+            .iter()
+            .any(|m| m.role == MessageRole::Controller && m.text.contains("forward_to_agent"))
+    })
+    .await;
+    assert_eq!(tool_records(host, &id, "forward_to_agent").await, (2, 1));
+    let conversation = f.runs.last().unwrap().conversation_id.clone().unwrap();
+    let carrying = |c: &otter_core::conversation::Conversation| {
+        c.turns
+            .iter()
+            .filter(|t| t.text().contains("Use tabs, not commas"))
+            .count()
+    };
+    eventually("the message reaches the agent", || async {
+        let c = host
+            .conn()
+            .await
+            .conversation_get(conversation.as_str())
+            .await
+            .unwrap()
+            .conversation;
+        (carrying(&c) > 0).then_some(())
+    })
+    .await;
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    let c = host
+        .conn()
+        .await
+        .conversation_get(conversation.as_str())
+        .await
+        .unwrap()
+        .conversation;
+    assert_eq!(
+        carrying(&c),
+        1,
+        "{:#?}",
+        c.turns.iter().map(|t| t.text()).collect::<Vec<_>>()
+    );
+}
+
+/// The same message sent twice (a retry after a lost reply) is one message,
+/// answered once.
+#[tokio::test]
+async fn a_message_sent_twice_is_answered_once() {
+    let fake = host_with(vec![]).await;
+    let host = &fake.host;
+    let id = at_work(host, "Add CSV export HANG").await;
+    let text = "Where is it?\nCALL: get_task {}";
+    for _ in 0..2 {
+        host.conn()
+            .await
+            .feature_send("twice-1", &id, text)
+            .await
+            .unwrap();
+    }
+    let (f, answers) = run(host, &id, "twice-1", text).await;
+    assert_eq!(answers.len(), 1, "{answers:?}");
+    assert_eq!(f.messages.iter().filter(|m| m.text == text).count(), 1);
+    assert_eq!(tool_records(host, &id, "get_task").await, (0, 1));
+}
