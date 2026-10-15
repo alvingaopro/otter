@@ -7313,6 +7313,12 @@ async fn a_hosts_features_become_its_tasks() {
         c.step_id.as_ref().is_some_and(|s| first.step(s).is_some()),
         "{c:?}"
     );
+    // Otter's conversation on the host, which fails soft: it read.
+    let chat = conn.otter_get().await.unwrap();
+    assert!(
+        chat.messages.iter().any(|m| m.text == "What needs me?"),
+        "{chat:#?}"
+    );
 
     // Started again: nothing more to move, the same tasks.
     conn.shutdown().await.unwrap();
