@@ -8,6 +8,12 @@
 //!   (which in turn may realize a Nix flake via `use flake`). The result is
 //!   applied on top of the login environment, explicitly, before any managed
 //!   process starts — no shell hooks involved.
+//!
+//! direnv is run with otterd's stand-ins (`run/bin`, files.rs) already first
+//! on PATH. What it exports remembers the PATH it started from, and a shell
+//! hook in a session goes back to that PATH whenever it reloads (a watched
+//! file changed) or unloads (`cd` elsewhere): the stand-ins must be in it,
+//! or they would drop off PATH mid-session.
 
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -20,14 +26,20 @@ use crate::env::{EnvMap, which};
 
 pub struct EnvironmentManager {
     base: EnvMap,
+    /// `base` with the stand-ins first on PATH: what direnv runs in.
+    with_shim: EnvMap,
     direnv: Option<PathBuf>,
 }
 
 impl EnvironmentManager {
-    pub fn new(base: &EnvMap) -> Self {
+    pub fn new(base: &EnvMap, shim: PathBuf) -> Self {
+        let mut with_shim = base.clone();
+        let path = base.get("PATH").cloned().unwrap_or_default();
+        with_shim.insert("PATH".into(), crate::files::shim_first(&shim, &path));
         EnvironmentManager {
             direnv: which("direnv", base),
             base: base.clone(),
+            with_shim,
         }
     }
 
@@ -64,7 +76,7 @@ impl EnvironmentManager {
                     self.direnv(direnv, root, &["allow"]).await?;
                 }
                 let out = self.direnv(direnv, root, &["export", "json"]).await?;
-                let mut env = self.base.clone();
+                let mut env = self.with_shim.clone();
                 if !out.trim().is_empty() {
                     let diff: std::collections::BTreeMap<String, Option<String>> =
                         serde_json::from_str(&out).context("parsing `direnv export json`")?;
@@ -85,7 +97,7 @@ impl EnvironmentManager {
             .args(args)
             .current_dir(root)
             .env_clear()
-            .envs(&self.base)
+            .envs(&self.with_shim)
             // Quiet "direnv: loading …" chatter; errors still go to stderr.
             .env("DIRENV_LOG_FORMAT", "")
             .stdin(Stdio::null())

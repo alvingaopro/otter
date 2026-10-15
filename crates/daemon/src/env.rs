@@ -20,10 +20,17 @@ const END: &str = "__WORKD_ENV_END__";
 const SELF_VAR: &str = "OTTER_SELF_EXE";
 
 /// Variables that describe a particular terminal, shell process or SSH
-/// connection rather than the user's environment.
+/// connection rather than the user's environment. direnv's state belongs to
+/// the directory the daemon happened to start from: a direnv run for a
+/// workspace, or a session's shell hook, would first go back to the PATH from
+/// before it, dropping otterd's stand-ins (environment.rs).
 const STRIP: &[&str] = &[
     "_",
     "COLUMNS",
+    "DIRENV_DIFF",
+    "DIRENV_DIR",
+    "DIRENV_FILE",
+    "DIRENV_WATCHES",
     "LINES",
     "OLDPWD",
     "PWD",

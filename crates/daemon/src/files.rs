@@ -40,6 +40,15 @@ pub fn shim_dir(paths: &Paths) -> PathBuf {
     paths.run_dir.join("bin")
 }
 
+/// `path` with `dir` first, and nowhere else.
+pub fn shim_first(dir: &Path, path: &str) -> String {
+    let dir = dir.to_string_lossy();
+    std::iter::once(&*dir)
+        .chain(path.split(':').filter(|d| !d.is_empty() && *d != dir))
+        .collect::<Vec<_>>()
+        .join(":")
+}
+
 fn clipboard_dir(paths: &Paths) -> PathBuf {
     paths.run_dir.join("clipboard")
 }
@@ -362,6 +371,17 @@ impl Daemon {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn shim_goes_first_once() {
+        let dir = Path::new("/h/run/bin");
+        assert_eq!(shim_first(dir, "/usr/bin:/bin"), "/h/run/bin:/usr/bin:/bin");
+        assert_eq!(
+            shim_first(dir, "/nix/x/bin:/h/run/bin:/usr/bin"),
+            "/h/run/bin:/nix/x/bin:/usr/bin"
+        );
+        assert_eq!(shim_first(dir, ""), "/h/run/bin");
+    }
 
     #[tokio::test]
     async fn shim_serves_a_fresh_paste_and_defers_otherwise() {

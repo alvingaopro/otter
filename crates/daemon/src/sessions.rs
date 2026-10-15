@@ -259,17 +259,11 @@ impl Daemon {
         // the browser stand-in (login.rs) unless the user chose a browser.
         env.entry("BROWSER".into())
             .or_insert_with(|| "otter-open".into());
-        // The stand-ins (wl-paste, xdg-open, …; files.rs) come first.
+        // The stand-ins (wl-paste, xdg-open, …; files.rs) come first. A
+        // direnv environment already has them (environment.rs).
         let shim = crate::files::shim_dir(&self.paths);
         let path = env.get("PATH").cloned().unwrap_or_default();
-        env.insert(
-            "PATH".into(),
-            if path.is_empty() {
-                shim.display().to_string()
-            } else {
-                format!("{}:{path}", shim.display())
-            },
-        );
+        env.insert("PATH".into(), crate::files::shim_first(&shim, &path));
         let result = match argv {
             Ok(argv) => {
                 let spec = LaunchSpec {
