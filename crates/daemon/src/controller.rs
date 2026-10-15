@@ -219,7 +219,7 @@ impl Daemon {
         // The developer said something: answer first (it may pause or go on)
         // — with Otter's tools where it has them (D-089).
         if !unanswered(&f).is_empty() {
-            match self.turn_backend(&f).await {
+            match self.turn_backend() {
                 Some(backend) => self.otter_turn(&f, backend).await?,
                 None => self.converse(&f).await?,
             }

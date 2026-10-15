@@ -7,11 +7,31 @@ no network listener; nothing in the desktop app imports it.
 
 ```
 otterd ──stdin: initialize, send_turn, interrupt, policy_reply,
-                resolve_interaction, shutdown──▶ worker ──SDK──▶ Claude Code
+                resolve_interaction, tool_result, shutdown──▶ worker ──SDK──▶ Claude Code
        ◀──stdout: ready, session, delivered, text_delta, text,
                 tool_started, tool_finished, policy_check,
-                permission_request, background, turn_finished, fatal──
+                permission_request, tool_call, background, turn_finished, fatal──
 ```
+
+## Two profiles
+
+`initialize` says what the run is for (`profile`; absent: `coding`):
+
+- **`coding`** — the coding agent (D-057): Claude Code's tools, each call
+  checked by Otter's policy (`policy_check` → `policy_reply`), the project's
+  settings.
+- **`otter`** — Otter's own turn (D-089): `otter_tools` (each a name, a
+  description and a JSON schema) served from an in-process MCP server and
+  nothing else — no Claude Code tools (`tools: []`), no settings, no other
+  MCP servers; anything else the model asks for is denied. Each call goes to
+  otterd as `tool_call {call_id, tool, input}`, and its answer comes back as
+  `tool_result {call_id, output}`; otterd's gateway decides what a call may
+  do. `instructions` is the whole system prompt.
+
+A worker lists the profiles it has in `ready` and `--check` (`profiles`);
+otterd uses one for Otter's turn only if it says `otter` — a worker from
+before profiles would run a coding agent instead. `probes/otter-tools.mjs`
+checks the profile against real Claude.
 
 ## Compatibility record
 

@@ -206,6 +206,22 @@ async fn a_turn_that_fails_still_answers_once() {
         "the status: {}",
         reply.text
     );
+    // Said, not only logged (D-076); and `otter doctor` has it until a turn works.
+    assert!(
+        reply
+            .text
+            .contains("I couldn't look just now: scripted failure."),
+        "{}",
+        reply.text
+    );
+    let couldnt = |s: &otter_core::HostStatus| {
+        s.problems
+            .iter()
+            .any(|p| p.what.starts_with("Otter couldn't answer on"))
+    };
+    assert!(couldnt(&host.conn().await.host_status().await.unwrap()));
+    run(host, &id, "fail-2", "And now?\nCALL: get_task {}").await;
+    assert!(!couldnt(&host.conn().await.host_status().await.unwrap()));
 }
 
 #[tokio::test]
@@ -540,8 +556,8 @@ async fn live_otter_says_why_a_task_is_blocked() {
             _ => None,
         })
         .collect();
+    // The context already says why; looking further is the model's call.
     println!("tools: {looked:?}");
-    assert!(!looked.is_empty(), "it looked");
     assert!(
         reply.text.to_lowercase().contains("workspace"),
         "{}",
@@ -549,4 +565,36 @@ async fn live_otter_says_why_a_task_is_blocked() {
     );
     assert!(!reply.text.contains("INTENT:"), "{}", reply.text);
     assert_eq!(f.status, FeatureStatus::Blocked, "nothing changed");
+}
+
+/// A brain without a tool-using turn (a provider's API, M5) answers as
+/// before with the flag on, and the host says so.
+#[tokio::test]
+async fn a_provider_without_a_turn_answers_as_before_and_says_so() {
+    let fake =
+        fake_agent_host_with("ok", "openrouter", |_| vec![("OTTER_BRAIN_V2", "1".into())]).await;
+    let host = &fake.host;
+    let status = host.conn().await.host_status().await.unwrap();
+    assert_eq!(
+        status.otter.as_deref(),
+        Some("without tools: `openrouter` has no tool-using turn yet")
+    );
+    assert!(
+        status
+            .problems
+            .iter()
+            .any(|p| p.what.starts_with("Otter answers without tools")),
+        "{:?}",
+        status.problems
+    );
+    let id = draft(host).await;
+    let (_, answers) = run(host, &id, "or-1", "What's going on?\nCALL: get_task {}").await;
+    assert!(answers.is_empty(), "no tool answered: {answers:?}");
+    assert!(
+        !records(host, &id)
+            .await
+            .iter()
+            .any(|r| r.text.starts_with("Otter: ")),
+        "converse uses no tools"
+    );
 }

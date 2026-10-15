@@ -13,7 +13,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow, bail};
 use serde_json::{Value, json};
-use tokio::io::{AsyncWriteExt, BufReader};
+use tokio::io::{AsyncReadExt, AsyncWriteExt, BufReader};
 
 use super::claude_sdk::{
     Frame, PROTOCOL_VERSION, init_timeout, node, read_frame, strip_nulls, worker_check,
@@ -23,6 +23,8 @@ use crate::env::EnvMap;
 
 /// The profile a worker needs for Otter's turn.
 pub const PROFILE: &str = "otter";
+/// How much of the worker's stderr is kept for a failure's reason.
+const STDERR_KEEP: usize = 4 * 1024;
 
 /// Whether this host's worker can run Otter's turn; `Err` says why not.
 pub fn ready(env: &EnvMap) -> Result<(), String> {
@@ -72,8 +74,7 @@ where
         .envs(r.env)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        // Diagnostics are the worker's; Otter's turn keeps none of them.
-        .stderr(Stdio::null())
+        .stderr(Stdio::piped())
         .process_group(0)
         .kill_on_drop(true);
     let mut child = crate::env::spawn_tokio(&mut cmd)
@@ -81,6 +82,28 @@ where
         .with_context(|| format!("starting {} {}", node.display(), worker.display()))?;
     let mut stdin = child.stdin.take().expect("piped");
     let mut out = BufReader::new(child.stdout.take().expect("piped"));
+    // Diagnostics: drained (a full pipe would stall the worker), the tail
+    // kept for a failure's reason.
+    let tail = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+    let keep = tail.clone();
+    let mut stderr = child.stderr.take().expect("piped");
+    let drained = tokio::spawn(async move {
+        let mut buf = vec![0u8; 4096];
+        while let Ok(n) = stderr.read(&mut buf).await {
+            if n == 0 {
+                break;
+            }
+            let mut t = keep.lock().unwrap();
+            t.push_str(&String::from_utf8_lossy(&buf[..n]));
+            if t.len() > STDERR_KEEP {
+                let cut = t.len() - STDERR_KEEP;
+                let cut = (cut..t.len())
+                    .find(|i| t.is_char_boundary(*i))
+                    .unwrap_or(t.len());
+                t.drain(..cut);
+            }
+        }
+    });
     let mut n = 0u64;
     let mut send = async |kind: &str, payload: Value| -> Result<()> {
         n += 1;
@@ -112,76 +135,84 @@ where
         }
     };
 
-    send(
-        "initialize",
-        strip_nulls(json!({
-            "profile": PROFILE,
-            "otter_tools": r.tools,
-            "conversation_id": otter_core::ConversationId::generate().to_string(),
-            "cwd": r.cwd,
-            "model": r.model,
-            "instructions": r.instructions,
-            "max_turns": r.max_turns,
-            "setting_sources": [],
-        })),
-    )
-    .await?;
-    let ready = tokio::time::timeout(init_timeout(r.env), async {
+    // Everything up to the end of the turn: any failure comes out here, so
+    // what the worker said on the way goes with it.
+    let result: Result<String> = async {
+        send(
+            "initialize",
+            strip_nulls(json!({
+                "profile": PROFILE,
+                "otter_tools": r.tools,
+                "conversation_id": otter_core::ConversationId::generate().to_string(),
+                "cwd": r.cwd,
+                "model": r.model,
+                "instructions": r.instructions,
+                "max_turns": r.max_turns,
+                "setting_sources": [],
+            })),
+        )
+        .await?;
+        let ready = tokio::time::timeout(init_timeout(r.env), async {
+            loop {
+                let Some(ev) = next().await? else {
+                    bail!("the Claude worker ended before it was ready");
+                };
+                match ev["type"].as_str() {
+                    Some("ready") => return Ok(ev),
+                    Some("fatal") | Some("nack") => {
+                        bail!("the Claude worker: {}", text(&ev, &["message", "error"]))
+                    }
+                    _ => {}
+                }
+            }
+        })
+        .await
+        .map_err(|_| anyhow!("the Claude worker wasn't ready in time"))??;
+        let has_profile = ready["profiles"]
+            .as_array()
+            .is_some_and(|p| p.iter().any(|v| v == PROFILE));
+        if !has_profile {
+            bail!("the Claude worker has no Otter profile; reinstall with `otter host install`");
+        }
+
+        send("send_turn", json!({"turn_id": "t1", "text": r.prompt})).await?;
+        let mut said = String::new();
         loop {
             let Some(ev) = next().await? else {
-                bail!("the Claude worker ended before it was ready");
+                break Err(anyhow!("the Claude worker ended in the middle of the turn"));
             };
             match ev["type"].as_str() {
-                Some("ready") => return Ok(ev),
-                Some("fatal") | Some("nack") => {
-                    bail!("the Claude worker: {}", text(&ev, &["message", "error"]))
+                Some("tool_call") => {
+                    let (Some(id), Some(tool)) = (ev["call_id"].as_str(), ev["tool"].as_str())
+                    else {
+                        continue;
+                    };
+                    let output = call(tool.to_owned(), ev["input"].clone()).await;
+                    send("tool_result", json!({"call_id": id, "output": output})).await?;
+                }
+                Some("text") => said = text(&ev, &["text"]),
+                Some("turn_finished") => {
+                    break match ev["outcome"].as_str() {
+                        Some("completed") => Ok(ev["summary"]
+                            .as_str()
+                            .filter(|s| !s.trim().is_empty())
+                            .map(str::to_owned)
+                            .unwrap_or(said)),
+                        other => Err(anyhow!(
+                            "Otter's turn ended {} ({})",
+                            other.unwrap_or("?"),
+                            ev["error"].as_str().unwrap_or("no reason given")
+                        )),
+                    };
+                }
+                Some("fatal") => {
+                    break Err(anyhow!("the Claude worker: {}", text(&ev, &["message"])));
                 }
                 _ => {}
             }
         }
-    })
-    .await
-    .map_err(|_| anyhow!("the Claude worker wasn't ready in time"))??;
-    let has_profile = ready["profiles"]
-        .as_array()
-        .is_some_and(|p| p.iter().any(|v| v == PROFILE));
-    if !has_profile {
-        bail!("the Claude worker has no Otter profile; reinstall with `otter host install`");
     }
-
-    send("send_turn", json!({"turn_id": "t1", "text": r.prompt})).await?;
-    let mut said = String::new();
-    let result = loop {
-        let Some(ev) = next().await? else {
-            break Err(anyhow!("the Claude worker ended in the middle of the turn"));
-        };
-        match ev["type"].as_str() {
-            Some("tool_call") => {
-                let (Some(id), Some(tool)) = (ev["call_id"].as_str(), ev["tool"].as_str()) else {
-                    continue;
-                };
-                let output = call(tool.to_owned(), ev["input"].clone()).await;
-                send("tool_result", json!({"call_id": id, "output": output})).await?;
-            }
-            Some("text") => said = text(&ev, &["text"]),
-            Some("turn_finished") => {
-                break match ev["outcome"].as_str() {
-                    Some("completed") => Ok(ev["summary"]
-                        .as_str()
-                        .filter(|s| !s.trim().is_empty())
-                        .map(str::to_owned)
-                        .unwrap_or(said)),
-                    other => Err(anyhow!(
-                        "Otter's turn ended {} ({})",
-                        other.unwrap_or("?"),
-                        ev["error"].as_str().unwrap_or("no reason given")
-                    )),
-                };
-            }
-            Some("fatal") => break Err(anyhow!("the Claude worker: {}", text(&ev, &["message"]))),
-            _ => {}
-        }
-    };
+    .await;
     let _ = send("shutdown", json!({})).await;
     if tokio::time::timeout(Duration::from_secs(5), child.wait())
         .await
@@ -189,7 +220,20 @@ where
     {
         let _ = child.kill().await;
     }
-    result
+    let _ = tokio::time::timeout(Duration::from_secs(1), drained).await;
+    let tail = tail.lock().unwrap().clone();
+    result.map_err(|e| with_tail(e, &tail))
+}
+
+/// A failure, with what the worker's diagnostics last said (redacted).
+fn with_tail(e: anyhow::Error, tail: &str) -> anyhow::Error {
+    match tail.lines().rev().find(|l| !l.trim().is_empty()) {
+        Some(l) => anyhow!(
+            "{e:#} (the worker said: {})",
+            super::excerpt(&otter_core::redact::redact(l), 200)
+        ),
+        None => e,
+    }
 }
 
 fn text(ev: &Value, keys: &[&str]) -> String {
@@ -358,5 +402,11 @@ mod tests {
         let (reply, _) = turn(&env, dir.path(), "[msg_x] hi").await;
         let e = reply.unwrap_err().to_string();
         assert!(e.contains("no credentials"), "{e}");
+        // What the worker last said goes with it, without its secrets.
+        assert!(
+            e.contains("the worker said: tried ANTHROPIC_API_KEY="),
+            "{e}"
+        );
+        assert!(!e.contains("WORKERLEAK"), "{e}");
     }
 }
