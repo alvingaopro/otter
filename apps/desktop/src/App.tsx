@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -22,6 +22,7 @@ import { CliDialog } from "./CliDialog";
 import { WorkspacePane } from "./WorkspacePane";
 import { NewWorkspaceDialog } from "./NewWorkspaceDialog";
 import { SettingsDialog } from "./SettingsDialog";
+import { PanelGrip, SIDEBAR, usePanelWidth } from "./panelResize";
 import { useTheme } from "./theme";
 import { defaultSession, groups, headline, movePin, pinnedOf, placeAll, stalePins, togglePin, trayLabel } from "./model";
 import type { MenuItem } from "./Menu";
@@ -53,6 +54,9 @@ export default function App() {
     saveView(v);
   };
   const [sessions, setSessions] = useState<Record<string, string>>({});
+  // One width for the Tasks and Workspaces lists (D-097).
+  const [sidebarWidth, setSidebarWidth] = usePanelWidth(SIDEBAR);
+  const sidebarGrip = <PanelGrip panel={SIDEBAR} width={sidebarWidth} onResize={setSidebarWidth} label="Sidebar width" />;
   const [now, setNow] = useState(Date.now());
   const [version, setVersion] = useState<string | undefined>();
   const [open, setOpen] = useState<Open>(null);
@@ -250,7 +254,7 @@ export default function App() {
     : undefined;
 
   return (
-    <div className={IS_MAC ? "app mac" : "app"}>
+    <div className={IS_MAC ? "app mac" : "app"} style={{ "--sidebar-width": `${sidebarWidth}px` } as CSSProperties}>
       <div className="body">
         <ActivityBar
           view={view}
@@ -318,6 +322,7 @@ export default function App() {
               if (session) setSessions((m) => ({ ...m, [key]: session }));
               setView("workspaces");
             }}
+            grip={sidebarGrip}
             onOpenPreview={async (host, port, path) => {
               // A remote host's preview: forward just that port (D-046).
               const local = payload?.hosts.find((h) => h.name === host)?.describe === "this Mac";
@@ -364,6 +369,7 @@ export default function App() {
           pinMenu={pinMenu}
           onMovePin={(key, to) => setPins(movePin(pins, shownPins, key, to))}
         />
+        {sidebarGrip}
         {!payload ? (
           <main className="pane empty">
             <div className="drag-strip" data-tauri-drag-region />

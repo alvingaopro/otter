@@ -75,12 +75,12 @@ impl Workspace {
 
 /// Durable, human-level description of why a workspace exists. Every field is
 /// optional. Not to be confused with an agent's own conversation context.
+/// There is no goal (D-098): a brief written before still reads, its goal
+/// ignored.
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Brief {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub goal: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -108,7 +108,6 @@ impl Brief {
         };
         Brief {
             title: text(self.title),
-            goal: text(self.goal),
             description: text(self.description),
             constraints: list(self.constraints),
             references: list(self.references),
@@ -787,7 +786,7 @@ mod tests {
             name: "scratch".into(),
             root: "/home/u/.otter/workspaces/ws_x".into(),
             brief: Brief {
-                goal: Some("try things".into()),
+                description: Some("try things".into()),
                 ..Default::default()
             },
             source: WorkspaceSource::Empty,
@@ -809,15 +808,25 @@ mod tests {
     fn normalized_brief_drops_blank_text() {
         let b = Brief {
             title: Some("  ".into()),
-            goal: Some(" fix it \n".into()),
+            description: Some(" fix it \n".into()),
             decisions: vec!["".into(), " keep v1 ".into()],
             ..Default::default()
         }
         .normalized();
         assert_eq!(b.title, None);
-        assert_eq!(b.goal.as_deref(), Some("fix it"));
+        assert_eq!(b.description.as_deref(), Some("fix it"));
         assert_eq!(b.decisions, vec!["keep v1".to_owned()]);
         assert!(Brief::default().normalized().is_empty());
+    }
+
+    #[test]
+    fn a_brief_with_a_goal_still_reads() {
+        // Written before D-098, by an older otterd or client.
+        let b: Brief = serde_json::from_str(r#"{"title":"t","goal":"old"}"#).unwrap();
+        assert_eq!(b.title.as_deref(), Some("t"));
+        assert!(!serde_json::to_string(&b).unwrap().contains("goal"));
+        let empty: Brief = serde_json::from_str(r#"{"goal":"old"}"#).unwrap();
+        assert!(empty.is_empty());
     }
 
     #[test]

@@ -42,6 +42,8 @@ Layout:
 - `src/` — React: `ActivityBar` + `nav.ts` (the Tasks — features in code, D-088 — / Workspaces / Otter views, D-041; `OtterView` + `otterChat.ts` are Otter's conversation on a host, D-093),
   `FeaturesView` + `features.ts` (the contract) + `featureSource.ts` (where
   features come from: the hosts, or sample data in tests; D-042),
-  `Sidebar`, `WorkspacePane`, `Terminal` (xterm.js), `model.ts`
+  `Sidebar`, `WorkspacePane`, `Terminal` (xterm.js), `panelResize` (the
+  list's and the Files/Timeline panel's widths, D-097; `composerResize` is
+  the message box's height), `model.ts`
   (grouping and wording only), `TimelinePanel` + `timeline.ts` (a workspace's
   events as one line each).

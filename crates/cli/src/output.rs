@@ -116,9 +116,6 @@ pub fn workspace_details(host: &str, ws: &Workspace) {
     if let Some(t) = &brief.title {
         println!("  title:    {t}");
     }
-    if let Some(g) = &brief.goal {
-        println!("  goal:     {g}");
-    }
     if let Some(d) = &brief.description {
         println!("  about:    {d}");
     }
@@ -296,14 +293,10 @@ pub fn event_line(host: &str, rec: &EventRecord, names: &mut HashMap<String, Str
 /// `otter ws brief`: the whole brief, one field per line.
 pub fn brief(workspace: &str, b: &Brief) {
     if b.is_empty() {
-        println!("{workspace} has no brief (set one with `otter ws brief {workspace} --goal …`)");
+        println!("{workspace} has no brief (set one with `otter ws brief {workspace} --title …`)");
         return;
     }
-    let text = [
-        ("title", &b.title),
-        ("goal", &b.goal),
-        ("description", &b.description),
-    ];
+    let text = [("title", &b.title), ("description", &b.description)];
     for (label, value) in text {
         if let Some(v) = value {
             println!("{label}: {v}");

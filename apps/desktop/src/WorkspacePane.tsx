@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, type CSSProperties } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { Glyph } from "./Glyph";
 import { Dialog } from "./Dialog";
@@ -6,6 +6,7 @@ import { Menu, type MenuItem } from "./Menu";
 import { NewSessionDialog } from "./NewSessionDialog";
 import { FilesPanel } from "./FilesPanel";
 import { TimelinePanel } from "./TimelinePanel";
+import { PanelGrip, SIDE_PANEL, usePanelWidth } from "./panelResize";
 import { BriefDialog, briefSummary } from "./BriefDialog";
 import { ago, kindLabel, sessionGlyph } from "./model";
 import { Terminal, type Ending } from "./Terminal";
@@ -37,6 +38,7 @@ export function WorkspacePane({ placed, session, onSession, now, theme, appVersi
   const [closing, setClosing] = useState<string | null>(null);
   // The side panel: files or the timeline.
   const [side, setSide] = useState<"files" | "timeline" | null>(null);
+  const [sideWidth, setSideWidth] = usePanelWidth(SIDE_PANEL);
   const toggle = (panel: "files" | "timeline") => setSide((s) => (s === panel ? null : panel));
 
   // A new session, or a new execution of it, starts a fresh attach.
@@ -118,14 +120,10 @@ export function WorkspacePane({ placed, session, onSession, now, theme, appVersi
           {ws.sourceKind === "empty" && <span className="chip">scratch</span>}
           <span className="root mono">{ws.root}</span>
         </div>
-        {brief.text ? (
+        {brief.text && (
           <button className="brief-line" onClick={() => setOpen("brief")} title={`${brief.text}\n\nEdit the brief`}>
             <span className="brief-text">{brief.text}</span>
             {brief.more > 0 && <span className="brief-more">+{brief.more} more</span>}
-          </button>
-        ) : (
-          <button className="link-btn brief-add" onClick={() => setOpen("brief")}>
-            Add a goal
           </button>
         )}
         <span className="spacer" data-tauri-drag-region />
@@ -160,7 +158,7 @@ export function WorkspacePane({ placed, session, onSession, now, theme, appVersi
             },
             { label: "Unarchive workspace", hidden: !archived, onSelect: () => void unarchive() },
             ...pinItems,
-            { label: brief.text ? "Edit brief…" : "Add a goal…", onSelect: () => setOpen("brief") },
+            { label: brief.text || brief.more > 0 ? "Edit brief…" : "Add a brief…", onSelect: () => setOpen("brief") },
             { label: "Delete workspace…", danger: true, onSelect: () => setOpen("delete-workspace") },
           ]}
         />
@@ -273,7 +271,7 @@ export function WorkspacePane({ placed, session, onSession, now, theme, appVersi
       )}
       {error && <div className="notice error">{error}</div>}
 
-      <div className="work-row">
+      <div className="work-row" style={{ "--side-width": `${sideWidth}px` } as CSSProperties}>
         <div className="work">
       {archived ? (
         <div className="empty">
@@ -348,6 +346,14 @@ export function WorkspacePane({ placed, session, onSession, now, theme, appVersi
       )}
 
         </div>
+        {side && (
+          <PanelGrip
+            panel={SIDE_PANEL}
+            width={sideWidth}
+            onResize={setSideWidth}
+            label={side === "files" ? "Files width" : "Timeline width"}
+          />
+        )}
         {side === "files" && <FilesPanel host={host.name} workspace={ws.id} onClose={() => setSide(null)} />}
         {side === "timeline" && <TimelinePanel host={host.name} ws={ws} now={now} onClose={() => setSide(null)} />}
       </div>

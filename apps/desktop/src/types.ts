@@ -39,7 +39,6 @@ export interface SessionView {
 /** Why a workspace exists (design §8). Absent fields are unset. */
 export interface Brief {
   title?: string;
-  goal?: string;
   description?: string;
   constraints?: string[];
   references?: string[];

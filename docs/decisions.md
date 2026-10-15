@@ -2953,3 +2953,49 @@ D-090's gate, recorded as such.
   merged without one: when to release stays the developer's.
 - The transcripts (V2-0c) are still what tells whether it is better; the
   off switch is there for what they show.
+
+## D-097 — The app's side panels are as wide as the developer drags them (2026-10-15)
+
+Dogfooding: the Files panel (300 px) cut off file names, and the workspace
+list (280 px) couldn't be widened either. Both now have a handle on their
+inner edge, as the message box has had since D-088:
+
+- **Drag the edge, or ←/→ on it (16 px a step); a double-click goes back to
+  the usual width.** The width is remembered on this Mac (`localStorage`),
+  like the message box's height.
+- **One width for the list on the left:** the Workspaces and Tasks lists
+  share it, so switching views doesn't move the column. **One width for the
+  panel on the right:** Files and Timeline share it, as they share the place.
+- **Bounds:** the list is 180 px or more and leaves the view 400 px; the
+  right panel is 220 px or more and leaves the terminal 320 px. The same
+  bounds are the panels' `min-width`/`max-width` in CSS, so a window made
+  narrower later still leaves the work room; that replaces the fixed
+  220/180 px the list took in narrow windows.
+- The handle takes no room: it overlaps the panel's border, shows on
+  hover, and sits above the title bar's drag region so grabbing the top of
+  an edge doesn't move the window.
+- Not done: the task view's conversation/detail split, and collapsing a
+  panel by dragging it closed (the Files/Timeline buttons close it).
+
+## D-098 — A workspace has no goal (2026-10-15)
+
+Amends D-038 and design §8. Dogfooding: New workspace asked for a goal, and
+the workspace pane showed it (or "Add a goal") beside the name, for a line
+the developer doesn't want to write — the name says what the workspace is
+for, and the task says what the work is (D-043). Nothing ever read the goal:
+agents and Otter take a task's brief, never a workspace's.
+
+- **`Brief` has no `goal`.** A brief written before still reads (serde
+  ignores the field, no `deny_unknown_fields`) and loses its goal the next
+  time it is saved; an older client's `goal` is ignored the same way. No
+  other wire change: `workspace.create` and `workspace.set_brief` still take
+  a brief (title, description, constraints, references, decisions).
+- **CLI:** `otter new --goal` and `otter ws brief --goal` are gone;
+  `--title` and `--description` remain.
+- **App:** New workspace has no Goal field. The pane's line beside the name
+  shows the brief's title (or description) only when there is one, with no
+  "Add a goal" in its place; the brief is edited from the workspace menu
+  ("Add a brief…" / "Edit brief…").
+- A task's own worktree (`feature.start` in a workspace of its own) is
+  described by the task's title, and "The feature … in a worktree of its
+  own" moves to the description.
