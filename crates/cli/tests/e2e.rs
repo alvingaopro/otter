@@ -279,15 +279,17 @@ fn brief_is_set_shown_and_edited() {
     let home = Home::new();
     let cli = Cli::new();
     cli.add_local_host("here", &home);
-    cli.ok(&[
-        "new",
+    cli.ok(&["new", "why", "--no-agent"]);
+    let out = cli.ok(&["ws", "brief", "why"]);
+    assert!(out.starts_with("why has no brief"), "{out}");
+    let out = cli.ok(&[
+        "ws",
+        "brief",
         "why",
-        "--no-agent",
-        "--goal",
+        "--description",
         "Fix renewal validation",
     ]);
-    let out = cli.ok(&["ws", "brief", "why"]);
-    assert_eq!(out.trim(), "goal: Fix renewal validation");
+    assert_eq!(out.trim(), "description: Fix renewal validation");
 
     let out = cli.ok(&[
         "ws",
@@ -301,7 +303,7 @@ fn brief_is_set_shown_and_edited() {
         "Preserve Salesforce behavior.",
     ]);
     assert!(out.contains("title: GCP renewal"), "{out}");
-    assert!(out.contains("goal: Fix renewal validation"), "{out}");
+    assert!(out.contains("description: Fix renewal validation"), "{out}");
     assert!(
         out.contains("decisions:\n  - Renewal count includes the initial term."),
         "{out}"
@@ -313,8 +315,8 @@ fn brief_is_set_shown_and_edited() {
     );
     assert_eq!(cli.workspace("why")["brief"]["title"], "GCP renewal");
 
-    cli.ok(&["ws", "brief", "why", "--goal", ""]);
-    assert!(cli.workspace("why")["brief"].get("goal").is_none());
+    cli.ok(&["ws", "brief", "why", "--description", ""]);
+    assert!(cli.workspace("why")["brief"].get("description").is_none());
     let out = cli.ok(&["ws", "brief", "why", "--clear"]);
     assert!(out.starts_with("why has no brief"), "{out}");
 }

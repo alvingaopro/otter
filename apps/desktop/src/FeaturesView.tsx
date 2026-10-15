@@ -38,10 +38,12 @@ interface Props {
   onOpenWorkspace: (host: string, workspaceId: string, sessionId?: string) => void;
   /** Open a preview port of a host in the browser (forwarding it if remote). */
   onOpenPreview: (host: string, port: number, path: string) => Promise<void>;
+  /** The list's resize handle (D-097): the same width as the Workspaces list. */
+  grip?: ReactNode;
 }
 
 /** The Features view (D-041, D-042): product work, independent of the Workspace view. */
-export function FeaturesView({ source, hosts, workspaces, now, focus, onOpenWorkspace, onOpenPreview }: Props) {
+export function FeaturesView({ source, hosts, workspaces, now, focus, onOpenWorkspace, onOpenPreview, grip }: Props) {
   const [list, setList] = useState<PlacedFeature[]>(() => source.list());
   const [filter, setFilter] = useState<FeatureFilter>("all");
   const [selected, setSelected] = useState<string | undefined>();
@@ -122,6 +124,7 @@ export function FeaturesView({ source, hosts, workspaces, now, focus, onOpenWork
           )}
         </div>
       </nav>
+      {grip}
       {current ? (
         <FeaturePane
           key={current.key}

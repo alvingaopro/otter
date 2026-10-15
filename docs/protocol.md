@@ -167,8 +167,10 @@ All additions (no protocol bump): daemons before them answer
 ## Workspace brief
 
 - `workspace.create {…, brief}` and `workspace.set_brief {workspace, brief}`
-  take a `Brief`: `{title?, goal?, description?, constraints?, references?,
-  decisions?}` (strings and string lists, all optional).
+  take a `Brief`: `{title?, description?, constraints?, references?,
+  decisions?}` (strings and string lists, all optional). There is no `goal`
+  (D-098): an older client's is ignored, and a stored one dropped on the
+  next save.
 - `workspace.set_brief` → the workspace. It **replaces** the whole brief
   (fields left out are cleared): clients edit by read-modify-write of the
   brief they were shown. The daemon trims text, drops blank text and blank

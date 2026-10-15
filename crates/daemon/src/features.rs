@@ -869,7 +869,7 @@ impl Daemon {
             name: new_name,
             brief: Some(otter_core::Brief {
                 title: Some(f.title.clone()),
-                goal: Some(format!(
+                description: Some(format!(
                     "The feature “{}”, in a worktree of its own",
                     f.title
                 )),

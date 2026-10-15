@@ -206,7 +206,7 @@ enum WorkspaceCommand {
     /// restart them.
     #[command(visible_alias = "restore")]
     Unarchive { target: String },
-    /// Show or edit why a workspace exists: its title, goal, description,
+    /// Show or edit why a workspace exists: its title, description,
     /// constraints, references and decisions.
     Brief(BriefArgs),
     /// Stop all sessions and delete the workspace and its directory. Git
@@ -229,9 +229,6 @@ struct BriefArgs {
     /// Short title (`""` clears it).
     #[arg(long)]
     title: Option<String>,
-    /// Why this workspace exists (`""` clears it).
-    #[arg(long)]
-    goal: Option<String>,
     /// Longer description (`""` clears it).
     #[arg(long)]
     description: Option<String>,
@@ -253,7 +250,6 @@ impl BriefArgs {
     fn edits(&self) -> bool {
         self.clear
             || self.title.is_some()
-            || self.goal.is_some()
             || self.description.is_some()
             || !self.constraints.is_empty()
             || !self.references.is_empty()
@@ -268,9 +264,6 @@ impl BriefArgs {
         };
         if let Some(t) = self.title {
             b.title = Some(t);
-        }
-        if let Some(g) = self.goal {
-            b.goal = Some(g);
         }
         if let Some(d) = self.description {
             b.description = Some(d);
@@ -288,9 +281,6 @@ struct WorkspaceCreateArgs {
     /// Host to create it on.
     #[arg(long)]
     host: Option<String>,
-    /// Why this workspace exists.
-    #[arg(long)]
-    goal: Option<String>,
     /// Git repository to work in (cloned once per host, one worktree per
     /// workspace).
     #[arg(long, conflicts_with = "dir")]
@@ -724,10 +714,6 @@ async fn create_workspace(config: &Config, args: WorkspaceCreateArgs, json: bool
     };
     let mut conn = connect(config, &host).await?;
     let sessions = default_sessions(&args);
-    let brief = args.goal.map(|goal| Brief {
-        goal: Some(goal),
-        ..Default::default()
-    });
     let source = match (args.repo, args.dir) {
         (Some(repository), _) => SourceSpec::Git {
             repository,
@@ -740,7 +726,7 @@ async fn create_workspace(config: &Config, args: WorkspaceCreateArgs, json: bool
     let ws = conn
         .workspace_create(WorkspaceCreate {
             name: args.name,
-            brief,
+            brief: None,
             source,
             sessions: Some(sessions),
         })

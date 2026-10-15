@@ -202,7 +202,7 @@ name: Fix GCP renewal validation
 host: dev-01
 root: ~/.otter/workspaces/ws_01/repo
 brief:
-  goal: Fix scheduled offer renewal validation.
+  title: Fix scheduled offer renewal validation.
 source:
   type: git
   repository: suger-api
@@ -234,11 +234,9 @@ Workspace exists.
 
 ```yaml
 title: Fix GCP renewal validation
-goal: >
-  Fix validation behavior for scheduled GCP Marketplace
-  offers.
 description: >
-  Scheduled custom offers require duration while
+  Fix validation behavior for scheduled GCP Marketplace
+  offers. Scheduled custom offers require duration while
   on-acceptance custom offers require an end date.
 constraints:
   - Preserve Salesforce behavior.
@@ -251,9 +249,10 @@ decisions:
 
 Every field other than the workspace identity should be optional.
 
-The brief is set at creation (`otter new --goal`, the app's New workspace
-goal field) and edited any time, in any state, with `workspace.set_brief`
-(`otter ws brief`, the app's brief line under the workspace name): D-038.
+The brief is edited any time, in any state, with `workspace.set_brief`
+(`otter ws brief`, the app's workspace menu): D-038. It has no goal
+(D-098): the name says what the workspace is for, and the task what the work
+is.
 
 The Brief should not be confused with an agent's internal conversation context.
 

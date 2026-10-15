@@ -160,13 +160,13 @@ otter feature accept csv
 ```
 otter host add|list|rm|default|status|install|shutdown
 otter doctor [host]                                 # what's wrong with your hosts, and what to do
-otter new <name> [--host H] [--goal G] [--agent codex|claude] [--prompt P] [--no-agent] [--no-shell]
+otter new <name> [--host H] [--agent codex|claude] [--prompt P] [--no-agent] [--no-shell]
                  [--repo URL [--branch B] [--base REV] | --dir PATH] [--no-wait]
 otter ls [--watch] [--table] [--archived]
 otter ack <ws[/session]>
 otter workspace show|prepare <ws>
 otter workspace archive|unarchive <ws>              # stop and put away, files kept
-otter workspace brief <ws> [--goal G] [--title T] [--description D]
+otter workspace brief <ws> [--title T] [--description D]
                      [--constraint C] [--reference R] [--decision D] [--clear]   # why it exists
 otter workspace delete <ws> [--yes] [--force]       # --force: discard uncommitted work
 otter start <ws> [--name N] [--kind terminal|service|task] [-- command]

@@ -2771,7 +2771,7 @@ async fn brief_is_set_at_creation_and_edited_later() {
         .workspace_create(WorkspaceCreate {
             name: "why".into(),
             brief: Some(otter_core::Brief {
-                goal: Some("  Fix renewal validation \n".into()),
+                description: Some("  Fix renewal validation \n".into()),
                 title: Some(" ".into()),
                 ..Default::default()
             }),
@@ -2780,7 +2780,10 @@ async fn brief_is_set_at_creation_and_edited_later() {
         })
         .await
         .unwrap();
-    assert_eq!(ws.brief.goal.as_deref(), Some("Fix renewal validation"));
+    assert_eq!(
+        ws.brief.description.as_deref(),
+        Some("Fix renewal validation")
+    );
     assert_eq!(ws.brief.title, None, "blank text is absent, not empty");
 
     let mut stream = host.conn().await.subscribe(None).await.unwrap();
@@ -2789,7 +2792,10 @@ async fn brief_is_set_at_creation_and_edited_later() {
     brief.decisions = vec!["Renewal count includes the initial term.".into(), "".into()];
     let edited = conn.workspace_set_brief("why", brief).await.unwrap();
     assert_eq!(edited.brief.title.as_deref(), Some("GCP renewal"));
-    assert_eq!(edited.brief.goal.as_deref(), Some("Fix renewal validation"));
+    assert_eq!(
+        edited.brief.description.as_deref(),
+        Some("Fix renewal validation")
+    );
     assert_eq!(edited.brief.decisions.len(), 1);
     assert_eq!(conn.workspace_get("why").await.unwrap().brief, edited.brief);
     let rec = tokio::time::timeout(Duration::from_secs(10), stream.next())
@@ -2842,14 +2848,14 @@ async fn brief_is_set_at_creation_and_edited_later() {
         .workspace_set_brief(
             "why",
             otter_core::Brief {
-                goal: Some("parked".into()),
+                description: Some("parked".into()),
                 ..Default::default()
             },
         )
         .await
         .unwrap();
     assert_eq!(ws.state, WorkspaceState::Archived);
-    assert_eq!(ws.brief.goal.as_deref(), Some("parked"));
+    assert_eq!(ws.brief.description.as_deref(), Some("parked"));
     let err = conn
         .workspace_set_brief("nope", otter_core::Brief::default())
         .await

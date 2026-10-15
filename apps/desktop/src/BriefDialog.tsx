@@ -25,7 +25,6 @@ export function BriefDialog({
   onClose: () => void;
 }) {
   const [title, setTitle] = useState(brief.title ?? "");
-  const [goal, setGoal] = useState(brief.goal ?? "");
   const [description, setDescription] = useState(brief.description ?? "");
   const [constraints, setConstraints] = useState(lines(brief.constraints));
   const [references, setReferences] = useState(lines(brief.references));
@@ -40,7 +39,6 @@ export function BriefDialog({
     setError(null);
     const next: Brief = {
       title: title.trim() || undefined,
-      goal: goal.trim() || undefined,
       description: description.trim() || undefined,
       constraints: unlines(constraints),
       references: unlines(references),
@@ -58,10 +56,6 @@ export function BriefDialog({
   return (
     <Dialog title={`Brief for ${name}`} onClose={onClose}>
       <form className="form" onSubmit={submit}>
-        <label className="field">
-          <span>Goal</span>
-          <textarea value={goal} onChange={(e) => setGoal(e.target.value)} rows={2} placeholder="Why this workspace exists" />
-        </label>
         <label className="field">
           <span>Title</span>
           <input className="prose" value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Fix GCP renewal validation" />
@@ -100,13 +94,10 @@ export function BriefDialog({
   );
 }
 
-/** One line for the pane header: the goal (or title), and how much more the brief holds. */
+/** One line for the pane header: the title (or description), and how much more the brief holds. */
 export function briefSummary(b: Brief): { text?: string; more: number } {
-  const text = b.goal ?? b.title ?? b.description;
-  const more =
-    [b.title, b.goal, b.description].filter(Boolean).length -
-    (text ? 1 : 0) +
-    listed(b);
+  const text = b.title ?? b.description;
+  const more = [b.title, b.description].filter(Boolean).length - (text ? 1 : 0) + listed(b);
   return { text, more };
 }
 

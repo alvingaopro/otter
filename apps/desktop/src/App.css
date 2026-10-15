@@ -119,9 +119,11 @@ code, .mono { font-family: var(--mono); }
 
 .body { flex: 1; min-height: 0; display: flex; }
 
-/* Sidebar */
+/* Sidebar: its width is the developer's (D-097, panelResize.tsx's SIDEBAR),
+   and narrow windows still leave the work 400px. */
 .sidebar {
-  width: 280px; flex: none; display: flex; flex-direction: column;
+  width: var(--sidebar-width, 280px); min-width: 180px; max-width: calc(100% - 400px);
+  flex: none; display: flex; flex-direction: column;
   background: var(--sidebar); border-right: 1px solid var(--line);
 }
 .sidebar-groups { flex: 1; overflow-y: auto; padding: 6px 10px 12px; display: flex; flex-direction: column; gap: 18px; }
@@ -209,7 +211,6 @@ code, .mono { font-family: var(--mono); }
 .brief-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .brief-more { flex: none; color: var(--faint); font-size: 12px; }
 .brief-line:hover .brief-text { text-decoration: underline; text-decoration-color: var(--faint); }
-.brief-add { flex: none; padding: 0; }
 /* In the toolbar the brief takes the room left after the chips; a long one is cut off. */
 .pane-head .brief-line { flex: 0 1 auto; min-width: 80px; font-size: 12.5px; color: var(--muted); }
 .link-btn { color: var(--working-text); font-size: 12.5px; }
@@ -410,8 +411,10 @@ code, .mono { font-family: var(--mono); }
 .work-row { flex: 1; min-height: 0; display: flex; }
 .work { flex: 1; min-width: 0; display: flex; flex-direction: column; }
 .files-toggle.on { background: var(--btn); }
+/* Files/Timeline: resizable like the sidebar (SIDE_PANEL); the terminal keeps 320px. */
 .files {
-  width: 300px; flex: none; display: flex; flex-direction: column; min-height: 0;
+  width: var(--side-width, 300px); min-width: 220px; max-width: calc(100% - 320px);
+  flex: none; display: flex; flex-direction: column; min-height: 0;
   border-left: 1px solid var(--line); background: var(--term); overflow: hidden;
 }
 .files.dropping { outline: 2px dashed var(--working); outline-offset: -4px; }
@@ -467,13 +470,17 @@ code, .mono { font-family: var(--mono); }
 .view { flex: 1; min-width: 0; display: flex; }
 .view[hidden] { display: none; }
 
-/* Narrow windows: the sidebar gives way to the work. */
-@media (max-width: 900px) {
-  .sidebar { width: 220px; }
+/* A panel's inner edge (D-097): drag it to make the panel wider or narrower.
+   It takes no room in its row and overlaps the border it sits on. */
+.panel-grip { flex: none; position: relative; z-index: 5; width: 7px; margin: 0 -3px; cursor: col-resize; touch-action: none; }
+.panel-grip::after {
+  content: ""; position: absolute; top: 0; bottom: 0; left: 2px; width: 3px;
+  background: var(--working); opacity: 0; transition: opacity 0.15s;
 }
-@media (max-width: 640px) {
-  .sidebar { width: 180px; }
-}
+.panel-grip:hover::after { transition-delay: 0.15s; }
+.panel-grip:hover::after, .panel-grip:focus-visible::after, .panel-grip.dragging::after { opacity: 1; }
+.panel-grip:focus-visible { outline: none; }
+body.resizing-col { cursor: col-resize; user-select: none; }
 
 /* Features view (D-042) */
 .feature-filters { display: flex; flex-wrap: wrap; gap: 6px; padding: 10px 12px 4px; }

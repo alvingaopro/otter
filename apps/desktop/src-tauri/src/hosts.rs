@@ -932,8 +932,8 @@ mod tests {
 
         // The brief the New workspace / Brief dialogs send.
         let brief: otter_core::Brief =
-            serde_json::from_str(r#"{"goal":"fix it","decisions":["keep v1"]}"#).unwrap();
-        assert_eq!(brief.goal.as_deref(), Some("fix it"));
+            serde_json::from_str(r#"{"title":"fix it","decisions":["keep v1"]}"#).unwrap();
+        assert_eq!(brief.title.as_deref(), Some("fix it"));
         assert_eq!(brief.decisions, ["keep v1"]);
     }
 }
