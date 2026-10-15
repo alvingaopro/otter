@@ -1908,6 +1908,7 @@ async fn claude_code_prompts_come_from_its_hooks() {
         ws.attention[0].summary,
         "claude needs your approval: Bash: Create empty file z"
     );
+    assert!(!ws.attention[0].inferred, "reported (D-109)");
     let log = std::fs::read_to_string(host.home().join("state/events.jsonl")).unwrap();
     assert!(!log.contains("empty file"));
 
@@ -2011,6 +2012,7 @@ async fn claude_code_without_hooks_falls_back_to_the_quiet_turn() {
     create(host, "nohooks", Some(vec![SessionSpec::agent("claude")])).await;
     let ws = wait_agent(host, "nohooks", "claude", AgentState::Blocked).await;
     assert_eq!(ws.attention[0].kind, AttentionKind::Approval);
+    assert!(ws.attention[0].inferred, "guessed (D-109)");
     assert!(
         ws.attention[0].summary.contains("seems to be waiting"),
         "{:?}",
@@ -3040,13 +3042,14 @@ async fn archived_git_workspace_keeps_its_worktree_until_deleted() {
     assert!(root.join("wip.txt").is_file());
 
     // Deleting an archived workspace still protects uncommitted work, then
-    // removes the worktree and keeps the branch.
+    // removes the worktree, its branch, and (the last one on it) the
+    // repository's copy (D-108).
     conn.workspace_archive("parked").await.unwrap();
     let err = conn.workspace_delete("parked", false).await.unwrap_err();
     assert!(err.to_string().contains("uncommitted"), "{err}");
     conn.workspace_delete("parked", true).await.unwrap();
     assert!(!root.exists());
-    git(&base, &["show-ref", "--verify", "refs/heads/otterd/parked"]);
+    assert!(!base.exists());
 }
 
 #[tokio::test]
@@ -7325,4 +7328,81 @@ async fn a_hosts_features_become_its_tasks() {
     let mut conn = host.conn().await;
     assert_eq!(conn.task_list().await.unwrap().len(), 2);
     assert!(!state.join("features").exists());
+}
+
+/// Deleting a workspace removes what it had (D-108): its worktree and its
+/// branch — never commits that are nowhere else, unless forced — and the
+/// repository's copy once no workspace uses it, unless a branch in it still
+/// holds unpushed work.
+#[tokio::test]
+async fn deleting_a_workspace_cleans_up_its_branch_and_repository() {
+    let th = TestHost::new();
+    let host = &th;
+    let repo = make_repo(host, "origin", &[("a.txt", "a\n")]);
+    let mut conn = host.conn().await;
+    let ready = |name: &'static str| async move {
+        eventually("workspace ready", || async {
+            let ws = host.conn().await.workspace_get(name).await.unwrap();
+            (ws.state == WorkspaceState::Ready).then_some(ws)
+        })
+        .await
+    };
+    for name in ["one", "two"] {
+        conn.workspace_create(git_ws(name, &repo, None, vec![]))
+            .await
+            .unwrap();
+    }
+    let (one, two) = (ready("one").await, ready("two").await);
+    let repos = host.home().join("repos");
+    let copy = std::fs::read_dir(&repos)
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap()
+        .path();
+    let base = copy.join("base");
+    let branches = || git(&base, &["branch", "--list", "--format=%(refname:short)"]);
+    let commit = |dir: &Path, file: &str| {
+        std::fs::write(dir.join(file), "x\n").unwrap();
+        git(dir, &["add", "-A"]);
+        git(dir, &["commit", "-qm", file]);
+    };
+
+    // A commit on one's branch, pushed nowhere: not without force.
+    commit(Path::new(&one.root), "b.txt");
+    let err = conn.workspace_delete("one", false).await.unwrap_err();
+    assert!(
+        format!("{err:#}").contains("1 commit not pushed anywhere"),
+        "{err:#}"
+    );
+    conn.workspace_delete("one", true).await.unwrap();
+    assert!(!branches().contains("otterd/one"), "{}", branches());
+    assert!(!Path::new(&one.root).exists());
+    assert!(base.exists(), "two still uses it");
+
+    // Unpushed work on a branch of its own keeps the copy, with the branch.
+    let root = Path::new(&two.root);
+    git(root, &["checkout", "-qb", "extra"]);
+    commit(root, "c.txt");
+    git(root, &["checkout", "-q", "otterd/two"]);
+    conn.workspace_delete("two", false).await.unwrap();
+    let left = branches();
+    assert!(
+        left.contains("extra") && !left.contains("otterd/two"),
+        "{left}"
+    );
+    assert!(base.exists(), "extra holds unpushed work");
+
+    // Without it, the copy goes with the last workspace.
+    git(&base, &["branch", "-D", "extra"]);
+    conn.workspace_create(git_ws("three", &repo, None, vec![]))
+        .await
+        .unwrap();
+    ready("three").await;
+    conn.workspace_delete("three", false).await.unwrap();
+    assert!(
+        !copy.exists(),
+        "{:?}",
+        std::fs::read_dir(&repos).unwrap().count()
+    );
 }

@@ -181,6 +181,18 @@ All additions (no protocol bump): daemons before them answer
 
 An addition (no protocol bump): daemons before it answer `invalid_request`.
 
+## Deleting workspaces
+
+- `workspace.delete {workspace, force?}` stops the workspace's sessions and
+  removes what Otter made for it (D-108). That is its directory under
+  `~/.otter/workspaces/`, never an attached folder. For a Git workspace it
+  is the worktree and its branch, and the repository's copy under
+  `~/.otter/repos/` once no workspace uses it.
+- The copy is kept, though, while any branch in it holds commits on no
+  remote.
+- Without `force`, `conflict` when the worktree has uncommitted changes or
+  the branch has commits not pushed anywhere; `force` discards both.
+
 ## Names
 
 - `workspace.rename {workspace, name}` → the workspace; `session.rename

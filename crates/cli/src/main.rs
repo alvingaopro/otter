@@ -213,15 +213,17 @@ enum WorkspaceCommand {
     /// stay as they are.
     #[command(visible_alias = "mv")]
     Rename { target: String, name: String },
-    /// Stop all sessions and delete the workspace and its directory. Git
-    /// branches are kept.
+    /// Stop all sessions and delete the workspace and its directory; a Git
+    /// workspace's branch too, and the repository's copy once no workspace
+    /// uses it. Commits not pushed anywhere stop it, unless --force.
     #[command(visible_alias = "rm")]
     Delete {
         target: String,
         /// Don't ask for confirmation.
         #[arg(short, long)]
         yes: bool,
-        /// Discard uncommitted changes in a Git worktree.
+        /// Discard uncommitted changes, and commits on its branch not pushed
+        /// anywhere.
         #[arg(long)]
         force: bool,
     },

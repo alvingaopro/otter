@@ -110,7 +110,9 @@ pub enum Request {
     /// [`otter_core::Workspace`].
     #[serde(rename = "workspace.prepare")]
     WorkspacePrepare(WorkspaceRef),
-    /// Stops all sessions and removes managed resources. Result: `null`.
+    /// Stops all sessions and removes managed resources: a Git workspace's
+    /// worktree and branch, and the repository's copy once unused (D-108).
+    /// Result: `null`.
     #[serde(rename = "workspace.delete")]
     WorkspaceDelete(WorkspaceDelete),
     /// Put a workspace away: stop its sessions and resolve its attention,
@@ -420,7 +422,8 @@ pub struct SessionRename {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct WorkspaceDelete {
     pub workspace: String,
-    /// Delete even if a Git worktree has uncommitted changes.
+    /// Delete even if a Git worktree has uncommitted changes, or its branch
+    /// commits not pushed anywhere (D-108).
     #[serde(default)]
     pub force: bool,
 }
