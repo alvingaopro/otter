@@ -8,9 +8,10 @@ developer's word draws its authority from the developer's own message.
 V2-0b, V2-0c). M1 done: the gateway, the turn, the `scripted` backend,
 and Claude's turn through the worker's Otter profile (live: V2-1a, V2-1b;
 `otter doctor` says which path a host has). M2 reordered (D-090): the
-default stays off until the reply streams and the transcripts exist;
-first a host setting (*Otter's tools (preview)* in Settings — done), then
-streaming, then the crash and replay tests. **To make the default
+default stays off until the transcripts exist. Done: a host setting
+(*Otter's tools (preview)* in Settings) and streaming (Claude's words as it
+writes them, a new paragraph per message, the reply replacing them at the
+end). Next: the crash and replay tests. **To make the default
 possible, the developer:** turns the setting on for a host whose Otter is
 Claude Code, works real tasks with it, and records 5–10 transcripts
 (V2-0c); and, on a host with an API key, runs the spike with it (V2-0b).

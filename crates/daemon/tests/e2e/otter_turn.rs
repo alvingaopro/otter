@@ -633,3 +633,47 @@ async fn otters_tools_are_a_host_setting() {
     let s = fake.host.conn().await.settings_get().await.unwrap();
     assert_eq!(s.otter_tools, Some(true));
 }
+
+/// Otter's reply streams as Claude writes it (D-051, plan M2b): what it says
+/// before looking, then the answer; the last piece is the reply itself.
+#[tokio::test]
+async fn otters_reply_streams_as_it_is_written() {
+    use otter_protocol::Event;
+    let fake = claude_host("ok").await;
+    let host = &fake.host;
+    let id = draft(host).await;
+    let mut events = host.conn().await.subscribe(None).await.unwrap();
+    host.conn()
+        .await
+        .feature_send("stream-1", &id, "Where is it?")
+        .await
+        .unwrap();
+    let mut pieces = Vec::new();
+    let last = tokio::time::timeout(Duration::from_secs(20), async {
+        loop {
+            let rec = events.next().await.unwrap().unwrap();
+            if let Event::FeatureStream {
+                role: MessageRole::Controller,
+                text,
+                done,
+                ..
+            } = rec.event
+            {
+                if done {
+                    return text;
+                }
+                pieces.push(text);
+            }
+        }
+    })
+    .await
+    .expect("the stream finishes");
+    // Sent at most every 100 ms: the first piece goes at once, the rest with
+    // the reply (the fake writes them all inside that).
+    assert_eq!(
+        pieces.first().map(String::as_str),
+        Some("Let me "),
+        "{pieces:?}"
+    );
+    assert_eq!(last, "The task is draft.");
+}

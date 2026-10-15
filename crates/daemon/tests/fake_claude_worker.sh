@@ -45,6 +45,8 @@ while IFS= read -r line; do
         turn=t1
         case "$line" in *FORWARD*) forward=1 ;; esac
         msg=$(printf '%s' "$line" | grep -o '\[msg_[A-Za-z0-9]*\]' | tail -1 | tr -d '[]')
+        out '{"type":"text_delta","message":"m0","block":0,"text":"Let me "}'
+        out '{"type":"text_delta","message":"m0","block":0,"text":"look."}'
         out '{"type":"tool_call","call_id":"call-1","tool":"get_task","input":{}}'
         continue
       fi
@@ -95,6 +97,8 @@ while IFS= read -r line; do
         out '{"type":"tool_call","call_id":"call-2","tool":"forward_to_agent","input":{"message_ids":["'"$msg"'"]}}'
         continue
       fi
+      out '{"type":"text_delta","message":"m1","block":0,"text":"The task is "}'
+      out '{"type":"text_delta","message":"m1","block":0,"text":"'"$status"'."}'
       out '{"type":"text","message":"m1","block":0,"text":"The task is '"$status"'."}'
       out '{"type":"turn_finished","turn_id":"t1","outcome":"completed","summary":"The task is '"$status"'.","error":null,"session_cost_usd":0.01}'
       ;;

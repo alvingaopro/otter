@@ -56,6 +56,9 @@ pub struct OtterRun<'a> {
     pub tools: Vec<Value>,
     /// Model round trips at most.
     pub max_turns: usize,
+    /// Where the reply goes as Claude writes it (D-051). What it says
+    /// before a tool call shows too; the turn's result replaces it all.
+    pub say: &'a crate::brain::Say<'a>,
 }
 
 /// Run it: each tool call answered by `call(name, input)`; the result is
@@ -177,6 +180,8 @@ where
 
         send("send_turn", json!({"turn_id": "t1", "text": r.prompt})).await?;
         let mut said = String::new();
+        // The message being streamed: a new one starts a new paragraph.
+        let mut streaming: Option<String> = None;
         loop {
             let Some(ev) = next().await? else {
                 break Err(anyhow!("the Claude worker ended in the middle of the turn"));
@@ -189,6 +194,18 @@ where
                     };
                     let output = call(tool.to_owned(), ev["input"].clone()).await;
                     send("tool_result", json!({"call_id": id, "output": output})).await?;
+                }
+                Some("text_delta") => {
+                    let (Some(message), Some(piece)) =
+                        (ev["message"].as_str(), ev["text"].as_str())
+                    else {
+                        continue;
+                    };
+                    if streaming.as_deref().is_some_and(|m| m != message) {
+                        (r.say)("\n\n");
+                    }
+                    streaming = Some(message.to_owned());
+                    (r.say)(piece);
                 }
                 Some("text") => said = text(&ev, &["text"]),
                 Some("turn_finished") => {
@@ -271,6 +288,17 @@ mod tests {
         cwd: &Path,
         prompt: &str,
     ) -> (Result<String>, Vec<(String, Value)>) {
+        turn_written(env, cwd, prompt).await.0
+    }
+
+    /// A turn, and what was streamed while it was written.
+    async fn turn_written(
+        env: &EnvMap,
+        cwd: &Path,
+        prompt: &str,
+    ) -> ((Result<String>, Vec<(String, Value)>), String) {
+        let written = Mutex::new(String::new());
+        let say = |piece: &str| written.lock().unwrap().push_str(piece);
         let calls = Arc::new(Mutex::new(Vec::new()));
         let seen = calls.clone();
         let reply = run(
@@ -282,6 +310,7 @@ mod tests {
                 prompt,
                 tools: vec![json!({"name": "get_task", "description": "d", "input_schema": {"type": "object"}})],
                 max_turns: 6,
+                say: &say,
             },
             move |name, input| {
                 let seen = seen.clone();
@@ -296,7 +325,8 @@ mod tests {
         )
         .await;
         let calls = calls.lock().unwrap().clone();
-        (reply, calls)
+        let written = written.lock().unwrap().clone();
+        ((reply, calls), written)
     }
 
     #[tokio::test]
@@ -319,6 +349,16 @@ mod tests {
                 json!({"message_ids": ["msg_abc2"]})
             )
         );
+    }
+
+    /// The reply streams as it's written (D-051): what Claude says before a
+    /// tool call, then, as a new paragraph, the answer.
+    #[tokio::test]
+    async fn the_reply_streams_while_it_is_written() {
+        let (dir, env) = fake("ok");
+        let ((reply, _), written) = turn_written(&env, dir.path(), "[msg_s] Where is it?").await;
+        assert_eq!(reply.unwrap(), "The task is blocked.");
+        assert_eq!(written, "Let me look.\n\nThe task is blocked.");
     }
 
     #[tokio::test]
@@ -358,6 +398,7 @@ mod tests {
                 prompt,
                 tools,
                 max_turns: 6,
+                say: &|_: &str| {},
             },
             move |name, _input| {
                 let seen = seen.clone();
