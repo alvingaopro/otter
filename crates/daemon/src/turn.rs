@@ -321,11 +321,11 @@ impl TurnBackend for ClaudeTurn {
                 prompt: &prompt,
                 tools,
                 max_turns: turn.limits.max_round_trips,
+                say: turn.say,
             },
             |name, input| async move { gateway.call(&name, input).await.to_string() },
         )
         .await?;
-        (turn.say)(&reply);
         Ok(reply)
     }
 }
