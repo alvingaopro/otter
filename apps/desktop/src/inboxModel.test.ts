@@ -47,8 +47,8 @@ describe("the inbox", () => {
   });
 
   it("lists what waits in the menu bar, longest first", () => {
-    const items = trayTasks(tasks, (t, what, h) => `${t} · ${what} (${h})`);
+    const items = trayTasks(tasks);
     expect(items.map((i) => i.key)).toEqual([`task:mac/${failed.id}`, `task:mac/${blocked.id}`]);
-    expect(items[0].label).toContain("Stopped after 6 of 6 attempts");
+    expect(items[0].what).toContain("Stopped after 6 of 6 attempts");
   });
 });

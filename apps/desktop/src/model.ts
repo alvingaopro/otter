@@ -225,28 +225,58 @@ export function stalePins(pins: string[], hosts: HostsPayload["hosts"]): string[
   });
 }
 
-/** Longest glance in the menu bar; the app has the rest. */
-const GLANCE = 52;
+/** Longest line in the menu bar: one long line widens the whole menu; the app has the rest. */
+const TRAY_LINE = 44;
+/** Longest name on a menu bar line (task titles are sentences). */
+const TRAY_NAME = 24;
+
+function cut(t: string, max: number): string {
+  return t.length > max ? `${t.slice(0, max - 1).trimEnd()}…` : t;
+}
 
 /**
  * What needs you, at a glance: "needs your approval" becomes "Approve", paths
- * become their last part, and it's cut to fit a menu.
+ * become their last part, a finished turn says only that it finished, and
+ * it's cut to `max`, keeping a trailing "(+N)".
  *   "claude needs your approval: Read: /home/a/b/createOffer.html"
  *   → "Approve: Read createOffer.html"
+ *   "claude-2 finished: Yes, it would exceed the request… (+1)"
+ *   → "claude-2 finished (+1)"
  */
-export function glance(summary: string): string {
-  let t = summary
+export function glance(summary: string, max = TRAY_LINE): string {
+  const more = / \(\+\d+\)$/.exec(summary)?.[0] ?? "";
+  const t = summary
+    .slice(0, summary.length - more.length)
     .replace(/^.*?\bneeds your approval:\s*/i, "Approve: ")
     .replace(/^(Approve: \w+):\s+/, "$1 ")
+    // A finished turn: the reply is the app's to show.
+    .replace(/^(\S+ finished):[\s\S]*$/, "$1")
     // Paths: only their last part.
     .replace(/(?:~|\.{1,2})?\/?(?:[\w.@+-]+\/)+([\w.@+-]+)/g, "$1")
     .replace(/\s+/g, " ")
     .trim();
-  if (t.length > GLANCE) t = `${t.slice(0, GLANCE - 1).trimEnd()}…`;
-  return t;
+  return cut(t, max - more.length) + more;
 }
 
-/** A menu bar line for a workspace that needs you. */
-export function trayLabel(name: string, summary: string, host: string, showHost: boolean): string {
-  return `${name} · ${glance(summary)}${showHost ? `  (${host})` : ""}`;
+/** Something waiting, for the menu bar: a workspace or a task. */
+export interface TrayLine {
+  key: string;
+  name: string;
+  what: string;
+  host: string;
+}
+
+/**
+ * The menu bar's lines, each cut to fit: the name, its host only when a line
+ * on another host has the same name, and what waits.
+ *   "marketplace · claude-2 finished", "api (box) · Approve: Bash make"
+ */
+export function trayLabels(lines: TrayLine[]): { key: string; label: string }[] {
+  const hosts = new Map<string, Set<string>>();
+  for (const l of lines) hosts.set(l.name, (hosts.get(l.name) ?? new Set()).add(l.host));
+  return lines.map((l) => {
+    let name = cut(l.name, TRAY_NAME);
+    if ((hosts.get(l.name)?.size ?? 0) > 1) name += ` (${l.host})`;
+    return { key: l.key, label: `${name} · ${glance(l.what, Math.max(TRAY_LINE - name.length - 3, 16))}` };
+  });
 }

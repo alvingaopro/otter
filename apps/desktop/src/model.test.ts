@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { glance, trayLabel } from "./model";
+import { glance, trayLabels } from "./model";
+
+const line = (name: string, what: string, host = "code", key = name) => ({ key, name, what, host });
 
 describe("menu bar glance", () => {
   it("says what to do, with only a file's name", () => {
@@ -12,14 +14,27 @@ describe("menu bar glance", () => {
     expect(glance("waiting for input (+2)")).toBe("waiting for input (+2)");
   });
 
-  it("fits a menu", () => {
-    const g = glance(`Approve: Bash ${"x".repeat(200)}`);
-    expect(g.length).toBeLessThanOrEqual(52);
-    expect(g.endsWith("…")).toBe(true);
+  it("says a turn finished, not what it said", () => {
+    expect(glance("claude-2 finished: Yes, it would exceed the request limit.\nSo I split it.")).toBe("claude-2 finished");
+    expect(glance("claude-2 finished: Yes, it would exceed the request limit (+1)")).toBe("claude-2 finished (+1)");
+    expect(glance("claude finished its turn")).toBe("claude finished its turn");
   });
 
-  it("names the host only when there are several", () => {
-    expect(trayLabel("task", "agent finished", "code", false)).toBe("task · agent finished");
-    expect(trayLabel("task", "agent finished", "code", true)).toBe("task · agent finished  (code)");
+  it("fits a menu", () => {
+    const [{ label }] = trayLabels([line("n".repeat(100), `Approve: Bash ${"x".repeat(200)} (+3)`)]);
+    expect(label.length).toBeLessThanOrEqual(44);
+    expect(label.endsWith("… (+3)")).toBe(true);
+    expect(trayLabels([line("marketplace", "claude-2 finished: Yes, it would exceed the request limit")])[0].label).toBe(
+      "marketplace · claude-2 finished",
+    );
+  });
+
+  it("names the host only when another host has the same name", () => {
+    const labels = trayLabels([
+      line("api", "agent finished", "mac", "a"),
+      line("api", "build failed (status 1)", "box", "b"),
+      line("web", "agent finished", "box", "c"),
+    ]).map((l) => l.label);
+    expect(labels).toEqual(["api (mac) · agent finished", "api (box) · build failed (status 1)", "web · agent finished"]);
   });
 });

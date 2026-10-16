@@ -707,6 +707,10 @@ stretch with no recording shows as a gap, and plot average with peak.
   lists them; picking one opens the app on it. Closing the window hides it,
   so notifications and the status keep working; the Dock icon and the menu
   bar bring it back, Quit quits.
+  *Amended 2026-10-16:* one long line widened the whole menu, so each line is
+  cut to 44 characters (task titles to 24), a finished turn says only that it
+  finished (the reply is in the app), and the host is named only when a line
+  on another host has the same name.
 - **Files.** `fs.list/read/write` on otterd (paths relative to the
   workspace root, or absolute; 1 MiB base64 chunks, no message-size limit on
   the wire). The workspace view has a Files panel: browse, click a file to

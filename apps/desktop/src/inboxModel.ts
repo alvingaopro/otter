@@ -4,7 +4,7 @@
 // done. Pure: grouping, order and wording only.
 
 import { taskActivity, needOf, STATUS_LABEL, statusDetail, type Need, type PlacedTask } from "./tasks";
-import { headline } from "./model";
+import { headline, type TrayLine } from "./model";
 import type { Activity, Placed } from "./types";
 
 export type InboxGroupId = "needs" | "working" | "done";
@@ -124,10 +124,10 @@ export function newNeeds(seen: Map<string, string | null>, list: PlacedTask[]): 
 }
 
 /** Tasks in the menu bar item: what waits, longest first (keys `task:host/id`). */
-export function trayTasks(list: PlacedTask[], label: (title: string, what: string, host: string) => string): { key: string; label: string }[] {
+export function trayTasks(list: PlacedTask[]): TrayLine[] {
   return list
     .map((p) => ({ p, need: needOf(p.task) }))
     .filter((x): x is { p: PlacedTask; need: Need } => x.need !== undefined)
     .sort((a, b) => a.need.since.localeCompare(b.need.since))
-    .map(({ p, need }) => ({ key: `task:${p.key}`, label: label(p.task.title, need.summary, p.host) }));
+    .map(({ p, need }) => ({ key: `task:${p.key}`, name: p.task.title, what: need.summary, host: p.host }));
 }
