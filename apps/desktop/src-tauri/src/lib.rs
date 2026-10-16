@@ -21,6 +21,14 @@ const SETTINGS: &str = "settings";
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // Holding a key repeats it, as vim's hjkl need (D-116), instead of
+    // WebKit's press-and-hold accent menu: set in this app's own defaults,
+    // which outrank the system-wide setting, before any window opens.
+    #[cfg(target_os = "macos")]
+    objc2_foundation::NSUserDefaults::standardUserDefaults().setBool_forKey(
+        false,
+        objc2_foundation::ns_string!("ApplePressAndHoldEnabled"),
+    );
     tauri::Builder::default()
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_clipboard_manager::init())
