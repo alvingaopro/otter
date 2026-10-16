@@ -3477,3 +3477,40 @@ Three things from a day in the workspace view:
   pixel-identical after another opens, and one opened before the font
   loads matches one opened after.
 - **New session lists Claude Code second,** after Shell.
+
+## D-117 — Where a session's history scrolls (2026-10-16)
+
+Dogfooding: scrolling a Claude Code session in the app lags. Measured on the
+dogfooding host with a 291×60 pane, replaying a real Claude Code history
+into an isolated tmux server with Otter's config:
+
+- **tmux isn't what's slow.** A wheel step costs tmux under 2 ms and 1–2 KB
+  (it scrolls the region instead of redrawing; a whole screen is ~14 KB).
+  It kept up with a 40-report trackpad flick at ~120 Hz. A multiplexer of
+  our own would gain nothing here, and would lose sessions outliving otterd
+  (D-007 adopts them at startup).
+- **The round trip is.** Every step goes from the Mac over SSH to otterd and
+  tmux, then back: about 20 ms on that link before anything is drawn, more
+  than a frame. Whatever scrolls on the host has that floor, whether tmux,
+  a replacement or the program itself.
+- **Claude Code sessions come in two kinds.** *Inline* (how Otter starts
+  it): the transcript is in tmux's history, and the wheel puts tmux in copy
+  mode. *Full screen* (`CLAUDE_CODE_NO_FLICKER=1`): alternate screen with
+  any-event mouse tracking. The wheel, and every pointer move, go to Claude
+  Code, which keeps the transcript and redraws the screen each step. Neither
+  tmux nor the app can scroll that one locally. Its cost is Claude Code's
+  and wasn't measured.
+- **Now: three lines a wheel step** in both copy-mode tables, instead of
+  tmux's five. xterm.js sends one wheel report per about 3.3 lines of
+  trackpad travel (it scales pixel deltas under 50 by 0.3). Five lines a
+  report ran 1.5× ahead of the finger, in 81 px jumps. Three keeps it about
+  1:1, and is the usual step elsewhere. otterd sources its config on every
+  start, so running sessions get it when the host updates. It's a tuning
+  knob; the developer judges it.
+- **Next, not done: the history in the app.** Smooth, pixel-level scrolling
+  needs the history where the wheel is, in xterm's own buffer. tmux control
+  mode (as iTerm2 uses it) would feed the pane's output to the app's
+  terminal. It would need history seeded from `capture-pane -e` on attach,
+  resize through `refresh-client -C`, and flow control. That redesigns
+  attach on both ends and helps inline sessions only, so it gets its own
+  decision when taken up.
