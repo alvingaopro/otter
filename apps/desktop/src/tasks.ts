@@ -262,14 +262,13 @@ export type TaskAction =
 
 // --- Wording and grouping (no runtime state) ---
 
-export type TaskFilter = "all" | "active" | "needs" | "done" | "failed";
+/** Where the list shows a task: waiting on you, going on, or over. */
+export type TaskGroup = "needs" | "active" | "done";
 
-export const FILTERS: { id: TaskFilter; label: string }[] = [
-  { id: "all", label: "All" },
+export const GROUPS: { id: TaskGroup; label: string }[] = [
   { id: "needs", label: "Needs you" },
   { id: "active", label: "Active" },
   { id: "done", label: "Done" },
-  { id: "failed", label: "Failed" },
 ];
 
 const ACTIVE: TaskStatus[] = ["planning", "implementing", "verifying", "review"];
@@ -309,19 +308,32 @@ export function needsYou(f: Task): boolean {
   return needOf(f) !== undefined;
 }
 
-export function matches(f: Task, filter: TaskFilter): boolean {
-  switch (filter) {
-    case "all":
-      return true;
-    case "needs":
-      return needsYou(f);
-    case "active":
-      return ACTIVE.includes(f.status) || f.status === "paused" || f.status === "draft";
-    case "done":
-      return f.status === "done";
-    case "failed":
-      return f.status === "failed" || f.status === "cancelled";
+export function groupOf(f: Task): TaskGroup {
+  if (needsYou(f)) return "needs";
+  if (f.status === "done" || f.status === "cancelled" || f.status === "failed") return "done";
+  return "active";
+}
+
+/** Whether `text` finds a task: part of its title, request or host. */
+export function findMatch(p: PlacedTask, text: string): boolean {
+  const t = text.trim().toLowerCase();
+  return !t || [p.task.title, p.task.request, p.host].some((s) => s.toLowerCase().includes(t));
+}
+
+/** The same line said several times in a row, once with a count. */
+export function collapseRepeats(lines: string[]): { text: string; times: number }[] {
+  const out: { text: string; times: number }[] = [];
+  for (const text of lines) {
+    const last = out[out.length - 1];
+    if (last?.text === text) last.times += 1;
+    else out.push({ text, times: 1 });
   }
+  return out;
+}
+
+/** The budget once it constrains the work: half of the attempts used. */
+export function budgetBinds(f: Task): boolean {
+  return f.budget.max_iterations > 0 && f.budget.iterations_used * 2 >= f.budget.max_iterations;
 }
 
 /**

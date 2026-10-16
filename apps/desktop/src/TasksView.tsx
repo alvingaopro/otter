@@ -1,27 +1,31 @@
-import { useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { Dialog } from "./Dialog";
 import { Glyph } from "./Glyph";
 import { ComposerGrip, useComposerHeight } from "./composerResize";
 import { Markdown } from "./Markdown";
 import { MemoryDialog } from "./MemoryDialog";
+import { Menu } from "./Menu";
 import { ago } from "./model";
 import otterIcon from "./assets/otter.png";
 import type { CodingConversation, Interaction, RuntimeCapabilities } from "./conversation";
 import type { TaskSource } from "./taskSource";
-import { QuestionForm, Work } from "./Work";
+import { QuestionForm, Turn, WorkHead } from "./Work";
 import {
-  FILTERS,
+  GROUPS,
   STATUS_LABEL,
+  budgetBinds,
+  collapseRepeats,
+  findMatch,
+  groupOf,
   taskGlyph,
-  matches,
   pendingDecisions,
   sortTasks,
   statusDetail,
   type DecisionRequest,
+  type Evidence,
   type Task,
   type TaskAction,
   type TaskEventRecord,
-  type TaskFilter,
   type PlacedTask,
   type WorkspaceChoice,
 } from "./tasks";
@@ -46,14 +50,14 @@ interface Props {
 /** The Tasks view (D-041, D-042): product work, independent of the Workspace view. */
 export function TasksView({ source, hosts, workspaces, now, focus, onOpenWorkspace, onOpenPreview, grip }: Props) {
   const [list, setList] = useState<PlacedTask[]>(() => source.list());
-  const [filter, setFilter] = useState<TaskFilter>("all");
+  const [find, setFind] = useState("");
   const [selected, setSelected] = useState<string | undefined>();
   const [creating, setCreating] = useState(false);
   // Opened from elsewhere (the Inbox): show that one.
   useEffect(() => {
     if (!focus) return;
     setSelected(focus.key);
-    setFilter("all");
+    setFind("");
   }, [focus]);
 
   useEffect(() => {
@@ -61,9 +65,13 @@ export function TasksView({ source, hosts, workspaces, now, focus, onOpenWorkspa
     return source.subscribe(setList);
   }, [source]);
 
-  const sorted = useMemo(() => sortTasks(list), [list]);
-  const shown = sorted.filter((p) => matches(p.task, filter));
-  const current = list.find((p) => p.key === selected) ?? shown[0];
+  // Grouped as the list shows them (D-114): what needs you, what is going on, what is over.
+  const groups = useMemo(() => {
+    const shown = sortTasks(list).filter((p) => findMatch(p, find));
+    return GROUPS.map((g) => ({ ...g, items: shown.filter((p) => groupOf(p.task) === g.id) })).filter((g) => g.items.length > 0);
+  }, [list, find]);
+  const first = groups[0]?.items[0];
+  const current = list.find((p) => p.key === selected) ?? first;
 
   return (
     <>
@@ -77,52 +85,64 @@ export function TasksView({ source, hosts, workspaces, now, focus, onOpenWorkspa
             </svg>
           </button>
         </div>
-        <div className="task-filters" role="group" aria-label="Filter tasks">
-          {FILTERS.map((f) => {
-            const count = sorted.filter((p) => matches(p.task, f.id)).length;
-            return (
-              <button
-                key={f.id}
-                className={filter === f.id ? "filter-chip on" : "filter-chip"}
-                aria-pressed={filter === f.id}
-                onClick={() => setFilter(f.id)}
-              >
-                {f.label}
-                <span className="filter-count">{count}</span>
-              </button>
-            );
-          })}
-        </div>
+        {list.length > 0 && (
+          <div className="sidebar-filter">
+            <input
+              type="search"
+              aria-label="Find a task"
+              placeholder="Find a task"
+              value={find}
+              onChange={(e) => setFind(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Escape") {
+                  setFind("");
+                  e.currentTarget.blur();
+                } else if (e.key === "Enter" && first) {
+                  setSelected(first.key);
+                }
+              }}
+              autoCapitalize="off"
+              autoCorrect="off"
+              spellCheck={false}
+            />
+          </div>
+        )}
         <div className="sidebar-groups">
-          {shown.length === 0 ? (
-            <p className="muted small task-none">{list.length === 0 ? "No tasks yet." : "Nothing matches this filter."}</p>
-          ) : (
-            <div className="group" role="list">
-              {shown.map((p) => (
-                <button
-                  key={p.key}
-                  role="listitem"
-                  className={p.key === current?.key ? "ws-row selected" : "ws-row"}
-                  aria-current={p.key === current?.key}
-                  onClick={() => setSelected(p.key)}
-                >
-                  <span className="ws-glyph">
-                    <Glyph kind={taskGlyph(p.task)} />
-                  </span>
-                  <span className="ws-text">
-                    <span className="ws-line">
-                      <span className="ws-name">{p.task.title}</span>
-                      <span className="ws-host">{p.host}</span>
+          {list.length === 0 && <p className="muted small sidebar-none">No tasks yet.</p>}
+          {list.length > 0 && groups.length === 0 && <p className="muted small sidebar-none">No task matches.</p>}
+          {groups.map((g) => (
+            <section key={g.id} className="group" aria-label={g.label}>
+              <h2 className={`group-label ${g.id}`}>
+                <span>{g.label.toUpperCase()}</span>
+                <span className="count">{g.items.length}</span>
+              </h2>
+              <div role="list">
+                {g.items.map((p) => (
+                  <button
+                    key={p.key}
+                    role="listitem"
+                    className={p.key === current?.key ? "ws-row selected" : "ws-row"}
+                    aria-current={p.key === current?.key}
+                    onClick={() => setSelected(p.key)}
+                  >
+                    <span className="ws-glyph">
+                      <Glyph kind={taskGlyph(p.task)} />
                     </span>
-                    <span className="ws-line sub">
-                      <span className="ws-summary">{rowSummary(p.task)}</span>
-                      <span className="ws-age">{ago(p.task.updated_at, now)}</span>
+                    <span className="ws-text">
+                      <span className="ws-line">
+                        <span className="ws-name">{p.task.title}</span>
+                        <span className="ws-host">{p.host}</span>
+                      </span>
+                      <span className="ws-line sub">
+                        <span className="ws-summary">{rowSummary(p.task)}</span>
+                        <span className="ws-age">{ago(p.task.updated_at, now)}</span>
+                      </span>
                     </span>
-                  </span>
-                </button>
-              ))}
-            </div>
-          )}
+                  </button>
+                ))}
+              </div>
+            </section>
+          ))}
         </div>
       </nav>
       {grip}
@@ -155,7 +175,7 @@ export function TasksView({ source, hosts, workspaces, now, focus, onOpenWorkspa
           onClose={() => setCreating(false)}
           onCreate={async (host, title, request, workspace, answerOnly) => {
             const p = await source.create(host, title, request, workspace, answerOnly);
-            setFilter("all");
+            setFind("");
             setSelected(p.key);
             setCreating(false);
           }}
@@ -169,12 +189,15 @@ function rowSummary(f: Task): string {
   const pending = pendingDecisions(f).length;
   if (pending > 0) return `${pending} decision${pending > 1 ? "s" : ""} waiting`;
   if (f.status_reason) return f.status_reason;
-  const done = f.steps.filter((t) => t.status === "done").length;
-  if (f.steps.length > 0) return `${STATUS_LABEL[f.status]} · ${done}/${f.steps.length} steps`;
+  const work = f.steps.filter((t) => !t.planning);
+  const done = work.filter((t) => t.status === "done").length;
+  if (work.length > 0) return `${STATUS_LABEL[f.status]} · ${done}/${work.length} steps`;
   return STATUS_LABEL[f.status];
 }
 
-type Tab = "plan" | "work" | "steps" | "approvals" | "evidence" | "delivery" | "timeline";
+type Tab = "overview" | "activity";
+
+const ENDED = ["done", "cancelled"];
 
 function TaskPane({
   placed,
@@ -195,8 +218,7 @@ function TaskPane({
   const wsName = workspaces.find((w) => w.id === f.workspace_id)?.name;
   const [deleting, setDeleting] = useState(false);
   const [remembering, setRemembering] = useState(false);
-  const pending = pendingDecisions(f);
-  const [tab, setTab] = useState<Tab>(pending.length > 0 ? "approvals" : "plan");
+  const [tab, setTab] = useState<Tab>("overview");
   const [error, setError] = useState<string | null>(null);
   // The coding agent's side (D-055…D-059), and what its runtime can do.
   const [conversations, setConversations] = useState<CodingConversation[]>([]);
@@ -229,38 +251,30 @@ function TaskPane({
     source.act(placed.key, action).catch((e) => setError(String(e)));
   };
 
-  const tabs: { id: Tab; label: string; count?: number }[] = [
-    { id: "plan", label: "Plan" },
-    { id: "work", label: "Work" },
-    { id: "steps", label: "Steps", count: f.steps.length },
-    { id: "approvals", label: "Approvals", count: pending.length },
-    { id: "evidence", label: "Evidence", count: f.evidence.length },
-    { id: "delivery", label: "Delivery" },
-    { id: "timeline", label: "Timeline" },
-  ];
-
   return (
     <main className="pane task-pane" aria-label={f.title}>
       <header className="pane-head" data-tauri-drag-region>
         <Glyph kind={taskGlyph(f)} />
         <h1 className="task-title">{f.title}</h1>
         <span className={`status-pill ${taskGlyph(f)}`}>{STATUS_LABEL[f.status]}</span>
-        {statusDetail(f) && <span className="status-detail">{statusDetail(f)}</span>}
-        <span className="chips">
-          {f.answer_only && (
-            <span className="chip" title="The coding agent only reads; a plan to change things comes to you first">
-              Answer only
-            </span>
-          )}
-          <span className="chip">{placed.host}</span>
+        {f.answer_only && (
+          <span className="chip" title="The coding agent only reads; a plan to change things comes to you first">
+            Answer only
+          </span>
+        )}
+        <span className="task-where">
+          {placed.host}
           {f.workspace_id && (
-            <button className="chip link-btn" onClick={() => onOpenWorkspace(placed.host, f.workspace_id!)}>
-              {wsName ?? f.workspace_id}
-            </button>
+            <>
+              {" / "}
+              <button className="link-btn" title="Open the workspace" onClick={() => onOpenWorkspace(placed.host, f.workspace_id!)}>
+                {wsName ?? f.workspace_id}
+              </button>
+            </>
           )}
         </span>
         <span className="spacer" />
-        {f.workspace_id && !["done", "cancelled"].includes(f.status) && (
+        {f.workspace_id && !ENDED.includes(f.status) && (
           <button
             className="btn"
             title={f.preview ? `Port ${f.preview.port} on ${placed.host}` : "Start the app's preview in its workspace"}
@@ -278,17 +292,16 @@ function TaskPane({
             {f.preview ? "Open preview" : "Preview"}
           </button>
         )}
-        {source.memory && (
-          <button className="btn" title="What Otter noted from what you decided" onClick={() => setRemembering(true)}>
-            Memory
-          </button>
-        )}
         <TaskActions f={f} act={act} caps={caps} />
-        {deletable(f) && (
-          <button className="btn outline" title="Delete this task" onClick={() => setDeleting(true)}>
-            Delete
-          </button>
-        )}
+        <Menu
+          label="More actions"
+          items={[
+            { label: "Memory", onSelect: () => setRemembering(true), hidden: !source.memory },
+            { label: "Open workspace", onSelect: () => onOpenWorkspace(placed.host, f.workspace_id!), hidden: !f.workspace_id },
+            { label: "Cancel task", onSelect: () => act({ action: "cancel" }), hidden: ENDED.includes(f.status) },
+            { label: "Delete task…", onSelect: () => setDeleting(true), danger: true, hidden: !deletable(f) },
+          ]}
+        />
       </header>
       {remembering && source.memory && (
         <MemoryDialog
@@ -312,8 +325,8 @@ function TaskPane({
           Preview with sample data: nothing here runs.
         </p>
       )}
-      <StatusBanner f={f} onApprovals={() => setTab("approvals")} act={act} />
-      {!f.workspace_id && !["done", "cancelled"].includes(f.status) && (
+      <StatusBanner f={f} act={act} />
+      {!f.workspace_id && !ENDED.includes(f.status) && (
         <div className="banner info" role="group" aria-label="Workspace">
           <span className="banner-text">Choose the workspace this task's work happens in.</span>
           <span className="banner-actions">
@@ -336,32 +349,29 @@ function TaskPane({
       )}
       {error && <p className="notice error-text">{error}</p>}
       <div className="task-body">
-        <Conversation placed={placed} source={source} now={now} caps={caps} onError={setError} />
+        <Conversation placed={placed} source={source} now={now} caps={caps} act={act} interactions={interactions} onError={setError} />
         <section className="task-detail" aria-label="Details">
           <div className="detail-tabs" role="tablist" aria-label="Task details">
-            {tabs.map((t) => (
+            {(["overview", "activity"] as const).map((t) => (
               <button
-                key={t.id}
+                key={t}
                 role="tab"
-                id={`ftab-${t.id}`}
-                aria-selected={tab === t.id}
-                aria-controls={`fpanel-${t.id}`}
-                className={tab === t.id ? "detail-tab on" : "detail-tab"}
-                onClick={() => setTab(t.id)}
+                id={`ftab-${t}`}
+                aria-selected={tab === t}
+                aria-controls={`fpanel-${t}`}
+                className={tab === t ? "detail-tab on" : "detail-tab"}
+                onClick={() => setTab(t)}
               >
-                {t.label}
-                {t.count ? <span className={t.id === "approvals" ? "filter-count needs" : "filter-count"}>{t.count}</span> : null}
+                {t === "overview" ? "Overview" : "Activity"}
               </button>
             ))}
           </div>
           <div className="detail-body" role="tabpanel" id={`fpanel-${tab}`} aria-labelledby={`ftab-${tab}`}>
-            {tab === "plan" && <Plan f={f} />}
-            {tab === "steps" && <Steps placed={placed} onOpenWorkspace={onOpenWorkspace} />}
-            {tab === "work" && <Work conversations={conversations} now={now} />}
-            {tab === "approvals" && <Approvals f={f} act={act} now={now} interactions={interactions} />}
-            {tab === "evidence" && <EvidenceList f={f} now={now} shot={(name) => source.artifact(placed.key, name)} />}
-            {tab === "delivery" && <DeliveryPanel f={f} />}
-            {tab === "timeline" && <Timeline placed={placed} source={source} now={now} />}
+            {tab === "overview" ? (
+              <Overview placed={placed} now={now} onOpenWorkspace={onOpenWorkspace} shot={(name) => source.artifact(placed.key, name)} />
+            ) : (
+              <ActivityFeed placed={placed} source={source} conversations={conversations} now={now} />
+            )}
           </div>
         </section>
       </div>
@@ -425,6 +435,7 @@ function DeleteTaskDialog({
   );
 }
 
+/** What the task can be told to do now; cancelling and deleting are in the ⋯ menu. */
 function TaskActions({
   f,
   act,
@@ -467,48 +478,38 @@ function TaskActions({
           Retry
         </button>
       )}
-      {f.status === "review" && (
-        <>
-          {gatesClear(f) ? (
-            <button className="btn primary" onClick={() => act({ action: "accept" })}>
-              Accept
-            </button>
-          ) : (
-            <button
-              className="btn outline"
-              title="Some gates haven't passed; accepting anyway is recorded in the report"
-              onClick={() => act({ action: "accept", override_gates: true })}
-            >
-              Accept anyway
-            </button>
-          )}
-        </>
-      )}
-      {!["done", "cancelled"].includes(f.status) && (
-        <button className="btn outline" onClick={() => act({ action: "cancel" })}>
-          Cancel
-        </button>
-      )}
+      {f.status === "review" &&
+        (gatesClear(f) ? (
+          <button className="btn primary" onClick={() => act({ action: "accept" })}>
+            Accept
+          </button>
+        ) : (
+          <button
+            className="btn outline"
+            title="Some gates haven't passed; accepting anyway is recorded in the report"
+            onClick={() => act({ action: "accept", override_gates: true })}
+          >
+            Accept anyway
+          </button>
+        ))}
     </span>
   );
 }
 
-function StatusBanner({ f, onApprovals, act }: { f: Task; onApprovals: () => void; act: (a: TaskAction) => void }) {
+/**
+ * Only what has no other place: a stop, a block without a decision to
+ * answer, waiting for a workspace. A decision waits above the message box.
+ */
+function StatusBanner({ f, act }: { f: Task; act: (a: TaskAction) => void }) {
   const pending = pendingDecisions(f).length;
-  if (pending > 0 || f.status === "blocked") {
+  if (f.status === "blocked") {
+    if (pending > 0) return null;
     return (
       <div className="banner needs" role="status">
         <span className="banner-text">
           <Glyph kind="needs" />
-          <span className="banner-summary">{f.status_reason ?? `${pending} decision${pending === 1 ? "" : "s"} waiting for you`}</span>
+          <span className="banner-summary">{f.status_reason ?? "Waiting on you"}</span>
         </span>
-        {pending > 0 && (
-          <span className="banner-actions">
-            <button className="btn" onClick={onApprovals}>
-              Review
-            </button>
-          </span>
-        )}
       </div>
     );
   }
@@ -519,26 +520,11 @@ function StatusBanner({ f, onApprovals, act }: { f: Task; onApprovals: () => voi
           <Glyph kind="failed" />
           <span className="banner-summary">{f.status_reason ?? "The task failed"}</span>
         </span>
-        <span className="banner-actions">
-          <button className="btn" onClick={() => act({ action: "retry" })}>
-            Retry
-          </button>
-        </span>
-      </div>
-    );
-  }
-  if (f.status === "review") {
-    return (
-      <div className="banner needs" role="status">
-        <span className="banner-text">
-          <Glyph kind="needs" />
-          <span className="banner-summary">{f.status_reason ?? "Ready for your review"}</span>
-        </span>
       </div>
     );
   }
   // Waiting for its workspace (D-079): or a worktree of its own (D-080).
-  if (f.status_reason?.startsWith("Waiting for ")) {
+  if (pending === 0 && f.status_reason?.startsWith("Waiting for ")) {
     return (
       <div className="banner info" role="status">
         <span className="banner-text">
@@ -585,17 +571,37 @@ export function MessageText({ role, text, children }: { role: string; text: stri
   );
 }
 
+/** A coding agent's report this long folds, so the conversation around it stays in view. */
+const FOLD_CHARS = 1200;
+
+function Folded({ long, children }: { long: boolean; children: ReactNode }) {
+  const [open, setOpen] = useState(false);
+  if (!long) return <>{children}</>;
+  return (
+    <>
+      <div className={open ? "fold open" : "fold"}>{children}</div>
+      <button className="link-btn fold-toggle" aria-expanded={open} onClick={() => setOpen((o) => !o)}>
+        {open ? "Show less" : "Show all"}
+      </button>
+    </>
+  );
+}
+
 function Conversation({
   placed,
   source,
   now,
   caps,
+  act,
+  interactions,
   onError,
 }: {
   placed: PlacedTask;
   source: TaskSource;
   now: number;
   caps?: RuntimeCapabilities | null;
+  act: (a: TaskAction) => void;
+  interactions: Map<string, Interaction>;
   onError?: (e: string) => void;
 }) {
   const [text, setText] = useState("");
@@ -603,6 +609,16 @@ function Conversation({
   const [inputHeight, setInputHeight] = useComposerHeight();
   const end = useRef<HTMLDivElement>(null);
   const messages = placed.task.messages;
+  const pending = pendingDecisions(placed.task);
+  // A decision taken shows where it was asked; one waiting, above the message box.
+  const said = useMemo(() => {
+    const decided = placed.task.decisions.filter((d) => d.status !== "pending");
+    const items = [
+      ...messages.map((m) => ({ at: Date.parse(m.at), key: m.id, message: m, decision: undefined })),
+      ...decided.map((d) => ({ at: Date.parse(d.created_at), key: d.id, message: undefined, decision: d })),
+    ];
+    return items.sort((a, b) => a.at - b.at);
+  }, [messages, placed.task.decisions]);
   const live = placed.task.runs.find((r) => ["starting", "running", "waiting"].includes(r.state));
   // Being written right now (D-051); a written one shows until its message loads.
   const drafts = (source.drafts?.(placed.key) ?? []).filter(
@@ -614,7 +630,7 @@ function Conversation({
   const last = messages[messages.length - 1];
   const replying = drafts.some((d) => d.role === "controller");
   const awaitingReply =
-    !replying && last?.role === "user" && messages.length > 1 && !["done", "cancelled"].includes(placed.task.status);
+    !replying && last?.role === "user" && messages.length > 1 && !ENDED.includes(placed.task.status);
   useEffect(
     () => end.current?.scrollIntoView?.({ block: "end" }),
     [messages.length, activity.length, awaitingReply, draftText.length],
@@ -637,15 +653,21 @@ function Conversation({
     <section className="conversation" aria-label="Conversation">
       <div className="messages" role="log" aria-live="polite">
         {messages.length === 0 && <p className="muted small">No messages yet. Describe what you want, or refine the request.</p>}
-        {messages.map((m) => (
-          <div key={m.id} className={`message ${m.role}`}>
-            <div className="message-head">
-              <Speaker role={m.role} />
-              <span className="message-at">{ago(m.at, now)}</span>
+        {said.map(({ key, message: m, decision }) =>
+          m ? (
+            <div key={key} className={`message ${m.role}`}>
+              <div className="message-head">
+                <Speaker role={m.role} />
+                <span className="message-at">{ago(m.at, now)}</span>
+              </div>
+              <Folded long={m.role === "agent" && m.text.length > FOLD_CHARS}>
+                <MessageText role={m.role} text={m.text} />
+              </Folded>
             </div>
-            <MessageText role={m.role} text={m.text} />
-          </div>
-        ))}
+          ) : (
+            <DecidedNote key={key} d={decision!} now={now} />
+          ),
+        )}
         {drafts.map((d) => (
           <div key={d.stream_id} className={`message ${d.role} streaming`}>
             <div className="message-head">
@@ -675,6 +697,15 @@ function Conversation({
         {awaitingReply && <p className="muted small replying">Otter is replying…</p>}
         <div ref={end} />
       </div>
+      {pending.length > 0 && (
+        <section className="pending-decisions" aria-label="Waiting for your decision">
+          <ul className="plain-list decisions">
+            {pending.map((d) => (
+              <Decision key={d.id} d={d} act={act} now={now} interaction={interactions.get(d.id)} />
+            ))}
+          </ul>
+        </section>
+      )}
       <form className="composer" onSubmit={submit}>
         <ComposerGrip height={inputHeight} onResize={setInputHeight} />
         <textarea
@@ -727,110 +758,32 @@ function Conversation({
   );
 }
 
-function Plan({ f }: { f: Task }) {
+const VERDICT: Record<string, string> = { approved: "Approved", denied: "Denied", answered: "Answered", cancelled: "Withdrawn" };
+
+function decider(d: DecisionRequest): string | undefined {
+  if (d.decided_by === "user") return "you";
+  if (d.decided_by === "controller") return "Otter";
+  return d.decided_by;
+}
+
+/** A decision already taken, where it was asked in the conversation. */
+function DecidedNote({ d, now }: { d: DecisionRequest; now: number }) {
+  const by = decider(d);
   return (
-    <div className="plan">
-      <h2 className="sub-title">Request</h2>
-      <p className="plan-request">{f.request || <span className="muted">—</span>}</p>
-      <h2 className="sub-title">Requirements</h2>
-      {f.requirements.length === 0 ? (
-        <p className="muted small">None yet: Otter writes them while planning.</p>
-      ) : (
-        <ul className="plain-list">
-          {f.requirements.map((r) => (
-            <li key={r}>{r}</li>
-          ))}
-        </ul>
-      )}
-      <h2 className="sub-title">Acceptance criteria</h2>
-      {f.acceptance.length === 0 ? (
-        <p className="muted small">None yet.</p>
-      ) : (
-        <ul className="plain-list criteria">
-          {f.acceptance.map((c) => (
-            <li key={c.id}>
-              <Glyph kind={c.met === true ? "done" : c.met === false ? "failed" : "idle"} />
-              <span>{c.text}</span>
-              <span className="muted small">{c.met === undefined ? "not verified" : c.met ? "met" : "not met"}</span>
-            </li>
-          ))}
-        </ul>
-      )}
-      {f.verify_command && (
-        <>
-          <h2 className="sub-title">Check</h2>
-          <p className="small">
-            <code>{f.verify_command}</code>
-          </p>
-        </>
-      )}
-      <h2 className="sub-title">Budget</h2>
-      <p className="small">
-        {f.budget.iterations_used} of {f.budget.max_iterations} attempts used · up to {f.budget.max_minutes} min
-      </p>
-      {f.rationale && f.rationale.length > 0 && (
-        <>
-          <h2 className="sub-title">Why</h2>
-          <ul className="plain-list small">
-            {[...f.rationale].reverse().map((r, i) => (
-              <li key={i}>{r}</li>
-            ))}
-          </ul>
-        </>
-      )}
+    <div className="decided">
+      <div className="decided-head">
+        <Glyph kind={d.status === "denied" ? "failed" : d.status === "cancelled" ? "idle" : "done"} />
+        <span className="decided-verdict">
+          {VERDICT[d.status] ?? d.status}
+          {by && ` by ${by}`}
+        </span>
+        <span className="muted small">
+          {d.risk} risk · {d.kind.replace("_", " ")} · {ago(d.decided_at ?? d.created_at, now)}
+        </span>
+      </div>
+      <div className="decided-summary">{d.summary}</div>
+      {d.answer && <div className="muted small">{d.answer}</div>}
     </div>
-  );
-}
-
-const TASK_GLYPH = { pending: "idle", running: "working", blocked: "needs", done: "done", failed: "failed", skipped: "idle" } as const;
-
-function Steps({ placed, onOpenWorkspace }: { placed: PlacedTask; onOpenWorkspace: Props["onOpenWorkspace"] }) {
-  const f = placed.task;
-  if (f.steps.length === 0) return <p className="muted small">No steps yet: the plan comes first.</p>;
-  return (
-    <ul className="plain-list steps">
-      {f.steps.map((t) => (
-        <li key={t.id} className="step">
-          <Glyph kind={TASK_GLYPH[t.status]} />
-          <span className="step-text">
-            <span className="step-title">{t.title}</span>
-            <span className="muted small">
-              {t.status}
-              {t.attempts > 1 && ` · attempt ${t.attempts}`}
-              {t.depends_on.length > 0 && ` · after ${t.depends_on.map((d) => f.steps.findIndex((x) => x.id === d) + 1).join(", ")}`}
-            </span>
-            {t.last_error && <span className="error-text small">{t.last_error}</span>}
-          </span>
-          {t.workspace_id && (
-            <button className="link-btn" onClick={() => onOpenWorkspace(placed.host, t.workspace_id!, t.session_id)}>
-              {t.session_id ? "Open session" : "Open workspace"}
-            </button>
-          )}
-        </li>
-      ))}
-    </ul>
-  );
-}
-
-function Approvals({
-  f,
-  act,
-  now,
-  interactions,
-}: {
-  f: Task;
-  act: (a: TaskAction) => void;
-  now: number;
-  interactions?: Map<string, Interaction>;
-}) {
-  if (f.decisions.length === 0) return <p className="muted small">Nothing has needed a decision.</p>;
-  const sorted = [...f.decisions].sort((a, b) => Number(b.status === "pending") - Number(a.status === "pending"));
-  return (
-    <ul className="plain-list decisions">
-      {sorted.map((d) => (
-        <Decision key={d.id} d={d} act={act} now={now} interaction={interactions?.get(d.id)} />
-      ))}
-    </ul>
   );
 }
 
@@ -908,35 +861,130 @@ export function Decision({
   );
 }
 
-function EvidenceList({ f, now, shot }: { f: Task; now: number; shot: (name: string) => Promise<string> }) {
-  if (f.evidence.length === 0) return <p className="muted small">No evidence yet: tests, browser checks and CI results land here.</p>;
+function Section({ title, count, children }: { title: string; count?: string; children: ReactNode }) {
   return (
-    <ul className="plain-list evidence">
-      {f.evidence.map((e) => (
-        <li key={e.id} className="evidence-item">
-          <Glyph kind={e.ok === true ? "done" : e.ok === false ? "failed" : "idle"} />
-          <span className="step-text">
-            <span>
-              {e.uri ? (
-                <a href={e.uri} target="_blank" rel="noreferrer">
-                  {e.title}
-                </a>
-              ) : (
-                e.title
-              )}
-            </span>
-            <span className="muted small">
-              {e.kind.replace("_", " ")}
-              {e.uncertain && " · judgment, not a check"} · {ago(e.at, now)}
-            </span>
-            {e.detail && <span className="muted small evidence-detail">{e.detail}</span>}
-            {e.kind === "screenshot" && e.uri?.startsWith("artifact:") && <Shot load={() => shot(e.uri!)} alt={e.title} />}
-          </span>
-        </li>
-      ))}
-    </ul>
+    <section className="ov-section" aria-label={title}>
+      <h2 className="ov-title">
+        <span>{title}</span>
+        {count && <span className="count">{count}</span>}
+      </h2>
+      {children}
+    </section>
   );
 }
+
+/**
+ * The task at a glance (D-114): only sections that have something, in the
+ * order its stage needs them.
+ */
+function Overview({
+  placed,
+  now,
+  onOpenWorkspace,
+  shot,
+}: {
+  placed: PlacedTask;
+  now: number;
+  onOpenWorkspace: Props["onOpenWorkspace"];
+  shot: (name: string) => Promise<string>;
+}) {
+  const f = placed.task;
+  const parts: Record<string, ReactNode> = {
+    now: <Now f={f} />,
+    outcome: <Outcome f={f} />,
+    progress: <Progress placed={placed} onOpenWorkspace={onOpenWorkspace} />,
+    checks: <Checks f={f} now={now} shot={shot} />,
+    delivery: <DeliveryInfo f={f} />,
+    report: f.report ? (
+      <Section title="Report">
+        <Markdown className="report" text={f.report} />
+      </Section>
+    ) : null,
+    decisions: <Decisions f={f} now={now} />,
+    request: <Request f={f} />,
+  };
+  const order = ENDED.includes(f.status)
+    ? ["outcome", "report", "checks", "delivery", "progress", "decisions", "request"]
+    : f.status === "review"
+      ? ["now", "checks", "delivery", "report", "progress", "decisions", "request"]
+      : ["now", "progress", "checks", "delivery", "report", "decisions", "request"];
+  return (
+    <div className="overview">
+      {order.map((k) => (
+        <Fragment key={k}>{parts[k]}</Fragment>
+      ))}
+    </div>
+  );
+}
+
+/** Where it stands; the budget only once it constrains the work. A stop or a block is in the banner. */
+function Now({ f }: { f: Task }) {
+  if (ENDED.includes(f.status)) return null;
+  const detail = f.status === "failed" || f.status === "blocked" ? undefined : statusDetail(f);
+  const line = f.status === "draft" ? "Not started: Start when the request says what you want." : detail;
+  const budget = budgetBinds(f);
+  if (!line && !budget) return null;
+  return (
+    <Section title="Now">
+      {line && <p className="ov-text">{line}</p>}
+      {budget && (
+        <p className="muted small ov-budget">
+          {f.budget.iterations_used} of {f.budget.max_iterations} attempts used · up to {f.budget.max_minutes} min
+        </p>
+      )}
+    </Section>
+  );
+}
+
+/** How it ended. */
+function Outcome({ f }: { f: Task }) {
+  if (!ENDED.includes(f.status)) return null;
+  return (
+    <Section title="Outcome">
+      <p className="ov-text ov-outcome">
+        <Glyph kind={f.status === "done" ? "done" : "idle"} />
+        <span>{f.status_reason ?? STATUS_LABEL[f.status]}</span>
+      </p>
+    </Section>
+  );
+}
+
+const STEP_GLYPH = { pending: "idle", running: "working", blocked: "needs", done: "done", failed: "failed", skipped: "idle" } as const;
+
+/** The plan's steps; the coding agent's planning turn isn't one. */
+function Progress({ placed, onOpenWorkspace }: { placed: PlacedTask; onOpenWorkspace: Props["onOpenWorkspace"] }) {
+  const f = placed.task;
+  const steps = f.steps.filter((t) => !t.planning);
+  if (steps.length === 0) return null;
+  const done = steps.filter((t) => t.status === "done").length;
+  return (
+    <Section title="Progress" count={`${done} of ${steps.length}`}>
+      <ul className="plain-list steps">
+        {steps.map((t) => (
+          <li key={t.id} className="step">
+            <Glyph kind={STEP_GLYPH[t.status]} />
+            <span className="step-text">
+              <span className="step-title">{t.title}</span>
+              <span className="muted small">
+                {t.status}
+                {t.attempts > 1 && ` · attempt ${t.attempts}`}
+                {t.depends_on.length > 0 && ` · after ${t.depends_on.map((d) => steps.findIndex((x) => x.id === d) + 1).join(", ")}`}
+              </span>
+              {t.last_error && <span className="error-text small">{t.last_error}</span>}
+            </span>
+            {t.workspace_id && (
+              <button className="link-btn" onClick={() => onOpenWorkspace(placed.host, t.workspace_id!, t.session_id)}>
+                {t.session_id ? "Open session" : "Open workspace"}
+              </button>
+            )}
+          </li>
+        ))}
+      </ul>
+    </Section>
+  );
+}
+
+const GATE_GLYPH = { passed: "done", failed: "failed", pending: "working", not_applicable: "idle" } as const;
 
 /** Every gate but the developer's own acceptance passed (or doesn't apply). */
 function gatesClear(f: Task): boolean {
@@ -944,59 +992,177 @@ function gatesClear(f: Task): boolean {
   return gates.length > 0 && gates.filter((g) => g.name !== "Your acceptance").every((g) => g.status === "passed" || g.status === "not_applicable");
 }
 
-const GATE_GLYPH = { passed: "done", failed: "failed", pending: "working", not_applicable: "idle" } as const;
-
-/** The gates, the pull request and its CI, and the final report (D-047). */
-function DeliveryPanel({ f }: { f: Task }) {
+/**
+ * What says the work is right: each acceptance criterion with the evidence
+ * behind it, the gates (D-047), and evidence that backs no criterion.
+ */
+function Checks({ f, now, shot }: { f: Task; now: number; shot: (name: string) => Promise<string> }) {
   const gates = f.gates ?? [];
-  const d = f.delivery;
+  const backing = (id: string, ids: string[]) => f.evidence.filter((e) => ids.includes(e.id) || e.criterion_id === id);
+  const used = new Set(f.acceptance.flatMap((c) => backing(c.id, c.evidence).map((e) => e.id)));
+  const rest = f.evidence.filter((e) => !used.has(e.id));
+  if (f.acceptance.length === 0 && gates.length === 0 && rest.length === 0 && !f.verify_command) return null;
+  const met = f.acceptance.filter((c) => c.met === true).length;
   return (
-    <div className="plan">
-      <h2 className="sub-title">Gates</h2>
-      {gates.length === 0 ? (
-        <p className="muted small">Checked once the work is verified.</p>
-      ) : (
-        <ul className="plain-list criteria">
-          {gates.map((g) => (
-            <li key={g.name}>
-              <Glyph kind={GATE_GLYPH[g.status]} />
-              <span>{g.name}</span>
-              <span className="muted small">{g.status === "not_applicable" ? "n/a" : g.status}{g.detail ? ` · ${g.detail}` : ""}</span>
+    <Section title="Checks" count={f.acceptance.length > 0 ? `${met} of ${f.acceptance.length}` : undefined}>
+      {f.acceptance.length > 0 && (
+        <ul className="plain-list checks">
+          {f.acceptance.map((c) => (
+            <li key={c.id} className="check">
+              <Glyph kind={c.met === true ? "done" : c.met === false ? "failed" : "idle"} />
+              <span className="step-text">
+                <span>{c.text}</span>
+                <span className="muted small">{c.met === undefined ? "not checked yet" : c.met ? "met" : "not met"}</span>
+                {backing(c.id, c.evidence).map((e) => (
+                  <EvidenceLine key={e.id} e={e} now={now} shot={shot} />
+                ))}
+              </span>
             </li>
           ))}
         </ul>
       )}
-      {d && (
-        <>
-          <h2 className="sub-title">Pull request</h2>
-          {d.declined ? (
-            <p className="small muted">You chose not to publish; the change stays on {d.branch}.</p>
-          ) : d.pr_url ? (
-            <p className="small">
-              <a href={d.pr_url} target="_blank" rel="noreferrer">
-                {d.pr_url}
-              </a>{" "}
-              <span className="muted">· {d.branch}</span>
-            </p>
+      {gates.length > 0 && (
+        <ul className="plain-list checks gates">
+          {gates.map((g) => (
+            <li key={g.name} className="check">
+              <Glyph kind={GATE_GLYPH[g.status]} />
+              <span className="step-text">
+                <span>{g.name}</span>
+                <span className="muted small">
+                  {g.status === "not_applicable" ? "n/a" : g.status}
+                  {g.detail ? ` · ${g.detail}` : ""}
+                </span>
+              </span>
+            </li>
+          ))}
+        </ul>
+      )}
+      {rest.length > 0 && (
+        <ul className="plain-list checks">
+          {rest.map((e) => (
+            <li key={e.id} className="check">
+              <EvidenceLine e={e} now={now} shot={shot} glyph />
+            </li>
+          ))}
+        </ul>
+      )}
+      {f.verify_command && (
+        <p className="muted small ov-check">
+          Checked with <code>{f.verify_command}</code>
+        </p>
+      )}
+    </Section>
+  );
+}
+
+function EvidenceLine({ e, now, shot, glyph }: { e: Evidence; now: number; shot: (name: string) => Promise<string>; glyph?: boolean }) {
+  return (
+    <span className="evidence-item">
+      {glyph && <Glyph kind={e.ok === true ? "done" : e.ok === false ? "failed" : "idle"} />}
+      <span className="step-text">
+        <span>
+          {e.uri && !e.uri.startsWith("artifact:") ? (
+            <a href={e.uri} target="_blank" rel="noreferrer">
+              {e.title}
+            </a>
           ) : (
-            <p className="small muted">Waiting to publish {d.branch}.</p>
+            e.title
           )}
-          {d.ci.length > 0 && (
-            <ul className="plain-list small">
-              {d.ci.map((c) => (
-                <li key={c.name}>
-                  <Glyph kind={c.state === "pass" || c.state === "skipping" ? "done" : c.state === "pending" ? "working" : "failed"} /> {c.name}{" "}
-                  <span className="muted">{c.state}</span>
-                </li>
-              ))}
-            </ul>
-          )}
-          {d.reruns > 0 && <p className="small muted">Reran flaky CI {d.reruns}×.</p>}
+        </span>
+        <span className="muted small">
+          {e.kind.replace("_", " ")}
+          {e.ok === true && " · passed"}
+          {e.ok === false && " · failed"}
+          {e.uncertain && " · judgment, not a check"} · {ago(e.at, now)}
+        </span>
+        {e.detail && <span className="muted small evidence-detail">{e.detail}</span>}
+        {e.kind === "screenshot" && e.uri?.startsWith("artifact:") && <Shot load={() => shot(e.uri!)} alt={e.title} />}
+      </span>
+    </span>
+  );
+}
+
+/** The change as published: its pull request and CI. */
+function DeliveryInfo({ f }: { f: Task }) {
+  const d = f.delivery;
+  if (!d) return null;
+  return (
+    <Section title="Delivery">
+      {d.declined ? (
+        <p className="small muted">You chose not to publish; the change stays on {d.branch}.</p>
+      ) : d.pr_url ? (
+        <p className="small">
+          <a href={d.pr_url} target="_blank" rel="noreferrer">
+            {d.pr_url}
+          </a>{" "}
+          <span className="muted">· {d.branch}</span>
+        </p>
+      ) : (
+        <p className="small muted">Waiting to publish {d.branch}.</p>
+      )}
+      {d.ci.length > 0 && (
+        <ul className="plain-list small ci">
+          {d.ci.map((c) => (
+            <li key={c.name}>
+              <Glyph kind={c.state === "pass" || c.state === "skipping" ? "done" : c.state === "pending" ? "working" : "failed"} /> {c.name}{" "}
+              <span className="muted">{c.state}</span>
+            </li>
+          ))}
+        </ul>
+      )}
+      {d.reruns > 0 && <p className="small muted">Reran flaky CI {d.reruns}×.</p>}
+    </Section>
+  );
+}
+
+/** Decisions already taken; one waiting is above the message box. */
+function Decisions({ f, now }: { f: Task; now: number }) {
+  const decided = f.decisions.filter((d) => d.status !== "pending");
+  if (decided.length === 0) return null;
+  return (
+    <Section title="Decisions" count={String(decided.length)}>
+      <ul className="plain-list checks">
+        {[...decided].reverse().map((d) => (
+          <li key={d.id} className="check">
+            <Glyph kind={d.status === "denied" ? "failed" : d.status === "cancelled" ? "idle" : "done"} />
+            <span className="step-text">
+              <span className="ov-clip">{d.summary}</span>
+              <span className="muted small">
+                {VERDICT[d.status] ?? d.status}
+                {decider(d) && ` by ${decider(d)}`} · {d.risk} risk · {ago(d.decided_at ?? d.created_at, now)}
+              </span>
+            </span>
+          </li>
+        ))}
+      </ul>
+    </Section>
+  );
+}
+
+/** What was asked for: it is also the first message, so it folds. */
+function Request({ f }: { f: Task }) {
+  const [open, setOpen] = useState(false);
+  if (!f.request && f.requirements.length === 0) return null;
+  const long = f.request.length > 240 || f.request.split("\n").length > 3;
+  return (
+    <Section title="Request">
+      {f.request && <p className={open || !long ? "plan-request" : "plan-request clamped"}>{f.request}</p>}
+      {long && (
+        <button className="link-btn" aria-expanded={open} onClick={() => setOpen((o) => !o)}>
+          {open ? "Show less" : "Show all"}
+        </button>
+      )}
+      {f.requirements.length > 0 && (
+        <>
+          <h3 className="ov-sub">Requirements</h3>
+          <ul className="plain-list requirements">
+            {f.requirements.map((r) => (
+              <li key={r}>{r}</li>
+            ))}
+          </ul>
         </>
       )}
-      <h2 className="sub-title">Report</h2>
-      {f.report ? <Markdown className="report" text={f.report} /> : <p className="muted small">Written when every gate has passed.</p>}
-    </div>
+    </Section>
   );
 }
 
@@ -1015,8 +1181,30 @@ function Shot({ load, alt }: { load: () => Promise<string>; alt: string }) {
   return src ? <img className="evidence-shot" src={src} alt={alt} /> : null;
 }
 
-function Timeline({ placed, source, now }: { placed: PlacedTask; source: TaskSource; now: number }) {
+type Who = "all" | "agent" | "task";
+const WHO: { id: Who; label: string }[] = [
+  { id: "all", label: "All" },
+  { id: "agent", label: "Coding agent" },
+  { id: "task", label: "Task" },
+];
+
+/**
+ * What happened, newest first (D-114): the task's own history and the
+ * coding agent's turns in one feed, then Otter's reasons.
+ */
+function ActivityFeed({
+  placed,
+  source,
+  conversations,
+  now,
+}: {
+  placed: PlacedTask;
+  source: TaskSource;
+  conversations: CodingConversation[];
+  now: number;
+}) {
   const [events, setEvents] = useState<TaskEventRecord[] | null>(null);
+  const [who, setWho] = useState<Who>("all");
   const updated = placed.task.updated_at;
   useEffect(() => {
     let live = true;
@@ -1028,17 +1216,59 @@ function Timeline({ placed, source, now }: { placed: PlacedTask; source: TaskSou
       live = false;
     };
   }, [placed.key, updated, source]);
-  if (!events) return <p className="muted small">Loading…</p>;
-  if (events.length === 0) return <p className="muted small">No history yet.</p>;
+  const items = [
+    ...(who === "agent"
+      ? []
+      : (events ?? []).map((e) => ({
+          at: Date.parse(e.ts),
+          key: `e${e.seq}`,
+          node: (
+            <li className="feed-event">
+              <span className="muted small">{ago(e.ts, now)}</span>
+              <span>{e.text}</span>
+            </li>
+          ),
+        }))),
+    ...(who === "task"
+      ? []
+      : conversations.flatMap((c) =>
+          c.turns.map((t) => ({ at: Date.parse(t.started_at ?? t.queued_at), key: `t${c.id}/${t.id}`, node: <Turn c={c} t={t} now={now} /> })),
+        )),
+  ].sort((a, b) => b.at - a.at);
+  const reasons = collapseRepeats(placed.task.rationale ?? []).reverse();
   return (
-    <ol className="plain-list task-timeline">
-      {[...events].reverse().map((e) => (
-        <li key={e.seq}>
-          <span className="muted small">{ago(e.ts, now)}</span>
-          <span>{e.text}</span>
-        </li>
-      ))}
-    </ol>
+    <div className="feed">
+      <div className="seg" role="group" aria-label="Show what happened">
+        {WHO.map((w) => (
+          <button key={w.id} className={who === w.id ? "seg-btn on" : "seg-btn"} aria-pressed={who === w.id} onClick={() => setWho(w.id)}>
+            {w.label}
+          </button>
+        ))}
+      </div>
+      {who !== "task" && conversations.map((c) => <WorkHead key={c.id} c={c} />)}
+      {items.length > 0 ? (
+        <ol className="plain-list feed-list">
+          {items.map((i) => (
+            <Fragment key={i.key}>{i.node}</Fragment>
+          ))}
+        </ol>
+      ) : (
+        <p className="muted small">{events === null && who !== "agent" ? "Loading…" : who === "agent" ? "No coding work yet: it starts when a task runs." : "Nothing yet."}</p>
+      )}
+      {who !== "agent" && reasons.length > 0 && (
+        <details className="reasons">
+          <summary>Otter's reasons ({reasons.length})</summary>
+          <ul className="plain-list">
+            {reasons.map((r, i) => (
+              <li key={i}>
+                {r.text}
+                {r.times > 1 && <span className="muted small"> ×{r.times}</span>}
+              </li>
+            ))}
+          </ul>
+        </details>
+      )}
+    </div>
   );
 }
 
