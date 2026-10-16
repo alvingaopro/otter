@@ -201,8 +201,6 @@ pub enum Request {
     #[serde(rename = "settings.models")]
     SettingsModels(host::ModelsQuery),
 
-    /// Every task on this host, newest first. Result:
-    /// `Vec<`[`otter_core::task::Task`]`>`.
     /// Otter's conversation on this host (D-093). Result:
     /// [`otter_core::task::OtterChat`].
     #[serde(rename = "otter.get")]
@@ -215,7 +213,17 @@ pub enum Request {
     /// `Vec<`[`otter_core::task::TaskEventRecord`]`>`.
     #[serde(rename = "otter.events")]
     OtterEvents(otter::OtterEvents),
+    /// Otter's memories (D-113): the host's and one conversation's. Result:
+    /// [`otter::OtterMemory`].
+    #[serde(rename = "memory.get")]
+    MemoryGet(otter::MemoryGet),
+    /// Replace what one of Otter's memories says. Result:
+    /// [`otter::OtterMemory`].
+    #[serde(rename = "memory.set")]
+    MemorySet(otter::MemorySet),
 
+    /// Every task on this host, newest first. Result:
+    /// `Vec<`[`otter_core::task::Task`]`>`.
     #[serde(rename = "task.list")]
     TaskList,
     /// Result: [`otter_core::task::Task`].
@@ -326,6 +334,8 @@ impl Request {
             Request::OtterGet => "otter.get",
             Request::OtterSend(_) => "otter.send",
             Request::OtterEvents(_) => "otter.events",
+            Request::MemoryGet(_) => "memory.get",
+            Request::MemorySet(_) => "memory.set",
             Request::TaskList => "task.list",
             Request::TaskGet(_) => "task.get",
             Request::TaskCreate(_) => "task.create",

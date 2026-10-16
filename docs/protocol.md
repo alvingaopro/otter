@@ -386,6 +386,22 @@ turn them on.
 An addition (no protocol bump): daemons before it answer `invalid_request`;
 `otter chat` says the host's otterd is too old.
 
+Otter's memory (D-113): what Otter noted from what the developer decided.
+There is one memory for each conversation and one for the host, across
+every conversation there. Every turn is given both. Each is Markdown, at
+most 8 000 characters, redacted.
+
+- `memory.get {task?}` → `OtterMemory {host, conversation, max_chars}`.
+  `conversation` is the task's memory, or Otter's conversation on the host
+  when no task is given.
+- `memory.set {task?, memory: "host" | "conversation", text, previous?}` →
+  the same. `text` replaces all of that memory. `previous`, what it said when
+  the edit began, makes the call a `conflict` if Otter has changed it since.
+  An unknown task is `not_found`, and too much text is `invalid_argument`.
+- Neither memory is in an event. A client reads them when it shows them.
+- Also an addition: older daemons answer `invalid_request`, and the app says
+  the host's otterd is too old.
+
 ## Triggers
 
 What starts unattended work on a host (D-083), kept in

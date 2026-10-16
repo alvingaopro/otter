@@ -5,6 +5,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import type { CodingConversation, RuntimeCapabilities } from "./conversation";
+import { daemonMemory, mockMemory, type MemorySource } from "./memory";
 import type { Draft, Task, TaskAction, TaskEventRecord, MessageRole, PlacedTask } from "./tasks";
 
 export interface TaskSource {
@@ -33,6 +34,8 @@ export interface TaskSource {
   watchConversations?(key: string, onChange: () => void): () => void;
   /** What the host's coding runtime can do (`null`: an otterd that doesn't say). */
   capabilities?(host: string): Promise<RuntimeCapabilities | null>;
+  /** Otter's memories (D-113). */
+  memory?: MemorySource;
 }
 
 /** The coding agent's work on the sample tasks. */
@@ -237,6 +240,7 @@ export function mockSource(host = "preview", now = Date.now()): TaskSource {
 
   return {
     preview: true,
+    memory: mockMemory(),
     list: () => list,
     subscribe(listener) {
       listeners.add(listener);
@@ -446,6 +450,7 @@ export function daemonSource(): TaskSource {
 
   return {
     preview: false,
+    memory: daemonMemory(),
     setHosts(next) {
       const added = next.filter((h) => !hosts.includes(h));
       const changed = added.length > 0 || next.length !== hosts.length;

@@ -91,6 +91,8 @@ pub fn run() {
             tasks::task_create,
             tasks::otter_get,
             tasks::otter_send,
+            tasks::memory_get,
+            tasks::memory_set,
             tasks::task_send,
             tasks::task_act,
             tasks::task_events,

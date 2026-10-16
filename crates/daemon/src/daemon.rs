@@ -52,6 +52,8 @@ pub struct Daemon {
     pub tasks: Mutex<TaskStore>,
     /// Otter's conversation on this host (D-093).
     pub(crate) chat: Mutex<crate::chat::ChatStore>,
+    /// Taken by every change to Otter's memories (D-113).
+    pub(crate) memory_lock: Mutex<()>,
     /// Woken whenever a task changes, for the controller.
     pub(crate) task_wake: tokio::sync::Notify,
     /// Tasks that just ended, whose own workspaces the controller puts
@@ -168,6 +170,7 @@ impl Daemon {
             store: Mutex::new(store),
             tasks: Mutex::new(tasks),
             chat: Mutex::new(chat),
+            memory_lock: Mutex::new(()),
             task_wake: tokio::sync::Notify::new(),
             finished: Default::default(),
             runs: Default::default(),
@@ -314,6 +317,8 @@ impl Daemon {
             Request::OtterGet => json(self.otter_get().await),
             Request::OtterSend(p) => json(self.otter_send(p).await?),
             Request::OtterEvents(p) => json(self.otter_events(&p).await?),
+            Request::MemoryGet(p) => json(self.memory_get(&p).await?),
+            Request::MemorySet(p) => json(self.memory_set(p).await?),
             Request::TaskArtifact(p) => json(self.task_artifact(&p).await?),
             Request::TriggerCreate(p) => json(self.trigger_create(p).await?),
             Request::TriggerList => json(self.trigger_list().await),

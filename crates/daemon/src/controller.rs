@@ -369,6 +369,7 @@ impl Daemon {
                             env: &env,
                         },
                         &text,
+                        &self.memories(Some(&f.id)),
                         &say,
                     )
                     .await

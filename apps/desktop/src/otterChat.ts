@@ -4,6 +4,7 @@
 
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { daemonMemory, mockMemory, type MemorySource } from "./memory";
 import { commandId } from "./taskSource";
 import type { Message } from "./tasks";
 
@@ -25,6 +26,8 @@ export interface OtterSource {
   send(host: string, text: string): Promise<OtterChat>;
   /** Told when the host's conversation changes, and as a reply is written. */
   watch(host: string, onChange: () => void, onDraft: (d: OtterDraft) => void): () => void;
+  /** Otter's memories (D-113). */
+  memory?: MemorySource;
 }
 
 /** An otterd before Otter's conversation doesn't know the request. */
@@ -34,6 +37,7 @@ export function tooOld(error: unknown): boolean {
 
 export function daemonOtter(): OtterSource {
   return {
+    memory: daemonMemory(),
     get: (host) => invoke<OtterChat>("otter_get", { host }),
     send: (host, text) => invoke<OtterChat>("otter_send", { host, commandId: commandId(), text }),
     watch(host, onChange, onDraft) {
@@ -63,6 +67,7 @@ export function mockOtter(): OtterSource {
   let n = 0;
   const stamp = () => new Date().toISOString();
   return {
+    memory: mockMemory(),
     async get(host) {
       return chats.get(host) ?? { messages: [], history_seq: 0 };
     },

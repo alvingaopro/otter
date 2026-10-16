@@ -111,6 +111,8 @@ Consequences:
    (`brain.rs:894-905`): the brief, `status_text`, the steps, and the last
    12 messages at 600 characters each. To that it adds the tool descriptions.
    Otter fetches details with tools and doesn't paste in whole transcripts.
+   (D-113 later raised this to the last 20 messages at 2 000 characters each,
+   plus Otter's memories. `get_messages` reads the rest.)
 5. Moving the turn outside `step()` later needs `expected_revision` checks
    and its own decision. That is not in V2.
 
@@ -140,7 +142,7 @@ produces or edits it. The gateway checks it on every write.
 |---|---|---|---|
 | **Observe** | any turn | `get_task`, `get_run_events`, `get_pending_decisions` | (no change) |
 | **Routine** | any turn | `pause_task` (the safe direction; D-083 itself pauses on a wait limit) | `Decider::Controller`, with Otter's reason |
-| **On the developer's word** | `Developer` turns only | `forward_to_agent`, `redirect_agent`, `start_task`, `resume_task`, `approve_plan`, `accept_task`, `retry_task`, `revise_task`, `ask_agent` (M2.5), `create_task` (M3) | `Decider::User`, with "You said …" (the message text); `command_id` from the developer's message (rule 3) |
+| **On the developer's word** | `Developer` turns only | `forward_to_agent`, `redirect_agent`, `start_task`, `resume_task`, `approve_plan`, `accept_task`, `retry_task`, `revise_task`, `ask_agent` (M2.5), `create_task` (M3), `remember`, `edit_memory` (D-113) | `Decider::User`, with "You said …" (the message text); `command_id` from the developer's message (rule 3) |
 
 Rules:
 
@@ -206,6 +208,7 @@ passes `otter_core::redact` before the model sees it.
 | `get_run_events` | the run's events and activity | last N (default 30), redacted |
 | `get_pending_decisions` | `f.pending_decisions()` | id, summary, kind, risk, `user_only` |
 | `get_task_evidence` | evidence and the latest check | bounded excerpts |
+| `get_messages` (D-113) | the conversation's messages (a task's, or the host's) | newest first, whole, redacted; 30 a page, 8 000 characters each, 40 000 a page; `before`, `query` |
 
 `list_tasks` and `list_workspaces` arrive with the host conversation (M3).
 
@@ -259,6 +262,12 @@ tests:
 | Task | `Feature.messages` (unchanged) | `history.jsonl` of the feature: one record per tool call (request, origin, `command_id`, outcome, redacted) | existing feature store, `FEATURE_SCHEMA`/`migrate()` |
 | Host (M3) | its own journal | same journal | D-058's **file mechanics** (commit order, fsync, snapshot, read-only on corruption) with **its own record kinds**, not the runtime `Op` enum |
 
+- **Otter's memory (D-113)** is kept beside them, as Markdown each turn is
+  given: `state/tasks/<id>/memory.md` (the task's conversation),
+  `state/otter/chat-memory.md` (the host's conversation) and
+  `state/otter/memory.md` (across every conversation on the host). It is
+  written whole and atomically, redacted and bounded. The history records
+  that Otter changed it, not what it says.
 - The coding agent's runtime conversation (D-055, D-058, D-064) is separate
   and unchanged. Otter's calls never go into it.
 - **Write intent is a history record.** For every write, a

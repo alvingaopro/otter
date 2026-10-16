@@ -20,6 +20,8 @@ use otter_protocol::{
 mod converse;
 #[path = "e2e/host_chat.rs"]
 mod host_chat;
+#[path = "e2e/memory.rs"]
+mod memory;
 #[path = "e2e/otter_turn.rs"]
 mod otter_turn;
 #[path = "e2e/provider_turn.rs"]

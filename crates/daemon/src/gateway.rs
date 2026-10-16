@@ -2,14 +2,16 @@
 //! checks — here, in otterd, never in the model.
 //!
 //! - **Observe** tools read the task, its history, its run, its
-//!   decisions and evidence; everything they return is redacted (D-075) and
-//!   bounded.
+//!   decisions and evidence, and the conversation's older messages;
+//!   everything they return is redacted (D-075) and bounded.
 //! - **Routine**: pausing — the safe direction — in any turn.
 //! - **On the developer's word**: forwarding their messages, redirecting,
 //!   starting, resuming, retrying, approving the plan, accepting, a changed
 //!   goal. Only in a turn the developer's message started; each change is
 //!   applied once under `<that message>:<tool>` (forwarding keeps each
-//!   message's own id, D-059).
+//!   message's own id, D-059). Noting something in Otter's memory (D-113)
+//!   too: what Otter keeps comes from talking with the developer, never
+//!   from an event.
 //!
 //! Every change goes through what `converse` does (`effective_intent`,
 //! `intent_step`, `after_intent`): a tool and a classified message have the
@@ -30,6 +32,7 @@ use crate::agents::excerpt;
 use crate::brain::Intent;
 use crate::controller::{effective_intent, intent_step, plan_question};
 use crate::daemon::Daemon;
+use crate::memory::{MAX_MEMORY, Memory};
 use crate::tasks::Change;
 
 /// What started Otter's turn (D-089 §3). Set by otterd, never by the model.
@@ -114,6 +117,51 @@ fn message_ids() -> Value {
         "required": ["message_ids"],
         "additionalProperties": false
     })
+}
+
+/// What every conversation has (D-113): its older messages, and Otter's
+/// memory.
+fn conversation_tools() -> Vec<ToolSpec> {
+    use Class::*;
+    let memory = || json!({"type": "string", "enum": ["conversation", "host"]});
+    vec![
+        ToolSpec {
+            name: "get_messages",
+            class: Observe,
+            description: "This conversation's messages, newest first and whole (the context has only the latest, cut short): before a message id to go further back; query to find the ones that mention it. Their ids aren't this turn's: tools that take message ids don't take them.",
+            input: json!({
+                "type": "object",
+                "properties": {
+                    "before": {"type": "string"},
+                    "query": {"type": "string"},
+                    "limit": {"type": "integer", "minimum": 1, "maximum": 30, "default": 10}
+                },
+                "additionalProperties": false
+            }),
+        },
+        ToolSpec {
+            name: "remember",
+            class: DeveloperWord,
+            description: "Note in your memory, a line, something the developer decided or settled that should outlast the recent messages: a decision, a preference, a constraint, what was agreed. memory: conversation (this conversation's) or host (every conversation on this host). Not progress, never secrets.",
+            input: json!({
+                "type": "object",
+                "properties": {"memory": memory(), "note": {"type": "string"}},
+                "required": ["memory", "note"],
+                "additionalProperties": false
+            }),
+        },
+        ToolSpec {
+            name: "edit_memory",
+            class: DeveloperWord,
+            description: "Correct your memory: old, copied exactly from it, becomes new (empty: dropped). For a note that changed or no longer holds, or to fold notes together when it is full.",
+            input: json!({
+                "type": "object",
+                "properties": {"memory": memory(), "old": {"type": "string"}, "new": {"type": "string"}},
+                "required": ["memory", "old", "new"],
+                "additionalProperties": false
+            }),
+        },
+    ]
 }
 
 /// Otter's tools for a task's conversation (M1).
@@ -223,6 +271,9 @@ pub fn tools() -> Vec<ToolSpec> {
             none(),
         ),
     ]
+    .into_iter()
+    .chain(conversation_tools())
+    .collect()
 }
 
 fn task_id(more: Value) -> Value {
@@ -317,6 +368,9 @@ pub fn host_tools() -> Vec<ToolSpec> {
             task_id(json!({})),
         ),
     ]
+    .into_iter()
+    .chain(conversation_tools())
+    .collect()
 }
 
 /// The tools a turn in `scope` has.
@@ -459,6 +513,9 @@ impl Gateway {
             .next("tell the developer what you would do; they can ask for it");
             self.record_done(name, Some(e.code)).await;
             return Err(e);
+        }
+        if matches!(name, "remember" | "edit_memory") {
+            return self.memory_tool(name, args).await;
         }
         let result = match (&self.inner.scope, spec.class) {
             (Scope::Host, Class::Observe) => self.host_observe(name, args).await,
@@ -627,6 +684,7 @@ impl Gateway {
                     "developer_only": d.user_only,
                 })).collect::<Vec<_>>(),
             })),
+            "get_messages" => messages_page(&f.messages, args),
             "get_task_evidence" => {
                 let n = lim(10, 50)?;
                 let skip = f.evidence.len().saturating_sub(n);
@@ -644,6 +702,116 @@ impl Gateway {
             }
             _ => Err(fail("not_found", format!("there is no tool `{name}`"))),
         }
+    }
+
+    // --- Memory (D-113) ----------------------------------------------------
+
+    /// `remember` and `edit_memory`: this conversation's memory, or the
+    /// host's. Not applied under a command id — one turn may note several
+    /// things — but a note already there isn't added again, so a turn run
+    /// again notes nothing twice.
+    async fn memory_tool(&self, name: &str, args: &Value) -> Result<Value, ToolError> {
+        use otter_protocol::otter::MemoryScope;
+        let origin = &self.inner.origin;
+        self.record(
+            TaskEvent::ToolCalled {
+                tool: name.into(),
+                origin: origin.name().into(),
+                authority: origin.authority().map(|m| m.id.to_string()),
+            },
+            None,
+        )
+        .await;
+        let text = |key: &str| args.get(key).and_then(Value::as_str).unwrap_or_default();
+        let result = async {
+            let (scope, which) = match text("memory") {
+                "conversation" => (MemoryScope::Conversation, "this conversation's memory"),
+                "host" => (MemoryScope::Host, "the host's memory"),
+                _ => return Err(fail("invalid", "memory is conversation or host")),
+            };
+            let task = match &self.inner.scope {
+                Scope::Task(id) => Some(id),
+                Scope::Host => None,
+            };
+            let m = Memory::of(scope, task);
+            let d = &self.inner.daemon;
+            let mut did = "";
+            let now = if name == "remember" {
+                let note = redact(text("note").trim());
+                if note.is_empty() {
+                    return Err(fail("invalid", "note is what to remember"));
+                }
+                if note.chars().count() > MAX_NOTE {
+                    return Err(fail(
+                        "invalid",
+                        format!("a note is at most {MAX_NOTE} characters"),
+                    )
+                    .next("keep to what was decided"));
+                }
+                d.change_memory(&m, |now| {
+                    if noted(now, &note) {
+                        did = "already noted";
+                        return Ok(None);
+                    }
+                    let line = if note.starts_with(['-', '*', '#']) {
+                        note.clone()
+                    } else {
+                        format!("- {note}")
+                    };
+                    let sep = if now.is_empty() || now.ends_with('\n') {
+                        ""
+                    } else {
+                        "\n"
+                    };
+                    let next = format!("{now}{sep}{line}\n");
+                    if next.trim().chars().count() > MAX_MEMORY {
+                        return Err(fail(
+                            "limit",
+                            format!("the memory is full ({MAX_MEMORY} characters)"),
+                        )
+                        .next("edit_memory: fold notes together or drop what no longer holds, then remember this"));
+                    }
+                    did = "noted";
+                    Ok(Some(next))
+                })
+                .await?
+            } else {
+                let old = text("old");
+                let new = redact(text("new").trim());
+                if old.trim().is_empty() {
+                    return Err(fail("invalid", "old is text copied from the memory"));
+                }
+                d.change_memory(&m, |now| match now.matches(old).count() {
+                    0 => Err(fail("not_found", "that text isn't in the memory")
+                        .next("old is copied exactly from the memory you were given")),
+                    1 => {
+                        did = "edited";
+                        Ok(Some(now.replacen(old, &new, 1)))
+                    }
+                    _ => Err(fail("invalid", "that text is in the memory more than once")
+                        .next("give more of it, so it is found once")),
+                })
+                .await?
+            };
+            if did != "already noted" {
+                self.inner
+                    .done
+                    .lock()
+                    .unwrap()
+                    .push(format!("{name}: {which}"));
+            }
+            Ok(json!({
+                "done": did,
+                "memory": text("memory"),
+                "chars": now.chars().count(),
+                "max_chars": MAX_MEMORY,
+                "now": now,
+            }))
+        }
+        .await;
+        self.record_done(name, result.as_ref().err().map(|e| e.code))
+            .await;
+        result
     }
 
     // --- On the host (D-093) -----------------------------------------------
@@ -695,6 +863,10 @@ impl Gateway {
                     })
                     .collect();
                 Ok(json!({"newest_first": tasks}))
+            }
+            "get_messages" => {
+                let chat = d.chat.lock().await;
+                messages_page(&chat.get().messages, args)
             }
             "list_workspaces" => {
                 let store = d.store.lock().await;
@@ -1167,6 +1339,86 @@ impl Gateway {
     }
 }
 
+/// The most one note in Otter's memory says, in characters.
+const MAX_NOTE: usize = 1_000;
+
+/// Whether `memory` already says `note`: a line the same but for its
+/// bullet (a note of several lines: all of it, as written).
+fn noted(memory: &str, note: &str) -> bool {
+    let bare = |l: &str| l.trim().trim_start_matches(['-', '*']).trim().to_owned();
+    if note.trim().contains('\n') {
+        return memory.contains(note.trim());
+    }
+    memory.lines().any(|l| bare(l) == bare(note))
+}
+
+/// `get_messages`: a conversation's messages, newest first and whole (but
+/// redacted, and bounded: a message to 8 000 characters, a page to 40 000).
+fn messages_page(all: &[Message], args: &Value) -> Result<Value, ToolError> {
+    let limit = match args.get("limit") {
+        None | Some(Value::Null) => 10,
+        Some(v) => v
+            .as_u64()
+            .filter(|n| (1..=30).contains(n))
+            .ok_or_else(|| fail("invalid", "limit is a number from 1 to 30"))?
+            as usize,
+    };
+    let end = match args.get("before").and_then(Value::as_str) {
+        None | Some("") => all.len(),
+        Some(id) => all
+            .iter()
+            .position(|m| m.id.as_str() == id)
+            .ok_or_else(|| {
+                fail(
+                    "invalid",
+                    format!("{id} isn't a message in this conversation"),
+                )
+            })?,
+    };
+    let query = args
+        .get("query")
+        .and_then(Value::as_str)
+        .map(|q| q.trim().to_lowercase())
+        .filter(|q| !q.is_empty());
+    let mut page = Vec::new();
+    let mut size = 0;
+    let mut more = false;
+    for m in all[..end].iter().rev() {
+        if let Some(q) = &query
+            && !m.text.to_lowercase().contains(q)
+        {
+            continue;
+        }
+        if page.len() == limit || (size >= 40_000 && !page.is_empty()) {
+            more = true;
+            break;
+        }
+        let text = cut(&redact(&m.text), 8_000);
+        size += text.len();
+        page.push(json!({
+            "id": m.id.as_str(),
+            "from": match m.role {
+                otter_core::task::MessageRole::User => "developer",
+                otter_core::task::MessageRole::Controller => "otter",
+                otter_core::task::MessageRole::Agent => "coding agent",
+                otter_core::task::MessageRole::System => "system",
+            },
+            "at": m.at,
+            "text": text,
+        }));
+    }
+    Ok(json!({"newest_first": page, "more": more, "in_conversation": all.len()}))
+}
+
+/// `text` to at most `max` characters, its lines kept.
+fn cut(text: &str, max: usize) -> String {
+    if text.chars().count() <= max {
+        return text.to_owned();
+    }
+    let kept: String = text.chars().take(max.saturating_sub(1)).collect();
+    format!("{kept}…")
+}
+
 /// Tests only (`OTTER_TEST_CRASH=<point>:<tool>`): otterd dies here, as a
 /// crash would — `called` once a change is written down, `applied` once it
 /// is made and before anything reaches the agent — to show what the next
@@ -1183,23 +1435,41 @@ mod tests {
 
     #[test]
     fn each_tool_has_one_class_and_a_closed_schema() {
-        let all = tools();
-        let mut names: Vec<&str> = all.iter().map(|t| t.name).collect();
-        names.sort();
-        names.dedup();
-        assert_eq!(names.len(), all.len(), "a name twice");
-        for t in &all {
-            assert_eq!(t.input["type"], "object", "{}", t.name);
-            assert_eq!(t.input["additionalProperties"], false, "{}", t.name);
+        for all in [tools(), host_tools()] {
+            let mut names: Vec<&str> = all.iter().map(|t| t.name).collect();
+            names.sort();
+            names.dedup();
+            assert_eq!(names.len(), all.len(), "a name twice");
+            for t in &all {
+                assert_eq!(t.input["type"], "object", "{}", t.name);
+                assert_eq!(t.input["additionalProperties"], false, "{}", t.name);
+            }
+            // Only pausing changes anything without the developer's word.
+            let routine: Vec<&str> = all
+                .iter()
+                .filter(|t| t.class == Class::Routine)
+                .map(|t| t.name)
+                .collect();
+            assert_eq!(routine, ["pause_task"]);
+            // Never Otter's: cancel, delete, decide anything else, publish.
+            for n in [
+                "cancel_task",
+                "delete_task",
+                "decide",
+                "answer_pending_decision",
+                "publish",
+            ] {
+                assert!(!names.contains(&n), "{n}");
+            }
+            // Every conversation reads its messages and keeps a memory, which
+            // only a turn the developer started changes (D-113).
+            let class = |n: &str| all.iter().find(|t| t.name == n).unwrap().class;
+            assert_eq!(class("get_messages"), Class::Observe);
+            assert_eq!(class("remember"), Class::DeveloperWord);
+            assert_eq!(class("edit_memory"), Class::DeveloperWord);
         }
+        let all = tools();
         let class = |n: &str| all.iter().find(|t| t.name == n).unwrap().class;
-        // Only pausing changes anything without the developer's word.
-        let routine: Vec<&str> = all
-            .iter()
-            .filter(|t| t.class == Class::Routine)
-            .map(|t| t.name)
-            .collect();
-        assert_eq!(routine, ["pause_task"]);
         for n in [
             "forward_to_agent",
             "ask_agent",
@@ -1214,16 +1484,98 @@ mod tests {
         ] {
             assert_eq!(class(n), Class::DeveloperWord, "{n}");
         }
-        // Never Otter's: cancel, delete, decide anything else, publish.
-        for n in [
-            "cancel_task",
-            "delete_task",
-            "decide",
-            "answer_pending_decision",
-            "publish",
-        ] {
-            assert!(!names.contains(&n), "{n}");
+    }
+
+    fn msg(id: &str, role: otter_core::task::MessageRole, text: &str) -> Message {
+        Message {
+            id: otter_core::MessageId::from(id),
+            role,
+            text: text.into(),
+            at: chrono::Utc::now(),
+            correlation_id: None,
         }
+    }
+
+    #[test]
+    fn a_note_already_in_memory_is_one_line_the_same() {
+        let memory = "- Use Postgres 16\n* small PRs\n## Auth\n- tokens expire in 1h\n";
+        assert!(noted(memory, "Use Postgres 16"));
+        assert!(noted(memory, "- small PRs"));
+        assert!(
+            !noted(memory, "Use Postgres"),
+            "part of a line isn't the note"
+        );
+        assert!(!noted(memory, "PRs"));
+        assert!(noted(memory, "## Auth\n- tokens expire in 1h"));
+        assert!(!noted("", "anything"));
+    }
+
+    #[test]
+    fn older_messages_come_whole_newest_first_a_page_at_a_time() {
+        use otter_core::task::MessageRole::{Controller, User};
+        let all: Vec<Message> = (1..=25)
+            .map(|i| {
+                let role = if i % 2 == 1 { User } else { Controller };
+                msg(
+                    &format!("msg_{i}"),
+                    role,
+                    &format!("line one {i}\nline two"),
+                )
+            })
+            .collect();
+        let ids = |v: &Value| -> Vec<String> {
+            v["newest_first"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|m| m["id"].as_str().unwrap().to_owned())
+                .collect()
+        };
+        let first = messages_page(&all, &json!({})).unwrap();
+        assert_eq!(ids(&first)[..2], ["msg_25", "msg_24"]);
+        assert_eq!(ids(&first).len(), 10);
+        assert_eq!(first["more"], true);
+        assert_eq!(first["in_conversation"], 25);
+        // Whole: lines kept.
+        assert_eq!(first["newest_first"][0]["text"], "line one 25\nline two");
+        assert_eq!(first["newest_first"][0]["from"], "developer");
+        assert_eq!(first["newest_first"][1]["from"], "otter");
+        let back = messages_page(&all, &json!({"before": "msg_6", "limit": 30})).unwrap();
+        assert_eq!(ids(&back), ["msg_5", "msg_4", "msg_3", "msg_2", "msg_1"]);
+        assert_eq!(back["more"], false);
+        let found = messages_page(&all, &json!({"query": "ONE 1"})).unwrap();
+        assert_eq!(
+            ids(&found),
+            [
+                "msg_19", "msg_18", "msg_17", "msg_16", "msg_15", "msg_14", "msg_13", "msg_12",
+                "msg_11", "msg_10"
+            ]
+        );
+        assert_eq!(found["more"], true, "msg_1 matches too");
+        assert!(messages_page(&all, &json!({"before": "msg_x"})).is_err());
+        assert!(messages_page(&all, &json!({"limit": 31})).is_err());
+        // Redacted, and bounded.
+        let secret = vec![msg(
+            "msg_s",
+            User,
+            "ANTHROPIC_API_KEY=sk-ant-abc123def456ghi",
+        )];
+        let v = messages_page(&secret, &json!({})).unwrap();
+        assert!(!v.to_string().contains("sk-ant-abc123def456ghi"), "{v}");
+        let big: Vec<Message> = (0..10)
+            .map(|i| msg(&format!("msg_b{i}"), User, &"x".repeat(9_000)))
+            .collect();
+        let v = messages_page(&big, &json!({"limit": 30})).unwrap();
+        assert_eq!(
+            v["newest_first"][0]["text"]
+                .as_str()
+                .unwrap()
+                .chars()
+                .count(),
+            8_000
+        );
+        assert_eq!(ids(&v).len(), 5, "a page stops at 40 000 characters");
+        assert_eq!(v["more"], true);
     }
 
     #[test]

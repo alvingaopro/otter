@@ -57,7 +57,8 @@ Inside the daemon (`crates/daemon/src`):
   to the task's history; `agents/claude_otter.rs` runs Claude's turn
   through the worker's `otter` profile (no Claude Code tools, only Otter's);
   `chat.rs` is Otter's conversation on the host (D-093), with the host's
-  tools, `otter chat` in the CLI
+  tools, `otter chat` in the CLI; `memory.rs` is Otter's memory (D-113),
+  each conversation's and the host's, given to every turn
 - `runs.rs` + `runtime/` — managed agent runs (D-044): the runtime contract,
   the approval `policy`, the conversation `actor` and registry (D-055/D-056),
   and the bridge from a run to its task; `agents/claude_stream.rs` is

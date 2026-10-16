@@ -149,5 +149,6 @@ record it in [`decisions.md`](decisions.md) first.
   without credentials.
 - Tests: `scratch_workspace_with_default_login_shell` (no env on tmux's
   command line, the env file gone), `credentials_in_failures_stay_out_of_what_otter_keeps`,
-  `a_failing_worker_says_why`, the `redact` unit tests, and
-  `settings_take_keys_write_only_and_keep_them` (keys).
+  `a_failing_worker_says_why`, the `redact` unit tests,
+  `settings_take_keys_write_only_and_keep_them` (keys), and
+  `the_developer_reads_and_edits_otters_memory` (Otter's memory, D-113).
