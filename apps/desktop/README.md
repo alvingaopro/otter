@@ -47,7 +47,7 @@ Layout:
   `FindPanel` (⌘F), `SessionTerminal` (a session's terminal and its end
   banners; two side by side, D-110), `DiffView` + `diff.ts` + `highlight.ts`
   (diffs side by side, folded, highlighted, D-111), `Terminal` (xterm.js; `links.ts` for ⌘-click,
-  `terminalFont.ts` for ⌘=/⌘-), `newer.ts` (requests older hosts don't
+  `terminalFont.ts` for ⌘=/⌘- and the font in Settings › This Mac, D-116), `newer.ts` (requests older hosts don't
   know), `panelResize` (the
   list's and the Files/Timeline panel's widths, D-097; `composerResize` is
   the message box's height), `model.ts`

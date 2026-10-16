@@ -3442,3 +3442,26 @@ didn't.
 - **The host keeps it.** `otter chat`, `otter.get` / `otter.send`, the
   conversation's memory and the host's tools are unchanged, so the view can
   come back without a protocol change if a use shows up in dogfooding.
+
+## D-116 — The terminal types like a terminal (2026-10-16)
+
+Three things from a day in the workspace view:
+
+- **Holding a key repeats it.** In neovim, holding `k` moved once. The
+  app's web view treats a held key as macOS press-and-hold, which waits to
+  offer accented letters instead of repeating (VS Code users fix the same
+  thing with `defaults write`). At launch the app sets
+  `ApplePressAndHoldEnabled` to false in its own defaults. They outrank the
+  system-wide setting and apply to Otter only. Uses `objc2-foundation`,
+  which was already in the tree through Tauri.
+- **The terminal font is the developer's,** in Settings › This Mac: any
+  installed font or a list, kept on this Mac like the text size (D-106),
+  applied at once. Settings › This Mac also has the text size, alongside
+  ⌘= and ⌘-. The bundled JetBrains Mono stays the default and the fallback
+  for glyphs a chosen font lacks.
+- **Measured after the font loads.** The terminal measures its cells and
+  draws its glyphs (WebGL) with whatever font is loaded when it opens. The
+  bundled font loads only when first used, and text measured with a
+  fallback spreads out. Once the font's faces load (or fail to), the
+  terminal measures and draws again.
+- **New session lists Claude Code second,** after Shell.

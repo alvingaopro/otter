@@ -97,6 +97,20 @@ describe("Settings", () => {
   const dialog = () => document.querySelector('[role="dialog"]')!;
   const button = (text: string) => [...dialog().querySelectorAll("button")].find((b) => b.textContent === text)!;
 
+  it("sets this Mac's terminal font and size, at once and without a host", async () => {
+    const mac = dialog().querySelector('[aria-label="This Mac"]')!;
+    type(mac.querySelector<HTMLInputElement>('input[aria-label="Terminal font"]')!, "Menlo");
+    expect(localStorage.getItem("otter.terminal-font-family")).toBe("Menlo");
+    const size = mac.querySelector<HTMLInputElement>('input[aria-label="Terminal text size"]')!;
+    await act(async () => type(size, "15"));
+    expect(localStorage.getItem("otter.terminal-font-size")).toBe("15");
+    expect(size.value).toBe("15");
+    // Nothing went to the host.
+    expect(calls.map((c) => c.cmd)).toEqual(["settings_get"]);
+    await act(async () => type(mac.querySelector<HTMLInputElement>('input[aria-label="Terminal font"]')!, ""));
+    await act(async () => type(size, "13"));
+  });
+
   it("sets what Otter thinks with and a key, which is sent once and never shown", async () => {
     expect(calls[0]).toEqual({ cmd: "settings_get", args: { host: "mac" } });
     expect(dialog().textContent).toContain("not set");

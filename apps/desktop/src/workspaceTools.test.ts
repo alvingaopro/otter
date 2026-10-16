@@ -163,6 +163,33 @@ describe("text size", () => {
   });
 });
 
+describe("terminal font (D-116)", () => {
+  it("quotes what was typed and keeps the bundled font as the fallback", async () => {
+    const { familyStack, DEFAULT_FAMILY } = await import("./terminalFont");
+    expect(familyStack("")).toBe(DEFAULT_FAMILY);
+    expect(familyStack("  ")).toBe(DEFAULT_FAMILY);
+    expect(familyStack("MesloLGS Nerd Font")).toBe(`"MesloLGS Nerd Font", ${DEFAULT_FAMILY}`);
+    expect(familyStack("'Fira Code', Menlo")).toBe(`"Fira Code", "Menlo", ${DEFAULT_FAMILY}`);
+    expect(familyStack('Evil"; color: red')).toBe(`"Evil; color: red", ${DEFAULT_FAMILY}`);
+    expect(familyStack("ui-monospace")).toBe(`ui-monospace, ${DEFAULT_FAMILY}`);
+  });
+
+  it("is remembered and told to every terminal", async () => {
+    const { fontChoice, fontFamily, onFontFamily, setFontFamily, DEFAULT_FAMILY } = await import("./terminalFont");
+    const seen: string[] = [];
+    const off = onFontFamily((f) => seen.push(f));
+    setFontFamily("Menlo");
+    expect(fontChoice()).toBe("Menlo");
+    expect(fontFamily()).toBe(`"Menlo", ${DEFAULT_FAMILY}`);
+    expect(localStorage.getItem("otter.terminal-font-family")).toBe("Menlo");
+    setFontFamily("");
+    expect(fontFamily()).toBe(DEFAULT_FAMILY);
+    expect(localStorage.getItem("otter.terminal-font-family")).toBeNull();
+    expect(seen).toEqual([`"Menlo", ${DEFAULT_FAMILY}`, DEFAULT_FAMILY]);
+    off();
+  });
+});
+
 describe("what needs you, and how loudly (D-109)", () => {
   const item = (kind: "approval" | "question" | "review" | "failure" | "completion", inferred = false, at = "2026-10-15T08:00:00Z") => ({
     id: `a_${kind}_${inferred}`,

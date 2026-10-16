@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type FormEvent, type KeyboardEvent, type R
 import { invoke } from "@tauri-apps/api/core";
 import { Dialog } from "./Dialog";
 import type { RuntimeCapabilities } from "./conversation";
+import { FONT_SUGGESTIONS, fontChoice, fontSize, onFontSize, setFontFamily, setFontSize } from "./terminalFont";
 
 /** Mirrors `otter_protocol::host::ControllerInfo` (D-052). */
 export interface ControllerInfo {
@@ -185,6 +186,7 @@ export function SettingsDialog({ hosts, defaultHost, onClose }: { hosts: string[
   if (hosts.length === 0) {
     return (
       <Dialog title="Settings" onClose={onClose}>
+        <MacSettings />
         <p className="muted">Connect a host first: Otter runs on a host, and its settings are kept there.</p>
       </Dialog>
     );
@@ -222,6 +224,7 @@ export function SettingsDialog({ hosts, defaultHost, onClose }: { hosts: string[
   const coding = settings?.coding?.backend ? caps : null;
   return (
     <Dialog title="Settings" onClose={onClose}>
+      <MacSettings />
       <form className="form settings" onSubmit={submit}>
         <Row label="Host" hint="Each host keeps its own settings; Otter works there while this app is closed.">
           {hosts.length > 1 ? (
@@ -393,6 +396,48 @@ export function SettingsDialog({ hosts, defaultHost, onClose }: { hosts: string[
         </div>
       </form>
     </Dialog>
+  );
+}
+
+/** This Mac's own settings (D-116): kept here, applied as they change, no host involved. */
+function MacSettings() {
+  const [font, setFont] = useState(fontChoice);
+  const [size, setSize] = useState(fontSize);
+  useEffect(() => onFontSize(setSize), []);
+  return (
+    <section className="form settings settings-mac" aria-label="This Mac">
+      <h2 className="settings-title">This Mac</h2>
+      <Row label="Terminal font" hint="Any font installed on this Mac, or a list of them. Empty: JetBrains Mono, which comes with the app.">
+        <input
+          list="terminal-fonts"
+          aria-label="Terminal font"
+          placeholder="JetBrains Mono"
+          value={font}
+          spellCheck={false}
+          autoCapitalize="off"
+          autoCorrect="off"
+          onChange={(e) => {
+            setFont(e.target.value);
+            setFontFamily(e.target.value);
+          }}
+        />
+        <datalist id="terminal-fonts">
+          {FONT_SUGGESTIONS.map((f) => (
+            <option key={f} value={f} />
+          ))}
+        </datalist>
+      </Row>
+      <Row label="Text size" hint="⌘= and ⌘- change it in a terminal too; ⌘0 goes back to 13.">
+        <input
+          type="number"
+          aria-label="Terminal text size"
+          min={9}
+          max={24}
+          value={size}
+          onChange={(e) => e.target.value && setFontSize(Number(e.target.value))}
+        />
+      </Row>
+    </section>
   );
 }
 

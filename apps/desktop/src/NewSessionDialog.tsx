@@ -7,8 +7,8 @@ type Kind = "terminal" | "codex" | "claude" | "service" | "command";
 
 const KINDS: [Kind, string, string][] = [
   ["terminal", "Shell", "An interactive shell (or a command you run interactively)."],
-  ["codex", "Codex", "A Codex session; it remembers its conversation across restarts."],
   ["claude", "Claude Code", "A Claude Code session; it remembers its conversation across restarts."],
+  ["codex", "Codex", "A Codex session; it remembers its conversation across restarts."],
   ["service", "Service", "A long-running command, like a dev server."],
   ["command", "Command", "A command that runs to completion, like tests; you’re told if it fails."],
 ];

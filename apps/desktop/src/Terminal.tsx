@@ -11,7 +11,7 @@ import { ClipboardAddon, type IClipboardProvider } from "@xterm/addon-clipboard"
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { logicalLine, urlAtColumn } from "./links";
-import { fontSize, onFontSize } from "./terminalFont";
+import { fontFamily, fontSize, onFontFamily, onFontSize } from "./terminalFont";
 import "@xterm/xterm/css/xterm.css";
 import type { AttachEvent } from "./types";
 
@@ -137,7 +137,7 @@ export function Terminal({ host, workspace, session, onEnd, generation, label, w
 
   useEffect(() => {
     const term = new XTerm({
-      fontFamily: '"JetBrains Mono", "SF Mono", Menlo, monospace',
+      fontFamily: fontFamily(),
       fontSize: fontSize(),
       lineHeight: 1.25,
       cursorBlink: true,
@@ -235,6 +235,22 @@ export function Terminal({ host, workspace, session, onEnd, generation, label, w
       term.options.fontSize = n;
       if (el.current && el.current.offsetWidth > 0 && el.current.offsetHeight > 0) fit.fit();
     });
+    // The font chosen in Settings (D-116). The terminal measures its cells
+    // and draws its glyphs once, with whatever font is loaded then; the
+    // bundled one loads only when first used, so measured before that the
+    // text spreads out. Measure and draw again when it has loaded. xterm
+    // measures only when the option changes: a trailing space changes it
+    // without changing the font.
+    const refont = (family: string) => {
+      term.options.fontFamily = term.options.fontFamily === family ? `${family} ` : family;
+      term.clearTextureAtlas();
+      if (el.current && el.current.offsetWidth > 0 && el.current.offsetHeight > 0) fit.fit();
+    };
+    const unfamily = onFontFamily((family) => {
+      refont(family);
+      void loaded(family).then(() => !disposed && refont(family));
+    });
+    void loaded(fontFamily()).then(() => !disposed && refont(fontFamily()));
     // ⌘-click a link to open it (D-106): the session has the mouse otherwise,
     // so neither the press nor its release reaches it.
     let swallowUp = false;
@@ -261,6 +277,7 @@ export function Terminal({ host, workspace, session, onEnd, generation, label, w
       disposed = true;
       observer.disconnect();
       unfont();
+      unfamily();
       box.removeEventListener("mousedown", linkDown, true);
       box.removeEventListener("mouseup", linkUp, true);
       input.dispose();
@@ -287,4 +304,12 @@ export function Terminal({ host, workspace, session, onEnd, generation, label, w
       </div>
     </>
   );
+}
+
+/** The regular and bold faces of `family` at the terminals' size, loaded (or given up on). */
+function loaded(family: string): Promise<unknown> {
+  const fonts = document.fonts;
+  if (!fonts) return Promise.resolve();
+  const size = `${fontSize()}px ${family}`;
+  return Promise.all([fonts.load(size), fonts.load(`600 ${size}`)]).catch(() => undefined);
 }
