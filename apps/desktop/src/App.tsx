@@ -9,8 +9,6 @@ import { Sidebar } from "./Sidebar";
 import { ActivityBar } from "./ActivityBar";
 import { TasksView } from "./TasksView";
 import { Inbox } from "./Inbox";
-import { OtterView } from "./OtterView";
-import { daemonOtter } from "./otterChat";
 import { newNeeds, trayTasks } from "./inboxModel";
 import type { PlacedTask } from "./tasks";
 import { daemonSource } from "./taskSource";
@@ -87,7 +85,6 @@ export default function App() {
   const { choice: themeChoice, resolved: theme, cycle: cycleTheme } = useTheme();
   /** Tasks, from each connected host's otterd (D-043). */
   const [taskSource] = useState(() => daemonSource());
-  const [otterSource] = useState(() => daemonOtter());
   const [tasks, setTasks] = useState<PlacedTask[]>(() => taskSource.list());
   useEffect(() => taskSource.subscribe(setTasks), [taskSource]);
   const taskNeeds = tasks.filter((p) => taskNeedsYou(p.task)).length;
@@ -365,17 +362,6 @@ export default function App() {
               setSelected(key);
               setHostPage(null);
               setView("workspaces");
-            }}
-          />
-        </div>
-        <div className="view" id="view-otter" role="tabpanel" aria-labelledby="view-tab-otter" hidden={view !== "otter"}>
-          <OtterView
-            hosts={connectedHosts}
-            source={otterSource}
-            now={now}
-            onOpenTask={(host, task) => {
-              setTaskFocus({ key: `${host}/${task}`, at: Date.now() });
-              setView("tasks");
             }}
           />
         </div>

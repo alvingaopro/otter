@@ -27,14 +27,17 @@ describe("nav", () => {
   it("ignores an unknown stored view", () => {
     localStorage.setItem("otter.view", "settings");
     expect(storedView()).toBe("inbox");
+    // Otter's view is gone (D-115).
+    localStorage.setItem("otter.view", "otter");
+    expect(storedView()).toBe("inbox");
     expect(parseView(null)).toBeUndefined();
   });
 
-  it("maps ⌘1–⌘4 and nothing else", () => {
+  it("maps ⌘1–⌘3 and nothing else", () => {
     expect(viewForShortcut(key("1", { metaKey: true }))).toBe("inbox");
     expect(viewForShortcut(key("2", { metaKey: true }))).toBe("tasks");
     expect(viewForShortcut(key("3", { metaKey: true }))).toBe("workspaces");
-    expect(viewForShortcut(key("4", { metaKey: true }))).toBe("otter");
+    expect(viewForShortcut(key("4", { metaKey: true }))).toBeUndefined();
     expect(viewForShortcut(key("2"))).toBeUndefined();
     expect(viewForShortcut(key("2", { metaKey: true, shiftKey: true }))).toBeUndefined();
     expect(viewForShortcut(key("5", { metaKey: true }))).toBeUndefined();
@@ -43,11 +46,10 @@ describe("nav", () => {
   it("moves with arrows, wrapping, and jumps with Home/End", () => {
     expect(viewForArrow("inbox", "ArrowDown")).toBe("tasks");
     expect(viewForArrow("tasks", "ArrowDown")).toBe("workspaces");
-    expect(viewForArrow("workspaces", "ArrowDown")).toBe("otter");
-    expect(viewForArrow("otter", "ArrowDown")).toBe("inbox");
-    expect(viewForArrow("inbox", "ArrowUp")).toBe("otter");
+    expect(viewForArrow("workspaces", "ArrowDown")).toBe("inbox");
+    expect(viewForArrow("inbox", "ArrowUp")).toBe("workspaces");
     expect(viewForArrow("workspaces", "Home")).toBe("inbox");
-    expect(viewForArrow("inbox", "End")).toBe("otter");
+    expect(viewForArrow("inbox", "End")).toBe("workspaces");
     expect(viewForArrow("tasks", "Enter")).toBeUndefined();
   });
 });

@@ -166,34 +166,6 @@ pub async fn runtime_capabilities(
         .map_err(|e| e.to_string())
 }
 
-/// Otter's conversation on a host (D-093). An `otterd` too old for it
-/// answers with an error, which the view says plainly.
-#[tauri::command]
-pub async fn otter_get(
-    app: AppHandle,
-    host: String,
-) -> Result<otter_core::task::OtterChat, String> {
-    rpc(&app, &host)
-        .await?
-        .otter_get()
-        .await
-        .map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-pub async fn otter_send(
-    app: AppHandle,
-    host: String,
-    command_id: String,
-    text: String,
-) -> Result<otter_core::task::OtterChat, String> {
-    rpc(&app, &host)
-        .await?
-        .otter_send(&command_id, &text)
-        .await
-        .map_err(|e| e.to_string())
-}
-
 /// Otter's memories (D-113): the host's, and the task's conversation's (or,
 /// without a task, Otter's conversation's on the host).
 #[tauri::command]
