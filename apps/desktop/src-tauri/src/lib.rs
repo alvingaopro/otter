@@ -89,8 +89,6 @@ pub fn run() {
             forwards::forward_pin,
             tasks::tasks_list,
             tasks::task_create,
-            tasks::otter_get,
-            tasks::otter_send,
             tasks::memory_get,
             tasks::memory_set,
             tasks::task_send,

@@ -1,7 +1,7 @@
 import { useEffect, useState, type FormEvent } from "react";
 import { Dialog } from "./Dialog";
 import type { MemoryScope, MemorySource, OtterMemory } from "./memory";
-import { tooOld } from "./otterChat";
+import { tooOld } from "./memory";
 
 type Loaded = { state: "loading" } | { state: "ready"; memory: OtterMemory } | { state: "too_old" } | { state: "error"; error: string };
 

@@ -21,6 +21,11 @@ export interface MemorySource {
   set(host: string, task: string | undefined, memory: MemoryScope, text: string, previous: string): Promise<OtterMemory>;
 }
 
+/** An otterd from before memory (D-113) answers this. */
+export function tooOld(error: unknown): boolean {
+  return /unknown variant|invalid_request|InvalidRequest/.test(String(error));
+}
+
 export function daemonMemory(): MemorySource {
   return {
     get: (host, task) => invoke<OtterMemory>("memory_get", { host, task: task ?? null }),

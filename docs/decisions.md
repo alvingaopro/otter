@@ -3426,3 +3426,19 @@ every time, had the least room. Only the app changes:
 - Not built: a note in the conversation where Otter saved something to
   memory. Nothing per message says so; the history only records that
   Otter's tool ran.
+
+## D-115 — Otter's view leaves the app for now (2026-10-16)
+
+The developer asked what Otter's view (D-093) was for, and to take it out if
+it wasn't used. They didn't use it. A request becomes a task through New
+task, and what needs them is in the Inbox. On the dogfooding host the view
+stayed empty: a conversation on the host covered nothing the other views
+didn't.
+
+- **The app drops the view:** its Activity Bar entry and ⌘4, the pane and
+  the commands behind it. A view remembered as Otter opens the Inbox.
+  Memory stays in each task's ⋯ menu; its dialog shows the host's memory
+  too.
+- **The host keeps it.** `otter chat`, `otter.get` / `otter.send`, the
+  conversation's memory and the host's tools are unchanged, so the view can
+  come back without a protocol change if a use shows up in dogfooding.
