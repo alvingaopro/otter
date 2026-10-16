@@ -3464,4 +3464,16 @@ Three things from a day in the workspace view:
   bundled font loads only when first used, and text measured with a
   fallback spreads out. Once the font's faces load (or fail to), the
   terminal measures and draws again.
+  *Amended 2026-10-16:* by changing its font option alone, not by also
+  clearing its glyphs (`clearTextureAtlas`). Terminals with the same font
+  and size share one set of drawn glyphs, and clearing it redraws only the
+  terminal that asked; the others keep pointing at glyphs that are gone.
+  Every terminal opened did this, so switching back to a workspace (kept
+  mounted, D-100) or to the other of two side by side (D-110) showed its
+  screen as scraps of the wrong glyphs until a reload. Only cells that
+  changed afterward drew correctly. Changing the option already measures
+  again, takes glyphs drawn with the loaded font, and redraws the terminal
+  in full. Checked in headless Chromium (WebGL): a kept terminal stays
+  pixel-identical after another opens, and one opened before the font
+  loads matches one opened after.
 - **New session lists Claude Code second,** after Shell.

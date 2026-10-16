@@ -240,10 +240,13 @@ export function Terminal({ host, workspace, session, onEnd, generation, label, w
     // bundled one loads only when first used, so measured before that the
     // text spreads out. Measure and draw again when it has loaded. xterm
     // measures only when the option changes: a trailing space changes it
-    // without changing the font.
+    // without changing the font. The change also gives the terminal glyphs
+    // drawn from then on, and redraws it in full. Never clear the glyphs
+    // (clearTextureAtlas): terminals with the same font share them, and
+    // every other one, a kept workspace's too, would draw scraps of the
+    // wrong ones until its cells changed.
     const refont = (family: string) => {
       term.options.fontFamily = term.options.fontFamily === family ? `${family} ` : family;
-      term.clearTextureAtlas();
       if (el.current && el.current.offsetWidth > 0 && el.current.offsetHeight > 0) fit.fit();
     };
     const unfamily = onFontFamily((family) => {
