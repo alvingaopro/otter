@@ -193,3 +193,41 @@ pub async fn otter_send(
         .await
         .map_err(|e| e.to_string())
 }
+
+/// Otter's memories (D-113): the host's, and the task's conversation's (or,
+/// without a task, Otter's conversation's on the host).
+#[tauri::command]
+pub async fn memory_get(
+    app: AppHandle,
+    host: String,
+    task: Option<String>,
+) -> Result<otter_protocol::otter::OtterMemory, String> {
+    rpc(&app, &host)
+        .await?
+        .memory_get(task.as_deref())
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// The developer's edit of one memory: all of what it says, and what it
+/// said when the edit began.
+#[tauri::command]
+pub async fn memory_set(
+    app: AppHandle,
+    host: String,
+    task: Option<String>,
+    memory: otter_protocol::otter::MemoryScope,
+    text: String,
+    previous: String,
+) -> Result<otter_protocol::otter::OtterMemory, String> {
+    rpc(&app, &host)
+        .await?
+        .memory_set(otter_protocol::otter::MemorySet {
+            task,
+            memory,
+            text,
+            previous: Some(previous),
+        })
+        .await
+        .map_err(|e| e.to_string())
+}

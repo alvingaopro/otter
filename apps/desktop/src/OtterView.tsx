@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import { ComposerGrip, useComposerHeight } from "./composerResize";
+import { MemoryDialog } from "./MemoryDialog";
 import { MessageText, Speaker } from "./TasksView";
 import { ago } from "./model";
 import { tooOld, type OtterChat, type OtterDraft, type OtterSource } from "./otterChat";
@@ -46,6 +47,7 @@ export function OtterView({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [inputHeight, setInputHeight] = useComposerHeight();
+  const [remembering, setRemembering] = useState(false);
   const end = useRef<HTMLDivElement>(null);
 
   // A host that went away: the first one left.
@@ -126,7 +128,20 @@ export function OtterView({
             ))}
           </select>
         </label>
+        {source.memory && host && loaded.state === "ready" && (
+          <button className="btn" title="What Otter noted from what you decided" onClick={() => setRemembering(true)}>
+            Memory
+          </button>
+        )}
       </header>
+      {remembering && source.memory && host && (
+        <MemoryDialog
+          source={source.memory}
+          host={host}
+          conversation="This conversation"
+          onClose={() => setRemembering(false)}
+        />
+      )}
       <section className="conversation" aria-label="Conversation with Otter">
         <div className="messages" role="log" aria-live="polite">
           {loaded.state === "loading" && <p className="muted small">Loading…</p>}

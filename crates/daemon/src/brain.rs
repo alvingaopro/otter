@@ -161,7 +161,14 @@ pub trait Brain: Send + Sync {
     /// Answer the developer's message (D-049): what's going on, and whether
     /// they asked to go on or to stop — a model's judgment. Without a model:
     /// the status only; acting on the message is left to the buttons.
-    async fn reply(&self, cx: &Context<'_>, _message: &str, _say: &Say<'_>) -> Result<Reply> {
+    /// `memories`: what Otter noted (D-113), which only a turn may change.
+    async fn reply(
+        &self,
+        cx: &Context<'_>,
+        _message: &str,
+        _memories: &str,
+        _say: &Say<'_>,
+    ) -> Result<Reply> {
         // Without a model a message can't be told apart: it goes to the
         // coding agent as guidance, as it always has.
         Ok(Reply {
@@ -663,7 +670,7 @@ impl Brain for Scripted {
     async fn judge(&self, cx: &Context<'_>) -> Result<Judgement> {
         Ok(rules_judge(cx))
     }
-    async fn reply(&self, _: &Context<'_>, message: &str, say: &Say<'_>) -> Result<Reply> {
+    async fn reply(&self, _: &Context<'_>, message: &str, _: &str, say: &Say<'_>) -> Result<Reply> {
         let (_, intent) = split_intent(message);
         let text = format!("Scripted: {intent:?}.");
         say(&text);
@@ -964,16 +971,14 @@ impl Brain for Model {
         )))
     }
 
-    async fn reply(&self, cx: &Context<'_>, message: &str, say: &Say<'_>) -> Result<Reply> {
+    async fn reply(
+        &self,
+        cx: &Context<'_>,
+        message: &str,
+        memories: &str,
+        say: &Say<'_>,
+    ) -> Result<Reply> {
         let f = cx.task;
-        let recent: Vec<String> = f
-            .messages
-            .iter()
-            .rev()
-            .take(12)
-            .rev()
-            .map(|m| format!("{:?}: {}", m.role, super::agents::excerpt(&m.text, 600)))
-            .collect();
         let steps: Vec<String> = f
             .steps
             .iter()
@@ -985,7 +990,7 @@ impl Brain for Model {
              latest message directly and briefly (2-5 sentences), in the language they wrote in. \
              Say what is happening and what happens next; if they give instructions, say how you'll \
              act on them. Don't invent progress.\n{brief}\nStatus: {status}\nSteps:\n{steps}\n\
-             Recent conversation:\n{recent}\n\nTheir message: {message}\n\n\
+             {memories}\nRecent conversation:\n{recent}\n\nTheir message: {message}\n\n\
              Write your reply as plain text. Then, on a last line of its own, write `INTENT: <x>` where \
              <x> is: guide if they tell the coding agent how to do the current work (an instruction, a \
              correction, a detail) without changing what should be built — it gets it with its next turn; \
@@ -997,7 +1002,7 @@ impl Brain for Model {
             brief = brief(f),
             status = status_text(f),
             steps = steps.join("\n"),
-            recent = recent.join("\n"),
+            recent = crate::turn::recent(&f.messages),
         );
         // The developer sees the reply as it's written, without the intent line.
         let written = std::sync::Mutex::new(String::new());

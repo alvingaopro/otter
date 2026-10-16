@@ -20,6 +20,7 @@ mod gateway;
 mod git;
 mod history;
 mod login;
+mod memory;
 mod metrics;
 mod paths;
 mod providers;

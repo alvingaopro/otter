@@ -362,6 +362,8 @@ code, .mono { font-family: var(--mono); }
 }
 .field select { height: 34px; padding: 0 8px; }
 .field textarea { padding: 8px 10px; resize: vertical; line-height: 19px; margin-top: 2px; }
+.field textarea.memory-text { font-family: var(--mono); font-size: 12px; }
+.memory-count { float: right; font-weight: normal; }
 .field select:focus, .field textarea:focus { outline: 2px solid var(--working); outline-offset: -1px; }
 .check { display: flex; align-items: center; gap: 8px; font-size: 13.5px; }
 .check input { width: 15px; height: 15px; accent-color: var(--working); }

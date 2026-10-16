@@ -580,6 +580,25 @@ impl Connection {
         .await
     }
 
+    /// Otter's memories (D-113): the host's, and the task's conversation's
+    /// (or, without `task`, Otter's conversation's on the host).
+    pub async fn memory_get(
+        &mut self,
+        task: Option<&str>,
+    ) -> Result<otter_protocol::otter::OtterMemory> {
+        self.call(Request::MemoryGet(otter_protocol::otter::MemoryGet {
+            task: task.map(str::to_owned),
+        }))
+        .await
+    }
+
+    pub async fn memory_set(
+        &mut self,
+        p: otter_protocol::otter::MemorySet,
+    ) -> Result<otter_protocol::otter::OtterMemory> {
+        self.call(Request::MemorySet(p)).await
+    }
+
     pub async fn task_send(
         &mut self,
         command_id: &str,

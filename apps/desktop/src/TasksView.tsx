@@ -3,6 +3,7 @@ import { Dialog } from "./Dialog";
 import { Glyph } from "./Glyph";
 import { ComposerGrip, useComposerHeight } from "./composerResize";
 import { Markdown } from "./Markdown";
+import { MemoryDialog } from "./MemoryDialog";
 import { ago } from "./model";
 import otterIcon from "./assets/otter.png";
 import type { CodingConversation, Interaction, RuntimeCapabilities } from "./conversation";
@@ -193,6 +194,7 @@ function TaskPane({
   const f = placed.task;
   const wsName = workspaces.find((w) => w.id === f.workspace_id)?.name;
   const [deleting, setDeleting] = useState(false);
+  const [remembering, setRemembering] = useState(false);
   const pending = pendingDecisions(f);
   const [tab, setTab] = useState<Tab>(pending.length > 0 ? "approvals" : "plan");
   const [error, setError] = useState<string | null>(null);
@@ -276,6 +278,11 @@ function TaskPane({
             {f.preview ? "Open preview" : "Preview"}
           </button>
         )}
+        {source.memory && (
+          <button className="btn" title="What Otter noted from what you decided" onClick={() => setRemembering(true)}>
+            Memory
+          </button>
+        )}
         <TaskActions f={f} act={act} caps={caps} />
         {deletable(f) && (
           <button className="btn outline" title="Delete this task" onClick={() => setDeleting(true)}>
@@ -283,6 +290,15 @@ function TaskPane({
           </button>
         )}
       </header>
+      {remembering && source.memory && (
+        <MemoryDialog
+          source={source.memory}
+          host={placed.host}
+          task={f.id}
+          conversation="This task"
+          onClose={() => setRemembering(false)}
+        />
+      )}
       {deleting && (
         <DeleteTaskDialog
           placed={placed}

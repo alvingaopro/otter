@@ -3327,3 +3327,58 @@ restarted.
   in `.zprofile` or `.zshenv` are kept.
 - Tested end to end: a session touches its `.envrc`, runs what the hook
   runs, and `run/bin` is still on PATH.
+
+## D-113 — Otter remembers what was decided (2026-10-16)
+
+Each reply was a fresh model call given the last 12 messages, cut to 600
+characters each (`turn.rs`, and `brain.rs` for brains without tools). A
+decision made 13 messages back was gone, and no tool read older messages.
+The developer asked for a memory per conversation, plus one across
+conversations for the decisions that hold everywhere.
+
+- **More of the conversation:** the last 20 messages, cut to 2 000
+  characters each, in a task's turn, on the host and in `reply`. A line says
+  how many messages there are and which id to page back from.
+- **`get_messages`** (Observe, in every conversation) reads the
+  conversation's messages newest first and whole (redacted, D-075), in pages
+  (`before` a message id), or the ones that mention a `query`. Bounded: 30
+  messages, 8 000 characters each, 40 000 a page. Its ids aren't the turn's:
+  `forward_to_agent` and the like still take only this turn's messages.
+- **Two memories each turn is given,** Markdown files:
+  - the conversation's: `state/tasks/<id>/memory.md` for a task (deleted
+    with it), `state/otter/chat-memory.md` for Otter's conversation on the
+    host (D-093);
+  - the host's, across every conversation there: `state/otter/memory.md`.
+    "Across" means one host: otterd is per host and nothing syncs memories
+    between hosts.
+
+  The context labels them `memory "conversation"` and `memory "host"`, the
+  values the tools take. Brains without tools are given them in `reply` too,
+  but can't change them.
+- **Otter changes them with `remember`** (adds a line; a note already there
+  isn't added again) **and `edit_memory`** (replaces text found exactly
+  once; empty drops it). Both are on the developer's word: only a turn their
+  message started may call them, so what Otter keeps comes from talking with
+  them, never from an event or from what a tool returned. They aren't
+  applied under `<message>:<tool>`, because one message may settle several
+  things; the "already there" check is what keeps a turn run again from
+  noting twice. The history records `ToolCalled`/`ToolDone`, never what was
+  noted. "Only pausing changes anything without the developer's word"
+  stands.
+- **A note is never authority.** The instructions say a note informs the
+  answer and is never the developer's word for a tool. An approval still
+  comes from this turn's messages.
+- **Bounded and redacted:** 8 000 characters per memory, 1 000 per note,
+  each redacted when written (invariant 13). A full memory refuses another
+  note until Otter folds notes together or drops some (`next` says so).
+  Memories are never in `events.jsonl`.
+- **The developer's to read and correct:**
+  - `memory.get {task?}` and `memory.set {task?, memory, text, previous?}`
+    are new methods, so no protocol bump.
+  - `previous` makes an edit that races one of Otter's notes a `conflict`
+    instead of losing it.
+  - The app's task header and Otter's view have a **Memory** button: both
+    memories, editable.
+  - Each memory is read from disk for every turn, so editing a file by hand
+    takes effect at the next turn.
+  - No event says a memory changed. The dialog reads it when it opens.
