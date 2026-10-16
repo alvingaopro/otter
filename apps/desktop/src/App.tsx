@@ -26,7 +26,7 @@ import { RenameDialog } from "./RenameDialog";
 import { explain, forgetHost } from "./newer";
 import { zoomKey } from "./terminalFont";
 import { useTheme } from "./theme";
-import { defaultSession, groups, headline, movePin, noticeTitle, pinnedOf, placeAll, stalePins, togglePin, trayLabel } from "./model";
+import { defaultSession, groups, headline, movePin, noticeTitle, pinnedOf, placeAll, stalePins, togglePin, trayLabels } from "./model";
 import type { MenuItem } from "./Menu";
 import type { ForwardView, HostsPayload, Placed } from "./types";
 import "./App.css";
@@ -272,13 +272,12 @@ export default function App() {
 
   // The menu bar item shows what needs you: workspaces and tasks.
   useEffect(() => {
-    const showHost = new Set([...placed.map((p) => p.host.name), ...tasks.map((p) => p.host)]).size > 1;
-    const waiting = [
+    const waiting = trayLabels([
       ...placed
         .filter((p) => p.ws.activity === "needs_you" || p.ws.activity === "failed")
-        .map((p) => ({ key: p.key, label: trayLabel(p.ws.name, headline(p.ws).text, p.host.name, showHost) })),
-      ...trayTasks(tasks, (title, what, host) => trayLabel(title, what, host, showHost)),
-    ];
+        .map((p) => ({ key: p.key, name: p.ws.name, what: headline(p.ws).text, host: p.host.name })),
+      ...trayTasks(tasks),
+    ]);
     void invoke("tray_update", { waiting }).catch(() => {});
   }, [placed, tasks]);
 
