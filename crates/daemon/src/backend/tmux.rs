@@ -459,6 +459,13 @@ set -g remain-on-exit on
 # The wheel scrolls a session's history (tmux keeps it; the client only sees
 # the screen), and text copied there reaches the client's clipboard.
 set -g mouse on
+# Three lines a wheel step, not tmux's five: the app's terminal sends a step
+# per about three lines of trackpad travel, so the history stays under the
+# finger, in smaller jumps (D-117).
+bind -T copy-mode WheelUpPane select-pane \\; send-keys -X -N 3 scroll-up
+bind -T copy-mode WheelDownPane select-pane \\; send-keys -X -N 3 scroll-down
+bind -T copy-mode-vi WheelUpPane select-pane \\; send-keys -X -N 3 scroll-up
+bind -T copy-mode-vi WheelDownPane select-pane \\; send-keys -X -N 3 scroll-down
 set -g set-clipboard on
 set -as terminal-features \",xterm*:clipboard\"
 set -g automatic-rename off
@@ -482,6 +489,19 @@ mod tests {
         assert!(
             config("tmux-256color", false).contains("set -g remain-on-exit on\nset -g window-size")
         );
+    }
+
+    #[test]
+    fn wheel_scrolls_three_lines() {
+        let config = config("tmux-256color", true);
+        for table in ["copy-mode", "copy-mode-vi"] {
+            for (key, dir) in [("WheelUpPane", "up"), ("WheelDownPane", "down")] {
+                let line = format!(
+                    "bind -T {table} {key} select-pane \\; send-keys -X -N 3 scroll-{dir}\n"
+                );
+                assert!(config.contains(&line), "{line}");
+            }
+        }
     }
 
     #[test]
