@@ -3369,7 +3369,8 @@ conversations for the decisions that hold everywhere.
   answer and is never the developer's word for a tool. An approval still
   comes from this turn's messages.
 - **Bounded and redacted:** 8 000 characters per memory, 1 000 per note,
-  each redacted when written (invariant 13). A full memory refuses another
+  redacted when written and again when read, because a file may have been
+  edited by hand (invariant 13). A full memory refuses another
   note until Otter folds notes together or drops some (`next` says so).
   Memories are never in `events.jsonl`.
 - **The developer's to read and correct:**

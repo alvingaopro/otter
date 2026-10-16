@@ -314,16 +314,18 @@ async fn the_developer_reads_and_edits_otters_memory() {
     );
     assert!(!host.home().join("state/tasks/task_nope").exists());
 
-    // Read afresh: an edit by hand is what Otter is given next.
+    // Read afresh: an edit by hand is what Otter is given next, redacted.
     std::fs::write(
         host.home().join("state/otter/memory.md"),
-        "- edited by hand\n",
+        "- edited by hand\n- deploy token ghp_handwrittenhandwritten0123456789\n",
     )
     .unwrap();
     let m = conn.memory_get(Some(&id)).await.unwrap();
-    assert_eq!(m.host, "- edited by hand\n");
+    assert!(m.host.starts_with("- edited by hand\n"), "{}", m.host);
+    assert!(!m.host.contains("ghp_handwritten"), "{}", m.host);
     drop(conn);
     let (_, reply, _) = run(host, &id, "c-1", "CONTEXT").await;
     assert!(reply.contains("- edited by hand"), "{reply}");
+    assert!(!reply.contains("ghp_handwritten"), "{reply}");
     assert!(reply.contains("- orders are soft-deleted"), "{reply}");
 }

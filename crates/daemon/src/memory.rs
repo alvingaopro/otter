@@ -59,9 +59,10 @@ impl Memory {
     }
 }
 
-/// What a memory file says ("" when there is none).
+/// What a memory file says ("" when there is none), redacted: a file
+/// edited by hand may hold what Otter must never keep or show.
 fn read(path: &Path) -> String {
-    std::fs::read_to_string(path).unwrap_or_default()
+    redact(&std::fs::read_to_string(path).unwrap_or_default())
 }
 
 /// Replace a memory file: a private temporary file, synced, renamed.
