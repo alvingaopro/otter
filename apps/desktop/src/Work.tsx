@@ -11,6 +11,7 @@ import {
   turnLabel,
   turnText,
   type CodingConversation,
+  type CodingTurn,
   type Interaction,
 } from "./conversation";
 
@@ -28,87 +29,99 @@ export function Work({ conversations, now }: { conversations: CodingConversation
     <div className="work">
       {conversations.map((c) => (
         <section key={c.id} className="work-conversation" aria-label={`Conversation ${c.id}`}>
-          <div className="work-head">
-            <span className="work-status">{conversationStatus(c)}</span>
-            <span className="spacer" />
-            <span className="muted small" title={`${c.id} · ${c.backend}`}>
-              {c.model ?? "default model"} · run {c.generation}
-              {c.resumable ? "" : " · not resumable"}
-            </span>
-          </div>
-          {c.read_only && (
-            <p className="notice small" role="note">
-              This conversation's record is read-only ({c.read_only}); what was recorded is below.
-            </p>
-          )}
+          <WorkHead c={c} />
           <ol className="turns">
-            {c.turns.map((t) => {
-              const said = c.messages.filter((m) => m.turn_id === t.id);
-              const tools = c.tools.filter((x) => x.turn_id === t.id);
-              const asked = c.interactions.filter((i) => i.turn_id === t.id);
-              return (
-                <li key={t.id} className={`turn ${t.state}`}>
-                  <div className="turn-head">
-                    <Glyph kind={turnGlyph(t)} />
-                    <span className="turn-label">{turnLabel(t, c.errors)}</span>
-                    {t.redirect && <span className="chip small">change of direction</span>}
-                    <span className="spacer" />
-                    <span className="muted small">{ago(t.started_at ?? t.queued_at, now)}</span>
-                  </div>
-                  <div className="turn-input muted small">
-                    {t.initiator === "user" ? "You" : "Otter"}: {firstLine(turnText(t))}
-                  </div>
-                  {t.reason && t.state === "finished" && t.outcome !== "completed" && (
-                    <div className="turn-reason small">{t.reason}</div>
-                  )}
-                  {t.error && c.errors?.[t.error] && <div className="turn-next small">{c.errors[t.error]!.next}</div>}
-                  {tools.length > 0 && (
-                    <ul className="plain-list tools">
-                      {tools.map((x) => (
-                        <li key={x.id} className={`tool ${x.status}`}>
-                          <details>
-                            <summary>
-                              <Glyph kind={TOOL_GLYPH[x.status]} />
-                              <span className="tool-name">{x.name}</span>
-                              <span className="tool-summary">{x.summary}</span>
-                              <span className="muted small">{TOOL_LABEL[x.status]}</span>
-                            </summary>
-                            {x.result ? (
-                              <pre className="tool-output">
-                                {x.result.summary}
-                                {x.result.truncated && "\n…"}
-                              </pre>
-                            ) : (
-                              <p className="muted small">
-                                {x.status === "result_unavailable" ? "Its result was never reported." : "No result yet."}
-                              </p>
-                            )}
-                          </details>
-                        </li>
-                      ))}
-                    </ul>
-                  )}
-                  {asked.map((i) => (
-                    <div key={i.id} className={`asked ${i.status}`}>
-                      <span className="muted small">
-                        Asked: {i.summary ?? i.questions?.map((q) => q.prompt).join(" · ") ?? i.plan ?? i.type} — {i.status.replace("_", " ")}
-                        {i.decided_by && ` (${i.decided_by === "user" ? "you" : i.decided_by})`}
-                      </span>
-                    </div>
-                  ))}
-                  {said.map((m) => (
-                    <div key={m.id} className={`turn-said ${m.lifecycle}`}>
-                      {messageText(m)}
-                      {m.lifecycle === "interrupted" && <span className="muted small"> — cut off</span>}
-                    </div>
-                  ))}
-                </li>
-              );
-            })}
+            {c.turns.map((t) => (
+              <Turn key={t.id} c={c} t={t} now={now} />
+            ))}
           </ol>
         </section>
       ))}
     </div>
+  );
+}
+
+/** A conversation's state and model, and whether its record is read-only. */
+export function WorkHead({ c }: { c: CodingConversation }) {
+  return (
+    <>
+      <div className="work-head">
+        <span className="work-status">{conversationStatus(c)}</span>
+        <span className="spacer" />
+        <span className="muted small" title={`${c.id} · ${c.backend}`}>
+          {c.model ?? "default model"} · run {c.generation}
+          {c.resumable ? "" : " · not resumable"}
+        </span>
+      </div>
+      {c.read_only && (
+        <p className="notice small" role="note">
+          This conversation's record is read-only ({c.read_only}); what was recorded is below.
+        </p>
+      )}
+    </>
+  );
+}
+
+/** One turn: what it was asked, the tools it used, what it asked and said. */
+export function Turn({ c, t, now }: { c: CodingConversation; t: CodingTurn; now: number }) {
+  const said = c.messages.filter((m) => m.turn_id === t.id);
+  const tools = c.tools.filter((x) => x.turn_id === t.id);
+  const asked = c.interactions.filter((i) => i.turn_id === t.id);
+  return (
+    <li className={`turn ${t.state}`}>
+      <div className="turn-head">
+        <Glyph kind={turnGlyph(t)} />
+        <span className="turn-label">{turnLabel(t, c.errors)}</span>
+        {t.redirect && <span className="chip small">change of direction</span>}
+        <span className="spacer" />
+        <span className="muted small">{ago(t.started_at ?? t.queued_at, now)}</span>
+      </div>
+      <div className="turn-input muted small">
+        {t.initiator === "user" ? "You" : "Otter"}: {firstLine(turnText(t))}
+      </div>
+      {t.reason && t.state === "finished" && t.outcome !== "completed" && <div className="turn-reason small">{t.reason}</div>}
+      {t.error && c.errors?.[t.error] && <div className="turn-next small">{c.errors[t.error]!.next}</div>}
+      {tools.length > 0 && (
+        <ul className="plain-list tools">
+          {tools.map((x) => (
+            <li key={x.id} className={`tool ${x.status}`}>
+              <details>
+                <summary>
+                  <Glyph kind={TOOL_GLYPH[x.status]} />
+                  <span className="tool-name">{x.name}</span>
+                  <span className="tool-summary">{x.summary}</span>
+                  <span className="muted small">{TOOL_LABEL[x.status]}</span>
+                </summary>
+                {x.result ? (
+                  <pre className="tool-output">
+                    {x.result.summary}
+                    {x.result.truncated && "\n…"}
+                  </pre>
+                ) : (
+                  <p className="muted small">
+                    {x.status === "result_unavailable" ? "Its result was never reported." : "No result yet."}
+                  </p>
+                )}
+              </details>
+            </li>
+          ))}
+        </ul>
+      )}
+      {asked.map((i) => (
+        <div key={i.id} className={`asked ${i.status}`}>
+          <span className="muted small">
+            Asked: {i.summary ?? i.questions?.map((q) => q.prompt).join(" · ") ?? i.plan ?? i.type} — {i.status.replace("_", " ")}
+            {i.decided_by && ` (${i.decided_by === "user" ? "you" : i.decided_by})`}
+          </span>
+        </div>
+      ))}
+      {said.map((m) => (
+        <div key={m.id} className={`turn-said ${m.lifecycle}`}>
+          {messageText(m)}
+          {m.lifecycle === "interrupted" && <span className="muted small"> — cut off</span>}
+        </div>
+      ))}
+    </li>
   );
 }
 

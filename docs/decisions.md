@@ -3383,3 +3383,46 @@ conversations for the decisions that hold everywhere.
   - Each memory is read from disk for every turn, so editing a file by hand
     takes effect at the next turn.
   - No event says a memory changed. The dialog reads it when it opens.
+
+## D-114 — A task's page shows what the task has (2026-10-16)
+
+Dogfooding an answer-only task: the page had five list filters, seven
+detail tabs and a Plan full of "None yet". The status sentence was cut off
+in the header and repeated the list row and Otter's last message. "Why"
+listed the same line three times, and a decision waiting for the developer
+lived in its own tab behind a banner. The conversation, the one part used
+every time, had the least room. Only the app changes:
+
+- **The list is grouped:** Needs you (a decision, a review, a block, a
+  stop), Active, Done (cancelled ones too), each with its count. A find box
+  takes part of a title, the request or the host. It replaces the five
+  filter chips.
+- **The header holds the task's actions:** status, host / workspace as a
+  link, Start / Pause / Resume / Retry / Accept, Interrupt and Preview.
+  Memory, Open workspace, Cancel task and Delete task… are in a ⋯ menu.
+  The status sentence moved to the panel.
+- **Decisions are in the conversation.** One waiting is pinned above the
+  message box with its Approve / Deny or its questions. One taken shows
+  where it was asked, with who decided. The banner stays only for what has
+  no other place: a stop, a block without a decision, waiting for a
+  workspace.
+- **Two tabs instead of seven:**
+  - **Overview** shows only sections with something in them, ordered for
+    the task's stage. A working task starts with Now, Progress and Checks.
+    One under review starts with Checks, Delivery and Report. A finished
+    one starts with Outcome.
+    - **Checks** joins acceptance criteria, gates and evidence. Each
+      criterion shows the evidence behind it.
+    - **Progress** leaves out the coding agent's planning turn.
+    - The request folds, because it is also the first message.
+    - The budget shows only once half the attempts are used.
+  - **Activity** is the task's history and the coding agent's turns in one
+    feed, newest first, narrowed to All, Coding agent or Task. Otter's
+    reasons ("Why") come after it, a line said several times in a row
+    once with ×N. They are real repeats (each follow-up answered again),
+    not a bug to fix in the daemon.
+- **A long report from the coding agent folds** (over 1 200 characters),
+  so the messages around it stay in view.
+- Not built: a note in the conversation where Otter saved something to
+  memory. Nothing per message says so; the history only records that
+  Otter's tool ran.
