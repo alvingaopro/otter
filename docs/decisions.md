@@ -3557,7 +3557,10 @@ stays as the backend (design §12), attached in control mode.
   line. Each row is written in the style the one before ended in (tracked,
   kept short) and reset before the line break. A line feed that scrolls
   fills the new line with the current background. History cut off by the
-  byte cap still passes on its style.
+  byte cap still passes on its style. Line drawing is marked the same way,
+  with SO and SI carrying across rows, and is tracked the same way. The
+  snapshot makes G1 the line-drawing set, as tmux does for a terminal
+  client. A hyperlink still open at the end of a capture is closed.
 - **Not readable on attach:** bracketed paste, focus reporting and cursor
   style; tmux exposes none of them. For bracketed paste, every snapshot turns
   it on in the app, and the daemon delivers a bracketed paste through a paste
@@ -3580,7 +3583,8 @@ stays as the backend (design §12), attached in control mode.
   screen attach sent only the latest screen. The daemon owns what waits for
   the client. Past 2 MiB it drops all of it, and takes a new snapshot once
   the client has taken what it had. So a stuck client costs at most 2 MiB
-  and a snapshot. Measured: a 15 MB flood while the client didn't read for
+  and a snapshot. Those snapshots come at least 500 ms apart, so a client
+  slower than the program sees a screen, not a flicker of them. Measured: a 15 MB flood while the client didn't read for
   6 s reached it as 354 KB, with one resync, ending identical to tmux.
   During a 400 MB flood with a client that read nothing for 15 s, otterd
   stayed at 26 MB.
@@ -3611,9 +3615,10 @@ stays as the backend (design §12), attached in control mode.
     screen and 2,000 rows of history were identical for a snapshot of a
     Claude Code transcript, the transcript streamed live (769 KB), `less`
     entered live and attached while open, and the 15 MB flood.
-  - Cell by cell with colors, against tmux's own screen attach and copy
-    mode: 118 of 120 rows were identical. The 2 others are the background
-    differences above.
-  - Reviewed by a second model before merging. What it found (unbounded
-    memory, styles, hangs on a failed snapshot, Home and End, a resize race,
-    early query answers, NULs) is fixed above.
+  - Cell by cell with colors and line drawing, against tmux's own screen
+    attach and copy mode: 120 rows of real and crafted output were
+    identical, except rows showing the background differences above.
+  - Reviewed twice by a second model before merging. What it found is fixed
+    above: unbounded memory, styles, hangs on a failed snapshot, Home and
+    End, a resize race, early query answers, NULs, line drawing, links, and
+    resync spacing.

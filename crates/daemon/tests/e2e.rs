@@ -949,7 +949,7 @@ async fn stream_attach_keeps_styles_that_go_on_across_rows() {
         .session_write(
             "sty",
             "sh",
-            "clear; printf '\\033[44m%200s\\033[0m\\r\\n\\033[7mSTATUS   \\033[0m\\r\\nstyled-done\\r\\n' ''",
+            "clear; printf '\\033[44m%200s\\033[0m\\r\\n\\033[7mSTATUS   \\033[0m\\r\\n\\033(0lqqk\\033(B\\r\\nstyled-done\\r\\n' ''",
             true,
         )
         .await
@@ -965,6 +965,9 @@ async fn stream_attach_keeps_styles_that_go_on_across_rows() {
     );
     // Styled blanks at the end of a row stay.
     assert!(phase2.contains("STATUS   \x1b["), "{phase2:?}");
+    // Line drawing, which tmux marks with SO and SI.
+    assert!(phase2.starts_with("\x1b[?2026h\x1b)0"), "{phase2:?}");
+    assert!(phase2.contains("\x0elqqk"), "{phase2:?}");
 }
 
 #[tokio::test]

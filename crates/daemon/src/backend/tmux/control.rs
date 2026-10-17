@@ -20,11 +20,13 @@ use std::fmt::Write as _;
 use std::process::Stdio;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
 
 use anyhow::{Context, Result};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, ChildStdout, Command};
 use tokio::sync::mpsc;
+use tokio::time::Instant;
 
 use super::{EXIT_MARKER, OLD_EXIT_MARKER};
 use crate::backend::{Flow, Stream, StreamInput};
@@ -41,6 +43,9 @@ const STATE_FORMAT: &str = "#{pane_id} #{pane_width} #{pane_height} #{history_si
 const SNAPSHOT_REPLIES: usize = 5;
 /// Output waiting for the client beyond this is dropped for a fresh snapshot.
 const BEHIND: usize = 2 << 20;
+/// Snapshots after falling behind come at least this far apart, so a client
+/// slower than the program sees a screen, not a flicker of them.
+const RESYNC_GAP: Duration = Duration::from_millis(500);
 /// History in a snapshot, at most: all of it arrives before the client's
 /// terminal shows any (synchronized output holds it, for up to a second).
 const HISTORY_BYTES: usize = 256 << 10;
@@ -175,10 +180,13 @@ async fn read(
     mut sent: mpsc::UnboundedReceiver<Sent>,
 ) {
     let _ = asks.send(());
+    let mut asked = Instant::now();
     let mut parser = Parser::default();
     let mut pending: VecDeque<(Sent, Vec<Reply>)> = VecDeque::new();
-    // Fell behind: a snapshot once the client has caught up.
+    // Fell behind: a snapshot once the client has caught up, and not before
+    // `resync_at`.
     let mut resync = false;
+    let mut resync_at: Option<Instant> = None;
     let mut stdout = BufReader::new(stdout);
     let mut line = Vec::new();
     loop {
@@ -188,12 +196,20 @@ async fn read(
                     break;
                 }
             }
-            // `line` keeps what was read of a line if this wins.
+            // `line` keeps what was read of a line if these win.
             more = flow.client(resync) => {
                 if !more {
                     break;
                 }
                 resync = false;
+                resync_at = Some(Instant::now().max(asked + RESYNC_GAP));
+                continue;
+            }
+            () = async { tokio::time::sleep_until(resync_at.unwrap_or_else(Instant::now)).await },
+                if resync_at.is_some() =>
+            {
+                resync_at = None;
+                asked = Instant::now();
                 let _ = asks.send(());
                 continue;
             }
@@ -517,12 +533,14 @@ fn render(snap: &Snapshot, history: bool, first: bool) -> Vec<u8> {
     let mut out = Vec::new();
     if first {
         out.extend_from_slice(b"\x1b[H\x1b[2J");
+        out.extend_from_slice(LINE_DRAWING);
         draw(&mut out, &shown);
         cup(&mut out, s.cursor_y, s.cursor_x);
     }
     // CAN ends whatever sequence was cut off, RIS starts over, and what
     // follows shows only once it's all there.
     out.extend_from_slice(b"\x18\x1bc\x1b[?2026h");
+    out.extend_from_slice(LINE_DRAWING);
     if history && s.history > 0 {
         let (dropped, kept) = budget(&snap.history, HISTORY_BYTES);
         // The first row kept goes on in the style the rows left out ended in.
@@ -534,6 +552,7 @@ fn render(snap: &Snapshot, history: bool, first: bool) -> Vec<u8> {
             lines(&mut out, std::slice::from_ref(row), &mut style);
             out.extend_from_slice(b"\r\n");
         }
+        end_link(&mut out, kept);
     }
     let normal = if s.alternate {
         rows(&snap.saved, height)
@@ -541,6 +560,7 @@ fn render(snap: &Snapshot, history: bool, first: bool) -> Vec<u8> {
         shown.clone()
     };
     lines(&mut out, &normal, &mut Style::default());
+    end_link(&mut out, &normal);
     if s.alternate {
         cup(&mut out, s.saved_y, s.saved_x);
         out.extend_from_slice(b"\x1b[?1049h");
@@ -579,6 +599,18 @@ fn render(snap: &Snapshot, history: bool, first: bool) -> Vec<u8> {
     out
 }
 
+/// tmux marks cells in the DEC line-drawing set with SO and SI (shift out to
+/// G1 and back), so G1 is that set, as tmux sets it for a terminal client.
+const LINE_DRAWING: &[u8] = b"\x1b)0";
+
+/// A capture's rows may end inside a hyperlink (OSC 8), which the next
+/// capture doesn't expect.
+fn end_link(out: &mut Vec<u8>, rows: &[Vec<u8>]) {
+    if rows.iter().any(|row| find(row, b"\x1b]8;").is_some()) {
+        out.extend_from_slice(b"\x1b]8;;\x1b\\");
+    }
+}
+
 /// `lines` as exactly `height` rows of the screen, without the marker tmux
 /// draws under an exited process (its styles stay: later rows go on in them).
 fn rows(lines: &[Vec<u8>], height: usize) -> Vec<Vec<u8>> {
@@ -606,10 +638,7 @@ fn lines(out: &mut Vec<u8>, rows: &[Vec<u8>], style: &mut Style) {
         if i > 0 {
             out.extend_from_slice(b"\r\n");
         }
-        out.extend_from_slice(&style.sgr());
-        out.extend_from_slice(row);
-        out.extend_from_slice(b"\x1b[0m");
-        style.feed(row);
+        row_in(out, row, style);
     }
 }
 
@@ -618,10 +647,20 @@ fn draw(out: &mut Vec<u8>, rows: &[Vec<u8>]) {
     let mut style = Style::default();
     for (i, row) in rows.iter().enumerate() {
         cup(out, i as u16, 0);
-        out.extend_from_slice(&style.sgr());
-        out.extend_from_slice(row);
-        out.extend_from_slice(b"\x1b[0m");
-        style.feed(row);
+        row_in(out, row, &mut style);
+    }
+    end_link(out, rows);
+}
+
+/// `row` in `style`, which it leaves as it ends; the terminal is left in the
+/// default style.
+fn row_in(out: &mut Vec<u8>, row: &[u8], style: &mut Style) {
+    out.extend_from_slice(&style.sgr());
+    out.extend_from_slice(row);
+    out.extend_from_slice(b"\x1b[0m");
+    style.feed(row);
+    if style.shifted {
+        out.push(SI);
     }
 }
 
@@ -690,14 +729,35 @@ struct Style {
     underline_color: Option<String>,
     /// Attributes on (`1`, `3`, `4:3`, `7`…), in the order turned on.
     attrs: Vec<String>,
+    /// Shifted out: line drawing (SO), until SI. SGR doesn't touch it.
+    shifted: bool,
 }
+
+const SO: u8 = 0x0e;
+const SI: u8 = 0x0f;
 
 impl Style {
     fn feed(&mut self, line: &[u8]) {
-        for (params, last) in split_csi(line).0 {
-            if last == b'm' {
-                self.apply(&String::from_utf8_lossy(params));
+        let mut i = 0;
+        while i < line.len() {
+            match line[i] {
+                0x1b if line.get(i + 1) == Some(&b'[') => {
+                    let start = i + 2;
+                    let mut end = start;
+                    while end < line.len() && !(0x40..=0x7e).contains(&line[end]) {
+                        end += 1;
+                    }
+                    if line.get(end) == Some(&b'm') {
+                        self.apply(&String::from_utf8_lossy(&line[start..end]));
+                    }
+                    i = end + 1;
+                    continue;
+                }
+                SO => self.shifted = true,
+                SI => self.shifted = false,
+                _ => {}
             }
+            i += 1;
         }
     }
 
@@ -706,7 +766,12 @@ impl Style {
         while let Some(p) = it.next() {
             let code = p.split(':').next().unwrap_or("");
             match code {
-                "" | "0" => *self = Style::default(),
+                "" | "0" => {
+                    *self = Style {
+                        shifted: self.shifted,
+                        ..Style::default()
+                    }
+                }
                 "38" | "48" | "58" => {
                     // `38;5;n`, `38;2;r;g;b`, or the same with colons.
                     let color = if p.contains(':') {
@@ -765,16 +830,21 @@ impl Style {
             .retain(|a| !codes.contains(&a.split(':').next().unwrap_or("")));
     }
 
-    /// The SGR that sets this style from the default; empty for the default.
+    /// What sets this style from the default; empty for the default.
     fn sgr(&self) -> Vec<u8> {
-        if *self == Style::default() {
-            return Vec::new();
-        }
         let mut params: Vec<&str> = self.attrs.iter().map(String::as_str).collect();
         params.extend(self.fg.as_deref());
         params.extend(self.bg.as_deref());
         params.extend(self.underline_color.as_deref());
-        format!("\x1b[{}m", params.join(";")).into_bytes()
+        let mut out = if params.is_empty() {
+            Vec::new()
+        } else {
+            format!("\x1b[{}m", params.join(";")).into_bytes()
+        };
+        if self.shifted {
+            out.push(SO);
+        }
+        out
     }
 }
 
@@ -1101,7 +1171,7 @@ mod tests {
         let out = String::from_utf8(render(&snapshot(false), true, false)).unwrap();
         assert_eq!(
             out,
-            "\x18\x1bc\x1b[?2026h\
+            "\x18\x1bc\x1b[?2026h\x1b)0\
              h1\x1b[0m\r\n\x1b[31mh2  \x1b[0m\r\n\
              one\x1b[0m\r\ntwo   \x1b[0m\r\n\x1b[0m\
              \x1b[?1h\x1b[?1003h\x1b[?1006h\x1b[?2004h\
@@ -1114,10 +1184,10 @@ mod tests {
     #[test]
     fn renders_the_alternate_screen_over_the_normal_one() {
         let out = String::from_utf8(render(&snapshot(true), true, true)).unwrap();
-        let (first, rest) = out.split_once("\x18\x1bc\x1b[?2026h").unwrap();
+        let (first, rest) = out.split_once("\x18\x1bc\x1b[?2026h\x1b)0").unwrap();
         assert_eq!(
             first,
-            "\x1b[H\x1b[2J\x1b[1;1Hone\x1b[0m\x1b[2;1Htwo   \x1b[0m\x1b[3;1H\x1b[0m\x1b[3;6H"
+            "\x1b[H\x1b[2J\x1b)0\x1b[1;1Hone\x1b[0m\x1b[2;1Htwo   \x1b[0m\x1b[3;1H\x1b[0m\x1b[3;6H"
         );
         assert!(rest.starts_with(
             "h1\x1b[0m\r\n\x1b[31mh2  \x1b[0m\r\nn1\x1b[0m\r\nn2\x1b[0m\r\nn3\x1b[0m"
@@ -1141,6 +1211,23 @@ mod tests {
         assert!(out.contains(
             "\x1b[1;38;5;31mbold\x1b[0m\r\n\x1b[1;38;5;31mstill\x1b[0m\r\n\x1b[1;38;5;31m\x1b[22mplain\x1b[0m\r\n"
         ), "{out:?}");
+    }
+
+    #[test]
+    fn line_drawing_goes_on_across_rows_and_links_end_with_their_capture() {
+        // tmux shifts out once; the next row's line drawing has no SO.
+        let mut snap = snapshot(false);
+        snap.screen = lines_of(&["\x0elqq", "qqk\x0f end", "\x1b]8;;https://x\x1b\\link"]);
+        let out = String::from_utf8(render(&snap, false, false)).unwrap();
+        assert!(out.contains("\x1b)0"), "G1 is line drawing");
+        assert!(
+            out.contains("\x0elqq\x1b[0m\x0f\r\n\x0eqqk\x0f end\x1b[0m\r\n"),
+            "{out:?}"
+        );
+        assert!(out.contains("link\x1b[0m\x1b]8;;\x1b\\"), "{out:?}");
+        let mut style = Style::default();
+        style.feed(b"\x1b[1m\x0eab\x1b[0m");
+        assert_eq!(style.sgr(), b"\x0e", "an SGR reset keeps the shift");
     }
 
     #[test]
