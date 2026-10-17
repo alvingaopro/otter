@@ -89,6 +89,9 @@ pub async fn run(
             cols,
             rows,
             term,
+            // `otter attach` shows the session's screen; the wheel scrolls
+            // the session's history.
+            history: None,
         })
         .await?;
 

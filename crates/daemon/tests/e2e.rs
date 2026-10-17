@@ -430,8 +430,22 @@ async fn attach(
     ws: &str,
     session: &str,
 ) -> (otter_client::AttachReader, otter_client::AttachWriter) {
-    let (_, reader, writer) = host
-        .conn()
+    let (ready, reader, writer) = attach_with(host, ws, session, None).await;
+    assert!(!ready.history);
+    (reader, writer)
+}
+
+async fn attach_with(
+    host: &TestHost,
+    ws: &str,
+    session: &str,
+    history: Option<u32>,
+) -> (
+    otter_protocol::AttachReady,
+    otter_client::AttachReader,
+    otter_client::AttachWriter,
+) {
+    host.conn()
         .await
         .attach(SessionAttach {
             session: SessionRef {
@@ -441,10 +455,10 @@ async fn attach(
             cols: 100,
             rows: 30,
             term: Some("xterm-256color".into()),
+            history,
         })
         .await
-        .unwrap();
-    (reader, writer)
+        .unwrap()
 }
 
 /// Read frames until the accumulated output contains `needle`.
@@ -754,6 +768,191 @@ async fn attach_carries_utf8_and_ctrl_c() {
         read_exit(&mut reader).await.reason,
         AttachExitReason::Detached
     );
+}
+
+/// A stream attach (D-118): the client's terminal keeps the history.
+async fn stream_attach(
+    host: &TestHost,
+    ws: &str,
+    session: &str,
+) -> (otter_client::AttachReader, otter_client::AttachWriter) {
+    let (ready, reader, writer) = attach_with(host, ws, session, Some(1000)).await;
+    assert!(ready.history, "the daemon can stream");
+    (reader, writer)
+}
+
+fn backend_ref(ws: &Workspace) -> String {
+    ws.sessions[0]
+        .current_execution()
+        .unwrap()
+        .backend_ref
+        .clone()
+}
+
+#[tokio::test]
+async fn stream_attach_brings_the_history_and_round_trips() {
+    let host = TestHost::new();
+    sh_session(&host, "st").await;
+    let mut conn = host.conn().await;
+    conn.session_write(
+        "st",
+        "sh",
+        "i=0; while [ $i -lt 300 ]; do i=$((i+1)); echo line-$i; done",
+        true,
+    )
+    .await
+    .unwrap();
+    wait_output(&host, "st", "sh", "line-300").await;
+    let exec = backend_ref(&conn.workspace_get("st").await.unwrap());
+
+    let (mut reader, mut writer) = stream_attach(&host, "st", "sh").await;
+    // Lines long scrolled off a 30-row screen come with the snapshot, which
+    // ends with the screen and the cursor, shown all at once.
+    let snapshot = read_until(&mut reader, "\x1b[?2026l").await;
+    assert!(snapshot.contains("line-150\x1b[0m\r\n"), "{snapshot:?}");
+    assert!(snapshot.contains("line-300"));
+    assert!(snapshot.contains("\x1b[?2004h"), "pastes are bracketed");
+
+    // Then the process's own output, as it writes it.
+    send(&mut writer, "echo stream-$((6*7))\r").await;
+    read_until(&mut reader, "stream-42").await;
+
+    writer
+        .send(&Frame::Resize {
+            cols: 111,
+            rows: 33,
+        })
+        .await
+        .unwrap();
+    eventually("window resized", || async {
+        let out = host.tmux(&[
+            "display-message",
+            "-p",
+            "-t",
+            &format!("={exec}:"),
+            "#{window_width}x#{window_height}",
+        ]);
+        (String::from_utf8_lossy(&out.stdout).trim() == "111x33").then_some(())
+    })
+    .await;
+
+    writer.send(&Frame::Detach).await.unwrap();
+    assert_eq!(
+        read_exit(&mut reader).await.reason,
+        AttachExitReason::Detached
+    );
+    eventually("no clients left", || async {
+        let out = host.tmux(&["list-clients", "-F", "#{client_name}"]);
+        String::from_utf8_lossy(&out.stdout)
+            .trim()
+            .is_empty()
+            .then_some(())
+    })
+    .await;
+    assert!(host.tmux_has_session(&exec));
+    let ws = host.conn().await.workspace_get("st").await.unwrap();
+    assert_eq!(ws.sessions[0].status(), SessionStatus::Running);
+}
+
+#[tokio::test]
+async fn stream_attach_restores_the_alternate_screen_and_its_modes() {
+    let host = TestHost::new();
+    sh_session(&host, "alt").await;
+    let mut conn = host.conn().await;
+    conn.session_write("alt", "sh", "echo normal-screen-line", true)
+        .await
+        .unwrap();
+    wait_output(&host, "alt", "sh", "normal-screen-line").await;
+    // A full-screen program: the alternate screen, the mouse, cursor keys.
+    conn.session_write(
+        "alt",
+        "sh",
+        "printf '\\033[?1049h\\033[?1002h\\033[?1006h\\033[?1h\\033[Hin-alt-screen'; sleep 600",
+        true,
+    )
+    .await
+    .unwrap();
+    wait_output(&host, "alt", "sh", "in-alt-screen").await;
+
+    let (mut reader, _writer) = stream_attach(&host, "alt", "sh").await;
+    let snapshot = read_until(&mut reader, "\x1b[?2026l").await;
+    let phase2 = snapshot.split("\x1bc").nth(1).unwrap_or_default();
+    let (normal, alternate) = phase2.split_once("\x1b[?1049h").expect("alternate screen");
+    assert!(normal.contains("normal-screen-line"), "{phase2:?}");
+    assert!(alternate.contains("in-alt-screen"), "{phase2:?}");
+    for mode in ["\x1b[?1002h", "\x1b[?1006h", "\x1b[?1h"] {
+        assert!(alternate.contains(mode), "{mode:?} in {alternate:?}");
+    }
+}
+
+#[tokio::test]
+async fn stream_attach_pastes_with_brackets_only_when_asked() {
+    for asked in [true, false] {
+        let host = TestHost::new();
+        // `cat -v` shows what the program receives, escapes as `^[`.
+        let program = if asked {
+            "printf '\\033[?2004h'; stty raw -echo; exec cat -v"
+        } else {
+            "stty raw -echo; exec cat -v"
+        };
+        create(
+            &host,
+            "p",
+            Some(vec![spec(SessionKind::Terminal, "cat", program)]),
+        )
+        .await;
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        let (mut reader, mut writer) = stream_attach(&host, "p", "cat").await;
+        read_until(&mut reader, "\x1b[?2026l").await;
+        // A paste as the client's terminal sends it, brackets and all.
+        send(
+            &mut writer,
+            "\x1b[200~say \"$HOME\" \\ #{pane_id} ; ok\rnext\x1b[201~typed",
+        )
+        .await;
+        let out = read_until(&mut reader, "typed").await;
+        let pasted = "say \"$HOME\" \\ #{pane_id} ; ok^Mnext";
+        if asked {
+            assert!(
+                out.contains(&format!("^[[200~{pasted}^[[201~typed")),
+                "{out:?}"
+            );
+        } else {
+            assert!(out.contains(&format!("{pasted}typed")), "{out:?}");
+            assert!(!out.contains("200~"), "{out:?}");
+        }
+    }
+}
+
+#[tokio::test]
+async fn stream_attach_ends_with_the_process_and_leaves_it_on_disconnect() {
+    let host = TestHost::new();
+    sh_session(&host, "se").await;
+    let ws = host.conn().await.workspace_get("se").await.unwrap();
+    {
+        let (mut reader, mut writer) = stream_attach(&host, "se", "sh").await;
+        send(&mut writer, "echo before-$((1+1))-drop\r").await;
+        read_until(&mut reader, "before-2-drop").await;
+        // Dropped without detaching, like a Mac going to sleep.
+    }
+    eventually("stream client gone", || async {
+        let out = host.tmux(&["list-clients", "-F", "#{client_name}"]);
+        String::from_utf8_lossy(&out.stdout)
+            .trim()
+            .is_empty()
+            .then_some(())
+    })
+    .await;
+    assert!(host.tmux_has_session(&backend_ref(&ws)));
+    // Nothing was typed into the session on the way out.
+    let (mut reader, mut writer) = stream_attach(&host, "se", "sh").await;
+    send(&mut writer, "echo still-$((2+3))\r").await;
+    read_until(&mut reader, "still-5").await;
+
+    send(&mut writer, "exit 5\r").await;
+    let exit = read_exit(&mut reader).await;
+    assert_eq!(exit.reason, AttachExitReason::Exited);
+    assert_eq!(exit.exit_code, Some(5));
 }
 
 #[tokio::test]

@@ -461,7 +461,7 @@ policy}`. An addition (no protocol bump).
 ## Attach mode
 
 After a successful `session.attach` response
-(`{"session_id","execution_id"}`), both directions switch to binary frames:
+(`{"session_id","execution_id","history"?}`), both directions switch to binary frames:
 
 ```text
 +---------+--------------------+------------------+
@@ -479,6 +479,7 @@ After a successful `session.attach` response
 - Maximum payload: 4 MiB (`MAX_FRAME_LEN`); larger frames are a protocol error.
 - `session.attach` params carry the initial `cols`, `rows` and the client's
   `TERM`; the attach starts at that size and shows the session's current screen.
+  An optional `history` (lines) asks for a **stream attach**, below.
 - Data is bytes, not text: UTF-8 sequences may be split across frames.
 - **Detach**: the client sends `detach`; the daemon ends the attach and sends
   `exit {"reason":"detached"}`. The session keeps running.
@@ -497,6 +498,22 @@ After a successful `session.attach` response
   network is noticed within about a minute even when idle.
 - **Initial screen**: attaching redraws the session's current screen (tmux
   attach semantics); scrollback stays in the session (`session.read`).
+- **Stream attach** (D-118): with `history`, a daemon that can answers
+  `"history": true`, and the client's terminal becomes the session's terminal:
+  - Output starts with a snapshot that rebuilds the terminal: the screen at
+    once, then (shown together, in synchronized output) up to `history` lines
+    of history, the normal and alternate screens, cursor and modes. After it
+    comes the program's own output. A client that falls far behind gets a
+    fresh snapshot instead of the backlog; each starts with CAN and RIS.
+  - The client keeps the history, so it scrolls it without asking the host.
+    The daemon may send fewer lines than asked (it caps the bytes).
+  - The session's terminal has already answered the program's queries
+    (cursor position, device attributes, colors…); the client must not
+    answer them, or the answers arrive as typing.
+  - Every snapshot turns on bracketed paste. The client sends pastes
+    bracketed and the daemon delivers them bracketed only if the program asked.
+  - Without `"history": true` in the response (an older daemon), it's the
+    screen attach above. The CLI always uses that.
 - **Malformed frames** (unknown kind, bad resize length, oversize) end the
   attach as if the client had disconnected.
 

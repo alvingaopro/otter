@@ -1,6 +1,8 @@
 // An embedded terminal attached to one session. Mounting attaches, unmounting
-// detaches (the session keeps running); switching sessions remounts, and
-// tmux redraws the current screen on attach.
+// detaches (the session keeps running); switching sessions remounts. The host
+// sends the session's screen and history, then the program's own output, so
+// this terminal keeps the history and the wheel scrolls it here (D-118). An
+// older host draws the session's screen instead, and keeps the history.
 
 import { useEffect, useRef, useState } from "react";
 import { Channel, invoke } from "@tauri-apps/api/core";
@@ -74,6 +76,9 @@ const LIGHT = {
   brightWhite: "#2E3036",
 };
 
+/** Lines of history asked for on attach; the host may send fewer (D-118). */
+const HISTORY = 2000;
+
 export type Ending =
   | { kind: "exited"; exitCode?: number }
   | { kind: "ended" }
@@ -96,6 +101,35 @@ interface Props {
   theme: "light" | "dark";
   /** On screen (its workspace kept but not shown otherwise, D-100): takes the keyboard when it comes back. */
   active?: boolean;
+}
+
+/**
+ * Queries a program sends its terminal (where the cursor is, what the
+ * terminal can do, its colors) that xterm answers on its own. A terminal that
+ * keeps the history gets the program's own output, but the session's terminal
+ * has answered these already, and a second answer would arrive as typing.
+ * The handlers go with the terminal.
+ */
+function leaveAnswersToTheSession(term: XTerm) {
+  const p = term.parser;
+  const answered = () => true;
+  const asks = (data: string) => data.split(";").includes("?");
+  p.registerCsiHandler({ final: "c" }, answered);
+  p.registerCsiHandler({ prefix: ">", final: "c" }, answered);
+  p.registerCsiHandler({ prefix: "=", final: "c" }, answered);
+  p.registerCsiHandler({ final: "n" }, answered);
+  p.registerCsiHandler({ prefix: "?", final: "n" }, answered);
+  p.registerCsiHandler({ intermediates: "$", final: "p" }, answered);
+  p.registerCsiHandler({ prefix: "?", intermediates: "$", final: "p" }, answered);
+  // Window reports; other window operations go through.
+  p.registerCsiHandler({ final: "t" }, (params) => {
+    const op = params[0];
+    return typeof op === "number" && op >= 11 && op <= 21;
+  });
+  p.registerDcsHandler({ intermediates: "$", final: "q" }, answered);
+  for (const osc of [4, 10, 11, 12]) p.registerOscHandler(osc, asks);
+  // A read of the clipboard; writes still reach it.
+  p.registerOscHandler(52, (data) => data.split(";")[1] === "?");
 }
 
 /** The http(s) link under the pointer, if any. */
@@ -144,8 +178,9 @@ export function Terminal({ host, workspace, session, onEnd, generation, label, w
       scrollback: 5000,
       theme: themeRef.current === "light" ? LIGHT : DARK,
       allowProposedApi: false,
-      // The session (tmux) handles the mouse: the wheel scrolls its history.
-      // Option-drag selects locally instead.
+      // The wheel scrolls this terminal's history, unless the program asked
+      // for the mouse (or an older host draws the screen: the host's then).
+      // Option-drag selects here even so.
       macOptionClickForcesSelection: true,
     });
     const fit = new FitAddon();
@@ -200,18 +235,23 @@ export function Terminal({ host, workspace, session, onEnd, generation, label, w
       else if (e.reason === "error") onEndRef.current({ kind: "error", message: e.message ?? "attach failed" });
     };
 
-    invoke<number>("attach_open", {
+    invoke<{ id: number; history: boolean }>("attach_open", {
       host,
       workspace,
       session,
       cols: term.cols,
       rows: term.rows,
+      history: HISTORY,
       output,
       events,
     })
-      .then((attachId) => {
-        if (disposed) void invoke("attach_close", { id: attachId });
-        else id = attachId;
+      .then((opened) => {
+        if (disposed) {
+          void invoke("attach_close", { id: opened.id });
+          return;
+        }
+        id = opened.id;
+        if (opened.history) leaveAnswersToTheSession(term);
       })
       .catch((err) => {
         if (!disposed) onEndRef.current({ kind: "error", message: String(err) });

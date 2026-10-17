@@ -16,7 +16,9 @@ use anyhow::{Context, Result, bail};
 use async_trait::async_trait;
 use tokio::process::Command;
 
-use super::{AttachCommand, ExecutionBackend, LaunchSpec, Launched, ProcessState};
+mod control;
+
+use super::{AttachCommand, ExecutionBackend, LaunchSpec, Launched, ProcessState, Stream};
 use crate::env::{EnvMap, self_exe, which, write_env_file};
 use crate::paths::Paths;
 
@@ -353,6 +355,18 @@ impl ExecutionBackend for TmuxBackend {
             ],
             env,
         }
+    }
+
+    async fn open_stream(
+        &self,
+        backend_ref: &str,
+        cols: u16,
+        rows: u16,
+        history: u32,
+    ) -> Result<Option<Stream>> {
+        let mut cmd = self.command();
+        cmd.args(["-C", "attach-session", "-t", &target_session(backend_ref)]);
+        control::open(cmd, cols, rows, history).map(Some)
     }
 
     async fn detach_client(&self, tty: &str) -> Result<()> {

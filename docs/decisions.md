@@ -3513,4 +3513,77 @@ into an isolated tmux server with Otter's config:
   terminal. It would need history seeded from `capture-pane -e` on attach,
   resize through `refresh-client -C`, and flow control. That redesigns
   attach on both ends and helps inline sessions only, so it gets its own
-  decision when taken up.
+  decision when taken up. *Amended 2026-10-17:* taken up in D-118.
+
+## D-118 — The app's terminal keeps the history (2026-10-17)
+
+Takes up D-117's next step. In the app, each wheel step through a session's
+history went to the host and back (about 20 ms on the dogfooding link). Now
+the history is in the app's terminal, and scrolling it stays on the Mac. tmux
+stays as the backend (design §12), attached in control mode.
+
+- **On the wire:** `session.attach` takes an optional `history` (lines), and
+  `"history": true` in the response says the daemon streams. Both are
+  optional, so compatible, and there's no version bump. An older daemon
+  ignores the request, and the app gets today's attach. The CLI keeps the
+  screen attach; a user's own terminal would need the same care.
+- **In the daemon:** `ExecutionBackend::open_stream`, none by default (then
+  the PTY attach). tmux runs `tmux -C attach-session` over pipes
+  (`backend/tmux/control.rs`), and `%output` is the pane's own output. tmux
+  stays inside `backend/` (invariant 7). Detaching closes the control
+  client's stdin, so nothing is typed into the session (invariant 3).
+- **The snapshot** is one command line: `refresh-client -C`,
+  `display-message` (the pane's state), and three `capture-pane`s. tmux runs
+  a line's commands without reading the pane in between. Measured with a
+  counter printing as fast as it could: the capture ended at N and the first
+  streamed number was N+1, three times out of three. Output before the
+  replies is dropped, and output after them is forwarded. From it the app's
+  terminal is rebuilt:
+  - the screen at once;
+  - then, after CAN and RIS and inside synchronized output (xterm.js holds
+    it up to a second), up to `history` lines of history, capped at 256 KiB;
+  - the normal screen, and the alternate one with its saved cursor;
+  - scroll region, origin, wrap, insert, cursor keys, keypad and mouse
+    modes, and the cursor.
+  History rows go as captured: `-J` keeps the trailing blanks that wrap a
+  line. The app asks for 2,000 lines.
+- **Not readable on attach:** bracketed paste, focus reporting and cursor
+  style; tmux exposes none of them. For bracketed paste, every snapshot turns
+  it on in the app, and the daemon delivers a bracketed paste through a paste
+  buffer (`paste-buffer -p -r`). tmux adds the brackets only if the program
+  asked for them. tmux 3.7 shows control characters in a pasted buffer as
+  `^X` (tab, CR and LF pass). Focus reporting and cursor style come back the
+  next time the program sets them.
+- **Input** goes through `send-keys -H`, byte for byte, including each byte
+  of a UTF-8 character (measured).
+- **Queries:** tmux, the session's terminal, has answered the program's
+  queries. The app's xterm.js would answer them again from the raw output,
+  and its answers would arrive as typing. In a stream attach the app
+  swallows them: DA, DSR, DECRQM, window reports, DECRQSS, color and
+  clipboard reads.
+- **Falling behind:** a stream is every byte the program writes, while a
+  screen attach sent only the latest screen. When more than 2 MiB waits for
+  the client, the daemon drops it and takes a new snapshot, under a new
+  generation, and what's queued from the old one is skipped. Measured: a
+  15 MB flood while the client didn't read for 6 s reached it as 354 KB,
+  with one resync, ending identical to tmux.
+- **Size:** the snapshot sets the client's size first, so it's taken at that
+  size. With `window-size latest`, a more recent client of another size (the
+  CLI on the same session) sizes the window. The stream is then laid out for
+  that size until the app is the latest client again. It's logged, not
+  solved.
+- **Differences left:**
+  - A screen cleared from its top-left corner goes into tmux's history but
+    not the app's; xterm.js discards it, as most terminals do.
+  - Characters are laid out with xterm.js's Unicode widths instead of tmux's.
+    A Claude Code transcript streamed live came out the same.
+  - Full-screen programs that keep their own history (Claude Code with
+    `CLAUDE_CODE_NO_FLICKER=1`) still scroll it on the host (D-117).
+- **Verified:**
+  - End to end against real tmux: history, typing, resize, detach and
+    disconnect leaving the session, exit, both paste cases, and the
+    alternate screen with its modes.
+  - Headless xterm.js fed a real otterd's stream, compared with tmux: the
+    screen and 2,000 rows of history were identical for a snapshot of a
+    Claude Code transcript, the transcript streamed live (769 KB), `less`
+    entered live and attached while open, and the flood above.

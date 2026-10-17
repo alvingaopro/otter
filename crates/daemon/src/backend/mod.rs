@@ -8,9 +8,12 @@ pub mod tmux;
 
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
 use anyhow::Result;
 use async_trait::async_trait;
+use tokio::sync::mpsc;
 
 use crate::env::EnvMap;
 
@@ -41,6 +44,67 @@ pub struct AttachCommand {
     pub env: EnvMap,
 }
 
+/// An attach where the client's terminal is the process's terminal (D-118):
+/// first a snapshot that rebuilds it (screen, history, cursor, modes), then
+/// the process's own output, so the client keeps the history itself.
+pub struct Stream {
+    output: mpsc::UnboundedReceiver<(u64, Vec<u8>)>,
+    input: Option<mpsc::UnboundedSender<StreamInput>>,
+    flow: Arc<Flow>,
+}
+
+pub enum StreamInput {
+    Data(Vec<u8>),
+    Resize { cols: u16, rows: u16 },
+}
+
+/// Output not yet taken by the client, shared by a stream's two ends. When
+/// too much is waiting, the backend drops it and sends a fresh snapshot
+/// instead, under a new generation; what's still queued from an older one
+/// is skipped.
+#[derive(Default)]
+pub struct Flow {
+    pub queued: AtomicUsize,
+    pub generation: AtomicU64,
+}
+
+impl Stream {
+    pub fn new(
+        output: mpsc::UnboundedReceiver<(u64, Vec<u8>)>,
+        input: mpsc::UnboundedSender<StreamInput>,
+        flow: Arc<Flow>,
+    ) -> Self {
+        Stream {
+            output,
+            input: Some(input),
+            flow,
+        }
+    }
+
+    /// What to show next; `None` once the attach is over.
+    pub async fn recv(&mut self) -> Option<Vec<u8>> {
+        loop {
+            let (generation, data) = self.output.recv().await?;
+            self.flow.queued.fetch_sub(data.len(), Ordering::Relaxed);
+            if generation == self.flow.generation.load(Ordering::Relaxed) {
+                return Some(data);
+            }
+        }
+    }
+
+    pub fn send(&self, input: StreamInput) {
+        if let Some(tx) = &self.input {
+            let _ = tx.send(input);
+        }
+    }
+
+    /// Leave without touching the process; output ends soon after. Dropping
+    /// the stream instead ends it at once.
+    pub fn detach(&mut self) {
+        self.input = None;
+    }
+}
+
 #[async_trait]
 pub trait ExecutionBackend: Send + Sync {
     fn name(&self) -> &'static str;
@@ -63,6 +127,18 @@ pub trait ExecutionBackend: Send + Sync {
     async fn send_text(&self, backend_ref: &str, text: &str, enter: bool) -> Result<()>;
 
     fn attach_command(&self, backend_ref: &str, term: &str) -> AttachCommand;
+
+    /// A stream attach at `cols`×`rows` with up to `history` lines of
+    /// history; `None` if this backend has none (the PTY attach is used).
+    async fn open_stream(
+        &self,
+        _backend_ref: &str,
+        _cols: u16,
+        _rows: u16,
+        _history: u32,
+    ) -> Result<Option<Stream>> {
+        Ok(None)
+    }
 
     /// Remove backend-specific chatter (e.g. tmux's "[detached …]") from
     /// attach output so backend details don't leak to the user.
