@@ -487,12 +487,23 @@ pub struct SessionAttach {
     /// The client terminal's `TERM`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub term: Option<String>,
+    /// The client's terminal keeps the history (D-118): the daemon sends a
+    /// snapshot of the session's terminal with up to this many lines of
+    /// history, then the program's own output. Absent: the daemon draws the
+    /// session's screen and the history stays in the session.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub history: Option<u32>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AttachReady {
     pub session_id: otter_core::SessionId,
     pub execution_id: otter_core::ExecutionId,
+    /// The client's terminal keeps the history: it asked and the daemon can.
+    /// The session's terminal answers the program's queries, so the client's
+    /// must not.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub history: bool,
 }
 
 /// Resolves the workspace's attention items, narrowed to one session or one

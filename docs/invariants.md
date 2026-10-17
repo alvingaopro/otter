@@ -36,7 +36,10 @@ record it in [`decisions.md`](decisions.md) first.
   `attach_round_trip_resize_and_detach`,
   `attach_is_disposable_across_daemon_restart`,
   `attach_ends_cleanly_when_the_session_restarts_or_is_deleted`,
-  `attach_shows_existing_screen_and_survives_repeated_cycles`; manually
+  `attach_shows_existing_screen_and_survives_repeated_cycles`, and for a
+  stream attach (D-118: detaching closes the control client's stdin)
+  `stream_attach_brings_the_history_and_round_trips`,
+  `stream_attach_ends_with_the_process_and_leaves_it_on_disconnect`; manually
   verified by freezing the remote sshd mid-attach (D-017). An attach is
   looking, not answering: it settles a finished turn, never an approval or
   a question (D-099) — `looking_at_a_prompt_does_not_answer_it`.
@@ -87,7 +90,8 @@ record it in [`decisions.md`](decisions.md) first.
 
 ### 7. tmux is an execution backend, not the Session abstraction.
 
-- `ExecutionBackend` (`backend/mod.rs`); only `backend/tmux.rs` knows tmux.
+- `ExecutionBackend` (`backend/mod.rs`); only `backend/tmux.rs` (and its
+  control-mode client, `backend/tmux/control.rs`) knows tmux.
   Executions are tmux sessions named by Otter's own execution id, so no tmux
   identifier enters the domain model. tmux's own messages are filtered from
   attach output and captures.

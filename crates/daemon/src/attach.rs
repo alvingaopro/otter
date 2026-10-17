@@ -6,6 +6,10 @@
 //!        ◄─frames──         ◄─bytes───            ◄──
 //! ```
 //!
+//! A client that keeps the history itself gets a stream instead (D-118): the
+//! backend's snapshot of the session's terminal, then the process's own
+//! output, so the client's terminal is the process's terminal.
+//!
 //! The attach ends when the client detaches or disconnects, or when the
 //! session's process exits or is stopped. In every case the backend session
 //! itself keeps running unless something else stopped it.
@@ -16,12 +20,13 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use otter_protocol::frame::{AttachExit, AttachExitReason, Frame, read_frame, write_frame};
-use otter_protocol::{Event, SessionAttach};
+use otter_protocol::{AttachReady, Event, SessionAttach};
 use portable_pty::{CommandBuilder, PtySize, native_pty_system};
 use tokio::io::BufReader;
 use tokio::net::unix::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::sync::{broadcast::error::RecvError, mpsc};
 
+use crate::backend::{Stream, StreamInput};
 use crate::daemon::Daemon;
 use crate::server::respond;
 
@@ -51,21 +56,48 @@ pub async fn run(
         }
     };
 
-    let term = params.term.as_deref().unwrap_or("xterm-256color");
-    let attach_cmd = daemon.backend.attach_command(&target.backend_ref, term);
-    let pty = match open_pty(&attach_cmd, params.cols, params.rows) {
-        Ok(p) => p,
-        Err(e) => {
-            respond(
-                &mut w,
-                id,
-                Err(otter_protocol::RpcError::internal(format!("{e:#}"))),
-            )
-            .await?;
-            return Ok(());
+    // The client's terminal keeps the history if it asked and the backend
+    // can (D-118); otherwise it sees a terminal client's screen.
+    let stream = match params.history {
+        Some(lines) => match daemon
+            .backend
+            .open_stream(&target.backend_ref, params.cols, params.rows, lines)
+            .await
+        {
+            Ok(stream) => stream,
+            Err(e) => {
+                tracing::warn!("stream attach failed, attaching a terminal client: {e:#}");
+                None
+            }
+        },
+        None => None,
+    };
+    let (mut viewer, ready) = match stream {
+        Some(stream) => (
+            Viewer::Stream(Some(stream)),
+            AttachReady {
+                history: true,
+                ..target.ready.clone()
+            },
+        ),
+        None => {
+            let term = params.term.as_deref().unwrap_or("xterm-256color");
+            let attach_cmd = daemon.backend.attach_command(&target.backend_ref, term);
+            match open_pty(&attach_cmd, params.cols, params.rows) {
+                Ok(pty) => (Viewer::pty(pty), target.ready.clone()),
+                Err(e) => {
+                    respond(
+                        &mut w,
+                        id,
+                        Err(otter_protocol::RpcError::internal(format!("{e:#}"))),
+                    )
+                    .await?;
+                    return Ok(());
+                }
+            }
         }
     };
-    respond(&mut w, id, Ok(serde_json::to_value(&target.ready)?)).await?;
+    respond(&mut w, id, Ok(serde_json::to_value(&ready)?)).await?;
     // Looking at the session settles what was only to be seen (D-099).
     daemon
         .engage(
@@ -74,50 +106,7 @@ pub async fn run(
             crate::attention::Engaged::Looked,
         )
         .await;
-    tracing::info!(execution = %target.ready.execution_id, "attach started");
-
-    let Pty {
-        master,
-        mut reader,
-        mut writer,
-        mut child,
-        tty,
-    } = pty;
-    let mut killer = child.clone_killer();
-
-    // PTY output → channel (blocking reads on a dedicated thread).
-    let (out_tx, mut out_rx) = mpsc::channel::<Output>(64);
-    std::thread::spawn(move || {
-        let mut buf = [0u8; 16 * 1024];
-        loop {
-            match reader.read(&mut buf) {
-                Ok(0) | Err(_) => break,
-                Ok(n) => {
-                    if out_tx
-                        .blocking_send(Output::Data(buf[..n].to_vec()))
-                        .is_err()
-                    {
-                        return;
-                    }
-                }
-            }
-        }
-        let _ = out_tx.blocking_send(Output::Eof);
-    });
-
-    // Channel → PTY input (blocking writes on a dedicated thread).
-    let (in_tx, in_rx) = std::sync::mpsc::channel::<Vec<u8>>();
-    std::thread::spawn(move || {
-        for data in in_rx {
-            if writer
-                .write_all(&data)
-                .and_then(|_| writer.flush())
-                .is_err()
-            {
-                break;
-            }
-        }
-    });
+    tracing::info!(execution = %target.ready.execution_id, history = ready.history, "attach started");
 
     // Client frames → channel. Frame reads are not cancel-safe, so they get
     // their own task instead of living in the select below.
@@ -145,31 +134,33 @@ pub async fn run(
             }
         };
         tokio::select! {
-            out = out_rx.recv() => match out {
-                Some(Output::Data(mut data)) => {
-                    daemon.backend.filter_attach_output(&mut data);
+            out = viewer.recv() => match out {
+                Some(mut data) => {
+                    // A terminal client's notices; a stream is the program's
+                    // own output, all of it.
+                    if matches!(viewer, Viewer::Pty { .. }) {
+                        daemon.backend.filter_attach_output(&mut data);
+                    }
                     if !client_gone && !data.is_empty() && write_frame(&mut w, &Frame::Data(data)).await.is_err() {
                         client_gone = true;
-                        let _ = killer.kill();
+                        viewer.kill();
                     }
                 }
-                // The attach client exited and the PTY closed.
-                Some(Output::Eof) | None => break,
+                // The attach client exited (for a PTY: and the PTY closed).
+                None => break,
             },
             frame = frame_rx.recv(), if !client_gone => match frame.flatten() {
-                Some(Frame::Data(data)) => { let _ = in_tx.send(data); }
-                Some(Frame::Resize { cols, rows }) => {
-                    let _ = master.resize(pty_size(cols, rows));
-                }
+                Some(Frame::Data(data)) => viewer.input(data),
+                Some(Frame::Resize { cols, rows }) => viewer.resize(cols, rows),
                 Some(Frame::Detach) => {
                     ending.get_or_insert(exit(AttachExitReason::Detached, None));
-                    begin_detach(&daemon, tty.as_deref(), &mut detach_deadline);
+                    begin_detach(&daemon, &mut viewer, &mut detach_deadline);
                 }
                 Some(Frame::Exit(_)) => {}
                 None => {
                     // Client disconnected without detaching.
                     client_gone = true;
-                    let _ = killer.kill();
+                    viewer.kill();
                 }
             },
             ev = events.recv() => {
@@ -193,21 +184,17 @@ pub async fn run(
                 };
                 if let Some(reason) = ended {
                     ending.get_or_insert(reason);
-                    begin_detach(&daemon, tty.as_deref(), &mut detach_deadline);
+                    begin_detach(&daemon, &mut viewer, &mut detach_deadline);
                 }
             }
             _ = deadline => {
                 detach_deadline = None;
-                let _ = killer.kill();
+                viewer.kill();
             }
         }
     }
 
-    tokio::task::spawn_blocking(move || {
-        let _ = child.wait();
-    });
-    drop(in_tx);
-    drop(master);
+    viewer.close();
     if !client_gone {
         let ending = ending.unwrap_or_else(|| exit(AttachExitReason::Ended, None));
         let _ = write_frame(&mut w, &Frame::Exit(ending)).await;
@@ -249,21 +236,150 @@ fn ends_attach(
 /// arm a deadline after which it is killed instead.
 fn begin_detach(
     daemon: &Arc<Daemon>,
-    tty: Option<&str>,
+    viewer: &mut Viewer,
     deadline: &mut Option<tokio::time::Instant>,
 ) {
     if deadline.is_some() {
         return;
     }
     *deadline = Some(tokio::time::Instant::now() + DETACH_GRACE);
-    if let Some(tty) = tty {
-        let daemon = daemon.clone();
-        let tty = tty.to_owned();
-        tokio::spawn(async move {
-            if let Err(e) = daemon.backend.detach_client(&tty).await {
-                tracing::debug!("graceful detach failed: {e:#}");
+    match viewer {
+        Viewer::Pty { tty: Some(tty), .. } => {
+            let daemon = daemon.clone();
+            let tty = tty.clone();
+            tokio::spawn(async move {
+                if let Err(e) = daemon.backend.detach_client(&tty).await {
+                    tracing::debug!("graceful detach failed: {e:#}");
+                }
+            });
+        }
+        Viewer::Pty { tty: None, .. } => {}
+        Viewer::Stream(stream) => {
+            if let Some(stream) = stream {
+                stream.detach();
+            }
+        }
+    }
+}
+
+/// What the client is looking through: a terminal client in a PTY, or a
+/// stream (`None` once killed).
+enum Viewer {
+    Pty {
+        master: Box<dyn portable_pty::MasterPty + Send>,
+        out_rx: mpsc::Receiver<Output>,
+        in_tx: std::sync::mpsc::Sender<Vec<u8>>,
+        child: Box<dyn portable_pty::Child + Send + Sync>,
+        killer: Box<dyn portable_pty::ChildKiller + Send + Sync>,
+        tty: Option<String>,
+    },
+    Stream(Option<Stream>),
+}
+
+impl Viewer {
+    fn pty(pty: Pty) -> Self {
+        let Pty {
+            master,
+            mut reader,
+            mut writer,
+            child,
+            tty,
+        } = pty;
+        let killer = child.clone_killer();
+
+        // PTY output → channel (blocking reads on a dedicated thread).
+        let (out_tx, out_rx) = mpsc::channel::<Output>(64);
+        std::thread::spawn(move || {
+            let mut buf = [0u8; 16 * 1024];
+            loop {
+                match reader.read(&mut buf) {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => {
+                        if out_tx
+                            .blocking_send(Output::Data(buf[..n].to_vec()))
+                            .is_err()
+                        {
+                            return;
+                        }
+                    }
+                }
+            }
+            let _ = out_tx.blocking_send(Output::Eof);
+        });
+
+        // Channel → PTY input (blocking writes on a dedicated thread).
+        let (in_tx, in_rx) = std::sync::mpsc::channel::<Vec<u8>>();
+        std::thread::spawn(move || {
+            for data in in_rx {
+                if writer
+                    .write_all(&data)
+                    .and_then(|_| writer.flush())
+                    .is_err()
+                {
+                    break;
+                }
             }
         });
+
+        Viewer::Pty {
+            master,
+            out_rx,
+            in_tx,
+            child,
+            killer,
+            tty,
+        }
+    }
+
+    /// Output for the client; `None` once the attach client is gone.
+    async fn recv(&mut self) -> Option<Vec<u8>> {
+        match self {
+            Viewer::Pty { out_rx, .. } => match out_rx.recv().await {
+                Some(Output::Data(data)) => Some(data),
+                Some(Output::Eof) | None => None,
+            },
+            Viewer::Stream(Some(stream)) => stream.recv().await,
+            Viewer::Stream(None) => None,
+        }
+    }
+
+    fn input(&self, data: Vec<u8>) {
+        match self {
+            Viewer::Pty { in_tx, .. } => {
+                let _ = in_tx.send(data);
+            }
+            Viewer::Stream(Some(stream)) => stream.send(StreamInput::Data(data)),
+            Viewer::Stream(None) => {}
+        }
+    }
+
+    fn resize(&self, cols: u16, rows: u16) {
+        match self {
+            Viewer::Pty { master, .. } => {
+                let _ = master.resize(pty_size(cols, rows));
+            }
+            Viewer::Stream(Some(stream)) => stream.send(StreamInput::Resize { cols, rows }),
+            Viewer::Stream(None) => {}
+        }
+    }
+
+    fn kill(&mut self) {
+        match self {
+            Viewer::Pty { killer, .. } => {
+                let _ = killer.kill();
+            }
+            // Dropping a stream ends its client at once.
+            Viewer::Stream(stream) => *stream = None,
+        }
+    }
+
+    /// Release everything once the attach is over.
+    fn close(self) {
+        if let Viewer::Pty { mut child, .. } = self {
+            tokio::task::spawn_blocking(move || {
+                let _ = child.wait();
+            });
+        }
     }
 }
 

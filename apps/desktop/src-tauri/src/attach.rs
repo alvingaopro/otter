@@ -38,6 +38,14 @@ impl Attaches {
     }
 }
 
+/// An open attach: its id, and whether the terminal keeps the history (the
+/// host streams, D-118) or shows the session's screen (an older host).
+#[derive(Clone, Debug, Serialize)]
+pub struct AttachOpened {
+    id: u64,
+    history: bool,
+}
+
 /// How an attach ended, for the terminal's status line.
 #[derive(Clone, Debug, Serialize)]
 #[serde(tag = "type", rename_all = "camelCase")]
@@ -64,19 +72,21 @@ pub async fn attach_open(
     session: String,
     cols: u16,
     rows: u16,
+    history: Option<u32>,
     output: Channel<InvokeResponseBody>,
     events: Channel<AttachEvent>,
-) -> Result<u64, String> {
+) -> Result<AttachOpened, String> {
     let transport = app.state::<Hosts>().transport(&host)?;
     let conn = Connection::connect(&transport)
         .await
         .map_err(|e| e.to_string())?;
-    let (_ready, mut reader, mut writer) = conn
+    let (ready, mut reader, mut writer) = conn
         .attach(SessionAttach {
             session: SessionRef { workspace, session },
             cols,
             rows,
             term: Some("xterm-256color".into()),
+            history,
         })
         .await
         .map_err(|e| e.to_string())?;
@@ -128,7 +138,10 @@ pub async fn attach_open(
         app2.state::<Attaches>().open.lock().unwrap().remove(&id);
     });
 
-    Ok(id)
+    Ok(AttachOpened {
+        id,
+        history: ready.history,
+    })
 }
 
 #[tauri::command]
