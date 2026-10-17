@@ -925,6 +925,90 @@ async fn stream_attach_pastes_with_brackets_only_when_asked() {
 }
 
 #[tokio::test]
+async fn stream_attach_keeps_styles_that_go_on_across_rows() {
+    let host = TestHost::new();
+    sh_session(&host, "sty").await;
+    let exec = backend_ref(&host.conn().await.workspace_get("sty").await.unwrap());
+    // A first attach makes the window the client's size, 100 columns.
+    let (mut reader, mut writer) = stream_attach(&host, "sty", "sh").await;
+    read_until(&mut reader, "\x1b[?2026l").await;
+    writer.send(&Frame::Detach).await.unwrap();
+    read_exit(&mut reader).await;
+    let width = host.tmux(&[
+        "display-message",
+        "-p",
+        "-t",
+        &format!("={exec}:"),
+        "#{pane_width}",
+    ]);
+    assert_eq!(String::from_utf8_lossy(&width.stdout).trim(), "100");
+
+    // Two full rows of blue: tmux captures the style once, on the first.
+    host.conn()
+        .await
+        .session_write(
+            "sty",
+            "sh",
+            "clear; printf '\\033[44m%200s\\033[0m\\r\\n\\033[7mSTATUS   \\033[0m\\r\\nstyled-done\\r\\n' ''",
+            true,
+        )
+        .await
+        .unwrap();
+    wait_output(&host, "sty", "sh", "styled-done").await;
+    let (mut reader, _writer) = stream_attach(&host, "sty", "sh").await;
+    let snapshot = read_until(&mut reader, "\x1b[?2026l").await;
+    let phase2 = snapshot.split("\x1bc").nth(1).unwrap_or_default();
+    let blank = " ".repeat(100);
+    assert!(
+        phase2.contains(&format!("\x1b[0m\r\n\x1b[44m{blank}")),
+        "the second row is blue too: {phase2:?}"
+    );
+    // Styled blanks at the end of a row stay.
+    assert!(phase2.contains("STATUS   \x1b["), "{phase2:?}");
+}
+
+#[tokio::test]
+async fn stream_attach_that_falls_behind_gets_a_fresh_snapshot() {
+    let host = TestHost::new();
+    sh_session(&host, "fb").await;
+    let (mut reader, mut writer) = stream_attach(&host, "fb", "sh").await;
+    read_until(&mut reader, "\x1b[?2026l").await;
+    // About 7 MB, while the client reads nothing.
+    send(&mut writer, "seq 1 1000000; echo flood-$((2+3))-done\r").await;
+    tokio::time::sleep(Duration::from_secs(4)).await;
+    let out = read_until(&mut reader, "flood-5-done").await;
+    assert!(out.contains("\x18\x1bc"), "a fresh snapshot came");
+    assert!(out.len() < 3 << 20, "not the backlog: {} bytes", out.len());
+    // And after it, the program's output as usual.
+    send(&mut writer, "echo after-$((4+4))\r").await;
+    read_until(&mut reader, "after-8").await;
+}
+
+#[tokio::test]
+async fn stream_attach_sends_home_and_end_as_a_terminal_client_would() {
+    let host = TestHost::new();
+    create(
+        &host,
+        "ke",
+        Some(vec![spec(
+            SessionKind::Terminal,
+            "cat",
+            "stty raw -echo; exec cat -v",
+        )]),
+    )
+    .await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let (mut reader, mut writer) = stream_attach(&host, "ke", "cat").await;
+    read_until(&mut reader, "\x1b[?2026l").await;
+    // What xterm sends; the session's terminal (tmux-256color) says `\e[1~`.
+    for key in ["\x1b[H", "\x1b[F", "\x1bOH", "done"] {
+        send(&mut writer, key).await;
+    }
+    let out = read_until(&mut reader, "done").await;
+    assert!(out.contains("^[[1~^[[4~^[[1~done"), "{out:?}");
+}
+
+#[tokio::test]
 async fn stream_attach_ends_with_the_process_and_leaves_it_on_disconnect() {
     let host = TestHost::new();
     sh_session(&host, "se").await;

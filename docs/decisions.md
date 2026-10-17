@@ -3532,58 +3532,88 @@ stays as the backend (design §12), attached in control mode.
   (`backend/tmux/control.rs`), and `%output` is the pane's own output. tmux
   stays inside `backend/` (invariant 7). Detaching closes the control
   client's stdin, so nothing is typed into the session (invariant 3).
-- **The snapshot** is one command line: `refresh-client -C`,
-  `display-message` (the pane's state), and three `capture-pane`s. tmux runs
-  a line's commands without reading the pane in between. Measured with a
-  counter printing as fast as it could: the capture ended at N and the first
-  streamed number was N+1, three times out of three. Output before the
-  replies is dropped, and output after them is forwarded. From it the app's
-  terminal is rebuilt:
+- **The snapshot** is one command line: `refresh-client -C` (the size,
+  clamped to the 1–10000 tmux takes), `display-message` (the pane's state),
+  and three `capture-pane`s. tmux runs a line's commands without reading the
+  pane in between. Measured with a counter printing as fast as it could: the
+  capture ended at N and the first streamed number was N+1, three times out
+  of three. Output before the replies is dropped, and output after them is
+  forwarded. From it the app's terminal is rebuilt:
   - the screen at once;
   - then, after CAN and RIS and inside synchronized output (xterm.js holds
     it up to a second), up to `history` lines of history, capped at 256 KiB;
   - the normal screen, and the alternate one with its saved cursor;
   - scroll region, origin, wrap, insert, cursor keys, keypad and mouse
     modes, and the cursor.
-  History rows go as captured: `-J` keeps the trailing blanks that wrap a
-  line. The app asks for 2,000 lines.
+
+  The app asks for 2,000 lines. The writer formats the line at the size it
+  has, so a resize can't overtake it.
+- **Replies are counted:** each command gets one reply, and an error drops
+  the rest of its line. So replies are matched to the lines sent, and a
+  snapshot that partly failed still shows what came instead of waiting.
+- **Styles:** tmux's captures write a style once, and it holds across rows
+  until it changes. Screens are captured with `-N`, so styled trailing
+  blanks stay, and history with `-J`, which keeps the blanks that wrap a
+  line. Each row is written in the style the one before ended in (tracked,
+  kept short) and reset before the line break. A line feed that scrolls
+  fills the new line with the current background. History cut off by the
+  byte cap still passes on its style.
 - **Not readable on attach:** bracketed paste, focus reporting and cursor
   style; tmux exposes none of them. For bracketed paste, every snapshot turns
   it on in the app, and the daemon delivers a bracketed paste through a paste
   buffer (`paste-buffer -p -r`). tmux adds the brackets only if the program
   asked for them. tmux 3.7 shows control characters in a pasted buffer as
-  `^X` (tab, CR and LF pass). Focus reporting and cursor style come back the
+  `^X` (tab, CR and LF pass). A paste with a NUL goes as typing, because
+  tmux's strings end at one. Focus reporting and cursor style come back the
   next time the program sets them.
 - **Input** goes through `send-keys -H`, byte for byte, including each byte
-  of a UTF-8 character (measured).
+  of a UTF-8 character (measured). Home and End go as tmux's key names, so
+  the program gets what its terminal says (`\e[1~`, `\e[4~`), as with a
+  terminal client; xterm.js sends xterm's.
 - **Queries:** tmux, the session's terminal, has answered the program's
   queries. The app's xterm.js would answer them again from the raw output,
   and its answers would arrive as typing. In a stream attach the app
   swallows them: DA, DSR, DECRQM, window reports, DECRQSS, color and
-  clipboard reads.
+  clipboard reads. The app holds output until it knows the attach is a
+  stream, so this applies from the first byte.
 - **Falling behind:** a stream is every byte the program writes, while a
-  screen attach sent only the latest screen. When more than 2 MiB waits for
-  the client, the daemon drops it and takes a new snapshot, under a new
-  generation, and what's queued from the old one is skipped. Measured: a
-  15 MB flood while the client didn't read for 6 s reached it as 354 KB,
-  with one resync, ending identical to tmux.
+  screen attach sent only the latest screen. The daemon owns what waits for
+  the client. Past 2 MiB it drops all of it, and takes a new snapshot once
+  the client has taken what it had. So a stuck client costs at most 2 MiB
+  and a snapshot. Measured: a 15 MB flood while the client didn't read for
+  6 s reached it as 354 KB, with one resync, ending identical to tmux.
+  During a 400 MB flood with a client that read nothing for 15 s, otterd
+  stayed at 26 MB.
 - **Size:** the snapshot sets the client's size first, so it's taken at that
   size. With `window-size latest`, a more recent client of another size (the
   CLI on the same session) sizes the window. The stream is then laid out for
   that size until the app is the latest client again. It's logged, not
   solved.
-- **Differences left:**
+- **Differences left** (the app's terminal behaves like a terminal, not like
+  tmux's drawing of one):
   - A screen cleared from its top-left corner goes into tmux's history but
     not the app's; xterm.js discards it, as most terminals do.
+  - When a line wraps at the bottom, xterm.js fills the new row with the
+    background in effect, and tmux doesn't.
+  - tmux's screen attach drew styled blanks at the end of a row as plain
+    (`\e[K`). The stream shows them as the program wrote them, and as
+    tmux's grid holds them.
   - Characters are laid out with xterm.js's Unicode widths instead of tmux's.
     A Claude Code transcript streamed live came out the same.
   - Full-screen programs that keep their own history (Claude Code with
     `CLAUDE_CODE_NO_FLICKER=1`) still scroll it on the host (D-117).
 - **Verified:**
   - End to end against real tmux: history, typing, resize, detach and
-    disconnect leaving the session, exit, both paste cases, and the
-    alternate screen with its modes.
+    disconnect leaving the session, exit, both paste cases, Home and End, the
+    alternate screen with its modes, styles across rows (shown to fail
+    without carrying them), and falling behind.
   - Headless xterm.js fed a real otterd's stream, compared with tmux: the
     screen and 2,000 rows of history were identical for a snapshot of a
     Claude Code transcript, the transcript streamed live (769 KB), `less`
-    entered live and attached while open, and the flood above.
+    entered live and attached while open, and the 15 MB flood.
+  - Cell by cell with colors, against tmux's own screen attach and copy
+    mode: 118 of 120 rows were identical. The 2 others are the background
+    differences above.
+  - Reviewed by a second model before merging. What it found (unbounded
+    memory, styles, hangs on a failed snapshot, Home and End, a resize race,
+    early query answers, NULs) is fixed above.

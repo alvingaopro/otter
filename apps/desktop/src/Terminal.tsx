@@ -222,9 +222,14 @@ export function Terminal({ host, workspace, session, onEnd, generation, label, w
     let id: number | null = null;
     let disposed = false;
 
+    // Held until the attach says what it is: in a stream, the session's
+    // terminal answers the program's queries, from the first byte.
+    let held: Uint8Array[] | null = [];
     const output = new Channel<ArrayBuffer | number[]>();
     output.onmessage = (data) => {
-      term.write(data instanceof ArrayBuffer ? new Uint8Array(data) : Uint8Array.from(data));
+      const bytes = data instanceof ArrayBuffer ? new Uint8Array(data) : Uint8Array.from(data);
+      if (held) held.push(bytes);
+      else term.write(bytes);
     };
     const events = new Channel<AttachEvent>();
     events.onmessage = (e) => {
@@ -252,6 +257,8 @@ export function Terminal({ host, workspace, session, onEnd, generation, label, w
         }
         id = opened.id;
         if (opened.history) leaveAnswersToTheSession(term);
+        for (const bytes of held ?? []) term.write(bytes);
+        held = null;
       })
       .catch((err) => {
         if (!disposed) onEndRef.current({ kind: "error", message: String(err) });

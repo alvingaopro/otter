@@ -136,7 +136,11 @@ pub async fn run(
         tokio::select! {
             out = viewer.recv() => match out {
                 Some(mut data) => {
-                    daemon.backend.filter_attach_output(&mut data);
+                    // A terminal client's notices; a stream is the program's
+                    // own output, all of it.
+                    if matches!(viewer, Viewer::Pty { .. }) {
+                        daemon.backend.filter_attach_output(&mut data);
+                    }
                     if !client_gone && !data.is_empty() && write_frame(&mut w, &Frame::Data(data)).await.is_err() {
                         client_gone = true;
                         viewer.kill();
