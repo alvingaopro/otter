@@ -129,14 +129,13 @@ enum Reset {
     Nothing,
 }
 
-/// What [`Reset::Modes`] undoes: the style and the charsets, the alternate
-/// screen, insert and origin modes, wrap and the cursor, the scroll region
-/// (the cursor kept), cursor and keypad keys, the mouse, bracketed paste and
-/// focus reports.
-const MODES_OFF: &[u8] =
-    b"\x1b[0m\x0f\x1b(B\x1b[?1049l\x1b[4l\x1b[?6l\x1b[?7h\x1b[?25h\x1b7\x1b[r\x1b8\
+/// What [`Reset::Modes`] undoes: the style, the alternate screen, insert and
+/// origin modes, wrap and the cursor, the scroll region (the cursor kept),
+/// cursor and keypad keys, the mouse, bracketed paste and focus reports, and
+/// last the charsets (restoring a saved cursor restores them too).
+const MODES_OFF: &[u8] = b"\x1b[0m\x1b[?1049l\x1b[4l\x1b[?6l\x1b[?7h\x1b[?25h\x1b7\x1b[r\x1b8\
     \x1b[?1l\x1b>\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1005l\x1b[?1006l\x1b[?1015l\x1b[?1016l\
-    \x1b[?2004l\x1b[?1004l";
+    \x1b[?2004l\x1b[?1004l\x0f\x1b(B";
 
 /// A line sent to tmux: how many replies it gets, and what it was.
 struct Sent {
@@ -1936,7 +1935,7 @@ mod tests {
             (0, false, Reset::Modes)
         );
         let (out, _, _) = render(&snapshot(false), again);
-        assert!(out.starts_with(b"\x18\x1b[?2026h\x1b[0m\x0f\x1b(B\x1b[?1049l"));
+        assert!(out.starts_with(b"\x18\x1b[?2026h\x1b[0m\x1b[?1049l"));
         // Each row from the start of a cleared line, wherever the cursor was.
         let out = String::from_utf8(out).unwrap();
         assert!(

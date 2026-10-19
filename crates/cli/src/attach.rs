@@ -79,10 +79,15 @@ fn detach_key_at(keys: &[u8]) -> Option<usize> {
         at += 1;
         digits(&mut at);
     }
-    if !keys[at..].starts_with(b";5") {
-        return None;
-    }
-    at += 2;
+    // Ctrl, also with Caps Lock or Num Lock on (kitty reports them, 64 and
+    // 128, when asked for all keys).
+    at = ["5", "69", "133", "197"].iter().find_map(|m| {
+        let field = format!(";{m}");
+        let rest = &keys[at..];
+        (rest.starts_with(field.as_bytes())
+            && matches!(rest.get(field.len()), Some(b':' | b';' | b'u')))
+        .then_some(at + field.len())
+    })?;
     if keys.get(at) == Some(&b':') {
         if !matches!(keys.get(at + 1), Some(b'1' | b'2')) {
             return None;
@@ -317,6 +322,17 @@ mod tests {
         assert_eq!(detach_key(b"\x1b[93;5:3u"), None, "a release");
         assert_eq!(detach_key(b"\x1b[93u"), None, "] alone");
         assert_eq!(detach_key(b"\x1b[93;6u"), None, "with Shift too");
+        assert_eq!(
+            detach_key(b"\x1b[93;69u"),
+            Some((0, 8)),
+            "with Caps Lock on"
+        );
+        assert_eq!(
+            detach_key(b"\x1b[93;133:1u"),
+            Some((0, 11)),
+            "with Num Lock on"
+        );
+        assert_eq!(detach_key(b"\x1b[93;55u"), None);
         assert_eq!(detach_key(b"plain"), None);
     }
 }
