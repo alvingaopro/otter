@@ -497,6 +497,22 @@ impl Connection {
         self.call(Request::RuntimeCapabilities).await
     }
 
+    /// Start the coding agent for one short reply (D-124): `backend` and
+    /// `model` as given, else the host's settings.
+    pub async fn runtime_test(
+        &mut self,
+        backend: Option<&str>,
+        model: Option<&str>,
+    ) -> Result<otter_protocol::conversation::RuntimeTest> {
+        self.call(Request::RuntimeTest(
+            otter_protocol::conversation::RuntimeTestRequest {
+                backend: backend.map(str::to_owned),
+                model: model.map(str::to_owned),
+            },
+        ))
+        .await
+    }
+
     /// Runtime conversations, newest first (a task's, if given).
     pub async fn conversation_list(
         &mut self,

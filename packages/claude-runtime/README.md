@@ -91,9 +91,11 @@ npm run build     # dist/main.js
 node probes/live.mjs [model]   # live check against real Claude; uses this host's sign-in
 ```
 
-To have otterd use a development build: `OTTER_CODING_BACKEND=sdk` (or
-Settings → coding backend `sdk`) and `OTTER_CLAUDE_WORKER=$PWD` in otterd's
-environment.
+otterd runs the coding agent through this worker unless a host picks the
+Claude Code CLI (D-124). To have otterd use a development build:
+`OTTER_CLAUDE_WORKER=$PWD` in otterd's environment. `otter runtime test`
+(Settings › Coding agent › *Run a test* in the app) starts it for one short
+reply.
 
 Released hosts get it from `otter host install` (D-060): a per-platform
 `otter-claude-runtime-<version>-<platform>.tar.gz`, checked against its

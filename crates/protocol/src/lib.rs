@@ -273,6 +273,11 @@ pub enum Request {
     /// Result: [`conversation::RuntimeCapabilities`].
     #[serde(rename = "runtime.capabilities")]
     RuntimeCapabilities,
+    /// Start the coding agent for one short reply, in a scratch directory
+    /// with every tool refused (D-124); up to two minutes. Result:
+    /// [`conversation::RuntimeTest`].
+    #[serde(rename = "runtime.test")]
+    RuntimeTest(conversation::RuntimeTestRequest),
     /// Runtime conversations, newest first. Result:
     /// `Vec<`[`conversation::ConversationView`]`>`.
     #[serde(rename = "conversation.list")]
@@ -350,6 +355,7 @@ impl Request {
             Request::TriggerDelete(_) => "trigger.delete",
             Request::TriggerRun(_) => "trigger.run",
             Request::RuntimeCapabilities => "runtime.capabilities",
+            Request::RuntimeTest(_) => "runtime.test",
             Request::ConversationList(_) => "conversation.list",
             Request::ConversationGet(_) => "conversation.get",
             Request::ConversationHistory(_) => "conversation.history",

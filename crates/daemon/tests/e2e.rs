@@ -2272,6 +2272,9 @@ async fn fake_agent_host_with(
     let log = scratch.path().join("codex-args.log");
     let p = |x: &Path| x.to_string_lossy().into_owned();
     let vars = vec![
+        // The fake `claude -p` (fake_claude_stream.sh), unless a test picks
+        // the SDK worker (`fake_sdk_host`).
+        ("OTTER_CODING_BACKEND", "legacy_cli".into()),
         // An isolated user: no dotfiles that could put the real codex first.
         ("HOME", p(&home)),
         ("SHELL", isolated_shell(scratch.path())),
@@ -6953,6 +6956,88 @@ async fn fake_sdk_host() -> (FakeCodex, std::path::PathBuf) {
 }
 
 #[tokio::test]
+async fn the_coding_agent_is_tested_with_one_short_reply() {
+    use otter_protocol::conversation::StepState;
+    let (fake, worker_log) = fake_sdk_host().await;
+    let mut conn = fake.host.conn().await;
+    // The host's backend, with a small model: the tool it tries is refused,
+    // and it answers.
+    let t = conn.runtime_test(None, None).await.unwrap();
+    assert!(t.ready, "{t:?}");
+    assert_eq!(t.backend, "sdk");
+    let states: Vec<StepState> = t.steps.iter().map(|s| s.state).collect();
+    assert_eq!(states, [StepState::Passed, StepState::Passed], "{t:?}");
+    assert_eq!(
+        t.steps[0].detail,
+        "worker 0.1.0 · claude-agent-sdk fake · node 0"
+    );
+    assert!(t.steps[1].detail.contains("with haiku"), "{t:?}");
+    let log = std::fs::read_to_string(&worker_log).unwrap();
+    assert!(log.contains(r#""model":"haiku""#), "{log}");
+    assert!(
+        log.contains("runtime-test"),
+        "in a scratch directory: {log}"
+    );
+    assert!(log.contains(r#""decision":"deny""#), "{log}");
+    // Nothing is left behind: no directory, no conversation.
+    assert!(!fake.host.home().join("state/runtime-test").exists());
+    assert!(conn.conversation_list(None).await.unwrap().is_empty());
+
+    // Another backend and model than the saved ones (not saved by testing).
+    let t = conn
+        .runtime_test(Some("legacy_cli"), Some("sonnet"))
+        .await
+        .unwrap();
+    assert!(t.ready && t.backend == "legacy_cli", "{t:?}");
+    assert!(t.steps[1].detail.contains("with sonnet"), "{t:?}");
+    let args = std::fs::read_to_string(&fake.log).unwrap();
+    assert!(args.contains("--model sonnet"), "{args}");
+    let s = conn.settings_get().await.unwrap();
+    assert_eq!(s.coding.backend.as_deref(), Some("sdk"));
+    assert!(conn.runtime_test(Some("nope"), None).await.is_err());
+
+    // A worker that can't sign in says so, without its secrets.
+    let failing = fake_agent_host_with("ok", "rules", |scratch| {
+        let worker = scratch.join("worker.sh");
+        std::fs::write(&worker, include_str!("fake_claude_worker.sh")).unwrap();
+        vec![
+            ("OTTER_CODING_BACKEND", "sdk".into()),
+            ("OTTER_NODE", "/bin/sh".into()),
+            ("OTTER_CLAUDE_WORKER", worker.to_string_lossy().into_owned()),
+            ("FAKE_WORKER_MODE", "fatal".into()),
+        ]
+    })
+    .await;
+    let t = failing
+        .host
+        .conn()
+        .await
+        .runtime_test(None, None)
+        .await
+        .unwrap();
+    assert!(!t.ready);
+    assert_eq!(t.steps[1].state, StepState::Failed);
+    assert!(
+        t.steps[1].detail.starts_with("It didn't start:")
+            && t.steps[1].detail.contains("no credentials"),
+        "{t:?}"
+    );
+    assert!(!format!("{t:?}").contains("WORKERLEAK"));
+
+    // Not installed: the run isn't tried.
+    let missing = TestHost::with_env(&[
+        ("OTTER_CONTROLLER", "off".into()),
+        ("OTTER_NODE", "/bin/sh".into()),
+        ("OTTER_CLAUDE_WORKER", "/nonexistent/claude-runtime".into()),
+    ])
+    .await;
+    let t = missing.conn().await.runtime_test(None, None).await.unwrap();
+    let states: Vec<StepState> = t.steps.iter().map(|s| s.state).collect();
+    assert_eq!(states, [StepState::Failed, StepState::Skipped], "{t:?}");
+    assert!(t.steps[0].detail.contains("isn't installed"), "{t:?}");
+}
+
+#[tokio::test]
 async fn a_task_runs_through_the_sdk_worker_with_policy_checks_and_a_form() {
     use otter_core::conversation::{InteractionKind, InteractionResponse, ToolStatus, TurnOutcome};
     use otter_core::task::{DecisionStatus, TaskAction, TaskStatus};
@@ -7042,7 +7127,8 @@ async fn the_coding_backend_and_model_are_settings_of_their_own() {
     let host = TestHost::with_env(&[("OTTER_CONTROLLER", "off".into())]).await;
     let mut conn = host.conn().await;
     let s = conn.settings_get().await.unwrap();
-    assert_eq!(s.coding.backend.as_deref(), Some("legacy_cli"));
+    // The SDK worker by default (D-124).
+    assert_eq!(s.coding.backend.as_deref(), Some("sdk"));
     let s = conn
         .settings_set(SettingsUpdate {
             coding: Some(CodingSettings {

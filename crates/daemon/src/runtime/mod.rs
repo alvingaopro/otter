@@ -21,6 +21,7 @@
 pub mod actor;
 pub mod conversations;
 pub mod policy;
+pub mod test_run;
 
 use std::path::PathBuf;
 

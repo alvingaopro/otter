@@ -245,9 +245,9 @@ The Control Agent's model and API keys on this host (D-048).
   key), `claude`, `rules` and `off` — and `active`, the controller in use
   now (what automatic chose). Both are absent from daemons before D-052.
 - The view also has `coding: {backend, model?}` — how the coding agent runs
-  (`legacy_cli` or `sdk`, D-057) and its Claude model, apart from Otter's
-  own; `settings.set {coding: {backend?, model?}}` changes them (`""`
-  resets). Absent from older daemons.
+  (`legacy_cli` or `sdk`, D-057; `sdk` unless set, D-124) and its Claude
+  model, apart from Otter's own; `settings.set {coding: {backend?, model?}}`
+  changes them (`""` resets). Absent from older daemons.
 - The view also has `otter_tools` (Otter answers with its tools, D-089/D-090),
   `otter_tools_from_env` (`OTTER_BRAIN_V2`, which overrides it) and
   `otter_answers` ("with tools (claude)", or "without tools…" and why);
@@ -274,6 +274,13 @@ turns, messages, tool calls and interactions. See
   can do. Missing tasks are reported, never simulated. For `sdk`,
   `available` needs Node, the installed worker and its `--check` (D-060);
   `notes` say which is missing.
+- `runtime.test {backend?, model?}` → `{backend, ready, steps: [{name,
+  state: passed|failed|skipped, detail}]}` (D-124): the coding agent
+  started for one short reply, in a scratch directory under the host's
+  state, every tool call refused, up to two minutes. Absent fields: the
+  host's settings; no model set: a small one (`haiku`). Nothing is saved
+  and no conversation is recorded. One at a time (`conflict` otherwise);
+  an older daemon answers `invalid_request`.
 - `conversation.list {task?}` → conversations, newest first;
   `conversation.get {conversation}` → one. Each is the conversation with
   `resumable` in place of the provider's own session id, which stays on
