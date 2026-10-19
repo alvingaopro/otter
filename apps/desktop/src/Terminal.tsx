@@ -76,8 +76,17 @@ const LIGHT = {
   brightWhite: "#2E3036",
 };
 
-/** Lines of history asked for on attach; the host may send fewer (D-118). */
-const HISTORY = 2000;
+/** Lines of history asked for on attach (the terminal's scrollback); the host
+ * may send fewer (D-118). */
+const HISTORY = 5000;
+/** Lines of history to keep once earlier ones are asked for (D-119). */
+const MORE_HISTORY = 20000;
+
+/** What the host says besides output (D-119). */
+type Control =
+  | { type: "window"; size: [number, number] | null }
+  | { type: "snapshot"; lines: number; more: boolean }
+  | { type: string };
 
 export type Ending =
   | { kind: "exited"; exitCode?: number }
@@ -155,6 +164,13 @@ export function Terminal({ host, workspace, session, onEnd, generation, label, w
   const onEndRef = useRef(onEnd);
   onEndRef.current = onEnd;
   const [size, setSize] = useState<string>("");
+  // Bumped to attach again: a new attach takes the window back (D-119).
+  const [epoch, setEpoch] = useState(0);
+  /** Another client sizes the window: this terminal shows it at that size. */
+  const [following, setFollowing] = useState(false);
+  /** Earlier history on the host: offered at the top of what's here. */
+  const [earlier, setEarlier] = useState<"none" | "offer" | "loading">("none");
+  const loadEarlier = useRef<() => void>(() => {});
   const termRef = useRef<XTerm | null>(null);
   const themeRef = useRef(theme);
   themeRef.current = theme;
@@ -222,14 +238,82 @@ export function Terminal({ host, workspace, session, onEnd, generation, label, w
     let id: number | null = null;
     let disposed = false;
 
+    let controls = false;
+    /** Another client's size for the window, while it sizes it. */
+    let follow: [number, number] | null = null;
+    /** On screen, as the host was last told (it assumes so). */
+    let visible = true;
+    /** Earlier history is on the host. */
+    let more = false;
+    /** Earlier history asked for: how far from the end the reader was. */
+    let fromBottom: number | null = null;
+
+    const onScreen = () => !!el.current && el.current.offsetWidth > 0 && el.current.offsetHeight > 0;
+    // Fit to the element; while another client sizes the window, stay at its
+    // size, and tell the host what this one would be.
+    const fitNow = () => {
+      if (!onScreen()) return;
+      if (!follow) {
+        fit.fit();
+        return;
+      }
+      const want = fit.proposeDimensions();
+      if (want && id !== null) void invoke("attach_resize", { id, cols: want.cols, rows: want.rows });
+    };
+    // Off screen, the host sends nothing; back, it catches up (D-119).
+    const tellView = () => {
+      if (id === null || !controls) return;
+      const now = onScreen() && document.visibilityState !== "hidden";
+      if (now === visible) return;
+      visible = now;
+      const want = now ? fit.proposeDimensions() : undefined;
+      void invoke("attach_view", { id, visible: now, cols: want?.cols ?? term.cols, rows: want?.rows ?? term.rows });
+    };
+    const offerEarlier = () => {
+      const buf = term.buffer.active;
+      const atTop = buf.type === "normal" && buf.viewportY === 0 && buf.length > term.rows;
+      setEarlier(fromBottom !== null ? "loading" : controls && more && atTop ? "offer" : "none");
+    };
+    loadEarlier.current = () => {
+      if (id === null || fromBottom !== null) return;
+      const buf = term.buffer.normal;
+      fromBottom = buf.length - buf.viewportY;
+      term.options.scrollback = MORE_HISTORY;
+      offerEarlier();
+      void invoke("attach_history", { id, lines: MORE_HISTORY });
+    };
+    const apply = (c: Control) => {
+      if (c.type === "window" && "size" in c) {
+        follow = c.size;
+        setFollowing(c.size !== null);
+        if (c.size) term.resize(c.size[0], c.size[1]);
+        else fitNow();
+      } else if (c.type === "snapshot" && "more" in c) {
+        more = c.more;
+        if (fromBottom !== null) {
+          // Rebuilt with earlier history: back where the reader was.
+          term.scrollToLine(Math.max(0, term.buffer.normal.length - fromBottom));
+          fromBottom = null;
+        }
+        offerEarlier();
+      }
+    };
+    // In order with the output around it: a size takes effect before what's
+    // laid out at it.
+    const deliver = (item: Uint8Array | Control) => {
+      if (item instanceof Uint8Array) term.write(item);
+      else term.write("", () => !disposed && apply(item));
+    };
+
     // Held until the attach says what it is: in a stream, the session's
     // terminal answers the program's queries, from the first byte.
-    let held: Uint8Array[] | null = [];
-    const output = new Channel<ArrayBuffer | number[]>();
+    let held: (Uint8Array | Control)[] | null = [];
+    const output = new Channel<ArrayBuffer | number[] | Control>();
     output.onmessage = (data) => {
-      const bytes = data instanceof ArrayBuffer ? new Uint8Array(data) : Uint8Array.from(data);
-      if (held) held.push(bytes);
-      else term.write(bytes);
+      const item =
+        data instanceof ArrayBuffer ? new Uint8Array(data) : Array.isArray(data) ? Uint8Array.from(data) : data;
+      if (held) held.push(item);
+      else deliver(item);
     };
     const events = new Channel<AttachEvent>();
     events.onmessage = (e) => {
@@ -240,7 +324,7 @@ export function Terminal({ host, workspace, session, onEnd, generation, label, w
       else if (e.reason === "error") onEndRef.current({ kind: "error", message: e.message ?? "attach failed" });
     };
 
-    invoke<{ id: number; history: boolean }>("attach_open", {
+    invoke<{ id: number; history: boolean; controls?: boolean }>("attach_open", {
       host,
       workspace,
       session,
@@ -256,9 +340,11 @@ export function Terminal({ host, workspace, session, onEnd, generation, label, w
           return;
         }
         id = opened.id;
+        controls = opened.controls === true;
         if (opened.history) leaveAnswersToTheSession(term);
-        for (const bytes of held ?? []) term.write(bytes);
+        for (const item of held ?? []) deliver(item);
         held = null;
+        tellView();
       })
       .catch((err) => {
         if (!disposed) onEndRef.current({ kind: "error", message: String(err) });
@@ -269,18 +355,22 @@ export function Terminal({ host, workspace, session, onEnd, generation, label, w
     });
     const resized = term.onResize(({ cols, rows }) => {
       setSize(`${cols}×${rows}`);
-      if (id !== null) void invoke("attach_resize", { id, cols, rows });
+      // Following another client's size isn't this terminal's own.
+      if (id !== null && !follow) void invoke("attach_resize", { id, cols, rows });
     });
+    const scrolled = term.onScroll(offerEarlier);
     // A hidden terminal (another view in front, D-041) has no size: fitting
     // it then would shrink the session for everyone attached.
     const observer = new ResizeObserver(() => {
-      if (el.current && el.current.offsetWidth > 0 && el.current.offsetHeight > 0) fit.fit();
+      fitNow();
+      tellView();
     });
     observer.observe(el.current!);
+    document.addEventListener("visibilitychange", tellView);
     // ⌘= / ⌘- anywhere (D-106); a hidden terminal fits when it's shown.
     const unfont = onFontSize((n) => {
       term.options.fontSize = n;
-      if (el.current && el.current.offsetWidth > 0 && el.current.offsetHeight > 0) fit.fit();
+      fitNow();
     });
     // The font chosen in Settings (D-116). The terminal measures its cells
     // and draws its glyphs once, with whatever font is loaded then; the
@@ -294,7 +384,7 @@ export function Terminal({ host, workspace, session, onEnd, generation, label, w
     // wrong ones until its cells changed.
     const refont = (family: string) => {
       term.options.fontFamily = term.options.fontFamily === family ? `${family} ` : family;
-      if (el.current && el.current.offsetWidth > 0 && el.current.offsetHeight > 0) fit.fit();
+      fitNow();
     };
     const unfamily = onFontFamily((family) => {
       refont(family);
@@ -319,9 +409,15 @@ export function Terminal({ host, workspace, session, onEnd, generation, label, w
       e.preventDefault();
       e.stopPropagation();
     };
+    // Clicked while another client sizes the window: attach again, which
+    // takes the window back.
+    const reclaim = () => {
+      if (follow) setEpoch((n) => n + 1);
+    };
     const box = el.current!;
     box.addEventListener("mousedown", linkDown, true);
     box.addEventListener("mouseup", linkUp, true);
+    box.addEventListener("mousedown", reclaim);
 
     return () => {
       disposed = true;
@@ -330,26 +426,41 @@ export function Terminal({ host, workspace, session, onEnd, generation, label, w
       unfamily();
       box.removeEventListener("mousedown", linkDown, true);
       box.removeEventListener("mouseup", linkUp, true);
+      box.removeEventListener("mousedown", reclaim);
+      document.removeEventListener("visibilitychange", tellView);
       input.dispose();
       resized.dispose();
+      scrolled.dispose();
+      setFollowing(false);
+      setEarlier("none");
       if (id !== null) void invoke("attach_close", { id });
       termRef.current = null;
       term.dispose();
     };
-  }, [host, workspace, session, generation]);
+  }, [host, workspace, session, generation, epoch]);
 
   return (
     <>
       <section className={dimmed ? "terminal-frame dimmed" : "terminal-frame"} aria-label="Terminal">
         <div className="terminal" ref={el} />
+        {earlier !== "none" && (
+          <button
+            className="terminal-earlier"
+            disabled={earlier === "loading"}
+            onClick={() => loadEarlier.current()}
+          >
+            {earlier === "loading" ? "Loading earlier lines…" : "Load earlier lines"}
+          </button>
+        )}
       </section>
       <div className="statusbar">
         <span className="statusbar-left" title="⌘-click a link to open it · ⌘F finds in its history · ⌘= ⌘- text size">
           <span className={dimmed ? "dot off" : "dot"} />
           {dimmed ? "not attached" : "attached"} · {label}
         </span>
-        <span>
+        <span title={following ? "Another window sized this session. Click the terminal to fit it here." : undefined}>
           {where} · {size}
+          {following && " · sized by another window"}
         </span>
       </div>
     </>

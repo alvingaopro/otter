@@ -132,6 +132,8 @@ pub fn run() {
             attach::attach_open,
             attach::attach_input,
             attach::attach_resize,
+            attach::attach_view,
+            attach::attach_history,
             attach::attach_close,
             files::fs_list,
             files::fs_remove,
