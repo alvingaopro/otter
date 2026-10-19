@@ -48,12 +48,41 @@ pub struct AttachCommand {
 /// the process's own output, so the client keeps the history itself.
 pub struct Stream {
     flow: Arc<Flow>,
-    input: Option<mpsc::UnboundedSender<StreamInput>>,
+    /// Typing, to the backend's writer; dropping it detaches.
+    input: Option<mpsc::UnboundedSender<Vec<u8>>>,
+    /// Size, view and history, to the backend's reader.
+    controls: mpsc::UnboundedSender<StreamInput>,
 }
 
 pub enum StreamInput {
     Data(Vec<u8>),
-    Resize { cols: u16, rows: u16 },
+    Resize {
+        cols: u16,
+        rows: u16,
+    },
+    /// The client's terminal is on screen or not (D-119), at this size.
+    View {
+        visible: bool,
+        cols: u16,
+        rows: u16,
+    },
+    /// Rebuild the client's terminal with up to this many lines of history.
+    History(u32),
+}
+
+/// What a stream gives the client.
+#[derive(Debug, PartialEq)]
+pub enum StreamOutput {
+    Data(Vec<u8>),
+    /// Another client sizes the window, and output is laid out for that size;
+    /// `None` once it's the client's own again.
+    Window(Option<(u16, u16)>),
+    /// A snapshot ended, with this many lines of history; `more`: the
+    /// session holds earlier ones.
+    Snapshot {
+        lines: u32,
+        more: bool,
+    },
 }
 
 /// Output waiting for the client, between a stream's two ends. The backend
@@ -70,7 +99,8 @@ pub struct Flow {
 
 #[derive(Default)]
 struct Queue {
-    chunks: VecDeque<Vec<u8>>,
+    /// Each with the bytes it counts as output waiting (snapshots don't).
+    chunks: VecDeque<(StreamOutput, usize)>,
     bytes: usize,
     /// The client found nothing queued and waits.
     waiting: bool,
@@ -85,20 +115,31 @@ impl Flow {
         self.queue.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    /// Queue output for the client; `false` once it has left.
-    pub fn push(&self, data: Vec<u8>) -> bool {
+    /// Queue the program's output for the client; `false` once it has left.
+    pub fn push_output(&self, data: Vec<u8>) -> bool {
+        let n = data.len();
+        self.push_counted(StreamOutput::Data(data), n)
+    }
+
+    /// Queue something that isn't the program's output (a snapshot, a
+    /// notice): it doesn't count towards falling behind.
+    pub fn push(&self, out: StreamOutput) -> bool {
+        self.push_counted(out, 0)
+    }
+
+    fn push_counted(&self, out: StreamOutput, counted: usize) -> bool {
         let mut q = self.queue();
         if q.left {
             return false;
         }
-        q.bytes += data.len();
-        q.chunks.push_back(data);
+        q.bytes += counted;
+        q.chunks.push_back((out, counted));
         drop(q);
         self.queued.notify_waiters();
         true
     }
 
-    /// Bytes queued and not yet taken.
+    /// Bytes of the program's output queued and not yet taken.
     pub fn bytes(&self) -> usize {
         self.queue().bytes
     }
@@ -140,25 +181,30 @@ impl Flow {
 }
 
 impl Stream {
-    pub fn new(flow: Arc<Flow>, input: mpsc::UnboundedSender<StreamInput>) -> Self {
+    pub fn new(
+        flow: Arc<Flow>,
+        input: mpsc::UnboundedSender<Vec<u8>>,
+        controls: mpsc::UnboundedSender<StreamInput>,
+    ) -> Self {
         Stream {
             flow,
             input: Some(input),
+            controls,
         }
     }
 
-    /// What to show next; `None` once the attach is over.
-    pub async fn recv(&mut self) -> Option<Vec<u8>> {
+    /// What to give the client next; `None` once the attach is over.
+    pub async fn recv(&mut self) -> Option<StreamOutput> {
         loop {
             let queued = self.flow.queued.notified();
             tokio::pin!(queued);
             queued.as_mut().enable();
             {
                 let mut q = self.flow.queue();
-                if let Some(data) = q.chunks.pop_front() {
-                    q.bytes -= data.len();
+                if let Some((out, counted)) = q.chunks.pop_front() {
+                    q.bytes -= counted;
                     q.waiting = false;
-                    return Some(data);
+                    return Some(out);
                 }
                 if q.done {
                     return None;
@@ -174,8 +220,15 @@ impl Stream {
     }
 
     pub fn send(&self, input: StreamInput) {
-        if let Some(tx) = &self.input {
-            let _ = tx.send(input);
+        match input {
+            StreamInput::Data(data) => {
+                if let Some(tx) = &self.input {
+                    let _ = tx.send(data);
+                }
+            }
+            other => {
+                let _ = self.controls.send(other);
+            }
         }
     }
 

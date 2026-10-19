@@ -209,6 +209,7 @@ impl Daemon {
                 session_id: session.id.clone(),
                 execution_id: exec.id.clone(),
                 history: false,
+                controls: false,
             },
             workspace_id: ws_id,
             backend_ref: exec.backend_ref.clone(),
