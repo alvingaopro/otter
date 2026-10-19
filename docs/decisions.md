@@ -3707,21 +3707,28 @@ the default, because:
   `own_terminal` streams the daemon drops queries from the output
   (`backend/queries.rs`): device attributes, cursor and status reports, mode
   and setting requests, the version and keyboard protocol, window reports,
-  colour and clipboard reads, iTerm2's reports, kitty's picture query, ENQ
-  and DECID. Everything else passes as it is, also when a sequence is split
+  colour and clipboard reads, iTerm2's reports, kitty's picture query (told
+  by its control data, up to its first `;`), sixel graphics attributes,
+  modifier-key reports, area checksums and the presentation state, ENQ and
+  DECID. Everything else passes as it is, also when a sequence is split
   across chunks. Long strings (pictures, clipboard writes) stream through
   rather than being held.
 - **Nothing in it may be wiped.** There's no RIS and no screen drawn ahead
-  of the history, since that would land in the scrollback too. Catching up
+  of the history, since that would land in the scrollback too. Each row is
+  written from the start of its line, cleared first: the cursor and the
+  lines may hold anything. Clearing after a full row would take its last
+  cell on many terminals. Catching up
   after falling behind undoes the program's modes and sends only the screen:
   the history is already there, and sent again it would show twice. What
   was dropped stays missing.
 - **The program sets the terminal's modes directly**, as over plain SSH. On
-  the way out the CLI undoes them: the alternate screen, the mouse, keys,
-  the scroll region, synchronized output, the keyboard protocols, and the
-  cursor's shape and colour. It then moves below the screen. Ctrl-] also
-  detaches when a program has turned on the kitty keyboard protocol or
-  modifyOtherKeys, which encode it differently.
+  the way out the CLI undoes them: the alternate screen, the charsets, the
+  mouse and its encodings, keys, the scroll region, synchronized output,
+  the keyboard protocols (kitty's flags, however many were pushed), and the
+  cursor's shape and colour. The window's title, pushed at the start, is
+  given back. It then moves below the screen. Ctrl-] also detaches when a
+  program has turned on the kitty keyboard protocol (in any of its forms:
+  press or repeat, never release) or modifyOtherKeys.
 - **Verified:**
   - Unit tests for the query filter, including sequences split across
     chunks.

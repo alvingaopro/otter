@@ -6,6 +6,9 @@
 //! the user's terminal would answer again, and its answers would arrive in
 //! the session as typing. So queries are dropped on the way, and everything
 //! else passes as it is, also when a sequence is split across chunks.
+//!
+//! Only 7-bit sequences (`ESC [` and so on) are read: no program writes the
+//! 8-bit C1 forms, and UTF-8 text is never mistaken for them.
 
 const ESC: u8 = 0x1b;
 const BEL: u8 = 0x07;
@@ -15,9 +18,12 @@ const CAN: u8 = 0x18;
 const SUB: u8 = 0x1a;
 /// A CSI longer than this isn't a query; it passes.
 const MAX_CSI: usize = 64;
-/// A string sequence (OSC, DCS, APC) is a query or not by its start; this
-/// much is enough to tell.
+/// A string sequence (OSC, DCS) is a query or not by its start; this much
+/// is enough to tell.
 const STRING_HEAD: usize = 32;
+/// A kitty picture's control data ends at its first `;`, and asks (`a=q`)
+/// anywhere in it: up to this much is held to tell.
+const APC_HEAD: usize = 256;
 
 #[derive(Default)]
 pub struct Queries {
@@ -119,7 +125,7 @@ impl Queries {
                 self.state = if b == ESC { StringEsc } else { String };
                 // Long enough to tell: a query is dropped to its end, and
                 // anything else (a picture, a clipboard write) streams on.
-                if self.held.len() >= STRING_HEAD {
+                if telling(&self.held) {
                     if string_query(&self.held, false) {
                         self.held.clear();
                         self.state = if b == ESC { DropEsc } else { Drop };
@@ -152,6 +158,15 @@ impl Queries {
     fn pass_held(&mut self, out: &mut Vec<u8>) {
         out.append(&mut self.held);
         self.state = State::Ground;
+    }
+}
+
+/// Whether enough of a string sequence is held to tell if it's a query.
+fn telling(seq: &[u8]) -> bool {
+    if seq[1] == b'_' {
+        seq.len() >= APC_HEAD || seq[2..].contains(&b';')
+    } else {
+        seq.len() >= STRING_HEAD
     }
 }
 
@@ -198,6 +213,12 @@ fn csi_query(body: &[u8]) -> bool {
         (Some(b'?'), [], b'u') => true,
         // Terminal parameters.
         (None, [], b'x') => true,
+        // Sixel and ReGIS graphics attributes (every form is answered).
+        (Some(b'?'), [], b'S') => params.contains(&b';'),
+        // Which key modifiers are reported how.
+        (Some(b'?'), [], b'm') => true,
+        // A checksum of an area, the presentation state.
+        (None, [b'*'], b'y') | (None, [b'$'], b'w') => true,
         // Window reports; other window operations act.
         (None, [], b't') => matches!(first, Some(11 | 13..=16 | 18..=21)),
         _ => false,
@@ -227,8 +248,14 @@ fn string_query(seq: &[u8], whole: bool) -> bool {
         }
         // Settings and capabilities (DECRQSS, XTGETTCAP).
         b'P' => body.starts_with(b"$q") || body.starts_with(b"+q"),
-        // Whether pictures work (kitty).
-        b'_' => body.starts_with(b"G") && (whole || body.len() >= 8) && find(body, b"a=q"),
+        // Whether pictures work (kitty): `a=q` in the control data, which
+        // ends at the first `;`.
+        b'_' => {
+            let control = body.split(|&b| b == b';').next().unwrap_or_default();
+            body.starts_with(b"G")
+                && (whole || body.contains(&b';') || seq.len() >= APC_HEAD)
+                && find(control, b"a=q")
+        }
         _ => false,
     }
 }
@@ -255,6 +282,15 @@ mod tests {
         let kept: &[u8] = b"\x1b[31mred\x1b[0m\x1b[2J\x1b[?1049h\x1b[>4;1m\x1b[>4n\x1b[8;24;80t\
             \x1b[22;0t\x1b[2 q\x1b]0;title\x07\x1b]11;#000000\x07\x1b]52;c;aGk=\x07\
             \x1b]8;;https://x\x1b\\link\x1b]8;;\x1b\\\x1b[>1u\x1b[<u\x1bPq#0;2;0;0;0\x1b\\";
+        assert_eq!(filtered(&[kept]), kept);
+    }
+
+    #[test]
+    fn graphics_and_key_queries_go_too() {
+        let input: &[u8] = b"a\x1b[?1;1;0Sb\x1b[?4mc\x1b[1;1;1;1;1;1*yd\x1b[1$we\x1b_Gi=31,s=100,v=100,t=d,f=24,m=0,a=q;AAAA\x1b\\f";
+        assert_eq!(filtered(&[input]), b"abcdef");
+        // Not queries: a sixel colour, a picture sent, scrolling up.
+        let kept: &[u8] = b"\x1b[?1S\x1b[2S\x1b_Ga=T,f=100;iVBORw0KGgo=\x1b\\";
         assert_eq!(filtered(&[kept]), kept);
     }
 

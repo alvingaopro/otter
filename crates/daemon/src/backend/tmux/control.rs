@@ -129,11 +129,14 @@ enum Reset {
     Nothing,
 }
 
-/// What [`Reset::Modes`] undoes: the alternate screen, the style, insert and
-/// origin modes, wrap and the cursor, the scroll region (the cursor kept),
-/// cursor and keypad keys, the mouse, bracketed paste and focus reports.
-const MODES_OFF: &[u8] = b"\x1b[0m\x1b[?1049l\x1b[4l\x1b[?6l\x1b[?7h\x1b[?25h\x1b7\x1b[r\x1b8\
-    \x1b[?1l\x1b>\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1005l\x1b[?1006l\x1b[?2004l\x1b[?1004l";
+/// What [`Reset::Modes`] undoes: the style and the charsets, the alternate
+/// screen, insert and origin modes, wrap and the cursor, the scroll region
+/// (the cursor kept), cursor and keypad keys, the mouse, bracketed paste and
+/// focus reports.
+const MODES_OFF: &[u8] =
+    b"\x1b[0m\x0f\x1b(B\x1b[?1049l\x1b[4l\x1b[?6l\x1b[?7h\x1b[?25h\x1b7\x1b[r\x1b8\
+    \x1b[?1l\x1b>\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1005l\x1b[?1006l\x1b[?1015l\x1b[?1016l\
+    \x1b[?2004l\x1b[?1004l";
 
 /// A line sent to tmux: how many replies it gets, and what it was.
 struct Sent {
@@ -858,12 +861,14 @@ fn render(snap: &Snapshot, take: Take) -> (Vec<u8>, u32, bool) {
     if take.screen_first {
         out.extend_from_slice(b"\x1b[H\x1b[2J");
         out.extend_from_slice(LINE_DRAWING);
-        draw(&mut out, &shown);
+        draw(&mut out, &shown, false);
         cup(&mut out, s.cursor_y, s.cursor_x);
     }
     // CAN ends whatever sequence was cut off, the reset starts over, and
     // what follows shows only once it's all there.
     out.push(0x18);
+    // Not reset, the user's terminal may hold anything where rows go.
+    let clear = take.reset != Reset::Full;
     match take.reset {
         Reset::Full => out.extend_from_slice(b"\x1bc\x1b[?2026h"),
         Reset::Modes => {
@@ -883,7 +888,7 @@ fn render(snap: &Snapshot, take: Take) -> (Vec<u8>, u32, bool) {
             style.feed(row);
         }
         for row in kept {
-            lines(&mut out, std::slice::from_ref(row), &mut style);
+            lines(&mut out, std::slice::from_ref(row), &mut style, clear);
             out.extend_from_slice(b"\r\n");
         }
         end_link(&mut out, kept);
@@ -893,12 +898,12 @@ fn render(snap: &Snapshot, take: Take) -> (Vec<u8>, u32, bool) {
     } else {
         shown.clone()
     };
-    lines(&mut out, &normal, &mut Style::default());
+    lines(&mut out, &normal, &mut Style::default(), clear);
     end_link(&mut out, &normal);
     if s.alternate {
         cup(&mut out, s.saved_y, s.saved_x);
         out.extend_from_slice(b"\x1b[?1049h");
-        draw(&mut out, &shown);
+        draw(&mut out, &shown, clear);
     }
     let full = s.region_top == 0 && usize::from(s.region_bottom) + 1 >= height;
     if !full && s.region_bottom > s.region_top {
@@ -973,28 +978,34 @@ fn rows(lines: &[Vec<u8>], height: usize) -> Vec<Vec<u8>> {
 }
 
 /// Rows one under the other, each in the style the previous ended in.
-fn lines(out: &mut Vec<u8>, rows: &[Vec<u8>], style: &mut Style) {
+/// `clear`: each row's line is cleared first, from its start (the terminal
+/// wasn't reset, so the cursor and the lines may hold anything).
+fn lines(out: &mut Vec<u8>, rows: &[Vec<u8>], style: &mut Style, clear: bool) {
     for (i, row) in rows.iter().enumerate() {
         if i > 0 {
             out.extend_from_slice(b"\r\n");
         }
-        row_in(out, row, style);
+        row_in(out, row, style, clear);
     }
 }
 
 /// Rows each at its place, so nothing scrolls.
-fn draw(out: &mut Vec<u8>, rows: &[Vec<u8>]) {
+fn draw(out: &mut Vec<u8>, rows: &[Vec<u8>], clear: bool) {
     let mut style = Style::default();
     for (i, row) in rows.iter().enumerate() {
         cup(out, i as u16, 0);
-        row_in(out, row, &mut style);
+        row_in(out, row, &mut style, clear);
     }
     end_link(out, rows);
 }
 
 /// `row` in `style`, which it leaves as it ends; the terminal is left in the
-/// default style.
-fn row_in(out: &mut Vec<u8>, row: &[u8], style: &mut Style) {
+/// default style. The line is cleared before, not after: right after a full
+/// row, erasing would take its last cell on many terminals.
+fn row_in(out: &mut Vec<u8>, row: &[u8], style: &mut Style, clear: bool) {
+    if clear {
+        out.extend_from_slice(b"\r\x1b[2K");
+    }
     out.extend_from_slice(&style.sgr());
     out.extend_from_slice(row);
     out.extend_from_slice(b"\x1b[0m");
@@ -1925,6 +1936,12 @@ mod tests {
             (0, false, Reset::Modes)
         );
         let (out, _, _) = render(&snapshot(false), again);
-        assert!(out.starts_with(b"\x18\x1b[?2026h\x1b[0m\x1b[?1049l"));
+        assert!(out.starts_with(b"\x18\x1b[?2026h\x1b[0m\x0f\x1b(B\x1b[?1049l"));
+        // Each row from the start of a cleared line, wherever the cursor was.
+        let out = String::from_utf8(out).unwrap();
+        assert!(
+            out.contains("\r\x1b[2Kone\x1b[0m\r\n\r\x1b[2Ktwo"),
+            "{out:?}"
+        );
     }
 }

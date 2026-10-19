@@ -1103,12 +1103,17 @@ async fn stream_attach_off_screen_gets_nothing_and_catches_up_on_return() {
         })
     };
 
+    // What's already on its way still comes after going off screen: wait
+    // for the shell to be quiet first (its prompt).
+    quiet_for(&mut reader, Duration::from_millis(300)).await;
+
     // Off screen and back, nothing written meanwhile: no snapshot, just on.
     writer.send(&view(false)).await.unwrap();
     writer.send(&view(true)).await.unwrap();
     send(&mut writer, "echo plain-$((1+1))\r").await;
     let out = read_until(&mut reader, "plain-2").await;
     assert!(!out.contains("\x1bc"), "{out:?}");
+    quiet_for(&mut reader, Duration::from_millis(300)).await;
 
     // Off screen while the program writes: it runs on, the client gets none.
     writer.send(&view(false)).await.unwrap();

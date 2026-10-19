@@ -969,7 +969,7 @@ fn attach_with_scrollback_puts_the_history_in_this_terminal() {
     writer.write_all(&[0x1d]).unwrap();
     let after = wait_for("[detached from");
     assert!(
-        after.contains("\x1b[?1049l") && after.contains("\x1b[<u"),
+        after.contains("\x1b[?1049l") && after.contains("\x1b[<10u"),
         "modes undone"
     );
     let deadline = Instant::now() + Duration::from_secs(10);

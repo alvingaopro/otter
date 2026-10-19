@@ -24,9 +24,6 @@ use tokio::sync::mpsc;
 
 /// Ctrl-]
 pub const DETACH_KEY: u8 = 0x1d;
-/// Ctrl-] as a terminal sends it once a program asked for more of the
-/// keyboard: the kitty protocol, xterm's modifyOtherKeys.
-const DETACH_KEYS: [&[u8]; 3] = [&[DETACH_KEY], b"\x1b[93;5u", b"\x1b[27;5;93~"];
 /// Lines of history put in this terminal's scrollback with `--scrollback`.
 const SCROLLBACK_LINES: u32 = 5000;
 
@@ -39,22 +36,69 @@ const DETACH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 const RESET_TERMINAL: &str =
     "\x1b[?1049l\x1b[?25h\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?2004l\x1b[?1004l\x1b[0m";
 /// What a program may have set in this terminal, directly, with
-/// `--scrollback`, undone: besides the above, synchronized output, mouse
-/// encoding, cursor and keypad keys, the scroll region (cursor kept), insert
-/// and wrap, the keyboard protocols, the cursor's shape and colour.
-const RESET_STREAM: &str = "\x1b[?2026l\x1b[?1005l\x1b[?1l\x1b>\x1b7\x1b[r\x1b8\x1b[4l\x1b[?7h\
-    \x1b[<u\x1b[>4;0m\x1b[0 q\x1b]112\x07";
+/// `--scrollback`, undone: besides the above, synchronized output, the
+/// charsets, other mouse encodings and alternate scrolling, cursor and keypad
+/// keys, the scroll region (cursor kept), insert and wrap, the keyboard
+/// protocols (kitty's flags, however many were pushed), the cursor's shape
+/// and colour, and the window's title (pushed when it started).
+const RESET_STREAM: &str = "\x1b[?2026l\x0f\x1b(B\x1b[?1005l\x1b[?1015l\x1b[?1016l\x1b[?1007l\
+    \x1b[?1l\x1b>\x1b7\x1b[r\x1b8\x1b[4l\x1b[?7h\x1b[=0;1u\x1b[<10u\x1b[>4;0m\x1b[0 q\x1b]112\x07\
+    \x1b[23;0t";
+/// Keep the window's title, for `RESET_STREAM` to give back.
+const PUSH_TITLE: &str = "\x1b[22;0t";
 
 /// Where the first detach key in `keys` is, and how long it is.
 fn detach_key(keys: &[u8]) -> Option<(usize, usize)> {
-    DETACH_KEYS
-        .iter()
-        .filter_map(|key| {
-            keys.windows(key.len())
-                .position(|w| w == *key)
-                .map(|at| (at, key.len()))
-        })
-        .min()
+    (0..keys.len()).find_map(|at| detach_key_at(&keys[at..]).map(|len| (at, len)))
+}
+
+/// How long the detach key that starts `keys` is, if one does: Ctrl-] as
+/// its byte, or as a terminal sends it once a program asked for more of the
+/// keyboard. xterm's modifyOtherKeys: `CSI 27;5;93~`. The kitty protocol:
+/// `CSI 93;5u`, maybe with alternate keys (`93:…`), the event type (press
+/// or repeat; never release, or letting go of a Ctrl-] typed into the
+/// program would detach) and the text (`;…`).
+fn detach_key_at(keys: &[u8]) -> Option<usize> {
+    if keys.first() == Some(&DETACH_KEY) {
+        return Some(1);
+    }
+    const XTERM: &[u8] = b"\x1b[27;5;93~";
+    if keys.starts_with(XTERM) {
+        return Some(XTERM.len());
+    }
+    let mut at = b"\x1b[93".len();
+    if !keys.starts_with(b"\x1b[93") {
+        return None;
+    }
+    let digits = |at: &mut usize| {
+        while keys.get(*at).is_some_and(u8::is_ascii_digit) {
+            *at += 1;
+        }
+    };
+    while keys.get(at) == Some(&b':') {
+        at += 1;
+        digits(&mut at);
+    }
+    if !keys[at..].starts_with(b";5") {
+        return None;
+    }
+    at += 2;
+    if keys.get(at) == Some(&b':') {
+        if !matches!(keys.get(at + 1), Some(b'1' | b'2')) {
+            return None;
+        }
+        at += 2;
+    }
+    if keys.get(at) == Some(&b';') {
+        at += 1;
+        while keys
+            .get(at)
+            .is_some_and(|b| b.is_ascii_digit() || *b == b':')
+        {
+            at += 1;
+        }
+    }
+    (keys.get(at) == Some(&b'u')).then_some(at + 1)
 }
 
 /// The local terminal size, falling back to 80x24 when it is unknown (some
@@ -127,6 +171,9 @@ pub async fn run(
         .await?;
     // An older host gives the screen either way.
     let stream = ready.history;
+    if stream {
+        print!("{PUSH_TITLE}");
+    }
 
     let raw = RawMode::enable()?;
 
@@ -261,7 +308,15 @@ mod tests {
         assert_eq!(detach_key(b"ab\x1dcd"), Some((2, 1)));
         assert_eq!(detach_key(b"x\x1b[93;5u"), Some((1, 7)));
         assert_eq!(detach_key(b"\x1b[27;5;93~"), Some((0, 10)));
+        // The kitty protocol's fuller forms: press, repeat, alternate keys,
+        // the text.
+        assert_eq!(detach_key(b"\x1b[93;5:1u"), Some((0, 9)));
+        assert_eq!(detach_key(b"\x1b[93;5:2u"), Some((0, 9)));
+        assert_eq!(detach_key(b"\x1b[93:125;5u"), Some((0, 11)));
+        assert_eq!(detach_key(b"\x1b[93;5;29u"), Some((0, 10)));
+        assert_eq!(detach_key(b"\x1b[93;5:3u"), None, "a release");
         assert_eq!(detach_key(b"\x1b[93u"), None, "] alone");
+        assert_eq!(detach_key(b"\x1b[93;6u"), None, "with Shift too");
         assert_eq!(detach_key(b"plain"), None);
     }
 }
