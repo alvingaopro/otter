@@ -3692,3 +3692,42 @@ Follows D-118, with what dogfooding it left open.
     missed output; another client sizing the window, then leaving; the
     cursor restored; earlier history brought.
   - The desktop crate passes clippy (built here with nix-provided libraries).
+
+## D-120 — `otter attach --scrollback` (2026-10-19)
+
+The CLI gets what D-118 gave the app, as an option: with `--scrollback`, the
+user's terminal is the session's terminal. It gets up to 5,000 lines of
+history, then the program's own output, and keeps them as its own
+scrollback, so scrolling, selecting and finding are the terminal's. After
+detaching, the session stays in that scrollback. It's an option and not
+the default, because:
+
+- **The user's terminal answers queries.** The app could stop its own
+  answers; a terminal the user picked can't be stopped. So for
+  `own_terminal` streams the daemon drops queries from the output
+  (`backend/queries.rs`): device attributes, cursor and status reports, mode
+  and setting requests, the version and keyboard protocol, window reports,
+  colour and clipboard reads, iTerm2's reports, kitty's picture query, ENQ
+  and DECID. Everything else passes as it is, also when a sequence is split
+  across chunks. Long strings (pictures, clipboard writes) stream through
+  rather than being held.
+- **Nothing in it may be wiped.** There's no RIS and no screen drawn ahead
+  of the history, since that would land in the scrollback too. Catching up
+  after falling behind undoes the program's modes and sends only the screen:
+  the history is already there, and sent again it would show twice. What
+  was dropped stays missing.
+- **The program sets the terminal's modes directly**, as over plain SSH. On
+  the way out the CLI undoes them: the alternate screen, the mouse, keys,
+  the scroll region, synchronized output, the keyboard protocols, and the
+  cursor's shape and colour. It then moves below the screen. Ctrl-] also
+  detaches when a program has turned on the kitty keyboard protocol or
+  modifyOtherKeys, which encode it differently.
+- **Verified:**
+  - Unit tests for the query filter, including sequences split across
+    chunks.
+  - End to end against real tmux: a stream to the user's own terminal gets
+    no queries while an app stream does (the control), and the user's
+    terminal isn't reset.
+  - The `otter` binary in a PTY: the history arrives, typing goes through,
+    and Ctrl-] detaches and undoes the modes while the session goes on.
+

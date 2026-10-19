@@ -514,7 +514,12 @@ After a successful `session.attach` response
   - Every snapshot turns on bracketed paste. The client sends pastes
     bracketed and the daemon delivers them bracketed only if the program asked.
   - Without `"history": true` in the response (an older daemon), it's the
-    screen attach above. The CLI always uses that.
+    screen attach above. The CLI uses that unless `--scrollback`.
+  - With `"own_terminal": true` (D-120), the client's terminal is the user's
+    own (`otter attach --scrollback`). The daemon keeps the program's queries
+    out of the output, never resets that terminal (no RIS), and draws no
+    screen ahead of the history. When it catches the client up, it undoes
+    the program's modes instead and sends no history again.
 - **Control frames** (D-119): a stream client that sends `"controls": true`
   on `session.attach` and gets `"controls": true` back may send and must
   take kind-5 frames. Neither side sends one otherwise. A `type` it doesn't

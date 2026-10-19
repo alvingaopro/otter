@@ -99,6 +99,7 @@ pub async fn attach_open(
             term: Some("xterm-256color".into()),
             history,
             controls: true,
+            own_terminal: false,
         })
         .await
         .map_err(|e| e.to_string())?;

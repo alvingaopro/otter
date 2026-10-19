@@ -34,7 +34,8 @@ use tokio::sync::mpsc;
 use tokio::time::Instant;
 
 use super::{EXIT_MARKER, HISTORY_LIMIT, OLD_EXIT_MARKER};
-use crate::backend::{Flow, Stream, StreamInput, StreamOutput};
+use crate::backend::queries::Queries;
+use crate::backend::{Flow, Stream, StreamInput, StreamOptions, StreamOutput};
 
 /// Starts the reply that carries a snapshot's state.
 const MARKER: &str = "otter-snapshot";
@@ -72,7 +73,7 @@ const PASTE_END: &[u8] = b"\x1b[201~";
 static PASTES: AtomicU64 = AtomicU64::new(0);
 
 /// Runs `cmd` (a `tmux -C attach-session`) as the stream's other end.
-pub(super) fn open(mut cmd: Command, cols: u16, rows: u16, history: u32) -> Result<Stream> {
+pub(super) fn open(mut cmd: Command, how: StreamOptions) -> Result<Stream> {
     cmd.stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null());
@@ -91,7 +92,8 @@ pub(super) fn open(mut cmd: Command, cols: u16, rows: u16, history: u32) -> Resu
         )),
     };
     tokio::spawn(writer.run(stdin, in_rx, ask_rx, sent_tx));
-    let reader = Reader::new(flow.clone(), ask_tx, size(cols, rows), history);
+    let mut reader = Reader::new(flow.clone(), ask_tx, size(how.cols, how.rows), how.history);
+    reader.own_terminal(how.own_terminal);
     tokio::spawn(reader.run(child, stdout, control_rx, sent_rx));
     Ok(Stream::new(flow, in_tx, control_tx))
 }
@@ -112,7 +114,26 @@ struct Take {
     /// Draw the screen at once, before the history: the client's terminal is
     /// new or out of date. Not when it asked for more history (it's reading).
     screen_first: bool,
+    reset: Reset,
 }
+
+/// What a snapshot does to the client's terminal before it rebuilds it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Reset {
+    /// Starts it over (RIS): the app's terminal is the session's alone.
+    Full,
+    /// Leaves the program's screen and modes: the user's own terminal, where
+    /// the session was already shown.
+    Modes,
+    /// Nothing: the user's own terminal, as they left it.
+    Nothing,
+}
+
+/// What [`Reset::Modes`] undoes: the alternate screen, the style, insert and
+/// origin modes, wrap and the cursor, the scroll region (the cursor kept),
+/// cursor and keypad keys, the mouse, bracketed paste and focus reports.
+const MODES_OFF: &[u8] = b"\x1b[0m\x1b[?1049l\x1b[4l\x1b[?6l\x1b[?7h\x1b[?25h\x1b7\x1b[r\x1b8\
+    \x1b[?1l\x1b>\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1005l\x1b[?1006l\x1b[?2004l\x1b[?1004l";
 
 /// A line sent to tmux: how many replies it gets, and what it was.
 struct Sent {
@@ -218,6 +239,10 @@ struct Reader {
     next: Option<Take>,
     /// When the last snapshot was asked for.
     asked: Instant,
+    /// The client's terminal is the user's own; queries are kept out of it.
+    queries: Option<Queries>,
+    /// A snapshot has been shown.
+    shown: bool,
     /// Fell behind: a snapshot once the client has caught up, and not before
     /// `resync_at`.
     resync: bool,
@@ -243,9 +268,15 @@ impl Reader {
             taking: false,
             next: None,
             asked: Instant::now(),
+            queries: None,
+            shown: false,
             resync: false,
             resync_at: None,
         }
+    }
+
+    fn own_terminal(&mut self, own: bool) {
+        self.queries = own.then(Queries::default);
     }
 
     async fn run(
@@ -301,21 +332,30 @@ impl Reader {
             let event = parser.line(&line);
             line.clear();
             match event {
-                Some(Event::Output { pane, data }) => match self.relay.output(&pane, data) {
-                    Some(data)
-                        if flow.bytes() + data.len() > BEHIND && self.relay.fell_behind() =>
-                    {
-                        // Not taken in time: a snapshot replaces all of it.
-                        flow.clear();
-                        self.resync = true;
-                    }
-                    Some(data) => {
-                        if !flow.push_output(data) {
-                            break;
+                Some(Event::Output { pane, data }) => {
+                    match self
+                        .relay
+                        .output(&pane, data)
+                        .map(|data| match &mut self.queries {
+                            Some(queries) => queries.filter(&data),
+                            None => data,
+                        }) {
+                        Some(data) if data.is_empty() => {}
+                        Some(data)
+                            if flow.bytes() + data.len() > BEHIND && self.relay.fell_behind() =>
+                        {
+                            // Not taken in time: a snapshot replaces all of it.
+                            flow.clear();
+                            self.resync = true;
                         }
+                        Some(data) => {
+                            if !flow.push_output(data) {
+                                break;
+                            }
+                        }
+                        None => {}
                     }
-                    None => {}
-                },
+                }
                 Some(Event::Layout { size }) => {
                     self.window = Some(size);
                     self.tell();
@@ -371,8 +411,13 @@ impl Reader {
                     }
                     return true;
                 };
-                // It has everything up to its capture.
+                // It has everything up to its capture; what came before it,
+                // cut off or not, is gone.
                 self.relay.dropped = false;
+                self.shown = true;
+                if self.queries.is_some() {
+                    self.queries = Some(Queries::default());
+                }
                 self.window = Some(shot.size);
                 // Before the snapshot, whatever else is in flight: the client
                 // lays it out at that size. A resize's answer settles it after.
@@ -427,11 +472,20 @@ impl Reader {
     }
 
     fn regular(&self, screen_first: bool) -> Take {
+        let own = self.queries.is_some();
         Take {
             size: self.size,
-            history: self.history,
+            // The user's own terminal keeps the history it was given; sent
+            // again, it would be there twice.
+            history: if own && self.shown { 0 } else { self.history },
             budget: HISTORY_BYTES,
-            screen_first,
+            // Drawn ahead, the screen would end up in its scrollback too.
+            screen_first: screen_first && !own,
+            reset: match (own, self.shown) {
+                (false, _) => Reset::Full,
+                (true, true) => Reset::Modes,
+                (true, false) => Reset::Nothing,
+            },
         }
     }
 
@@ -807,9 +861,17 @@ fn render(snap: &Snapshot, take: Take) -> (Vec<u8>, u32, bool) {
         draw(&mut out, &shown);
         cup(&mut out, s.cursor_y, s.cursor_x);
     }
-    // CAN ends whatever sequence was cut off, RIS starts over, and what
-    // follows shows only once it's all there.
-    out.extend_from_slice(b"\x18\x1bc\x1b[?2026h");
+    // CAN ends whatever sequence was cut off, the reset starts over, and
+    // what follows shows only once it's all there.
+    out.push(0x18);
+    match take.reset {
+        Reset::Full => out.extend_from_slice(b"\x1bc\x1b[?2026h"),
+        Reset::Modes => {
+            out.extend_from_slice(b"\x1b[?2026h");
+            out.extend_from_slice(MODES_OFF);
+        }
+        Reset::Nothing => out.extend_from_slice(b"\x1b[?2026h"),
+    }
     out.extend_from_slice(LINE_DRAWING);
     if take.history > 0 && s.history > 0 {
         let (dropped, kept) = budget(&snap.history, take.budget);
@@ -1316,6 +1378,7 @@ mod tests {
             history,
             budget: HISTORY_BYTES,
             screen_first,
+            reset: Reset::Full,
         }
     }
 
@@ -1837,5 +1900,31 @@ mod tests {
         let _ = next(&mut stream).await;
         reader.answered(Line::Resize, vec![reply(&[]), reply(&["90x25"])]);
         assert_eq!(next(&mut stream).await, StreamOutput::Window(None));
+    }
+
+    #[tokio::test]
+    async fn the_users_own_terminal_is_left_as_it_is_and_kept_from_queries() {
+        let (mut reader, mut asked, mut stream) = reader();
+        reader.own_terminal(true);
+        reader.take(reader.regular(true));
+        let first = snapshot_asked(&mut asked);
+        assert_eq!(
+            (first.history, first.screen_first, first.reset),
+            (5000, false, Reset::Nothing)
+        );
+        reader.answered(Line::Snapshot(first), shot_replies((100, 30)));
+        let StreamOutput::Data(shown) = next(&mut stream).await else {
+            panic!("the snapshot")
+        };
+        assert!(shown.starts_with(b"\x18\x1b[?2026h") && !shown.windows(2).any(|w| w == b"\x1bc"));
+        let _ = next(&mut stream).await;
+        // Caught up later: no history again, and only its modes undone.
+        let again = reader.regular(true);
+        assert_eq!(
+            (again.history, again.screen_first, again.reset),
+            (0, false, Reset::Modes)
+        );
+        let (out, _, _) = render(&snapshot(false), again);
+        assert!(out.starts_with(b"\x18\x1b[?2026h\x1b[0m\x1b[?1049l"));
     }
 }

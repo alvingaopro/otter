@@ -714,6 +714,7 @@ dependencies = [
  "otter-client",
  "otter-core",
  "otter-protocol",
+ "portable-pty",
  "serde",
  "serde_json",
  "tempfile",

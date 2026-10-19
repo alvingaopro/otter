@@ -895,3 +895,93 @@ fn otter_chat_talks_to_otter_on_a_host() {
     assert!(out.contains("you: What's here?"), "{out}");
     assert!(out.contains("Otter: list_tasks:"), "{out}");
 }
+
+/// `otter attach --scrollback` in a terminal (a PTY): the session's history
+/// lands in it, typing goes through, Ctrl-] detaches and undoes the
+/// program's modes (D-119).
+#[test]
+fn attach_with_scrollback_puts_the_history_in_this_terminal() {
+    use portable_pty::{CommandBuilder, PtySize, native_pty_system};
+    use std::io::{Read, Write};
+    use std::sync::{Arc, Mutex};
+
+    let home = Home::new();
+    let cli = Cli::new();
+    cli.add_local_host("here", &home);
+    cli.ok(&["new", "sb", "--host", "here", "--no-agent"]);
+    cli.ok(&[
+        "send",
+        "sb",
+        "i=0; while [ $i -lt 200 ]; do i=$((i+1)); echo early-$i; done",
+    ]);
+    cli.wait_logs("sb", "early-200");
+
+    let pty = native_pty_system()
+        .openpty(PtySize {
+            rows: 30,
+            cols: 100,
+            pixel_width: 0,
+            pixel_height: 0,
+        })
+        .unwrap();
+    let mut cmd = CommandBuilder::new(env!("CARGO_BIN_EXE_otter"));
+    cmd.args(["attach", "--scrollback", "sb"]);
+    cmd.env("OTTER_CONFIG_DIR", cli.config.path());
+    cmd.env("OTTER_CONTROLLER", "off");
+    cmd.env("TERM", "xterm-256color");
+    let mut child = pty.slave.spawn_command(cmd).unwrap();
+    drop(pty.slave);
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let mut reader = pty.master.try_clone_reader().unwrap();
+    let sink = seen.clone();
+    std::thread::spawn(move || {
+        let mut buf = [0u8; 8192];
+        while let Ok(n) = reader.read(&mut buf) {
+            if n == 0 {
+                break;
+            }
+            sink.lock().unwrap().extend_from_slice(&buf[..n]);
+        }
+    });
+    let wait_for = |needle: &str| {
+        let deadline = Instant::now() + Duration::from_secs(15);
+        loop {
+            let text = String::from_utf8_lossy(&seen.lock().unwrap()).into_owned();
+            if text.contains(needle) {
+                return text;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "never saw {needle:?} in {text:?}"
+            );
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    };
+    let mut writer = pty.master.take_writer().unwrap();
+
+    // Lines long off a 30-row screen came, for this terminal to keep.
+    let snapshot = wait_for("\x1b[?2026l");
+    assert!(snapshot.contains("early-50\x1b[0m\r\n"), "{snapshot:?}");
+    assert!(!snapshot.contains("\x1bc"), "this terminal isn't reset");
+    writer.write_all(b"echo cli-$((2+3))\r").unwrap();
+    wait_for("cli-5");
+
+    writer.write_all(&[0x1d]).unwrap();
+    let after = wait_for("[detached from");
+    assert!(
+        after.contains("\x1b[?1049l") && after.contains("\x1b[<u"),
+        "modes undone"
+    );
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let status = loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            break status;
+        }
+        assert!(Instant::now() < deadline, "otter attach didn't exit");
+        std::thread::sleep(Duration::from_millis(50));
+    };
+    assert!(status.success());
+    // The session goes on.
+    cli.ok(&["send", "sb", "echo still-$((3+3))"]);
+    cli.wait_logs("sb", "still-6");
+}
