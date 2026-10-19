@@ -27,28 +27,29 @@ describe("the performance overlay's switch (D-128)", () => {
 
 describe("a second of measurements", () => {
   it("counts frames, the slowest one, lateness and the terminals' bytes", () => {
-    const meter = new Meter(0, 1000);
-    for (let t = 16; t <= 480; t += 16) meter.frame(t);
-    meter.frame(520); // a 40 ms frame
-    for (let t = 536; t < 1000; t += 16) meter.frame(t);
+    const meter = new Meter(-500, 1000);
+    // 50 Hz from 0 ms, with the frames at 500 and 520 dropped: a 60 ms frame.
+    for (let t = 0; t <= 1000; t += 20) if (t !== 500 && t !== 520) meter.frame(t);
     meter.late(3);
     meter.late(12);
     meter.late(5);
-    expect(meter.sample(992, 1000, 10)).toBeNull();
-    meter.frame(1008);
-    const s = meter.sample(1008, 1000 + 4096, 1234)!;
-    // 61 frames in 1008 ms.
-    expect(s.fps).toBe(61);
-    expect(s.worstFrame).toBe(40);
+    expect(meter.due(980)).toBe(false);
+    expect(meter.sample(980, 1000, 10)).toBeNull();
+    expect(meter.due(1000)).toBe(true);
+    const s = meter.sample(1000, 1000 + 4096, 1234)!;
+    // Counted from the first frame, not from when the meter was made.
+    expect(s.fps).toBe(48);
+    expect(s.worstFrame).toBe(60);
     expect(s.lag).toBe(12);
     expect(s.domNodes).toBe(1234);
-    expect(s.terminal).toBe(Math.round((4096 * 1000) / 1008));
+    expect(s.terminal).toBe(4096);
     expect(s).not.toHaveProperty("heap");
 
     // The next second starts from nothing.
-    for (let t = 1024; t <= 2008; t += 16) meter.frame(t);
-    const t = meter.sample(2008, 1000 + 4096, 1234, 50 * 1024 * 1024)!;
-    expect(t.worstFrame).toBe(16);
+    for (let t = 1020; t <= 2000; t += 20) meter.frame(t);
+    const t = meter.sample(2000, 1000 + 4096, 1234, 50 * 1024 * 1024)!;
+    expect(t.fps).toBe(50);
+    expect(t.worstFrame).toBe(20);
     expect(t.lag).toBe(0);
     expect(t.terminal).toBe(0);
     expect(t.heap).toBe(50 * 1024 * 1024);
@@ -57,9 +58,13 @@ describe("a second of measurements", () => {
   it("doesn't count the time a hidden window drew nothing", () => {
     const meter = new Meter(0, 0);
     meter.frame(16);
+    meter.frame(32);
     meter.resume(60_000, 0);
-    for (let t = 60_016; t <= 61_000; t += 16) meter.frame(t);
-    expect(meter.sample(61_000, 0, 1)!.worstFrame).toBe(16);
+    expect(meter.due(61_000)).toBe(false);
+    for (let t = 60_020; t <= 61_020; t += 20) meter.frame(t);
+    const s = meter.sample(61_020, 0, 1)!;
+    expect(s.worstFrame).toBe(20);
+    expect(s.fps).toBe(50);
   });
 
   it("says sizes and rates briefly, and colours the frame rate", () => {

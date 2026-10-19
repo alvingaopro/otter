@@ -22,23 +22,26 @@ function Readout() {
   const [app, setApp] = useState<ProcessStats | null>(null);
   useEffect(() => {
     const meter = new Meter(performance.now(), terminalTotal());
-    // Measured every frame, shown once a second: drawing the readout every
-    // frame would cost what it measures.
+    // Counted every frame, the rest read and shown once a second: counting
+    // the page's elements or drawing the readout every frame would cost what
+    // it measures.
     let frame = requestAnimationFrame(function tick(now) {
       meter.frame(now);
-      const s = meter.sample(now, terminalTotal(), document.getElementsByTagName("*").length, heap());
-      if (s) setSample(s);
+      if (meter.due(now)) setSample(meter.sample(now, terminalTotal(), document.getElementsByTagName("*").length, heap()));
       frame = requestAnimationFrame(tick);
     });
     // The main thread's lateness: a 100 ms timer, against when it was due.
-    let due = performance.now() + 100;
+    // Not while hidden, nor the first tick back: WebKit slows a hidden
+    // window's timers, and that isn't the main thread being late.
+    let due: number | undefined;
     const timer = setInterval(() => {
       const now = performance.now();
-      if (!document.hidden) meter.late(Math.max(0, now - due));
-      due = now + 100;
+      if (due !== undefined) meter.late(Math.max(0, now - due));
+      due = document.hidden ? undefined : now + 100;
     }, 100);
     // A hidden window draws no frames: say nothing rather than 0 fps.
     const visibility = () => {
+      due = undefined;
       if (document.hidden) setSample(null);
       else meter.resume(performance.now(), terminalTotal());
     };

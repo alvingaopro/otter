@@ -62,7 +62,11 @@ export interface Sample {
   heap?: number;
 }
 
-/** Counts frames and lateness, and makes a `Sample` of each second. */
+/**
+ * Counts frames and lateness, and makes a `Sample` of each second. A second
+ * is counted from a frame: the first one only starts it, and each after it
+ * ends a frame's time.
+ */
 export class Meter {
   private frames = 0;
   private worst = 0;
@@ -75,19 +79,27 @@ export class Meter {
   ) {}
 
   frame(now: number) {
-    if (this.last !== undefined) this.worst = Math.max(this.worst, now - this.last);
+    if (this.last === undefined) this.start = now;
+    else {
+      this.worst = Math.max(this.worst, now - this.last);
+      this.frames++;
+    }
     this.last = now;
-    this.frames++;
   }
 
   late(ms: number) {
     this.lag = Math.max(this.lag, ms);
   }
 
+  /** Whether a second has passed since the first frame, so a sample is due. */
+  due(now: number): boolean {
+    return this.last !== undefined && now - this.start >= 1000;
+  }
+
   /** Once a second has passed: its sample, and the next second starts. */
   sample(now: number, bytes: number, domNodes: number, heap?: number): Sample | null {
+    if (!this.due(now)) return null;
     const span = now - this.start;
-    if (span < 1000) return null;
     const s: Sample = {
       fps: Math.round((this.frames * 1000) / span),
       worstFrame: Math.round(this.worst),
