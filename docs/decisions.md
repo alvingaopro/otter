@@ -3829,3 +3829,31 @@ said selecting copies.
 - **Verified:** app unit tests for a drag let go outside, a double-click's
   word, and no copy for a click, another button, a press outside the
   terminal, or a selection from before.
+
+## D-126 — Pinyin's punctuation on the first press (2026-10-19)
+
+With macOS Pinyin, punctuation typed with Shift (？！：（ and the like) took
+two presses in the app's terminal.
+
+- **The first ？ was dropped** (xterm.js #6144, in 6.0.0 and 6.1.0-beta.315;
+  the fix, #6200, isn't merged). WebKit delivers an input method's commit
+  before the character's own keydown: beforeinput, input, keydown. xterm.js
+  drops typed text that comes while a keydown it saw isn't let go yet, so as
+  not to send a key twice, and the last keydown it saw was the Shift's. The
+  first press was lost; the next, after the first's keyup, got through.
+- **Now,** when the last key pressed was a modifier alone (Shift, Control,
+  Option, ⌘, Caps Lock, which switches the input source), a commit lifts
+  that gate, a private field of xterm's, before xterm reads it. Only then:
+  when the character's keydown comes first, xterm sends the text itself
+  from its textarea, and lifting the gate would send it twice.
+- **Not around a composition.** What a composition commits, xterm sends
+  once it ends, with whatever came after it in the textarea: `ni` and then
+  Shift+/ commits 你 and types ？ in one keystroke, and both go in that one
+  send. Lifting the gate then sent the ？ twice (found in review). So the gate
+  stays while composing, and a composition's end forgets the modifier.
+- **Verified:** app tests with xterm.js itself: without the change the
+  first ？ is dropped (kept as a control: when xterm.js fixes it, it fails,
+  and the change goes); with it, two presses send two; punctuation without
+  Shift goes once; a composition ended by ？ goes once, which fails when
+  its end keeps the modifier; a keydown first still sends once, which fails
+  when the gate is lifted on every commit. Not yet typed on a Mac.

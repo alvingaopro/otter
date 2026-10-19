@@ -13,6 +13,7 @@ import { ClipboardAddon, type IClipboardProvider } from "@xterm/addon-clipboard"
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { copyOnSelect } from "./copyOnSelect";
+import { takeImeCommits } from "./imeCommit";
 import { logicalLine, urlAtColumn } from "./links";
 import { fontFamily, fontSize, onFontFamily, onFontSize } from "./terminalFont";
 import "@xterm/xterm/css/xterm.css";
@@ -424,6 +425,8 @@ export function Terminal({ host, workspace, session, onEnd, generation, label, w
     box.addEventListener("mousedown", reclaim);
     // A selection made here is copied when the mouse is let go (D-123).
     const uncopy = copyOnSelect(box, term, writeText);
+    // Pinyin's ？！：（ arrive on the first press (D-126).
+    const untake = takeImeCommits(box, term);
 
     return () => {
       disposed = true;
@@ -434,6 +437,7 @@ export function Terminal({ host, workspace, session, onEnd, generation, label, w
       box.removeEventListener("mouseup", linkUp, true);
       box.removeEventListener("mousedown", reclaim);
       uncopy();
+      untake();
       document.removeEventListener("visibilitychange", tellView);
       input.dispose();
       resized.dispose();
