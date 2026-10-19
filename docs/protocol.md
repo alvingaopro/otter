@@ -475,6 +475,7 @@ After a successful `session.attach` response
 | 2    | resize | client → daemon  | `cols u16 BE`, `rows u16 BE` (exactly 4 bytes)  |
 | 3    | detach | client → daemon  | empty                                           |
 | 4    | exit   | daemon → client  | JSON `{"reason", "exit_code"?, "message"?}`     |
+| 5    | control | both, once both said they take it | JSON `{"type", …}` (below)    |
 
 - Maximum payload: 4 MiB (`MAX_FRAME_LEN`); larger frames are a protocol error.
 - `session.attach` params carry the initial `cols`, `rows` and the client's
@@ -514,6 +515,22 @@ After a successful `session.attach` response
     bracketed and the daemon delivers them bracketed only if the program asked.
   - Without `"history": true` in the response (an older daemon), it's the
     screen attach above. The CLI always uses that.
+- **Control frames** (D-119): a stream client that sends `"controls": true`
+  on `session.attach` and gets `"controls": true` back may send and must
+  take kind-5 frames. Neither side sends one otherwise. A `type` it doesn't
+  know is ignored.
+  - `{"type":"view","visible",cols,rows}` (client → daemon): whether the
+    client's terminal is on screen. Off screen, the daemon sends it no output.
+    Back on screen, at that size, it gets a snapshot if it missed any.
+  - `{"type":"history","lines"}` (client → daemon): rebuild the client's
+    terminal with up to that many lines of history.
+  - `{"type":"window","size":[cols,rows]|null}` (daemon → client): another
+    client sizes the session's window, so output is laid out for that size.
+    It comes before a snapshot taken at it. `null` means the size is the
+    client's own again.
+  - `{"type":"snapshot","lines","more"}` (daemon → client): a snapshot's
+    bytes just ended. `lines` is how much history it brought, and `more`
+    says the session holds earlier lines.
 - **Malformed frames** (unknown kind, bad resize length, oversize) end the
   attach as if the client had disconnected.
 
@@ -525,6 +542,8 @@ Compatible — no bump; old peers must keep working:
 
 - a new optional request parameter or response field (unknown fields are
   ignored);
+- a new frame kind sent only once both peers said they take it (as
+  `controls` does for kind 5);
 - a new RPC method (old daemons answer `invalid_request`);
 - a new event kind (old clients see it as `Unknown` and ignore it);
 - a new error code (old clients see `Unknown`).

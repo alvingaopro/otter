@@ -222,7 +222,9 @@ impl Config {
     /// Directory for SSH ControlMaster sockets, if it exists (or can be
     /// created) and is short enough for a socket path.
     fn control_dir(&self) -> Option<PathBuf> {
-        let dir = self.dir.join("cm");
+        // Not `cm` any more: masters made before connections were compressed
+        // (D-119) lived there, and would be reused as they are.
+        let dir = self.dir.join("cz");
         if dir.as_os_str().len() > MAX_CONTROL_DIR_LEN {
             return None;
         }

@@ -493,6 +493,9 @@ pub struct SessionAttach {
     /// session's screen and the history stays in the session.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub history: Option<u32>,
+    /// The client takes and sends control frames (D-119).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub controls: bool,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -504,6 +507,10 @@ pub struct AttachReady {
     /// must not.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub history: bool,
+    /// The daemon takes and sends control frames: the client asked, and
+    /// this is a stream.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub controls: bool,
 }
 
 /// Resolves the workspace's attention items, narrowed to one session or one

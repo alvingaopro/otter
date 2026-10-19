@@ -13,6 +13,7 @@ const KIND_DATA: u8 = 1;
 const KIND_RESIZE: u8 = 2;
 const KIND_DETACH: u8 = 3;
 const KIND_EXIT: u8 = 4;
+const KIND_CONTROL: u8 = 5;
 
 /// Maximum payload accepted from the peer.
 pub const MAX_FRAME_LEN: u32 = 4 * 1024 * 1024;
@@ -27,6 +28,31 @@ pub enum Frame {
     Detach,
     /// Daemon→client: the attach ended. Always the last frame.
     Exit(AttachExit),
+    /// Both ways, and only once both peers said they take them (`controls`
+    /// on `session.attach` and in its response, D-119): what isn't terminal
+    /// bytes.
+    Control(Control),
+}
+
+/// A control frame's message (JSON, tagged by `type`).
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum Control {
+    /// Client→daemon: whether the client's terminal is on screen, and its
+    /// size. Not on screen, it gets no output; back on screen, it catches up.
+    View { visible: bool, cols: u16, rows: u16 },
+    /// Client→daemon: rebuild the client's terminal with up to `lines` lines
+    /// of history.
+    History { lines: u32 },
+    /// Daemon→client: another client sizes the window, `[cols, rows]`, and
+    /// output is laid out for that; `null` once it's the client's size again.
+    Window { size: Option<[u16; 2]> },
+    /// Daemon→client: a snapshot just ended (its bytes came before this),
+    /// with `lines` lines of history; `more`: the session holds earlier ones.
+    Snapshot { lines: u32, more: bool },
+    /// From a newer peer; ignored.
+    #[serde(other)]
+    Unknown,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -65,6 +91,12 @@ pub async fn write_frame<W: AsyncWrite + Unpin>(w: &mut W, frame: &Frame) -> std
             KIND_EXIT,
             serde_json::to_vec(exit)
                 .expect("AttachExit serializes")
+                .into(),
+        ),
+        Frame::Control(control) => (
+            KIND_CONTROL,
+            serde_json::to_vec(control)
+                .expect("Control serializes")
                 .into(),
         ),
     };
@@ -110,6 +142,10 @@ pub async fn read_frame<R: AsyncRead + Unpin>(r: &mut R) -> std::io::Result<Opti
             serde_json::from_slice(&payload)
                 .map_err(|e| invalid(format!("bad exit frame: {e}")))?,
         ),
+        KIND_CONTROL => Frame::Control(
+            serde_json::from_slice(&payload)
+                .map_err(|e| invalid(format!("bad control frame: {e}")))?,
+        ),
         other => return Err(invalid(format!("unknown frame kind {other}"))),
     };
     Ok(Some(frame))
@@ -137,6 +173,16 @@ mod tests {
                 exit_code: Some(2),
                 message: None,
             }),
+            Frame::Control(Control::View {
+                visible: true,
+                cols: 100,
+                rows: 30,
+            }),
+            Frame::Control(Control::Window { size: None }),
+            Frame::Control(Control::Snapshot {
+                lines: 5000,
+                more: true,
+            }),
         ];
         let mut buf = Vec::new();
         for f in &frames {
@@ -147,5 +193,18 @@ mod tests {
             assert_eq!(read_frame(&mut cursor).await.unwrap().as_ref(), Some(f));
         }
         assert_eq!(read_frame(&mut cursor).await.unwrap(), None);
+    }
+
+    #[test]
+    fn controls_read_as_json_and_unknown_ones_are_kept_quiet() {
+        let window: Control = serde_json::from_str(r#"{"type":"window","size":[80,24]}"#).unwrap();
+        assert_eq!(
+            window,
+            Control::Window {
+                size: Some([80, 24])
+            }
+        );
+        let later: Control = serde_json::from_str(r#"{"type":"from_the_future","x":1}"#).unwrap();
+        assert_eq!(later, Control::Unknown);
     }
 }

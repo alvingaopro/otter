@@ -2,9 +2,10 @@
 //! connection per open terminal (D-004), bridged to the webview.
 //!
 //! Output goes to the webview as raw bytes over a Tauri channel (an
-//! `ArrayBuffer` in JS, no JSON/base64 on the hot path); input, resize and
-//! detach come back as commands. An attach is disposable: closing it never
-//! affects the session.
+//! `ArrayBuffer` in JS, no JSON/base64 on the hot path), and the daemon's
+//! control frames (D-119) as JSON on the same channel, so they stay in order
+//! with it; input, resize, view, history and detach come back as commands.
+//! An attach is disposable: closing it never affects the session.
 
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -12,7 +13,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use otter_client::Connection;
-use otter_protocol::frame::{AttachExitReason, Frame};
+use otter_protocol::frame::{AttachExitReason, Control, Frame};
 use otter_protocol::{SessionAttach, SessionRef};
 use serde::Serialize;
 use tauri::ipc::{Channel, InvokeResponseBody};
@@ -27,23 +28,33 @@ const DETACH_TIMEOUT: Duration = Duration::from_secs(5);
 #[derive(Default)]
 pub struct Attaches {
     next: AtomicU64,
-    open: Mutex<HashMap<u64, mpsc::UnboundedSender<Frame>>>,
+    open: Mutex<HashMap<u64, Open>>,
+}
+
+struct Open {
+    tx: mpsc::UnboundedSender<Frame>,
+    /// The daemon takes control frames; an older one would end the attach.
+    controls: bool,
 }
 
 impl Attaches {
     fn send(&self, id: u64, frame: Frame) {
-        if let Some(tx) = self.open.lock().unwrap().get(&id) {
-            let _ = tx.send(frame);
+        if let Some(open) = self.open.lock().unwrap().get(&id)
+            && (open.controls || !matches!(frame, Frame::Control(_)))
+        {
+            let _ = open.tx.send(frame);
         }
     }
 }
 
-/// An open attach: its id, and whether the terminal keeps the history (the
-/// host streams, D-118) or shows the session's screen (an older host).
+/// An open attach: its id, whether the terminal keeps the history (the host
+/// streams, D-118) or shows the session's screen (an older host), and whether
+/// control frames go both ways (D-119).
 #[derive(Clone, Debug, Serialize)]
 pub struct AttachOpened {
     id: u64,
     history: bool,
+    controls: bool,
 }
 
 /// How an attach ended, for the terminal's status line.
@@ -87,6 +98,7 @@ pub async fn attach_open(
             rows,
             term: Some("xterm-256color".into()),
             history,
+            controls: true,
         })
         .await
         .map_err(|e| e.to_string())?;
@@ -94,7 +106,13 @@ pub async fn attach_open(
     let attaches = app.state::<Attaches>();
     let id = attaches.next.fetch_add(1, Ordering::Relaxed);
     let (tx, mut rx) = mpsc::unbounded_channel::<Frame>();
-    attaches.open.lock().unwrap().insert(id, tx);
+    attaches.open.lock().unwrap().insert(
+        id,
+        Open {
+            tx,
+            controls: ready.controls,
+        },
+    );
 
     // Frames to the daemon. Ends (dropping the connection) once the sender is
     // removed from `open`.
@@ -113,6 +131,12 @@ pub async fn attach_open(
             match reader.next().await {
                 Ok(Some(Frame::Data(data))) => {
                     if output.send(InvokeResponseBody::Raw(data)).is_err() {
+                        break None;
+                    }
+                }
+                Ok(Some(Frame::Control(control))) => {
+                    let json = serde_json::to_string(&control).unwrap_or_default();
+                    if output.send(InvokeResponseBody::Json(json)).is_err() {
                         break None;
                     }
                 }
@@ -141,6 +165,7 @@ pub async fn attach_open(
     Ok(AttachOpened {
         id,
         history: ready.history,
+        controls: ready.controls,
     })
 }
 
@@ -154,6 +179,27 @@ pub fn attach_input(app: AppHandle, id: u64, data: String) {
 pub fn attach_resize(app: AppHandle, id: u64, cols: u16, rows: u16) {
     app.state::<Attaches>()
         .send(id, Frame::Resize { cols, rows });
+}
+
+/// The terminal went off or back on screen (D-119): off, the daemon sends
+/// nothing; back, it catches up at this size.
+#[tauri::command]
+pub fn attach_view(app: AppHandle, id: u64, visible: bool, cols: u16, rows: u16) {
+    app.state::<Attaches>().send(
+        id,
+        Frame::Control(Control::View {
+            visible,
+            cols,
+            rows,
+        }),
+    );
+}
+
+/// Rebuild the terminal with up to `lines` lines of history.
+#[tauri::command]
+pub fn attach_history(app: AppHandle, id: u64, lines: u32) {
+    app.state::<Attaches>()
+        .send(id, Frame::Control(Control::History { lines }));
 }
 
 /// Detach (the session keeps running). If the daemon doesn't confirm in time,

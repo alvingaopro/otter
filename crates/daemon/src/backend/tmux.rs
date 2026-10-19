@@ -32,6 +32,9 @@ const EXIT_MARKER: &str = "[process exited, status";
 /// What tmux before 3.3 draws under an exited process instead.
 const OLD_EXIT_MARKER: &str = "Pane is dead";
 
+/// Lines of history tmux keeps for a pane (`history-limit`).
+const HISTORY_LIMIT: u32 = 50000;
+
 /// Initial window size before any client attaches.
 const DEFAULT_COLS: u16 = 160;
 const DEFAULT_ROWS: u16 = 48;
@@ -461,7 +464,7 @@ set -g status off
 set -g prefix None
 set -g prefix2 None
 set -g escape-time 0
-set -g history-limit 50000
+set -g history-limit {HISTORY_LIMIT}
 set -g default-size {DEFAULT_COLS}x{DEFAULT_ROWS}
 set -g default-terminal \"{default_terminal}\"
 set -as terminal-features \",xterm*:RGB\"

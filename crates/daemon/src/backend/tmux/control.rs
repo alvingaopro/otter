@@ -4,16 +4,21 @@
 //! the client keeps the history and scrolls it without asking the host.
 //!
 //! The client's terminal is rebuilt from a snapshot on attach, and again when
-//! it falls too far behind. One command line takes it: tmux runs a line's
-//! commands without reading the pane in between, so output that came before
-//! the snapshot's replies is in it and output after them is new. Each command
-//! gets one reply, and an error drops the rest of its line, so replies are
-//! matched to the lines sent by counting.
+//! it falls too far behind, comes back on screen after missing output, or
+//! asks for more history (D-119). One command line takes it: tmux runs a
+//! line's commands without reading the pane in between, so output that came
+//! before the snapshot's replies is in it and output after them is new. Each
+//! command gets one reply, and an error drops the rest of its line, so
+//! replies are matched to the lines sent by counting.
 //!
 //! Input goes back with `send-keys -H`, byte for byte. A bracketed paste goes
 //! through a paste buffer instead, so tmux, which knows whether the program
 //! asked for bracketed paste, adds the brackets or not. The client's terminal
 //! can't be told that on attach, so every snapshot turns bracketing on.
+//!
+//! The reader keeps what the client is: its size, whether it's on screen,
+//! the history it keeps. It asks the writer for snapshots and resizes, and
+//! tells the client when another client sizes the window.
 
 use std::collections::VecDeque;
 use std::fmt::Write as _;
@@ -28,27 +33,33 @@ use tokio::process::{Child, ChildStdin, ChildStdout, Command};
 use tokio::sync::mpsc;
 use tokio::time::Instant;
 
-use super::{EXIT_MARKER, OLD_EXIT_MARKER};
-use crate::backend::{Flow, Stream, StreamInput};
+use super::{EXIT_MARKER, HISTORY_LIMIT, OLD_EXIT_MARKER};
+use crate::backend::{Flow, Stream, StreamInput, StreamOutput};
 
 /// Starts the reply that carries a snapshot's state.
 const MARKER: &str = "otter-snapshot";
-/// The pane's state, in the order [`State::parse`] reads it.
-const STATE_FORMAT: &str = "#{pane_id} #{pane_width} #{pane_height} #{history_size} \
-    #{alternate_on} #{alternate_saved_x} #{alternate_saved_y} #{cursor_x} #{cursor_y} \
-    #{cursor_flag} #{keypad_cursor_flag} #{keypad_flag} #{wrap_flag} #{insert_flag} \
-    #{origin_flag} #{scroll_region_upper} #{scroll_region_lower} #{mouse_standard_flag} \
-    #{mouse_button_flag} #{mouse_all_flag} #{mouse_utf8_flag} #{mouse_sgr_flag}";
-/// Commands in a snapshot's line (see [`snapshot_line`]).
+/// The pane's state, in the order [`State::parse`] reads it. Commas keep an
+/// empty field (a format this tmux doesn't have) in its place.
+const STATE_FORMAT: &str = "#{pane_id},#{pane_width},#{pane_height},#{history_size},\
+    #{alternate_on},#{alternate_saved_x},#{alternate_saved_y},#{cursor_x},#{cursor_y},\
+    #{cursor_flag},#{keypad_cursor_flag},#{keypad_flag},#{wrap_flag},#{insert_flag},\
+    #{origin_flag},#{scroll_region_upper},#{scroll_region_lower},#{mouse_standard_flag},\
+    #{mouse_button_flag},#{mouse_all_flag},#{mouse_utf8_flag},#{mouse_sgr_flag},\
+    #{cursor_shape},#{cursor_blinking},#{cursor_colour}";
+/// Commands in a snapshot's line (see [`snapshot_line`]), and in a resize's.
 const SNAPSHOT_REPLIES: usize = 5;
+const RESIZE_REPLIES: usize = 2;
 /// Output waiting for the client beyond this is dropped for a fresh snapshot.
+/// Snapshots don't count.
 const BEHIND: usize = 2 << 20;
 /// Snapshots after falling behind come at least this far apart, so a client
 /// slower than the program sees a screen, not a flicker of them.
 const RESYNC_GAP: Duration = Duration::from_millis(500);
 /// History in a snapshot, at most: all of it arrives before the client's
 /// terminal shows any (synchronized output holds it, for up to a second).
-const HISTORY_BYTES: usize = 256 << 10;
+const HISTORY_BYTES: usize = 1 << 20;
+/// History the client asked for itself, at most: it waits for it.
+const MORE_HISTORY_BYTES: usize = 4 << 20;
 /// The largest window tmux makes, either way.
 const MAX_SIZE: u16 = 10000;
 /// Input bytes per `send-keys`; paste bytes per `set-buffer`.
@@ -70,40 +81,54 @@ pub(super) fn open(mut cmd: Command, cols: u16, rows: u16, history: u32) -> Resu
     let stdout = child.stdout.take().context("tmux control client stdout")?;
     let flow = Arc::new(Flow::default());
     let (in_tx, in_rx) = mpsc::unbounded_channel();
+    let (control_tx, control_rx) = mpsc::unbounded_channel();
     let (ask_tx, ask_rx) = mpsc::unbounded_channel();
     let (sent_tx, sent_rx) = mpsc::unbounded_channel();
     let writer = Writer {
-        size: size(cols, rows),
-        history,
         input: Input::new(format!(
             "otter-paste-{}",
             PASTES.fetch_add(1, Ordering::Relaxed)
         )),
     };
     tokio::spawn(writer.run(stdin, in_rx, ask_rx, sent_tx));
-    tokio::spawn(read(
-        child,
-        stdout,
-        Relay::new(history),
-        flow.clone(),
-        ask_tx,
-        sent_rx,
-    ));
-    Ok(Stream::new(flow, in_tx))
+    let reader = Reader::new(flow.clone(), ask_tx, size(cols, rows), history);
+    tokio::spawn(reader.run(child, stdout, control_rx, sent_rx));
+    Ok(Stream::new(flow, in_tx, control_tx))
 }
 
-/// A line sent to tmux: how many replies it gets, and for a snapshot, the
-/// size it was taken at.
-struct Sent {
-    replies: usize,
-    snapshot: Option<(u16, u16)>,
+/// What the reader asks the writer to send.
+enum Ask {
+    Snapshot(Take),
+    Resize((u16, u16)),
 }
 
-/// Writes tmux commands: the client's input and size, and snapshots when
-/// the reader asks.
-struct Writer {
+/// A snapshot to take.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Take {
     size: (u16, u16),
     history: u32,
+    /// Bytes of history, at most.
+    budget: usize,
+    /// Draw the screen at once, before the history: the client's terminal is
+    /// new or out of date. Not when it asked for more history (it's reading).
+    screen_first: bool,
+}
+
+/// A line sent to tmux: how many replies it gets, and what it was.
+struct Sent {
+    replies: usize,
+    line: Line,
+}
+
+enum Line {
+    Input,
+    /// Ends with the window's size.
+    Resize,
+    Snapshot(Take),
+}
+
+/// Writes tmux commands: the client's typing, and what the reader asks.
+struct Writer {
     input: Input,
 }
 
@@ -111,36 +136,36 @@ impl Writer {
     async fn run(
         mut self,
         mut stdin: ChildStdin,
-        mut input: mpsc::UnboundedReceiver<StreamInput>,
-        mut asks: mpsc::UnboundedReceiver<()>,
+        mut input: mpsc::UnboundedReceiver<Vec<u8>>,
+        mut asks: mpsc::UnboundedReceiver<Ask>,
         sent: mpsc::UnboundedSender<Sent>,
     ) {
         loop {
             let lines: Vec<(String, Sent)> = tokio::select! {
-                input = input.recv() => match input {
-                    Some(StreamInput::Data(data)) => self
+                data = input.recv() => match data {
+                    Some(data) => self
                         .input
                         .commands(&data)
                         .into_iter()
-                        .map(|line| (line, Sent { replies: 1, snapshot: None }))
+                        .map(|line| (line, Sent { replies: 1, line: Line::Input }))
                         .collect(),
-                    Some(StreamInput::Resize { cols, rows }) => {
-                        self.size = size(cols, rows);
-                        let (cols, rows) = self.size;
-                        vec![(
-                            format!("refresh-client -C {cols}x{rows}"),
-                            Sent { replies: 1, snapshot: None },
-                        )]
-                    }
                     // Detached: closing stdin ends the control client, and
                     // nothing reaches the process.
                     None => return,
                 },
-                // At the size the client has now, so a resize can't overtake it.
-                Some(()) = asks.recv() => vec![(
-                    snapshot_line(self.size, self.history),
-                    Sent { replies: SNAPSHOT_REPLIES, snapshot: Some(self.size) },
-                )],
+                Some(ask) = asks.recv() => vec![match ask {
+                    Ask::Snapshot(take) => (
+                        snapshot_line(take.size, take.history),
+                        Sent { replies: SNAPSHOT_REPLIES, line: Line::Snapshot(take) },
+                    ),
+                    Ask::Resize((cols, rows)) => (
+                        format!(
+                            "refresh-client -C {cols}x{rows} ; \
+                             display-message -p '#{{window_width}}x#{{window_height}}'"
+                        ),
+                        Sent { replies: RESIZE_REPLIES, line: Line::Resize },
+                    ),
+                }],
             };
             for (line, record) in lines {
                 // An empty line would detach the client.
@@ -160,7 +185,8 @@ impl Writer {
 }
 
 /// The command line that takes a snapshot. It sets the client's size first:
-/// the window is that size for the commands after it.
+/// the window is that size for the commands after it, unless another client
+/// sizes it.
 fn snapshot_line((cols, rows): (u16, u16), history: u32) -> String {
     format!(
         "refresh-client -C {cols}x{rows} ; display-message -p '{MARKER} {STATE_FORMAT}' ; \
@@ -170,97 +196,289 @@ fn snapshot_line((cols, rows): (u16, u16), history: u32) -> String {
     )
 }
 
-/// tmux's replies and the pane's output → what the client shows.
-async fn read(
-    mut child: Child,
-    stdout: ChildStdout,
-    mut relay: Relay,
+/// Reads what tmux sends and keeps what the client is.
+struct Reader {
+    relay: Relay,
     flow: Arc<Flow>,
-    asks: mpsc::UnboundedSender<()>,
-    mut sent: mpsc::UnboundedReceiver<Sent>,
-) {
-    let _ = asks.send(());
-    let mut asked = Instant::now();
-    let mut parser = Parser::default();
-    let mut pending: VecDeque<(Sent, Vec<Reply>)> = VecDeque::new();
-    // Fell behind: a snapshot once the client has caught up, and not before
-    // `resync_at`.
-    let mut resync = false;
-    let mut resync_at: Option<Instant> = None;
-    let mut stdout = BufReader::new(stdout);
-    let mut line = Vec::new();
-    loop {
-        tokio::select! {
-            read = stdout.read_until(b'\n', &mut line) => {
-                if !matches!(read, Ok(n) if n > 0) {
-                    break;
-                }
-            }
-            // `line` keeps what was read of a line if these win.
-            more = flow.client(resync) => {
-                if !more {
-                    break;
-                }
-                resync = false;
-                resync_at = Some(Instant::now().max(asked + RESYNC_GAP));
-                continue;
-            }
-            () = async { tokio::time::sleep_until(resync_at.unwrap_or_else(Instant::now)).await },
-                if resync_at.is_some() =>
-            {
-                resync_at = None;
-                asked = Instant::now();
-                let _ = asks.send(());
-                continue;
-            }
-        }
-        if line.last() == Some(&b'\n') {
-            line.pop();
-        }
-        let event = parser.line(&line);
-        line.clear();
-        let data = match event {
-            Some(Event::Output { pane, data }) => match relay.output(&pane, data) {
-                Some(data) if flow.bytes() + data.len() > BEHIND && relay.fell_behind() => {
-                    // Not taken in time: a snapshot replaces all of it.
-                    flow.clear();
-                    resync = true;
-                    continue;
-                }
-                Some(data) => data,
-                None => continue,
-            },
-            Some(Event::Reply { ok, lines }) => {
-                while let Ok(record) = sent.try_recv() {
-                    pending.push_back((record, Vec::new()));
-                }
-                let Some((record, replies)) = pending.front_mut() else {
-                    continue;
-                };
-                replies.push(Reply { ok, lines });
-                if ok && replies.len() < record.replies {
-                    continue;
-                }
-                let Some((record, replies)) = pending.pop_front() else {
-                    continue;
-                };
-                match record
-                    .snapshot
-                    .and_then(|asked| relay.snapshot(replies, asked))
-                {
-                    Some(data) => data,
-                    None => continue,
-                }
-            }
-            None => continue,
-        };
-        if !flow.push(data) {
-            break;
+    asks: mpsc::UnboundedSender<Ask>,
+    /// The client's size, as it last said.
+    size: (u16, u16),
+    /// Lines of history the client keeps.
+    history: u32,
+    /// The window's size, as tmux last said.
+    window: Option<(u16, u16)>,
+    /// Lines of ours that resize the window, not yet answered: until then
+    /// the window's size is in flux.
+    resizing: usize,
+    /// What the client was last told about the window.
+    told: Option<(u16, u16)>,
+    /// A snapshot was asked for and hasn't come.
+    taking: bool,
+    /// A snapshot to take once the one coming has come.
+    next: Option<Take>,
+    /// When the last snapshot was asked for.
+    asked: Instant,
+    /// Fell behind: a snapshot once the client has caught up, and not before
+    /// `resync_at`.
+    resync: bool,
+    resync_at: Option<Instant>,
+}
+
+impl Reader {
+    fn new(
+        flow: Arc<Flow>,
+        asks: mpsc::UnboundedSender<Ask>,
+        size: (u16, u16),
+        history: u32,
+    ) -> Self {
+        Reader {
+            relay: Relay::new(),
+            flow,
+            asks,
+            size,
+            history: history.min(HISTORY_LIMIT),
+            window: None,
+            resizing: 0,
+            told: None,
+            taking: false,
+            next: None,
+            asked: Instant::now(),
+            resync: false,
+            resync_at: None,
         }
     }
-    flow.done();
-    let _ = child.start_kill();
-    let _ = child.wait().await;
+
+    async fn run(
+        mut self,
+        mut child: Child,
+        stdout: ChildStdout,
+        mut controls: mpsc::UnboundedReceiver<StreamInput>,
+        mut sent: mpsc::UnboundedReceiver<Sent>,
+    ) {
+        self.take(self.regular(true));
+        let flow = self.flow.clone();
+        let mut parser = Parser::default();
+        let mut pending: VecDeque<(Sent, Vec<Reply>)> = VecDeque::new();
+        let mut stdout = BufReader::new(stdout);
+        let mut line = Vec::new();
+        loop {
+            let resync_at = self.resync_at;
+            tokio::select! {
+                read = stdout.read_until(b'\n', &mut line) => {
+                    if !matches!(read, Ok(n) if n > 0) {
+                        break;
+                    }
+                }
+                // `line` keeps what was read of a line if these win.
+                more = flow.client(self.resync) => {
+                    if !more {
+                        break;
+                    }
+                    self.resync = false;
+                    self.resync_at = Some(Instant::now().max(self.asked + RESYNC_GAP));
+                    continue;
+                }
+                () = async { tokio::time::sleep_until(resync_at.unwrap_or_else(Instant::now)).await },
+                    if resync_at.is_some() =>
+                {
+                    self.resync_at = None;
+                    if self.relay.visible {
+                        self.take(self.regular(true));
+                    } else {
+                        // Off screen: the snapshot can wait for it to be back.
+                        self.relay.dropped = true;
+                    }
+                    continue;
+                }
+                Some(control) = controls.recv() => {
+                    self.control(control);
+                    continue;
+                }
+            }
+            if line.last() == Some(&b'\n') {
+                line.pop();
+            }
+            let event = parser.line(&line);
+            line.clear();
+            match event {
+                Some(Event::Output { pane, data }) => match self.relay.output(&pane, data) {
+                    Some(data)
+                        if flow.bytes() + data.len() > BEHIND && self.relay.fell_behind() =>
+                    {
+                        // Not taken in time: a snapshot replaces all of it.
+                        flow.clear();
+                        self.resync = true;
+                    }
+                    Some(data) => {
+                        if !flow.push_output(data) {
+                            break;
+                        }
+                    }
+                    None => {}
+                },
+                Some(Event::Layout { size }) => {
+                    self.window = Some(size);
+                    self.tell();
+                }
+                Some(Event::Reply { ok, lines }) => {
+                    while let Ok(record) = sent.try_recv() {
+                        pending.push_back((record, Vec::new()));
+                    }
+                    let Some((record, replies)) = pending.front_mut() else {
+                        continue;
+                    };
+                    replies.push(Reply { ok, lines });
+                    if ok && replies.len() < record.replies {
+                        continue;
+                    }
+                    if let Some((record, replies)) = pending.pop_front()
+                        && !self.answered(record.line, replies)
+                    {
+                        break;
+                    }
+                }
+                None => {}
+            }
+        }
+        flow.done();
+        let _ = child.start_kill();
+        let _ = child.wait().await;
+    }
+
+    /// A line's replies came; `false` once the client has left.
+    fn answered(&mut self, line: Line, replies: Vec<Reply>) -> bool {
+        match line {
+            Line::Input => true,
+            Line::Resize => {
+                self.resizing = self.resizing.saturating_sub(1);
+                if let Some(size) = replies
+                    .get(1)
+                    .filter(|r| r.ok)
+                    .and_then(|r| r.lines.first())
+                    .and_then(|l| parse_size(l))
+                {
+                    self.window = Some(size);
+                }
+                self.tell();
+                true
+            }
+            Line::Snapshot(take) => {
+                self.resizing = self.resizing.saturating_sub(1);
+                self.taking = false;
+                let Some(shot) = self.relay.snapshot(replies, take) else {
+                    if let Some(next) = self.next.take() {
+                        self.take(next);
+                    }
+                    return true;
+                };
+                // It has everything up to its capture.
+                self.relay.dropped = false;
+                self.window = Some(shot.size);
+                // Before the snapshot, whatever else is in flight: the client
+                // lays it out at that size. A resize's answer settles it after.
+                let other = (shot.size != self.size).then_some(shot.size);
+                if other != self.told {
+                    self.told = other;
+                    self.flow.push(StreamOutput::Window(other));
+                }
+                let pushed = self.flow.push(StreamOutput::Data(shot.bytes))
+                    && self.flow.push(StreamOutput::Snapshot {
+                        lines: shot.lines,
+                        more: shot.more,
+                    });
+                if let Some(next) = self.next.take() {
+                    self.take(next);
+                }
+                pushed
+            }
+        }
+    }
+
+    fn control(&mut self, control: StreamInput) {
+        match control {
+            StreamInput::Resize { cols, rows } => self.resize(size(cols, rows)),
+            StreamInput::View {
+                visible,
+                cols,
+                rows,
+            } => {
+                self.relay.visible = visible;
+                if !visible {
+                    return;
+                }
+                // Back on screen at this size; a snapshot if output was missed.
+                let size = size(cols, rows);
+                if std::mem::take(&mut self.relay.dropped) {
+                    self.size = size;
+                    self.take(self.regular(true));
+                } else {
+                    self.resize(size);
+                }
+            }
+            StreamInput::History(lines) => {
+                self.history = lines.min(HISTORY_LIMIT);
+                self.take(Take {
+                    budget: MORE_HISTORY_BYTES,
+                    ..self.regular(false)
+                });
+            }
+            StreamInput::Data(_) => {}
+        }
+    }
+
+    fn regular(&self, screen_first: bool) -> Take {
+        Take {
+            size: self.size,
+            history: self.history,
+            budget: HISTORY_BYTES,
+            screen_first,
+        }
+    }
+
+    /// Take a snapshot, or once the one coming has come.
+    fn take(&mut self, take: Take) {
+        // Whatever it's for, it also catches up a client that fell behind.
+        self.resync = false;
+        self.resync_at = None;
+        if self.taking {
+            let next = self.next.get_or_insert(take);
+            next.history = next.history.max(take.history);
+            next.budget = next.budget.max(take.budget);
+            next.screen_first |= take.screen_first;
+            next.size = take.size;
+            return;
+        }
+        self.taking = true;
+        self.relay.wait();
+        self.resizing += 1;
+        self.asked = Instant::now();
+        let _ = self.asks.send(Ask::Snapshot(Take {
+            size: self.size,
+            ..take
+        }));
+    }
+
+    fn resize(&mut self, size: (u16, u16)) {
+        if size == self.size {
+            return;
+        }
+        self.size = size;
+        self.resizing += 1;
+        let _ = self.asks.send(Ask::Resize(size));
+    }
+
+    /// Tell the client the window's size if another client sizes it, or that
+    /// it no longer does, once our own resizes have settled.
+    fn tell(&mut self) {
+        if self.resizing > 0 {
+            return;
+        }
+        let other = self.window.filter(|w| *w != self.size);
+        if other != self.told {
+            self.told = other;
+            self.flow.push(StreamOutput::Window(other));
+        }
+    }
 }
 
 /// Some clients report 0×0 when they can't tell; don't shrink the session's
@@ -273,6 +491,13 @@ fn size(cols: u16, rows: u16) -> (u16, u16) {
     }
 }
 
+/// `100x30` → (100, 30).
+fn parse_size(text: &[u8]) -> Option<(u16, u16)> {
+    let text = std::str::from_utf8(text).ok()?;
+    let (cols, rows) = text.trim().split_once('x')?;
+    Some((cols.parse().ok()?, rows.parse().ok()?))
+}
+
 /// One line of control-mode output, read.
 #[derive(Debug, PartialEq)]
 enum Event {
@@ -280,6 +505,8 @@ enum Event {
     Reply { ok: bool, lines: Vec<Vec<u8>> },
     /// The pane's own output.
     Output { pane: Vec<u8>, data: Vec<u8> },
+    /// The window's layout changed; it's this size now.
+    Layout { size: (u16, u16) },
 }
 
 struct Reply {
@@ -312,6 +539,14 @@ impl Parser {
         if let Some(guard) = line.strip_prefix(b"%begin ") {
             self.reply = Some((guard.to_vec(), Vec::new()));
             return None;
+        }
+        // `%layout-change @1 a87d,100x30,0,0,0 …`: after the checksum, the size.
+        if let Some(rest) = line.strip_prefix(b"%layout-change ") {
+            let layout = rest.split(|&b| b == b' ').nth(1)?;
+            let size = layout.split(|&b| b == b',').nth(1)?;
+            return Some(Event::Layout {
+                size: parse_size(size)?,
+            });
         }
         let rest = line.strip_prefix(b"%output ")?;
         let space = rest.iter().position(|&b| b == b' ')?;
@@ -370,6 +605,11 @@ struct State {
     mouse_all: bool,
     mouse_utf8: bool,
     mouse_sgr: bool,
+    /// DECSCUSR's number for the cursor's shape, if the program set one
+    /// (tmux 3.4+ says).
+    cursor_style: Option<u8>,
+    /// The cursor's colour, if the program set one.
+    cursor_colour: Option<String>,
 }
 
 impl State {
@@ -388,8 +628,8 @@ impl State {
     /// `line` is the marker followed by [`STATE_FORMAT`], expanded.
     fn parse(line: &[u8]) -> Option<State> {
         let line = std::str::from_utf8(line).ok()?;
-        let f: Vec<&str> = line.strip_prefix(MARKER)?.split_whitespace().collect();
-        if f.len() != 22 {
+        let f: Vec<&str> = line.strip_prefix(MARKER)?.trim_start().split(',').collect();
+        if f.len() < 22 {
             return None;
         }
         // Unset positions come as 4294967295 (the saved cursor, when there's
@@ -400,6 +640,17 @@ impl State {
                 .map(|v| v.min(u64::from(u16::MAX)) as u16)
         };
         let on = |i: usize| f[i] != "0";
+        let blinking = f.get(23).map(|b| *b == "1");
+        let cursor_style = match (f.get(22).copied(), blinking) {
+            (Some("block"), Some(blink)) => Some(if blink { 1 } else { 2 }),
+            (Some("underline"), Some(blink)) => Some(if blink { 3 } else { 4 }),
+            (Some("bar"), Some(blink)) => Some(if blink { 5 } else { 6 }),
+            _ => None,
+        };
+        let cursor_colour = f
+            .get(24)
+            .filter(|c| !c.is_empty() && **c != "none")
+            .map(|c| (*c).to_owned());
         Some(State {
             pane: f[0].as_bytes().to_vec(),
             width: n(1)?,
@@ -423,6 +674,8 @@ impl State {
             mouse_all: on(19),
             mouse_utf8: on(20),
             mouse_sgr: on(21),
+            cursor_style,
+            cursor_colour,
         })
     }
 }
@@ -436,43 +689,60 @@ struct Snapshot {
     saved: Vec<Vec<u8>>,
 }
 
-enum Phase {
-    /// Output is in the snapshot being taken; skip it until the snapshot.
-    Waiting {
-        first: bool,
-    },
-    Streaming,
+/// A snapshot rendered for the client.
+struct Shot {
+    bytes: Vec<u8>,
+    /// The window's size it was taken at.
+    size: (u16, u16),
+    lines: u32,
+    more: bool,
 }
 
-/// What the client should see, from what tmux sends.
+/// What the client should see of the pane's output.
 struct Relay {
-    phase: Phase,
+    /// A snapshot is coming; output until it is in it.
+    coming: bool,
     pane: Vec<u8>,
-    history: u32,
+    /// The client's terminal is on screen; not, its output is dropped.
+    visible: bool,
+    /// Output was dropped while it wasn't.
+    dropped: bool,
 }
 
 impl Relay {
-    fn new(history: u32) -> Self {
+    fn new() -> Self {
         Relay {
-            phase: Phase::Waiting { first: true },
+            coming: true,
             pane: Vec::new(),
-            history,
+            visible: true,
+            dropped: false,
         }
     }
 
-    /// A session has one pane; its id is known unless its state wasn't.
-    fn output(&self, pane: &[u8], data: Vec<u8>) -> Option<Vec<u8>> {
-        (matches!(self.phase, Phase::Streaming) && (pane == self.pane || self.pane.is_empty()))
-            .then_some(data)
+    /// A snapshot was asked for: skip output until it.
+    fn wait(&mut self) {
+        self.coming = true;
     }
 
-    /// The replies to a snapshot's line, taken at `asked`: what rebuilds the
-    /// client's terminal. A failed command loses its reply and the ones after
-    /// it; what came is still shown.
-    fn snapshot(&mut self, replies: Vec<Reply>, asked: (u16, u16)) -> Option<Vec<u8>> {
-        let Phase::Waiting { first } = self.phase else {
+    /// A session has one pane; its id is known unless its state wasn't.
+    fn output(&mut self, pane: &[u8], data: Vec<u8>) -> Option<Vec<u8>> {
+        if self.coming || !(pane == self.pane || self.pane.is_empty()) {
             return None;
-        };
+        }
+        if !self.visible {
+            self.dropped = true;
+            return None;
+        }
+        Some(data)
+    }
+
+    /// The replies to a snapshot's line: what rebuilds the client's terminal.
+    /// A failed command loses its reply and the ones after it; what came is
+    /// still shown.
+    fn snapshot(&mut self, replies: Vec<Reply>, take: Take) -> Option<Shot> {
+        if !self.coming {
+            return None;
+        }
         let mut parts: Vec<Option<Vec<Vec<u8>>>> = replies
             .into_iter()
             .map(|r| r.ok.then_some(r.lines))
@@ -490,13 +760,8 @@ impl Relay {
                     reply = %String::from_utf8_lossy(&state_reply.concat()),
                     "stream attach: unexpected pane state"
                 );
-                State::fallback(asked)
+                State::fallback(take.size)
             });
-        if (state.width, state.height) != asked {
-            // Another client sized the window (window-size latest).
-            tracing::debug!(?asked, got = ?(state.width, state.height),
-                "stream attach: the window has another size");
-        }
         let snapshot = Snapshot {
             state,
             history: part(2),
@@ -504,34 +769,39 @@ impl Relay {
             saved: part(4),
         };
         self.pane = snapshot.state.pane.clone();
-        self.phase = Phase::Streaming;
-        Some(render(&snapshot, self.history > 0, first))
+        self.coming = false;
+        let (bytes, lines, more) = render(&snapshot, take);
+        Some(Shot {
+            bytes,
+            size: (snapshot.state.width, snapshot.state.height),
+            lines,
+            more,
+        })
     }
 
     /// The client fell behind: skip output until a fresh snapshot, if one
     /// isn't already coming.
     fn fell_behind(&mut self) -> bool {
-        let streaming = matches!(self.phase, Phase::Streaming);
-        if streaming {
-            self.phase = Phase::Waiting { first: false };
-        }
+        let streaming = !self.coming;
+        self.coming = true;
         streaming
     }
 }
 
-/// Bytes that make the client's terminal show `snap`. `first`: the terminal
-/// is new, so the screen is drawn at once, before the history.
+/// Bytes that make the client's terminal show `snap` as `take` asked, the
+/// lines of history in them, and whether the session holds earlier ones.
 ///
 /// tmux's captures write a style once and it holds, across rows, until it
 /// changes; each capture starts from the default style. A line feed that
 /// scrolls fills the new line with the current background, so rows are
 /// separated with the style reset and set again after.
-fn render(snap: &Snapshot, history: bool, first: bool) -> Vec<u8> {
+fn render(snap: &Snapshot, take: Take) -> (Vec<u8>, u32, bool) {
     let s = &snap.state;
     let height = usize::from(s.height);
     let shown = rows(&snap.screen, height);
     let mut out = Vec::new();
-    if first {
+    let (mut lines_sent, mut more) = (0, false);
+    if take.screen_first {
         out.extend_from_slice(b"\x1b[H\x1b[2J");
         out.extend_from_slice(LINE_DRAWING);
         draw(&mut out, &shown);
@@ -541,8 +811,10 @@ fn render(snap: &Snapshot, history: bool, first: bool) -> Vec<u8> {
     // follows shows only once it's all there.
     out.extend_from_slice(b"\x18\x1bc\x1b[?2026h");
     out.extend_from_slice(LINE_DRAWING);
-    if history && s.history > 0 {
-        let (dropped, kept) = budget(&snap.history, HISTORY_BYTES);
+    if take.history > 0 && s.history > 0 {
+        let (dropped, kept) = budget(&snap.history, take.budget);
+        lines_sent = kept.len() as u32;
+        more = !dropped.is_empty() || s.history > take.history;
         // The first row kept goes on in the style the rows left out ended in.
         let mut style = Style::default();
         for row in dropped {
@@ -593,10 +865,16 @@ fn render(snap: &Snapshot, history: bool, first: bool) -> Vec<u8> {
             out.extend_from_slice(mode);
         }
     }
+    if let Some(style) = s.cursor_style {
+        let _ = write!(Bytes(&mut out), "\x1b[{style} q");
+    }
+    if let Some(colour) = &s.cursor_colour {
+        let _ = write!(Bytes(&mut out), "\x1b]12;{colour}\x07");
+    }
     let top = if s.origin { s.region_top } else { 0 };
     cup(&mut out, s.cursor_y.saturating_sub(top), s.cursor_x);
     out.extend_from_slice(b"\x1b[?2026l");
-    out
+    (out, lines_sent, more)
 }
 
 /// tmux marks cells in the DEC line-drawing set with SO and SI (shift out to
@@ -1027,9 +1305,18 @@ mod tests {
 
     fn state_line(alternate: bool) -> String {
         format!(
-            "{MARKER} %3 20 3 2 {} 4 1 5 2 1 1 0 1 0 0 0 2 0 0 1 0 1",
+            "{MARKER} %3,20,3,2,{},4,1,5,2,1,1,0,1,0,0,0,2,0,0,1,0,1,default,0,none",
             u8::from(alternate)
         )
+    }
+
+    fn take(size: (u16, u16), history: u32, screen_first: bool) -> Take {
+        Take {
+            size,
+            history,
+            budget: HISTORY_BYTES,
+            screen_first,
+        }
     }
 
     fn reply(lines: &[&str]) -> Reply {
@@ -1051,17 +1338,28 @@ mod tests {
 
     #[test]
     fn state_reads_unset_positions() {
+        // tmux before 3.4 has no cursor formats: they come empty.
         let line =
-            format!("{MARKER} %0 40 5 0 0 4294967295 4294967295 2 0 1 0 0 1 0 0 0 4 0 0 0 0 0");
+            format!("{MARKER} %0,40,5,0,0,4294967295,4294967295,2,0,1,0,0,1,0,0,0,4,0,0,0,0,0,,,");
         let state = State::parse(line.as_bytes()).expect("parsed");
         assert!(!state.alternate);
         assert_eq!((state.cursor_x, state.region_bottom), (2, 4));
-        assert!(State::parse(b"otter-snapshot %0 40").is_none());
+        assert_eq!(
+            (state.cursor_style, state.cursor_colour.as_deref()),
+            (None, None)
+        );
+        assert!(State::parse(b"otter-snapshot %0,40").is_none());
+        let line = format!("{MARKER} %0,40,5,0,0,0,0,2,0,1,0,0,1,0,0,0,4,0,0,0,0,0,bar,0,#ff8800");
+        let state = State::parse(line.as_bytes()).expect("parsed");
+        assert_eq!(
+            (state.cursor_style, state.cursor_colour.as_deref()),
+            (Some(6), Some("#ff8800"))
+        );
     }
 
     #[test]
     fn output_counts_only_after_the_snapshot() {
-        let mut relay = Relay::new(10);
+        let mut relay = Relay::new();
         assert!(
             snapshot_line((20, 3), 10)
                 .starts_with("refresh-client -C 20x3 ; display-message -p 'otter-snapshot ")
@@ -1071,13 +1369,14 @@ mod tests {
             SNAPSHOT_REPLIES
         );
         assert_eq!(relay.output(b"%3", b"before".to_vec()), None);
-        let shown = relay
+        let shot = relay
             .snapshot(
                 replies(&state_line(false), &["old line"], &["$ ls", "a  b"]),
-                (20, 3),
+                take((20, 3), 10, true),
             )
             .unwrap();
-        let shown = String::from_utf8(shown).unwrap();
+        assert_eq!((shot.size, shot.lines, shot.more), ((20, 3), 1, false));
+        let shown = String::from_utf8(shot.bytes).unwrap();
         assert!(
             shown.contains("old line") && shown.contains("$ ls"),
             "{shown:?}"
@@ -1092,29 +1391,31 @@ mod tests {
     #[test]
     fn a_failed_or_unreadable_snapshot_still_shows_what_came() {
         // An error drops the rest of the line: only the first reply came.
-        let mut relay = Relay::new(10);
+        let mut relay = Relay::new();
         let shown = relay
             .snapshot(
                 vec![Reply {
                     ok: false,
                     lines: vec![],
                 }],
-                (20, 2),
+                take((20, 2), 10, true),
             )
-            .unwrap();
+            .unwrap()
+            .bytes;
         assert!(shown.ends_with(b"\x1b[?2026l"));
         assert_eq!(
             relay.output(b"%0", b"live".to_vec()),
             Some(b"live".to_vec())
         );
 
-        let mut relay = Relay::new(10);
+        let mut relay = Relay::new();
         let shown = relay
             .snapshot(
-                replies("otter-snapshot %0 something new", &["old"], &["shown"]),
-                (20, 2),
+                replies("otter-snapshot %0,something new", &["old"], &["shown"]),
+                take((20, 2), 10, true),
             )
-            .unwrap();
+            .unwrap()
+            .bytes;
         let shown = String::from_utf8(shown).unwrap();
         // No history is claimed, so the first screen row isn't drawn twice.
         assert!(
@@ -1129,10 +1430,14 @@ mod tests {
 
     #[test]
     fn falling_behind_skips_output_until_a_new_snapshot() {
-        let mut relay = Relay::new(10);
+        let mut relay = Relay::new();
         let first = relay
-            .snapshot(replies(&state_line(false), &[], &["screen"]), (20, 3))
-            .unwrap();
+            .snapshot(
+                replies(&state_line(false), &[], &["screen"]),
+                take((20, 3), 10, true),
+            )
+            .unwrap()
+            .bytes;
         assert!(
             first.starts_with(b"\x1b[H\x1b[2J"),
             "the first draws at once"
@@ -1141,8 +1446,12 @@ mod tests {
         assert!(!relay.fell_behind(), "one snapshot at a time");
         assert_eq!(relay.output(b"%3", b"dropped".to_vec()), None);
         let again = relay
-            .snapshot(replies(&state_line(false), &[], &["screen"]), (20, 3))
-            .unwrap();
+            .snapshot(
+                replies(&state_line(false), &[], &["screen"]),
+                take((20, 3), 10, false),
+            )
+            .unwrap()
+            .bytes;
         assert!(again.starts_with(b"\x18\x1bc"));
         assert_eq!(
             relay.output(b"%3", b"live".to_vec()),
@@ -1168,7 +1477,7 @@ mod tests {
         assert_eq!((state.region_top, state.region_bottom), (0, 2));
         assert!(state.mouse_all && state.mouse_sgr && !state.mouse_standard);
 
-        let out = String::from_utf8(render(&snapshot(false), true, false)).unwrap();
+        let out = String::from_utf8(render(&snapshot(false), take((20, 3), 10, false)).0).unwrap();
         assert_eq!(
             out,
             "\x18\x1bc\x1b[?2026h\x1b)0\
@@ -1177,13 +1486,14 @@ mod tests {
              \x1b[?1h\x1b[?1003h\x1b[?1006h\x1b[?2004h\
              \x1b[3;6H\x1b[?2026l"
         );
-        let without = String::from_utf8(render(&snapshot(false), false, false)).unwrap();
+        let without =
+            String::from_utf8(render(&snapshot(false), take((20, 3), 0, false)).0).unwrap();
         assert!(!without.contains("h1"), "history wasn't asked for");
     }
 
     #[test]
     fn renders_the_alternate_screen_over_the_normal_one() {
-        let out = String::from_utf8(render(&snapshot(true), true, true)).unwrap();
+        let out = String::from_utf8(render(&snapshot(true), take((20, 3), 10, true)).0).unwrap();
         let (first, rest) = out.split_once("\x18\x1bc\x1b[?2026h\x1b)0").unwrap();
         assert_eq!(
             first,
@@ -1203,7 +1513,7 @@ mod tests {
         let mut snap = snapshot(false);
         snap.screen = lines_of(&["\x1b[44m    ", "    ", "ab\x1b[49m  "]);
         snap.history = lines_of(&["\x1b[1;38;5;31mbold", "still", "\x1b[22mplain"]);
-        let out = String::from_utf8(render(&snap, true, true)).unwrap();
+        let out = String::from_utf8(render(&snap, take((20, 3), 10, true)).0).unwrap();
         // Each row starts in the style the one before ended in.
         assert!(out.contains(
             "\x1b[1;1H\x1b[44m    \x1b[0m\x1b[2;1H\x1b[44m    \x1b[0m\x1b[3;1H\x1b[44mab\x1b[49m  \x1b[0m"
@@ -1218,7 +1528,7 @@ mod tests {
         // tmux shifts out once; the next row's line drawing has no SO.
         let mut snap = snapshot(false);
         snap.screen = lines_of(&["\x0elqq", "qqk\x0f end", "\x1b]8;;https://x\x1b\\link"]);
-        let out = String::from_utf8(render(&snap, false, false)).unwrap();
+        let out = String::from_utf8(render(&snap, take((20, 3), 0, false)).0).unwrap();
         assert!(out.contains("\x1b)0"), "G1 is line drawing");
         assert!(
             out.contains("\x0elqq\x1b[0m\x0f\r\n\x0eqqk\x0f end\x1b[0m\r\n"),
@@ -1319,5 +1629,213 @@ mod tests {
         assert_eq!(size(0, 50), (80, 24));
         assert_eq!(size(20000, 65535), (MAX_SIZE, MAX_SIZE));
         assert_eq!(size(100, 30), (100, 30));
+    }
+
+    /// A reader with no tmux behind it: what it asks for, and what it gives
+    /// the client.
+    fn reader() -> (Reader, mpsc::UnboundedReceiver<Ask>, Stream) {
+        let flow = Arc::new(Flow::default());
+        let (asks, asked) = mpsc::unbounded_channel();
+        let (input, _) = mpsc::unbounded_channel();
+        let (controls, _) = mpsc::unbounded_channel();
+        let reader = Reader::new(flow.clone(), asks, (100, 30), 5000);
+        (reader, asked, Stream::new(flow, input, controls))
+    }
+
+    fn snapshot_asked(asked: &mut mpsc::UnboundedReceiver<Ask>) -> Take {
+        match asked.try_recv() {
+            Ok(Ask::Snapshot(take)) => take,
+            Ok(Ask::Resize(size)) => panic!("a resize to {size:?}, not a snapshot"),
+            Err(_) => panic!("nothing asked"),
+        }
+    }
+
+    /// The replies tmux gives a snapshot taken at `size` (cols, rows).
+    fn shot_replies(size: (u16, u16)) -> Vec<Reply> {
+        let state = format!(
+            "{MARKER} %0,{},{},1,0,0,0,0,0,1,0,0,1,0,0,0,{},0,0,0,0,0,default,0,none",
+            size.0,
+            size.1,
+            size.1 - 1
+        );
+        replies(&state, &["old"], &["screen"])
+    }
+
+    async fn next(stream: &mut Stream) -> StreamOutput {
+        tokio::time::timeout(Duration::from_secs(1), stream.recv())
+            .await
+            .expect("something for the client")
+            .expect("the stream goes on")
+    }
+
+    #[tokio::test]
+    async fn one_snapshot_at_a_time_and_none_lost() {
+        let (mut reader, mut asked, mut stream) = reader();
+        reader.take(reader.regular(true));
+        let first = snapshot_asked(&mut asked);
+        assert_eq!(
+            (first.size, first.history, first.screen_first),
+            ((100, 30), 5000, true)
+        );
+        // Asked for more history while the first is coming: it waits for it.
+        reader.control(StreamInput::History(20000));
+        assert!(asked.try_recv().is_err());
+        reader.answered(Line::Snapshot(first), shot_replies((100, 30)));
+        assert!(matches!(next(&mut stream).await, StreamOutput::Data(_)));
+        assert_eq!(
+            next(&mut stream).await,
+            StreamOutput::Snapshot {
+                lines: 1,
+                more: false
+            }
+        );
+        let more = snapshot_asked(&mut asked);
+        assert_eq!(
+            (more.history, more.budget, more.screen_first),
+            (20000, MORE_HISTORY_BYTES, false)
+        );
+    }
+
+    #[tokio::test]
+    async fn off_screen_output_is_dropped_and_a_snapshot_catches_up() {
+        let (mut reader, mut asked, mut stream) = reader();
+        reader.take(reader.regular(true));
+        let first = snapshot_asked(&mut asked);
+        reader.answered(Line::Snapshot(first), shot_replies((100, 30)));
+        let _ = (next(&mut stream).await, next(&mut stream).await);
+
+        // Off screen, nothing missed: back on, only the size goes.
+        reader.control(StreamInput::View {
+            visible: false,
+            cols: 100,
+            rows: 30,
+        });
+        reader.control(StreamInput::View {
+            visible: true,
+            cols: 120,
+            rows: 40,
+        });
+        assert!(matches!(asked.try_recv(), Ok(Ask::Resize((120, 40)))));
+        reader.answered(Line::Resize, vec![reply(&[]), reply(&["120x40"])]);
+
+        // Off screen while the program writes: dropped, then a snapshot.
+        reader.control(StreamInput::View {
+            visible: false,
+            cols: 120,
+            rows: 40,
+        });
+        assert_eq!(reader.relay.output(b"%0", b"while away".to_vec()), None);
+        reader.control(StreamInput::View {
+            visible: true,
+            cols: 120,
+            rows: 40,
+        });
+        let back = snapshot_asked(&mut asked);
+        assert_eq!((back.size, back.screen_first), ((120, 40), true));
+        assert_eq!(
+            reader.relay.output(b"%0", b"in the snapshot".to_vec()),
+            None
+        );
+    }
+
+    #[tokio::test]
+    async fn the_client_hears_of_another_size_before_a_snapshot_at_it() {
+        let (mut reader, mut asked, mut stream) = reader();
+        reader.take(reader.regular(true));
+        let first = snapshot_asked(&mut asked);
+        // Another client sized the window: the snapshot came at its size.
+        reader.answered(Line::Snapshot(first), shot_replies((80, 24)));
+        assert_eq!(
+            next(&mut stream).await,
+            StreamOutput::Window(Some((80, 24)))
+        );
+        assert!(matches!(next(&mut stream).await, StreamOutput::Data(_)));
+        let _ = next(&mut stream).await;
+
+        // While our own resize is in flight, tmux's layout notices wait.
+        reader.control(StreamInput::Resize { cols: 90, rows: 25 });
+        reader.window = Some((80, 24));
+        reader.tell();
+        assert!(matches!(asked.try_recv(), Ok(Ask::Resize((90, 25)))));
+        // It settled: the window is the client's now.
+        reader.answered(Line::Resize, vec![reply(&[]), reply(&["90x25"])]);
+        assert_eq!(next(&mut stream).await, StreamOutput::Window(None));
+    }
+
+    #[test]
+    fn layout_notices_carry_the_window_size() {
+        let mut p = Parser::default();
+        assert_eq!(
+            p.line(b"%layout-change @0 b25d,80x24,0,0,0 b25d,80x24,0,0,0 *"),
+            Some(Event::Layout { size: (80, 24) })
+        );
+    }
+
+    #[test]
+    fn renders_the_cursor_the_program_set() {
+        let mut snap = snapshot(false);
+        snap.state.cursor_style = Some(2);
+        snap.state.cursor_colour = Some("#ff8800".into());
+        let out = String::from_utf8(render(&snap, take((20, 3), 0, false)).0).unwrap();
+        assert!(out.contains("\x1b[2 q\x1b]12;#ff8800\x07"), "{out:?}");
+    }
+
+    #[test]
+    fn snapshots_say_when_the_session_holds_more() {
+        let mut snap = snapshot(false);
+        snap.state.history = 9000;
+        let (_, lines, more) = render(&snap, take((20, 3), 5000, false));
+        assert_eq!((lines, more), (2, true));
+    }
+
+    #[tokio::test]
+    async fn one_snapshot_catches_up_on_everything() {
+        let (mut reader, mut asked, mut stream) = reader();
+        reader.take(reader.regular(true));
+        let first = snapshot_asked(&mut asked);
+        reader.answered(Line::Snapshot(first), shot_replies((100, 30)));
+        let _ = (next(&mut stream).await, next(&mut stream).await);
+
+        // Fell behind, then asked for history: that snapshot does for both.
+        assert!(reader.relay.fell_behind());
+        reader.resync = true;
+        reader.control(StreamInput::History(20000));
+        assert!(!reader.resync && reader.resync_at.is_none());
+        let more = snapshot_asked(&mut asked);
+
+        // Off screen with output missed, the history snapshot came anyway:
+        // back on screen there's nothing more to catch up on.
+        reader.control(StreamInput::View {
+            visible: false,
+            cols: 100,
+            rows: 30,
+        });
+        reader.relay.dropped = true;
+        reader.answered(Line::Snapshot(more), shot_replies((100, 30)));
+        reader.control(StreamInput::View {
+            visible: true,
+            cols: 100,
+            rows: 30,
+        });
+        assert!(asked.try_recv().is_err(), "no second snapshot");
+    }
+
+    #[tokio::test]
+    async fn the_notice_comes_first_even_with_a_resize_in_flight() {
+        let (mut reader, mut asked, mut stream) = reader();
+        reader.take(reader.regular(true));
+        let first = snapshot_asked(&mut asked);
+        // The client resizes before the snapshot's replies come.
+        reader.control(StreamInput::Resize { cols: 90, rows: 25 });
+        assert!(matches!(asked.try_recv(), Ok(Ask::Resize((90, 25)))));
+        reader.answered(Line::Snapshot(first), shot_replies((100, 30)));
+        assert_eq!(
+            next(&mut stream).await,
+            StreamOutput::Window(Some((100, 30)))
+        );
+        assert!(matches!(next(&mut stream).await, StreamOutput::Data(_)));
+        let _ = next(&mut stream).await;
+        reader.answered(Line::Resize, vec![reply(&[]), reply(&["90x25"])]);
+        assert_eq!(next(&mut stream).await, StreamOutput::Window(None));
     }
 }

@@ -19,19 +19,23 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-use otter_protocol::frame::{AttachExit, AttachExitReason, Frame, read_frame, write_frame};
+use otter_protocol::frame::{
+    AttachExit, AttachExitReason, Control, Frame, read_frame, write_frame,
+};
 use otter_protocol::{AttachReady, Event, SessionAttach};
 use portable_pty::{CommandBuilder, PtySize, native_pty_system};
 use tokio::io::BufReader;
 use tokio::net::unix::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::sync::{broadcast::error::RecvError, mpsc};
 
-use crate::backend::{Stream, StreamInput};
+use crate::backend::{Stream, StreamInput, StreamOutput};
 use crate::daemon::Daemon;
 use crate::server::respond;
 
 /// How long to wait for a graceful detach before killing the attach client.
 const DETACH_GRACE: Duration = Duration::from_secs(2);
+/// Output in one frame, at most; a snapshot can be larger (frames take 4 MiB).
+const FRAME_DATA: usize = 1 << 20;
 
 enum Output {
     Data(Vec<u8>),
@@ -77,6 +81,7 @@ pub async fn run(
             Viewer::Stream(Some(stream)),
             AttachReady {
                 history: true,
+                controls: params.controls,
                 ..target.ready.clone()
             },
         ),
@@ -135,15 +140,33 @@ pub async fn run(
         };
         tokio::select! {
             out = viewer.recv() => match out {
-                Some(mut data) => {
-                    // A terminal client's notices; a stream is the program's
-                    // own output, all of it.
-                    if matches!(viewer, Viewer::Pty { .. }) {
-                        daemon.backend.filter_attach_output(&mut data);
-                    }
-                    if !client_gone && !data.is_empty() && write_frame(&mut w, &Frame::Data(data)).await.is_err() {
-                        client_gone = true;
-                        viewer.kill();
+                Some(out) => {
+                    let frames = match out {
+                        StreamOutput::Data(mut data) => {
+                            // A terminal client's notices; a stream is the
+                            // program's own output, all of it.
+                            if matches!(viewer, Viewer::Pty { .. }) {
+                                daemon.backend.filter_attach_output(&mut data);
+                            }
+                            data.chunks(FRAME_DATA).map(|d| Frame::Data(d.to_vec())).collect()
+                        }
+                        // Only to a client that takes them.
+                        _ if !ready.controls => Vec::new(),
+                        StreamOutput::Window(size) => vec![Frame::Control(Control::Window {
+                            size: size.map(|(cols, rows)| [cols, rows]),
+                        })],
+                        StreamOutput::Snapshot { lines, more } => {
+                            vec![Frame::Control(Control::Snapshot { lines, more })]
+                        }
+                    };
+                    for frame in frames {
+                        if client_gone {
+                            break;
+                        }
+                        if write_frame(&mut w, &frame).await.is_err() {
+                            client_gone = true;
+                            viewer.kill();
+                        }
                     }
                 }
                 // The attach client exited (for a PTY: and the PTY closed).
@@ -155,6 +178,11 @@ pub async fn run(
                 Some(Frame::Detach) => {
                     ending.get_or_insert(exit(AttachExitReason::Detached, None));
                     begin_detach(&daemon, &mut viewer, &mut detach_deadline);
+                }
+                Some(Frame::Control(control)) => {
+                    if ready.controls {
+                        viewer.control(control);
+                    }
                 }
                 Some(Frame::Exit(_)) => {}
                 None => {
@@ -332,10 +360,10 @@ impl Viewer {
     }
 
     /// Output for the client; `None` once the attach client is gone.
-    async fn recv(&mut self) -> Option<Vec<u8>> {
+    async fn recv(&mut self) -> Option<StreamOutput> {
         match self {
             Viewer::Pty { out_rx, .. } => match out_rx.recv().await {
-                Some(Output::Data(data)) => Some(data),
+                Some(Output::Data(data)) => Some(StreamOutput::Data(data)),
                 Some(Output::Eof) | None => None,
             },
             Viewer::Stream(Some(stream)) => stream.recv().await,
@@ -360,6 +388,26 @@ impl Viewer {
             }
             Viewer::Stream(Some(stream)) => stream.send(StreamInput::Resize { cols, rows }),
             Viewer::Stream(None) => {}
+        }
+    }
+
+    /// A control frame from the client (only a stream takes them).
+    fn control(&self, control: Control) {
+        let Viewer::Stream(Some(stream)) = self else {
+            return;
+        };
+        match control {
+            Control::View {
+                visible,
+                cols,
+                rows,
+            } => stream.send(StreamInput::View {
+                visible,
+                cols,
+                rows,
+            }),
+            Control::History { lines } => stream.send(StreamInput::History(lines)),
+            Control::Window { .. } | Control::Snapshot { .. } | Control::Unknown => {}
         }
     }
 

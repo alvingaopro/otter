@@ -33,7 +33,8 @@ port-forward.
 dial`; `dial` bridges the SSH channel's stdin/stdout to the socket and starts
 the daemon first if it isn't running. `otter` passes
 `-o ControlMaster=auto -o ControlPersist=600` (sockets in
-`~/.config/otter/cm/`) so repeated connections reuse one SSH connection.
+`~/.config/otter/cm/`; `cz/` since D-119 compresses them) so repeated
+connections reuse one SSH connection.
 
 **Why.**
 - A TCP port on `localhost` is reachable by *every* local user on the host;
@@ -3572,7 +3573,9 @@ stays as the backend (design §12), attached in control mode.
   asked for them. tmux 3.7 shows control characters in a pasted buffer as
   `^X` (tab, CR and LF pass). A paste with a NUL goes as typing, because
   tmux's strings end at one. Focus reporting and cursor style come back the
-  next time the program sets them.
+  next time the program sets them. *Amended 2026-10-19:* the cursor's
+  style and colour are restored on tmux 3.4+ (D-119); focus reporting
+  still can't be.
 - **Input** goes through `send-keys -H`, byte for byte, including each byte
   of a UTF-8 character (measured). Home and End go as tmux's key names, so
   the program gets what its terminal says (`\e[1~`, `\e[4~`), as with a
@@ -3596,7 +3599,8 @@ stays as the backend (design §12), attached in control mode.
   size. With `window-size latest`, a more recent client of another size (the
   CLI on the same session) sizes the window. The stream is then laid out for
   that size until the app is the latest client again. It's logged, not
-  solved.
+  solved. *Amended 2026-10-19:* the client hears the window's size and
+  follows it (D-119).
 - **Differences left** (the app's terminal behaves like a terminal, not like
   tmux's drawing of one):
   - A screen cleared from its top-left corner goes into tmux's history but
@@ -3626,3 +3630,65 @@ stays as the backend (design §12), attached in control mode.
     above: unbounded memory, styles, hangs on a failed snapshot, Home and
     End, a resize race, early query answers, NULs, line drawing, links, and
     resync spacing.
+
+## D-119 — Streams hear what the client's terminal is doing (2026-10-19)
+
+Follows D-118, with what dogfooding it left open.
+
+- **Control frames:** kind 5, JSON, both ways, used only once both peers
+  said `controls`. Old peers never see one, so it's compatible: no version
+  bump, and the Compatibility section now says so.
+- **Off screen, nothing is sent.** The app keeps up to five workspaces'
+  terminals mounted (D-100). Each got all of its session's output, over SSH,
+  parsed by a terminal nobody saw. Now a terminal off screen (its workspace
+  not shown, another view in front, the window hidden) tells the host. The
+  daemon drops its output and notes that it did. Back on screen the
+  terminal gets a snapshot (screen first) if it missed any; otherwise it
+  just goes on. This isn't tmux's `refresh-client -A pane:off`: once every
+  client turns a pane off, tmux stops reading it and the program blocks.
+  Tested: the program runs on while the client gets nothing.
+- **SSH is compressed.** Snapshots are escape-heavy text. Real Claude Code
+  ones went from 203 KiB to 29 KiB with zlib, which is what SSH uses.
+  Otter's ssh passes `Compression=yes` after the host's `ssh_args`, so an
+  explicit option there wins (it does override `~/.ssh/config`).
+  ControlMaster sockets moved to `cz/`, so masters made before aren't
+  reused uncompressed. Keeping more session terminals mounted would make
+  switching instant, but the app already holds up to ten terminals, and
+  WebKit has about sixteen WebGL contexts.
+- **Another client's size.** tmux gives the window to the client that typed
+  last (window-size latest). A control client can't take it back, whether
+  by typing, by resizing, or with a per-window size (all measured); a new
+  control client does. So the daemon reads the window's size: from
+  `%layout-change`, and read back with each resize, so notices don't flap.
+  When it isn't the stream client's own, the daemon tells the client,
+  before any snapshot laid out at it. The app then shows the session at
+  that size and says so. A click attaches again and takes the window back.
+  When the other client leaves, the window is the app's again, and the app
+  is told.
+- **The cursor:** tmux 3.4+ has `#{cursor_shape}`, `#{cursor_blinking}` and
+  `#{cursor_colour}`. The snapshot restores the shape (DECSCUSR) and the
+  colour (OSC 12). The state line is comma-separated now, so a tmux without
+  those formats leaves them empty and its state still reads.
+- **Focus reporting** still can't be restored: tmux has no format for it,
+  and `send-keys FocusIn` types the word (tmux 3.7).
+- **History:**
+  - The app asks for 5,000 lines on attach: its scrollback, 1 MiB at most,
+    about 150 KiB compressed.
+  - Scrolled to the top of that, while the host holds more, it offers
+    earlier lines: a snapshot with up to 20,000 (4 MiB) that keeps the
+    reader's place.
+  - Each snapshot says how many lines it brought and whether there are more.
+  - Snapshots no longer count as output waiting. A 4 MiB one would have
+    made the next output fall behind, and dropped itself.
+  - Output frames are cut to 1 MiB; frames take up to 4 MiB.
+- **Memory in the app:** xterm.js keeps about 12 bytes a cell. 5,000 lines
+  of a 291-column pane is about 17 MB a terminal, and 20,000 is about 70 MB,
+  but only for terminals where earlier lines were asked for.
+- **Verified:**
+  - Unit tests: one snapshot at a time, with none lost; output off screen
+    dropped, then caught up; the window notice before the snapshot, and only
+    once resizes settle; layout notices; the cursor; more history.
+  - End to end against real tmux: off screen and back, with and without
+    missed output; another client sizing the window, then leaving; the
+    cursor restored; earlier history brought.
+  - The desktop crate passes clippy (built here with nix-provided libraries).

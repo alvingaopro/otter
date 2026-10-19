@@ -10,7 +10,7 @@ use otter_core::{
     EnvironmentKind, EnvironmentStatus, ExecutionState, SessionKind, SessionStatus, Workspace,
     WorkspaceSource, WorkspaceState,
 };
-use otter_protocol::frame::{AttachExitReason, Frame};
+use otter_protocol::frame::{AttachExitReason, Control, Frame};
 use otter_protocol::{
     Cursor, Event, SessionAttach, SessionCreate, SessionRef, SessionSpec, SourceSpec,
     WorkspaceCreate,
@@ -456,9 +456,85 @@ async fn attach_with(
             rows: 30,
             term: Some("xterm-256color".into()),
             history,
+            controls: false,
         })
         .await
         .unwrap()
+}
+
+/// A stream attach that takes control frames (D-119), at `cols`×`rows`.
+async fn controlled_attach(
+    host: &TestHost,
+    ws: &str,
+    session: &str,
+    (cols, rows): (u16, u16),
+    history: u32,
+) -> (otter_client::AttachReader, otter_client::AttachWriter) {
+    let (ready, reader, writer) = host
+        .conn()
+        .await
+        .attach(SessionAttach {
+            session: SessionRef {
+                workspace: ws.into(),
+                session: session.into(),
+            },
+            cols,
+            rows,
+            term: Some("xterm-256color".into()),
+            history: Some(history),
+            controls: true,
+        })
+        .await
+        .unwrap();
+    assert!(ready.history && ready.controls);
+    (reader, writer)
+}
+
+/// Read frames until a control frame `want` accepts; the output before it.
+async fn read_until_control(
+    reader: &mut otter_client::AttachReader,
+    want: impl Fn(&Control) -> bool,
+) -> (String, Control) {
+    let mut seen = Vec::new();
+    tokio::time::timeout(Duration::from_secs(15), async {
+        loop {
+            match reader.next().await.unwrap() {
+                Some(Frame::Data(d)) => seen.extend_from_slice(&d),
+                Some(Frame::Control(c)) if want(&c) => {
+                    return (String::from_utf8_lossy(&seen).into_owned(), c);
+                }
+                Some(Frame::Control(_)) => {}
+                other => panic!("unexpected frame {other:?}"),
+            }
+        }
+    })
+    .await
+    .unwrap_or_else(|_| {
+        panic!(
+            "no such control frame after {:?}",
+            String::from_utf8_lossy(&seen)
+        )
+    })
+}
+
+fn snapshot_done(c: &Control) -> bool {
+    matches!(c, Control::Snapshot { .. })
+}
+
+/// Output that comes within `wait`, if any.
+async fn quiet_for(reader: &mut otter_client::AttachReader, wait: Duration) -> Vec<u8> {
+    let mut seen = Vec::new();
+    let _ = tokio::time::timeout(wait, async {
+        loop {
+            match reader.next().await.unwrap() {
+                Some(Frame::Data(d)) => seen.extend_from_slice(&d),
+                Some(_) => {}
+                None => return,
+            }
+        }
+    })
+    .await;
+    seen
 }
 
 /// Read frames until the accumulated output contains `needle`.
@@ -1009,6 +1085,160 @@ async fn stream_attach_sends_home_and_end_as_a_terminal_client_would() {
     }
     let out = read_until(&mut reader, "done").await;
     assert!(out.contains("^[[1~^[[4~^[[1~done"), "{out:?}");
+}
+
+#[tokio::test]
+async fn stream_attach_off_screen_gets_nothing_and_catches_up_on_return() {
+    let host = TestHost::new();
+    sh_session(&host, "vw").await;
+    let (mut reader, mut writer) = controlled_attach(&host, "vw", "sh", (100, 30), 1000).await;
+    read_until_control(&mut reader, snapshot_done).await;
+    let view = |visible| {
+        Frame::Control(Control::View {
+            visible,
+            cols: 100,
+            rows: 30,
+        })
+    };
+
+    // Off screen and back, nothing written meanwhile: no snapshot, just on.
+    writer.send(&view(false)).await.unwrap();
+    writer.send(&view(true)).await.unwrap();
+    send(&mut writer, "echo plain-$((1+1))\r").await;
+    let out = read_until(&mut reader, "plain-2").await;
+    assert!(!out.contains("\x1bc"), "{out:?}");
+
+    // Off screen while the program writes: it runs on, the client gets none.
+    writer.send(&view(false)).await.unwrap();
+    host.conn()
+        .await
+        .session_write("vw", "sh", "echo while-away-$((2+2))", true)
+        .await
+        .unwrap();
+    wait_output(&host, "vw", "sh", "while-away-4").await;
+    assert!(
+        quiet_for(&mut reader, Duration::from_millis(500))
+            .await
+            .is_empty()
+    );
+    // Back on screen: a snapshot with what was missed.
+    writer.send(&view(true)).await.unwrap();
+    let (back, _) = read_until_control(&mut reader, snapshot_done).await;
+    assert!(
+        back.contains("\x18\x1bc") && back.contains("while-away-4"),
+        "{back:?}"
+    );
+}
+
+#[tokio::test]
+async fn stream_attach_hears_when_another_client_sizes_the_window() {
+    let host = TestHost::new();
+    sh_session(&host, "sz").await;
+    let (mut reader, _writer) = controlled_attach(&host, "sz", "sh", (100, 30), 100).await;
+    read_until_control(&mut reader, snapshot_done).await;
+
+    // A terminal client (as `otter attach`) at 80×24 that types last.
+    let (_, mut other, mut other_writer) = host
+        .conn()
+        .await
+        .attach(SessionAttach {
+            session: SessionRef {
+                workspace: "sz".into(),
+                session: "sh".into(),
+            },
+            cols: 80,
+            rows: 24,
+            term: Some("xterm-256color".into()),
+            history: None,
+            controls: false,
+        })
+        .await
+        .unwrap();
+    send(&mut other_writer, " ").await;
+    let (_, told) = read_until_control(&mut reader, |c| matches!(c, Control::Window { .. })).await;
+    assert_eq!(
+        told,
+        Control::Window {
+            size: Some([80, 24])
+        }
+    );
+
+    // It leaves: the window is the stream client's again.
+    other_writer.send(&Frame::Detach).await.unwrap();
+    read_exit(&mut other).await;
+    let (_, told) = read_until_control(&mut reader, |c| matches!(c, Control::Window { .. })).await;
+    assert_eq!(told, Control::Window { size: None });
+}
+
+#[tokio::test]
+async fn stream_attach_restores_the_cursor_the_program_set() {
+    let host = TestHost::new();
+    sh_session(&host, "cur").await;
+    let exec = backend_ref(&host.conn().await.workspace_get("cur").await.unwrap());
+    let shape = host.tmux(&[
+        "display-message",
+        "-p",
+        "-t",
+        &format!("={exec}:"),
+        "#{cursor_shape}",
+    ]);
+    if String::from_utf8_lossy(&shape.stdout).trim().is_empty() {
+        eprintln!("skipped: this tmux has no cursor formats (3.4+)");
+        return;
+    }
+    host.conn()
+        .await
+        .session_write(
+            "cur",
+            "sh",
+            "printf '\\033[4 q\\033]12;#ff8800\\007'; echo cursor-set",
+            true,
+        )
+        .await
+        .unwrap();
+    wait_output(&host, "cur", "sh", "cursor-set").await;
+    let (mut reader, _writer) = controlled_attach(&host, "cur", "sh", (100, 30), 100).await;
+    let (snapshot, _) = read_until_control(&mut reader, snapshot_done).await;
+    assert!(
+        snapshot.contains("\x1b[4 q"),
+        "steady underline: {snapshot:?}"
+    );
+    assert!(snapshot.contains("\x1b]12;#ff8800\x07"), "{snapshot:?}");
+}
+
+#[tokio::test]
+async fn stream_attach_brings_earlier_history_when_asked() {
+    let host = TestHost::new();
+    sh_session(&host, "hi").await;
+    host.conn()
+        .await
+        .session_write(
+            "hi",
+            "sh",
+            "i=0; while [ $i -lt 3000 ]; do i=$((i+1)); echo row-$i; done",
+            true,
+        )
+        .await
+        .unwrap();
+    wait_output(&host, "hi", "sh", "row-3000").await;
+    let (mut reader, mut writer) = controlled_attach(&host, "hi", "sh", (100, 30), 500).await;
+    let (first, done) = read_until_control(&mut reader, snapshot_done).await;
+    assert!(!first.contains("row-100\x1b"), "not asked for yet");
+    assert!(
+        matches!(done, Control::Snapshot { more: true, .. }),
+        "{done:?}"
+    );
+
+    writer
+        .send(&Frame::Control(Control::History { lines: 5000 }))
+        .await
+        .unwrap();
+    let (more, done) = read_until_control(&mut reader, snapshot_done).await;
+    assert!(more.contains("row-100\x1b[0m\r\n"), "earlier rows came");
+    assert!(
+        matches!(done, Control::Snapshot { more: false, .. }),
+        "{done:?}"
+    );
 }
 
 #[tokio::test]
