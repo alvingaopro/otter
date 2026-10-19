@@ -311,12 +311,11 @@ async fn follow(app: &AppHandle, name: &str, transport: &Transport) -> Result<Ne
                     // from a provider built in or (asked) another site.
                     match rec.event {
                         otter_protocol::Event::BrowserOpenRequested { request_id, .. } => {
-                            tauri::async_runtime::spawn(crate::forwards::open_login(
-                                login_app.clone(),
-                                login_host.clone(),
-                                request_id,
-                                None,
-                            ));
+                            let (app, host) = (login_app.clone(), login_host.clone());
+                            tauri::async_runtime::spawn(async move {
+                                let _ =
+                                    crate::forwards::open_login(app, host, request_id, None).await;
+                            });
                         }
                         otter_protocol::Event::BrowserOpenAsked {
                             request_id,
@@ -473,7 +472,7 @@ pub async fn host_add(
     let nonempty = |s: Option<String>| s.map(|s| s.trim().to_owned()).filter(|s| !s.is_empty());
     let (destination, otterd_path, home) =
         (nonempty(destination), nonempty(otterd_path), nonempty(home));
-    let mut config = load_config().map_err(|e| format!("{e:#}"))?;
+    let config = load_config().map_err(|e| format!("{e:#}"))?;
     let transport = match destination {
         Some(destination) => HostTransport::Ssh {
             destination,
@@ -534,6 +533,9 @@ pub async fn host_add(
             Err(e) => return Err(e.to_string()),
         }
     }
+    // Read again: the file may have changed while the host was set up (a
+    // sign-in site allowed, the CLI adding a host).
+    let mut config = load_config().map_err(|e| format!("{e:#}"))?;
     config.add_host(entry).map_err(|e| e.to_string())?;
     config.save().map_err(|e| format!("{e:#}"))?;
     reconcile(&app);

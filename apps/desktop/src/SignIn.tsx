@@ -29,34 +29,60 @@ function Cross() {
 /** The pages waiting, newest last, in the window's corner. */
 export function SignInAsks({ asks, onDone }: { asks: SignInAsk[]; onDone: (requestId: string) => void }) {
   if (asks.length === 0) return null;
-  const open = (a: SignInAsk, always: boolean) => {
-    onDone(a.requestId);
-    void invoke("sign_in_open", { host: a.host, requestId: a.requestId, site: a.site, always }).catch(() => {});
-  };
   return (
     <div className="sign-in-asks">
       {asks.map((a) => (
-        <section key={a.requestId} className="sign-in-ask" role="alertdialog" aria-label={`Sign in at ${a.site}?`}>
-          <div className="sign-in-ask-head">
-            <span className="sign-in-ask-title">Sign in at {a.site}?</span>
-            <button className="icon-btn" aria-label="Not now" title="Not now" onClick={() => onDone(a.requestId)}>
-              <Cross />
-            </button>
-          </div>
+        <Ask key={a.requestId} ask={a} onDone={() => onDone(a.requestId)} />
+      ))}
+    </div>
+  );
+}
+
+/** One page: it goes once opened; if it couldn't be, it says why. */
+function Ask({ ask: a, onDone }: { ask: SignInAsk; onDone: () => void }) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const open = async (always: boolean) => {
+    setBusy(true);
+    try {
+      await invoke("sign_in_open", { host: a.host, requestId: a.requestId, site: a.site, always });
+      onDone();
+    } catch (e) {
+      setError(String(e));
+      setBusy(false);
+    }
+  };
+  return (
+    <section className="sign-in-ask" role="alertdialog" aria-label={`Sign in at ${a.site}?`}>
+      <div className="sign-in-ask-head">
+        <span className="sign-in-ask-title">Sign in at {a.site}?</span>
+        <button className="icon-btn" aria-label={error ? "Close" : "Not now"} title={error ? "Close" : "Not now"} onClick={onDone}>
+          <Cross />
+        </button>
+      </div>
+      {error ? (
+        <p className="error small">{error}</p>
+      ) : (
+        <>
           <p className="muted small">
             A tool {a.workspace ? `in ${a.workspace} ` : ""}on {a.host} wants to open this page in your browser.
           </p>
           <div className="sign-in-ask-actions">
-            <button className="btn primary" onClick={() => open(a, false)}>
+            <button className="btn primary" disabled={busy} onClick={() => void open(false)}>
               Open
             </button>
-            <button className="btn outline" onClick={() => open(a, true)} title={`From now on, ${a.site} opens without asking`}>
+            <button
+              className="btn outline"
+              disabled={busy}
+              onClick={() => void open(true)}
+              title={`From now on, ${a.site} opens without asking`}
+            >
               Always open
             </button>
           </div>
-        </section>
-      ))}
-    </div>
+        </>
+      )}
+    </section>
   );
 }
 

@@ -6,8 +6,8 @@
 //! whichever takes it first opens it, never both), maps a loopback callback
 //! port to this machine over the shared SSH connection, and opens the page.
 //! A page on another site (`BrowserOpenAsked`, D-121) it takes only if the
-//! whole site is one this Mac allowed; it can't ask, so it leaves the rest to
-//! the app. Every page is checked again here before it opens.
+//! whole site is one this Mac allowed (as the list was when it started); it
+//! can't ask, so it leaves the rest to the app. Every page is checked again here before it opens.
 //! Callback mappings go when the host stops listening on the port (the tool
 //! got its redirect), after ten minutes, or when [`Logins::stop`] runs.
 
@@ -171,14 +171,17 @@ async fn open_login(
     let Ok(opening) = conn.browser_take(&request_id).await else {
         return;
     };
-    // This Mac decides, whatever the host said.
-    if !url::Url::parse(&opening.url)
-        .is_ok_and(|url| otter_protocol::sign_in::opens(&url, &allowed))
-    {
+    // This Mac decides, whatever the host said: the page, and the callback
+    // port, read from the page itself.
+    let Ok(url) = url::Url::parse(&opening.url) else {
+        return;
+    };
+    if !otter_protocol::sign_in::opens(&url, &allowed) {
         return;
     }
     // A local host's callback port is already on this machine.
-    if let (Some(port), Transport::Ssh { .. }) = (opening.callback_port, &transport) {
+    let port = otter_protocol::sign_in::callback_port(&url);
+    if let (Some(port), Transport::Ssh { .. }) = (port, &transport) {
         let mapping = Mapping {
             host,
             direction: Direction::ToLocal,

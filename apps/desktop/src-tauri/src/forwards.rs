@@ -291,40 +291,44 @@ const LOGIN_TTL: std::time::Duration = std::time::Duration::from_secs(600);
 /// A tool on `host` asked for a sign-in page: take it, and if this Mac opens
 /// it (a provider built in, a site allowed here, or `approved`: the site the
 /// developer just said yes to), map its callback port here and open it.
+/// The error says why it didn't open.
 pub async fn open_login(
     app: AppHandle,
     host: String,
     request_id: String,
     approved: Option<String>,
-) {
+) -> Result<(), String> {
     use tauri_plugin_opener::OpenerExt;
-    let Ok(transport) = app.state::<Hosts>().transport(&host) else {
-        return;
-    };
-    let Ok(mut conn) = otter_client::Connection::connect(&transport).await else {
-        return;
-    };
+    let transport = app.state::<Hosts>().transport(&host)?;
+    let mut conn = otter_client::Connection::connect(&transport)
+        .await
+        .map_err(|_| format!("{host} isn't reachable"))?;
     // Another app (another Mac) may have taken it first: then it's theirs.
-    let Ok(opening) = conn.browser_take(&request_id).await else {
-        return;
-    };
-    // This Mac decides, whatever the host said (D-121).
+    // Or its two minutes are up.
+    let opening = conn
+        .browser_take(&request_id)
+        .await
+        .map_err(|_| "It's gone: the tool stopped waiting. Run it again.".to_owned())?;
+    // This Mac decides, whatever the host said (D-121): the page, and the
+    // callback port, read from the page itself.
     let sites = crate::hosts::load_config()
         .map(|c| c.sign_in_sites)
         .unwrap_or_default();
-    let opens = url::Url::parse(&opening.url).is_ok_and(|url| {
-        otter_protocol::sign_in::opens(&url, &sites)
-            || (url.scheme() == "https"
-                && approved.as_deref() == url.host_str().map(str::to_lowercase).as_deref())
-    });
+    let url = url::Url::parse(&opening.url).map_err(|_| "It isn't a page.".to_owned())?;
+    let opens = otter_protocol::sign_in::opens(&url, &sites)
+        || (url.scheme() == "https"
+            && approved.as_deref() == url.host_str().map(str::to_lowercase).as_deref());
     if !opens {
         tracing_log(&format!(
             "not opening a sign-in page from {}",
             opening.provider
         ));
-        return;
+        return Err(format!(
+            "Not opened: it's on {}.",
+            url.host_str().unwrap_or("another site")
+        ));
     }
-    if let Some(port) = opening.callback_port {
+    if let Some(port) = otter_protocol::sign_in::callback_port(&url) {
         let mapping = Mapping {
             host: host.clone(),
             direction: Direction::ToLocal,
@@ -353,9 +357,12 @@ pub async fn open_login(
         }
         publish(&app);
     }
-    if let Err(e) = app.opener().open_url(&opening.url, None::<&str>) {
-        tracing_log(&format!("opening a sign-in page: {e}"));
-    }
+    app.opener()
+        .open_url(&opening.url, None::<&str>)
+        .map_err(|e| {
+            tracing_log(&format!("opening a sign-in page: {e}"));
+            format!("The browser didn't open it: {e}")
+        })
 }
 
 /// Drop login callbacks whose time is up or whose port the host no longer

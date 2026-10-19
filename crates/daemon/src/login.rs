@@ -49,53 +49,19 @@ pub fn check(raw: &str) -> Result<Opening, String> {
     if url.scheme() != "https" || url.host_str().is_none() {
         return Err("only https sign-in pages are opened on the Mac".into());
     }
+    // A named host, never a pattern (`https://*.co.uk/` parses): the site the
+    // Mac is told about is what *Always open* would allow.
+    let host = match url.host() {
+        Some(url::Host::Domain(d)) if otter_protocol::sign_in::is_host(d) => d.to_lowercase(),
+        _ => return Err("only sign-in pages on a named host are opened on the Mac".into()),
+    };
     let none: &[&str] = &[];
     Ok(Opening {
         url: raw.to_owned(),
-        provider: url.host_str().unwrap_or_default().to_lowercase(),
-        callback_port: loopback_port(&url, 2),
+        provider: host,
+        callback_port: otter_protocol::sign_in::callback_port(&url),
         built_in: otter_protocol::sign_in::opens(&url, none),
     })
-}
-
-/// The port of a loopback `redirect_uri`, looking into https URLs wrapped in
-/// the query (`continue`, `return_to`, …) up to `depth` levels.
-fn loopback_port(url: &Url, depth: u32) -> Option<u16> {
-    let pairs: Vec<(String, String)> = url
-        .query_pairs()
-        .map(|(k, v)| (k.into(), v.into()))
-        .collect();
-    if let Some(p) = pairs
-        .iter()
-        .filter(|(k, _)| k == "redirect_uri")
-        .find_map(|(_, v)| loopback_redirect(v))
-    {
-        return Some(p);
-    }
-    if depth == 0 {
-        return None;
-    }
-    let mut sorted = pairs;
-    sorted.sort();
-    sorted.iter().find_map(|(_, v)| {
-        let inner = Url::parse(v).ok()?;
-        (inner.scheme() == "https" && inner.host_str().is_some())
-            .then(|| loopback_port(&inner, depth - 1))
-            .flatten()
-    })
-}
-
-fn loopback_redirect(raw: &str) -> Option<u16> {
-    let u = Url::parse(raw).ok()?;
-    if u.scheme() != "http" {
-        return None;
-    }
-    match u.host_str()? {
-        "127.0.0.1" | "localhost" | "[::1]" | "::1" => {}
-        _ => return None,
-    }
-    // An explicit, unprivileged port only (`url` drops the default 80).
-    u.port().filter(|p| *p >= 1024)
 }
 
 // ---------------------------------------------------------------------------
@@ -153,12 +119,14 @@ mod tests {
                 Url::parse(page).unwrap().host_str().unwrap()
             );
         }
-        // Not https: never.
+        // Not https, or not a named host: never.
         assert!(
             check("http://accounts.google.com/")
                 .unwrap_err()
                 .contains("https")
         );
+        assert!(check("https://*.co.uk/x").is_err(), "a pattern for a host");
+        assert!(check("https://10.0.0.1/login").is_err());
         assert!(check("file:///etc/passwd").is_err());
     }
 

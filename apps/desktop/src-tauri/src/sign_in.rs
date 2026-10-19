@@ -65,24 +65,24 @@ pub fn sign_in_forget(site: String) -> Result<Vec<String>, String> {
 }
 
 /// The developer said open: this page, and with `always` every page on its
-/// site from now on.
+/// site from now on. The page opens even if the site can't be kept; the
+/// error says what went wrong.
 #[tauri::command]
-pub fn sign_in_open(
+pub async fn sign_in_open(
     app: AppHandle,
     host: String,
     request_id: String,
     site: String,
     always: bool,
 ) -> Result<(), String> {
-    if always {
-        sign_in_allow(site.clone())?;
+    // A host names the page's site: a host, never a pattern.
+    if !otter_protocol::sign_in::is_host(&site) {
+        return Err(format!("{site} isn't a site"));
     }
-    tauri::async_runtime::spawn(crate::forwards::open_login(
-        app,
-        host,
-        request_id,
-        Some(site),
-    ));
+    crate::forwards::open_login(app, host, request_id, Some(site.clone())).await?;
+    if always {
+        sign_in_allow(site).map_err(|e| format!("Opened, but not kept: {e}"))?;
+    }
     Ok(())
 }
 
@@ -94,13 +94,14 @@ pub fn asked(
     site: &str,
     workspace_id: Option<&WorkspaceId>,
 ) {
+    if !otter_protocol::sign_in::is_host(site) {
+        return;
+    }
     if otter_protocol::sign_in::whole_site_on(site, &sites_now()) {
-        tauri::async_runtime::spawn(crate::forwards::open_login(
-            app.clone(),
-            host.to_owned(),
-            request_id.to_owned(),
-            None,
-        ));
+        let (app, host, request_id) = (app.clone(), host.to_owned(), request_id.to_owned());
+        tauri::async_runtime::spawn(async move {
+            let _ = crate::forwards::open_login(app, host, request_id, None).await;
+        });
         return;
     }
     let _ = app.emit(

@@ -15,6 +15,7 @@ vi.mock("@tauri-apps/api/core", () => ({
       kept.sites = [...kept.sites, new URL(site.includes("://") ? site : `https://${site}`).host];
       return kept.sites;
     }
+    if (cmd === "sign_in_open" && args.requestId === "login_gone") throw "It's gone: the tool stopped waiting. Run it again.";
     if (cmd === "sign_in_forget") {
       kept.sites = kept.sites.filter((s) => s !== args.site);
       return kept.sites;
@@ -91,16 +92,39 @@ describe("asking about a sign-in page (D-121)", () => {
     expect(el.textContent).toContain("in billing on dev-01");
 
     await act(async () => button("Open").click());
+    await flush();
     expect(calls[calls.length - 1]).toEqual({
       cmd: "sign_in_open",
       args: { host: "dev-01", requestId: "login_1", site: "login.corp.test", always: false },
     });
+    expect(done).toEqual(["login_1"]);
+
+    // Opened, it goes; the next one is asked about afresh.
+    const next = { ...ask, requestId: "login_2" };
+    await act(async () => root.render(<SignInAsks asks={[next]} onDone={(id) => done.push(id)} />));
     await act(async () => button("Always open").click());
-    expect(calls[calls.length - 1]?.args.always).toBe(true);
+    await flush();
+    expect(calls[calls.length - 1]?.args).toMatchObject({ requestId: "login_2", always: true });
+
+    const last = { ...ask, requestId: "login_3" };
+    await act(async () => root.render(<SignInAsks asks={[last]} onDone={(id) => done.push(id)} />));
     const asked = calls.length;
     await act(async () => button("Not now").click());
     expect(calls.length).toBe(asked);
-    expect(done).toEqual(["login_1", "login_1", "login_1"]);
+    expect(done).toEqual(["login_1", "login_2", "login_3"]);
+  });
+
+  it("says why a page didn't open, and stays until closed", async () => {
+    const done: string[] = [];
+    const gone = { ...ask, requestId: "login_gone" };
+    await act(async () => root.render(<SignInAsks asks={[gone]} onDone={(id) => done.push(id)} />));
+    await act(async () => button("Open").click());
+    await flush();
+    expect(el.textContent).toContain("the tool stopped waiting");
+    expect(done).toEqual([]);
+    expect(button("Open")).toBeUndefined();
+    await act(async () => button("Close").click());
+    expect(done).toEqual(["login_gone"]);
   });
 
   it("shows nothing when nothing waits", async () => {

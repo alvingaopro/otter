@@ -3748,8 +3748,10 @@ browser opener's refusal. Anyone using a sign-in site Otter didn't know had
 the same silent failure.
 
 - **Salesforce is built in:** `login.salesforce.com`, `test.salesforce.com`
-  and `*.my.salesforce.com` (orgs, scratch orgs, sandboxes). The list moved to
-  `otter_protocol::sign_in`, so the daemon and the Mac use the same one.
+  and `*.my.salesforce.com` (orgs, scratch orgs, sandboxes). The last is
+  every org's own domain, wider than one company's sign-in page, as
+  `*.awsapps.com` is. The list moved to `otter_protocol::sign_in`, so the
+  daemon and the Mac use the same one.
 - **Any other https page is offered to the Mac, not refused.** The daemon
   keeps it for the usual two minutes and emits `BrowserOpenAsked`, with the
   site only, no URL. The tool still hears an error, so it prints its link
@@ -3760,20 +3762,27 @@ the same silent failure.
   share them, and one list serves every host. A host can't widen it: before
   opening any page, the app or `otter attach` checks it again against the
   built-in providers and the Mac's sites. Even for a `BrowserOpenRequested`,
-  the host's word isn't enough.
+  the host's word isn't enough. The callback port the Mac maps is read from
+  the page it opens, not from the event.
+- **A host names a site; it never names a pattern.** The site in
+  `BrowserOpenAsked` must be a plain host name (no `*`, no path), checked by
+  the daemon and again by the Mac, or *Always open* could add a pattern the
+  host chose (`*.co.uk`). Only the developer types `*.`, and only leading.
 - **The app asks, in its corner:** "Sign in at login.corp.test?", which tool
   wants it (workspace and host), then *Open*, *Always open*, or not now. If
   the window isn't in front, a notification says so too. *Always open* adds
   the site and opens the page, so the login goes on without running the
   command again. The question goes when the host lets the page go (two
-  minutes).
+  minutes). If the page can't be opened (gone, taken by another Mac), the
+  card says so instead of vanishing; if the site can't be kept, the page
+  still opens and the card says it wasn't kept.
 - **Settings › This Mac › Sign-in pages** lists the sites allowed, each with
   a button to ask again, and a field for a site or a pasted link (`*.` plus
   a domain for its subdomains). Below it is one line naming the providers
   built in.
 - **`otter attach`** opens an asked page only if its whole site is allowed on
-  the Mac. It can't ask in a terminal that's busy with the session, so it
-  leaves the rest to the app, untaken.
+  the Mac, as the list was when it attached. It can't ask in a terminal
+  that's busy with the session, so it leaves the rest to the app, untaken.
 - **Verified:**
   - Unit tests for the shared matching (Salesforce's hosts, look-alikes,
     `*.`, path prefixes, what can be typed).

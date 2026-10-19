@@ -628,11 +628,7 @@ impl Daemon {
         {
             return Err(RpcError::new(
                 otter_protocol::ErrorCode::Unavailable,
-                if opening.built_in {
-                    "no Otter app or attached terminal is connected to open it".to_owned()
-                } else {
-                    format!("{} is not a sign-in site Otter opens", opening.provider)
-                },
+                "no Otter app or attached terminal is connected to open it",
             ));
         }
         let workspace_id = match &p.session {
