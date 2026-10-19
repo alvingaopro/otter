@@ -198,10 +198,12 @@ code, .mono { font-family: var(--mono); }
 .count-badge.working.on { background: var(--meter-track); color: var(--working-text); }
 .count-badge.on:hover { filter: brightness(1.15); }
 
-.hosts { border-top: 1px solid var(--line); padding: 10px 14px 10px 20px; display: flex; flex-direction: column; gap: 6px; }
+.hosts { border-top: 1px solid var(--line); padding: 10px 14px 10px 20px; display: flex; flex-direction: column; gap: 6px; container-type: inline-size; }
 .hosts .group-label { padding: 0; margin-bottom: 0; color: var(--faint); }
 .hosts-label { align-items: center; }
-.hosts-summary { margin-left: 6px; font-weight: 500; letter-spacing: 0; color: var(--faint); }
+.hosts-summary { margin-left: 6px; font-weight: 500; letter-spacing: 0; color: var(--faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.hosts-label .group-toggle { min-width: 0; overflow: hidden; }
+.hosts-label .group-toggle > span:not(.hosts-summary) { flex: none; }
 .hosts-summary.warn { color: var(--needs-text); }
 .host-list { display: flex; flex-direction: column; gap: 2px; padding-right: 6px; }
 .sidebar-foot { display: flex; align-items: center; gap: 8px; min-height: 26px; padding-top: 8px; margin-top: 2px; border-top: 1px solid var(--line); }
@@ -217,6 +219,19 @@ code, .mono { font-family: var(--mono); }
 .host-name { font-family: var(--mono); }
 .host-state { color: var(--faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .host-version { margin-left: auto; flex: none; color: var(--needs-text); font-family: var(--mono); font-size: 11.5px; }
+.host-state.warn { color: var(--failed); }
+/* Every host behind this app, updated at once (D-131). */
+.hosts-update {
+  margin-left: auto; margin-right: 4px; flex: none; white-space: nowrap; display: inline-flex; align-items: center; gap: 5px; height: 20px; padding: 0 8px;
+  border-radius: 6px; background: var(--needs-bg); color: var(--needs-text); font-size: 11.5px; font-weight: 500; letter-spacing: 0;
+}
+.hosts-update:hover:not(:disabled) { filter: brightness(1.15); }
+/* No room for its words beside the summary: the arrow alone (its words
+   are its label and tooltip). */
+@container (max-width: 269px) {
+  .hosts-update { padding: 0 6px; }
+  .hosts-update-label { display: none; }
+}
 
 /* Workspace pane */
 .pane { flex: 1; min-width: 0; display: flex; flex-direction: column; background: var(--panel); position: relative; }
