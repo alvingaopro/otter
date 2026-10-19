@@ -3883,9 +3883,9 @@ update was a new `.dmg` from the release page, dragged over the old app
   the app menu, the Settings menu ("Command line tools…" once they're there)
   and the first-run screen. The cost: an `otter` built by hand and put in
   `~/.local/bin` is replaced at the next launch; earlier on `PATH` it isn't.
-- **The first update is by hand.** v0.7.16 and earlier have no updater: the
-  first release with it is installed from its `.dmg`, and the next ones
-  arrive in the app.
+- **The first update is by hand.** Releases before this one have no
+  updater: the first release with it is installed from its `.dmg`, and the
+  next ones arrive in the app.
 - **Verified:** the manifest for fake signatures of both architectures, and
   an error when one is missing; a file signed with the key verifies, the
   way the updater checks it (the public key from `tauri.conf.json`, the

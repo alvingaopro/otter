@@ -264,6 +264,7 @@ jobs:
       # release becomes the latest.
       - name: Update manifest
         run: |
+          mkdir -p "$RUNNER_TEMP/sigs"
           gh release download "v$VERSION" --pattern '*.app.tar.gz.sig' --dir "$RUNNER_TEMP/sigs"
           python3 scripts/update_manifest.py "$VERSION" "$RUNNER_TEMP/sigs" > latest.json
           cat latest.json

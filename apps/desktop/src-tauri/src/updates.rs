@@ -81,17 +81,27 @@ pub fn update_get(app: AppHandle) -> Option<String> {
 }
 
 /// Download the version on offer, check its signature, put it in place of
-/// this app and restart into it. Failures are also announced
-/// (`update-failed`), since the app menu can start one too.
+/// this app and restart into it. Progress and failures are announced
+/// (`update-progress`, `update-failed`), since the app menu can start one
+/// too; asked again while one is under way, it leaves that one to finish.
 #[tauri::command]
 pub async fn update_install(app: AppHandle) -> Result<(), String> {
     let updates = app.state::<Updates>();
     let Some(update) = updates.offer.lock().unwrap().clone() else {
-        return Err("there's no update to install".into());
+        let message = "there's no update to install".to_owned();
+        let _ = app.emit("update-failed", &message);
+        return Err(message);
     };
     if updates.installing.swap(true, Ordering::SeqCst) {
-        return Err("already updating".into());
+        return Ok(());
     }
+    let _ = app.emit(
+        "update-progress",
+        Progress {
+            downloaded: 0,
+            total: None,
+        },
+    );
     let (mut downloaded, mut shown) = (0u64, None);
     let installed = update
         .download_and_install(

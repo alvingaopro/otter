@@ -643,6 +643,9 @@ pub fn link_cli(replace: bool) -> Result<Option<String>, String> {
     let (Some(app), Some(bin)) = (bundled_cli(), local_bin()) else {
         return Ok(None);
     };
+    // One at a time: the launch's runs beside a developer's install.
+    static LINKING: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _one = LINKING.lock().unwrap_or_else(|e| e.into_inner());
     link(&app, &bin, replace).map_err(|e| format!("couldn't link the command-line tools: {e}"))?;
     Ok(Some(format!(
         "otter and otterd in {} are this app's own; they update with it",
