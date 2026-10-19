@@ -28,6 +28,7 @@ import { explain, forgetHost } from "./newer";
 import { zoomKey } from "./terminalFont";
 import { useTheme } from "./theme";
 import { offered, progressed, type UpdateOffer } from "./update";
+import { PerfOverlay } from "./PerfOverlay";
 import { defaultSession, groups, headline, movePin, noticeTitle, pinnedOf, placeAll, stalePins, togglePin, trayLabels } from "./model";
 import type { MenuItem } from "./Menu";
 import type { ForwardView, HostsPayload, Placed } from "./types";
@@ -544,6 +545,7 @@ export default function App() {
           );
         })()}
       <SignInAsks asks={asks} onDone={(id) => setAsks((a) => a.filter((x) => x.requestId !== id))} />
+      <PerfOverlay />
       {open?.kind === "add" && <AddHostDialog version={version} onClose={() => setOpen(null)} />}
       {open?.kind === "settings" && (
         <SettingsDialog

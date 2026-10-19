@@ -1,13 +1,14 @@
 //! Otter desktop: a thin client. All state comes from the hosts' daemons
 //! through `otter-client`; this crate only connects, flattens state for the
 //! UI (`view`), bridges terminals (`attach`), moves files (`files`), keeps
-//! port mappings (`forwards`) and the menu bar item (`tray`), and updates
-//! itself (`updates`).
+//! port mappings (`forwards`) and the menu bar item (`tray`), updates
+//! itself (`updates`) and says how its own process does (`perf`).
 
 mod attach;
 mod files;
 mod forwards;
 mod hosts;
+mod perf;
 mod pins;
 mod settings;
 mod sign_in;
@@ -111,6 +112,7 @@ pub fn run() {
             hosts::cli_status,
             updates::update_get,
             updates::update_install,
+            perf::process_stats,
             hosts::host_metrics,
             hosts::host_ports,
             hosts::host_history,

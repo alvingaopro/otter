@@ -980,3 +980,14 @@ body.resizing-row { cursor: row-resize; user-select: none; }
 .sign-in-site-list .icon-btn { width: 28px; height: 28px; }
 .sign-in-add { display: flex; gap: 8px; padding: 10px 10px 10px 14px; }
 .sign-in-add .settings-input { flex: 1; width: auto; min-width: 0; }
+
+/* The performance overlay (D-128): above everything and never in the way.
+   Its own dark plate in both themes, so its colours are its own. */
+.perf-overlay {
+  position: fixed; top: 4px; right: 4px; z-index: 100; pointer-events: none;
+  padding: 3px 7px; border-radius: 5px; background: rgba(0, 0, 0, 0.78); color: #d7dae0;
+  font: 11px/1.45 var(--mono); font-variant-numeric: tabular-nums; white-space: nowrap;
+}
+.perf-fps.good { color: #4ade80; }
+.perf-fps.fair { color: #facc15; }
+.perf-fps.poor { color: #f87171; }
