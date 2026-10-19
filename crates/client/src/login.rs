@@ -5,6 +5,9 @@
 //! `BrowserOpenRequested` (`browser.take`, once — with the app also connected,
 //! whichever takes it first opens it, never both), maps a loopback callback
 //! port to this machine over the shared SSH connection, and opens the page.
+//! A page on another site (`BrowserOpenAsked`, D-121) it takes only if the
+//! whole site is one this Mac allowed; it can't ask, so it leaves the rest to
+//! the app. Every page is checked again here before it opens.
 //! Callback mappings go when the host stops listening on the port (the tool
 //! got its redirect), after ten minutes, or when [`Logins::stop`] runs.
 
@@ -38,7 +41,13 @@ impl Logins {
     /// Subscribe as the browser for `host` and serve its sign-in pages in the
     /// background. Returns once subscribed, so a login started right after is
     /// caught.
-    pub async fn start(transport: Transport, host: &str, open: Opener) -> Result<Logins> {
+    /// `allowed`: the sign-in sites this Mac opens besides those built in.
+    pub async fn start(
+        transport: Transport,
+        host: &str,
+        open: Opener,
+        allowed: Vec<String>,
+    ) -> Result<Logins> {
         let stream = Connection::connect(&transport)
             .await?
             .subscribe_for_browser(None)
@@ -48,6 +57,7 @@ impl Logins {
             transport.clone(),
             host.to_owned(),
             open,
+            Arc::new(allowed),
             callbacks.clone(),
             stream,
         ));
@@ -80,6 +90,7 @@ async fn serve(
     transport: Transport,
     host: String,
     open: Opener,
+    allowed: Arc<Vec<String>>,
     callbacks: Callbacks,
     mut stream: EventStream,
 ) {
@@ -89,11 +100,17 @@ async fn serve(
     loop {
         // Event reads aren't cancel-safe: reap between requests, not during.
         let (tx, mut rx) = tokio::sync::mpsc::channel(16);
+        let mine = allowed.clone();
         let reader = tokio::spawn(async move {
             while let Ok(Some(rec)) = stream.next().await {
-                if let Event::BrowserOpenRequested { request_id, .. } = rec.event
-                    && tx.send(request_id).await.is_err()
-                {
+                let id = match rec.event {
+                    Event::BrowserOpenRequested { request_id, .. } => request_id,
+                    Event::BrowserOpenAsked {
+                        request_id, site, ..
+                    } if otter_protocol::sign_in::whole_site_on(&site, &mine) => request_id,
+                    _ => continue,
+                };
+                if tx.send(id).await.is_err() {
                     return;
                 }
             }
@@ -108,6 +125,7 @@ async fn serve(
                             host.clone(),
                             id,
                             open.clone(),
+                            allowed.clone(),
                             callbacks.clone(),
                         ));
                     }
@@ -143,6 +161,7 @@ async fn open_login(
     host: String,
     request_id: String,
     open: Opener,
+    allowed: Arc<Vec<String>>,
     callbacks: Callbacks,
 ) {
     let Ok(mut conn) = Connection::connect(&transport).await else {
@@ -152,6 +171,12 @@ async fn open_login(
     let Ok(opening) = conn.browser_take(&request_id).await else {
         return;
     };
+    // This Mac decides, whatever the host said.
+    if !url::Url::parse(&opening.url)
+        .is_ok_and(|url| otter_protocol::sign_in::opens(&url, &allowed))
+    {
+        return;
+    }
     // A local host's callback port is already on this machine.
     if let (Some(port), Transport::Ssh { .. }) = (opening.callback_port, &transport) {
         let mapping = Mapping {

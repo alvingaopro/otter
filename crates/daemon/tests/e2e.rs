@@ -3533,17 +3533,39 @@ async fn browser_login_opens_trusted_pages_through_a_connected_app() {
     assert_eq!(opening.url, aws);
     assert!(conn.browser_take(&event.0).await.is_err());
 
-    // Not a trusted provider: refused, with the reason on the host.
+    // Not a provider built in: the Mac decides (D-121). The tool hears so
+    // and prints its link as it would; the app is asked, by site only.
     conn.session_write(
         "login",
         "sh",
-        "xdg-open https://example.com/; echo bad-done-$((40+2))",
+        "xdg-open 'https://sso.example.com/start?token=secret'; echo asked-done-$((40+2))",
         true,
     )
     .await
     .unwrap();
-    let out = wait_output(&host, "login", "sh", "bad-done-42").await;
-    assert!(out.contains("not a trusted sign-in provider"), "{out}");
+    let (request_id, site) = tokio::time::timeout(Duration::from_secs(15), async {
+        loop {
+            let rec = stream.next().await.unwrap().unwrap();
+            match rec.event {
+                Event::BrowserOpenAsked {
+                    request_id, site, ..
+                } => return (request_id, site),
+                Event::BrowserOpenRequested { .. } => panic!("not to be opened at once"),
+                _ => {}
+            }
+        }
+    })
+    .await
+    .expect("BrowserOpenAsked");
+    assert_eq!(site, "sso.example.com");
+    let out = wait_output(&host, "login", "sh", "asked-done-42").await;
+    assert!(out.contains("asks whether to open it"), "{out}");
+    let log = std::fs::read_to_string(host.home().join("state/events.jsonl")).unwrap();
+    assert!(!log.contains("token=secret"), "URL leaked into the log");
+    // Allowed on the Mac, it's taken like any other page, once.
+    let opening = conn.browser_take(&request_id).await.unwrap();
+    assert_eq!(opening.url, "https://sso.example.com/start?token=secret");
+    assert!(conn.browser_take(&request_id).await.is_err());
 }
 
 #[tokio::test]
@@ -3747,10 +3769,10 @@ async fn browser_login_opens_pages_from_attached_terminals_once() {
             Ok(())
         })
     };
-    let first = Logins::start(host.transport.clone(), "test", opener(1))
+    let first = Logins::start(host.transport.clone(), "test", opener(1), vec![])
         .await
         .unwrap();
-    let second = Logins::start(host.transport.clone(), "test", opener(2))
+    let second = Logins::start(host.transport.clone(), "test", opener(2), vec![])
         .await
         .unwrap();
 
@@ -3798,6 +3820,74 @@ async fn browser_login_opens_pages_from_attached_terminals_once() {
     assert_eq!(opened.lock().unwrap().len(), 1);
     // Only then the host's own opener: served, the page didn't go there.
     assert_eq!(opened_on_host(), [github]);
+}
+
+#[tokio::test]
+async fn a_terminal_opens_other_sign_in_sites_only_if_this_mac_allowed_them() {
+    use otter_client::login::{Logins, Opener};
+    use std::sync::{Arc, Mutex};
+
+    let host = TestHost::new();
+    sh_session(&host, "login").await;
+    let _opened_on_host = host_opener(&host).await;
+    let mut conn = host.conn().await;
+    let opened = Arc::new(Mutex::new(Vec::<String>::new()));
+    let record = opened.clone();
+    let opener: Opener = Arc::new(move |url: &str| {
+        record.lock().unwrap().push(url.to_owned());
+        Ok(())
+    });
+    // This Mac allowed one site of its own (D-121).
+    let logins = Logins::start(
+        host.transport.clone(),
+        "test",
+        opener,
+        vec!["*.example.com".into()],
+    )
+    .await
+    .unwrap();
+    let mut stream = host.conn().await.subscribe(None).await.unwrap();
+
+    let allowed = "https://sso.example.com/start";
+    conn.session_write("login", "sh", &format!("xdg-open '{allowed}'"), true)
+        .await
+        .unwrap();
+    let got = eventually("the allowed site opens", || {
+        let first = opened.lock().unwrap().first().cloned();
+        async move { first }
+    })
+    .await;
+    assert_eq!(got, allowed);
+
+    // Another site: not opened here, and left for the app to ask about.
+    conn.session_write("login", "sh", "xdg-open 'https://other.test/login'", true)
+        .await
+        .unwrap();
+    let request_id = tokio::time::timeout(Duration::from_secs(15), async {
+        loop {
+            if let Event::BrowserOpenAsked {
+                request_id, site, ..
+            } = stream.next().await.unwrap().unwrap().event
+                && site == "other.test"
+            {
+                return request_id;
+            }
+        }
+    })
+    .await
+    .expect("asked about other.test");
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert_eq!(
+        opened.lock().unwrap().len(),
+        1,
+        "{:?}",
+        opened.lock().unwrap()
+    );
+    assert!(
+        conn.browser_take(&request_id).await.is_ok(),
+        "still the app's to take"
+    );
+    logins.stop().await;
 }
 
 #[tokio::test]

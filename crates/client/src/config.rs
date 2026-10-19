@@ -45,6 +45,10 @@ pub struct Config {
     /// Host used when a command doesn't name one and several are registered.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default_host: Option<String>,
+    /// Sign-in sites this Mac opens without asking, besides the providers
+    /// built in (D-121): `login.example.com`, `*.example.com`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sign_in_sites: Vec<String>,
     #[serde(default, rename = "host")]
     pub hosts: Vec<HostEntry>,
     #[serde(skip)]
@@ -138,6 +142,26 @@ impl Config {
         std::fs::write(&tmp, toml::to_string_pretty(self)?)?;
         std::fs::rename(&tmp, &path).with_context(|| format!("writing {}", path.display()))?;
         Ok(())
+    }
+
+    /// Open sign-in pages on `input` (a site, or a link to one) without
+    /// asking; the site as kept. Call `save` after.
+    pub fn allow_sign_in_site(&mut self, input: &str) -> Result<String> {
+        let Some(site) = otter_protocol::sign_in::site(input) else {
+            bail!(
+                "`{}` isn't a site: try login.example.com or *.example.com",
+                input.trim()
+            );
+        };
+        if !self.sign_in_sites.contains(&site) {
+            self.sign_in_sites.push(site.clone());
+        }
+        Ok(site)
+    }
+
+    /// Ask again before opening pages on `site`. Call `save` after.
+    pub fn forget_sign_in_site(&mut self, site: &str) {
+        self.sign_in_sites.retain(|s| s != site);
     }
 
     /// Register a host (name rules and uniqueness checked); call `save` after.
@@ -256,6 +280,7 @@ mod tests {
     fn hosts_round_trip_through_toml() {
         let config = Config {
             default_host: Some("dev-01".into()),
+            sign_in_sites: vec!["*.example.com".into()],
             hosts: vec![
                 HostEntry {
                     name: "dev-01".into(),

@@ -288,9 +288,15 @@ pub fn forward_pin(
 /// How long a browser login's callback port stays mapped at most.
 const LOGIN_TTL: std::time::Duration = std::time::Duration::from_secs(600);
 
-/// A tool on `host` asked for a sign-in page (`BrowserOpenRequested`): take
-/// it, map its callback port to this Mac if it has one, and open it here.
-pub async fn open_login(app: AppHandle, host: String, request_id: String) {
+/// A tool on `host` asked for a sign-in page: take it, and if this Mac opens
+/// it (a provider built in, a site allowed here, or `approved`: the site the
+/// developer just said yes to), map its callback port here and open it.
+pub async fn open_login(
+    app: AppHandle,
+    host: String,
+    request_id: String,
+    approved: Option<String>,
+) {
     use tauri_plugin_opener::OpenerExt;
     let Ok(transport) = app.state::<Hosts>().transport(&host) else {
         return;
@@ -302,6 +308,22 @@ pub async fn open_login(app: AppHandle, host: String, request_id: String) {
     let Ok(opening) = conn.browser_take(&request_id).await else {
         return;
     };
+    // This Mac decides, whatever the host said (D-121).
+    let sites = crate::hosts::load_config()
+        .map(|c| c.sign_in_sites)
+        .unwrap_or_default();
+    let opens = url::Url::parse(&opening.url).is_ok_and(|url| {
+        otter_protocol::sign_in::opens(&url, &sites)
+            || (url.scheme() == "https"
+                && approved.as_deref() == url.host_str().map(str::to_lowercase).as_deref())
+    });
+    if !opens {
+        tracing_log(&format!(
+            "not opening a sign-in page from {}",
+            opening.provider
+        ));
+        return;
+    }
     if let Some(port) = opening.callback_port {
         let mapping = Mapping {
             host: host.clone(),

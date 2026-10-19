@@ -8,7 +8,10 @@
 //! stand-ins in `run/bin` (first on every session's PATH, see `files.rs`)
 //! run `otterd open-url <url>`. The policy follows portkeeper's:
 //!
-//! - **https only**, and only **trusted sign-in providers** ([`PROVIDERS`]).
+//! - **https only**. A provider built in
+//!   ([`otter_protocol::sign_in::BUILT_IN`]) opens at once; any other site is
+//!   offered to the Mac, which opens it only if the developer allowed that
+//!   site there, or asks (D-121). Either way the Mac checks the page again.
 //! - **One loopback port** at most: the explicit port of a `redirect_uri`
 //!   to `127.0.0.1`/`localhost`/`[::1]`, found in the URL or in an https URL
 //!   wrapped inside it (two levels).
@@ -26,62 +29,33 @@ use chrono::{Duration, Utc};
 use otter_core::Timestamp;
 use url::Url;
 
-/// Sign-in hosts that open without asking: a host, or `*.` plus a domain for
-/// any subdomain, `*` as one whole label, optionally a path prefix.
-pub const PROVIDERS: &[&str] = &[
-    "oidc.*.amazonaws.com",
-    "device.sso.*.amazonaws.com",
-    "*.awsapps.com",
-    "accounts.google.com",
-    "login.microsoftonline.com",
-    "microsoft.com/devicelogin",
-    "github.com/login",
-    "app.terraform.io",
-];
-
 /// How long a request waits for an app to take it.
 const PENDING_TTL: Duration = Duration::minutes(2);
 
-/// An accepted sign-in page.
+/// A sign-in page that may go to the Mac.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Opening {
     pub url: String,
+    /// The page's host.
     pub provider: String,
     pub callback_port: Option<u16>,
+    /// A provider built in: it opens at once. Otherwise the Mac decides.
+    pub built_in: bool,
 }
 
-/// Decide whether `raw` may be opened on the Mac.
+/// Whether `raw` can go to the Mac at all: an https page.
 pub fn check(raw: &str) -> Result<Opening, String> {
     let url = Url::parse(raw).map_err(|_| "not a URL".to_owned())?;
     if url.scheme() != "https" || url.host_str().is_none() {
         return Err("only https sign-in pages are opened on the Mac".into());
     }
-    let host = url.host_str().unwrap_or_default().to_lowercase();
-    if !trusted(&url) {
-        return Err(format!("{host} is not a trusted sign-in provider in Otter"));
-    }
+    let none: &[&str] = &[];
     Ok(Opening {
         url: raw.to_owned(),
-        provider: host,
+        provider: url.host_str().unwrap_or_default().to_lowercase(),
         callback_port: loopback_port(&url, 2),
+        built_in: otter_protocol::sign_in::opens(&url, none),
     })
-}
-
-fn trusted(url: &Url) -> bool {
-    let host = url.host_str().unwrap_or_default().to_lowercase();
-    let path = url.path().trim_start_matches('/').to_lowercase();
-    PROVIDERS.iter().any(|entry| {
-        let (pat, prefix) = entry.split_once('/').unwrap_or((entry, ""));
-        host_matches(&host, pat) && path.starts_with(prefix)
-    })
-}
-
-fn host_matches(host: &str, pat: &str) -> bool {
-    if let Some(rest) = pat.strip_prefix("*.") {
-        return host == rest || host.ends_with(&format!(".{rest}"));
-    }
-    let (h, p): (Vec<&str>, Vec<&str>) = (host.split('.').collect(), pat.split('.').collect());
-    h.len() == p.len() && p.iter().zip(&h).all(|(p, h)| *p == "*" || p == h)
 }
 
 /// The port of a loopback `redirect_uri`, looking into https URLs wrapped in
@@ -153,26 +127,38 @@ mod tests {
     use super::*;
 
     #[test]
-    fn opens_trusted_https_providers_only() {
-        assert!(check("https://d-1234.awsapps.com/start/#/device?user_code=ABCD").is_ok());
-        assert!(check("https://oidc.us-east-1.amazonaws.com/authorize?client_id=x").is_ok());
-        assert!(check("https://accounts.google.com/o/oauth2/auth?x=1").is_ok());
-        assert!(check("https://github.com/login/device").is_ok());
-        assert!(check("https://microsoft.com/devicelogin").is_ok());
-        // Not a provider, wrong path, not https, look-alike hosts.
-        assert!(
-            check("https://example.com/")
-                .unwrap_err()
-                .contains("not a trusted")
-        );
-        assert!(check("https://github.com/evil/repo").is_err());
+    fn built_in_providers_open_at_once_others_go_to_the_mac() {
+        for page in [
+            "https://d-1234.awsapps.com/start/#/device?user_code=ABCD",
+            "https://oidc.us-east-1.amazonaws.com/authorize?client_id=x",
+            "https://accounts.google.com/o/oauth2/auth?x=1",
+            "https://github.com/login/device",
+            "https://microsoft.com/devicelogin",
+            "https://login.salesforce.com/services/oauth2/authorize?x=1",
+            "https://x-dev-ed.scratch.my.salesforce.com/secur/frontdoor.jsp?sid=s",
+        ] {
+            assert!(check(page).unwrap().built_in, "{page}");
+        }
+        // Not a provider, wrong path, look-alike hosts: the Mac decides.
+        for page in [
+            "https://example.com/",
+            "https://github.com/evil/repo",
+            "https://accounts.google.com.evil.com/",
+            "https://oidc.amazonaws.com.evil.com/",
+        ] {
+            let opening = check(page).unwrap();
+            assert!(!opening.built_in, "{page}");
+            assert_eq!(
+                opening.provider,
+                Url::parse(page).unwrap().host_str().unwrap()
+            );
+        }
+        // Not https: never.
         assert!(
             check("http://accounts.google.com/")
                 .unwrap_err()
                 .contains("https")
         );
-        assert!(check("https://accounts.google.com.evil.com/").is_err());
-        assert!(check("https://oidc.amazonaws.com.evil.com/").is_err());
         assert!(check("file:///etc/passwd").is_err());
     }
 

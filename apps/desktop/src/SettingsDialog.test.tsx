@@ -105,14 +105,14 @@ describe("Settings", () => {
     await act(async () => type(size, "15"));
     expect(localStorage.getItem("otter.terminal-font-size")).toBe("15");
     expect(size.value).toBe("15");
-    // Nothing went to the host.
-    expect(calls.map((c) => c.cmd)).toEqual(["settings_get"]);
+    // Nothing went to the host (this Mac's sign-in sites are read here).
+    expect(calls.map((c) => c.cmd).filter((c) => !c.startsWith("sign_in_"))).toEqual(["settings_get"]);
     await act(async () => type(mac.querySelector<HTMLInputElement>('input[aria-label="Terminal font"]')!, ""));
     await act(async () => type(size, "13"));
   });
 
   it("sets what Otter thinks with and a key, which is sent once and never shown", async () => {
-    expect(calls[0]).toEqual({ cmd: "settings_get", args: { host: "mac" } });
+    expect(calls.find((c) => c.cmd === "settings_get")).toEqual({ cmd: "settings_get", args: { host: "mac" } });
     expect(dialog().textContent).toContain("not set");
     const select = dialog().querySelector<HTMLSelectElement>('select[aria-label="Model provider"]')!;
     select.value = "openrouter";

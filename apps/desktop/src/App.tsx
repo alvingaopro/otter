@@ -20,6 +20,7 @@ import { CliDialog } from "./CliDialog";
 import { WorkspacePane } from "./WorkspacePane";
 import { NewWorkspaceDialog } from "./NewWorkspaceDialog";
 import { SettingsDialog } from "./SettingsDialog";
+import { ASK_TTL_MS, SignInAsks, type SignInAsk } from "./SignIn";
 import { PanelGrip, SIDEBAR, usePanelWidth } from "./panelResize";
 import { QuickOpen } from "./QuickOpen";
 import { RenameDialog } from "./RenameDialog";
@@ -58,6 +59,10 @@ interface Jump {
 
 export default function App() {
   const [payload, setPayload] = useState<HostsPayload | null>(null);
+  const payloadRef = useRef(payload);
+  payloadRef.current = payload;
+  /** Sign-in pages from sites this Mac doesn't open by itself (D-121). */
+  const [asks, setAsks] = useState<SignInAsk[]>([]);
   const [selected, setSelected] = useState<string | undefined>();
   /** The view in front (D-041); the others stay mounted, so nothing they run is lost. */
   const [view, setViewState] = useState<View>(storedView);
@@ -157,6 +162,17 @@ export default function App() {
     };
     window.addEventListener("keydown", onKey, true);
     const unlisten = listen<HostsPayload>("hosts", (e) => setPayload(e.payload));
+    // A tool on a host wants a sign-in page from another site: ask, in the
+    // corner, and by notification if the window isn't in front.
+    const unasked = listen<{ host: string; requestId: string; site: string; workspaceId?: string }>("sign-in-ask", (e) => {
+      const { host, requestId, site, workspaceId } = e.payload;
+      const workspace = payloadRef.current?.hosts
+        .find((h) => h.name === host)
+        ?.workspaces.find((w) => w.id === workspaceId)?.name;
+      setAsks((a) => [...a.filter((x) => x.requestId !== requestId), { host, requestId, site, workspace }]);
+      setTimeout(() => setAsks((a) => a.filter((x) => x.requestId !== requestId)), ASK_TTL_MS);
+      if (!focused.current) sendNotification({ title: `Sign in at ${site}?`, body: `A tool on ${host} wants to open it` });
+    });
     const unmenu = listen<string>("menu", (e) => {
       if (e.payload === "install-cli") setOpen({ kind: "cli" });
       if (e.payload === "settings") setOpen({ kind: "settings" });
@@ -182,6 +198,7 @@ export default function App() {
     });
     return () => {
       void unlisten.then((f) => f());
+      void unasked.then((f) => f());
       void unmenu.then((f) => f());
       void unforwards.then((f) => f());
       void unjump.then((f) => f());
@@ -517,6 +534,7 @@ export default function App() {
             />
           );
         })()}
+      <SignInAsks asks={asks} onDone={(id) => setAsks((a) => a.filter((x) => x.requestId !== id))} />
       {open?.kind === "add" && <AddHostDialog version={version} onClose={() => setOpen(null)} />}
       {open?.kind === "settings" && (
         <SettingsDialog hosts={connectedHosts} defaultHost={current?.host.name} onClose={() => setOpen(null)} />

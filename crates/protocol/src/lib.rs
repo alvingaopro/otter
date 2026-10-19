@@ -22,6 +22,7 @@ pub mod frame;
 pub mod fs;
 pub mod host;
 pub mod otter;
+pub mod sign_in;
 pub mod task;
 pub mod wire;
 pub mod work;

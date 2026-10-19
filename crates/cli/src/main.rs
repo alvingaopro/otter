@@ -441,6 +441,7 @@ async fn run(cli: Cli) -> Result<()> {
             let host = attach::Host {
                 transport: config.transport(&found.host),
                 name: found.host.name.clone(),
+                sign_in_sites: config.sign_in_sites.clone(),
             };
             attach::run(
                 found.conn,

@@ -134,6 +134,8 @@ impl Drop for RawMode {
 pub struct Host {
     pub name: String,
     pub transport: Transport,
+    /// Sign-in sites this Mac opens besides those built in (D-121).
+    pub sign_in_sites: Vec<String>,
 }
 
 pub async fn run(
@@ -154,7 +156,9 @@ pub async fn run(
         None
     } else {
         let open: Opener = Arc::new(login::system_open);
-        Logins::start(host.transport, &host.name, open).await.ok()
+        Logins::start(host.transport, &host.name, open, host.sign_in_sites)
+            .await
+            .ok()
     };
     let (cols, rows) = terminal_size();
     let term = std::env::var("TERM").ok().filter(|t| !t.is_empty());

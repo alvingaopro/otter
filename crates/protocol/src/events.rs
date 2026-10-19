@@ -140,6 +140,18 @@ pub enum Event {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         workspace_id: Option<WorkspaceId>,
     },
+    /// Like [`Event::BrowserOpenRequested`], for a page on a site that isn't
+    /// a provider built in (D-121): the Mac opens it if the developer allowed
+    /// that site there, or asks. An app from before ignores it.
+    BrowserOpenAsked {
+        request_id: String,
+        /// The page's host, e.g. `login.example.com`.
+        site: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        callback_port: Option<u16>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        workspace_id: Option<WorkspaceId>,
+    },
     /// A task changed: its history grew to `history_seq`. What happened
     /// is in the task's own history (`task.events`).
     #[serde(alias = "FeatureChanged")]
@@ -234,6 +246,7 @@ impl Event {
             Event::AttentionCreated { .. } => "AttentionCreated",
             Event::AttentionResolved { .. } => "AttentionResolved",
             Event::BrowserOpenRequested { .. } => "BrowserOpenRequested",
+            Event::BrowserOpenAsked { .. } => "BrowserOpenAsked",
             Event::TaskChanged { .. } => "TaskChanged",
             Event::OtterChanged { .. } => "OtterChanged",
             Event::OtterStream { .. } => "OtterStream",
@@ -278,7 +291,8 @@ impl Event {
             | Event::AgentStateChanged { workspace_id, .. }
             | Event::AttentionCreated { workspace_id, .. }
             | Event::AttentionResolved { workspace_id, .. } => Some(workspace_id),
-            Event::BrowserOpenRequested { workspace_id, .. } => workspace_id.as_ref(),
+            Event::BrowserOpenRequested { workspace_id, .. }
+            | Event::BrowserOpenAsked { workspace_id, .. } => workspace_id.as_ref(),
         }
     }
 

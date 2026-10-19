@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { Dialog } from "./Dialog";
 import type { RuntimeCapabilities } from "./conversation";
 import { FONT_SUGGESTIONS, fontChoice, fontSize, onFontSize, setFontFamily, setFontSize } from "./terminalFont";
+import { SignInSites } from "./SignIn";
 
 /** Mirrors `otter_protocol::host::ControllerInfo` (D-052). */
 export interface ControllerInfo {
@@ -426,6 +427,9 @@ function MacSettings() {
             <option key={f} value={f} />
           ))}
         </datalist>
+      </Row>
+      <Row label="Sign-in pages">
+        <SignInSites />
       </Row>
       <Row label="Text size" hint="⌘= and ⌘- change it in a terminal too; ⌘0 goes back to 13.">
         <input
