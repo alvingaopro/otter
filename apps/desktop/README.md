@@ -48,7 +48,7 @@ Layout:
 - `src/` — React: `ActivityBar` + `nav.ts` (the Inbox / Tasks / Workspaces views, D-041, D-088, D-107; Otter's view on a host left the app, D-115),
   `TasksView` (a grouped list; a task's Overview and Activity, D-114) + `tasks.ts` (the contract) + `taskSource.ts` (where
   tasks come from: the hosts, or sample data in tests; D-042),
-  `Sidebar` (with the filter), `QuickOpen` (⌘K), `WorkspacePane` (kept
+  `Sidebar` (with the filter, and updating every host behind the app at once, D-131), `QuickOpen` (⌘K), `WorkspacePane` (kept
   mounted while hidden, D-100), `ChangesPanel` + `changes.ts` (D-102),
   `FindPanel` (⌘F), `SessionTerminal` (a session's terminal and its end
   banners; two side by side, D-110), `DiffView` + `diff.ts` + `highlight.ts`

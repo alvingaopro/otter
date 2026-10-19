@@ -1,4 +1,5 @@
 import { useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
+import { invoke } from "@tauri-apps/api/core";
 import { Glyph } from "./Glyph";
 import { ContextMenu, type MenuItem } from "./Menu";
 import { ago, groups, headline, matchScore, pinnedOf, workspaceGlyph } from "./model";
@@ -40,6 +41,14 @@ const HOST_STATE: Record<HostView["status"], string> = {
 
 const HOSTS_OPEN_KEY = "otter.hostsOpen";
 
+/** Whether release `a` (X.Y.Z) comes before `b`. */
+export function older(a: string, b: string): boolean {
+  const parts = (v: string) => v.split(/[.+-]/).slice(0, 3).map((x) => parseInt(x, 10) || 0);
+  const [x, y] = [parts(a), parts(b)];
+  for (let i = 0; i < 3; i++) if (x[i] !== y[i]) return x[i] < y[i];
+  return false;
+}
+
 function storedHostsOpen(): boolean {
   try {
     return localStorage.getItem(HOSTS_OPEN_KEY) !== "false";
@@ -50,6 +59,36 @@ function storedHostsOpen(): boolean {
 
 export function Sidebar(props: Props) {
   const { placed, hosts, selected, onSelect, now, appVersion, onAddHost, onHost, hostPage } = props;
+  // Updating every host whose otterd is older than this app, at once
+  // (D-131): which are under way, and why one didn't.
+  const [updating, setUpdating] = useState<Set<string>>(() => new Set());
+  const [failed, setFailed] = useState<Record<string, string>>({});
+  // Never one newer than the app: its update would be a step back.
+  const behind = appVersion
+    ? hosts.filter((h) => (h.status === "connected" || h.status === "incompatible") && !!h.version && older(h.version, appVersion))
+    : [];
+  const updateText = updating.size > 0 ? "Updating…" : behind.length > 1 ? "Update all" : "Update";
+  async function updateAll() {
+    const names = behind.map((h) => h.name).filter((n) => !updating.has(n));
+    setUpdating((u) => new Set([...u, ...names]));
+    setFailed((f) => Object.fromEntries(Object.entries(f).filter(([n]) => !names.includes(n))));
+    // Side by side: each host is its own download and restart.
+    await Promise.all(
+      names.map(async (name) => {
+        try {
+          await invoke<string>("host_install", { name });
+        } catch (e) {
+          setFailed((f) => ({ ...f, [name]: String(e) }));
+        } finally {
+          setUpdating((u) => {
+            const next = new Set(u);
+            next.delete(name);
+            return next;
+          });
+        }
+      }),
+    );
+  }
   // Archived workspaces are out of the way until asked for (D-036).
   const [showArchived, setShowArchived] = useState(false);
   const [hostsOpen, setHostsOpen] = useState(storedHostsOpen);
@@ -257,6 +296,24 @@ export function Sidebar(props: Props) {
               </span>
             )}
           </button>
+          {(behind.length > 0 || updating.size > 0) && (
+            <button
+              className="hosts-update"
+              aria-label={updateText}
+              disabled={updating.size > 0}
+              onClick={() => void updateAll()}
+              title={
+                updating.size > 0
+                  ? `Updating otterd on ${[...updating].join(", ")}…`
+                  : `Update otterd on ${behind.map((h) => h.name).join(", ")} to ${appVersion}; sessions keep running`
+              }
+            >
+              <svg width="11" height="11" viewBox="0 0 12 12" aria-hidden="true">
+                <path d="M6 10.5V4M3.2 6.5L6 3.7l2.8 2.8M2 1.5h8" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
+              </svg>
+              <span className="hosts-update-label">{updateText}</span>
+            </button>
+          )}
           <button className="icon-btn" aria-label="Add a host" title="Add a host" onClick={onAddHost}>
             <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true">
               <path d="M6 1.5v9M1.5 6h9" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
@@ -271,11 +328,17 @@ export function Sidebar(props: Props) {
                 className={h.name === hostPage ? "host-row selected" : "host-row"}
                 aria-current={h.name === hostPage ? "page" : undefined}
                 onClick={() => onHost(h.name)}
-                title={[h.describe, h.version && `otterd ${h.version}`, h.message].filter(Boolean).join(" — ")}
+                title={[h.describe, h.version && `otterd ${h.version}`, h.message, failed[h.name]].filter(Boolean).join(" — ")}
               >
                 <span className={`host-dot ${h.status}`} />
                 <span className="host-name">{h.name}</span>
-                <span className="host-state">{HOST_STATE[h.status]}</span>
+                {updating.has(h.name) ? (
+                  <span className="host-state">updating…</span>
+                ) : failed[h.name] ? (
+                  <span className="host-state warn">update failed</span>
+                ) : (
+                  <span className="host-state">{HOST_STATE[h.status]}</span>
+                )}
                 {h.version && appVersion && h.version !== appVersion && (
                   <span className="host-version">otterd {h.version}</span>
                 )}

@@ -4142,3 +4142,26 @@ never went to the host. The display was 60 Hz (a MacBook Air), so WebKit's
     winning a disagreement; another screen; an xterm without those parts;
     undoing.
   - Not yet scrolled on a Mac.
+
+## D-131 — Update every host at once (2026-10-19)
+
+Each release, every host shows its older otterd in orange in the sidebar,
+and each was updated on its own page. Now the Hosts heading has one
+button for all of them.
+
+- **Which hosts:** those whose otterd is older than this app, connected or
+  reporting an incompatible otterd. Never one that's newer (its "update"
+  would go back a release), one that's unreachable, or one without otterd
+  (its page installs it).
+- **What it does:** the same install and restart as each host's page
+  (`host_install`), on all of them at once. Sessions keep running
+  (invariant 4). A host being updated says *updating…*; one that fails
+  says *update failed*, with why in its tooltip, and the button offers it
+  again. Updated hosts come back on the new version and drop out.
+- **Room:** *Update all* (or *Update* for one) when the list is wide
+  enough to keep the summary whole; otherwise the orange arrow alone,
+  its words in its tooltip and label.
+- **Verified:** app tests for which hosts are picked, both at once, the
+  states while updating and after a failure, and no button when all are
+  current. Rendered dark and light, wide, usual and narrow.
+
