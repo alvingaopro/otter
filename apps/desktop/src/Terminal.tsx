@@ -243,8 +243,9 @@ export function Terminal({ host, workspace, session, onEnd, generation, label, w
     let follow: [number, number] | null = null;
     /** On screen, as the host was last told (it assumes so). */
     let visible = true;
-    /** Earlier history is on the host. */
+    /** Earlier history is on the host, and wasn't asked for in full yet. */
     let more = false;
+    let askedAll = false;
     /** Earlier history asked for: how far from the end the reader was. */
     let fromBottom: number | null = null;
 
@@ -272,12 +273,13 @@ export function Terminal({ host, workspace, session, onEnd, generation, label, w
     const offerEarlier = () => {
       const buf = term.buffer.active;
       const atTop = buf.type === "normal" && buf.viewportY === 0 && buf.length > term.rows;
-      setEarlier(fromBottom !== null ? "loading" : controls && more && atTop ? "offer" : "none");
+      setEarlier(fromBottom !== null ? "loading" : controls && more && !askedAll && atTop ? "offer" : "none");
     };
     loadEarlier.current = () => {
       if (id === null || fromBottom !== null) return;
       const buf = term.buffer.normal;
       fromBottom = buf.length - buf.viewportY;
+      askedAll = true;
       term.options.scrollback = MORE_HISTORY;
       offerEarlier();
       void invoke("attach_history", { id, lines: MORE_HISTORY });
@@ -411,8 +413,9 @@ export function Terminal({ host, workspace, session, onEnd, generation, label, w
     };
     // Clicked while another client sizes the window: attach again, which
     // takes the window back.
-    const reclaim = () => {
-      if (follow) setEpoch((n) => n + 1);
+    // Not a ⌘-click on a link or an Option-drag to select.
+    const reclaim = (e: MouseEvent) => {
+      if (follow && e.button === 0 && !e.metaKey && !e.altKey) setEpoch((n) => n + 1);
     };
     const box = el.current!;
     box.addEventListener("mousedown", linkDown, true);

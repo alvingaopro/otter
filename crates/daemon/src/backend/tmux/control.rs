@@ -282,7 +282,12 @@ impl Reader {
                     if resync_at.is_some() =>
                 {
                     self.resync_at = None;
-                    self.take(self.regular(true));
+                    if self.relay.visible {
+                        self.take(self.regular(true));
+                    } else {
+                        // Off screen: the snapshot can wait for it to be back.
+                        self.relay.dropped = true;
+                    }
                     continue;
                 }
                 Some(control) = controls.recv() => {
@@ -366,9 +371,16 @@ impl Reader {
                     }
                     return true;
                 };
+                // It has everything up to its capture.
+                self.relay.dropped = false;
                 self.window = Some(shot.size);
-                // Before the snapshot: the client lays it out at that size.
-                self.tell();
+                // Before the snapshot, whatever else is in flight: the client
+                // lays it out at that size. A resize's answer settles it after.
+                let other = (shot.size != self.size).then_some(shot.size);
+                if other != self.told {
+                    self.told = other;
+                    self.flow.push(StreamOutput::Window(other));
+                }
                 let pushed = self.flow.push(StreamOutput::Data(shot.bytes))
                     && self.flow.push(StreamOutput::Snapshot {
                         lines: shot.lines,
@@ -425,6 +437,9 @@ impl Reader {
 
     /// Take a snapshot, or once the one coming has come.
     fn take(&mut self, take: Take) {
+        // Whatever it's for, it also catches up a client that fell behind.
+        self.resync = false;
+        self.resync_at = None;
         if self.taking {
             let next = self.next.get_or_insert(take);
             next.history = next.history.max(take.history);
@@ -1771,5 +1786,56 @@ mod tests {
         snap.state.history = 9000;
         let (_, lines, more) = render(&snap, take((20, 3), 5000, false));
         assert_eq!((lines, more), (2, true));
+    }
+
+    #[tokio::test]
+    async fn one_snapshot_catches_up_on_everything() {
+        let (mut reader, mut asked, mut stream) = reader();
+        reader.take(reader.regular(true));
+        let first = snapshot_asked(&mut asked);
+        reader.answered(Line::Snapshot(first), shot_replies((100, 30)));
+        let _ = (next(&mut stream).await, next(&mut stream).await);
+
+        // Fell behind, then asked for history: that snapshot does for both.
+        assert!(reader.relay.fell_behind());
+        reader.resync = true;
+        reader.control(StreamInput::History(20000));
+        assert!(!reader.resync && reader.resync_at.is_none());
+        let more = snapshot_asked(&mut asked);
+
+        // Off screen with output missed, the history snapshot came anyway:
+        // back on screen there's nothing more to catch up on.
+        reader.control(StreamInput::View {
+            visible: false,
+            cols: 100,
+            rows: 30,
+        });
+        reader.relay.dropped = true;
+        reader.answered(Line::Snapshot(more), shot_replies((100, 30)));
+        reader.control(StreamInput::View {
+            visible: true,
+            cols: 100,
+            rows: 30,
+        });
+        assert!(asked.try_recv().is_err(), "no second snapshot");
+    }
+
+    #[tokio::test]
+    async fn the_notice_comes_first_even_with_a_resize_in_flight() {
+        let (mut reader, mut asked, mut stream) = reader();
+        reader.take(reader.regular(true));
+        let first = snapshot_asked(&mut asked);
+        // The client resizes before the snapshot's replies come.
+        reader.control(StreamInput::Resize { cols: 90, rows: 25 });
+        assert!(matches!(asked.try_recv(), Ok(Ask::Resize((90, 25)))));
+        reader.answered(Line::Snapshot(first), shot_replies((100, 30)));
+        assert_eq!(
+            next(&mut stream).await,
+            StreamOutput::Window(Some((100, 30)))
+        );
+        assert!(matches!(next(&mut stream).await, StreamOutput::Data(_)));
+        let _ = next(&mut stream).await;
+        reader.answered(Line::Resize, vec![reply(&[]), reply(&["90x25"])]);
+        assert_eq!(next(&mut stream).await, StreamOutput::Window(None));
     }
 }
