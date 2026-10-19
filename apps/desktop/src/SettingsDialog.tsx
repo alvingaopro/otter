@@ -123,7 +123,7 @@ export function SettingsDialog({
   const [codingModel, setCodingModel] = useState("");
   const [caps, setCaps] = useState<RuntimeCapabilities | null>(null);
   const [test, setTest] = useState<Test | null>(null);
-  // Installing the Claude worker the host's otterd looks for (D-128).
+  // Installing the Claude worker the host's otterd looks for (D-129).
   const [install, setInstall] = useState<Install | null>(null);
   const [recheck, setRecheck] = useState(0);
   // Otter answers with its tools (D-089): tried out per host.
@@ -336,7 +336,7 @@ export function SettingsDialog({
   // What the host says of the backend on screen (it says it of the saved one).
   const capsHere = coding && coding.backend === backend ? coding : null;
   // Installing the worker would help: as the host says, or as a test found
-  // of a backend not saved yet (D-128).
+  // of a backend not saved yet (D-129).
   const offerInstall = !!capsHere?.worker_missing || (!!tested?.worker_missing && tested.backend === backend);
   const hostTab = HOST_TABS.includes(tab);
   // An older host has no coding settings: its tab goes.
@@ -761,7 +761,7 @@ function Appearance({ theme, onTheme }: { theme: ThemeChoice; onTheme: (t: Theme
   );
 }
 
-/** How installing the Claude worker went (D-128). */
+/** How installing the Claude worker went (D-129). */
 function InstallResult({ install, host, caps }: { install: Install; host: string; caps: RuntimeCapabilities | null }) {
   if (install.state === "running") {
     return (

@@ -112,7 +112,7 @@ export interface RuntimeTest {
   backend: string;
   ready: boolean;
   steps: { name: string; state: "passed" | "failed" | "skipped"; detail: string }[];
-  /** The Claude worker isn't installed; installing it would help (D-128). */
+  /** The Claude worker isn't installed; installing it would help (D-129). */
   worker_missing?: boolean;
 }
 
@@ -122,7 +122,7 @@ export interface RuntimeCapabilities {
   backend: string;
   available: boolean;
   notes?: string[];
-  /** The Claude worker isn't installed; installing it would help (D-128). */
+  /** The Claude worker isn't installed; installing it would help (D-129). */
   worker_missing?: boolean;
   tested_version?: string;
   structured_ready: boolean;

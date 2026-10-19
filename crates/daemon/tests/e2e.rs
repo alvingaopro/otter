@@ -7025,7 +7025,7 @@ async fn the_coding_agent_is_tested_with_one_short_reply() {
     assert!(!format!("{t:?}").contains("WORKERLEAK"));
 
     // Not installed anywhere otterd looks: the run isn't tried, and
-    // installing the worker would help (D-128).
+    // installing the worker would help (D-129).
     let nobody = tempfile::tempdir().unwrap();
     let missing = TestHost::with_env(&[
         ("OTTER_CONTROLLER", "off".into()),

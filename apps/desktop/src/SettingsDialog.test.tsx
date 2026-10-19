@@ -13,7 +13,7 @@ const state = vi.hoisted(() => ({
   oldTest: false,
   workerMissing: false,
   installFails: false,
-  // Found by a test of the SDK, saved or not (D-128).
+  // Found by a test of the SDK, saved or not (D-129).
   testWorkerMissing: false,
   noRelease: false,
 }));

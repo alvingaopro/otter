@@ -1224,7 +1224,7 @@ mod tests {
         assert!(caps.notes.iter().any(|n| n.contains("Node.js")));
         assert!(!caps.structured_ready);
         // A development build pointed at but not there: installing a
-        // release's worker wouldn't help (D-128).
+        // release's worker wouldn't help (D-129).
         let env = EnvMap::from([("OTTER_CLAUDE_WORKER".to_owned(), "/nonexistent".to_owned())]);
         let caps = ClaudeSdkRuntime.capabilities(&env);
         assert!(!caps.available && !caps.worker_missing);

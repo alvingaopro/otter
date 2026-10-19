@@ -567,7 +567,7 @@ pub async fn host_install(app: AppHandle, name: String) -> Result<String, String
 }
 
 /// Install the Claude worker (D-060) that the host's otterd looks for, its
-/// own release's, and nothing else (D-128): otterd stays as it is and keeps
+/// own release's, and nothing else (D-129): otterd stays as it is and keeps
 /// running, and finds the worker on the next check.
 #[tauri::command]
 pub async fn host_install_worker(app: AppHandle, name: String) -> Result<String, String> {
