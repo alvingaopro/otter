@@ -12,10 +12,13 @@ const state = vi.hoisted(() => ({
   otterTools: undefined as boolean | undefined,
   oldTest: false,
 }));
+// Holds back the host's answers to a save or a test until let go.
+const gate = vi.hoisted(() => ({ wait: null as Promise<void> | null }));
 
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: vi.fn(async (cmd: string, args: Record<string, unknown>) => {
     calls.push({ cmd, args });
+    if (gate.wait && (cmd === "settings_set" || cmd === "runtime_test")) await gate.wait;
     if (cmd === "settings_models") {
       if (args.controller === "openai") throw new Error("set the OpenAI key (OPENAI_API_KEY) first");
       return [
@@ -91,6 +94,15 @@ const { SettingsDialog } = await import("./SettingsDialog");
 let root: Root;
 let host: HTMLDivElement;
 const themes: string[] = [];
+let closed = 0;
+function hold(): () => void {
+  let go = () => {};
+  gate.wait = new Promise<void>((r) => (go = r));
+  return () => {
+    gate.wait = null;
+    go();
+  };
+}
 const flush = () => act(async () => new Promise((r) => setTimeout(r, 0)));
 
 function type(el: HTMLInputElement, value: string) {
@@ -103,6 +115,8 @@ describe("Settings", () => {
     (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
     calls.length = 0;
     themes.length = 0;
+    closed = 0;
+    gate.wait = null;
     state.set = false;
     state.controller = undefined;
     state.codingModel = undefined;
@@ -116,7 +130,9 @@ describe("Settings", () => {
     document.body.appendChild(host);
     root = createRoot(host);
     await act(async () =>
-      root.render(<SettingsDialog hosts={["mac"]} theme="system" onTheme={(t) => themes.push(t)} onClose={() => {}} />),
+      root.render(
+        <SettingsDialog hosts={["mac", "pc"]} defaultHost="mac" theme="system" onTheme={(t) => themes.push(t)} onClose={() => closed++} />,
+      ),
     );
     await flush();
   });
@@ -347,6 +363,71 @@ describe("Settings", () => {
   it("shows nothing about coding for an older host", async () => {
     expect(tabs().map((b) => b.textContent)).not.toContain("Coding agent");
     expect(calls.some((c) => c.cmd === "runtime_capabilities")).toBe(false);
+  });
+
+  it("asks before closing over unsaved changes", async () => {
+    await tab("Otter");
+    const select = dialog().querySelector<HTMLSelectElement>('select[aria-label="Model provider"]')!;
+    select.value = "openrouter";
+    await act(async () => select.dispatchEvent(new Event("change", { bubbles: true })));
+    const esc = () => act(async () => window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" })));
+    await esc();
+    expect(closed).toBe(0);
+    expect(dialog().textContent).toContain("Close without saving the changes on mac?");
+    await act(async () => button("Keep editing").click());
+    expect(dialog().textContent).toContain("Unsaved changes on mac");
+    await esc();
+    await esc();
+    expect(closed).toBe(1);
+  });
+
+  it("keeps another host's late answer out of the form", async () => {
+    await tab("Otter");
+    const select = dialog().querySelector<HTMLSelectElement>('select[aria-label="Model provider"]')!;
+    select.value = "openrouter";
+    await act(async () => select.dispatchEvent(new Event("change", { bubbles: true })));
+    const go = hold();
+    await act(async () => button("Save").click());
+    // Another host, while mac's save is under way.
+    const hostPick = dialog().querySelector<HTMLSelectElement>('select[aria-label="Host"]')!;
+    hostPick.value = "pc";
+    await act(async () => hostPick.dispatchEvent(new Event("change", { bubbles: true })));
+    await flush();
+    state.controller = "openrouter";
+    await act(async () => go());
+    await flush();
+    expect(dialog().textContent).not.toContain("Saved on");
+    expect(dialog().querySelector<HTMLSelectElement>('select[aria-label="Model provider"]')!.value).toBe("");
+    expect(dialog().textContent).not.toContain("Unsaved changes");
+  });
+
+  it("clears one key and keeps the others typed", async () => {
+    state.set = true;
+    state.modern = true;
+    act(() => root.unmount());
+    root = createRoot(host);
+    await act(async () => root.render(<SettingsDialog hosts={["mac"]} theme="system" onTheme={() => {}} onClose={() => {}} />));
+    await flush();
+    await tab("API keys");
+    await act(async () => button("Add…").click());
+    type(dialog().querySelector<HTMLInputElement>('input[aria-label="OPENAI_API_KEY"]')!, "sk-openai");
+    await act(async () => button("Clear").click());
+    await flush();
+    expect(calls.filter((c) => c.cmd === "settings_set").pop()!.args).toEqual({ host: "mac", update: { secrets: { OPENROUTER_API_KEY: null } } });
+    expect(dialog().querySelector<HTMLInputElement>('input[aria-label="OPENAI_API_KEY"]')!.value).toBe("sk-openai");
+  });
+
+  it("shows a coding agent test only for what's still on screen", async () => {
+    await tab("Coding agent");
+    const go = hold();
+    await act(async () => button("Run a test").click());
+    expect(dialog().textContent).toContain("Testing…");
+    type(dialog().querySelector<HTMLInputElement>('input[aria-label="Coding model"]')!, "opus");
+    await flush();
+    await act(async () => go());
+    await flush();
+    expect(dialog().querySelector('[aria-label="Test run"]')).toBeNull();
+    expect(dialog().querySelector('[role="status"]')?.textContent).toBe("Installed");
   });
 
   it("asks for a host before the host's settings", async () => {

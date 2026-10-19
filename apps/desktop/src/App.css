@@ -822,7 +822,7 @@ body.resizing-row { cursor: row-resize; user-select: none; }
 .hl .hljs-emphasis { font-style: italic; }
 .hl .hljs-strong { font-weight: 600; }
 
-/* Settings (D-125): tabs by kind on the left, a card per group on the right. */
+/* Settings (D-127): tabs by kind on the left, a card per group on the right. */
 .dialog.bare { padding: 0; }
 .dialog.settings-dialog {
   width: min(880px, calc(100vw - 32px)); height: min(600px, calc(88vh - 32px)); max-height: none;
@@ -932,6 +932,9 @@ body.resizing-row { cursor: row-resize; user-select: none; }
 .settings-empty p { margin: 0; max-width: 340px; }
 .settings-foot { display: flex; align-items: center; gap: 10px; min-height: 55px; padding: 0 16px 0 28px; border-top: 1px solid var(--line); }
 .settings-foot .spacer { flex: 1; }
+.settings-foot.leaving { background: var(--needs-bg); }
+.settings-foot.leaving .status-dot { background: var(--needs); }
+.settings-foot.leaving .muted { color: var(--text); }
 /* Narrow windows: the tabs go on top. */
 @media (max-width: 640px) {
   .dialog.settings-dialog { flex-direction: column; }

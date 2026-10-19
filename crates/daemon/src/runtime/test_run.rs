@@ -44,7 +44,7 @@ pub async fn run(
     model: Option<String>,
 ) -> Result<RuntimeTest, String> {
     if RUNNING.swap(true, Ordering::SeqCst) {
-        return Err("a test is already running on this host".into());
+        return Err("a test is already running on this host; it ends within two minutes".into());
     }
     struct Running;
     impl Drop for Running {
@@ -134,10 +134,11 @@ async fn answer(
             max_budget_usd: None,
         },
     };
-    let mut handle = match timeout_at(deadline, rt.start(spec)).await {
-        Err(_) => return Err(too_slow()),
-        Ok(Err(e)) => return Err(format!("It didn't start: {}.", e.root_cause())),
-        Ok(Ok(h)) => h,
+    // Not under the deadline: a start bounds its own wait, and a start cut
+    // short would leave what it began running.
+    let mut handle = match rt.start(spec).await {
+        Err(e) => return Err(format!("It didn't start: {}.", e.root_cause())),
+        Ok(h) => h,
     };
     let replied = reply(handle.as_mut(), deadline).await;
     let _ = handle.stop().await;

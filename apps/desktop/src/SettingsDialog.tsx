@@ -62,7 +62,7 @@ const OLD_CONTROLLERS: ControllerInfo[] = [
 type Models = { state: "loading" } | { state: "ready"; list: ModelInfo[] } | { state: "error"; error: string };
 type Test = { state: "running" } | { state: "done"; result: RuntimeTest } | { state: "error"; error: string };
 
-/** The tabs (D-125): this Mac's, then the chosen host's. */
+/** The tabs (D-127): this Mac's, then the chosen host's. */
 export type SettingsTab = "appearance" | "signin" | "otter" | "coding" | "keys";
 const TABS: SettingsTab[] = ["appearance", "signin", "otter", "coding", "keys"];
 const HOST_TABS: SettingsTab[] = ["otter", "coding", "keys"];
@@ -79,7 +79,7 @@ function storedTab(): SettingsTab {
 }
 
 /**
- * Settings, in tabs by kind (D-125): this Mac's (applied as they change,
+ * Settings, in tabs by kind (D-127): this Mac's (applied as they change,
  * kept here) and the chosen host's (saved there, with Save). Keys are sent
  * to that host's otterd and kept there (0600); this app never reads them
  * back, it only knows whether one is set. The models offered are what the
@@ -176,8 +176,13 @@ export function SettingsDialog({
     };
   }, [host, settings]);
 
-  // A test is of what was on screen.
-  useEffect(() => setTest((t) => (t?.state === "running" ? t : null)), [backend, codingModel]);
+  // What's on screen now, for answers that come back after it changed.
+  const now = useRef({ host, backend, codingModel });
+  now.current = { host, backend, codingModel };
+  // A test is of what was on screen; changed, it goes.
+  useEffect(() => setTest(null), [backend, codingModel]);
+  // Closing with changes not saved asks first (once).
+  const [leaving, setLeaving] = useState(false);
 
   const controllers = settings?.controllers?.length ? settings.controllers : OLD_CONTROLLERS;
   // The one the model and key below are for: the choice, else what automatic uses.
@@ -208,17 +213,22 @@ export function SettingsDialog({
     coding?: { backend?: string; model?: string };
     otter_tools?: boolean;
   }) {
+    const at = host;
+    const sent = Object.keys(update.secrets ?? {});
     setBusy(true);
     setError(null);
     setSaved(false);
     try {
-      const s = await invoke<HostSettings>("settings_set", { host, update });
+      const s = await invoke<HostSettings>("settings_set", { host: at, update });
+      // Another host was chosen meanwhile: this answer isn't its.
+      if (now.current.host !== at) return;
       setSettings(s);
-      setKeys({});
-      setReplacing(null);
+      // The keys sent are gone from the form; others typed stay.
+      setKeys((k) => Object.fromEntries(Object.entries(k).filter(([name]) => !sent.includes(name))));
+      setReplacing((r) => (r && sent.includes(r) ? null : r));
       setSaved(true);
     } catch (e) {
-      setError(String(e));
+      if (now.current.host === at) setError(String(e));
     } finally {
       setBusy(false);
     }
@@ -241,6 +251,9 @@ export function SettingsDialog({
       typed.length > 0 ||
       (!!codingSaved && (backend !== codingSaved || codingModel !== (settings.coding?.model ?? ""))) ||
       (toolsShown && otterTools !== settings.otter_tools));
+  useEffect(() => {
+    if (!dirty) setLeaving(false);
+  }, [dirty]);
 
   function submit() {
     if (!settings || busy || (needsModel && !!controller)) return;
@@ -264,13 +277,21 @@ export function SettingsDialog({
   }
 
   async function runTest() {
+    const asked = { host, backend, codingModel };
+    const same = () => now.current.host === asked.host && now.current.backend === asked.backend && now.current.codingModel === asked.codingModel;
     setTest({ state: "running" });
     try {
       const result = await invoke<RuntimeTest>("runtime_test", { host, backend, model: codingModel });
-      setTest({ state: "done", result });
+      // Of what was on screen then: shown only while it still is.
+      if (same()) setTest({ state: "done", result });
     } catch (e) {
-      setTest({ state: "error", error: needsNewer(host, e) });
+      if (same()) setTest({ state: "error", error: needsNewer(host, e) });
     }
+  }
+
+  function close() {
+    if (dirty && !leaving) return setLeaving(true);
+    onClose();
   }
 
   const label = (id: string) => controllers.find((c) => c.id === id)?.label ?? id;
@@ -319,7 +340,7 @@ export function SettingsDialog({
   );
 
   return (
-    <Dialog title="Settings" onClose={onClose} bare="settings-dialog">
+    <Dialog title="Settings" onClose={close} bare="settings-dialog">
       <nav className="settings-nav" aria-label="Settings">
         <h1 className="settings-nav-title">Settings</h1>
         <div className="settings-nav-group">This Mac</div>
@@ -356,7 +377,7 @@ export function SettingsDialog({
             <h2>{title}</h2>
             <p>{caption}</p>
           </div>
-          <button type="button" className="icon-btn settings-close" aria-label="Close" title="Close (Esc)" onClick={onClose}>
+          <button type="button" className="icon-btn settings-close" aria-label="Close" title="Close (Esc)" onClick={close}>
             <Icon d="close" />
           </button>
         </header>
@@ -452,7 +473,7 @@ export function SettingsDialog({
                       OTTER_CONTROLLER={settings.controller_from_env} in otterd's environment on {host} overrides this.
                     </p>
                   )}
-                  {needsModel && <p className="notice small">{short(info?.label ?? "")} has no default model: choose one.</p>}
+                  {needsModel && !!controller && <p className="notice small">{short(info?.label ?? "")} has no default model: choose one.</p>}
                   {settings.otter_tools !== undefined && (
                     <Group title="Answers">
                       <Row
@@ -583,12 +604,24 @@ export function SettingsDialog({
         </div>
 
         {dirty ? (
-          <footer className="settings-foot">
+          <footer className={leaving ? "settings-foot leaving" : "settings-foot"}>
             <span className="status-dot unsaved" aria-hidden="true" />
-            <span className="muted small">Unsaved changes on {host}</span>
+            <span className="muted small" role={leaving ? "alert" : undefined}>
+              {leaving ? `Close without saving the changes on ${host}?` : `Unsaved changes on ${host}`}
+            </span>
             <span className="spacer" />
-            <button type="button" className="btn outline" disabled={busy} onClick={() => settings && take(settings)}>
-              Discard
+            {leaving && (
+              <button type="button" className="btn ghost" onClick={() => setLeaving(false)}>
+                Keep editing
+              </button>
+            )}
+            <button
+              type="button"
+              className="btn outline"
+              disabled={busy}
+              onClick={() => (leaving ? onClose() : settings && take(settings))}
+            >
+              {leaving ? "Discard and close" : "Discard"}
             </button>
             <button type="button" className="btn primary" disabled={busy || (needsModel && !!controller)} onClick={submit}>
               Save
@@ -607,7 +640,7 @@ export function SettingsDialog({
   );
 }
 
-/** This Mac's look (D-116, D-125): kept here, applied as it changes. */
+/** This Mac's look (D-116, D-127): kept here, applied as it changes. */
 function Appearance({ theme, onTheme }: { theme: ThemeChoice; onTheme: (t: ThemeChoice) => void }) {
   const [font, setFont] = useState(fontChoice);
   const [size, setSize] = useState(fontSize);

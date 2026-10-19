@@ -3864,7 +3864,9 @@ to wait; the test is what makes the switch safe to see through.
   - The backend and model are the ones asked for, so the app tests what's
     on screen before it's saved. Absent, they're the host's. With no
     model set, it uses `haiku`: the reply proves the sign-in, and a small
-    model costs least. One test runs at a time on a host.
+    model costs least. One test runs at a time on a host; a second is
+    told the first ends within two minutes. A client that goes away
+    doesn't stop it sooner, and nothing is left running once it ends.
 - **Where:** Settings › Coding agent › *Run a test* (the status says
   *Installed* until a test has run, then *Ready* or *Not ready*), and
   `otter runtime test [--host] [--backend] [--model]`, which exits 1 when
@@ -3973,7 +3975,7 @@ two presses in the app's terminal.
   its end keeps the modifier; a keydown first still sends once, which fails
   when the gate is lifted on every commit. Not yet typed on a Mac.
 
-## D-125 — Settings in tabs by kind (2026-10-19)
+## D-127 — Settings in tabs by kind (2026-10-19)
 
 Settings was one long dialog. This Mac's font and sign-in sites sat
 between its text size and the host's model provider. What applied at once
@@ -3994,12 +3996,19 @@ between its text size and the host's model provider. What applied at once
   A bar with *Discard* and *Save* appears only when a host setting has
   changed, and stays while another tab is shown. Only what changed is
   sent (an unchanged coding backend isn't). Clearing a key saves at once,
-  as before.
+  as before, and keeps other keys typed but not saved. Closing (Esc, the
+  backdrop, ✕) with changes unsaved asks first, in that bar: *Keep
+  editing*, *Discard and close* or *Save*; closing again discards.
+- **Answers that come late don't land on the wrong form.** A save's
+  answer after another host was chosen is dropped. So is a test's
+  answer after the backend or model changed: a test is of what was on
+  screen.
 - A host with no coding settings (an older otterd) has no Coding agent
   tab. With no host connected, the host's tabs offer *Add a host…*.
 - `Dialog` takes a bare variant for this layout, and focuses the current
   tab when it opens. It now focuses once, not again each time its parent
   renders.
 - **Verified:** app tests for each tab, the save bar, Discard, only
-  changes being sent, the switch, the test, and no host. The tabs were
+  changes being sent, closing with changes, late answers, the switch,
+  the test, and no host. The tabs were
   rendered in Chromium, dark and light, at full size and narrow.
