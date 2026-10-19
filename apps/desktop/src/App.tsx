@@ -27,6 +27,7 @@ import { RenameDialog } from "./RenameDialog";
 import { explain, forgetHost } from "./newer";
 import { zoomKey } from "./terminalFont";
 import { useTheme } from "./theme";
+import { offered, progressed, type UpdateOffer } from "./update";
 import { defaultSession, groups, headline, movePin, noticeTitle, pinnedOf, placeAll, stalePins, togglePin, trayLabels } from "./model";
 import type { MenuItem } from "./Menu";
 import type { ForwardView, HostsPayload, Placed } from "./types";
@@ -85,6 +86,8 @@ export default function App() {
   const [hostPage, setHostPage] = useState<string | null>(null);
   const [forwards, setForwards] = useState<ForwardView[]>([]);
   const [cli, setCli] = useState<{ version?: string } | null>(null);
+  /** A newer release of this app (D-125). */
+  const [update, setUpdate] = useState<UpdateOffer | null>(null);
   /** Pinned workspace keys, top first, from `pins.toml` (D-040). */
   const [pins, setPinsState] = useState<string[]>([]);
   const { choice: themeChoice, resolved: theme, cycle: cycleTheme } = useTheme();
@@ -126,6 +129,12 @@ export default function App() {
       setView("workspaces");
     });
     void invoke<{ version?: string }>("cli_status").then(setCli);
+    void invoke<string | null>("update_get").then((v) => setUpdate((u) => offered(u, v)));
+    const unupdate = listen<string | null>("update", (e) => setUpdate((u) => offered(u, e.payload)));
+    const unprogress = listen<{ downloaded: number; total?: number }>("update-progress", (e) =>
+      setUpdate((u) => progressed(u, e.payload.downloaded, e.payload.total)),
+    );
+    const unfailed = listen<string>("update-failed", (e) => setUpdate((u) => u && { version: u.version, error: e.payload }));
     void invoke<string[]>("pins_get").then(setPinsState).catch(() => {});
     // ⌘N: new workspace (capture phase, so the terminal doesn't swallow it).
     const onKey = (e: KeyboardEvent) => {
@@ -202,6 +211,9 @@ export default function App() {
       void unmenu.then((f) => f());
       void unforwards.then((f) => f());
       void unjump.then((f) => f());
+      void unupdate.then((f) => f());
+      void unprogress.then((f) => f());
+      void unfailed.then((f) => f());
       void unfocus.then((f) => f());
       window.removeEventListener("keydown", onKey, true);
       clearInterval(tick);
@@ -359,7 +371,7 @@ export default function App() {
             { label: "Settings… (⌘,)", onSelect: () => setOpen({ kind: "settings" }) },
             { label: "Add a host…", onSelect: () => setOpen({ kind: "add" }) },
             {
-              label: cli?.version ? "Update command line tools…" : "Install command line tools…",
+              label: cli?.version ? "Command line tools…" : "Install command line tools…",
               onSelect: () => setOpen({ kind: "cli" }),
             },
           ]}
@@ -420,14 +432,12 @@ export default function App() {
           onAddHost={() => setOpen({ kind: "add" })}
           onHost={setHostPage}
           onNew={() => setOpen({ kind: "new" })}
-          cliAction={
-            cli && version && cli.version !== version
-              ? cli.version
-                ? "Update command line tools"
-                : "Install command line tools"
-              : undefined
-          }
-          onCli={() => setOpen({ kind: "cli" })}
+          update={update ?? undefined}
+          onUpdate={() => {
+            // Downloads, installs and restarts; the events say how far it got.
+            setUpdate((u) => u && { version: u.version, progress: null });
+            invoke("update_install").catch((e) => setUpdate((u) => u && { version: u.version, error: String(e) }));
+          }}
           pins={pins}
           pinMenu={pinMenu}
           onMovePin={(key, to) => setPins(movePin(pins, shownPins, key, to))}

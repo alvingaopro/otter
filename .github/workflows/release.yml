@@ -129,11 +129,16 @@ jobs:
           for b in otter otterd; do
             cp "$RUNNER_TEMP/$name/$b" "src-tauri/binaries/$b-${{ matrix.target }}"
           done
+      # With the app, its signed update (D-125): Otter.app.tar.gz and .sig
+      # beside it. Only the release has the key, so only it makes them.
       - name: Bundle
         working-directory: apps/desktop
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
         run: >-
           npm run tauri bundle -- --target ${{ matrix.target }} --bundles app,dmg
-          --config '{"build":{"beforeBuildCommand":""}}'
+          --config '{"build":{"beforeBuildCommand":""},"bundle":{"createUpdaterArtifacts":true}}'
       - name: Upload ${{ matrix.arch }} app
         run: |
           bundle=apps/desktop/src-tauri/target/${{ matrix.target }}/release/bundle
@@ -148,8 +153,11 @@ jobs:
             fi
           done
           mkdir -p out
-          cp "$bundle"/dmg/*.dmg "out/Otter_${VERSION}_macos_${{ matrix.arch }}.dmg"
-          tar -czf "out/Otter_${VERSION}_macos_${{ matrix.arch }}.app.tar.gz" -C "$bundle/macos" Otter.app
+          name="Otter_${VERSION}_macos_${{ matrix.arch }}"
+          cp "$bundle"/dmg/*.dmg "out/$name.dmg"
+          # The update as signed: its .sig covers these very bytes.
+          cp "$bundle/macos/Otter.app.tar.gz" "out/$name.app.tar.gz"
+          cp "$bundle/macos/Otter.app.tar.gz.sig" "out/$name.app.tar.gz.sig"
           gh release upload "v$VERSION" out/* --clobber
 
   binaries:
@@ -245,6 +253,20 @@ jobs:
     needs: [version, desktop-build, binaries]
     runs-on: ubuntu-latest
     env:
+      VERSION: ${{ needs.version.outputs.version }}
       GH_TOKEN: ${{ github.token }}
     steps:
-      - run: gh release edit "v${{ needs.version.outputs.version }}" --repo "$GITHUB_REPOSITORY" --draft=false --latest
+      - uses: actions/checkout@v7
+        with:
+          ref: v${{ needs.version.outputs.version }}
+      # Where installed apps look for an update (D-125):
+      # releases/latest/download/latest.json, so it's attached before the
+      # release becomes the latest.
+      - name: Update manifest
+        run: |
+          mkdir -p "$RUNNER_TEMP/sigs"
+          gh release download "v$VERSION" --pattern '*.app.tar.gz.sig' --dir "$RUNNER_TEMP/sigs"
+          python3 scripts/update_manifest.py "$VERSION" "$RUNNER_TEMP/sigs" > latest.json
+          cat latest.json
+          gh release upload "v$VERSION" latest.json --clobber
+      - run: gh release edit "v$VERSION" --draft=false --latest

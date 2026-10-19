@@ -613,29 +613,39 @@ fn local_bin() -> Option<PathBuf> {
 
 const CLI: [&str; 2] = ["otter", "otterd"];
 
-/// Where this app carries its own `otter` and `otterd` (D-085): beside its
-/// executable in `Otter.app/Contents/MacOS`. None for a development build,
-/// and for an app run from a disk image or a translocated copy, which a link
-/// would outlive.
-fn bundled_cli() -> Option<PathBuf> {
+/// This app's `Otter.app/Contents/MacOS`, when it runs from an installed
+/// copy. None for a development build, and for an app run from a disk image
+/// or a translocated copy, which a link would outlive and an update can't
+/// replace (D-125).
+pub fn installed_app() -> Option<PathBuf> {
     let exe = std::env::current_exe().ok()?;
     let dir = exe.parent()?;
     let path = dir.to_string_lossy();
     let installed = path.ends_with(".app/Contents/MacOS")
         && !path.starts_with("/Volumes/")
         && !path.contains("/AppTranslocation/");
-    (installed && CLI.iter().all(|b| dir.join(b).is_file())).then(|| dir.to_owned())
+    installed.then(|| dir.to_owned())
+}
+
+/// Where this app carries its own `otter` and `otterd` (D-085): beside its
+/// executable in an installed `Otter.app`.
+fn bundled_cli() -> Option<PathBuf> {
+    installed_app().filter(|dir| CLI.iter().all(|b| dir.join(b).is_file()))
 }
 
 /// Point `~/.local/bin/otter` and `otterd` at this app's own, so they are
 /// always the app's version (D-085). With `replace`, whatever is there is
-/// replaced (the developer asked); without it — at every launch — only links
-/// into an Otter app are, so a binary put there by hand is left alone.
+/// replaced (the developer asked); without it — at every launch — links into
+/// an Otter app and copies a release installed are (D-125), so anything else
+/// put there is left alone, and nothing is added where there was nothing.
 /// None when the app carries no binaries; else what it did.
 pub fn link_cli(replace: bool) -> Result<Option<String>, String> {
     let (Some(app), Some(bin)) = (bundled_cli(), local_bin()) else {
         return Ok(None);
     };
+    // One at a time: the launch's runs beside a developer's install.
+    static LINKING: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _one = LINKING.lock().unwrap_or_else(|e| e.into_inner());
     link(&app, &bin, replace).map_err(|e| format!("couldn't link the command-line tools: {e}"))?;
     Ok(Some(format!(
         "otter and otterd in {} are this app's own; they update with it",
@@ -933,11 +943,15 @@ fn link(app: &Path, bin: &Path, replace: bool) -> std::io::Result<()> {
     for b in CLI {
         let (to, at) = (app.join(b), bin.join(b));
         let current = std::fs::read_link(&at).ok();
-        let ours = current.as_ref().is_some_and(|p| {
-            p.to_string_lossy()
-                .ends_with(&format!(".app/Contents/MacOS/{b}"))
-        });
-        if current.as_ref() == Some(&to) || !(replace || ours) {
+        let ours = || match &current {
+            Some(p) => p
+                .to_string_lossy()
+                .ends_with(&format!(".app/Contents/MacOS/{b}")),
+            // A copy a release installed — an older app's download (D-020),
+            // `otter host install` — is Otter's too (D-125).
+            None => otter_build(&at, b),
+        };
+        if current.as_ref() == Some(&to) || !(replace || ours()) {
             continue;
         }
         // A link made beside it, then renamed over: never a moment without one.
@@ -947,6 +961,25 @@ fn link(app: &Path, bin: &Path, replace: bool) -> std::io::Result<()> {
         std::fs::rename(&tmp, &at)?;
     }
     Ok(())
+}
+
+/// Whether the file at `path` is a build of Otter's `name`: it answers
+/// `--version` with `<name> <version>`, as `otter` and `otterd` do.
+fn otter_build(path: &Path, name: &str) -> bool {
+    path.is_file()
+        && std::process::Command::new(path)
+            .arg("--version")
+            .stdin(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .output()
+            .is_ok_and(|o| {
+                o.status.success()
+                    && String::from_utf8_lossy(&o.stdout)
+                        .trim()
+                        .strip_prefix(name)
+                        .and_then(|v| v.strip_prefix(' '))
+                        .is_some_and(|v| v.starts_with(|c: char| c.is_ascii_digit()))
+            })
 }
 
 #[derive(Debug, Serialize)]
@@ -1016,6 +1049,33 @@ mod tests {
         );
         // Nothing left beside them.
         assert_eq!(std::fs::read_dir(&bin).unwrap().count(), 2);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// At launch, a copy a release installed becomes a link too, so nothing
+    /// needs "Update command line tools" (D-125); a program that only shares
+    /// the name is left.
+    #[test]
+    fn released_copies_become_links() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("otter-copies-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let app = dir.join("Otter.app/Contents/MacOS");
+        let bin = dir.join("bin");
+        std::fs::create_dir_all(&app).unwrap();
+        std::fs::create_dir_all(&bin).unwrap();
+        for (b, says) in [("otter", "otter 0.6.0"), ("otterd", "otterd-like 1.0")] {
+            let path = bin.join(b);
+            std::fs::write(&path, format!("#!/bin/sh\necho '{says}'\n")).unwrap();
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+
+        super::link(&app, &bin, false).unwrap();
+        assert_eq!(
+            std::fs::read_link(bin.join("otter")).unwrap(),
+            app.join("otter")
+        );
+        assert!(std::fs::read_link(bin.join("otterd")).is_err());
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

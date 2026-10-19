@@ -1,7 +1,8 @@
 //! Otter desktop: a thin client. All state comes from the hosts' daemons
 //! through `otter-client`; this crate only connects, flattens state for the
 //! UI (`view`), bridges terminals (`attach`), moves files (`files`), keeps
-//! port mappings (`forwards`) and the menu bar item (`tray`).
+//! port mappings (`forwards`) and the menu bar item (`tray`), and updates
+//! itself (`updates`).
 
 mod attach;
 mod files;
@@ -12,6 +13,7 @@ mod settings;
 mod sign_in;
 mod tasks;
 mod tray;
+mod updates;
 mod view;
 
 use tauri::Emitter;
@@ -19,6 +21,7 @@ use tauri::menu::{Menu, MenuItem, MenuItemKind};
 
 const INSTALL_CLI: &str = "install-cli";
 const SETTINGS: &str = "settings";
+const CHECK_UPDATES: &str = "check-updates";
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -35,17 +38,28 @@ pub fn run() {
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(hosts::Hosts::default())
         .manage(attach::Attaches::default())
         .manage(forwards::Forwards::default())
+        .manage(updates::Updates::default())
         .menu(|app| {
-            // The standard menu, plus "Settings…" (⌘,) and "Install Command
-            // Line Tools…" in the app menu (the UI handles both).
+            // The standard menu, plus "Check for Updates…", "Settings…" (⌘,)
+            // and "Install Command Line Tools…" in the app menu (the UI
+            // handles the last two).
             let menu = Menu::default(app)?;
             if let Some(MenuItemKind::Submenu(app_menu)) = menu.items()?.into_iter().next() {
+                let check = MenuItem::with_id(
+                    app,
+                    CHECK_UPDATES,
+                    "Check for Updates…",
+                    true,
+                    None::<&str>,
+                )?;
+                app_menu.insert(&check, 1)?;
                 let settings =
                     MenuItem::with_id(app, SETTINGS, "Settings…", true, Some("CmdOrCtrl+,"))?;
-                app_menu.insert(&settings, 2)?;
+                app_menu.insert(&settings, 3)?;
                 let item = MenuItem::with_id(
                     app,
                     INSTALL_CLI,
@@ -53,7 +67,7 @@ pub fn run() {
                     true,
                     None::<&str>,
                 )?;
-                app_menu.insert(&item, 3)?;
+                app_menu.insert(&item, 4)?;
             }
             Ok(menu)
         })
@@ -62,15 +76,21 @@ pub fn run() {
                 let _ = app.emit("menu", INSTALL_CLI);
             } else if event.id() == SETTINGS {
                 let _ = app.emit("menu", SETTINGS);
+            } else if event.id() == CHECK_UPDATES {
+                updates::check_now(app);
             }
         })
         .setup(|app| {
-            // Keep linked command-line tools at this app's version (D-085).
-            if let Err(e) = hosts::link_cli(false) {
-                eprintln!("{e}");
-            }
+            // Keep the command-line tools at this app's version (D-085): off
+            // the main thread, since it may ask a copy its version (D-125).
+            std::thread::spawn(|| {
+                if let Err(e) = hosts::link_cli(false) {
+                    eprintln!("{e}");
+                }
+            });
             hosts::start(app.handle());
             forwards::start(app.handle());
+            updates::start(app.handle());
             tray::setup(app.handle())?;
             Ok(())
         })
@@ -89,6 +109,8 @@ pub fn run() {
             hosts::host_install,
             hosts::install_cli,
             hosts::cli_status,
+            updates::update_get,
+            updates::update_install,
             hosts::host_metrics,
             hosts::host_ports,
             hosts::host_history,
