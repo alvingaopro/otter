@@ -12,6 +12,7 @@ import { WebglAddon } from "@xterm/addon-webgl";
 import { ClipboardAddon, type IClipboardProvider } from "@xterm/addon-clipboard";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { openUrl } from "@tauri-apps/plugin-opener";
+import { copyOnSelect } from "./copyOnSelect";
 import { logicalLine, urlAtColumn } from "./links";
 import { fontFamily, fontSize, onFontFamily, onFontSize } from "./terminalFont";
 import "@xterm/xterm/css/xterm.css";
@@ -203,8 +204,8 @@ export function Terminal({ host, workspace, session, onEnd, generation, label, w
     term.loadAddon(fit);
     // Text copied in the session (OSC 52) goes to the Mac clipboard.
     term.loadAddon(new ClipboardAddon(undefined, clipboard));
-    // ⌘C copies a local (Option-drag) selection; otherwise it goes to the
-    // session as usual.
+    // ⌘C copies a selection here too; otherwise it goes to the session as
+    // usual.
     term.attachCustomKeyEventHandler((e) => {
       if (e.type === "keydown" && e.metaKey && e.key === "c" && term.hasSelection()) {
         void writeText(term.getSelection());
@@ -421,6 +422,8 @@ export function Terminal({ host, workspace, session, onEnd, generation, label, w
     box.addEventListener("mousedown", linkDown, true);
     box.addEventListener("mouseup", linkUp, true);
     box.addEventListener("mousedown", reclaim);
+    // A selection made here is copied when the mouse is let go (D-123).
+    const uncopy = copyOnSelect(box, term, writeText);
 
     return () => {
       disposed = true;
@@ -430,6 +433,7 @@ export function Terminal({ host, workspace, session, onEnd, generation, label, w
       box.removeEventListener("mousedown", linkDown, true);
       box.removeEventListener("mouseup", linkUp, true);
       box.removeEventListener("mousedown", reclaim);
+      uncopy();
       document.removeEventListener("visibilitychange", tellView);
       input.dispose();
       resized.dispose();
