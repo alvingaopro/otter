@@ -106,13 +106,16 @@ impl Transport {
         }
         cmd.args(ssh_args);
         // Notice a dead network (laptop asleep, Wi-Fi gone) within ~45s
-        // instead of hanging until TCP gives up. After `ssh_args`, so explicit
-        // options there take precedence.
+        // instead of hanging until TCP gives up. Compress: a terminal's
+        // snapshot shrinks about sevenfold, and it's what an attach waits for
+        // (D-119). After `ssh_args`, so explicit options there take precedence.
         cmd.args([
             "-o",
             "ServerAliveInterval=15",
             "-o",
             "ServerAliveCountMax=3",
+            "-o",
+            "Compression=yes",
         ]);
         cmd.args(extra);
         cmd.arg(destination);
@@ -1073,6 +1076,8 @@ mod tests {
                 "ServerAliveInterval=15",
                 "-o",
                 "ServerAliveCountMax=3",
+                "-o",
+                "Compression=yes",
                 "dev-01",
                 "~/.local/bin/otterd --home '/tmp/x y' dial"
             ]

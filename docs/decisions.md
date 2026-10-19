@@ -33,7 +33,8 @@ port-forward.
 dial`; `dial` bridges the SSH channel's stdin/stdout to the socket and starts
 the daemon first if it isn't running. `otter` passes
 `-o ControlMaster=auto -o ControlPersist=600` (sockets in
-`~/.config/otter/cm/`) so repeated connections reuse one SSH connection.
+`~/.config/otter/cm/`; `cz/` since D-119 compresses them) so repeated
+connections reuse one SSH connection.
 
 **Why.**
 - A TCP port on `localhost` is reachable by *every* local user on the host;

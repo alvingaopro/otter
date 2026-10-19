@@ -614,7 +614,7 @@ fn ssh_host_normal_flow() {
     // Close the shared SSH connection (ControlPersist) if one was opened.
     let _ = Command::new("ssh")
         .arg("-o")
-        .arg(format!("ControlPath={}/cm/%C", cli.config.path().display()))
+        .arg(format!("ControlPath={}/cz/%C", cli.config.path().display()))
         .args(["-O", "exit", "localhost"])
         .stderr(Stdio::null())
         .status();
