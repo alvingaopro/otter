@@ -201,7 +201,7 @@ code, .mono { font-family: var(--mono); }
 .hosts-summary.warn { color: var(--needs-text); }
 .host-list { display: flex; flex-direction: column; gap: 2px; padding-right: 6px; }
 .sidebar-foot { display: flex; align-items: center; gap: 8px; min-height: 26px; padding-top: 8px; margin-top: 2px; border-top: 1px solid var(--line); }
-.btn.cli-btn { display: inline-flex; align-items: center; gap: 6px; background: var(--meter-track); color: var(--working-text); }
+.btn.update-btn { display: inline-flex; align-items: center; gap: 6px; background: var(--meter-track); color: var(--working-text); }
 .icon-btn { width: 22px; height: 22px; display: inline-flex; align-items: center; justify-content: center; border-radius: 6px; color: var(--muted); }
 .icon-btn:hover { background: var(--raised); color: var(--text); }
 .host-row { width: 100%; display: flex; align-items: center; gap: 8px; font-size: 12.5px; padding: 3px 6px; margin: 0 -6px; border-radius: 6px; }

@@ -64,7 +64,8 @@ const payload: HostsPayload = {
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: vi.fn(async (cmd: string) => {
     if (cmd === "hosts_get") return payload;
-    if (cmd === "cli_status") return { version: "0.6.1" };
+    if (cmd === "cli_status") return { version: "0.5.0" };
+    if (cmd === "update_get") return "0.6.2";
     return [];
   }),
 }));
@@ -255,6 +256,21 @@ describe("Activity Bar navigation", () => {
     // Each tab says its key.
     const logsTab = [...pane().querySelectorAll(".tab")].find((t) => t.textContent?.includes("logs"))!;
     expect(logsTab.getAttribute("title")).toContain("⌥2");
+  });
+
+  it("offers the app's update at the foot of the sidebar, not the command-line tools (D-125)", async () => {
+    const { invoke } = await import("@tauri-apps/api/core");
+    const calls = vi.mocked(invoke);
+    const foot = panel("workspaces").querySelector(".sidebar-foot")!;
+    // The tools say another version than the app's; they follow the app now.
+    expect(foot.textContent).not.toMatch(/command line tools/i);
+    const button = foot.querySelector<HTMLButtonElement>(".update-btn")!;
+    expect(button.textContent).toBe("Update to v0.6.2");
+    calls.mockClear();
+    await act(async () => button.click());
+    expect(calls.mock.calls.map(([cmd]) => cmd)).toEqual(["update_install"]);
+    expect(button.disabled).toBe(true);
+    expect(button.textContent).toBe("Updating… 0%");
   });
 
   it("opens Settings with ⌘,", async () => {

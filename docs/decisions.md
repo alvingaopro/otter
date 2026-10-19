@@ -464,7 +464,8 @@ delivery verified only up to the permission prompt under `tauri dev`.
   starts no workflows, so it cannot loop; it requires `main` to accept pushes
   from Actions.
 - Not yet: code signing and notarization (the app is unsigned; README says how
-  to open it), auto-update inside the app, and Linux desktop builds.
+  to open it), auto-update inside the app (since D-125), and Linux desktop
+  builds.
 
 ## D-020 — Onboarding: hosts and installs from the app (2026-10-08)
 
@@ -3829,6 +3830,72 @@ said selecting copies.
 - **Verified:** app unit tests for a drag let go outside, a double-click's
   word, and no copy for a click, another button, a press outside the
   terminal, or a selection from before.
+
+## D-125 — The app updates itself (2026-10-19)
+
+Asked for directly: the app should notice a new release and, on a click,
+update itself; and the "Update command line tools" button at the foot of
+the sidebar should go, since the app carries the tools (D-085). Until now an
+update was a new `.dmg` from the release page, dragged over the old app
+(D-019 left auto-update for later).
+
+- **Tauri's updater, fed by the release.** Every release attaches
+  `latest.json` (`scripts/update_manifest.py`, in the publish job, before
+  the release turns public and latest), naming each architecture's
+  `Otter_X.Y.Z_macos_<arch>.app.tar.gz` and its signature. Installed apps
+  read it from `releases/latest/download/latest.json`.
+- **Signed with a key of its own.** The updater takes only an archive
+  signed by the minisign key whose public half is in `tauri.conf.json`. The
+  release's bundle step signs with the private half (the repository secret
+  `TAURI_SIGNING_PRIVATE_KEY`, no password) and uploads Tauri's archive as
+  built — the `.sig` covers those bytes, so the release no longer tars the
+  `.app` itself. Only the release turns `createUpdaterArtifacts` on, so a
+  local `tauri build` needs no key. Losing the private key means no
+  installed app can update again (a new key needs a manual reinstall): it's
+  kept outside the repository, and backed up. This is apart from macOS code
+  signing, which stays ad hoc (D-019); an archive the app downloads itself
+  carries no quarantine, so Gatekeeper doesn't stop the new version.
+- **Checked, offered, installed when asked.** A check 10 s after launch,
+  then hourly (a release ships with every merge), and on demand from the
+  app menu's "Check for Updates…" (a native dialog: up to date, or "Update
+  and Restart"). A newer version shows as "Update to vX.Y.Z" at the foot of
+  the sidebar, where the tools' button was. A click downloads it (the button
+  counts the percent), checks the signature, swaps the bundle where it is
+  (asking for an administrator only where its folder isn't writable) and
+  restarts. Nothing installs without the click.
+- **Only an installed copy.** Not a development build, a disk image or a
+  translocated copy (`hosts::installed_app`, the test D-085's links already
+  used): those can't be replaced, and "Check for Updates…" says so.
+- **The tools follow; the daemon stays.** The bundle keeps its path, so the
+  links in `~/.local/bin` (D-085) are the new version's tools once it
+  restarts. This Mac's running otterd keeps its old binary: the host shows
+  `otterd X` and its Install restarts it, as before — restarting the daemon
+  stays the developer's button (D-085, D-061). The restart closes only the
+  app, which stops no work (invariant 12).
+- **No "Update command line tools".** It showed when `~/.local/bin/otter`
+  wasn't the app's version: missing, or a copy a release installed (an app
+  before D-085, `otter host install` on this Mac), which D-085's relinking
+  at launch left alone. Now such a copy — a regular file that answers
+  `--version` with `otter X.Y.Z` / `otterd X.Y.Z` — becomes a link to the
+  app's own at launch too (off the main thread, since that runs it), so the
+  tools never fall behind. Anything else there is still left alone, and
+  nothing is added where nothing was: "Install Command Line Tools…" stays in
+  the app menu, the Settings menu ("Command line tools…" once they're there)
+  and the first-run screen. The cost: an `otter` built by hand and put in
+  `~/.local/bin` is replaced at the next launch; earlier on `PATH` it isn't.
+- **The first update is by hand.** v0.7.16 and earlier have no updater: the
+  first release with it is installed from its `.dmg`, and the next ones
+  arrive in the app.
+- **Verified:** the manifest for fake signatures of both architectures, and
+  an error when one is missing; a file signed with the key verifies, the
+  way the updater checks it (the public key from `tauri.conf.json`, the
+  signature from the manifest), and with a byte added doesn't; app tests for
+  the update button (offered, no tools' button while the tools report
+  another version, a click installs and counts), its states, and a copy a
+  release installed becoming a link while a program that only shares the
+  name stays. **Not verified:** an update installed on a Mac, which needs
+  two releases with the updater; the administrator prompt; the release's
+  signing step, until its first run.
 
 ## D-126 — Pinyin's punctuation on the first press (2026-10-19)
 

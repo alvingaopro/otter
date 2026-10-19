@@ -25,7 +25,11 @@ npm run tauri build                     # .app / .dmg in src-tauri/target/releas
 Releases: every merge to `main` builds an arm64 and an x86_64 `.dmg` and publishes them
 with `otterd`/`otter` binaries (D-019). The version shown at the bottom of the
 sidebar is the release version; a host running a different `otterd` shows its version in
-the hosts list.
+the hosts list. An installed app updates itself (D-125): it checks the latest release
+hourly and offers "Update to vX.Y.Z" beside its version (or "Check for Updates…" in the
+app menu); a click downloads the signed update, swaps it in and restarts. Releases sign
+it with the `TAURI_SIGNING_PRIVATE_KEY` secret; a local `tauri build` makes no update and
+needs no key.
 
 Remote hosts need a `otterd` that speaks the same protocol version (see
 `docs/protocol.md`). Under `tauri dev`, macOS attributes notifications to the
@@ -38,6 +42,7 @@ Layout:
 - `src-tauri/src/view.rs` — the view model, with values derived by `otter-core`.
 - `src-tauri/src/attach.rs` — terminal bridge (raw-byte channel out, commands in).
 - `src-tauri/src/pins.rs` — pinned workspaces, kept in `pins.toml` (D-040).
+- `src-tauri/src/updates.rs` — the app's own updates, from the latest release (D-125).
 - `src-tauri/src/tasks.rs` — task commands, passed through to each host's otterd (D-043).
 - `src/` — React: `ActivityBar` + `nav.ts` (the Inbox / Tasks / Workspaces views, D-041, D-088, D-107; Otter's view on a host left the app, D-115),
   `TasksView` (a grouped list; a task's Overview and Activity, D-114) + `tasks.ts` (the contract) + `taskSource.ts` (where

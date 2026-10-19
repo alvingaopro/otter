@@ -3,6 +3,7 @@ import { Glyph } from "./Glyph";
 import { ContextMenu, type MenuItem } from "./Menu";
 import { ago, groups, headline, matchScore, pinnedOf, workspaceGlyph } from "./model";
 import type { HostView, Placed } from "./types";
+import { installing, updateLabel, type UpdateOffer } from "./update";
 import otterIcon from "./assets/otter.png";
 
 interface Props {
@@ -18,9 +19,9 @@ interface Props {
   /** The host whose page is open. */
   hostPage?: string;
   onNew: () => void;
-  /** Set when the command-line tools are missing or another version. */
-  cliAction?: string;
-  onCli: () => void;
+  /** A newer release of the app, on offer or installing (D-125). */
+  update?: UpdateOffer;
+  onUpdate: () => void;
   /** Pinned workspace keys, top first (D-040). */
   pins: string[];
   /** Pin, unpin and move items for a workspace's menus. */
@@ -283,12 +284,17 @@ export function Sidebar(props: Props) {
           </div>
         )}
         <div className="sidebar-foot">
-          {props.cliAction && (
-            <button className="btn small-btn cli-btn" onClick={props.onCli}>
+          {props.update && (
+            <button
+              className="btn small-btn update-btn"
+              onClick={props.onUpdate}
+              disabled={installing(props.update)}
+              title={props.update.error ?? `Restarts Otter into v${props.update.version}; your sessions keep running`}
+            >
               <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true">
                 <path d="M6 1.5v6.5M3.2 5.5L6 8.3l2.8-2.8M2 10.5h8" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
               </svg>
-              {props.cliAction}
+              {updateLabel(props.update)}
             </button>
           )}
           <span className="spacer" />
