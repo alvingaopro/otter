@@ -201,11 +201,22 @@ export function WorkspacePane({
   }, [shown]);
 
   // Its shortcuts, while it's in front and no dialog is open (D-106):
-  // ⌘T a new session, ⌘⇧[ / ⌘⇧] the session before / after, ⌘F find.
+  // ⌘T a new session, ⌘⇧[ / ⌘⇧] the session before / after, ⌥1…⌥9 the
+  // session in that place (D-122), ⌘F find.
   const sessionIds = ws.sessions.map((s) => s.id).join(",");
   useEffect(() => {
     if (!active || open !== null) return;
     const onKey = (e: KeyboardEvent) => {
+      // Before the terminal sees it (it would type ¡, ™, £…). By the key's
+      // place, whatever the layout makes of it.
+      if (e.altKey && !e.metaKey && !e.ctrlKey && !e.shiftKey && /^Digit[1-9]$/.test(e.code)) {
+        if (document.querySelector('[aria-modal="true"]')) return;
+        e.preventDefault();
+        e.stopPropagation();
+        const id = ws.sessions[Number(e.code.slice("Digit".length)) - 1]?.id;
+        if (id) choose(id);
+        return;
+      }
       if (!e.metaKey || e.ctrlKey || e.altKey) return;
       // Not under another dialog (⌘K's, say).
       if (document.querySelector('[aria-modal="true"]')) return;
@@ -366,11 +377,11 @@ export function WorkspacePane({
       )}
 
       <div className="tabs" role="tablist" aria-label="Sessions">
-        {ws.sessions.map((s) => (
+        {ws.sessions.map((s, i) => (
           <div
             key={s.id}
             className={s.id === current?.id ? "tab selected" : s.id === beside?.id ? "tab beside" : "tab"}
-            title={s.id === beside?.id ? "On the right" : undefined}
+            title={[s.id === beside?.id && "On the right", i < 9 && `⌥${i + 1}`].filter(Boolean).join(" · ") || undefined}
           >
             <button
               role="tab"

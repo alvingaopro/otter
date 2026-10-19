@@ -3169,7 +3169,8 @@ All app-side, kept on this Mac where remembered:
   last change, an agent's last move, its newest attention), not by name.
 - **Shortcuts in a workspace:** ⌘T a new session; ⌘⇧[ / ⌘⇧] the session
   before / after; ⌘F finds in the session's history. Not while a dialog is
-  open.
+  open. *Amended 2026-10-19:* ⌥1…⌥9 the session in that place
+  (D-122).
 - **⌘F reads the session's history** (`session.read`, the last 10 000
   lines) and searches it in the app. The history lives in the session
   (tmux's alternate screen keeps it out of the app's terminal), so the
@@ -3737,4 +3738,18 @@ the default, because:
     terminal isn't reset.
   - The `otter` binary in a PTY: the history arrives, typing goes through,
     and Ctrl-] detaches and undoes the modes while the session goes on.
+
+## D-122 — ⌥1…⌥9 switch sessions (2026-10-19)
+
+- **In a workspace, ⌥1 to ⌥9 show the session in that place** among its
+  tabs, as a click on that tab does. With two sessions side by side, the
+  one on the right trades places. Each tab's tooltip says its key.
+- **By the key's place (`code`), not what it types.** On a US layout, ⌥2
+  types ™. The workspace takes the key before the terminal does, so nothing
+  is typed into the session. A digit with no session in its place does
+  nothing.
+- **The cost:** layouts that type characters with ⌥ and a digit can't type
+  them in the app's terminal. On a German layout, ⌥5 to ⌥9 are `[ ] | { }`.
+  With Shift as well it's the terminal's key, and so is any key while a
+  dialog is open.
 

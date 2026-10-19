@@ -217,6 +217,46 @@ describe("Activity Bar navigation", () => {
     expect(terminal.unmounts).toBe(unmounts + 1);
   });
 
+  it("switches sessions with ⌥1…⌥9, before the terminal sees the keys (D-122)", async () => {
+    const row = (name: string) =>
+      [...host.querySelectorAll<HTMLButtonElement>(".ws-row")].find((b) => b.textContent?.includes(name))!;
+    await act(async () => tab("workspaces").click());
+    await act(async () => row("other").click());
+    await flush();
+    const pane = () => host.querySelector<HTMLElement>(".ws-pane:not([hidden])")!;
+    const selected = () => pane().querySelector(".tab.selected")?.textContent;
+    // What macOS sends for ⌥2 on a US layout: the key's place, and "™".
+    const press = (code: string, init: KeyboardEventInit = {}) => {
+      const e = new KeyboardEvent("keydown", { code, key: "™", altKey: true, bubbles: true, cancelable: true, ...init });
+      window.dispatchEvent(e);
+      return e;
+    };
+    let e!: KeyboardEvent;
+    await act(async () => {
+      e = press("Digit2");
+    });
+    expect(selected()).toContain("logs");
+    expect(e.defaultPrevented).toBe(true);
+    await act(async () => {
+      press("Digit1");
+    });
+    expect(selected()).toContain("shell");
+    // No session in that place: nothing changes.
+    await act(async () => {
+      press("Digit9");
+    });
+    expect(selected()).toContain("shell");
+    // With Shift too it's not the shortcut: the key goes on to the terminal.
+    await act(async () => {
+      e = press("Digit2", { shiftKey: true });
+    });
+    expect(selected()).toContain("shell");
+    expect(e.defaultPrevented).toBe(false);
+    // Each tab says its key.
+    const logsTab = [...pane().querySelectorAll(".tab")].find((t) => t.textContent?.includes("logs"))!;
+    expect(logsTab.getAttribute("title")).toContain("⌥2");
+  });
+
   it("opens Settings with ⌘,", async () => {
     await act(async () => {
       window.dispatchEvent(new KeyboardEvent("keydown", { key: ",", metaKey: true, bubbles: true }));
