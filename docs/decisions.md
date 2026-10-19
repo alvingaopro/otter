@@ -3753,3 +3753,27 @@ the default, because:
   With Shift as well it's the terminal's key, and so is any key while a
   dialog is open.
 
+
+## D-123 — Selecting text copies it again (2026-10-19)
+
+Before D-118, tmux had the mouse: a drag selected in tmux, which sent the
+text as OSC 52 when the button was let go, and it reached the Mac clipboard.
+Since D-118 the app's terminal keeps the history and selects by itself, so
+a selection stayed on the screen and only ⌘C copied it. The README still
+said selecting copies.
+
+- **Letting go copies.** When the left button is let go (in the terminal or
+  outside it), a selection made by that press goes to the Mac clipboard,
+  through the native plugin. That includes a drag, a double-click's word,
+  a triple-click's line, a Shift-click that extends it, and an Option-drag
+  over a program that has the mouse. The selection stays shown, and ⌘C
+  still copies it.
+- **Only a selection the press made.** A selection left from before isn't
+  copied again. Otherwise a click in a program that has the mouse, after
+  copying something in another app, would take the clipboard back.
+- A program with the mouse (Claude Code's fullscreen mode, tmux's mouse
+  on an older host) selects and copies by itself, through OSC 52, as
+  before.
+- **Verified:** app unit tests for a drag let go outside, a double-click's
+  word, and no copy for a click, another button, a press outside the
+  terminal, or a selection from before.
