@@ -281,7 +281,9 @@ impl AgentRuntime for ClaudeSdkRuntime {
             backend: "sdk".into(),
             available: ready,
             notes,
-            worker_missing: worker.is_none(),
+            // Not when a development build is pointed at: installing a
+            // release's wouldn't be where it looks.
+            worker_missing: worker.is_none() && setting(env, "OTTER_CLAUDE_WORKER").is_none(),
             tested_version: Some(format!("claude-agent-sdk {SDK_VERSION}")),
             structured_ready: false,
             features: RuntimeFeatures {
@@ -1221,8 +1223,10 @@ mod tests {
         assert!(!caps.available);
         assert!(caps.notes.iter().any(|n| n.contains("Node.js")));
         assert!(!caps.structured_ready);
-        // No worker next to this test binary: installing one would help.
+        // A development build pointed at but not there: installing a
+        // release's worker wouldn't help (D-128).
         let env = EnvMap::from([("OTTER_CLAUDE_WORKER".to_owned(), "/nonexistent".to_owned())]);
-        assert!(ClaudeSdkRuntime.capabilities(&env).worker_missing);
+        let caps = ClaudeSdkRuntime.capabilities(&env);
+        assert!(!caps.available && !caps.worker_missing);
     }
 }

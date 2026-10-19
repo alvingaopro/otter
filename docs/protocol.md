@@ -276,7 +276,7 @@ turns, messages, tool calls and interactions. See
   `notes` say which is missing. `worker_missing?` says the worker this
   otterd looks for isn't installed, which installing it would fix (D-128).
 - `runtime.test {backend?, model?}` → `{backend, ready, steps: [{name,
-  state: passed|failed|skipped, detail}]}` (D-124): the coding agent
+  state: passed|failed|skipped, detail}], worker_missing?}` (D-124, D-128): the coding agent
   started for one short reply, in a scratch directory under the host's
   state, every tool call refused, up to two minutes. Absent fields: the
   host's settings; no model set: a small one (`haiku`). Nothing is saved

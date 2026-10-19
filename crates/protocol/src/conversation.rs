@@ -82,6 +82,9 @@ pub struct RuntimeTest {
     /// Every step passed: coding work can start here.
     pub ready: bool,
     pub steps: Vec<TestStep>,
+    /// As in [`RuntimeCapabilities`], for the backend tested (D-128).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub worker_missing: bool,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]

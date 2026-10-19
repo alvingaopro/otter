@@ -333,6 +333,11 @@ export function SettingsDialog({
   const chosen = models?.state === "ready" ? models.list.find((m) => m.id === model.trim()) : undefined;
   const coding = codingSaved ? caps : null;
   const tested = test?.state === "done" ? test.result : null;
+  // What the host says of the backend on screen (it says it of the saved one).
+  const capsHere = coding && coding.backend === backend ? coding : null;
+  // Installing the worker would help: as the host says, or as a test found
+  // of a backend not saved yet (D-128).
+  const offerInstall = !!capsHere?.worker_missing || (!!tested?.worker_missing && tested.backend === backend);
   const hostTab = HOST_TABS.includes(tab);
   // An older host has no coding settings: its tab goes.
   const shown = tab === "coding" && settings && !codingSaved ? "otter" : tab;
@@ -554,7 +559,7 @@ export function SettingsDialog({
                             ? "It's installed, signed in and answering."
                             : "It can't run coding work yet: see below."
                           : coding && coding.backend === backend
-                            ? coding.worker_missing
+                            ? offerInstall
                               ? `The Claude worker isn't installed on ${host}. Install puts it there; otterd keeps running.`
                               : !coding.available && coding.notes?.[0]
                                 ? coding.notes[0]
@@ -570,7 +575,7 @@ export function SettingsDialog({
                             {tested ? (tested.ready ? "Ready" : "Not ready") : coding!.available ? "Installed" : "Not ready"}
                           </span>
                         )}
-                        {coding?.worker_missing && coding.backend === backend && (
+                        {offerInstall && (
                           <button
                             type="button"
                             className="btn primary"
@@ -591,7 +596,7 @@ export function SettingsDialog({
                         </button>
                       </div>
                     </Row>
-                    {install && <InstallResult install={install} host={host} ready={!!coding && !coding.worker_missing} />}
+                    {install && <InstallResult install={install} host={host} caps={capsHere} />}
                     {test && <TestResult test={test} />}
                   </Group>
                   <p className="muted small">For work that starts after you save; work under way keeps how it started.</p>
@@ -757,7 +762,7 @@ function Appearance({ theme, onTheme }: { theme: ThemeChoice; onTheme: (t: Theme
 }
 
 /** How installing the Claude worker went (D-128). */
-function InstallResult({ install, host, ready }: { install: Install; host: string; ready: boolean }) {
+function InstallResult({ install, host, caps }: { install: Install; host: string; caps: RuntimeCapabilities | null }) {
   if (install.state === "running") {
     return (
       <p className="settings-test muted small" role="status">
@@ -766,13 +771,20 @@ function InstallResult({ install, host, ready }: { install: Install; host: strin
     );
   }
   if (install.state === "error") return <p className="settings-test error-text small">{install.error}</p>;
-  // Installed: say so; not found after all: what the install said.
-  return ready ? (
-    <p className="settings-test muted small" role="status">
-      Installed. Run a test to check it's signed in.
-    </p>
-  ) : (
-    <pre className="output settings-output">{install.output}</pre>
+  // Found now: say so, and what else it needs. Not found, or the host can't
+  // say of this backend before it's saved: what the install said.
+  if (caps && !caps.worker_missing) {
+    return (
+      <p className="settings-test muted small" role="status">
+        {caps.available ? "Installed. Run a test to check it's signed in." : `Installed. Still not ready: ${caps.notes?.[0] ?? "see above."}`}
+      </p>
+    );
+  }
+  return (
+    <>
+      <pre className="output settings-output">{install.output}</pre>
+      {!caps && <p className="settings-test muted small">Run a test to check it.</p>}
+    </>
   );
 }
 
