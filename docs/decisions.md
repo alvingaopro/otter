@@ -465,7 +465,8 @@ delivery verified only up to the permission prompt under `tauri dev`.
   from Actions.
 - Not yet: code signing and notarization (the app is unsigned; README says how
   to open it), auto-update inside the app (since D-125), and Linux desktop
-  builds.
+  builds. *Amended 2026-10-19:* the desktop app is Mac-only, for good: no
+  Linux or Windows desktop builds (roadmap, *Not in scope*).
 
 ## D-020 — Onboarding: hosts and installs from the app (2026-10-08)
 
