@@ -273,6 +273,15 @@ describe("Activity Bar navigation", () => {
     expect(button.textContent).toBe("Updating…");
   });
 
+  it("shows the performance overlay only once it's turned on (D-128)", async () => {
+    const { setPerfOverlay } = await import("./perf");
+    expect(document.querySelector(".perf-overlay")).toBeNull();
+    await act(async () => setPerfOverlay(true));
+    expect(document.querySelector(".perf-overlay")?.textContent).toBe("— fps");
+    await act(async () => setPerfOverlay(false));
+    expect(document.querySelector(".perf-overlay")).toBeNull();
+  });
+
   it("opens Settings with ⌘,", async () => {
     await act(async () => {
       window.dispatchEvent(new KeyboardEvent("keydown", { key: ",", metaKey: true, bubbles: true }));

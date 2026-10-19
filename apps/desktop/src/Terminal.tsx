@@ -18,6 +18,7 @@ import { logicalLine, urlAtColumn } from "./links";
 import { fontFamily, fontSize, onFontFamily, onFontSize } from "./terminalFont";
 import "@xterm/xterm/css/xterm.css";
 import type { AttachEvent } from "./types";
+import { countTerminalBytes } from "./perf";
 
 /**
  * Clipboard writes go through the native plugin: text copied in the session
@@ -316,6 +317,7 @@ export function Terminal({ host, workspace, session, onEnd, generation, label, w
     output.onmessage = (data) => {
       const item =
         data instanceof ArrayBuffer ? new Uint8Array(data) : Array.isArray(data) ? Uint8Array.from(data) : data;
+      if (item instanceof Uint8Array) countTerminalBytes(item.byteLength);
       if (held) held.push(item);
       else deliver(item);
     };

@@ -4012,3 +4012,35 @@ between its text size and the host's model provider. What applied at once
   changes being sent, closing with changes, late answers, the switch,
   the test, and no host. The tabs were
   rendered in Chromium, dark and light, at full size and narrow.
+
+## D-128 — A performance overlay, under Settings › Developer (2026-10-19)
+
+Asked for directly: the frame-rate readout the developer had been pasting
+into the web inspector, in the window's top-right corner, as a setting that
+is off by default, with other common measurements beside it.
+
+- **Settings › Developer**, a tab of *This Mac* (D-127): one switch,
+  *Performance overlay*, kept on this Mac (`otter.perf-overlay`) and applied
+  at once. Off by default; while off nothing is measured — no frame loop, no
+  timer, no polling.
+- **What it shows**, once a second (measured every frame, drawn once a
+  second, so it doesn't cost what it measures): frames per second (green
+  from 55, red under 30) and the slowest frame; how late the main thread ran
+  a 100 ms timer, at most; the page's element count; what the terminals were
+  sent, per second; and the app process's memory and CPU. A hidden window
+  draws no frames, so it shows "— fps" then, not 0.
+- **Only what WebKit has.** The app's pages run in WKWebView, which has no
+  `performance.memory` and no long-task observer: the JS heap shows only
+  where the engine says (Chromium, not the Mac), and the timer's lateness
+  stands in for long tasks. The memory and CPU are the app process's, from
+  `ps` (`perf.rs`, every 2 s while shown): the pages themselves run in
+  WebKit's own processes, which the app can't single out, so the line says
+  "app".
+- **The terminals' bytes are counted always** — one add per chunk in
+  `Terminal`, so the first second shown is already right.
+- **Verified:** tests for the switch (off by default, remembered, nothing
+  sent to a host), the reduction of a second (frames, the slowest one,
+  lateness, bytes, and no gap counted after the window was hidden), the
+  overlay appearing and leaving with the switch, and `ps` read for the test's
+  own process; the Developer tab and the overlay rendered in Chromium, dark
+  and light. **Not verified:** the overlay in the Mac app itself.

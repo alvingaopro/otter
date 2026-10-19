@@ -154,10 +154,23 @@ describe("Settings", () => {
   it("opens on this Mac's look, then remembers the tab", async () => {
     expect(dialog().querySelector("h2")?.textContent).toBe("Appearance");
     // This host's otterd has no coding settings: no tab for them.
-    expect(tabs().map((b) => b.textContent)).toEqual(["Appearance", "Sign-in pages", "Otter", "API keys0 set"]);
+    expect(tabs().map((b) => b.textContent)).toEqual(["Appearance", "Sign-in pages", "Developer", "Otter", "API keys0 set"]);
     await tab("Otter");
     expect(localStorage.getItem("otter.settings-tab")).toBe("otter");
     expect(dialog().querySelector('[aria-current="page"]')?.textContent).toBe("Otter");
+  });
+
+  it("turns the performance overlay on and off under Developer, at once and without a host (D-128)", async () => {
+    await tab("Developer");
+    const toggle = dialog().querySelector<HTMLInputElement>('[aria-label="Show the performance overlay"]')!;
+    expect(toggle.checked).toBe(false);
+    await act(async () => toggle.click());
+    expect(toggle.checked).toBe(true);
+    expect(localStorage.getItem("otter.perf-overlay")).toBe("on");
+    await act(async () => toggle.click());
+    expect(localStorage.getItem("otter.perf-overlay")).toBeNull();
+    expect(calls.map((c) => c.cmd)).toEqual(["settings_get"]);
+    expect(dialog().textContent).not.toContain("Unsaved changes");
   });
 
   it("sets this Mac's theme, terminal font and size, at once and without a host", async () => {

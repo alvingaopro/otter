@@ -5,6 +5,7 @@ import type { RuntimeCapabilities, RuntimeTest } from "./conversation";
 import { explain as needsNewer } from "./newer";
 import { SignInSites } from "./SignIn";
 import { FONT_SUGGESTIONS, fontChoice, fontFamily, fontSize, onFontSize, setFontFamily, setFontSize } from "./terminalFont";
+import { onPerfOverlay, perfOverlay, setPerfOverlay } from "./perf";
 import type { ThemeChoice } from "./theme";
 
 /** Mirrors `otter_protocol::host::ControllerInfo` (D-052). */
@@ -63,8 +64,8 @@ type Models = { state: "loading" } | { state: "ready"; list: ModelInfo[] } | { s
 type Test = { state: "running" } | { state: "done"; result: RuntimeTest } | { state: "error"; error: string };
 
 /** The tabs (D-127): this Mac's, then the chosen host's. */
-export type SettingsTab = "appearance" | "signin" | "otter" | "coding" | "keys";
-const TABS: SettingsTab[] = ["appearance", "signin", "otter", "coding", "keys"];
+export type SettingsTab = "appearance" | "signin" | "developer" | "otter" | "coding" | "keys";
+const TABS: SettingsTab[] = ["appearance", "signin", "developer", "otter", "coding", "keys"];
 const HOST_TABS: SettingsTab[] = ["otter", "coding", "keys"];
 const TAB_KEY = "otter.settings-tab";
 
@@ -319,6 +320,7 @@ export function SettingsDialog({
   const heads: Record<SettingsTab, [string, string]> = {
     appearance: ["Appearance", "On this Mac. Changes apply right away."],
     signin: ["Sign-in pages", "Pages that tools on your hosts open in this Mac's browser. Kept on this Mac, for every host."],
+    developer: ["Developer", "On this Mac. For working on the app itself; changes apply right away."],
     otter: ["Otter", host ? `On ${host}. Plans each task, decides, and checks the work, also while this app is closed.` : "Kept on each host."],
     coding: ["Coding agent", host ? `On ${host}. Claude Code, which writes the code.` : "Kept on each host."],
     keys: ["API keys", host ? `On ${host}. Kept there, never read back.` : "Kept on each host."],
@@ -346,6 +348,7 @@ export function SettingsDialog({
         <div className="settings-nav-group">This Mac</div>
         {nav("appearance", "Appearance", <Icon d="appearance" />)}
         {nav("signin", "Sign-in pages", <Icon d="signin" />)}
+        {nav("developer", "Developer", <Icon d="developer" />)}
         <div className="settings-nav-group">Host</div>
         <div className="settings-host">
           <span className={host ? "status-dot ok" : "status-dot"} aria-hidden="true" />
@@ -385,6 +388,7 @@ export function SettingsDialog({
         <div className="settings-body">
           {shown === "appearance" && <Appearance theme={theme} onTheme={onTheme} />}
           {shown === "signin" && <SignInSites />}
+          {shown === "developer" && <Developer />}
           {hostTab && !host && (
             <div className="settings-empty">
               <strong>No host connected</strong>
@@ -766,6 +770,29 @@ function Segmented({
   );
 }
 
+/** For working on the app itself (D-128): this Mac's, applied at once. */
+function Developer() {
+  const [overlay, setOverlay] = useState(perfOverlay);
+  useEffect(() => onPerfOverlay(setOverlay), []);
+  return (
+    <Group title="Performance">
+      <Row
+        label="Performance overlay"
+        hint="In the window's top-right corner: frames per second and the slowest frame, how late the main thread runs, the page's size, what the terminals receive, and the app process's memory and CPU. While it's off, nothing is measured."
+      >
+        <input
+          type="checkbox"
+          role="switch"
+          className="switch"
+          aria-label="Show the performance overlay"
+          checked={overlay}
+          onChange={(e) => setPerfOverlay(e.target.checked)}
+        />
+      </Row>
+    </Group>
+  );
+}
+
 /** Settings that belong together, in one card under a name. */
 function Group({ title, children }: { title: string; children: ReactNode }) {
   return (
@@ -818,6 +845,7 @@ const ICONS: Record<string, ReactNode> = {
       <path d="M9.4 6.6L11 8.2" />
     </>
   ),
+  developer: <path d="M1.8 8.5h2.6l1.8-4.3 3.2 7.6 1.8-3.3h3" />,
   close: <path d="M4 4l8 8M12 4l-8 8" />,
 };
 
