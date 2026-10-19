@@ -4,6 +4,7 @@
 //! them alive independently of the daemon and of any client. tmux is the V1
 //! backend; nothing outside this module knows about tmux.
 
+mod queries;
 pub mod tmux;
 
 use std::collections::{HashMap, VecDeque};
@@ -52,6 +53,18 @@ pub struct Stream {
     input: Option<mpsc::UnboundedSender<Vec<u8>>>,
     /// Size, view and history, to the backend's reader.
     controls: mpsc::UnboundedSender<StreamInput>,
+}
+
+/// How a stream attach starts.
+#[derive(Clone, Copy, Debug)]
+pub struct StreamOptions {
+    pub cols: u16,
+    pub rows: u16,
+    /// Lines of history to send with the first snapshot.
+    pub history: u32,
+    /// The client's terminal is the user's own (D-119): no queries reach it,
+    /// it's never reset, and catching it up sends no history again.
+    pub own_terminal: bool,
 }
 
 pub enum StreamInput {
@@ -273,15 +286,9 @@ pub trait ExecutionBackend: Send + Sync {
 
     fn attach_command(&self, backend_ref: &str, term: &str) -> AttachCommand;
 
-    /// A stream attach at `cols`×`rows` with up to `history` lines of
-    /// history; `None` if this backend has none (the PTY attach is used).
-    async fn open_stream(
-        &self,
-        _backend_ref: &str,
-        _cols: u16,
-        _rows: u16,
-        _history: u32,
-    ) -> Result<Option<Stream>> {
+    /// A stream attach; `None` if this backend has none (the PTY attach is
+    /// used).
+    async fn open_stream(&self, _backend_ref: &str, _how: StreamOptions) -> Result<Option<Stream>> {
         Ok(None)
     }
 

@@ -28,7 +28,7 @@ use tokio::io::BufReader;
 use tokio::net::unix::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::sync::{broadcast::error::RecvError, mpsc};
 
-use crate::backend::{Stream, StreamInput, StreamOutput};
+use crate::backend::{Stream, StreamInput, StreamOptions, StreamOutput};
 use crate::daemon::Daemon;
 use crate::server::respond;
 
@@ -65,7 +65,15 @@ pub async fn run(
     let stream = match params.history {
         Some(lines) => match daemon
             .backend
-            .open_stream(&target.backend_ref, params.cols, params.rows, lines)
+            .open_stream(
+                &target.backend_ref,
+                StreamOptions {
+                    cols: params.cols,
+                    rows: params.rows,
+                    history: lines,
+                    own_terminal: params.own_terminal,
+                },
+            )
             .await
         {
             Ok(stream) => stream,

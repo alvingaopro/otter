@@ -18,7 +18,9 @@ use tokio::process::Command;
 
 mod control;
 
-use super::{AttachCommand, ExecutionBackend, LaunchSpec, Launched, ProcessState, Stream};
+use super::{
+    AttachCommand, ExecutionBackend, LaunchSpec, Launched, ProcessState, Stream, StreamOptions,
+};
 use crate::env::{EnvMap, self_exe, which, write_env_file};
 use crate::paths::Paths;
 
@@ -360,16 +362,10 @@ impl ExecutionBackend for TmuxBackend {
         }
     }
 
-    async fn open_stream(
-        &self,
-        backend_ref: &str,
-        cols: u16,
-        rows: u16,
-        history: u32,
-    ) -> Result<Option<Stream>> {
+    async fn open_stream(&self, backend_ref: &str, how: StreamOptions) -> Result<Option<Stream>> {
         let mut cmd = self.command();
         cmd.args(["-C", "attach-session", "-t", &target_session(backend_ref)]);
-        control::open(cmd, cols, rows, history).map(Some)
+        control::open(cmd, how).map(Some)
     }
 
     async fn detach_client(&self, tty: &str) -> Result<()> {

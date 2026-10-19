@@ -91,6 +91,10 @@ enum Command {
     Attach {
         /// `[host:]workspace[/session]` (default: first session).
         target: String,
+        /// Keep the session's history in this terminal: scroll and select it
+        /// as you do here. It stays in your scrollback after you detach.
+        #[arg(long)]
+        scrollback: bool,
     },
     /// Print a session's screen and scrollback.
     Logs {
@@ -428,7 +432,7 @@ async fn run(cli: Cli) -> Result<()> {
         }
         Command::New(args) => create_workspace(&config, args, json).await,
         Command::Start(args) => create_session(&config, args, json).await,
-        Command::Attach { target } => {
+        Command::Attach { target, scrollback } => {
             let target = Target::parse(&target)?;
             let found = find(&config, &target).await?;
             let session = found.session(target.session.as_deref())?;
@@ -438,7 +442,15 @@ async fn run(cli: Cli) -> Result<()> {
                 transport: config.transport(&found.host),
                 name: found.host.name.clone(),
             };
-            attach::run(found.conn, host, &ws_id, session.id.as_str(), &label).await
+            attach::run(
+                found.conn,
+                host,
+                &ws_id,
+                session.id.as_str(),
+                &label,
+                scrollback,
+            )
+            .await
         }
         Command::Logs { target, lines } => {
             let target = Target::parse(&target)?;

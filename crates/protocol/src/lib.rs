@@ -496,6 +496,12 @@ pub struct SessionAttach {
     /// The client takes and sends control frames (D-119).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub controls: bool,
+    /// The client's terminal is the user's own (`otter attach --scrollback`):
+    /// in a stream, the daemon keeps the program's queries out of it (its
+    /// answers would arrive as typing), never resets it, and catches it up
+    /// without sending history again (D-119).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub own_terminal: bool,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]

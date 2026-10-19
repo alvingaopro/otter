@@ -457,6 +457,7 @@ async fn attach_with(
             term: Some("xterm-256color".into()),
             history,
             controls: false,
+            own_terminal: false,
         })
         .await
         .unwrap()
@@ -483,6 +484,7 @@ async fn controlled_attach(
             term: Some("xterm-256color".into()),
             history: Some(history),
             controls: true,
+            own_terminal: false,
         })
         .await
         .unwrap();
@@ -1101,12 +1103,17 @@ async fn stream_attach_off_screen_gets_nothing_and_catches_up_on_return() {
         })
     };
 
+    // What's already on its way still comes after going off screen: wait
+    // for the shell to be quiet first (its prompt).
+    quiet_for(&mut reader, Duration::from_millis(300)).await;
+
     // Off screen and back, nothing written meanwhile: no snapshot, just on.
     writer.send(&view(false)).await.unwrap();
     writer.send(&view(true)).await.unwrap();
     send(&mut writer, "echo plain-$((1+1))\r").await;
     let out = read_until(&mut reader, "plain-2").await;
     assert!(!out.contains("\x1bc"), "{out:?}");
+    quiet_for(&mut reader, Duration::from_millis(300)).await;
 
     // Off screen while the program writes: it runs on, the client gets none.
     writer.send(&view(false)).await.unwrap();
@@ -1151,6 +1158,7 @@ async fn stream_attach_hears_when_another_client_sizes_the_window() {
             term: Some("xterm-256color".into()),
             history: None,
             controls: false,
+            own_terminal: false,
         })
         .await
         .unwrap();
@@ -1238,6 +1246,72 @@ async fn stream_attach_brings_earlier_history_when_asked() {
     assert!(
         matches!(done, Control::Snapshot { more: false, .. }),
         "{done:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_stream_to_the_users_own_terminal_keeps_queries_out_of_it() {
+    let host = TestHost::new();
+    sh_session(&host, "own").await;
+    let attach = |own_terminal| {
+        let host = &host;
+        async move {
+            let (ready, reader, writer) = host
+                .conn()
+                .await
+                .attach(SessionAttach {
+                    session: SessionRef {
+                        workspace: "own".into(),
+                        session: "sh".into(),
+                    },
+                    cols: 100,
+                    rows: 30,
+                    term: Some("xterm-256color".into()),
+                    history: Some(100),
+                    controls: false,
+                    own_terminal,
+                })
+                .await
+                .unwrap();
+            assert!(ready.history);
+            (reader, writer)
+        }
+    };
+    let (mut own, _own_writer) = attach(true).await;
+    let (mut app, _app_writer) = attach(false).await;
+    let first = read_until(&mut own, "\x1b[?2026l").await;
+    assert!(
+        !first.contains("\x1bc"),
+        "the user's terminal isn't reset: {first:?}"
+    );
+    read_until(&mut app, "\x1b[?2026l").await;
+
+    // The program asks its terminal things, then says it's done.
+    host.conn()
+        .await
+        .session_write(
+            "own",
+            "sh",
+            "printf 'a\\033[cb\\033[6nc\\033]11;?\\007d\\033[31me\\n'; echo asked-$((3+4))",
+            true,
+        )
+        .await
+        .unwrap();
+    let own_out = read_until(&mut own, "asked-7").await;
+    let app_out = read_until(&mut app, "asked-7").await;
+    for query in ["\x1b[c", "\x1b[6n", "\x1b]11;?"] {
+        assert!(
+            !own_out.contains(query),
+            "{query:?} reached it: {own_out:?}"
+        );
+        assert!(
+            app_out.contains(query),
+            "{query:?} goes to the app: {app_out:?}"
+        );
+    }
+    assert!(
+        own_out.contains("abcd\x1b[31me"),
+        "the rest is as it was: {own_out:?}"
     );
 }
 

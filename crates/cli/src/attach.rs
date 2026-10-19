@@ -3,6 +3,11 @@
 //! The local terminal is put in raw mode and bridged to the session through
 //! the daemon. `Ctrl-]` detaches; the session keeps running.
 //!
+//! With `--scrollback` (D-119) the local terminal is the session's terminal:
+//! it gets the program's own output, after the session's history, and keeps
+//! it as its own scrollback. The daemon keeps the program's queries away
+//! from it, and on the way out the program's modes are undone here.
+//!
 //! While attached, sign-in pages that tools on the host open (browser login,
 //! D-032) open in this machine's browser, as they do with the app.
 
@@ -19,6 +24,8 @@ use tokio::sync::mpsc;
 
 /// Ctrl-]
 pub const DETACH_KEY: u8 = 0x1d;
+/// Lines of history put in this terminal's scrollback with `--scrollback`.
+const SCROLLBACK_LINES: u32 = 5000;
 
 /// How long to wait for the daemon to confirm a detach before giving up on the
 /// connection (e.g. the network is gone and nothing will ever answer).
@@ -28,6 +35,76 @@ const DETACH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 /// drops before the remote side could restore the terminal itself.
 const RESET_TERMINAL: &str =
     "\x1b[?1049l\x1b[?25h\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?2004l\x1b[?1004l\x1b[0m";
+/// What a program may have set in this terminal, directly, with
+/// `--scrollback`, undone: besides the above, synchronized output, the
+/// charsets, other mouse encodings and alternate scrolling, cursor and keypad
+/// keys, the scroll region (cursor kept), insert and wrap, the keyboard
+/// protocols (kitty's flags, however many were pushed), the cursor's shape
+/// and colour, and the window's title (pushed when it started).
+const RESET_STREAM: &str = "\x1b[?2026l\x0f\x1b(B\x1b[?1005l\x1b[?1015l\x1b[?1016l\x1b[?1007l\
+    \x1b[?1l\x1b>\x1b7\x1b[r\x1b8\x1b[4l\x1b[?7h\x1b[=0;1u\x1b[<10u\x1b[>4;0m\x1b[0 q\x1b]112\x07\
+    \x1b[23;0t";
+/// Keep the window's title, for `RESET_STREAM` to give back.
+const PUSH_TITLE: &str = "\x1b[22;0t";
+
+/// Where the first detach key in `keys` is, and how long it is.
+fn detach_key(keys: &[u8]) -> Option<(usize, usize)> {
+    (0..keys.len()).find_map(|at| detach_key_at(&keys[at..]).map(|len| (at, len)))
+}
+
+/// How long the detach key that starts `keys` is, if one does: Ctrl-] as
+/// its byte, or as a terminal sends it once a program asked for more of the
+/// keyboard. xterm's modifyOtherKeys: `CSI 27;5;93~`. The kitty protocol:
+/// `CSI 93;5u`, maybe with alternate keys (`93:…`), the event type (press
+/// or repeat; never release, or letting go of a Ctrl-] typed into the
+/// program would detach) and the text (`;…`).
+fn detach_key_at(keys: &[u8]) -> Option<usize> {
+    if keys.first() == Some(&DETACH_KEY) {
+        return Some(1);
+    }
+    const XTERM: &[u8] = b"\x1b[27;5;93~";
+    if keys.starts_with(XTERM) {
+        return Some(XTERM.len());
+    }
+    let mut at = b"\x1b[93".len();
+    if !keys.starts_with(b"\x1b[93") {
+        return None;
+    }
+    let digits = |at: &mut usize| {
+        while keys.get(*at).is_some_and(u8::is_ascii_digit) {
+            *at += 1;
+        }
+    };
+    while keys.get(at) == Some(&b':') {
+        at += 1;
+        digits(&mut at);
+    }
+    // Ctrl, also with Caps Lock or Num Lock on (kitty reports them, 64 and
+    // 128, when asked for all keys).
+    at = ["5", "69", "133", "197"].iter().find_map(|m| {
+        let field = format!(";{m}");
+        let rest = &keys[at..];
+        (rest.starts_with(field.as_bytes())
+            && matches!(rest.get(field.len()), Some(b':' | b';' | b'u')))
+        .then_some(at + field.len())
+    })?;
+    if keys.get(at) == Some(&b':') {
+        if !matches!(keys.get(at + 1), Some(b'1' | b'2')) {
+            return None;
+        }
+        at += 2;
+    }
+    if keys.get(at) == Some(&b';') {
+        at += 1;
+        while keys
+            .get(at)
+            .is_some_and(|b| b.is_ascii_digit() || *b == b':')
+        {
+            at += 1;
+        }
+    }
+    (keys.get(at) == Some(&b'u')).then_some(at + 1)
+}
 
 /// The local terminal size, falling back to 80x24 when it is unknown (some
 /// PTYs report 0x0).
@@ -65,6 +142,7 @@ pub async fn run(
     workspace_id: &str,
     session: &str,
     label: &str,
+    scrollback: bool,
 ) -> Result<()> {
     if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
         bail!("attach needs an interactive terminal (try `otter logs` / `otter send`)");
@@ -80,7 +158,7 @@ pub async fn run(
     };
     let (cols, rows) = terminal_size();
     let term = std::env::var("TERM").ok().filter(|t| !t.is_empty());
-    let (_ready, mut reader, mut writer) = conn
+    let (ready, mut reader, mut writer) = conn
         .attach(SessionAttach {
             session: SessionRef {
                 workspace: workspace_id.to_owned(),
@@ -89,12 +167,18 @@ pub async fn run(
             cols,
             rows,
             term,
-            // `otter attach` shows the session's screen; the wheel scrolls
+            // Without `--scrollback`, the session's screen; the wheel scrolls
             // the session's history.
-            history: None,
+            history: scrollback.then_some(SCROLLBACK_LINES),
             controls: false,
+            own_terminal: scrollback,
         })
         .await?;
+    // An older host gives the screen either way.
+    let stream = ready.history;
+    if stream {
+        print!("{PUSH_TITLE}");
+    }
 
     let raw = RawMode::enable()?;
 
@@ -145,7 +229,7 @@ pub async fn run(
                     detach_sent = Some(tokio::time::Instant::now());
                     continue;
                 };
-                match keys.iter().position(|&b| b == DETACH_KEY) {
+                match detach_key(&keys).map(|(at, _)| at) {
                     Some(pos) => {
                         if pos > 0 {
                             let _ = writer.send(&Frame::Data(keys[..pos].to_vec())).await;
@@ -175,6 +259,13 @@ pub async fn run(
         }
     };
 
+    if stream {
+        // The program's modes, then below its screen: the session stays in
+        // the scrollback above.
+        let (_, rows) = terminal_size();
+        print!("{RESET_TERMINAL}{RESET_STREAM}\x1b[{rows};1H\r\n");
+        let _ = stdout.flush();
+    }
     drop(raw);
     if let Some(logins) = logins {
         logins.stop().await;
@@ -202,11 +293,46 @@ pub async fn run(
             ..
         }) => format!("[attach error: {}]", message.unwrap_or_default()),
         None => {
-            print!("{RESET_TERMINAL}");
+            if !stream {
+                print!("{RESET_TERMINAL}");
+            }
             format!("[connection to {label} lost; the session keeps running]")
         }
     };
     let _ = stdout.flush();
     eprintln!("{message}");
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ctrl_close_bracket_detaches_however_it_comes() {
+        assert_eq!(detach_key(b"ab\x1dcd"), Some((2, 1)));
+        assert_eq!(detach_key(b"x\x1b[93;5u"), Some((1, 7)));
+        assert_eq!(detach_key(b"\x1b[27;5;93~"), Some((0, 10)));
+        // The kitty protocol's fuller forms: press, repeat, alternate keys,
+        // the text.
+        assert_eq!(detach_key(b"\x1b[93;5:1u"), Some((0, 9)));
+        assert_eq!(detach_key(b"\x1b[93;5:2u"), Some((0, 9)));
+        assert_eq!(detach_key(b"\x1b[93:125;5u"), Some((0, 11)));
+        assert_eq!(detach_key(b"\x1b[93;5;29u"), Some((0, 10)));
+        assert_eq!(detach_key(b"\x1b[93;5:3u"), None, "a release");
+        assert_eq!(detach_key(b"\x1b[93u"), None, "] alone");
+        assert_eq!(detach_key(b"\x1b[93;6u"), None, "with Shift too");
+        assert_eq!(
+            detach_key(b"\x1b[93;69u"),
+            Some((0, 8)),
+            "with Caps Lock on"
+        );
+        assert_eq!(
+            detach_key(b"\x1b[93;133:1u"),
+            Some((0, 11)),
+            "with Num Lock on"
+        );
+        assert_eq!(detach_key(b"\x1b[93;55u"), None);
+        assert_eq!(detach_key(b"plain"), None);
+    }
 }
