@@ -270,7 +270,7 @@ describe("Activity Bar navigation", () => {
     await act(async () => button.click());
     expect(calls.mock.calls.map(([cmd]) => cmd)).toEqual(["update_install"]);
     expect(button.disabled).toBe(true);
-    expect(button.textContent).toBe("Updating… 0%");
+    expect(button.textContent).toBe("Updating…");
   });
 
   it("opens Settings with ⌘,", async () => {

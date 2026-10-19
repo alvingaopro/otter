@@ -162,7 +162,11 @@ pub fn check_now(app: &AppHandle) {
                     ))
                     .show(move |yes| {
                         if yes {
-                            tauri::async_runtime::spawn(update_install(install));
+                            tauri::async_runtime::spawn(async move {
+                                if let Err(e) = update_install(install.clone()).await {
+                                    say(&install, "Couldn't update Otter", &e);
+                                }
+                            });
                         }
                     });
             }

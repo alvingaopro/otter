@@ -435,7 +435,7 @@ export default function App() {
           update={update ?? undefined}
           onUpdate={() => {
             // Downloads, installs and restarts; the events say how far it got.
-            setUpdate((u) => u && { version: u.version, progress: 0 });
+            setUpdate((u) => u && { version: u.version, progress: null });
             invoke("update_install").catch((e) => setUpdate((u) => u && { version: u.version, error: String(e) }));
           }}
           pins={pins}
