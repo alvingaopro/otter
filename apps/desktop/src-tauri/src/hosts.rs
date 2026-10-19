@@ -566,6 +566,24 @@ pub async fn host_install(app: AppHandle, name: String) -> Result<String, String
     Ok(out)
 }
 
+/// Install the Claude worker (D-060) that the host's otterd looks for, its
+/// own release's, and nothing else (D-128): otterd stays as it is and keeps
+/// running, and finds the worker on the next check.
+#[tauri::command]
+pub async fn host_install_worker(app: AppHandle, name: String) -> Result<String, String> {
+    let transport = app.state::<Hosts>().transport(&name)?;
+    let version = Connection::connect(&transport)
+        .await
+        .map_err(|e| e.to_string())?
+        .host_status()
+        .await
+        .map_err(|e| e.to_string())?
+        .otterd_version;
+    otter_client::install::install(&transport, &version, false, false)
+        .await
+        .map_err(|e| e.to_string())
+}
+
 /// Install this app's release on a host and stop its running daemon. On
 /// this Mac, when its otterd is the one in `~/.local/bin` and the app
 /// carries its own (D-085), that's a link to the app's and only the Claude

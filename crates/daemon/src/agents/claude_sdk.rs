@@ -281,6 +281,7 @@ impl AgentRuntime for ClaudeSdkRuntime {
             backend: "sdk".into(),
             available: ready,
             notes,
+            worker_missing: worker.is_none(),
             tested_version: Some(format!("claude-agent-sdk {SDK_VERSION}")),
             structured_ready: false,
             features: RuntimeFeatures {
@@ -1220,5 +1221,8 @@ mod tests {
         assert!(!caps.available);
         assert!(caps.notes.iter().any(|n| n.contains("Node.js")));
         assert!(!caps.structured_ready);
+        // No worker next to this test binary: installing one would help.
+        let env = EnvMap::from([("OTTER_CLAUDE_WORKER".to_owned(), "/nonexistent".to_owned())]);
+        assert!(ClaudeSdkRuntime.capabilities(&env).worker_missing);
     }
 }

@@ -7035,6 +7035,10 @@ async fn the_coding_agent_is_tested_with_one_short_reply() {
     let states: Vec<StepState> = t.steps.iter().map(|s| s.state).collect();
     assert_eq!(states, [StepState::Failed, StepState::Skipped], "{t:?}");
     assert!(t.steps[0].detail.contains("isn't installed"), "{t:?}");
+    // …and says installing the worker would help (D-128); the fake one's there.
+    let caps = missing.conn().await.runtime_capabilities().await.unwrap();
+    assert!(caps.worker_missing && !caps.available, "{caps:?}");
+    assert!(!conn.runtime_capabilities().await.unwrap().worker_missing);
 }
 
 #[tokio::test]

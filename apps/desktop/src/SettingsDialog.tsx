@@ -62,6 +62,7 @@ const OLD_CONTROLLERS: ControllerInfo[] = [
 
 type Models = { state: "loading" } | { state: "ready"; list: ModelInfo[] } | { state: "error"; error: string };
 type Test = { state: "running" } | { state: "done"; result: RuntimeTest } | { state: "error"; error: string };
+type Install = { state: "running" } | { state: "done"; output: string } | { state: "error"; error: string };
 
 /** The tabs (D-127): this Mac's, then the chosen host's. */
 export type SettingsTab = "appearance" | "signin" | "developer" | "otter" | "coding" | "keys";
@@ -122,6 +123,9 @@ export function SettingsDialog({
   const [codingModel, setCodingModel] = useState("");
   const [caps, setCaps] = useState<RuntimeCapabilities | null>(null);
   const [test, setTest] = useState<Test | null>(null);
+  // Installing the Claude worker the host's otterd looks for (D-128).
+  const [install, setInstall] = useState<Install | null>(null);
+  const [recheck, setRecheck] = useState(0);
   // Otter answers with its tools (D-089): tried out per host.
   const [otterTools, setOtterTools] = useState(false);
 
@@ -152,6 +156,7 @@ export function SettingsDialog({
     setError(null);
     setSaved(false);
     setTest(null);
+    setInstall(null);
     setKeys({});
     invoke<HostSettings>("settings_get", { host })
       .then((s) => {
@@ -175,7 +180,7 @@ export function SettingsDialog({
     return () => {
       live = false;
     };
-  }, [host, settings]);
+  }, [host, settings, recheck]);
 
   // What's on screen now, for answers that come back after it changed.
   const now = useRef({ host, backend, codingModel });
@@ -288,6 +293,21 @@ export function SettingsDialog({
     } catch (e) {
       if (same()) setTest({ state: "error", error: needsNewer(host, e) });
     }
+  }
+
+  async function installWorker() {
+    const at = host;
+    setInstall({ state: "running" });
+    setTest(null);
+    try {
+      const output = await invoke<string>("host_install_worker", { name: at });
+      if (now.current.host !== at) return;
+      setInstall({ state: "done", output });
+    } catch (e) {
+      if (now.current.host === at) setInstall({ state: "error", error: String(e) });
+    }
+    // Whatever came of it, ask the host again.
+    setRecheck((n) => n + 1);
   }
 
   function close() {
@@ -534,9 +554,11 @@ export function SettingsDialog({
                             ? "It's installed, signed in and answering."
                             : "It can't run coding work yet: see below."
                           : coding && coding.backend === backend
-                            ? !coding.available && coding.notes?.[0]
-                              ? coding.notes[0]
-                              : "Run a test: one short reply, no tools, to check it's signed in."
+                            ? coding.worker_missing
+                              ? `The Claude worker isn't installed on ${host}. Install puts it there; otterd keeps running.`
+                              : !coding.available && coding.notes?.[0]
+                                ? coding.notes[0]
+                                : "Run a test: one short reply, no tools, to check it's signed in."
                             : "Run a test to check this before you save it."
                       }
                     >
@@ -548,11 +570,28 @@ export function SettingsDialog({
                             {tested ? (tested.ready ? "Ready" : "Not ready") : coding!.available ? "Installed" : "Not ready"}
                           </span>
                         )}
-                        <button type="button" className="btn outline" disabled={test?.state === "running"} onClick={() => void runTest()}>
+                        {coding?.worker_missing && coding.backend === backend && (
+                          <button
+                            type="button"
+                            className="btn primary"
+                            disabled={install?.state === "running"}
+                            onClick={() => void installWorker()}
+                            title={`Install the Claude worker on ${host}; otterd keeps running`}
+                          >
+                            {install?.state === "running" ? "Installing…" : "Install"}
+                          </button>
+                        )}
+                        <button
+                          type="button"
+                          className="btn outline"
+                          disabled={test?.state === "running" || install?.state === "running"}
+                          onClick={() => void runTest()}
+                        >
                           {test?.state === "running" ? "Testing…" : "Run a test"}
                         </button>
                       </div>
                     </Row>
+                    {install && <InstallResult install={install} host={host} ready={!!coding && !coding.worker_missing} />}
                     {test && <TestResult test={test} />}
                   </Group>
                   <p className="muted small">For work that starts after you save; work under way keeps how it started.</p>
@@ -714,6 +753,26 @@ function Appearance({ theme, onTheme }: { theme: ThemeChoice; onTheme: (t: Theme
         </div>
       </Group>
     </>
+  );
+}
+
+/** How installing the Claude worker went (D-128). */
+function InstallResult({ install, host, ready }: { install: Install; host: string; ready: boolean }) {
+  if (install.state === "running") {
+    return (
+      <p className="settings-test muted small" role="status">
+        Installing the Claude worker on {host}…
+      </p>
+    );
+  }
+  if (install.state === "error") return <p className="settings-test error-text small">{install.error}</p>;
+  // Installed: say so; not found after all: what the install said.
+  return ready ? (
+    <p className="settings-test muted small" role="status">
+      Installed. Run a test to check it's signed in.
+    </p>
+  ) : (
+    <pre className="output settings-output">{install.output}</pre>
   );
 }
 

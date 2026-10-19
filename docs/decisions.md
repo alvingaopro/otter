@@ -4045,3 +4045,32 @@ is off by default, with other common measurements beside it.
   overlay appearing and leaving with the switch, and `ps` read for the test's
   own process; the Developer tab and the overlay rendered in Chromium, dark
   and light. **Not verified:** the overlay in the Mac app itself.
+
+## D-129 — Install the Claude worker from Settings (2026-10-19)
+
+With the SDK the default (D-124), a host without the Claude worker can't
+run coding work. The fix was `otter host install` in a terminal. The app's
+host page only offers *Install* or *Update otterd* when otterd itself is
+missing or out of date, and its install re-downloads otterd and restarts
+the daemon.
+
+- **`runtime.capabilities` says when the worker is missing**
+  (`worker_missing`), so a client needn't read the notes. It's set only
+  when no worker is found where this otterd looks.
+- **Settings › Coding agent › *Install*** shows when it is. It installs
+  only the worker, from the release of the otterd the host runs (its
+  `host.status` version, which is where that otterd looks), with the same
+  checks as `otter host install` (SHA-256, `--check`). otterd isn't
+  touched or restarted, so nothing under way stops. The host is asked
+  again afterwards: *Installed* and *Run a test*, or what the install
+  said (a release with no worker for that platform, say), with *Install*
+  still there to try again.
+- **Node.js isn't installed for you.** It's the host's (D-060): the note
+  says which version is needed.
+- **Verified:**
+  - Unit: a worker that isn't there is `worker_missing`.
+  - End to end: a host without one says so; one with the fake worker
+    doesn't.
+  - App tests for the button, asking the host again, and a failed
+    install.
+

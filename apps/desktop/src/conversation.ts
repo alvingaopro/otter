@@ -120,6 +120,8 @@ export interface RuntimeCapabilities {
   backend: string;
   available: boolean;
   notes?: string[];
+  /** The Claude worker isn't installed; installing it would help (D-128). */
+  worker_missing?: boolean;
   tested_version?: string;
   structured_ready: boolean;
   features: {

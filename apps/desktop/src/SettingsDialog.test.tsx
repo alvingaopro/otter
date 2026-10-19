@@ -11,6 +11,8 @@ const state = vi.hoisted(() => ({
   codingModel: undefined as string | undefined,
   otterTools: undefined as boolean | undefined,
   oldTest: false,
+  workerMissing: false,
+  installFails: false,
 }));
 // Holds back the host's answers to a save or a test until let go.
 const gate = vi.hoisted(() => ({ wait: null as Promise<void> | null }));
@@ -26,7 +28,21 @@ vi.mock("@tauri-apps/api/core", () => ({
         { id: "openai/gpt-x", name: "OpenAI: GPT X" },
       ];
     }
+    if (cmd === "host_install_worker") {
+      if (state.installFails) throw "note: release 0.7.19 has no Claude worker for linux-riscv64";
+      state.workerMissing = false;
+      return "installed the Claude worker 0.7.19";
+    }
     if (cmd === "runtime_capabilities") {
+      if (state.workerMissing) {
+        return {
+          backend: "sdk",
+          available: false,
+          worker_missing: true,
+          notes: ["The Claude worker isn't installed next to otterd: `otter host install` installs it."],
+          features: {},
+        };
+      }
       return state.backend === "sdk"
         ? { backend: "sdk", available: false, notes: ["Node.js wasn't found."], features: {} }
         : { backend: "legacy_cli", available: true, features: {} };
@@ -122,7 +138,9 @@ describe("Settings", () => {
     state.codingModel = undefined;
     const name = expect.getState().currentTestName ?? "";
     state.modern = name.includes("models");
-    state.backend = name.includes("not installed") ? "sdk" : name.includes("coding agent") ? "legacy_cli" : undefined;
+    state.backend = name.includes("not installed") || name.includes("worker") ? "sdk" : name.includes("coding agent") ? "legacy_cli" : undefined;
+    state.workerMissing = name.includes("worker");
+    state.installFails = name.includes("can't be installed");
     state.otterTools = name.includes("Otter's tools") ? false : undefined;
     state.oldTest = name.includes("older otterd");
     localStorage.removeItem("otter.settings-tab");
@@ -338,6 +356,26 @@ describe("Settings", () => {
     await tab("Coding agent");
     expect(dialog().querySelector('[role="status"]')?.textContent).toBe("Not ready");
     expect(dialog().textContent).toContain("Node.js wasn't found.");
+  });
+
+  it("installs a missing Claude worker, and asks the host again", async () => {
+    await tab("Coding agent");
+    expect(dialog().textContent).toContain("The Claude worker isn't installed on mac. Install puts it there; otterd keeps running.");
+    await act(async () => button("Install").click());
+    await flush();
+    expect(calls).toContainEqual({ cmd: "host_install_worker", args: { name: "mac" } });
+    expect(calls.filter((c) => c.cmd === "runtime_capabilities")).toHaveLength(2);
+    expect(dialog().textContent).toContain("Installed. Run a test to check it's signed in.");
+    expect(button("Install")).toBeUndefined();
+  });
+
+  it("says why a Claude worker can't be installed", async () => {
+    await tab("Coding agent");
+    await act(async () => button("Install").click());
+    await flush();
+    expect(dialog().textContent).toContain("has no Claude worker for linux-riscv64");
+    // Still missing: the button stays, to try again.
+    expect(button("Install")).toBeDefined();
   });
 
   it("says an older otterd can't test the coding agent", async () => {
