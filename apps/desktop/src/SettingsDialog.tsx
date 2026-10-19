@@ -1,9 +1,11 @@
-import { useEffect, useRef, useState, type FormEvent, type KeyboardEvent, type ReactNode } from "react";
+import { useEffect, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { Dialog } from "./Dialog";
-import type { RuntimeCapabilities } from "./conversation";
-import { FONT_SUGGESTIONS, fontChoice, fontSize, onFontSize, setFontFamily, setFontSize } from "./terminalFont";
+import type { RuntimeCapabilities, RuntimeTest } from "./conversation";
+import { explain as needsNewer } from "./newer";
 import { SignInSites } from "./SignIn";
+import { FONT_SUGGESTIONS, fontChoice, fontFamily, fontSize, onFontSize, setFontFamily, setFontSize } from "./terminalFont";
+import type { ThemeChoice } from "./theme";
 
 /** Mirrors `otter_protocol::host::ControllerInfo` (D-052). */
 export interface ControllerInfo {
@@ -37,10 +39,10 @@ export interface HostSettings {
   otter_answers?: string;
 }
 
-/** How the coding agent can run on a host (D-057). */
-const BACKENDS: [string, string][] = [
-  ["legacy_cli", "Claude Code CLI"],
-  ["sdk", "Claude Agent SDK (needs Node.js)"],
+/** How the coding agent can run on a host (D-057): the SDK first, the default (D-124). */
+const BACKENDS: { id: string; name: string; hint: string }[] = [
+  { id: "sdk", name: "Agent SDK", hint: "The Claude Agent SDK, the default. Needs Node.js on the host." },
+  { id: "legacy_cli", name: "Claude Code CLI", hint: "The claude command on the host." },
 ];
 
 /** Mirrors `otter_protocol::host::ModelInfo`. */
@@ -58,19 +60,57 @@ const OLD_CONTROLLERS: ControllerInfo[] = [
 ];
 
 type Models = { state: "loading" } | { state: "ready"; list: ModelInfo[] } | { state: "error"; error: string };
+type Test = { state: "running" } | { state: "done"; result: RuntimeTest } | { state: "error"; error: string };
+
+/** The tabs (D-125): this Mac's, then the chosen host's. */
+export type SettingsTab = "appearance" | "signin" | "otter" | "coding" | "keys";
+const TABS: SettingsTab[] = ["appearance", "signin", "otter", "coding", "keys"];
+const HOST_TABS: SettingsTab[] = ["otter", "coding", "keys"];
+const TAB_KEY = "otter.settings-tab";
+
+function storedTab(): SettingsTab {
+  try {
+    const v = localStorage.getItem(TAB_KEY) as SettingsTab | null;
+    if (v && TABS.includes(v)) return v;
+  } catch {
+    // Storage unavailable: the first tab.
+  }
+  return "appearance";
+}
 
 /**
- * Settings of Otter on one host: which model thinks, and API keys.
- * Keys are sent to that host's otterd and kept there (0600); this app never
- * reads them back, it only knows whether one is set. The models offered are
- * what the provider lists, asked by the host with its key.
+ * Settings, in tabs by kind (D-125): this Mac's (applied as they change,
+ * kept here) and the chosen host's (saved there, with Save). Keys are sent
+ * to that host's otterd and kept there (0600); this app never reads them
+ * back, it only knows whether one is set. The models offered are what the
+ * provider lists, asked by the host with its key.
  */
-export function SettingsDialog({ hosts, defaultHost, onClose }: { hosts: string[]; defaultHost?: string; onClose: () => void }) {
+export function SettingsDialog({
+  hosts,
+  defaultHost,
+  theme,
+  onTheme,
+  onAddHost,
+  version,
+  onClose,
+}: {
+  hosts: string[];
+  defaultHost?: string;
+  theme: ThemeChoice;
+  onTheme: (t: ThemeChoice) => void;
+  onAddHost?: () => void;
+  version?: string;
+  onClose: () => void;
+}) {
+  const [tab, setTab] = useState<SettingsTab>(storedTab);
   const [host, setHost] = useState(hosts.includes(defaultHost ?? "") ? defaultHost! : hosts[0]);
   const [settings, setSettings] = useState<HostSettings | null>(null);
   const [controller, setController] = useState("");
   const [model, setModel] = useState("");
   const [keys, setKeys] = useState<Record<string, string>>({});
+  // The key whose field is open: to replace one that's set (Replace…), or on
+  // the API keys tab to add one (Add…).
+  const [replacing, setReplacing] = useState<string | null>(null);
   const [models, setModels] = useState<Models | null>(null);
   const [reload, setReload] = useState(0);
   const [error, setError] = useState<string | null>(null);
@@ -80,24 +120,43 @@ export function SettingsDialog({ hosts, defaultHost, onClose }: { hosts: string[
   const [backend, setBackend] = useState("");
   const [codingModel, setCodingModel] = useState("");
   const [caps, setCaps] = useState<RuntimeCapabilities | null>(null);
+  const [test, setTest] = useState<Test | null>(null);
   // Otter answers with its tools (D-089): tried out per host.
   const [otterTools, setOtterTools] = useState(false);
+
+  function go(t: SettingsTab) {
+    setTab(t);
+    try {
+      localStorage.setItem(TAB_KEY, t);
+    } catch {
+      // Not remembered; fine.
+    }
+  }
+
+  // The form as the host has it.
+  function take(s: HostSettings) {
+    setController(s.controller ?? "");
+    setModel(s.model ?? "");
+    setBackend(s.coding?.backend ?? "");
+    setCodingModel(s.coding?.model ?? "");
+    setOtterTools(s.otter_tools ?? false);
+    setKeys({});
+    setReplacing(null);
+  }
 
   useEffect(() => {
     if (!host) return;
     let live = true;
     setSettings(null);
     setError(null);
+    setSaved(false);
+    setTest(null);
     setKeys({});
     invoke<HostSettings>("settings_get", { host })
       .then((s) => {
         if (!live) return;
         setSettings(s);
-        setController(s.controller ?? "");
-        setModel(s.model ?? "");
-        setBackend(s.coding?.backend ?? "");
-        setCodingModel(s.coding?.model ?? "");
-        setOtterTools(s.otter_tools ?? false);
+        take(s);
       })
       .catch((e) => live && setError(`${e} (an otterd older than this app has no settings)`));
     return () => {
@@ -116,6 +175,9 @@ export function SettingsDialog({ hosts, defaultHost, onClose }: { hosts: string[
       live = false;
     };
   }, [host, settings]);
+
+  // A test is of what was on screen.
+  useEffect(() => setTest((t) => (t?.state === "running" ? t : null)), [backend, codingModel]);
 
   const controllers = settings?.controllers?.length ? settings.controllers : OLD_CONTROLLERS;
   // The one the model and key below are for: the choice, else what automatic uses.
@@ -153,6 +215,7 @@ export function SettingsDialog({ hosts, defaultHost, onClose }: { hosts: string[
       const s = await invoke<HostSettings>("settings_set", { host, update });
       setSettings(s);
       setKeys({});
+      setReplacing(null);
       setSaved(true);
     } catch (e) {
       setError(String(e));
@@ -165,69 +228,106 @@ export function SettingsDialog({ hosts, defaultHost, onClose }: { hosts: string[
     setController(id);
     // A model belongs to its provider: keep the saved one only for its own.
     setModel(id === (settings?.controller ?? "") ? (settings?.model ?? "") : "");
-    setSaved(false);
   }
 
   const needsModel = !!info?.models && !info.default_model && info.id !== "claude" && !model.trim();
+  const codingSaved = settings?.coding?.backend;
+  const toolsShown = settings?.otter_tools !== undefined && !settings.otter_tools_from_env;
+  const typed = Object.entries(keys).filter(([, v]) => v.trim());
+  const dirty =
+    !!settings &&
+    (controller !== (settings.controller ?? "") ||
+      model !== (settings.model ?? "") ||
+      typed.length > 0 ||
+      (!!codingSaved && (backend !== codingSaved || codingModel !== (settings.coding?.model ?? ""))) ||
+      (toolsShown && otterTools !== settings.otter_tools));
 
-  function submit(e: FormEvent) {
-    e.preventDefault();
+  function submit() {
+    if (!settings || busy || (needsModel && !!controller)) return;
     const secrets: Record<string, string> = {};
-    for (const [name, value] of Object.entries(keys)) if (value.trim()) secrets[name] = value.trim();
+    for (const [name, value] of typed) secrets[name] = value.trim();
+    // Only what changed of the coding agent's: an unchanged backend stays
+    // the host's default rather than becoming a choice.
+    const coding: { backend?: string; model?: string } = {};
+    if (codingSaved) {
+      if (backend !== codingSaved) coding.backend = backend;
+      if (codingModel !== (settings.coding?.model ?? "")) coding.model = codingModel;
+    }
     void save({
       controller,
       model,
       secrets,
-      ...(settings?.coding?.backend ? { coding: { backend, model: codingModel } } : {}),
+      ...(Object.keys(coding).length ? { coding } : {}),
       // Only where the host has it, and the environment doesn't decide.
-      ...(settings?.otter_tools !== undefined && !settings.otter_tools_from_env ? { otter_tools: otterTools } : {}),
+      ...(toolsShown && otterTools !== settings.otter_tools ? { otter_tools: otterTools } : {}),
     });
   }
 
-  if (hosts.length === 0) {
-    return (
-      <Dialog title="Settings" onClose={onClose}>
-        <MacSettings />
-        <p className="muted">Connect a host first: Otter runs on a host, and its settings are kept there.</p>
-      </Dialog>
-    );
+  async function runTest() {
+    setTest({ state: "running" });
+    try {
+      const result = await invoke<RuntimeTest>("runtime_test", { host, backend, model: codingModel });
+      setTest({ state: "done", result });
+    } catch (e) {
+      setTest({ state: "error", error: needsNewer(host, e) });
+    }
   }
 
   const label = (id: string) => controllers.find((c) => c.id === id)?.label ?? id;
-  const keyField = (s: HostSettings["secrets"][number]) => (
-    <div key={s.name} className="settings-key">
-      <div className="key-row">
-        <input
-          type="password"
-          autoComplete="off"
-          spellCheck={false}
-          aria-label={s.name}
-          placeholder={s.set ? "Replace the key…" : "Paste the key"}
-          value={keys[s.name] ?? ""}
-          onChange={(e) => setKeys((k) => ({ ...k, [s.name]: e.target.value }))}
-        />
-        {s.set && (
-          <button type="button" className="btn outline" disabled={busy} onClick={() => void save({ secrets: { [s.name]: null } })}>
-            Clear
-          </button>
-        )}
-      </div>
-      <span className="muted small">
-        <span className={s.set ? "key-state set" : "key-state"}>{s.set ? "set" : "not set"}</span> {s.purpose}. Kept on{" "}
-        {host}, never read back.
-      </span>
-    </div>
+  const keyInput = (s: HostSettings["secrets"][number], focus = false) => (
+    <input
+      autoFocus={focus}
+      type="password"
+      className="settings-input"
+      autoComplete="off"
+      spellCheck={false}
+      aria-label={s.name}
+      placeholder={s.set ? "Paste the new key" : "Paste the key"}
+      value={keys[s.name] ?? ""}
+      onChange={(e) => setKeys((k) => ({ ...k, [s.name]: e.target.value }))}
+    />
   );
   const mainKey = settings?.secrets?.find((s) => s.name === info?.secret);
-  const otherKeys = settings?.secrets?.filter((s) => s !== mainKey) ?? [];
   const chosen = models?.state === "ready" ? models.list.find((m) => m.id === model.trim()) : undefined;
+  const coding = codingSaved ? caps : null;
+  const tested = test?.state === "done" ? test.result : null;
+  const hostTab = HOST_TABS.includes(tab);
+  // An older host has no coding settings: its tab goes.
+  const shown = tab === "coding" && settings && !codingSaved ? "otter" : tab;
 
-  const coding = settings?.coding?.backend ? caps : null;
+  const heads: Record<SettingsTab, [string, string]> = {
+    appearance: ["Appearance", "On this Mac. Changes apply right away."],
+    signin: ["Sign-in pages", "Pages that tools on your hosts open in this Mac's browser. Kept on this Mac, for every host."],
+    otter: ["Otter", host ? `On ${host}. Plans each task, decides, and checks the work, also while this app is closed.` : "Kept on each host."],
+    coding: ["Coding agent", host ? `On ${host}. Claude Code, which writes the code.` : "Kept on each host."],
+    keys: ["API keys", host ? `On ${host}. Kept there, never read back.` : "Kept on each host."],
+  };
+  const [title, caption] = heads[shown];
+
+  const nav = (id: SettingsTab, name: string, icon: ReactNode, extra?: ReactNode) => (
+    <button
+      type="button"
+      className={shown === id ? "settings-nav-item on" : "settings-nav-item"}
+      aria-current={shown === id ? "page" : undefined}
+      data-autofocus={shown === id ? "" : undefined}
+      onClick={() => go(id)}
+    >
+      {icon}
+      <span>{name}</span>
+      {extra}
+    </button>
+  );
+
   return (
-    <Dialog title="Settings" onClose={onClose}>
-      <MacSettings />
-      <form className="form settings" onSubmit={submit}>
-        <Row label="Host" hint="Each host keeps its own settings; Otter works there while this app is closed.">
+    <Dialog title="Settings" onClose={onClose} bare="settings-dialog">
+      <nav className="settings-nav" aria-label="Settings">
+        <h1 className="settings-nav-title">Settings</h1>
+        <div className="settings-nav-group">This Mac</div>
+        {nav("appearance", "Appearance", <Icon d="appearance" />)}
+        {nav("signin", "Sign-in pages", <Icon d="signin" />)}
+        <div className="settings-nav-group">Host</div>
+        <div className="settings-host">
+          <span className={host ? "status-dot ok" : "status-dot"} aria-hidden="true" />
           {hosts.length > 1 ? (
             <select value={host} onChange={(e) => setHost(e.target.value)} aria-label="Host">
               {hosts.map((h) => (
@@ -235,226 +335,464 @@ export function SettingsDialog({ hosts, defaultHost, onClose }: { hosts: string[
               ))}
             </select>
           ) : (
-            <span className="settings-host">{host}</span>
+            <span className="settings-host-name">{host ?? "No host connected"}</span>
           )}
-        </Row>
-        {!settings && !error && <p className="muted small">Loading…</p>}
-        {settings && (
-          <>
-            <section className="settings-section" aria-label="Otter">
-              <h2>
-                Otter <span>plans each task, decides, and checks the work</span>
-              </h2>
-              <Row label="Model provider" hint={explain(effective, info, !controller)}>
-                <select value={controller} onChange={(e) => choose(e.target.value)} aria-label="Model provider">
-                  <option value="">
-                    {settings.active ? `Automatic — ${short(label(settings.active))}` : "Automatic"}
-                  </option>
-                  {controllers.map((c) => (
-                    <option key={c.id} value={c.id}>
-                      {short(c.label)}
-                    </option>
-                  ))}
-                </select>
-              </Row>
-              {settings.controller_from_env && (
-                <p className="notice small">
-                  OTTER_CONTROLLER={settings.controller_from_env} in otterd's environment on {host} overrides this.
-                </p>
-              )}
-              {mainKey && <Row label="API key">{keyField(mainKey)}</Row>}
-              {info?.models && (
-                <Row
-                  label="Model"
-                  hint={
-                    models?.state === "loading"
-                      ? "Loading models…"
-                      : models?.state === "ready"
-                        ? chosen?.name ?? `${models.list.length} models — type to search, or enter any name`
-                        : models?.state === "error"
-                          ? `Couldn't list models: ${models.error}`
-                          : "Any model name the provider accepts"
-                  }
-                >
-                  <div className="key-row">
-                    <ModelPicker
-                      value={model}
-                      onChange={setModel}
-                      models={models?.state === "ready" ? models.list : []}
-                      placeholder={info.default_model ? `Default: ${info.default_model}` : info.id === "claude" ? "Default" : "Choose a model"}
-                    />
-                    {listsModels && (
-                      <button
-                        type="button"
-                        className="btn outline icon-only"
-                        aria-label="Reload the models"
-                        title="Reload the models"
-                        disabled={models?.state === "loading"}
-                        onClick={() => setReload((n) => n + 1)}
-                      >
-                        ↻
-                      </button>
-                    )}
-                  </div>
-                </Row>
-              )}
-              {needsModel && <p className="notice small">{short(info?.label ?? "")} has no default model: choose one.</p>}
-              {settings.otter_tools !== undefined && (
-                <Row
-                  label="Tools"
-                  hint={
-                    settings.otter_tools_from_env
-                      ? `Set by OTTER_BRAIN_V2=${settings.otter_tools_from_env} in otterd's environment.`
-                      : settings.otter_answers
-                        ? `Now: ${settings.otter_answers}.`
-                        : undefined
-                  }
-                >
-                  <label className="check">
-                    <input
-                      type="checkbox"
-                      aria-label="Otter answers with tools"
-                      checked={otterTools}
-                      disabled={!!settings.otter_tools_from_env}
-                      onChange={(e) => setOtterTools(e.target.checked)}
-                    />
-                    <span>
-                      Look things up before answering
-                      <span className="muted small"> — the task, its runs, what waits on you; never a shell. Needs Claude Code.</span>
-                    </span>
-                  </label>
-                </Row>
-              )}
-            </section>
-            {settings.coding?.backend && (
-              <section className="settings-section" aria-label="Coding agent">
-                <h2>
-                  Coding agent <span>Claude Code, which writes the code — for work that starts after you save</span>
-                </h2>
-                <Row label="Runs via">
-                  <select aria-label="Coding agent runs through" value={backend} onChange={(e) => setBackend(e.target.value)}>
-                    {BACKENDS.map(([id, name]) => (
-                      <option key={id} value={id}>
-                        {name}
-                      </option>
-                    ))}
-                  </select>
-                </Row>
-                <Row label="Model">
-                  <input
-                    aria-label="Coding model"
-                    value={codingModel}
-                    onChange={(e) => setCodingModel(e.target.value)}
-                    placeholder="Default (e.g. opus, sonnet)"
-                    spellCheck={false}
-                    autoComplete="off"
-                  />
-                </Row>
-                {coding && coding.backend === settings.coding.backend && (
-                  <Row label="Status">
-                    <div role="status" className="settings-status">
-                      <span className={coding.available ? "status-dot ok" : "status-dot bad"} />
-                      {coding.available ? "Ready" : "Not ready"}
-                      {!coding.available && coding.notes?.[0] && <span className="muted"> — {coding.notes[0]}</span>}
-                      {(coding.notes?.length ?? 0) > (coding.available ? 0 : 1) && (
-                        <details className="settings-details">
-                          <summary className="muted small">Details</summary>
-                          <p className="muted small">{(coding.notes ?? []).slice(coding.available ? 0 : 1).join(" ")}</p>
-                        </details>
-                      )}
-                    </div>
-                  </Row>
-                )}
-              </section>
-            )}
-            {otherKeys.length > 0 && (
-              <details className="settings-section settings-keys">
-                <summary>
-                  Other API keys <span className="muted small">({otherKeys.filter((s) => s.set).length} set)</span>
-                </summary>
-                <p className="muted small">
-                  For switching providers without entering them again. Automatic uses the first one with a key.
-                </p>
-                {otherKeys.map((k) => (
-                  <Row key={k.name} label={k.name}>
-                    {keyField(k)}
-                  </Row>
-                ))}
-              </details>
-            )}
-          </>
-        )}
-        {error && <p className="error-text small">{error}</p>}
-        <div className="form-actions">
-          {saved && <span className="muted small">Saved on {host}.</span>}
-          <span className="spacer" />
-          <button type="button" className="btn outline" onClick={onClose}>
-            Close
-          </button>
-          <button type="submit" className="btn primary" disabled={!settings || busy || (needsModel && !!controller)}>
-            Save
-          </button>
         </div>
-      </form>
+        {nav("otter", "Otter", <Icon d="otter" />)}
+        {(!settings || codingSaved) && nav("coding", "Coding agent", <Icon d="coding" />)}
+        {nav(
+          "keys",
+          "API keys",
+          <Icon d="keys" />,
+          settings?.secrets && <span className="settings-nav-count">{settings.secrets.filter((s) => s.set).length} set</span>,
+        )}
+        <span className="spacer" />
+        {version && <span className="settings-version">Otter {version}</span>}
+      </nav>
+
+      <section className="settings-main">
+        <header className="settings-head">
+          <div>
+            <h2>{title}</h2>
+            <p>{caption}</p>
+          </div>
+          <button type="button" className="icon-btn settings-close" aria-label="Close" title="Close (Esc)" onClick={onClose}>
+            <Icon d="close" />
+          </button>
+        </header>
+
+        <div className="settings-body">
+          {shown === "appearance" && <Appearance theme={theme} onTheme={onTheme} />}
+          {shown === "signin" && <SignInSites />}
+          {hostTab && !host && (
+            <div className="settings-empty">
+              <strong>No host connected</strong>
+              <p className="muted small">Otter's settings live on a host, and it works there while this app is closed. Connect one to change them.</p>
+              {onAddHost && (
+                <button type="button" className="btn primary" onClick={onAddHost}>
+                  Add a host…
+                </button>
+              )}
+            </div>
+          )}
+          {hostTab && host && !settings && !error && <p className="muted small">Loading…</p>}
+          {hostTab && settings && (
+            <form
+              className="settings-form"
+              onSubmit={(e) => {
+                e.preventDefault();
+                submit();
+              }}
+            >
+              {shown === "otter" && (
+                <>
+                  <Group title="Model">
+                    <Row label="Provider" hint={explain(effective, info, !controller)}>
+                      <select className="settings-input" value={controller} onChange={(e) => choose(e.target.value)} aria-label="Model provider">
+                        <option value="">{settings.active ? `Automatic — ${short(label(settings.active))}` : "Automatic"}</option>
+                        {controllers.map((c) => (
+                          <option key={c.id} value={c.id}>
+                            {short(c.label)}
+                          </option>
+                        ))}
+                      </select>
+                    </Row>
+                    {mainKey && (
+                      <Row label="API key" hint={<span className="mono">{mainKey.name}</span>}>
+                        {mainKey.set && replacing !== mainKey.name ? (
+                          <div className="settings-inline">
+                            <span className="key-state set">Set</span>
+                            <button type="button" className="btn outline" onClick={() => setReplacing(mainKey.name)}>
+                              Replace…
+                            </button>
+                          </div>
+                        ) : (
+                          keyInput(mainKey, replacing === mainKey.name)
+                        )}
+                      </Row>
+                    )}
+                    {info?.models && (
+                      <Row
+                        label="Model"
+                        hint={
+                          models?.state === "loading"
+                            ? "Loading models…"
+                            : models?.state === "ready"
+                              ? (chosen?.name ?? `${models.list.length} models — type to search, or enter any name`)
+                              : models?.state === "error"
+                                ? `Couldn't list models: ${models.error}`
+                                : "Any model name the provider accepts"
+                        }
+                      >
+                        <div className="settings-inline">
+                          <ModelPicker
+                            value={model}
+                            onChange={setModel}
+                            models={models?.state === "ready" ? models.list : []}
+                            placeholder={info.default_model ? `Default: ${info.default_model}` : info.id === "claude" ? "Default" : "Choose a model"}
+                          />
+                          {listsModels && (
+                            <button
+                              type="button"
+                              className="btn outline icon-only"
+                              aria-label="Reload the models"
+                              title="Reload the models"
+                              disabled={models?.state === "loading"}
+                              onClick={() => setReload((n) => n + 1)}
+                            >
+                              ↻
+                            </button>
+                          )}
+                        </div>
+                      </Row>
+                    )}
+                  </Group>
+                  {settings.controller_from_env && (
+                    <p className="notice small">
+                      OTTER_CONTROLLER={settings.controller_from_env} in otterd's environment on {host} overrides this.
+                    </p>
+                  )}
+                  {needsModel && <p className="notice small">{short(info?.label ?? "")} has no default model: choose one.</p>}
+                  {settings.otter_tools !== undefined && (
+                    <Group title="Answers">
+                      <Row
+                        label="Look things up before answering"
+                        hint={
+                          settings.otter_tools_from_env
+                            ? `Set by OTTER_BRAIN_V2=${settings.otter_tools_from_env} in otterd's environment.`
+                            : `The task, its runs, what waits on you; never a shell. Needs Claude Code.${settings.otter_answers ? ` Now: ${settings.otter_answers}.` : ""}`
+                        }
+                      >
+                        <input
+                          type="checkbox"
+                          role="switch"
+                          className="switch"
+                          aria-label="Otter answers with tools"
+                          checked={otterTools}
+                          disabled={!!settings.otter_tools_from_env}
+                          onChange={(e) => setOtterTools(e.target.checked)}
+                        />
+                      </Row>
+                    </Group>
+                  )}
+                </>
+              )}
+
+              {shown === "coding" && codingSaved && (
+                <>
+                  <Group title="Claude Code">
+                    <Row label="Runs via" hint={BACKENDS.find((b) => b.id === backend)?.hint}>
+                      <Segmented
+                        label="Coding agent runs through"
+                        name="backend"
+                        value={backend}
+                        options={BACKENDS.map((b) => [b.id, b.name])}
+                        onChange={setBackend}
+                      />
+                    </Row>
+                    <Row label="Model" hint="Empty: Claude Code's own default.">
+                      <input
+                        className="settings-input"
+                        aria-label="Coding model"
+                        value={codingModel}
+                        onChange={(e) => setCodingModel(e.target.value)}
+                        placeholder="opus, sonnet…"
+                        spellCheck={false}
+                        autoComplete="off"
+                      />
+                    </Row>
+                    <Row
+                      label="Status"
+                      hint={
+                        tested
+                          ? tested.ready
+                            ? "It's installed, signed in and answering."
+                            : "It can't run coding work yet: see below."
+                          : coding && coding.backend === backend
+                            ? !coding.available && coding.notes?.[0]
+                              ? coding.notes[0]
+                              : "Run a test: one short reply, no tools, to check it's signed in."
+                            : "Run a test to check this before you save it."
+                      }
+                    >
+                      <div className="settings-inline">
+                        {/* Installed, from what the host says; ready only once a test has run. */}
+                        {(tested || (coding && coding.backend === backend)) && (
+                          <span role="status" className="settings-status">
+                            <span className={(tested ? tested.ready : coding!.available) ? "status-dot ok" : "status-dot bad"} aria-hidden="true" />
+                            {tested ? (tested.ready ? "Ready" : "Not ready") : coding!.available ? "Installed" : "Not ready"}
+                          </span>
+                        )}
+                        <button type="button" className="btn outline" disabled={test?.state === "running"} onClick={() => void runTest()}>
+                          {test?.state === "running" ? "Testing…" : "Run a test"}
+                        </button>
+                      </div>
+                    </Row>
+                    {test && <TestResult test={test} />}
+                  </Group>
+                  <p className="muted small">For work that starts after you save; work under way keeps how it started.</p>
+                </>
+              )}
+
+              {shown === "keys" && (
+                <>
+                  <Group title="Model providers">
+                    {(settings.secrets ?? []).map((k) => {
+                      const open = replacing === k.name;
+                      return (
+                        <div key={k.name} className="settings-key">
+                          <Row
+                            label={
+                              <>
+                                {k.purpose}
+                                {k.name === info?.secret && <span className="settings-tag">In use</span>}
+                              </>
+                            }
+                            hint={<span className="mono">{k.name}</span>}
+                          >
+                            <div className="settings-inline">
+                              <span className={k.set ? "key-state set" : "key-state"}>{k.set ? "Set" : "Not set"}</span>
+                              {k.set && (
+                                <button type="button" className="btn ghost" disabled={busy} onClick={() => void save({ secrets: { [k.name]: null } })}>
+                                  Clear
+                                </button>
+                              )}
+                              <button
+                                type="button"
+                                className="btn outline"
+                                onClick={() => {
+                                  setReplacing(open ? null : k.name);
+                                  setKeys(({ [k.name]: _, ...rest }) => rest);
+                                }}
+                              >
+                                {open ? "Cancel" : k.set ? "Replace…" : "Add…"}
+                              </button>
+                            </div>
+                          </Row>
+                          {open && <div className="settings-key-field">{keyInput(k, true)}</div>}
+                        </div>
+                      );
+                    })}
+                  </Group>
+                  <p className="muted small">Automatic uses the first provider with a key. Keys go to {host} and stay there; this app only knows whether one is set.</p>
+                </>
+              )}
+            </form>
+          )}
+          {error && <p className="error-text small">{error}</p>}
+        </div>
+
+        {dirty ? (
+          <footer className="settings-foot">
+            <span className="status-dot unsaved" aria-hidden="true" />
+            <span className="muted small">Unsaved changes on {host}</span>
+            <span className="spacer" />
+            <button type="button" className="btn outline" disabled={busy} onClick={() => settings && take(settings)}>
+              Discard
+            </button>
+            <button type="button" className="btn primary" disabled={busy || (needsModel && !!controller)} onClick={submit}>
+              Save
+            </button>
+          </footer>
+        ) : (
+          saved &&
+          hostTab && (
+            <footer className="settings-foot">
+              <span className="muted small">Saved on {host}.</span>
+            </footer>
+          )
+        )}
+      </section>
     </Dialog>
   );
 }
 
-/** This Mac's own settings (D-116): kept here, applied as they change, no host involved. */
-function MacSettings() {
+/** This Mac's look (D-116, D-125): kept here, applied as it changes. */
+function Appearance({ theme, onTheme }: { theme: ThemeChoice; onTheme: (t: ThemeChoice) => void }) {
   const [font, setFont] = useState(fontChoice);
   const [size, setSize] = useState(fontSize);
   useEffect(() => onFontSize(setSize), []);
   return (
-    <section className="form settings settings-mac" aria-label="This Mac">
-      <h2 className="settings-title">This Mac</h2>
-      <Row label="Terminal font" hint="Any font installed on this Mac, or a list of them. Empty: JetBrains Mono, which comes with the app.">
-        <input
-          list="terminal-fonts"
-          aria-label="Terminal font"
-          placeholder="JetBrains Mono"
-          value={font}
-          spellCheck={false}
-          autoCapitalize="off"
-          autoCorrect="off"
-          onChange={(e) => {
-            setFont(e.target.value);
-            setFontFamily(e.target.value);
-          }}
-        />
-        <datalist id="terminal-fonts">
-          {FONT_SUGGESTIONS.map((f) => (
-            <option key={f} value={f} />
-          ))}
-        </datalist>
-      </Row>
-      <Row label="Sign-in pages">
-        <SignInSites />
-      </Row>
-      <Row label="Text size" hint="⌘= and ⌘- change it in a terminal too; ⌘0 goes back to 13.">
-        <input
-          type="number"
-          aria-label="Terminal text size"
-          min={9}
-          max={24}
-          value={size}
-          onChange={(e) => e.target.value && setFontSize(Number(e.target.value))}
-        />
-      </Row>
+    <>
+      <Group title="Theme">
+        <Row label="Theme" hint="The app and its terminals.">
+          <Segmented
+            label="Theme"
+            name="theme"
+            value={theme}
+            options={[
+              ["system", "System"],
+              ["light", "Light"],
+              ["dark", "Dark"],
+            ]}
+            onChange={(t) => onTheme(t as ThemeChoice)}
+          />
+        </Row>
+      </Group>
+      <Group title="Terminal">
+        <Row label="Font" hint="Any font on this Mac, or a list of them. Empty: JetBrains Mono, which comes with the app.">
+          <input
+            className="settings-input"
+            list="terminal-fonts"
+            aria-label="Terminal font"
+            placeholder="JetBrains Mono"
+            value={font}
+            spellCheck={false}
+            autoCapitalize="off"
+            autoCorrect="off"
+            onChange={(e) => {
+              setFont(e.target.value);
+              setFontFamily(e.target.value);
+            }}
+          />
+          <datalist id="terminal-fonts">
+            {FONT_SUGGESTIONS.map((f) => (
+              <option key={f} value={f} />
+            ))}
+          </datalist>
+        </Row>
+        <Row label="Text size" hint="⌘= and ⌘- in a terminal too; ⌘0 goes back to 13.">
+          <div className="stepper">
+            <button type="button" aria-label="Smaller" onClick={() => setFontSize(size - 1)}>
+              −
+            </button>
+            <input
+              type="number"
+              aria-label="Terminal text size"
+              min={9}
+              max={24}
+              value={size}
+              onChange={(e) => e.target.value && setFontSize(Number(e.target.value))}
+            />
+            <button type="button" aria-label="Larger" onClick={() => setFontSize(size + 1)}>
+              +
+            </button>
+          </div>
+        </Row>
+        <div className="settings-preview" aria-label="Preview" style={{ fontFamily: fontFamily(), fontSize: size }}>
+          <div>
+            <span className="settings-preview-path">~/otter</span> <span className="muted">main</span> $ otter attach api
+          </div>
+          <div className="muted">0O 1lI {"{} [] -> => != =="}</div>
+        </div>
+      </Group>
+    </>
+  );
+}
+
+/** A test run's steps (D-124), or that it runs. */
+function TestResult({ test }: { test: Test }) {
+  if (test.state === "running") {
+    return (
+      <p className="settings-test muted small" role="status">
+        Starting Claude Code for one short reply, up to two minutes…
+      </p>
+    );
+  }
+  if (test.state === "error") return <p className="settings-test error-text small">{test.error}</p>;
+  return (
+    <ul className="settings-test" aria-label="Test run">
+      {test.result.steps.map((s) => (
+        <li key={s.name} className={`test-step ${s.state}`}>
+          <span className="test-mark" aria-label={s.state}>
+            {s.state === "passed" ? "✓" : s.state === "failed" ? "✕" : "–"}
+          </span>
+          <span>
+            <span className="test-name">{s.name}</span>
+            <span className="muted small"> {s.detail}</span>
+          </span>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+/** Choices side by side, one on (radios underneath). */
+function Segmented({
+  label,
+  name,
+  value,
+  options,
+  onChange,
+}: {
+  label: string;
+  name: string;
+  value: string;
+  options: [string, string][];
+  onChange: (v: string) => void;
+}) {
+  return (
+    <div className="segmented" role="radiogroup" aria-label={label}>
+      {options.map(([id, text]) => (
+        <label key={id} className={value === id ? "on" : ""}>
+          <input type="radio" name={name} value={id} checked={value === id} onChange={() => onChange(id)} />
+          {text}
+        </label>
+      ))}
+    </div>
+  );
+}
+
+/** Settings that belong together, in one card under a name. */
+function Group({ title, children }: { title: string; children: ReactNode }) {
+  return (
+    <section className="settings-group" aria-label={title}>
+      <h3>{title}</h3>
+      <div className="settings-card">{children}</div>
     </section>
   );
 }
 
-/** A setting: its name on the left, the control and a short hint on the right. */
-function Row({ label, hint, children }: { label: string; hint?: string; children: ReactNode }) {
+/** A setting: its name and a short hint on the left, the control on the right. */
+function Row({ label, hint, children }: { label: ReactNode; hint?: ReactNode; children?: ReactNode }) {
   return (
     <div className="settings-row">
-      <span className="settings-label">{label}</span>
-      <div className="settings-control field">
-        {children}
-        {hint && <span className="muted small">{hint}</span>}
+      <div className="settings-text">
+        <div className="settings-label">{label}</div>
+        {hint && <div className="settings-hint">{hint}</div>}
       </div>
+      {children && <div className="settings-control">{children}</div>}
     </div>
+  );
+}
+
+const ICONS: Record<string, ReactNode> = {
+  appearance: (
+    <>
+      <circle cx="8" cy="8" r="5.8" />
+      <path d="M8 2.2a5.8 5.8 0 0 1 0 11.6z" fill="currentColor" stroke="none" />
+    </>
+  ),
+  signin: (
+    <>
+      <path d="M10 2.8h2a1.2 1.2 0 0 1 1.2 1.2v8a1.2 1.2 0 0 1-1.2 1.2h-2" />
+      <path d="M6.5 5l3 3-3 3" />
+      <path d="M9.5 8H2.8" />
+    </>
+  ),
+  otter: <path d="M8 1.8v3.4M8 10.8v3.4M1.8 8h3.4M10.8 8h3.4M3.6 3.6l2.2 2.2M10.2 10.2l2.2 2.2M12.4 3.6l-2.2 2.2M5.8 10.2l-2.2 2.2" />,
+  coding: (
+    <>
+      <path d="M5.5 4.5L2 8l3.5 3.5" />
+      <path d="M10.5 4.5L14 8l-3.5 3.5" />
+    </>
+  ),
+  keys: (
+    <>
+      <circle cx="5.5" cy="10.5" r="2.7" />
+      <path d="M7.4 8.6L13 3" />
+      <path d="M11 5l1.6 1.6" />
+      <path d="M9.4 6.6L11 8.2" />
+    </>
+  ),
+  close: <path d="M4 4l8 8M12 4l-8 8" />,
+};
+
+function Icon({ d }: { d: keyof typeof ICONS }) {
+  return (
+    <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      {ICONS[d]}
+    </svg>
   );
 }
 

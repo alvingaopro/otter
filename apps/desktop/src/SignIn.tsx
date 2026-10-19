@@ -1,7 +1,8 @@
 // Sign-in pages from hosts (D-121). A tool on a host opens a page on a site
 // that isn't a provider built in: the window asks, in its corner, and the
-// developer opens it once or always. Settings › This Mac lists the sites
-// allowed, kept on this Mac (`hosts.toml`), where the CLI finds them too.
+// developer opens it once or always. Settings › Sign-in pages lists the
+// sites allowed, kept on this Mac (`hosts.toml`), where the CLI finds them
+// too.
 
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
@@ -86,7 +87,7 @@ function Ask({ ask: a, onDone }: { ask: SignInAsk; onDone: () => void }) {
   );
 }
 
-/** Settings › This Mac: the sites that open without asking. */
+/** Settings › Sign-in pages: the providers built in, and the sites allowed here. */
 export function SignInSites() {
   const [sites, setSites] = useState<string[]>([]);
   const [builtIn, setBuiltIn] = useState<string[]>([]);
@@ -121,47 +122,67 @@ export function SignInSites() {
   };
 
   return (
-    <div className="sign-in-sites">
-      {sites.length > 0 && (
-        <ul className="sign-in-site-list" aria-label="Sites that open without asking">
-          {sites.map((s) => (
-            <li key={s} className="chip mono">
-              {s}
-              <button className="icon-btn" aria-label={`Ask before opening ${s}`} title="Ask again" onClick={() => void forget(s)}>
-                <Cross />
-              </button>
-            </li>
-          ))}
-        </ul>
+    <>
+      {builtIn.length > 0 && (
+        <section className="settings-group" aria-label="Built in">
+          <h3>Built in</h3>
+          <div className="settings-card sign-in-built-in">
+            <ul className="sign-in-chips" aria-label="Providers built in">
+              {builtIn.map((b) => (
+                <li key={b} className="chip">
+                  {b}
+                </li>
+              ))}
+            </ul>
+            <span className="settings-hint">Open without asking.</span>
+          </div>
+        </section>
       )}
-      <form
-        className="sign-in-add"
-        onSubmit={(e) => {
-          e.preventDefault();
-          void add();
-        }}
-      >
-        <input
-          aria-label="Add a sign-in site"
-          placeholder="Paste a link, or login.example.com"
-          value={draft}
-          spellCheck={false}
-          autoCapitalize="off"
-          autoCorrect="off"
-          onChange={(e) => {
-            setDraft(e.target.value);
-            setError(null);
-          }}
-        />
-        <button className="btn" type="submit" disabled={!draft.trim()}>
-          Add
-        </button>
-      </form>
-      {error && <span className="error small">{error}</span>}
-      <span className="muted small">
-        {builtIn.length > 0 && `Built in: ${builtIn.join(", ")}. `}
-        Other sites ask first. Use *.example.com for a site and its subdomains.
-      </span>
-    </div>
+      <section className="settings-group" aria-label="Your sites">
+        <h3>Your sites</h3>
+        <div className="settings-card">
+          <ul className="sign-in-site-list" aria-label="Sites that open without asking">
+            {sites.map((s) => (
+              <li key={s}>
+                <span className="mono">{s}</span>
+                <span className="settings-hint">Opens without asking</span>
+                <button className="icon-btn" aria-label={`Ask before opening ${s}`} title="Ask again" onClick={() => void forget(s)}>
+                  <Cross />
+                </button>
+              </li>
+            ))}
+            {sites.length === 0 && <li className="settings-hint">None yet.</li>}
+          </ul>
+          <form
+            className="sign-in-add"
+            onSubmit={(e) => {
+              e.preventDefault();
+              void add();
+            }}
+          >
+            <input
+              className="settings-input"
+              aria-label="Add a sign-in site"
+              placeholder="Paste a link, or login.example.com"
+              value={draft}
+              spellCheck={false}
+              autoCapitalize="off"
+              autoCorrect="off"
+              onChange={(e) => {
+                setDraft(e.target.value);
+                setError(null);
+              }}
+            />
+            <button className="btn" type="submit" disabled={!draft.trim()}>
+              Add
+            </button>
+          </form>
+        </div>
+        {error && <span className="error-text small">{error}</span>}
+      </section>
+      <p className="muted small">
+        Other sites ask in the window's corner: Open, or Always open. *.example.com covers a site and its subdomains. The CLI uses this list too.
+      </p>
+    </>
   );
 }

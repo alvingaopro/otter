@@ -166,6 +166,22 @@ pub async fn runtime_capabilities(
         .map_err(|e| e.to_string())
 }
 
+/// Start the host's coding agent for one short reply (D-124), as set on
+/// screen: `backend` and `model`, else the host's settings.
+#[tauri::command]
+pub async fn runtime_test(
+    app: AppHandle,
+    host: String,
+    backend: Option<String>,
+    model: Option<String>,
+) -> Result<otter_protocol::conversation::RuntimeTest, String> {
+    rpc(&app, &host)
+        .await?
+        .runtime_test(backend.as_deref(), model.as_deref())
+        .await
+        .map_err(|e| e.to_string())
+}
+
 /// Otter's memories (D-113): the host's, and the task's conversation's (or,
 /// without a task, Otter's conversation's on the host).
 #[tauri::command]

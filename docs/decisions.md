@@ -1865,6 +1865,8 @@ Milestone 6 of the structured runtime plan, first step: a host gets the
   for fresh managed runs only after dogfooding (plan stages: development
   flag → explicitly enabled host → dogfood → default). Switching never
   moves a running conversation: one keeps the backend it began with.
+  *Amended 2026-10-19:* `sdk` is the default since D-124, at the
+  developer's direction, before the dogfooding finished.
 
 
 ## D-061 — Run states say what a crash left; unsafe recovery is the developer's (2026-10-13)
@@ -2238,6 +2240,7 @@ D-064 a CI fix is a turn in the feature's session. What wasn't:
   runs (legacy sees only what Claude Code asks about) and an interrupt that
   spares background work. D-060's path to making `sdk` the default — after
   dogfooding — stands; M2's live scenarios are that dogfooding's checklist.
+  *Amended 2026-10-19:* the default became `sdk` in D-124.
 
 ## D-069 — Report once (2026-10-14)
 
@@ -3831,6 +3834,51 @@ said selecting copies.
   word, and no copy for a click, another button, a press outside the
   terminal, or a selection from before.
 
+## D-124 — The coding agent runs through the SDK by default, and can be tested (2026-10-19)
+
+The developer asked for the Claude Agent SDK as the default, and for a way
+to see whether a host is ready for it. That departs from D-060 and D-068,
+which kept `legacy_cli` until dogfooding was done. The developer chose not
+to wait; the test is what makes the switch safe to see through.
+
+- **`sdk` unless a host says otherwise.** A host that never chose a
+  backend now runs new coding work through the worker. `legacy_cli` stays
+  one click away (Settings › Coding agent, or `OTTER_CODING_BACKEND`).
+  Work under way keeps the backend it began with (D-057). A host whose
+  Settings were saved before has `legacy_cli` stored: the old dialog sent
+  the backend it showed. It stays until it's changed. The new dialog sends
+  the backend only when it's changed, so an untouched one follows the
+  default.
+- **`runtime.test`: one short reply.** The checks in
+  `runtime.capabilities` say whether the agent is installed, not whether
+  it's signed in. `runtime.test` starts the agent for real, the way a run
+  does and with the same login environment. It runs in a scratch directory
+  under the host's state and asks for one word. Every tool call is
+  refused, and it's stopped once it answers: two minutes at most. It
+  reports two steps, *Installed* and *Signed in and answering*. The second
+  isn't tried when the first fails. A failure says what to do (sign in,
+  check the model, wait for the rate limit).
+  - Otter records nothing: no conversation, no task, and the scratch
+    directory is removed. Claude Code still writes its own session under
+    `~/.claude/projects/` on the host, as it does for any run.
+  - The backend and model are the ones asked for, so the app tests what's
+    on screen before it's saved. Absent, they're the host's. With no
+    model set, it uses `haiku`: the reply proves the sign-in, and a small
+    model costs least. One test runs at a time on a host.
+- **Where:** Settings › Coding agent › *Run a test* (the status says
+  *Installed* until a test has run, then *Ready* or *Not ready*), and
+  `otter runtime test [--host] [--backend] [--model]`, which exits 1 when
+  a host isn't ready.
+- **Tests:** the e2e hosts built on the fake `claude -p` ask for
+  `legacy_cli`; the SDK hosts ask for `sdk`, as before.
+- **Verified:**
+  - End to end with the fake worker: ready, with a small model, the tool
+    it tried refused, and nothing left behind. The same host through the
+    fake `claude -p` with another model. A worker that can't sign in says
+    so without its secrets. A host without the worker isn't tried.
+  - The default is `sdk` (`settings.get`).
+  - App tests for the button, its steps, the status and an older otterd.
+
 ## D-125 — The app updates itself (2026-10-19)
 
 Asked for directly: the app should notice a new release and, on a click,
@@ -3924,3 +3972,34 @@ two presses in the app's terminal.
   Shift goes once; a composition ended by ？ goes once, which fails when
   its end keeps the modifier; a keydown first still sends once, which fails
   when the gate is lifted on every commit. Not yet typed on a Mac.
+
+## D-125 — Settings in tabs by kind (2026-10-19)
+
+Settings was one long dialog. This Mac's font and sign-in sites sat
+between its text size and the host's model provider. What applied at once
+(this Mac's) sat next to what needed Save (the host's).
+
+- **Tabs on the left, in two groups:** *This Mac* (Appearance, Sign-in
+  pages) and *Host* (Otter, Coding agent, API keys), with the host chosen
+  between the two groups. Each tab's head says where its settings are kept.
+  The tab is remembered on this Mac.
+- **Appearance** holds the theme (System, Light, Dark), which left the
+  gear menu, and the terminal's font and size, with a preview. **Sign-in
+  pages** shows the providers built in and the sites allowed here (D-121).
+  **Otter** has the provider, its key, the model and Otter's tools.
+  **Coding agent** has how it runs, its model, and the test (D-124).
+  **API keys** lists every provider's key, which one is in use, and
+  *Add…*, *Replace…* or *Clear*.
+- **This Mac's settings apply as they change; the host's wait for Save.**
+  A bar with *Discard* and *Save* appears only when a host setting has
+  changed, and stays while another tab is shown. Only what changed is
+  sent (an unchanged coding backend isn't). Clearing a key saves at once,
+  as before.
+- A host with no coding settings (an older otterd) has no Coding agent
+  tab. With no host connected, the host's tabs offer *Add a host…*.
+- `Dialog` takes a bare variant for this layout, and focuses the current
+  tab when it opens. It now focuses once, not again each time its parent
+  renders.
+- **Verified:** app tests for each tab, the save bar, Discard, only
+  changes being sent, the switch, the test, and no host. The tabs were
+  rendered in Chromium, dark and light, at full size and narrow.

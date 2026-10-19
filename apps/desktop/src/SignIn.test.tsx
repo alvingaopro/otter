@@ -57,7 +57,8 @@ describe("the sites that open without asking (D-121)", () => {
     await act(async () => root.render(<SignInSites />));
     await flush();
     expect(el.textContent).toContain("*.okta.test");
-    expect(el.textContent).toContain("Built in: AWS, Salesforce");
+    const builtIn = [...el.querySelectorAll('[aria-label="Providers built in"] li')].map((li) => li.textContent);
+    expect(builtIn).toEqual(["AWS", "Salesforce"]);
 
     const input = el.querySelector<HTMLInputElement>('input[aria-label="Add a sign-in site"]')!;
     await act(async () => type(input, "https://login.corp.test/oauth?x=1"));
@@ -70,6 +71,9 @@ describe("the sites that open without asking (D-121)", () => {
     await act(async () => button("Ask before opening *.okta.test").click());
     await flush();
     expect(el.textContent).not.toContain("*.okta.test");
+    await act(async () => button("Ask before opening login.corp.test").click());
+    await flush();
+    expect(el.textContent).toContain("None yet.");
   });
 
   it("says what's wrong with what was typed", async () => {

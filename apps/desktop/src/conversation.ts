@@ -107,6 +107,13 @@ export interface Explanation {
   next: string;
 }
 
+/** Mirrors `otter_protocol::conversation::RuntimeTest` (D-124). */
+export interface RuntimeTest {
+  backend: string;
+  ready: boolean;
+  steps: { name: string; state: "passed" | "failed" | "skipped"; detail: string }[];
+}
+
 /** Mirrors `otter_protocol::conversation::RuntimeCapabilities`. */
 export interface RuntimeCapabilities {
   provider: string;
