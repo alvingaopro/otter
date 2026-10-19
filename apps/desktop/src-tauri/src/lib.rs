@@ -108,6 +108,7 @@ pub fn run() {
             hosts::host_add,
             hosts::host_remove,
             hosts::host_install,
+            hosts::host_install_worker,
             hosts::install_cli,
             hosts::cli_status,
             updates::update_get,

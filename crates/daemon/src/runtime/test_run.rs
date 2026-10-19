@@ -75,6 +75,7 @@ pub async fn run(
             backend: backend.into(),
             ready: false,
             steps,
+            worker_missing: caps.worker_missing,
         });
     }
     steps.push(step(
@@ -99,6 +100,7 @@ pub async fn run(
         backend: backend.into(),
         ready,
         steps,
+        worker_missing: false,
     })
 }
 

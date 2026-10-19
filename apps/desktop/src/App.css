@@ -922,6 +922,7 @@ body.resizing-row { cursor: row-resize; user-select: none; }
 .status-dot.ok { background: var(--done); }
 .status-dot.bad { background: var(--failed); }
 .status-dot.unsaved { background: var(--working); }
+.settings-card > .settings-output { margin: 0 14px 12px; }
 .settings-test { margin: 0; padding: 10px 14px 12px; list-style: none; display: flex; flex-direction: column; gap: 6px; }
 .test-step { display: flex; gap: 8px; align-items: baseline; font-size: 13px; }
 .test-mark { width: 14px; flex: none; text-align: center; font-weight: 600; }

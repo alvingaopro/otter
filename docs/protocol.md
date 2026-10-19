@@ -273,9 +273,10 @@ turns, messages, tool calls and interactions. See
   attachments, usage, pause, redirect}}`: what the host's managed runtime
   can do. Missing tasks are reported, never simulated. For `sdk`,
   `available` needs Node, the installed worker and its `--check` (D-060);
-  `notes` say which is missing.
+  `notes` say which is missing. `worker_missing?` says the worker this
+  otterd looks for isn't installed, which installing it would fix (D-129).
 - `runtime.test {backend?, model?}` → `{backend, ready, steps: [{name,
-  state: passed|failed|skipped, detail}]}` (D-124): the coding agent
+  state: passed|failed|skipped, detail}], worker_missing?}` (D-124, D-129): the coding agent
   started for one short reply, in a scratch directory under the host's
   state, every tool call refused, up to two minutes. Absent fields: the
   host's settings; no model set: a small one (`haiku`). Nothing is saved

@@ -133,6 +133,7 @@ impl AgentRuntime for ClaudeRuntime {
             backend: "legacy_cli".into(),
             available,
             notes,
+            worker_missing: false,
             tested_version: Some(OBSERVED_VERSION.into()),
             structured_ready: false,
             features: RuntimeFeatures {

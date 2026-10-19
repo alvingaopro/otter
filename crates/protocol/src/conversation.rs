@@ -21,6 +21,11 @@ pub struct RuntimeCapabilities {
     /// Why not, or what to know, in a sentence each.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub notes: Vec<String>,
+    /// The Claude worker this otterd looks for isn't installed: installing
+    /// it (its release's, `otter host install`, or the app's *Install*)
+    /// would get it going (D-129). Absent from older daemons.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub worker_missing: bool,
     /// The version the backend's protocol was observed or tested on.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tested_version: Option<String>,
@@ -77,6 +82,9 @@ pub struct RuntimeTest {
     /// Every step passed: coding work can start here.
     pub ready: bool,
     pub steps: Vec<TestStep>,
+    /// As in [`RuntimeCapabilities`], for the backend tested (D-129).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub worker_missing: bool,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]

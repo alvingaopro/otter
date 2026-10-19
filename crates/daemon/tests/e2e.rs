@@ -7024,17 +7024,24 @@ async fn the_coding_agent_is_tested_with_one_short_reply() {
     );
     assert!(!format!("{t:?}").contains("WORKERLEAK"));
 
-    // Not installed: the run isn't tried.
+    // Not installed anywhere otterd looks: the run isn't tried, and
+    // installing the worker would help (D-129).
+    let nobody = tempfile::tempdir().unwrap();
     let missing = TestHost::with_env(&[
         ("OTTER_CONTROLLER", "off".into()),
         ("OTTER_NODE", "/bin/sh".into()),
-        ("OTTER_CLAUDE_WORKER", "/nonexistent/claude-runtime".into()),
+        ("HOME", nobody.path().to_string_lossy().into_owned()),
     ])
     .await;
     let t = missing.conn().await.runtime_test(None, None).await.unwrap();
     let states: Vec<StepState> = t.steps.iter().map(|s| s.state).collect();
     assert_eq!(states, [StepState::Failed, StepState::Skipped], "{t:?}");
     assert!(t.steps[0].detail.contains("isn't installed"), "{t:?}");
+    assert!(t.worker_missing, "{t:?}");
+    let caps = missing.conn().await.runtime_capabilities().await.unwrap();
+    assert!(caps.worker_missing && !caps.available, "{caps:?}");
+    // The fake worker is there: nothing to install.
+    assert!(!conn.runtime_capabilities().await.unwrap().worker_missing);
 }
 
 #[tokio::test]
