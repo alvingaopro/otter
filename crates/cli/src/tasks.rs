@@ -832,6 +832,72 @@ pub async fn runtime_status(config: &Config, host: Option<String>, json: bool) -
     Ok(())
 }
 
+/// `otter runtime test` (D-124): each host's coding agent, started for one
+/// reply. Fails (exit 1) when one isn't ready.
+pub async fn runtime_test(
+    config: &Config,
+    host: Option<String>,
+    backend: Option<String>,
+    model: Option<String>,
+    json: bool,
+) -> Result<()> {
+    use otter_protocol::conversation::StepState;
+    let mut all = Vec::new();
+    for entry in hosts(config, host.as_deref())? {
+        if !json {
+            println!("{}: testing the coding agent…", entry.name);
+        }
+        let result = async {
+            let mut conn = connect(config, &entry).await?;
+            Ok::<_, anyhow::Error>(
+                conn.runtime_test(backend.as_deref(), model.as_deref())
+                    .await?,
+            )
+        }
+        .await;
+        all.push((entry.name.clone(), result));
+    }
+    let failed = all
+        .iter()
+        .filter(|(_, r)| !r.as_ref().is_ok_and(|t| t.ready))
+        .count();
+    if json {
+        let v: BTreeMap<_, _> = all
+            .into_iter()
+            .map(|(h, r)| {
+                let v = match r {
+                    Ok(t) => serde_json::to_value(t).unwrap_or_default(),
+                    Err(e) => serde_json::json!({ "error": format!("{e:#}") }),
+                };
+                (h, v)
+            })
+            .collect();
+        output::print_json(&v)?;
+    } else {
+        for (host, result) in all {
+            match result {
+                Err(e) => println!("{host}: not tested — {e:#}"),
+                Ok(t) => {
+                    let ready = if t.ready { "ready" } else { "not ready" };
+                    println!("{host}: claude via {} — {ready}", t.backend);
+                    for s in &t.steps {
+                        let mark = match s.state {
+                            StepState::Passed => "✓",
+                            StepState::Failed => "✗",
+                            StepState::Skipped => "–",
+                        };
+                        println!("  {mark} {}: {}", s.name, s.detail);
+                    }
+                }
+            }
+        }
+    }
+    if failed > 0 {
+        bail!("the coding agent isn't ready on {failed} host(s)");
+    }
+    Ok(())
+}
+
 pub async fn conversation_command(
     config: &Config,
     cmd: ConversationCommand,

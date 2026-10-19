@@ -334,6 +334,7 @@ impl Daemon {
                     })?;
                 json(rt.capabilities(self.environments.base()))
             }
+            Request::RuntimeTest(p) => json(self.runtime_test(p).await?),
             Request::ConversationList(q) => json(
                 self.conversations
                     .list(q.task.as_deref())
@@ -618,6 +619,35 @@ impl Drop for BrowserSubscriber {
 }
 
 impl Daemon {
+    /// `runtime.test` (D-124): the backend and model asked, else the
+    /// settings'; with no model set, a small one.
+    async fn runtime_test(
+        &self,
+        p: otter_protocol::conversation::RuntimeTestRequest,
+    ) -> RpcResult<otter_protocol::conversation::RuntimeTest> {
+        let (backend, model) = {
+            let s = self.settings.read().unwrap();
+            (
+                p.backend
+                    .filter(|b| !b.is_empty())
+                    .unwrap_or_else(|| s.coding_backend()),
+                p.model.or_else(|| s.coding_model()),
+            )
+        };
+        let rt = crate::runtime::runtime(crate::runs::DEFAULT_RUNTIME, &backend)
+            .ok_or_else(|| RpcError::invalid(format!("unknown coding backend `{backend}`")))?;
+        let model = model.map(|m| m.trim().to_owned()).filter(|m| !m.is_empty());
+        crate::runtime::test_run::run(
+            rt,
+            &backend,
+            self.environments.base().clone(),
+            &self.paths.state_dir.join("runtime-test"),
+            model,
+        )
+        .await
+        .map_err(RpcError::conflict)
+    }
+
     /// A browser stand-in on this host asks for a sign-in page on the Mac.
     async fn browser_open(&self, p: &otter_protocol::BrowserOpen) -> RpcResult<()> {
         let opening = crate::login::check(&p.url).map_err(RpcError::invalid)?;

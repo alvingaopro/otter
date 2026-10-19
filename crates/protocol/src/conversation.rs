@@ -57,6 +57,46 @@ pub struct ConversationRef {
     pub conversation: String,
 }
 
+/// `runtime.test` (D-124): start the coding agent for one short reply, to
+/// know it's installed, signed in and answering before any work needs it.
+/// Absent fields: the host's settings.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RuntimeTestRequest {
+    /// `legacy_cli` or `sdk`: what to test, saved or not.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub backend: Option<String>,
+    /// The coding model; empty: a small one (the reply proves the rest).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+}
+
+/// What `runtime.test` found, step by step.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RuntimeTest {
+    pub backend: String,
+    /// Every step passed: coding work can start here.
+    pub ready: bool,
+    pub steps: Vec<TestStep>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TestStep {
+    /// What was tried, for people.
+    pub name: String,
+    pub state: StepState,
+    /// What was seen, or what to do about it.
+    pub detail: String,
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum StepState {
+    Passed,
+    Failed,
+    /// Not tried: an earlier step failed.
+    Skipped,
+}
+
 /// `conversation.list`: every conversation, or a task's.
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ConversationQuery {

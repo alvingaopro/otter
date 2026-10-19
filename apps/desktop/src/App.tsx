@@ -90,7 +90,7 @@ export default function App() {
   const [update, setUpdate] = useState<UpdateOffer | null>(null);
   /** Pinned workspace keys, top first, from `pins.toml` (D-040). */
   const [pins, setPinsState] = useState<string[]>([]);
-  const { choice: themeChoice, resolved: theme, cycle: cycleTheme } = useTheme();
+  const { choice: themeChoice, resolved: theme, set: setTheme } = useTheme();
   /** Tasks, from each connected host's otterd (D-043). */
   const [taskSource] = useState(() => daemonSource());
   const [tasks, setTasks] = useState<PlacedTask[]>(() => taskSource.list());
@@ -367,7 +367,6 @@ export default function App() {
             workspaces: placed.filter((p) => p.ws.activity === "needs_you").length,
           }}
           settings={[
-            { label: `Theme: ${themeChoice === "system" ? "match system" : themeChoice}`, onSelect: cycleTheme },
             { label: "Settings… (⌘,)", onSelect: () => setOpen({ kind: "settings" }) },
             { label: "Add a host…", onSelect: () => setOpen({ kind: "add" }) },
             {
@@ -547,7 +546,15 @@ export default function App() {
       <SignInAsks asks={asks} onDone={(id) => setAsks((a) => a.filter((x) => x.requestId !== id))} />
       {open?.kind === "add" && <AddHostDialog version={version} onClose={() => setOpen(null)} />}
       {open?.kind === "settings" && (
-        <SettingsDialog hosts={connectedHosts} defaultHost={current?.host.name} onClose={() => setOpen(null)} />
+        <SettingsDialog
+          hosts={connectedHosts}
+          defaultHost={current?.host.name}
+          theme={themeChoice}
+          onTheme={setTheme}
+          onAddHost={() => setOpen({ kind: "add" })}
+          version={version}
+          onClose={() => setOpen(null)}
+        />
       )}
       {open?.kind === "cli" && (
         <CliDialog

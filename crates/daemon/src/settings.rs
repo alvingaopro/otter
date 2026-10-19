@@ -161,13 +161,13 @@ impl HostSettings {
     }
 
     /// The coding agent's backend: `OTTER_CODING_BACKEND`, else the setting,
-    /// else `legacy_cli`.
+    /// else `sdk` (D-124).
     pub fn coding_backend(&self) -> String {
         std::env::var("OTTER_CODING_BACKEND")
             .ok()
             .filter(|b| !b.is_empty())
             .or_else(|| self.stored.coding_backend.clone())
-            .unwrap_or_else(|| "legacy_cli".into())
+            .unwrap_or_else(|| "sdk".into())
     }
 
     /// Whether Otter answers with its tools (D-089): `OTTER_BRAIN_V2` (`1`

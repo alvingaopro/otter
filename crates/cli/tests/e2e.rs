@@ -692,6 +692,8 @@ fn a_task_goes_from_the_terminal_to_an_accepted_pull_request() {
         ),
         ("CLAUDE_CONFIG_DIR".into(), p(&dir.join("claude-config"))),
         ("FAKE_CLAUDE_STREAM".into(), p(&stream)),
+        // The fake is `claude -p`'s (D-124 made the SDK worker the default).
+        ("OTTER_CODING_BACKEND".into(), "legacy_cli".into()),
         ("FAKE_CODEX_LOG".into(), p(&dir.join("agent.log"))),
         ("FAKE_GH_DIR".into(), p(&gh)),
         ("OTTER_CONTROLLER".into(), "rules".into()),

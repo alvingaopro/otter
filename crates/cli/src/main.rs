@@ -336,6 +336,18 @@ enum RuntimeCommand {
         #[arg(long)]
         host: Option<String>,
     },
+    /// Start the coding agent for one short reply, to know it's installed,
+    /// signed in and answering (up to two minutes; no tools, no workspace).
+    Test {
+        #[arg(long)]
+        host: Option<String>,
+        /// `sdk` or `legacy_cli`; default: the host's setting.
+        #[arg(long)]
+        backend: Option<String>,
+        /// The coding model; default: the host's setting, else a small one.
+        #[arg(long)]
+        model: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -403,6 +415,11 @@ async fn run(cli: Cli) -> Result<()> {
         Command::Runtime(RuntimeCommand::Status { host }) => {
             tasks::runtime_status(&config, host, json).await
         }
+        Command::Runtime(RuntimeCommand::Test {
+            host,
+            backend,
+            model,
+        }) => tasks::runtime_test(&config, host, backend, model, json).await,
         Command::Ls {
             watch,
             table,

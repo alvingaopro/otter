@@ -129,6 +129,7 @@ pub fn run() {
             tasks::task_delete,
             tasks::conversations,
             tasks::runtime_capabilities,
+            tasks::runtime_test,
             settings::settings_get,
             settings::settings_set,
             settings::settings_models,
