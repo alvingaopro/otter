@@ -52,7 +52,7 @@ Layout:
   mounted while hidden, D-100), `ChangesPanel` + `changes.ts` (D-102),
   `FindPanel` (⌘F), `SessionTerminal` (a session's terminal and its end
   banners; two side by side, D-110), `DiffView` + `diff.ts` + `highlight.ts`
-  (diffs side by side, folded, highlighted, D-111), `Terminal` (xterm.js, which keeps the session's history, D-118; `imeCommit.ts` for Pinyin's punctuation, D-126; `links.ts` for ⌘-click,
+  (diffs side by side, folded, highlighted, D-111), `Terminal` (xterm.js, which keeps the session's history, D-118; `imeCommit.ts` for Pinyin's punctuation, D-126; `pixelScroll.ts` for scrolling by the pixel, D-130; `links.ts` for ⌘-click,
   `terminalFont.ts` for ⌘=/⌘- and the font in Settings › Appearance, D-116; `SettingsDialog`, tabs by kind, D-127; `PerfOverlay` + `perf.ts`, Settings › Developer's readout, D-128), `newer.ts` (requests older hosts don't
   know), `panelResize` (the
   list's and the Files/Timeline panel's widths, D-097; `composerResize` is

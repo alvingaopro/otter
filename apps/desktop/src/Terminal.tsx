@@ -14,6 +14,7 @@ import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { copyOnSelect } from "./copyOnSelect";
 import { takeImeCommits } from "./imeCommit";
+import { pixelScroll } from "./pixelScroll";
 import { logicalLine, urlAtColumn } from "./links";
 import { fontFamily, fontSize, onFontFamily, onFontSize } from "./terminalFont";
 import "@xterm/xterm/css/xterm.css";
@@ -429,6 +430,8 @@ export function Terminal({ host, workspace, session, onEnd, generation, label, w
     const uncopy = copyOnSelect(box, term, writeText);
     // Pinyin's ？！：（ arrive on the first press (D-126).
     const untake = takeImeCommits(box, term);
+    // The history follows the finger, not a row at a time (D-130).
+    const unscroll = pixelScroll(term);
 
     return () => {
       disposed = true;
@@ -440,6 +443,7 @@ export function Terminal({ host, workspace, session, onEnd, generation, label, w
       box.removeEventListener("mousedown", reclaim);
       uncopy();
       untake();
+      unscroll();
       document.removeEventListener("visibilitychange", tellView);
       input.dispose();
       resized.dispose();
