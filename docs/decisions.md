@@ -4083,3 +4083,62 @@ the daemon.
     saving, a release with no worker for the platform, and a failed
     install.
 
+## D-130 — The history follows the finger (2026-10-19)
+
+Scrolling a session's history in the app didn't keep up with the finger. The
+session was inline, so the history was the app's own (D-118) and the wheel
+never went to the host. The display was 60 Hz (a MacBook Air), so WebKit's
+60 frames a second weren't the cause either (roadmap M7).
+
+- **Why:** xterm.js 6 draws whole rows. Its scroll position is in pixels,
+  but the picture changes only when the position crosses a row: 21 px, at
+  the app's 13 px font and 1.25 line height on a Retina display. Measured
+  with xterm.js itself in headless Chromium, a real Claude Code history
+  (5,053 lines), and trackpad input as WebKit reports it, one report a frame.
+  At 120, 300, 600 and 1,200 px/s of finger travel, the text moved in 17,
+  40, 73 and 119 of 120 frames, and was up to 10 px from where the scroll
+  position put it. A slow read looked like 8 to 20 frames a second, a row
+  at a time.
+- **Now** the screen is moved by what's left past the row drawn
+  (`translateY`, at most half a row), in the same frame as xterm draws that
+  row. The move is in whole device pixels, so the text isn't blurred.
+  150 ms after scrolling stops, the position settles on the row drawn, eased
+  over 80 ms. xterm.js #6039 does the same inside xterm and isn't merged.
+  This reads xterm's viewport, scroll position and cell size, which are
+  private, and does nothing if they're missing. It goes when #6039 lands.
+- **Settling waits for the position to stop, not the output** (found in
+  review). xterm's viewport also tells of a scroll when output only
+  lengthens the history; counted as scrolling, a stream of output kept the
+  shift, and its blank edge, for as long as it flowed. A scroll that comes
+  just as it settles follows the finger, not eased.
+- **When the position and the row disagree** by more than half a row, the
+  row wins at once. That happens when the cells change size (⌘= / ⌘-, a
+  font loading), or when xterm moves the row itself, as when output arrives
+  with the history full.
+- **Left as it is:**
+  - While moving, up to half a row at the top or bottom edge is blank,
+    because the row partly in view isn't drawn.
+  - A mouse wheel's notch moves 50 px, about 2.4 rows, and settles the rest
+    after it stops.
+  - At rest there's no shift, so clicks and selection see the screen as
+    before.
+  - Full-screen programs (another screen, or one that takes the mouse, such
+    as Claude Code with `CLAUDE_CODE_NO_FLICKER=1`) still scroll themselves,
+    on the host (D-117).
+- **Verified:**
+  - In the same harness, the text moved in 119 of 120 frames at every speed
+    (the first frame has nothing to compare with), exactly where the scroll
+    position put it. It never moved more than half a row, always on whole
+    device pixels, and was on a row with no shift once scrolling stopped.
+    Nothing was left at the bottom, on the other screen, or once undone.
+    With output written every 40 ms while scrolled up part way into a row,
+    it settled on a row 150 ms after the scroll; before the fix it stayed
+    shifted until the output stopped.
+  - App tests, against a fake of xterm's viewport: the shift and its
+    rounding; settling once and only once, which fails when settling's own
+    scroll starts another; settling on time while output lengthens the
+    history, and a scroll just as it settles not eased, both of which fail
+    without the review's fix; following the finger again at once; the row
+    winning a disagreement; another screen; an xterm without those parts;
+    undoing.
+  - Not yet scrolled on a Mac.
