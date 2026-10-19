@@ -46,7 +46,7 @@ Layout:
   mounted while hidden, D-100), `ChangesPanel` + `changes.ts` (D-102),
   `FindPanel` (⌘F), `SessionTerminal` (a session's terminal and its end
   banners; two side by side, D-110), `DiffView` + `diff.ts` + `highlight.ts`
-  (diffs side by side, folded, highlighted, D-111), `Terminal` (xterm.js, which keeps the session's history, D-118; `links.ts` for ⌘-click,
+  (diffs side by side, folded, highlighted, D-111), `Terminal` (xterm.js, which keeps the session's history, D-118; `imeCommit.ts` for Pinyin's punctuation, D-126; `links.ts` for ⌘-click,
   `terminalFont.ts` for ⌘=/⌘- and the font in Settings › This Mac, D-116), `newer.ts` (requests older hosts don't
   know), `panelResize` (the
   list's and the Files/Timeline panel's widths, D-097; `composerResize` is
