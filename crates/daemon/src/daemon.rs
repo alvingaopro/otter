@@ -649,15 +649,33 @@ impl Daemon {
                 .as_str()
                 .trim_start_matches("ses_")
         );
-        tracing::info!(provider = %opening.provider, port = ?opening.callback_port, "browser login requested");
-        self.events
-            .emit(otter_protocol::Event::BrowserOpenRequested {
+        tracing::info!(provider = %opening.provider, port = ?opening.callback_port, built_in = opening.built_in, "browser login requested");
+        let built_in = opening.built_in;
+        let site = opening.provider.clone();
+        self.events.emit(if built_in {
+            otter_protocol::Event::BrowserOpenRequested {
                 request_id: request_id.clone(),
                 provider: opening.provider.clone(),
                 callback_port: opening.callback_port,
                 workspace_id,
-            });
+            }
+        } else {
+            otter_protocol::Event::BrowserOpenAsked {
+                request_id: request_id.clone(),
+                site: opening.provider.clone(),
+                callback_port: opening.callback_port,
+                workspace_id,
+            }
+        });
         self.logins.add(request_id, opening);
-        Ok(())
+        if built_in {
+            Ok(())
+        } else {
+            // The tool prints its link, as without a browser; the Mac may
+            // still open the page, and the tool's login goes on.
+            Err(RpcError::invalid(format!(
+                "{site} is not a sign-in site Otter opens by itself: the Otter app on your Mac asks whether to open it"
+            )))
+        }
     }
 }

@@ -20,6 +20,7 @@ tauri-build = { version = "2", features = [] }
 otter-core = { path = "../../../crates/core" }
 otter-protocol = { path = "../../../crates/protocol" }
 otter-client = { path = "../../../crates/client" }
+url = "2"
 tauri = { version = "2", features = ["tray-icon", "image-png"] }
 tauri-plugin-notification = "2"
 tauri-plugin-clipboard-manager = "2"

@@ -9,6 +9,7 @@ mod forwards;
 mod hosts;
 mod pins;
 mod settings;
+mod sign_in;
 mod tasks;
 mod tray;
 mod view;
@@ -134,6 +135,10 @@ pub fn run() {
             attach::attach_resize,
             attach::attach_view,
             attach::attach_history,
+            sign_in::sign_in_sites,
+            sign_in::sign_in_allow,
+            sign_in::sign_in_forget,
+            sign_in::sign_in_open,
             attach::attach_close,
             files::fs_list,
             files::fs_remove,

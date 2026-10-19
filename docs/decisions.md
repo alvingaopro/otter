@@ -767,7 +767,8 @@ page in the Mac's browser and finish on the host.
   stand-in). Only attach: it's where these tools are run; `ls --watch` and
   `events --follow` don't serve logins.
 - Not built: asking before opening an untrusted provider, an editable list,
-  a per-host off switch.
+  a per-host off switch. *Amended 2026-10-19:* asking and an editable list
+  came in D-121.
 
 ## D-034 — End-to-end tests for the CLI and the SSH transport (2026-10-08)
 
@@ -3738,6 +3739,57 @@ the default, because:
     terminal isn't reset.
   - The `otter` binary in a PTY: the history arrives, typing goes through,
     and Ctrl-] detaches and undoes the modes while the session goes on.
+
+## D-121 — Sign-in pages from other sites: allowed on the Mac, or asked (2026-10-19)
+
+`sf org open` and `sf org login web` opened nothing. Salesforce wasn't on
+D-032's list of providers, the list couldn't be changed, and sf hides the
+browser opener's refusal. Anyone using a sign-in site Otter didn't know had
+the same silent failure.
+
+- **Salesforce is built in:** `login.salesforce.com`, `test.salesforce.com`
+  and `*.my.salesforce.com` (orgs, scratch orgs, sandboxes). The last is
+  every org's own domain, wider than one company's sign-in page, as
+  `*.awsapps.com` is. The list moved to `otter_protocol::sign_in`, so the
+  daemon and the Mac use the same one.
+- **Any other https page is offered to the Mac, not refused.** The daemon
+  keeps it for the usual two minutes and emits `BrowserOpenAsked`, with the
+  site only, no URL. The tool still hears an error, so it prints its link
+  as it would. Its login waits on its callback or polls, so a page opened a
+  moment later still finishes it.
+- **The Mac decides.** Sites that open without asking are kept on the Mac,
+  in `hosts.toml` beside the hosts (`sign_in_sites`), so the app and the CLI
+  share them, and one list serves every host. A host can't widen it: before
+  opening any page, the app or `otter attach` checks it again against the
+  built-in providers and the Mac's sites. Even for a `BrowserOpenRequested`,
+  the host's word isn't enough. The callback port the Mac maps is read from
+  the page it opens, not from the event.
+- **A host names a site; it never names a pattern.** The site in
+  `BrowserOpenAsked` must be a plain host name (no `*`, no path), checked by
+  the daemon and again by the Mac, or *Always open* could add a pattern the
+  host chose (`*.co.uk`). Only the developer types `*.`, and only leading.
+- **The app asks, in its corner:** "Sign in at login.corp.test?", which tool
+  wants it (workspace and host), then *Open*, *Always open*, or not now. If
+  the window isn't in front, a notification says so too. *Always open* adds
+  the site and opens the page, so the login goes on without running the
+  command again. The question goes when the host lets the page go (two
+  minutes). If the page can't be opened (gone, taken by another Mac), the
+  card says so instead of vanishing; if the site can't be kept, the page
+  still opens and the card says it wasn't kept.
+- **Settings › This Mac › Sign-in pages** lists the sites allowed, each with
+  a button to ask again, and a field for a site or a pasted link (`*.` plus
+  a domain for its subdomains). Below it is one line naming the providers
+  built in.
+- **`otter attach`** opens an asked page only if its whole site is allowed on
+  the Mac, as the list was when it attached. It can't ask in a terminal
+  that's busy with the session, so it leaves the rest to the app, untaken.
+- **Verified:**
+  - Unit tests for the shared matching (Salesforce's hosts, look-alikes,
+    `*.`, path prefixes, what can be typed).
+  - End to end: an unknown site is asked about with no URL in the log and
+    taken once; a terminal opens only the sites its Mac allowed and leaves
+    the others to the app.
+  - App tests for the settings list and the question.
 
 ## D-122 — ⌥1…⌥9 switch sessions (2026-10-19)
 

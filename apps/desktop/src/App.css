@@ -844,3 +844,27 @@ body.resizing-row { cursor: row-resize; user-select: none; }
 .settings-details p { margin: 4px 0 0; }
 .settings-keys > summary { cursor: pointer; font-size: 13px; }
 .btn.icon-only { width: 32px; padding: 0; justify-content: center; }
+
+/* Sign-in pages from hosts (D-121): asked in the window's corner. */
+.sign-in-asks {
+  position: fixed; right: 16px; bottom: 16px; z-index: 50; width: 320px; max-width: calc(100vw - 32px);
+  display: flex; flex-direction: column; gap: 10px;
+}
+.sign-in-ask {
+  padding: 12px 14px; border-radius: 10px; background: var(--panel); border: 1px solid var(--line-strong);
+  box-shadow: 0 10px 30px var(--shadow); display: flex; flex-direction: column; gap: 6px;
+  animation: sign-in-in 0.16s ease-out;
+}
+.sign-in-ask-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.sign-in-ask-title { font-weight: 600; overflow-wrap: anywhere; }
+.sign-in-ask p { margin: 0; }
+.sign-in-ask-actions { display: flex; gap: 8px; margin-top: 4px; }
+@keyframes sign-in-in { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+@media (prefers-reduced-motion: reduce) { .sign-in-ask { animation: none; } }
+.sign-in-sites { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.sign-in-site-list { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 6px; }
+.sign-in-site-list .chip { padding-right: 2px; color: var(--text); }
+.sign-in-site-list .icon-btn { width: 18px; height: 18px; }
+.sign-in-add { display: flex; gap: 8px; }
+.sign-in-add input { flex: 1; min-width: 0; }
+.sign-in-sites .error { color: var(--failed); }

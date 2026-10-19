@@ -11,6 +11,7 @@ otter-core.workspace = true
 anyhow.workspace = true
 toml.workspace = true
 otter-protocol.workspace = true
+url.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true

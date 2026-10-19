@@ -17,6 +17,7 @@ export interface EventRecord {
   exit_code?: number;
   message?: string;
   provider?: string;
+  site?: string;
 }
 
 export interface Row {
@@ -157,6 +158,9 @@ export function timelineRows(records: EventRecord[], ws: WorkspaceView): Row[] {
       }
       case "BrowserOpenRequested":
         row("idle", "Sign-in page requested", r.provider);
+        break;
+      case "BrowserOpenAsked":
+        row("idle", "Sign-in page asked about", r.site);
         break;
       default:
       // Kinds this app doesn't know yet: left out.

@@ -446,17 +446,26 @@ policy}`. An addition (no protocol bump).
 
 - `browser.open {url, session?}` — from the host's browser stand-ins
   (`otterd open-url`, behind `xdg-open`, `www-browser` and `BROWSER=otter-open`
-  in sessions). Accepted only for https pages of trusted sign-in providers,
-  and only while a client (the app, or `otter attach`) is subscribed with
-  `events.subscribe {browser: true}`; otherwise an error says why and the
-  tool prints the URL itself.
-- Accepting it emits `BrowserOpenRequested {request_id, provider,
-  callback_port?, workspace_id?}` — the URL is not in the event (or the log).
+  in sessions). Only https pages, and only while a client (the app, or
+  `otter attach`) is subscribed with `events.subscribe {browser: true}`;
+  otherwise an error says why and the tool prints the URL itself.
+- A page from a sign-in provider built in (`otter_protocol::sign_in::BUILT_IN`)
+  emits `BrowserOpenRequested {request_id, provider, callback_port?,
+  workspace_id?}`. A page from any other site emits `BrowserOpenAsked
+  {request_id, site, callback_port?, workspace_id?}` (D-121), and the tool
+  still hears an error, so it prints the URL as it would. `site` is the
+  page's host, never a pattern; a client ignores one that isn't. The Mac
+  opens such a page if its developer allowed the site there, or asks. An app
+  from before D-121 ignores the event. The URL is in neither event (nor the
+  log).
+- Before opening any page, a client checks it again against the built-in
+  providers and the sites allowed on its Mac. The host's word isn't enough.
 - `browser.take {request_id}` → `{url, provider, callback_port?}`, once, for
   two minutes; with several browser clients, the first to take it opens it.
-  The client opens the URL on the Mac and maps `callback_port` (a
-  loopback `redirect_uri` port) to this Mac until the host stops listening on
-  it or ten minutes pass.
+  The client opens the URL on the Mac and maps its callback port (a
+  loopback `redirect_uri` port, which a D-121 client reads from the URL
+  itself) to this Mac until the host stops listening on it or ten minutes
+  pass.
 
 ## Attach mode
 
