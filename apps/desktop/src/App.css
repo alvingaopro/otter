@@ -795,6 +795,15 @@ body.resizing-row { cursor: row-resize; user-select: none; }
 .find-more { margin: 0; padding: 0 20px 8px; }
 
 /* An attention item that is a guess, not reported (D-109). */
+/* Tasks working in a workspace: their coding agent has no session tab. */
+.ws-tasks { list-style: none; margin: 0; padding: 6px 10px; display: flex; flex-direction: column; gap: 4px; border-bottom: 1px solid var(--line); }
+.ws-task { width: 100%; display: flex; align-items: center; gap: 8px; min-width: 0; padding: 5px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--raised); color: inherit; font: inherit; font-size: 13px; text-align: left; cursor: pointer; }
+.ws-task:hover { border-color: var(--line-strong); }
+.ws-task-label { flex: none; font-size: 11px; padding: 0 6px; border-radius: 5px; border: 1px solid var(--line-strong); color: var(--muted); }
+.ws-task-title { font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ws-task-status { flex: 1; min-width: 0; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ws-task-open { flex: none; color: var(--muted); }
+.ws-task:hover .ws-task-open { color: inherit; }
 .banner-guess { flex: none; font-size: 11px; padding: 1px 6px; border-radius: 5px; border: 1px dashed var(--line-strong); color: var(--muted); }
 
 /* Two sessions side by side (D-110): the left takes the rest. */

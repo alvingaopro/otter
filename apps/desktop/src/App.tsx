@@ -12,7 +12,7 @@ import { Inbox } from "./Inbox";
 import { newNeeds, trayTasks } from "./inboxModel";
 import type { PlacedTask } from "./tasks";
 import { daemonSource } from "./taskSource";
-import { needsYou as taskNeedsYou } from "./tasks";
+import { needsYou as taskNeedsYou, tasksIn } from "./tasks";
 import { saveView, storedView, viewForShortcut, type View } from "./nav";
 import { AddHostDialog } from "./AddHostDialog";
 import { HostPage } from "./HostPage";
@@ -510,6 +510,7 @@ export default function App() {
                 setTaskFocus({ key: `${p.host.name}/${id}`, at: Date.now() });
                 setView("tasks");
               }}
+              tasks={tasksIn(tasks, p.host.name, p.ws.id)}
             />
           ))}
         </div>

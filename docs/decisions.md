@@ -5025,3 +5025,14 @@ so the stand-in never served it.
   and the test fails with the call taken out; elsewhere it isn't called.
   By hand on the Mac mini: the same `osascript` line put a stored paste on
   its pasteboard, and Claude Code's Ctrl+V then pasted the image.
+
+## D-146 — A workspace shows the tasks working in it (2026-10-20)
+
+A task's "Open workspace" led to a workspace with no sign of its coding
+agent: the agent is a managed run (D-044, D-057), not a session, so it has
+no tab, and D-050 took away driving it. The workspace now lists the tasks
+still going in it (its own task, or one placed there or with a step there;
+not done or cancelled), one row each with the task's mark, title and what
+it is doing, above the session tabs; a click opens the task, where the
+agent's work is followed. The rows are read-only; the "Task ↗" chip of a
+workspace made for a task (D-105) stays, also after the task ends.
