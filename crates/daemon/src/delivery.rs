@@ -28,7 +28,9 @@ use crate::env::{EnvMap, which};
 pub const ACCEPTANCE_GATE: &str = "Your acceptance";
 /// Reruns of a failure that looks like infrastructure, per pushed commit.
 pub const MAX_RERUNS: u32 = 2;
-const LOG_TAIL: usize = 3000;
+/// A failed CI log keeps its last lines, each cut at so many characters.
+const LOG_LINES: usize = 40;
+const LOG_LINE: usize = 240;
 
 /// Failures that are the CI machinery's, not the change's.
 const FLAKY: &[&str] = &[
@@ -49,6 +51,158 @@ const FLAKY: &[&str] = &[
 pub fn looks_flaky(text: &str) -> bool {
     let lower = text.to_lowercase();
     FLAKY.iter().any(|p| lower.contains(p))
+}
+
+/// A failed run's log (`gh run view --log-failed`) as the agent and the
+/// developer read it (D-139). gh prints each line as `job⇥step⇥time text`,
+/// with a BOM and a terminal's colours: here the job and step head their
+/// lines once, without times or colours, and without credentials. It
+/// keeps the last [`LOG_LINES`] lines, so the same failure keeps the same
+/// lines from one run to the next whatever its times' lengths.
+pub fn ci_log(raw: &str) -> String {
+    let lines: Vec<(&str, &str, String)> = raw
+        .lines()
+        .map(|l| {
+            let mut parts = l.splitn(3, '\t');
+            match (parts.next(), parts.next(), parts.next()) {
+                (Some(job), Some(step), Some(text)) => (job, step, ci_line(text)),
+                _ => ("", "", ci_line(l)),
+            }
+        })
+        .collect();
+    let mut out = String::new();
+    let mut section = None;
+    for (job, step, text) in &lines[lines.len().saturating_sub(LOG_LINES)..] {
+        if !job.is_empty() && section != Some((job, step)) {
+            out.push_str(&format!("[{job} › {step}]\n"));
+            section = Some((job, step));
+        }
+        out.push_str(text);
+        out.push('\n');
+    }
+    otter_core::redact::redact(&out)
+}
+
+/// One line of a CI log without its timestamp, colours or BOM.
+fn ci_line(text: &str) -> String {
+    let text = text.replace('\u{feff}', "");
+    let text = match text.split_once(' ') {
+        Some((first, rest)) if is_timestamp(first) => rest,
+        None if is_timestamp(&text) => "",
+        _ => &text,
+    };
+    let mut out = String::new();
+    let mut chars = text.chars();
+    while let Some(c) = chars.next() {
+        if c != '\x1b' {
+            out.push(c);
+        } else if chars.clone().next() == Some('[') {
+            // A colour: `ESC [`, its parameters, a final byte.
+            chars.by_ref().skip(1).find(|c| ('@'..='~').contains(c));
+        }
+    }
+    out.chars().take(LOG_LINE).collect()
+}
+
+/// Two failed CI logs show the same failure (D-139): the same lines once
+/// what differs between any two runs of it — times, durations, run ids,
+/// hashes — is set aside.
+pub fn same_ci_failure(a: &str, b: &str) -> bool {
+    failure_key(a) == failure_key(b)
+}
+
+fn failure_key(log: &str) -> Vec<String> {
+    log.lines()
+        .map(|l| {
+            let words: Vec<&str> = l.split_whitespace().collect();
+            let key: Vec<String> = words
+                .iter()
+                .enumerate()
+                .map(|(i, w)| {
+                    let unit = words.get(i + 1).is_some_and(|n| is_unit(core(n)));
+                    if varies(core(w), unit) {
+                        "…".to_owned()
+                    } else {
+                        without_ids(w)
+                    }
+                })
+                .collect();
+            key.join(" ")
+        })
+        .filter(|l| !l.is_empty())
+        .collect()
+}
+
+/// A word without the punctuation around it: `(0.01s)` → `0.01s`.
+fn core(w: &str) -> &str {
+    w.trim_matches(|c: char| !c.is_ascii_alphanumeric())
+}
+
+/// `2026-10-15T03:47:20.4598260Z` and the like.
+fn is_timestamp(w: &str) -> bool {
+    let b = w.as_bytes();
+    let digits = |r: std::ops::Range<usize>| b[r].iter().all(u8::is_ascii_digit);
+    b.len() >= 19
+        && digits(0..4)
+        && b[4] == b'-'
+        && digits(5..7)
+        && b[7] == b'-'
+        && digits(8..10)
+        && b[10] == b'T'
+        && digits(11..13)
+        && b[13] == b':'
+}
+
+fn is_unit(w: &str) -> bool {
+    matches!(
+        w,
+        "ms" | "s" | "sec" | "secs" | "seconds" | "m" | "min" | "mins" | "minutes" | "h"
+    )
+}
+
+/// A time, a time of day or a duration (`0.01s`, `12ms`, `1.5 sec`).
+fn varies(w: &str, before_unit: bool) -> bool {
+    if is_timestamp(w) {
+        return true;
+    }
+    if w.matches(':').count() >= 2 && w.chars().all(|c| c.is_ascii_digit() || ":.".contains(c)) {
+        return true;
+    }
+    let n = w
+        .find(|c: char| !(c.is_ascii_digit() || c == '.'))
+        .unwrap_or(w.len());
+    let (number, unit) = w.split_at(n);
+    number.starts_with(|c: char| c.is_ascii_digit())
+        && if unit.is_empty() {
+            before_unit
+        } else {
+            is_unit(unit)
+        }
+}
+
+/// `w` with its ids as `…`: long numbers (runs, processes) and hashes.
+fn without_ids(w: &str) -> String {
+    let id = |s: &str| {
+        let digits = s.bytes().filter(u8::is_ascii_digit).count();
+        (digits == s.len() && s.len() >= 5)
+            || (s.len() >= 7
+                && digits > 0
+                && digits < s.len()
+                && s.bytes().all(|b| b.is_ascii_hexdigit()))
+    };
+    let mut out = String::new();
+    let mut part = String::new();
+    for c in w.chars().map(Some).chain([None]) {
+        match c {
+            Some(c) if c.is_ascii_alphanumeric() => part.push(c),
+            _ => {
+                out.push_str(if id(&part) { "…" } else { &part });
+                part.clear();
+                out.extend(c);
+            }
+        }
+    }
+    out
 }
 
 /// What the gates need to know beyond the task.
@@ -375,7 +529,9 @@ pub(crate) async fn run(
     ))
 }
 
+/// The end of what a tool printed, without credentials (invariant 13).
 fn tail(s: &str, n: usize) -> String {
+    let s = otter_core::redact::redact(s);
     let chars: Vec<char> = s.chars().collect();
     chars[chars.len().saturating_sub(n)..].iter().collect()
 }
@@ -602,7 +758,7 @@ impl<'a> GitHub<'a> {
                     .filter(|s| !s.is_empty()),
                 description: c["description"]
                     .as_str()
-                    .map(String::from)
+                    .map(otter_core::redact::redact)
                     .filter(|s| !s.is_empty()),
             })
             .collect())
@@ -620,7 +776,7 @@ impl<'a> GitHub<'a> {
             .gh(&["run", "view", id, "--log-failed"], None)
             .await
             .ok()?;
-        Some(tail(&out, LOG_TAIL))
+        Some(ci_log(&out))
     }
 
     pub async fn rerun(&self, check: &CiCheck) -> Result<()> {
@@ -818,5 +974,89 @@ mod tests {
             Some("123")
         );
         assert_eq!(GitHub::run_id("https://ci.example/x"), None);
+    }
+
+    /// A run of `make test` failing, as `gh run view --log-failed` prints
+    /// it: the time, the run and the commit differ from one run to the next.
+    fn failed_run(second: u32, took: &str, run: u64, sha: &str, got: u32) -> String {
+        let t = |ms: u32| format!("2026-10-20T18:0{second}:1{ms}.4598260Z");
+        [
+            format!(
+                "test\tRun make test\t\u{feff}{} ##[group]Run make test",
+                t(0)
+            ),
+            format!("test\tRun make test\t{} \x1b[36;1mmake test\x1b[0m", t(1)),
+            format!("test\tRun make test\t{} HEAD is now at {sha}", t(2)),
+            format!("test\tRun make test\t{} AssertionError: 3 != {got}", t(3)),
+            format!("test\tRun make test\t{} Ran 21 tests in {took}", t(4)),
+            format!(
+                "test\tRun make test\t{} see https://github.com/o/r/actions/runs/{run}/job/1",
+                t(5)
+            ),
+            format!(
+                "test\tRun make test\t{} ##[error]Process completed with exit code 1.",
+                t(6)
+            ),
+        ]
+        .join("\n")
+    }
+
+    #[test]
+    fn a_ci_log_reads_without_times_or_colours() {
+        let log = ci_log(&failed_run(1, "0.010s", 38677940243, "a512001d4b", 4));
+        assert_eq!(
+            log,
+            "[test › Run make test]\n##[group]Run make test\nmake test\nHEAD is now at a512001d4b\n\
+             AssertionError: 3 != 4\nRan 21 tests in 0.010s\n\
+             see https://github.com/o/r/actions/runs/38677940243/job/1\n\
+             ##[error]Process completed with exit code 1.\n"
+        );
+        // A long log keeps its end, by lines.
+        let long: Vec<String> = (0..100).map(|i| format!("j\ts\tline {i}")).collect();
+        let log = ci_log(&long.join("\n"));
+        assert_eq!(log.lines().count(), LOG_LINES + 1);
+        assert!(
+            log.ends_with("line 99\n") && !log.contains("line 59\n"),
+            "{log}"
+        );
+        // What isn't gh's shape stays as it is.
+        assert_eq!(ci_log("plain\n"), "plain\n");
+    }
+
+    #[test]
+    fn a_ci_log_keeps_no_credentials() {
+        let log = ci_log(
+            "test\tdeploy\t2026-10-20T18:00:00.1Z GITHUB_TOKEN=ghp_abcdefghijklmnopqrstuvwxyz0123",
+        );
+        assert!(!log.contains("ghp_abcdefghij"), "{log}");
+        assert!(
+            !tail(
+                "fatal: https://x:ghp_abcdefghijklmnopqrstuvwxyz0123@github.com/o/r",
+                500
+            )
+            .contains("ghp_abcdefghij")
+        );
+    }
+
+    #[test]
+    fn the_same_ci_failure_is_the_same_whatever_its_times() {
+        let first = ci_log(&failed_run(1, "0.010s", 38677940243, "a512001d4b", 4));
+        let again = ci_log(&failed_run(7, "0.1s", 38677999999, "b2515520aa", 4));
+        assert_ne!(first, again);
+        assert!(same_ci_failure(&first, &again));
+        // Kept before D-139: as gh printed it.
+        assert!(same_ci_failure(
+            &failed_run(1, "0.010s", 38677940243, "a512001d4b", 4),
+            &failed_run(2, "1.5s", 38677940244, "c0ffee1234", 4)
+        ));
+        assert!(same_ci_failure("Time: 1.234 s\n", "Time: 12 s\n"));
+        assert!(same_ci_failure(
+            "--- FAIL: TestX (0.00s)\n",
+            "--- FAIL: TestX (0.31s)\n"
+        ));
+        // Another failure isn't.
+        let other = ci_log(&failed_run(7, "0.1s", 38677999999, "b2515520aa", 5));
+        assert!(!same_ci_failure(&first, &other));
+        assert!(!same_ci_failure(&first, "test: exit 1\n"));
     }
 }

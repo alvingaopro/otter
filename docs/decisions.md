@@ -4448,3 +4448,35 @@ grantable. A task on authentication code asked at almost every search.
   in; then quoted options and a key's value; then quotes and backslashes
   inside a word, which also let a delete or a write outside pass before
   this change). The existing policy tests pass unchanged.
+
+## D-139 — A CI failure is the same failure whatever its times (2026-10-20)
+
+D-068 sends the same CI failure after a fix to the developer, comparing
+the failed log with the last one character for character. GitHub's
+`gh run view --log-failed` starts every line with the job, the step and a
+timestamp (and a BOM before the first), so two runs of one failure never
+match: a task fixes, pushes and fails until its six attempts are gone,
+where it should hand over after one fix. Found reading the code for the
+live task bench; the offline test missed it because its fake `gh` printed
+the same bytes every time.
+
+- **The log as it's read:** the job and step head their lines once; times,
+  the BOM and terminal colours go; the last 40 lines are kept, each cut at
+  240 characters. Lines, not characters, so a failure whose durations got
+  shorter keeps the same lines. The agent's fix turn gets this text too,
+  with less noise. Checks of one run share its log: it's added once.
+- **The same failure:** the same lines once what differs between any two
+  runs is set aside — timestamps, times of day, durations (`0.01s`,
+  `12ms`, `1.5 s`), numbers of five digits or more (run ids, processes)
+  and hex hashes. Line numbers, counts and assertion values stay, so a
+  different failure is still different. Logs kept before this were raw:
+  the first comparison against one differs, so that task gets one more
+  fix before the rule applies.
+- **No credentials:** what git and gh print on failure, the CI log and a
+  check's description pass `redact` before they become a task's messages,
+  evidence or otterd's log (invariant 13); they didn't before.
+- **Verified:** unit tests on gh's real shape (two runs of one failure
+  differing in times, durations, run id and commit match; another
+  assertion doesn't); the e2e test now gets a log whose times and
+  durations change with every view, and fails against the old comparison
+  with "all 6 attempts are used up".

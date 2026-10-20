@@ -105,6 +105,7 @@ Deterministic, whatever a model thinks:
   and resumed, not failed (D-063). Silent too long: the same (watchdog).
 - Attempts: new work costs one (`max_iterations`, 6); three per step.
 - Loops: the same failed run three times; the same work and verdict after
-  a fix (→ review); the same CI failure after a fix (→ the developer).
+  a fix (→ review); the same CI failure after a fix, times, durations
+  and ids aside (→ the developer, D-139).
 - CI that looks like the infrastructure's fault: rerun at most twice per
   pushed commit (D-047).

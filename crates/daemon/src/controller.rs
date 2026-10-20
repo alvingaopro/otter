@@ -2329,7 +2329,10 @@ impl Daemon {
                             c.name,
                             c.description.clone().unwrap_or_default()
                         ));
-                        if let Some(log) = gh.failed_log(c).await {
+                        // Checks of one run share its log: once.
+                        if let Some(log) = gh.failed_log(c).await
+                            && !text.contains(&log)
+                        {
                             text.push_str(&log);
                             text.push('\n');
                         }
@@ -2365,7 +2368,9 @@ impl Daemon {
                             .find(|e| e.kind == EvidenceKind::Ci && e.ok == Some(false));
                         let same = last.is_some_and(|e| {
                             e.title == title
-                                && e.detail.as_deref().map(str::trim) == Some(text.trim())
+                                && e.detail
+                                    .as_deref()
+                                    .is_some_and(|d| delivery::same_ci_failure(d, &text))
                         });
                         let fixed = f
                             .steps

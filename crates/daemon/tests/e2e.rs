@@ -6259,7 +6259,13 @@ async fn the_same_ci_failure_after_a_fix_goes_to_the_developer() {
     let fake = fake_agent_host("ok", "rules").await;
     let (id, _) = git_task(&fake).await;
     allow_publish(&fake.host, &id).await;
-    std::fs::write(fake.gh.join("log"), "assertion failed: left == right\n").unwrap();
+    // gh's shape: a time on every line, the test run's duration (D-139).
+    std::fs::write(
+        fake.gh.join("log"),
+        "test\tRun make test\t\u{feff}@TIME@ assertion failed: left == right\n\
+         test\tRun make test\t@TIME@ Ran 21 tests in @SECS@\n",
+    )
+    .unwrap();
     write_checks(
         &fake.gh,
         "checks.json",
