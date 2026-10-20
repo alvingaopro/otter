@@ -3759,7 +3759,23 @@ async fn files_upload_list_download_in_chunks() {
 
 #[tokio::test]
 async fn pasted_image_reaches_wl_paste_in_the_session() {
-    let host = TestHost::new();
+    use std::os::unix::fs::PermissionsExt;
+    // A Mac host's pasteboard gets the image too (D-145): a stand-in for
+    // `osascript` keeps what it was given, off the real clipboard.
+    let fake = tempfile::Builder::new().prefix("osa").tempdir().unwrap();
+    let pasteboard = fake.path().join("pasteboard.png");
+    let osascript = fake.path().join("osascript");
+    std::fs::write(
+        &osascript,
+        format!(
+            "#!/bin/sh\nfor a; do last=$a; done\ncp \"$last\" '{}'\n",
+            pasteboard.display()
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&osascript, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let host =
+        TestHost::with_env(&[("OTTER_OSASCRIPT", osascript.to_string_lossy().into_owned())]).await;
     sh_session(&host, "paste").await;
     let png = b"\x89PNG\r\n\x1a\n-not-really-an-image-";
     host.conn()
@@ -3784,6 +3800,11 @@ async fn pasted_image_reaches_wl_paste_in_the_session() {
         &format!("types=image/png bytes={}", png.len()),
     )
     .await;
+    if cfg!(target_os = "macos") {
+        assert_eq!(std::fs::read(&pasteboard).unwrap(), png);
+    } else {
+        assert!(!pasteboard.exists());
+    }
     // Not a PNG: refused.
     let err = host
         .conn()

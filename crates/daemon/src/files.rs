@@ -9,6 +9,10 @@
 //! serves an image pasted in the last two minutes and otherwise defers to a
 //! real `wl-paste`. Nothing on the host can read the Mac's clipboard.
 //!
+//! **On a Mac host** Claude Code reads the host's own pasteboard
+//! (`osascript`), not `wl-paste`, so otterd also puts the image there
+//! (D-145). That replaces whatever the host's clipboard held.
+//!
 //! **Deferring happens once.** Another tool's stand-in later on PATH may
 //! hand back to the first other one it finds — this one — and two stand-ins
 //! would call each other for ever. Deferring marks the environment
@@ -364,8 +368,44 @@ impl Daemon {
             f.write_all(&png).map_err(|e| io_err(&tmp, e))?;
         }
         std::fs::rename(&tmp, &path).map_err(|e| io_err(&path, e))?;
+        #[cfg(target_os = "macos")]
+        if let Err(e) = to_pasteboard(&path).await {
+            tracing::warn!("putting a pasted image on the host's clipboard: {e:#}");
+        }
         Ok(())
     }
+}
+
+/// Puts the PNG at `path` on the host's pasteboard, where Claude Code on a
+/// Mac looks for an image. `OTTER_OSASCRIPT` stands in for `osascript` in
+/// tests, which mustn't take the clipboard of whoever runs them.
+#[cfg(target_os = "macos")]
+async fn to_pasteboard(path: &Path) -> anyhow::Result<()> {
+    use anyhow::Context;
+    let osascript =
+        std::env::var_os("OTTER_OSASCRIPT").unwrap_or_else(|| "/usr/bin/osascript".into());
+    let run = tokio::process::Command::new(osascript)
+        .args([
+            "-e",
+            "on run argv",
+            "-e",
+            "set the clipboard to (read (POSIX file (item 1 of argv)) as «class PNGf»)",
+            "-e",
+            "end run",
+        ])
+        .arg(path)
+        .stdin(std::process::Stdio::null())
+        .kill_on_drop(true)
+        .output();
+    let out = tokio::time::timeout(std::time::Duration::from_secs(5), run)
+        .await
+        .context("osascript took over 5 s")??;
+    anyhow::ensure!(
+        out.status.success(),
+        "osascript: {}",
+        String::from_utf8_lossy(&out.stderr).trim()
+    );
+    Ok(())
 }
 
 #[cfg(test)]

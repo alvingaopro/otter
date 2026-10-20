@@ -732,6 +732,8 @@ stretch with no recording shows as a gap, and plot average with peak.
   host never gets a way to read the Mac's clipboard. Works in sessions
   attached through the app (not plain `ssh`), and in login shells whose
   profile keeps the inherited PATH.
+  *Amended 2026-10-20 (D-145):* on a Mac host, Claude Code reads the
+  host's pasteboard, so otterd puts the image there too.
 
 ## D-032 — Browser login (2026-10-08)
 
@@ -5002,3 +5004,24 @@ scrollback, which the app keeps and scrolls itself (D-118).
   session's prompts from its screen moving (D-136), observed before this
   on whichever renderer ran, holds on the classic one — the agent tests
   use a fake `claude`.
+
+## D-145 — A pasted image reaches Claude Code on a Mac host (2026-10-20)
+
+Dogfooding: the app on a laptop, a Mac mini as the host over SSH. Ctrl+V
+with a screenshot pasted the Mac mini's clipboard text instead. The app had
+sent the image and otterd had stored it (D-031), but Claude Code on macOS
+reads the host's own pasteboard with `osascript` and never runs `wl-paste`,
+so the stand-in never served it.
+
+- **On a Mac host, otterd also puts the image on the host's pasteboard**
+  (`osascript … «class PNGf»`, the stored file's path as an argument, 5 s
+  at most) before the app sends the key. It replaces whatever that
+  clipboard held: a host is used from elsewhere, and the paste is what was
+  asked for. A failure is logged; the paste itself still succeeds.
+- The stand-in stays: Linux hosts need it, and it's harmless on a Mac.
+- **Verified:** the paste e2e test runs otterd with `OTTER_OSASCRIPT`, a
+  stand-in that keeps what it's given (the real one would take the
+  clipboard of whoever runs the tests): on macOS it gets the pasted PNG,
+  and the test fails with the call taken out; elsewhere it isn't called.
+  By hand on the Mac mini: the same `osascript` line put a stored paste on
+  its pasteboard, and Claude Code's Ctrl+V then pasted the image.
