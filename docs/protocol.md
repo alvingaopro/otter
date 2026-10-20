@@ -191,7 +191,13 @@ An addition (no protocol bump): daemons before it answer `invalid_request`.
 - The copy is kept, though, while any branch in it holds commits on no
   remote.
 - Without `force`, `conflict` when the worktree has uncommitted changes or
-  the branch has commits not pushed anywhere; `force` discards both.
+  the branch has commits not pushed anywhere; `force` discards both. A
+  worktree that never finished preparing (no branch recorded) has neither
+  (D-135).
+- Running sessions are stopped first (`SessionStopped`), then the files go,
+  then `WorkspaceDeleted`. Meanwhile another `workspace.delete`,
+  `workspace.prepare` or `workspace.unarchive` of it gets `conflict`
+  (D-135).
 
 ## Names
 

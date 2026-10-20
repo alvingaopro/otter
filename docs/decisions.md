@@ -3256,7 +3256,7 @@ went. That copy is a full clone. The developer asked that deleting clean up.
   force both go: `--force` and the app's checkbox now say so.
 - **The repository's copy goes with the last workspace that used it.** The
   check runs under the store's lock, so a workspace being made on it is
-  counted. The copy stays while any branch in it holds commits on no remote,
+  counted. *(Since D-135: under the copy's Git lock.)* The copy stays while any branch in it holds commits on no remote,
   for example a branch kept by a delete from before this change.
 - **A branch another worktree has checked out stays,** and so does
   everything if removing the worktree failed: nothing half-removed.
@@ -4326,3 +4326,73 @@ without changing anything else on the host.
     - The browser sign-in shows its code, then who it is. A cleared
       identity leaves the host's.
 
+## D-135 — A checkout cut short is made again; deleting doesn't hold the host (2026-10-20)
+
+otterd killed `git` when it stopped, which it does on each update (D-125),
+and when a workspace was deleted while preparing. A `git worktree add`
+killed mid-checkout leaves its worktree locked "initializing" with files
+missing, and the workspace's record without its branch. The next otterd
+saw the `.git` and called it ready: agents started in a tree with files
+missing, and with no branch recorded, deleting it neither checked for
+unpushed commits nor deleted the branch (D-108). Deleting it failed, too:
+`git worktree remove --force` refuses a locked worktree. Killing `git` didn't
+stop the child that checks out, which went on writing into the tree. A
+worktree whose directory went missing couldn't be made again (git:
+"missing but already registered"), and each try left an `otterd/<name>-2`.
+Apart from that, `workspace.delete` removed the worktree, the directory and
+the repository's copy holding the store's lock, so every request on the
+host and the reconcile loop waited, often for gigabytes; and
+`workspace.create` waited up to 3 s for a Git workspace's fetch and
+checkout, which hardly ever finish that soon, so the app's dialog sat on
+"Creating…" though the workspace opens while it prepares.
+
+- **A worktree is done once its branch is recorded,** which happens only
+  after `git worktree add` finishes. Preparing one without it (a checkout
+  cut short), or whose directory is gone, makes it again. What is there goes
+  first: `worktree remove --force --force` (git's way to remove a locked
+  one), `worktree prune`, then the directory. The branch the cut-short
+  checkout made goes too if nothing is on it (no remote branch of its name,
+  no commit a remote lacks), so the new one has the same name. A worktree
+  made before goes back on its recorded branch, with its commits, and keeps
+  its recorded base. A directory a finished worktree left with its `.git`
+  missing is never cleared: adding fails on it, as before.
+- **Git runs in its own process group,** killed whole when the call is
+  dropped (a preparation cancelled, otterd stopping), so a checkout's child
+  doesn't outlive it.
+- **Deleting** removes a locked worktree, and the registration of one whose
+  directory is gone. A worktree never finished goes without force: the
+  uncommitted-changes and unpushed checks are for one that was. A
+  preparation under way is cancelled, and waited for, before anything is
+  removed. While a delete is under way, another delete of the workspace,
+  `workspace.prepare` and `workspace.unarchive` get `conflict` ("being
+  deleted"), and a preparation that finishes meanwhile starts nothing.
+- **Deleting holds the store's lock only to stop the processes and to drop
+  the record.** Running sessions stop first and are marked stopped
+  (`SessionStopped`), as when archiving. The worktree, branch and directory
+  then go without the lock, and the record last, under it. A failure on the
+  way still leaves the record, so deleting again retries. The repository's
+  copy goes after that, and its last-workspace check (D-108) is made under
+  the copy's Git lock: a workspace being made on it is either counted, or
+  fetches only once the copy is gone. The store's lock is never held across
+  Git now, so progress messages wait for it rather than being dropped when
+  it's busy. They're set around Git's calls, not from inside them: a first
+  clone reads "cloning repository" until "creating worktree".
+- **`workspace.create` waits** (up to 3 s, as before) **only when there's no
+  Git work:** an empty or existing directory, or for `workspace.prepare` and
+  `workspace.unarchive` a worktree already there. A Git workspace comes back
+  at once, preparing. The CLI already waits for it, and the app opens it
+  while it prepares. A workspace becoming ready wakes the controller, so a
+  task given a worktree of its own (D-080) steps on at once.
+- **A `git worktree add -b` that fails** deletes the branch git made for it,
+  so trying again doesn't take `-2`, `-3`.
+- **Verified:** e2e tests in `crates/daemon/tests/e2e/workspace_prep.rs`. A
+  checkout cut short, then otterd restarted: made again on `otterd/cut`,
+  whole, unlocked, its session started. A locked worktree deleted, and a
+  half-made one deleted right after a restart, without force. A worktree
+  gone with its registration locked: made again on its branch, with its
+  commit. With a `git` that sleeps: create returns at once, `workspace.get`
+  answers while a delete removes the worktree, and a delete while cloning
+  leaves no child of git behind. Each fails against the code before: ready
+  with a file missing, "cannot remove a locked working tree", failed on
+  `otterd/gone-2`, 3.0 s, 3.5 s, and a child that wrote after the delete. A
+  unit test for the `-b` branch fails without its cleanup.
