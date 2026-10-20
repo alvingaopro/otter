@@ -1493,11 +1493,12 @@ impl Daemon {
     }
 
     /// Why the task's workspace can't be worked in now, if it can't
-    /// (D-079): another task's run is there, or an agent the developer
-    /// started is at work there.
+    /// (D-079): another task's run is there, another task's work is there
+    /// and not done (D-141), or an agent the developer started is at work
+    /// there.
     async fn workspace_taken(self: &Arc<Self>, f: &Task) -> Option<String> {
         let ws_id = f.workspace_id.as_ref()?;
-        let (name, busy_session) = {
+        let (name, busy_session, git) = {
             let store = self.store.lock().await;
             let ws = store.workspace(ws_id.as_str())?;
             // Put away when it ended (D-105): its own comes back; another
@@ -1532,7 +1533,8 @@ impl Daemon {
                     })
                 })
                 .map(|s| s.name.clone());
-            (ws.name.clone(), busy)
+            let git = std::path::Path::new(&ws.root).join(".git").exists();
+            (ws.name.clone(), busy, git)
         };
         if let Some(other) = self.workspace_holder(ws_id).filter(|o| o != &f.id) {
             let title = self
@@ -1541,6 +1543,24 @@ impl Daemon {
                 .map(|o| o.title)
                 .unwrap_or_else(|_| other.to_string());
             return Some(format!("{WAITING}{name}: “{title}” is working there"));
+        }
+        // In a Git repository, another task's work there, not done, holds
+        // it between its runs too — in review, paused, blocked or failed —
+        // or publishing it would take this one's edits (D-141). Not when
+        // this one has worked there already: neither would go on.
+        if git
+            && f.runs.is_empty()
+            && let Some(other) = self.tasks.lock().await.list().into_iter().find(|o| {
+                o.id != f.id
+                    && o.workspace_id.as_ref() == Some(ws_id)
+                    && !o.runs.is_empty()
+                    && !matches!(o.status, TaskStatus::Done | TaskStatus::Cancelled)
+            })
+        {
+            return Some(format!(
+                "{WAITING}{name}: “{}” has work there that isn't done",
+                other.title
+            ));
         }
         busy_session.map(|s| format!("{WAITING}{name}: {s}{YOUR_AGENT}"))
     }

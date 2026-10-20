@@ -4448,3 +4448,45 @@ grantable. A task on authentication code asked at almost every search.
   in; then quoted options and a key's value; then quotes and backslashes
   inside a word, which also let a delete or a write outside pass before
   this change). The existing policy tests pass unchanged.
+
+## D-141 — A task holds its workspace until it's done (2026-10-20)
+
+D-079 gave a workspace one managed run at a time, so delivery wouldn't push
+one branch with two tasks' work. But the claim lasted only as long as a
+run. A task in review keeps its verified work uncommitted until the
+developer allows publishing (D-068), with no run at all. The live task
+bench (B03) started a second task in that workspace, then allowed the
+first to publish: `git add -A` committed the second's half-made edits under
+the first's title and into its pull request. The same gap let a waiting
+task slip in between two of a task's runs (its planning turn and its
+first step).
+
+- **In a Git repository, another task's work there, not done, holds the
+  workspace:** a task that has run in it and isn't done or cancelled — at work, in review,
+  paused, blocked or failed. A task wanting it waits as D-079 says
+  ("Waiting for <workspace>: “<task>” has work there that isn't done"),
+  costs no attempt, and goes on by itself when the other is accepted or
+  cancelled. Or it moves to a workspace of its own (D-080), since it hasn't
+  worked yet.
+- **Pausing doesn't hand a Git workspace over:** paused, a task's work is
+  still in the tree. Cancelling does. A cancelled task's files stay
+  (D-068), and the next task's delivery then takes them as the
+  workspace's.
+- **Only where delivery commits:** a workspace whose root is a Git
+  repository (a Git workspace, or an attached directory that is a
+  checkout). An empty or plain directory has no commit to mix work into,
+  and can't give a task one of its own (D-080), so it keeps D-079's one run
+  at a time: a daily trigger there goes on while yesterday's task waits in
+  review.
+- **No deadlock:** the hold applies only to a task that hasn't run in the
+  workspace yet. Two that both have (from before this, or another way
+  in) fall back to D-079's one run at a time.
+- **Not done:** a task accepted but whose pull request isn't merged yet
+  leaves its branch with that PR open; a next task in the same workspace
+  pushes to that branch and finds that PR. Waiting for the merge would
+  need GitHub's word on every step; it's the developer's call when to
+  start the next.
+- **Verified:** e2e `a_task_waiting_to_publish_keeps_its_workspace` (B03's
+  shape: the first asked to publish, the second waits through the publish
+  and starts once the first is accepted) fails against the code before;
+  D-079's and D-083's tests on plain directories pass unchanged.
