@@ -2164,7 +2164,9 @@ fn tmux_dir() -> String {
 /// at a permission prompt / AskUserQuestion until a line is typed;
 /// `twoprompts` asks again, for another command, right after the first is
 /// answered; `nohooks` ignores the settings (hooks disabled) and stops at a
-/// prompt.
+/// prompt; `countdown` stops at a prompt that redraws once a second (Claude
+/// Code's auto-deny countdown) and, once answered, runs the tool for ~5 s
+/// behind a spinner that redraws ten times a second.
 const FAKE_CLAUDE: &str = r#"#!/bin/sh
 if [ "$1" = --version ]; then echo "2.0.0-fake (Claude Code)"; exit 0; fi
 # Managed runs (`claude -p`, stream-json): fake_claude_stream.sh.
@@ -2213,6 +2215,19 @@ case "$FAKE_CODEX_MODE" in
     hook PermissionRequest ',"tool_name":"Bash","tool_input":{"command":"touch z","description":"Create empty file z"}'
     echo "Do you want to proceed?"
     read answer
+    hook PostToolUse ',"tool_name":"Bash","tool_response":{"stdout":""}'
+    ;;
+  countdown)
+    rec '{"type":"assistant","timestamp":"'$(now)'","message":{"role":"assistant","stop_reason":"tool_use","content":[{"type":"tool_use","name":"Bash"}]}}'
+    hook PermissionRequest ',"tool_name":"Bash","tool_input":{"command":"make test","description":"Run the tests"}'
+    echo "Do you want to proceed?"
+    ( n=59; while :; do printf '\rautomatically deny this request in 1:%02d ' "$n"; n=$(( (n + 59) % 60 )); sleep 1; done ) &
+    ticking=$!
+    read answer
+    kill $ticking
+    i=0
+    while [ $i -lt 50 ]; do printf '\rrunning %s ' "$i"; i=$((i + 1)); sleep 0.1; done
+    echo
     hook PostToolUse ',"tool_name":"Bash","tool_response":{"stdout":""}'
     ;;
   twoprompts)
@@ -2665,6 +2680,58 @@ async fn looking_at_a_prompt_does_not_answer_it() {
     .await;
     writer.send(&Frame::Detach).await.unwrap();
     read_exit(&mut reader).await;
+}
+
+/// A prompt that redraws once a second (Claude Code's auto-deny countdown)
+/// still needs the developer; approved, the tool's spinner says so before
+/// the tool finishes (D-136).
+#[tokio::test]
+async fn a_ticking_prompt_is_not_an_answer_but_a_running_tool_is() {
+    use otter_core::{AgentState, AttentionKind};
+    let fake = fake_codex_host("countdown").await;
+    let host = &fake.host;
+    create(host, "tick", Some(vec![SessionSpec::agent("claude")])).await;
+    let ws = wait_agent(host, "tick", "claude", AgentState::Blocked).await;
+    let summary = "claude needs your approval: Bash: Run the tests";
+    assert_eq!(ws.attention[0].summary, summary);
+
+    // Well past the 2 s that used to take any change for an answer, and
+    // the screen did change.
+    let screen = || async {
+        host.conn()
+            .await
+            .session_read("tick", "claude", Some(0))
+            .await
+            .unwrap()
+    };
+    let before = screen().await;
+    tokio::time::sleep(Duration::from_secs(5)).await;
+    assert_ne!(screen().await, before, "the prompt ticks");
+    let ws = host.conn().await.workspace_get("tick").await.unwrap();
+    let agent = ws.session("claude").unwrap().agent.clone().unwrap();
+    assert_eq!(agent.state, AgentState::Blocked);
+    assert_eq!(ws.attention.len(), 1, "{:?}", ws.attention);
+    assert_eq!(ws.attention[0].kind, AttentionKind::Approval);
+    assert_eq!(ws.attention[0].summary, summary);
+
+    // Approved: working while the tool runs, before its hook says it ended.
+    host.conn()
+        .await
+        .session_write("tick", "claude", "1", true)
+        .await
+        .unwrap();
+    wait_agent(host, "tick", "claude", AgentState::Working).await;
+    let hooks = host
+        .home()
+        .join("run/agents")
+        .join(ws.session("claude").unwrap().id.as_str())
+        .join("claude-hooks.jsonl");
+    let hooks = std::fs::read_to_string(hooks).unwrap();
+    assert!(hooks.contains("PermissionRequest"), "{hooks}");
+    assert!(!hooks.contains("PostToolUse"), "the tool still runs");
+    let ws = wait_agent(host, "tick", "claude", AgentState::WaitingForInput).await;
+    assert_eq!(ws.attention.len(), 1);
+    assert_eq!(ws.attention[0].kind, AttentionKind::Review);
 }
 
 /// A Claude Code session started on the host's own sign-in, restarted after
