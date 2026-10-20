@@ -5072,3 +5072,18 @@ Two things from a day of use.
   history when the terminal grew back. The terminal now never fits to, or
   tells the host, less than 20×4, and gives the session its size only once
   it has held for 150 ms. History already laid out narrow stays so.
+
+## D-149 — A terminal attaches at its own size (2026-10-20)
+
+After an update the app starts again and every terminal shown attaches at
+once, while the window is still being laid out; a session's history then
+came back laid out narrow, now and then. D-148 kept sizes under 20×4 out,
+but the attach still went out at once, with whatever size the terminal had
+then (xterm's 80×24 if it couldn't be measured, or one measured with the
+fallback font before the bundled one loaded), and each size the session
+gets, Claude Code lays its whole history out again at.
+
+A terminal now attaches only once it is on screen at a real size (D-148's
+20×4), measured with its own font (loaded, or given up on): the first size
+the session gets is the one it is shown at. A kept pane mounted hidden
+(D-100) attaches when it is first shown.
