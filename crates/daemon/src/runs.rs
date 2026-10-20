@@ -395,7 +395,8 @@ impl Daemon {
             .or_else(|| self.starting.lock().unwrap().get(workspace).cloned())
     }
 
-    /// A run that never got going: its generation ends, its turns too.
+    /// A run that never got going, or one otterd lost: its generation ends,
+    /// its turns too.
     fn end_conversation_run(
         &self,
         conversation: &ConversationId,
@@ -650,15 +651,30 @@ impl Daemon {
             }
         }
         // The actor went away without a word — with otterd, when it stops
-        // (see above), or else it is a failure.
+        // (see above), or else it is a failure: otterd's, not the agent's.
         if self.shutting_down() {
             return;
+        }
+        tracing::warn!(task = %task, run = %run, "the run's actor ended without ending the run");
+        // Its conversation is free again, or nothing could ever run in it
+        // until a restart (D-134).
+        if let Some(c) = conversation
+            .as_ref()
+            .and_then(|c| self.conversations.get(c.as_str()))
+            .filter(|c| c.active_run.as_ref() == Some(&run))
+        {
+            self.end_conversation_run(
+                &c.id,
+                c.generation,
+                TurnOutcome::OutcomeUnknown,
+                "not delivered: otterd lost the run",
+            );
         }
         self.finish_run(
             &task,
             &run,
             RunState::Failed,
-            Some("the run ended unexpectedly".into()),
+            Some("otterd lost the run (an internal error; otterd's log says where)".into()),
             true,
         )
         .await;

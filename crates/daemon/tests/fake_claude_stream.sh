@@ -10,7 +10,7 @@
 # resumed run finishes, logging what it was told), DIE_ALWAYS (dies every
 # time); anything else finishes the turn. Asked to plan the work, it proposes
 # two steps as JSON (NOPLAN: it answers in prose instead; PLANFAIL: the turn
-# fails). A `skip-init` file
+# fails; CJK: it says something in Chinese first). A `skip-init` file
 # next to the log keeps the session id back (as if it died before saying it).
 [ -n "$FAKE_CODEX_LOG" ] && echo "claude-stream $*" >> "$FAKE_CODEX_LOG"
 sid="fake-session-$$"
@@ -56,6 +56,8 @@ while read -r line; do
           *'Your step ('*) printf '%s' "$line" > "$memory" ;;
         esac
       fi
+      # CJK: it says a request in Chinese back first.
+      case "$line" in *CJK*) text "修复这个PR，https://example.com/o/r/pull/7" ;; esac
       case "$line" in
         *'plan the work'*NOPLAN*|*NOPLAN*'plan the work'*)
           result success false "I would write the export and test it." ;;

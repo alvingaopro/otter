@@ -1204,12 +1204,17 @@ impl Daemon {
                 f.status.as_str()
             )));
         }
+        // How it ended stays in the log; its history goes with it (D-134).
+        let (status, why) = (
+            f.status.as_str(),
+            otter_core::redact::redact(f.status_reason.as_deref().unwrap_or_default()),
+        );
         tasks
             .remove(&id)
             .map_err(|e| RpcError::internal(format!("deleting task: {e:#}")))?;
         drop(tasks);
         self.conversations.remove_for_task(&id);
-        tracing::info!(task = %id, "task deleted");
+        tracing::info!(task = %id, status, reason = %why, "task deleted");
         self.events.emit(Event::TaskDeleted { task_id: id });
         Ok(())
     }

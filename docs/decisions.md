@@ -4326,3 +4326,53 @@ without changing anything else on the host.
     - The browser sign-in shows its code, then who it is. A cleared
       identity leaves the host's.
 
+
+## D-134 — A task that stops says why, and can go on (2026-10-20)
+
+A task asked in Chinese failed in planning seconds after it started, twice
+more on retry, and was deleted, its history with it. The cause was in
+otterd, not the agent: `redact` (D-075) took the byte after the character
+before a key as the key's start, so text with a multi-byte character just
+before `word:` or `word=` (`修复这个PR，https://…`, a BOM in a CI log)
+panicked. The panic ended the run's actor; the bridge failed the run as
+"ended unexpectedly", and the task said the coding agent's look at the
+code had failed. Retrying couldn't start: the conversation still named the
+lost run as its active one until a restart. Nothing of this was in the log
+but two bare panic lines, and a panic in the controller's step would have
+left the task marked as being stepped, never stepped again.
+
+- **`redact`** finds the key's start by characters. Text in any script
+  reads whole.
+- **A lost run frees its conversation:** when the actor goes without ending
+  the run, the bridge ends the conversation's generation (outcome
+  unknown) if the run still holds it, and the run fails as *otterd lost
+  the run*, which is what happened. Retrying starts a new turn.
+- **Contained:** a task's step, Otter's follow-ups and its turn on the host
+  each run as a task of their own. A panic there is an error like the
+  others: the task fails with *Otter stopped: an internal error*, and the
+  host's turn can run again.
+- **In the log:** a panic, with its time, through the log like the rest; a
+  task failing, with why (redacted); a task deleted, with its last status
+  and why. A failed Otter's turn no longer quotes Node's warning hint as
+  what the worker said.
+- **Wording:** a failed look at the code says *the look at the code
+  failed (why)*, not that the agent's did, and that retrying tries again.
+- **A workspace only the developer can free needs them:** a task waiting
+  because an agent they started works in its workspace, or because the
+  workspace is archived, is *Waiting on you* (Inbox, `otter ls`), not
+  working. Waiting for a workspace being prepared, or for another task,
+  isn't. `WAITING`, `YOUR_AGENT` and `ARCHIVED` move to `otter-core` so
+  the rule and the words are one.
+- **CLI:** `otter task retry`; `resume`, `retry` and `cancel` say what
+  they do.
+- **Known limits:** a step that panics every time it's stepped fails the
+  task once, then panics again on each tick while a message waits for an
+  answer (each one logged).
+- **Verified:** unit tests for the scripts (`，https://`, a BOM, `看看token=`,
+  a key after Chinese still masked), a panicking step as an error, and the
+  waits that need the developer. An e2e test (`a_request_in_chinese_is_planned`)
+  with the fake agent saying Chinese back: it fails on the old `redact` with
+  *otterd lost the run*. By hand, with the old `redact` back: the task
+  failed, and Retry planned and went on; with the conversation's release
+  taken out as well, Retry failed with *run … is still serving this
+  conversation*, as on the developer's host.

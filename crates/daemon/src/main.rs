@@ -148,6 +148,8 @@ fn init_logging() {
         .with_writer(std::io::stderr)
         .with_ansi(false)
         .init();
+    // A panic is in the log like the rest, with its time (D-134).
+    std::panic::set_hook(Box::new(|info| tracing::error!("{info}")));
 }
 
 async fn serve(paths: Paths) -> Result<()> {

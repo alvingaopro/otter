@@ -173,9 +173,12 @@ fn key_values(s: &str) -> String {
         }
         // The key just before: letters, digits, `_`, `-`, `.`, maybe quoted.
         let before = s[..pos].trim_end_matches(['"', '\'']).trim_end();
+        // Past the character before the key, which may be more than a byte
+        // (`修复这个PR，https://…`, a BOM).
         let key_start = before
-            .rfind(|c: char| !(c.is_ascii_alphanumeric() || c == '_' || c == '-' || c == '.'))
-            .map_or(0, |i| i + 1);
+            .char_indices()
+            .rfind(|&(_, c)| !(c.is_ascii_alphanumeric() || c == '_' || c == '-' || c == '.'))
+            .map_or(0, |(i, c)| i + c.len_utf8());
         let key = before[key_start..].to_ascii_lowercase();
         let secret_key = !key.is_empty()
             && SECRET_KEYS.iter().any(|w| key.ends_with(w) || key.contains(&format!("{w}_")))
@@ -323,6 +326,22 @@ mod tests {
         ] {
             assert_eq!(redact(s), s, "{s}");
         }
+    }
+
+    #[test]
+    fn text_in_any_script_is_read_whole() {
+        // Each of these took otterd down: the key's start fell inside the
+        // character before it.
+        for s in [
+            "修复这个PR，https://github.com/o/r/pull/7",
+            "\u{feff}Run tests: cargo test",
+            "看看token=",
+            "打开http://localhost:3000",
+        ] {
+            assert_eq!(redact(s), s, "{s}");
+        }
+        assert_eq!(redact("密码，TOKEN=abc 好"), "密码，TOKEN=*** 好");
+        assert_eq!(redact("\u{feff}password: hunter2"), "\u{feff}password: ***");
     }
 
     #[test]
