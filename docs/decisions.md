@@ -4626,3 +4626,14 @@ Sign-in.
   it, and a command session beside it doesn't get it. The app's test: the Sign-in
   row with the coding agent, sent once, never shown, not among the API
   keys.
+
+## D-143 — Apple silicon only (2026-10-20)
+
+Each release ran four macOS jobs (the app and `otterd`/`otter`, per
+architecture) next to CI's macOS job, and runners queued for them: a
+release that builds in about 5 minutes took 9 to 15. Nobody runs Otter on
+an Intel Mac, so the x86_64 app, its update and the `macos-x86_64`
+binaries are gone, and a release runs two macOS jobs. `latest.json` names
+only `darwin-aarch64`. The installer refuses an Intel Mac and, on Apple
+silicon under Rosetta (where `uname -m` says x86_64), installs the arm64
+build. Supersedes the x86_64 half of D-026.

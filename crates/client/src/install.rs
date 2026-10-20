@@ -42,7 +42,10 @@ case "$(uname -s)-$(uname -m)" in
   Linux-x86_64) t=linux-x86_64 ;;
   Linux-aarch64 | Linux-arm64) t=linux-aarch64 ;;
   Darwin-arm64) t=macos-arm64 ;;
-  Darwin-x86_64) t=macos-x86_64 ;;
+  # Apple silicon only (D-143); a shell under Rosetta says x86_64.
+  Darwin-x86_64)
+    [ "$(sysctl -n hw.optional.arm64 2>/dev/null)" = 1 ] || {{ echo "otterd needs a Mac with Apple silicon" >&2; exit 3; }}
+    t=macos-arm64 ;;
   *) echo "otterd has no build for $(uname -sm)" >&2; exit 3 ;;
 esac
 base="{RELEASES}/v$v"
