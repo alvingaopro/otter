@@ -28,6 +28,7 @@ use tokio::io::BufReader;
 use tokio::net::unix::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::sync::{broadcast::error::RecvError, mpsc};
 
+use crate::attention::{Engaged, OnScreen};
 use crate::backend::{Stream, StreamInput, StreamOptions, StreamOutput};
 use crate::daemon::Daemon;
 use crate::server::respond;
@@ -111,12 +112,18 @@ pub async fn run(
         }
     };
     respond(&mut w, id, Ok(serde_json::to_value(&ready)?)).await?;
+    // A client that says whether its terminal is on screen looks for as
+    // long as it is (D-137). Counted before settling, so a turn that ends
+    // meanwhile is either not raised or settled here.
+    let mut on_screen = ready
+        .controls
+        .then(|| OnScreen::new(daemon.clone(), target.ready.session_id.clone()));
     // Looking at the session settles what was only to be seen (D-099).
     daemon
         .engage(
             &target.workspace_id,
             &target.ready.session_id,
-            crate::attention::Engaged::Looked,
+            Engaged::Looked,
         )
         .await;
     tracing::info!(execution = %target.ready.execution_id, history = ready.history, "attach started");
@@ -189,7 +196,16 @@ pub async fn run(
                 }
                 Some(Frame::Control(control)) => {
                     if ready.controls {
+                        let back = match (&control, on_screen.as_mut()) {
+                            (Control::View { visible, .. }, Some(on)) => on.show(*visible),
+                            _ => false,
+                        };
                         viewer.control(control);
+                        // Back on screen is looking again (D-137).
+                        if back {
+                            let session = &target.ready.session_id;
+                            daemon.engage(&target.workspace_id, session, Engaged::Looked).await;
+                        }
                     }
                 }
                 Some(Frame::Exit(_)) => {}
@@ -230,6 +246,7 @@ pub async fn run(
         }
     }
 
+    drop(on_screen);
     viewer.close();
     if !client_gone {
         let ending = ending.unwrap_or_else(|| exit(AttachExitReason::Ended, None));

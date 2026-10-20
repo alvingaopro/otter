@@ -84,6 +84,9 @@ pub struct Daemon {
     /// What each agent's screen showed last (a digest) and since when, by
     /// backend ref (reconcile.rs).
     pub(crate) screens: std::sync::Mutex<HashMap<String, (u64, crate::agents::Screen)>>,
+    /// Sessions a client shows on screen, and in how many terminals
+    /// (`attention::OnScreen`, D-137).
+    pub(crate) on_screen: std::sync::Mutex<HashMap<otter_core::SessionId, usize>>,
     /// Resource usage, sampled in the background for the host page.
     metrics: crate::metrics::Sampler,
     /// Browser login requests waiting for an app, and how many apps listen.
@@ -188,6 +191,7 @@ impl Daemon {
             workspace_env: Default::default(),
             preparing: Default::default(),
             screens: Default::default(),
+            on_screen: Default::default(),
             metrics,
             logins: Default::default(),
             browser_subscribers: Default::default(),

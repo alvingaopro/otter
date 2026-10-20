@@ -6,9 +6,12 @@
 //! resolved when the situation changes (the agent starts working again), when
 //! the developer answers (sends to the session, restarts, stops it), or
 //! explicitly. Looking at a session (attaching) resolves only what looking
-//! settles — a finished turn, a completed command (D-099). Each session has at
-//! most one open item; a newer one replaces it.
+//! settles — a finished turn, a completed command (D-099). So does a terminal
+//! coming on screen, and while one is, nothing of that kind is raised for its
+//! session (D-137). Each session has at most one open item; a newer one
+//! replaces it.
 
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use chrono::Utc;
@@ -85,8 +88,9 @@ pub fn resolve_session(ws: &mut Workspace, session_id: &SessionId) -> Vec<Event>
     resolve(ws, |a| a.session_id.as_ref() == Some(session_id))
 }
 
-/// Attention for a session whose current execution just ended.
-pub fn on_execution_ended(ws: &mut Workspace, session: &Session) -> Vec<Event> {
+/// Attention for a session whose current execution just ended; `on_screen`:
+/// the developer is looking at it (D-137).
+pub fn on_execution_ended(ws: &mut Workspace, session: &Session, on_screen: bool) -> Vec<Event> {
     let Some(exec) = session.current_execution() else {
         return Vec::new();
     };
@@ -123,7 +127,22 @@ pub fn on_execution_ended(ws: &mut Workspace, session: &Session) -> Vec<Event> {
         }
         _ => summary,
     };
-    raise(ws, Some(&session.id), kind, summary)
+    raise_unless_seen(ws, &session.id, kind, summary, on_screen)
+}
+
+/// [`raise`], unless the developer is looking at the session and seeing it
+/// is all the item asks (D-137): then it only replaces what was open.
+fn raise_unless_seen(
+    ws: &mut Workspace,
+    session_id: &SessionId,
+    kind: AttentionKind,
+    summary: String,
+    on_screen: bool,
+) -> Vec<Event> {
+    if on_screen && settled_by_looking(kind) {
+        return resolve_session(ws, session_id);
+    }
+    raise(ws, Some(session_id), kind, summary)
 }
 
 /// The kind and summary of a blocked agent's item: what it said it waits for,
@@ -146,7 +165,8 @@ pub fn blocked_item(name: &str, blocker: Option<&Blocker>) -> (AttentionKind, St
     }
 }
 
-/// Attention for an agent state transition.
+/// Attention for an agent state transition; `on_screen`: the developer is
+/// looking at the session (D-137).
 pub fn on_agent_state(
     ws: &mut Workspace,
     session_id: &SessionId,
@@ -154,6 +174,7 @@ pub fn on_agent_state(
     name: &str,
     state: AgentState,
     last_message: Option<&str>,
+    on_screen: bool,
 ) -> Vec<Event> {
     match state {
         AgentState::WaitingForInput => {
@@ -161,7 +182,7 @@ pub fn on_agent_state(
                 Some(m) => format!("{name} finished: {m}"),
                 None => format!("{name} finished its turn"),
             };
-            raise(ws, Some(session_id), AttentionKind::Review, summary)
+            raise_unless_seen(ws, session_id, AttentionKind::Review, summary, on_screen)
         }
         AgentState::Blocked => {
             let (kind, summary) = blocked_item(name, blocker);
@@ -176,7 +197,8 @@ pub fn on_agent_state(
 /// How the developer engaged with a session.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Engaged {
-    /// Attached: they saw it. That settles what was only to be seen.
+    /// Attached, or its terminal came on screen (D-137): they saw it. That
+    /// settles what was only to be seen.
     Looked,
     /// Sent it text: whatever it asked, they answered.
     Answered,
@@ -246,5 +268,55 @@ impl Daemon {
         for e in events {
             self.events.emit(e);
         }
+    }
+
+    /// The sessions a client shows on screen now (D-137).
+    pub(crate) fn on_screen(&self) -> HashSet<SessionId> {
+        self.on_screen.lock().unwrap().keys().cloned().collect()
+    }
+}
+
+/// A terminal showing a session, from a client that says whether it is on
+/// screen (D-119). While it is, the developer is looking at the session
+/// (D-137). It starts on screen, as a stream does; dropped, it's gone.
+pub(crate) struct OnScreen {
+    daemon: Arc<Daemon>,
+    session_id: SessionId,
+    shown: bool,
+}
+
+impl OnScreen {
+    pub(crate) fn new(daemon: Arc<Daemon>, session_id: SessionId) -> Self {
+        let mut on = OnScreen {
+            daemon,
+            session_id,
+            shown: false,
+        };
+        on.show(true);
+        on
+    }
+
+    /// Whether it's on screen now; true if it just came on.
+    pub(crate) fn show(&mut self, shown: bool) -> bool {
+        if shown == self.shown {
+            return false;
+        }
+        self.shown = shown;
+        let mut counts = self.daemon.on_screen.lock().unwrap();
+        if shown {
+            *counts.entry(self.session_id.clone()).or_default() += 1;
+        } else if let Some(n) = counts.get_mut(&self.session_id) {
+            *n -= 1;
+            if *n == 0 {
+                counts.remove(&self.session_id);
+            }
+        }
+        shown
+    }
+}
+
+impl Drop for OnScreen {
+    fn drop(&mut self) {
+        self.show(false);
     }
 }

@@ -2662,6 +2662,84 @@ async fn looking_at_a_prompt_does_not_answer_it() {
     read_exit(&mut reader).await;
 }
 
+/// A terminal on screen is looking (D-137): a turn that ends in front of the
+/// developer asks for nothing, and one that ended off screen is settled when
+/// it comes back on. Neither answers a prompt (D-099).
+#[tokio::test]
+async fn a_turn_that_ends_on_screen_is_already_seen() {
+    use otter_core::{AgentState, AttentionKind};
+    let fake = fake_codex_host("approval").await;
+    let host = &fake.host;
+    let kinds = |ws: &'static str| async move {
+        let w = host.conn().await.workspace_get(ws).await.unwrap();
+        w.attention.iter().map(|a| a.kind).collect::<Vec<_>>()
+    };
+    let view = |visible| {
+        Frame::Control(Control::View {
+            visible,
+            cols: 100,
+            rows: 30,
+        })
+    };
+
+    // On screen while the agent asks, and when its turn ends; another
+    // terminal on it is off screen meanwhile (a workspace kept, D-100).
+    create(host, "seen", Some(vec![SessionSpec::agent("claude")])).await;
+    wait_agent(host, "seen", "claude", AgentState::Blocked).await;
+    let (mut reader, mut writer) = controlled_attach(host, "seen", "claude", (100, 30), 1000).await;
+    read_until_control(&mut reader, snapshot_done).await;
+    let (mut kept, mut kept_writer) =
+        controlled_attach(host, "seen", "claude", (100, 30), 1000).await;
+    read_until_control(&mut kept, snapshot_done).await;
+    // Off screen and back again is looking again, still not answering.
+    writer.send(&view(false)).await.unwrap();
+    writer.send(&view(true)).await.unwrap();
+    kept_writer.send(&view(false)).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    assert_eq!(
+        kinds("seen").await,
+        [AttentionKind::Approval],
+        "on screen is looking, not answering"
+    );
+    // Answered in the terminal: the turn ends in front of the developer.
+    send(&mut writer, "1\r").await;
+    wait_agent(host, "seen", "claude", AgentState::WaitingForInput).await;
+    assert_eq!(
+        kinds("seen").await,
+        [],
+        "a turn seen ending asks for nothing"
+    );
+    tokio::time::sleep(Duration::from_millis(1000)).await;
+    assert_eq!(kinds("seen").await, []);
+    for (mut reader, mut writer) in [(reader, writer), (kept, kept_writer)] {
+        writer.send(&Frame::Detach).await.unwrap();
+        read_exit(&mut reader).await;
+    }
+
+    // Off screen when the turn ends: there's a turn to review, until the
+    // terminal is back on screen.
+    create(host, "away", Some(vec![SessionSpec::agent("claude")])).await;
+    wait_agent(host, "away", "claude", AgentState::Blocked).await;
+    let (mut reader, mut writer) = controlled_attach(host, "away", "claude", (100, 30), 1000).await;
+    read_until_control(&mut reader, snapshot_done).await;
+    writer.send(&view(false)).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    host.conn()
+        .await
+        .session_write("away", "claude", "1", true)
+        .await
+        .unwrap();
+    wait_agent(host, "away", "claude", AgentState::WaitingForInput).await;
+    assert_eq!(kinds("away").await, [AttentionKind::Review]);
+    writer.send(&view(true)).await.unwrap();
+    eventually("back on screen settles the review", || async {
+        kinds("away").await.is_empty().then_some(())
+    })
+    .await;
+    writer.send(&Frame::Detach).await.unwrap();
+    read_exit(&mut reader).await;
+}
+
 #[tokio::test]
 async fn claude_code_without_hooks_falls_back_to_the_quiet_turn() {
     use otter_core::{AgentState, AttentionKind};
