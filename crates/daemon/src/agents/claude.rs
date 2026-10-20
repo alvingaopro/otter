@@ -44,6 +44,21 @@ use serde_json::Value;
 
 use super::{AgentProvider, Blocker, LaunchContext, Observation, ObserveContext, excerpt, settle};
 use crate::env::{EnvMap, which};
+
+/// Claude Code's long-lived sign-in, from `claude setup-token`
+/// (`sk-ant-oat01-…`): set in Settings, given to Claude Code's processes
+/// (D-142). A key in their environment (`ANTHROPIC_API_KEY`) comes first.
+pub const OAUTH_TOKEN: &str = "CLAUDE_CODE_OAUTH_TOKEN";
+
+/// `env` signed in with `token`, when there is one; else as it is (Claude
+/// Code's own sign-in on the host).
+pub fn signed_in(env: &EnvMap, token: Option<&str>) -> EnvMap {
+    let mut env = env.clone();
+    if let Some(t) = token {
+        env.insert(OAUTH_TOKEN.into(), t.to_owned());
+    }
+    env
+}
 use otter_core::AttentionKind;
 
 /// Tolerance between our launch time and the transcript's mtime.
@@ -115,6 +130,10 @@ struct Pending {
 impl AgentProvider for ClaudeCode {
     fn id(&self) -> &'static str {
         "claude"
+    }
+
+    fn secrets(&self) -> &'static [&'static str] {
+        &[OAUTH_TOKEN]
     }
 
     async fn detect(&self, env: &EnvMap) -> AgentCapability {
@@ -600,6 +619,20 @@ mod tests {
     use super::*;
     use crate::agents::Screen;
     use std::collections::HashSet;
+
+    #[test]
+    fn a_token_from_settings_signs_claude_code_in() {
+        let env = EnvMap::from([("PATH".to_owned(), "/bin".to_owned())]);
+        let signed = signed_in(&env, Some("sk-ant-oat01-x"));
+        assert_eq!(
+            signed.get(OAUTH_TOKEN).map(String::as_str),
+            Some("sk-ant-oat01-x")
+        );
+        assert_eq!(signed.get("PATH").map(String::as_str), Some("/bin"));
+        // None set here: the host's own sign-in, untouched.
+        assert_eq!(signed_in(&env, None), env);
+        assert_eq!(ClaudeCode.secrets(), [OAUTH_TOKEN]);
+    }
     use std::io::Write;
 
     fn apply(lines: &[&str]) -> TranscriptUpdate {

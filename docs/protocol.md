@@ -240,6 +240,10 @@ The Control Agent's model and API keys on this host (D-048).
   the same view. Fields left out stay as they are; `""` resets the
   controller to automatic and the model to the default; `null` clears a
   secret. Unknown secret names and controllers fail with `invalid_request`.
+- Besides each provider's key, `secrets` lists `CLAUDE_CODE_OAUTH_TOKEN`
+  (D-142): Claude Code's sign-in, the token `claude setup-token` prints
+  (`sk-ant-oat01-…`; anything else fails with `invalid_request`). It is no
+  controller's key. Absent from daemons before it.
 - The view also lists `controllers: [{id, label, secret?, models,
   default_model?}]` — every model provider (with the secret holding its
   key), `claude`, `rules` and `off` — and `active`, the controller in use

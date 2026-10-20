@@ -535,6 +535,7 @@ impl Daemon {
                 .iter()
                 .filter_map(|p| Some((p.key.to_owned(), s.secret(p.key)?)))
                 .collect(),
+            claude_token: s.secret(crate::agents::claude::OAUTH_TOKEN),
             v2: s.otter_tools(),
         }
     }
