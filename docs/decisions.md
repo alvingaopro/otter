@@ -4595,6 +4595,131 @@ The change:
     shell ended while a question was up. otterd as it was resolved the
     item; this one keeps it.
 
+## D-137 — A terminal on screen is looking, and two smaller fixes (2026-10-20)
+
+Amends D-099. Only attaching counted as looking, but the app's terminals
+stay attached (D-100) and say whether they're on screen (D-119). A turn
+that ended in front of the developer raised a review that stayed in the
+sidebar, the tray and the Inbox until they clicked into the session they
+were watching. In dogfooding, of 46 review items that lived under 30 s, 43
+were settled by an attach, not by the agent moving on.
+
+- **On screen is looking.** A stream that takes control frames (the app's
+  terminal) looks from its attach until it says it's off screen (`view`),
+  and again once it says it's back. otterd keeps each terminal on screen,
+  since two can show one session (D-110). It's all in the attach bridge
+  and `attention.rs` (`OnScreen`); the backend knows nothing of it.
+  - Back on screen settles the session's finished turn or completed
+    command, as attaching does.
+  - While a session is on screen, a turn ending or a command completing
+    raises nothing. Raising it and settling it at once would still have
+    the app notify (D-109). The new state still replaces what was open,
+    such as an approval the agent moved past.
+  - Approvals, questions and failures are unchanged: looking never
+    answers them (D-099).
+  - On screen is the app's terminal having a size in a window the system
+    doesn't report hidden (`document.visibilityState`), focused or not. So
+    a turn that ends in a terminal left on screen while the developer
+    works in another app no longer notifies "turn finished".
+  - The CLI's attach doesn't say whether it's on screen, so it still looks
+    only when it attaches.
+  - **A client gone without a word** must not hold a session on screen.
+    When a Mac sleeps, the host's sshd and `otterd dial` stay up, so the
+    attach lives until the connection fails: about 15 minutes with output
+    flowing, and up to about 2 hours idle where sshd doesn't probe. Every
+    finished turn in that time would be lost, even after the app came back
+    and the developer looked elsewhere. Two things end it sooner:
+    - A frame that hasn't reached the client in 30 s ends the attach as if
+      the client had gone (`OTTER_ATTACH_WRITE_TIMEOUT_MS`). The final exit
+      frame is bounded the same way. Before, the write could wait for ever
+      once the buffers on the way were full. That kept a stuck attach, and
+      its terminal client, for as long as the connection took to fail.
+    - On screen lapses. The app says it again every 30 s while a terminal
+      is on screen; one otterd hasn't heard that from in 90 s no longer
+      counts. Said again, it counts again, but settles nothing: a timer
+      isn't the developer looking. Only coming back on screen settles.
+    - The 90 s applies to every client that takes control frames. An app
+      from before this never says it again, so after 90 s its terminals
+      stop counting and attention behaves as it did before this decision
+      (D-099), never worse. That mix is short-lived, since the app brings
+      and updates otterd (D-085, D-131). The other way, giving the limit
+      only to a client once it has said it again, would leave the first
+      30 s of every attach without it, and a Mac put to sleep then would
+      hold the session on screen until the connection failed.
+  - The app's half of D-100 (showing a workspace again settles by id) now
+    mostly finds nothing to do. It stays for older daemons.
+  - The `view` message is unchanged (protocol.md says what it now means),
+    so there's no version bump.
+- **Claude transcript discovery** (D-023). Until a Claude session's
+  transcript is written during its execution (the trust dialog, or a
+  resumed conversation not yet continued), each reconcile read the
+  project's transcript directory and stat'ed every file in it, twice a
+  second. That directory keeps every conversation had in the cwd.
+  - It's read again only when its mtime changed (a new transcript), or
+    after 5 s. A resumed older conversation (`/resume`) is only appended
+    to, which doesn't change the directory, and neither does a second file
+    made within one clock tick.
+  - A new execution looks at once.
+  - The last look is kept in memory. In `provider_state`, every look would
+    be a save.
+- **Real-browser tests apart.** Chrome on CI's runner sometimes stops
+  answering, which failed the whole test job until rerun.
+  - The tests that drive a real Chrome run only with
+    `OTTER_TEST_BROWSER=1`, and fail if it's set and no Chrome is found.
+    They are `browser::tests`' three and the three end-to-end browser
+    checks. The end-to-end ones are included because they took
+    `OTTER_BROWSER_NO_SANDBOX` from the main job's environment, and
+    without it Chrome can't start on the runner.
+  - CI runs them in a "Real browser" job, up to three times. A flake
+    passes on the next try with a warning, and a real break fails all
+    three and the job. (`continue-on-error` would have hidden a real
+    break: with nothing required to pass, a green PR is merged.)
+  - Locally, with Chrome or Chromium and python3: `OTTER_TEST_BROWSER=1
+    cargo test -p otterd -- browser::tests
+    a_browser_check_verifies_the_ui_with_evidence
+    a_broken_ui_fails_verification a_preview_runs_as_a_session_on_one_port`.
+    Add `OTTER_BROWSER_NO_SANDBOX=1` where Chrome's sandbox can't start.
+- **Verified:**
+  - End to end (`a_turn_that_ends_on_screen_is_already_seen`):
+    - An approval stays while its terminal is on screen, and when it goes
+      off and back.
+    - Answered in the terminal, the turn ends with nothing raised, while
+      a second terminal on the session is off screen.
+    - A turn that ended off screen is a review until its terminal is back
+      on screen.
+    - Against the code before, both halves fail: a review is raised, and
+      it stays. Keeping one mark per session instead of one per terminal
+      fails it too.
+  - End to end, a command (`a_command_that_completes_on_screen_is_already_seen`):
+    one that completes on screen raises nothing, and one that completes off
+    screen is a completion. Ignoring the terminal for a command fails it.
+  - End to end, a client that goes without a word
+    (`a_terminal_gone_without_a_word_is_no_longer_on_screen`): once its
+    attach is over, the turn that ends is a review. Keeping the mark when
+    the attach ends fails it.
+  - End to end, a client that stops reading
+    (`an_attach_whose_client_stops_reading_is_let_go`, at 1 s): the attach
+    is let go while the session runs on. Without the timeout, it waits for
+    ever.
+  - Unit (`a_terminal_counts_as_on_screen_while_its_client_says_so`): two
+    terminals on one session, one going; a mark lapsing at 90 s; said
+    again, counting for longer; a lapsed one back, not as coming on screen.
+  - The app's tests pass, and so does its type check.
+  - Unit (`transcripts_are_looked_for_only_when_there_may_be_a_new_one`):
+    - An appended older transcript is found by the rescan at 5 s, not
+      before. A new transcript is found on the next look.
+    - A new execution looks at once, and a clock gone back looks again.
+    - It fails with a look every time (the code before), and with the
+      time alone (no mtime).
+  - The browser tests skip without the variable, and fail with it when
+    there's no Chrome (none on the machine this was built on). On this
+    PR's CI, the "Real browser" job ran all six and they passed, and the
+    main job skipped them.
+  - The whole `cargo test` passes, and the new end-to-end tests passed
+    repeated runs, eight at once included. The command test failed twice
+    on its first two runs, as if on screen had been ignored, and never
+    again in about 25 runs since. Nothing found explains it.
+
 
 ## D-138 — Looking for a risky word isn't doing it (2026-10-20)
 

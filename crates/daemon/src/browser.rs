@@ -975,15 +975,19 @@ document.getElementById('go').addEventListener('click', () => {
     /// rest of the tests, can outlast a step on a CI runner.
     static ONE_BROWSER: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+    /// A real Chrome or Chromium, only with `OTTER_TEST_BROWSER=1` (D-137):
+    /// one dying on a shared runner isn't this code failing, so CI runs
+    /// these in a job of their own. Asked for, a missing one fails.
     fn browser() -> Option<PathBuf> {
+        if std::env::var("OTTER_TEST_BROWSER").as_deref() != Ok("1") {
+            eprintln!("skipping: drives a real browser; set OTTER_TEST_BROWSER=1");
+            return None;
+        }
         let mut env = EnvMap::new();
         env.insert("PATH".into(), std::env::var("PATH").unwrap_or_default());
-        let b = find_browser(&env);
-        match &b {
-            Some(p) => eprintln!("browser: {}", p.display()),
-            None => eprintln!("skipping: no Chrome/Chromium on this host"),
-        }
-        b
+        let b = find_browser(&env).expect("OTTER_TEST_BROWSER=1, but no Chrome/Chromium here");
+        eprintln!("browser: {}", b.display());
+        Some(b)
     }
 
     fn env() -> EnvMap {

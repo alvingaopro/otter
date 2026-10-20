@@ -520,12 +520,76 @@ fn transcript_dirs(env: &EnvMap, cwd: &str) -> Vec<PathBuf> {
     names.into_iter().map(|n| projects.join(n)).collect()
 }
 
+/// How often a session still looking for its transcript reads the
+/// directories anyway (D-137).
+const RESCAN_SECS: i64 = 5;
+
+/// Each execution's last look for its transcript, by its session's private
+/// directory and start (unix ms). In memory: kept in `provider_state`, every
+/// look would be a change to save.
+static SCANS: std::sync::Mutex<std::collections::BTreeMap<(PathBuf, i64), Scan>> =
+    std::sync::Mutex::new(std::collections::BTreeMap::new());
+
+/// A look at the transcript directories: when, and their mtimes then.
+#[derive(Debug)]
+struct Scan {
+    at: Timestamp,
+    dirs: Vec<Option<DateTime<Utc>>>,
+    /// When, by otterd's own clock: what's forgotten goes by it.
+    taken: std::time::Instant,
+}
+
+impl Scan {
+    /// Whether to look again (D-137). A new transcript changes its
+    /// directory's mtime. An older one resumed (`/resume`) is only appended
+    /// to, which doesn't, and neither does a second file made within the
+    /// clock tick of the last look: those wait for the rescan.
+    fn due(&self, now: Timestamp, dirs: &[Option<DateTime<Utc>>]) -> bool {
+        let since = now - self.at;
+        self.dirs != dirs || since < Duration::zero() || since >= Duration::seconds(RESCAN_SECS)
+    }
+}
+
 /// The most recently written transcript for the session's cwd, written since
-/// `since` and not bound to another session.
+/// `since` and not bound to another session. A project's directory holds
+/// every conversation had there, so it's read only when there may be a new
+/// one (D-137).
 fn newest_transcript(ctx: &ObserveContext<'_>, since: Timestamp) -> Option<(String, PathBuf)> {
+    let dirs = transcript_dirs(ctx.env, ctx.cwd);
+    let stamps: Vec<_> = dirs.iter().map(|d| mtime(d)).collect();
+    let key = (ctx.dir.to_path_buf(), ctx.started_at.timestamp_millis());
+    {
+        let mut scans = SCANS.lock().unwrap();
+        // Executions that stopped looking: bound, ended, gone.
+        let forget = std::time::Duration::from_secs(RESCAN_SECS as u64 * 12);
+        scans.retain(|_, s| s.taken.elapsed() < forget);
+        if scans.get(&key).is_some_and(|s| !s.due(ctx.now, &stamps)) {
+            return None;
+        }
+        scans.insert(
+            key.clone(),
+            Scan {
+                at: ctx.now,
+                dirs: stamps,
+                taken: std::time::Instant::now(),
+            },
+        );
+    }
+    let found = scan_transcripts(ctx, &dirs, since);
+    if found.is_some() {
+        SCANS.lock().unwrap().remove(&key);
+    }
+    found
+}
+
+fn scan_transcripts(
+    ctx: &ObserveContext<'_>,
+    dirs: &[PathBuf],
+    since: Timestamp,
+) -> Option<(String, PathBuf)> {
     let mut best: Option<(DateTime<Utc>, String, PathBuf)> = None;
-    for dir in transcript_dirs(ctx.env, ctx.cwd) {
-        let Ok(entries) = std::fs::read_dir(&dir) else {
+    for dir in dirs {
+        let Ok(entries) = std::fs::read_dir(dir) else {
             continue;
         };
         for entry in entries.flatten() {
@@ -708,6 +772,79 @@ mod tests {
         // Unknown record types are ignored.
         let other = r#"{"type":"file-history-snapshot","snapshot":{}}"#;
         assert_eq!(apply(&[other]).state, None);
+    }
+
+    #[test]
+    fn transcripts_are_looked_for_only_when_there_may_be_a_new_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let env: EnvMap = [(
+            "CLAUDE_CONFIG_DIR".to_owned(),
+            dir.path().join("config").display().to_string(),
+        )]
+        .into();
+        let cwd = dir.path().join("w");
+        std::fs::create_dir_all(&cwd).unwrap();
+        let cwd = cwd.to_string_lossy().into_owned();
+        let transcripts = transcript_dirs(&env, &cwd).remove(0);
+        std::fs::create_dir_all(&transcripts).unwrap();
+        let old = transcripts.join("old.jsonl");
+        std::fs::write(&old, "{}\n").unwrap();
+        // Written an hour ago, and so was the directory.
+        let age = |path: &Path| {
+            let hour_ago = std::time::SystemTime::now() - std::time::Duration::from_secs(3600);
+            std::fs::File::open(path)
+                .unwrap()
+                .set_modified(hour_ago)
+                .unwrap();
+        };
+        age(&old);
+        age(&transcripts);
+        let none = HashSet::new();
+        let t0 = Utc::now();
+        let look = |started: Timestamp, now: Timestamp| {
+            let ctx = ObserveContext {
+                cwd: &cwd,
+                dir: dir.path(),
+                started_at: started,
+                pid: None,
+                screen: None,
+                now,
+                env: &env,
+                claimed: &none,
+            };
+            newest_transcript(&ctx, started - Duration::seconds(CLOCK_SLACK)).map(|(id, _)| id)
+        };
+        let ms = Duration::milliseconds;
+
+        let started = t0 - Duration::seconds(10);
+        assert_eq!(look(started, t0), None);
+        // `/resume` of an older conversation appends to it, which leaves
+        // its directory as it was: found by the rescan, not at once.
+        let mut f = std::fs::OpenOptions::new().append(true).open(&old).unwrap();
+        writeln!(f, "{{}}").unwrap();
+        assert_eq!(look(started, t0 + ms(500)), None);
+        assert_eq!(look(started, t0 + ms(4500)), None);
+        assert_eq!(look(started, t0 + ms(5000)).as_deref(), Some("old"));
+
+        // Another execution looks at once, and a new transcript changes the
+        // directory: found on the next look.
+        age(&old);
+        age(&transcripts);
+        let restarted = started + Duration::seconds(1);
+        assert_eq!(look(restarted, t0 + ms(6000)), None);
+        assert_eq!(look(restarted, t0 + ms(6500)), None);
+        std::fs::write(transcripts.join("new.jsonl"), "{}\n").unwrap();
+        assert_eq!(look(restarted, t0 + ms(7000)).as_deref(), Some("new"));
+
+        // A clock gone back looks again.
+        let scan = Scan {
+            at: t0,
+            dirs: vec![None],
+            taken: std::time::Instant::now(),
+        };
+        assert!(!scan.due(t0 + ms(4999), &[None]));
+        assert!(scan.due(t0 - ms(1), &[None]));
+        assert!(scan.due(t0, &[Some(t0)]));
     }
 
     #[test]

@@ -6,10 +6,15 @@
 //! resolved when the situation changes (the agent starts working again), when
 //! the developer answers (sends to the session, restarts, stops it), or
 //! explicitly. Looking at a session (attaching) resolves only what looking
-//! settles — a finished turn, a completed command (D-099). Each session has at
-//! most one open item; a newer one replaces it.
+//! settles — a finished turn, a completed command (D-099). So does a terminal
+//! coming on screen, and while one is, nothing of that kind is raised for its
+//! session (D-137). Each session has at most one open item; a newer one
+//! replaces it.
 
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration, Instant};
 
 use chrono::Utc;
 use otter_core::{
@@ -85,8 +90,9 @@ pub fn resolve_session(ws: &mut Workspace, session_id: &SessionId) -> Vec<Event>
     resolve(ws, |a| a.session_id.as_ref() == Some(session_id))
 }
 
-/// Attention for a session whose current execution just ended.
-pub fn on_execution_ended(ws: &mut Workspace, session: &Session) -> Vec<Event> {
+/// Attention for a session whose current execution just ended; `on_screen`:
+/// the developer is looking at it (D-137).
+pub fn on_execution_ended(ws: &mut Workspace, session: &Session, on_screen: bool) -> Vec<Event> {
     let Some(exec) = session.current_execution() else {
         return Vec::new();
     };
@@ -123,7 +129,22 @@ pub fn on_execution_ended(ws: &mut Workspace, session: &Session) -> Vec<Event> {
         }
         _ => summary,
     };
-    raise(ws, Some(&session.id), kind, summary)
+    raise_unless_seen(ws, &session.id, kind, summary, on_screen)
+}
+
+/// [`raise`], unless the developer is looking at the session and seeing it
+/// is all the item asks (D-137): then it only replaces what was open.
+fn raise_unless_seen(
+    ws: &mut Workspace,
+    session_id: &SessionId,
+    kind: AttentionKind,
+    summary: String,
+    on_screen: bool,
+) -> Vec<Event> {
+    if on_screen && settled_by_looking(kind) {
+        return resolve_session(ws, session_id);
+    }
+    raise(ws, Some(session_id), kind, summary)
 }
 
 /// The kind and summary of a blocked agent's item: what it said it waits for,
@@ -146,7 +167,8 @@ pub fn blocked_item(name: &str, blocker: Option<&Blocker>) -> (AttentionKind, St
     }
 }
 
-/// Attention for an agent state transition.
+/// Attention for an agent state transition; `on_screen`: the developer is
+/// looking at the session (D-137).
 pub fn on_agent_state(
     ws: &mut Workspace,
     session_id: &SessionId,
@@ -154,6 +176,7 @@ pub fn on_agent_state(
     name: &str,
     state: AgentState,
     last_message: Option<&str>,
+    on_screen: bool,
 ) -> Vec<Event> {
     match state {
         AgentState::WaitingForInput => {
@@ -161,7 +184,7 @@ pub fn on_agent_state(
                 Some(m) => format!("{name} finished: {m}"),
                 None => format!("{name} finished its turn"),
             };
-            raise(ws, Some(session_id), AttentionKind::Review, summary)
+            raise_unless_seen(ws, session_id, AttentionKind::Review, summary, on_screen)
         }
         AgentState::Blocked => {
             let (kind, summary) = blocked_item(name, blocker);
@@ -176,7 +199,8 @@ pub fn on_agent_state(
 /// How the developer engaged with a session.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Engaged {
-    /// Attached: they saw it. That settles what was only to be seen.
+    /// Attached, or its terminal came on screen (D-137): they saw it. That
+    /// settles what was only to be seen.
     Looked,
     /// Sent it text: whatever it asked, they answered.
     Answered,
@@ -246,5 +270,111 @@ impl Daemon {
         for e in events {
             self.events.emit(e);
         }
+    }
+
+    /// The sessions a client shows on screen now (D-137).
+    pub(crate) fn on_screen(&self) -> HashSet<SessionId> {
+        self.on_screen.lock().unwrap().sessions(Instant::now())
+    }
+}
+
+/// How long a terminal counts as on screen after its client last said so
+/// (D-137). The app says it again every 30 s; a client gone without a word
+/// (a Mac asleep, its connection not yet failed) stops counting after this.
+const ON_SCREEN_FOR: Duration = Duration::from_secs(90);
+
+/// The terminals on screen (D-137): each one's session, and when its client
+/// last said it's on screen.
+#[derive(Default)]
+pub(crate) struct Screens(HashMap<u64, (SessionId, Instant)>);
+
+impl Screens {
+    /// Terminal `id` shows `session` on screen (`Some`), or is off screen or
+    /// gone (`None`). True if it just came on screen; said again, it only
+    /// counts for longer.
+    fn set(&mut self, id: u64, session: Option<&SessionId>, now: Instant) -> bool {
+        match session {
+            Some(s) => self.0.insert(id, (s.clone(), now)).is_none(),
+            None => {
+                self.0.remove(&id);
+                false
+            }
+        }
+    }
+
+    /// The sessions on screen as of `now`.
+    fn sessions(&self, now: Instant) -> HashSet<SessionId> {
+        self.0
+            .values()
+            .filter(|(_, said)| now.saturating_duration_since(*said) < ON_SCREEN_FOR)
+            .map(|(s, _)| s.clone())
+            .collect()
+    }
+}
+
+/// A terminal showing a session, from a client that says whether it is on
+/// screen (D-119). While it is, the developer is looking at the session
+/// (D-137). It starts on screen, as a stream does; dropped, it's gone.
+pub(crate) struct OnScreen {
+    daemon: Arc<Daemon>,
+    id: u64,
+    session_id: SessionId,
+}
+
+impl OnScreen {
+    pub(crate) fn new(daemon: Arc<Daemon>, session_id: SessionId) -> Self {
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        let on = OnScreen {
+            daemon,
+            id: NEXT.fetch_add(1, Ordering::Relaxed),
+            session_id,
+        };
+        on.show(true);
+        on
+    }
+
+    /// The client says whether it's on screen; true if it just came on. Said
+    /// again, it only counts for longer: a mark that lapsed comes back, but
+    /// settles nothing, as a timer isn't the developer looking.
+    pub(crate) fn show(&self, shown: bool) -> bool {
+        let session = shown.then_some(&self.session_id);
+        let mut screens = self.daemon.on_screen.lock().unwrap();
+        screens.set(self.id, session, Instant::now())
+    }
+}
+
+impl Drop for OnScreen {
+    fn drop(&mut self) {
+        self.show(false);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_terminal_counts_as_on_screen_while_its_client_says_so() {
+        let mut screens = Screens::default();
+        let (a, b) = (SessionId::generate(), SessionId::generate());
+        let t = Instant::now();
+        let secs = |n| t + Duration::from_secs(n);
+        assert!(screens.set(1, Some(&a), t), "came on screen");
+        assert!(screens.set(2, Some(&a), t), "a second terminal on it");
+        assert!(screens.set(3, Some(&b), t));
+        // Off screen or gone, one terminal; the other still shows `a`.
+        assert!(!screens.set(1, None, t));
+        assert!(!screens.set(3, None, t));
+        assert_eq!(screens.sessions(secs(1)), HashSet::from([a.clone()]));
+        // Not said again: it lapses.
+        assert_eq!(screens.sessions(secs(89)), HashSet::from([a.clone()]));
+        assert!(screens.sessions(secs(90)).is_empty());
+        // Said again, it counts for longer, and isn't coming on screen.
+        assert!(!screens.set(2, Some(&a), secs(60)));
+        assert_eq!(screens.sessions(secs(149)), HashSet::from([a.clone()]));
+        assert!(screens.sessions(secs(150)).is_empty());
+        // A mark that lapsed comes back, still not as coming on screen.
+        assert!(!screens.set(2, Some(&a), secs(200)));
+        assert_eq!(screens.sessions(secs(201)), HashSet::from([a]));
     }
 }

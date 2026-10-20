@@ -89,7 +89,9 @@ End-to-end tests live in `crates/daemon/tests/e2e.rs`. Each test gets its own
 `OTTER_HOME` under a short temp dir (Unix socket paths are length-limited) and
 its own tmux server. Requires `tmux` ≥ 3.2 and `git`; the direnv test skips if
 direnv is missing. Agent tests use a fake `codex` script that writes a rollout
-transcript — they never run the real Codex.
+transcript — they never run the real Codex. The tests that drive a real
+Chrome (browser checks, D-046) skip unless `OTTER_TEST_BROWSER=1`; CI runs
+them in a job of their own (D-137).
 
 `crates/cli/tests/e2e.rs` drives the real `otter` binary (its own
 `OTTER_CONFIG_DIR`) against such daemons, using the `otterd` built next to it.

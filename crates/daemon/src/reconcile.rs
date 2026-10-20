@@ -6,7 +6,7 @@ use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 
 use chrono::{DateTime, Utc};
-use otter_core::{AgentState, ExecutionState, TAIL_LINES, Workspace};
+use otter_core::{AgentState, ExecutionState, SessionId, TAIL_LINES, Workspace};
 use otter_protocol::Event;
 
 use crate::agents::{self, ObserveContext, Screen};
@@ -78,10 +78,21 @@ impl Daemon {
             }
         }
 
+        // Read under the store's lock: a terminal that comes on screen after
+        // this settles what this pass raises (D-137).
+        let on_screen = self.on_screen();
         let mut events = Vec::new();
         let mut changed = false;
         for ws in &mut store.state.workspaces {
-            changed |= reconcile_executions(ws, &observed, &settling, &tails, now, &mut events);
+            changed |= reconcile_executions(
+                ws,
+                &observed,
+                &settling,
+                &tails,
+                &on_screen,
+                now,
+                &mut events,
+            );
             if ws.sessions.iter().all(|s| s.agent.is_none()) {
                 continue;
             }
@@ -100,6 +111,7 @@ impl Daemon {
                     claimed: &claimed,
                     env: &env,
                     screens: &screens,
+                    on_screen: &on_screen,
                     dir: &dir,
                 };
                 changed |= observe_agent(ws, i, &seen, &mut events);
@@ -170,6 +182,8 @@ struct Seen<'a> {
     env: &'a EnvMap,
     /// How long each agent's screen has looked as it does, by backend ref.
     screens: &'a HashMap<String, Screen>,
+    /// Sessions the developer is looking at (D-137).
+    on_screen: &'a HashSet<SessionId>,
     /// The session's private directory.
     dir: &'a std::path::Path,
 }
@@ -182,6 +196,7 @@ fn reconcile_executions(
     observed: &HashMap<String, ProcessState>,
     settling: &HashSet<String>,
     tails: &HashMap<String, String>,
+    on_screen: &HashSet<SessionId>,
     now: DateTime<Utc>,
     events: &mut Vec<Event>,
 ) -> bool {
@@ -233,7 +248,8 @@ fn reconcile_executions(
     }
     for i in ended {
         let session = ws.sessions[i].clone();
-        events.extend(attention::on_execution_ended(ws, &session));
+        let seen = on_screen.contains(&session.id);
+        events.extend(attention::on_execution_ended(ws, &session, seen));
     }
     changed
 }
@@ -297,6 +313,7 @@ fn observe_agent(ws: &mut Workspace, i: usize, seen: &Seen<'_>, events: &mut Vec
         let message = info.last_message.clone();
         info.blocker = (next == AgentState::Blocked)
             .then(|| attention::blocked_item(&name, blocker.as_ref()).1);
+        let on_screen = seen.on_screen.contains(&id);
         events.extend(attention::on_agent_state(
             ws,
             &id,
@@ -304,6 +321,7 @@ fn observe_agent(ws: &mut Workspace, i: usize, seen: &Seen<'_>, events: &mut Vec
             &name,
             next,
             message.as_deref(),
+            on_screen,
         ));
     } else if let (AgentState::Blocked, Some(b)) = (next, blocker.as_ref()) {
         // Still blocked, on another prompt (D-099): the next approval came

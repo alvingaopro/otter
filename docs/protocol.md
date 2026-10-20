@@ -585,7 +585,13 @@ After a successful `session.attach` response
   know is ignored.
   - `{"type":"view","visible",cols,rows}` (client → daemon): whether the
     client's terminal is on screen. Off screen, the daemon sends it no output.
-    Back on screen, at that size, it gets a snapshot if it missed any.
+    Back on screen, at that size, it gets a snapshot if it missed any. On
+    screen (as it is until it says otherwise) is the developer looking at
+    the session: coming on screen settles what attaching does, and while
+    it's on screen a finished turn or a completed command raises nothing
+    (D-137). A client says it again while on screen, about every 30 s; one
+    not heard from for 90 s no longer counts as on screen. Said again, it
+    changes nothing else.
   - `{"type":"history","lines"}` (client → daemon): rebuild the client's
     terminal with up to that many lines of history.
   - `{"type":"window","size":[cols,rows]|null}` (daemon → client): another

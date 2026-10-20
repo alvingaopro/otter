@@ -2682,6 +2682,189 @@ async fn looking_at_a_prompt_does_not_answer_it() {
     read_exit(&mut reader).await;
 }
 
+/// A terminal on screen is looking (D-137): a turn that ends in front of the
+/// developer asks for nothing, and one that ended off screen is settled when
+/// it comes back on. Neither answers a prompt (D-099).
+#[tokio::test]
+async fn a_turn_that_ends_on_screen_is_already_seen() {
+    use otter_core::{AgentState, AttentionKind};
+    let fake = fake_codex_host("approval").await;
+    let host = &fake.host;
+    let kinds = |ws: &'static str| async move {
+        let w = host.conn().await.workspace_get(ws).await.unwrap();
+        w.attention.iter().map(|a| a.kind).collect::<Vec<_>>()
+    };
+    let view = |visible| {
+        Frame::Control(Control::View {
+            visible,
+            cols: 100,
+            rows: 30,
+        })
+    };
+
+    // On screen while the agent asks, and when its turn ends; another
+    // terminal on it is off screen meanwhile (a workspace kept, D-100).
+    create(host, "seen", Some(vec![SessionSpec::agent("claude")])).await;
+    wait_agent(host, "seen", "claude", AgentState::Blocked).await;
+    let (mut reader, mut writer) = controlled_attach(host, "seen", "claude", (100, 30), 1000).await;
+    read_until_control(&mut reader, snapshot_done).await;
+    let (mut kept, mut kept_writer) =
+        controlled_attach(host, "seen", "claude", (100, 30), 1000).await;
+    read_until_control(&mut kept, snapshot_done).await;
+    // Off screen and back again is looking again, still not answering.
+    writer.send(&view(false)).await.unwrap();
+    writer.send(&view(true)).await.unwrap();
+    kept_writer.send(&view(false)).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    assert_eq!(
+        kinds("seen").await,
+        [AttentionKind::Approval],
+        "on screen is looking, not answering"
+    );
+    // Answered in the terminal: the turn ends in front of the developer.
+    send(&mut writer, "1\r").await;
+    wait_agent(host, "seen", "claude", AgentState::WaitingForInput).await;
+    assert_eq!(
+        kinds("seen").await,
+        [],
+        "a turn seen ending asks for nothing"
+    );
+    tokio::time::sleep(Duration::from_millis(1000)).await;
+    assert_eq!(kinds("seen").await, []);
+    for (mut reader, mut writer) in [(reader, writer), (kept, kept_writer)] {
+        writer.send(&Frame::Detach).await.unwrap();
+        read_exit(&mut reader).await;
+    }
+
+    // Off screen when the turn ends: there's a turn to review, until the
+    // terminal is back on screen.
+    create(host, "away", Some(vec![SessionSpec::agent("claude")])).await;
+    wait_agent(host, "away", "claude", AgentState::Blocked).await;
+    let (mut reader, mut writer) = controlled_attach(host, "away", "claude", (100, 30), 1000).await;
+    read_until_control(&mut reader, snapshot_done).await;
+    writer.send(&view(false)).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    host.conn()
+        .await
+        .session_write("away", "claude", "1", true)
+        .await
+        .unwrap();
+    wait_agent(host, "away", "claude", AgentState::WaitingForInput).await;
+    assert_eq!(kinds("away").await, [AttentionKind::Review]);
+    writer.send(&view(true)).await.unwrap();
+    eventually("back on screen settles the review", || async {
+        kinds("away").await.is_empty().then_some(())
+    })
+    .await;
+    writer.send(&Frame::Detach).await.unwrap();
+    read_exit(&mut reader).await;
+}
+
+/// A command that completes on screen is seen completing (D-137); off
+/// screen, its completion waits to be seen.
+#[tokio::test]
+async fn a_command_that_completes_on_screen_is_already_seen() {
+    use otter_core::AttentionKind;
+    let host = TestHost::new();
+    let kinds = |ws: &'static str| {
+        let host = &host;
+        async move {
+            let w = host.conn().await.workspace_get(ws).await.unwrap();
+            w.attention.iter().map(|a| a.kind).collect::<Vec<_>>()
+        }
+    };
+    for (ws, on_screen) in [("cmd-seen", true), ("cmd-away", false)] {
+        create(
+            &host,
+            ws,
+            Some(vec![spec(
+                SessionKind::Command,
+                "ask",
+                "read x; echo got-$x",
+            )]),
+        )
+        .await;
+        wait_status(&host, ws, "ask", SessionStatus::Running).await;
+        let (mut reader, mut writer) = controlled_attach(&host, ws, "ask", (100, 30), 1000).await;
+        read_until_control(&mut reader, snapshot_done).await;
+        if !on_screen {
+            writer
+                .send(&Frame::Control(Control::View {
+                    visible: false,
+                    cols: 100,
+                    rows: 30,
+                }))
+                .await
+                .unwrap();
+            tokio::time::sleep(Duration::from_millis(300)).await;
+        }
+        send(&mut writer, "yes\r").await;
+        assert_eq!(
+            read_exit(&mut reader).await.reason,
+            AttachExitReason::Exited
+        );
+        wait_status(&host, ws, "ask", SessionStatus::Completed).await;
+        let want: &[AttentionKind] = if on_screen {
+            &[]
+        } else {
+            &[AttentionKind::Completion]
+        };
+        assert_eq!(kinds(ws).await, want, "{ws}");
+    }
+}
+
+/// A terminal whose client went without a word (no `view`, no detach) is
+/// no longer on screen (D-137): the turn that ends after it is to review.
+#[tokio::test]
+async fn a_terminal_gone_without_a_word_is_no_longer_on_screen() {
+    use otter_core::{AgentState, AttentionKind};
+    let fake = fake_codex_host("approval").await;
+    let host = &fake.host;
+    create(host, "gone", Some(vec![SessionSpec::agent("claude")])).await;
+    wait_agent(host, "gone", "claude", AgentState::Blocked).await;
+    let (mut reader, writer) = controlled_attach(host, "gone", "claude", (100, 30), 1000).await;
+    read_until_control(&mut reader, snapshot_done).await;
+    drop((reader, writer));
+    eventually("the attach is over", || async {
+        (attach_clients(host) == 0).then_some(())
+    })
+    .await;
+    host.conn()
+        .await
+        .session_write("gone", "claude", "1", true)
+        .await
+        .unwrap();
+    let ws = wait_agent(host, "gone", "claude", AgentState::WaitingForInput).await;
+    let kinds: Vec<_> = ws.attention.iter().map(|a| a.kind).collect();
+    assert_eq!(kinds, [AttentionKind::Review]);
+}
+
+/// A client that stops taking output is let go once a frame can't reach it
+/// (D-137): one whose end vanished (a Mac asleep) would otherwise hold the
+/// attach, and its terminal on screen, until the connection failed.
+#[tokio::test]
+async fn an_attach_whose_client_stops_reading_is_let_go() {
+    let host = TestHost::with_env(&[("OTTER_ATTACH_WRITE_TIMEOUT_MS", "1000".into())]).await;
+    sh_session(&host, "stuck").await;
+    let (mut reader, _writer) = controlled_attach(&host, "stuck", "sh", (100, 30), 1000).await;
+    read_until_control(&mut reader, snapshot_done).await;
+    assert_eq!(attach_clients(&host), 1);
+    // More output than the way to the client holds, never read.
+    host.conn()
+        .await
+        .session_write("stuck", "sh", "seq 1 400000", true)
+        .await
+        .unwrap();
+    eventually("the attach is let go", || async {
+        (attach_clients(&host) == 0).then_some(())
+    })
+    .await;
+    // The session goes on.
+    wait_output(&host, "stuck", "sh", "400000").await;
+    let ws = host.conn().await.workspace_get("stuck").await.unwrap();
+    assert_eq!(ws.sessions[0].status(), SessionStatus::Running);
+}
+
 /// A prompt that redraws once a second (Claude Code's auto-deny countdown)
 /// still needs the developer; approved, the tool's spinner says so before
 /// the tool finishes (D-136).
@@ -5942,11 +6125,16 @@ async fn a_run_lost_before_its_conversation_was_kept_starts_over_only_when_allow
 }
 
 // ---------------------------------------------------------------------------
-// Browser verification and previews (D-046). Skipped without a Chrome or
-// Chromium and python3 on this machine.
+// Browser verification and previews (D-046). They drive a real Chrome or
+// Chromium (and python3), so they run only with `OTTER_TEST_BROWSER=1`
+// (D-137), in CI's job of their own; asked for, a missing one fails.
 // ---------------------------------------------------------------------------
 
 fn browser_available() -> bool {
+    if std::env::var("OTTER_TEST_BROWSER").as_deref() != Ok("1") {
+        eprintln!("skipping: drives a real browser; set OTTER_TEST_BROWSER=1");
+        return false;
+    }
     let ok = std::env::var("OTTER_BROWSER").is_ok()
         || [
             "chromium",
@@ -5966,10 +6154,11 @@ fn browser_available() -> bool {
         .arg("--version")
         .output()
         .is_ok_and(|o| o.status.success());
-    if !(ok && python) {
-        eprintln!("skipping: needs Chrome/Chromium and python3");
-    }
-    ok && python
+    assert!(
+        ok && python,
+        "OTTER_TEST_BROWSER=1, but this needs Chrome/Chromium and python3"
+    );
+    true
 }
 
 const PREVIEW: &str = "python3 -m http.server {port} --bind 127.0.0.1";

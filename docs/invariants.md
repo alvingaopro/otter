@@ -42,7 +42,13 @@ record it in [`decisions.md`](decisions.md) first.
   `stream_attach_ends_with_the_process_and_leaves_it_on_disconnect`; manually
   verified by freezing the remote sshd mid-attach (D-017). An attach is
   looking, not answering: it settles a finished turn, never an approval or
-  a question (D-099) — `looking_at_a_prompt_does_not_answer_it`.
+  a question (D-099) — `looking_at_a_prompt_does_not_answer_it`. So is a
+  stream's terminal on screen, for as long as it is (D-137) —
+  `a_turn_that_ends_on_screen_is_already_seen`,
+  `a_command_that_completes_on_screen_is_already_seen`,
+  `a_terminal_gone_without_a_word_is_no_longer_on_screen`. A client that
+  stops reading is let go, and the session runs on —
+  `an_attach_whose_client_stops_reading_is_let_go`.
 
 ### 4. The control plane does not own agent process lifetime.
 
