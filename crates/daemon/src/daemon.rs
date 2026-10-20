@@ -342,13 +342,13 @@ impl Daemon {
                 self.task_list()
                     .await
                     .into_iter()
-                    .map(|f| self.with_live_activity(f))
+                    .map(|f| self.for_clients(f))
                     .collect::<Vec<_>>(),
             ),
-            Request::TaskGet(r) => json(self.with_live_activity(self.task_get(&r.task).await?)),
-            Request::TaskCreate(p) => json(self.task_create(p).await?),
-            Request::TaskSend(p) => json(self.with_live_activity(self.task_send(p).await?)),
-            Request::TaskAct(p) => json(self.with_live_activity(self.clone().task_act(p).await?)),
+            Request::TaskGet(r) => json(self.for_clients(self.task_get(&r.task).await?)),
+            Request::TaskCreate(p) => json(self.for_clients(self.task_create(p).await?)),
+            Request::TaskSend(p) => json(self.for_clients(self.task_send(p).await?)),
+            Request::TaskAct(p) => json(self.for_clients(self.clone().task_act(p).await?)),
             Request::TaskEvents(p) => json(self.task_events(&p).await?),
             Request::OtterGet => json(self.otter_get().await),
             Request::OtterSend(p) => json(self.otter_send(p).await?),

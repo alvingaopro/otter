@@ -2693,10 +2693,17 @@ async fn a_second_task_waits_for_the_workspace() {
     let fake = fake_agent_host("ok", "rules").await;
     let host = &fake.host;
     let first = started_with(host, "shared", "A long job HANG", "test:\n\t@true\n", false).await;
-    wait_task(host, &first, "working", |f| {
+    let a = wait_task(host, &first, "working", |f| {
         f.live_run().is_some_and(|r| r.state == RunState::Running)
     })
     .await;
+    // As clients see it (D-141): when its agent was last heard from, and
+    // what comes after the step under way.
+    assert!(a.live_run().unwrap().heard_at.is_some());
+    assert_eq!(
+        a.next.as_deref(),
+        Some("Then: the work is checked against its 2 acceptance criteria."),
+    );
     let mut conn = host.conn().await;
     let second = conn
         .task_create(otter_protocol::task::TaskCreate {
@@ -4273,6 +4280,19 @@ async fn a_task_goes_from_request_to_review_with_evidence() {
         f.messages
     );
     assert_eq!(f.runs[0].activity, ["$ make test"]);
+    // With its time; when the agent was last heard from isn't kept (D-141).
+    assert_eq!(f.runs[0].activity_at.len(), 1);
+    assert_eq!((f.runs[0].heard_at, f.runs[0].tools_running), (None, 0));
+    // Why Otter did what it did is in the history, at its time.
+    let history = fake.host.conn().await.task_events(&id, None).await.unwrap();
+    assert!(
+        history.iter().any(
+            |e| matches!(&e.event, otter_core::task::TaskEvent::Reasoned { .. })
+                && e.text.starts_with("Why: Plan (")
+        ),
+        "{:?}",
+        history.iter().map(|e| &e.text).collect::<Vec<_>>()
+    );
     assert!(
         f.messages
             .iter()

@@ -212,6 +212,9 @@ pub enum Event {
         task_id: TaskId,
         run_id: otter_core::RunId,
         line: String,
+        /// When it was done (absent from daemons before D-141).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        at: Option<otter_core::Timestamp>,
     },
     /// A kind this build doesn't know (from a newer daemon, or an older log
     /// line). New kinds are a compatible protocol change; clients ignore them.
