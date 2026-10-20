@@ -165,7 +165,8 @@ after `ssh host`, it should work in Otter".
 - First use of a repository on a host: `git clone --bare` into
   `~/.otter/repos/<repo-id>/base`, with `remote.origin.fetch` set so branches
   appear as `origin/*` (a bare clone doesn't do that by default). Bare because
-  nobody should work in the backing checkout.
+  nobody should work in the backing checkout. *(Since D-132: `git init
+  --bare` and a fetch, so the remote's branches aren't copied into it.)*
 - `<repo-id>` = last path component + a stable hash of the normalized URL
   (`suger-api-1a2b3c4d`): readable, collision-free across orgs.
 - Every Git workspace: `git fetch --prune`, then `git worktree add` at
@@ -4165,3 +4166,39 @@ button for all of them.
   states while updating and after a failure, and no button when all are
   current. Rendered dark and light, wide, usual and narrow.
 
+
+## D-132 — The repository's copy holds only the workspaces' branches (2026-10-20)
+
+`git clone --bare` (D-010) copied every branch the remote had into the
+copy's refs/heads, and nothing moved them afterwards. Three things went
+wrong from that: `--branch main` checked out main as it was on the day of
+the clone, with no upstream; a branch deleted on the remote left a copy
+holding commits on no remote, which kept the whole copy after its last
+workspace went (D-108); and a branch merged by squash or rebase, then
+deleted, looked like unpushed work once a fetch pruned it, so deleting its
+workspace asked for force.
+
+- **New copies:** `git init --bare`, `remote add origin`, fetch. The
+  remote's branches are only `origin/*`; refs/heads holds what workspaces
+  made.
+- **Copies from before** drop what their clone copied, once (marked by
+  `otter.ownBranchesOnly` in the copy's config), when a workspace is
+  prepared on them or their last one is deleted. A branch goes only when
+  the clone packed it, it has no reflog (nobody committed on it here), and
+  no worktree has it. Branches a workspace made are loose refs, and any
+  committed on have a reflog: they stay.
+- **A branch asked for by name** that is here but behind `origin/<name>`
+  is caught up, with that as its upstream. One with commits of its own is
+  left as it is.
+- **Landed work isn't unpushed:** commits on no remote still count unless
+  the branch's work is on the default branch under other commits, compared
+  by patch id: each commit (a rebase merge, `git cherry`), or the whole
+  branch as one commit on its merge base (a squash merge). Work added
+  since makes the patches differ, so it still needs force. A merge into
+  another branch than the default, or one whose patch changed on the way
+  in (conflicts resolved, neighbouring lines edited), still asks.
+- **Verified:** e2e tests for a fresh copy (only its workspaces' branches,
+  `--branch main` at the remote's tip, a branch deleted upstream doesn't
+  keep it), an older copy (cloned branches dropped when preparing and when
+  deleting, a branch with work kept), and squash and rebase merges (no
+  force; work added since still asks). Each fails against the code before.
