@@ -845,7 +845,11 @@ Rules (`agents/claude.rs`): `PermissionRequest` → `blocked` + `approval`
 + **`question`** ("claude asks: …"). Cleared by `PostToolUse*` (same
 subagent), `UserPromptSubmit`, `Stop`, or a transcript user record after it
 (a decline). A long approved command shows as the screen changing more than
-2 s after the prompt appeared → `working` before `PostToolUse`. Once any hook
+2 s after the prompt appeared → `working` before `PostToolUse`. *Amended
+2026-10-20:* any change counted, so a prompt that redrew (an auto-deny
+countdown, a background task ending) lost its item; now it takes the screen
+moving at every look for 2 s, and another tool's `PostToolUse` no longer
+clears a prompt (D-136). Once any hook
 has reported for the execution the heuristic is off: a long think with a
 still screen stays `working`.
 
@@ -867,7 +871,9 @@ make it miss; it never fires during the ticking states.
 
 Known limits: attaching resizes the pane, which reads as "answered" (shown
 as working until the tool finishes; the item was resolved by attaching
-anyway, but detaching without answering doesn't re-raise it). Hooks are
+anyway, but detaching without answering doesn't re-raise it). *Amended
+2026-10-20:* no longer; a resize is one change, which is no answer (D-136).
+Hooks are
 trusted for the whole execution once one reports; if they stop (otterd
 moved — the installer keeps it at `~/.local/bin/otterd`) there is no
 fallback until the agent restarts. After an otterd restart the first look
@@ -4326,3 +4332,83 @@ without changing anything else on the host.
     - The browser sign-in shows its code, then who it is. A cleared
       identity leaves the host's.
 
+## D-136 — A prompt that redraws is still a prompt (2026-10-20)
+
+An approval or a question from an interactive Claude Code session went away
+about 2 s after it was raised and never came back, while Claude still
+waited at its prompt. D-035 took a prompt as answered once the screen
+changed more than 2 s after it appeared, so that a long approved command
+shows as working before it ends. The screen's last change only moves
+forward, so any change after those 2 s counted, for good. In the live
+event log, approval items lasted 1.5–3.0 s: the 2 s plus one look. Two of
+them were `rm -rf` commands stopped by Claude Code's own safety check in
+auto mode: their prompts stayed up for 120 s and then timed out. Another
+question was cleared 0.5 s after it was raised by the `PostToolUse` of an
+`Agent` call made alongside it, then raised again by the 6 s `Notification`
+as an approval with no detail.
+
+Measured on Claude Code 2.1.304 through a dev otterd, capturing the screen
+as otterd does, every 250–500 ms:
+
+- A prompt alone is still: a Bash approval in manual mode for 36 s, a
+  question in auto mode for 42 s, a question with a background shell
+  running for 40 s. Not one change.
+- A background shell ending changes it once (its "· 1 shell still running"
+  goes). otterd as it was resolved the question then, with the question
+  still on the screen.
+- A prompt with an auto-deny window (the safety check; auto mode after
+  repeated denials) shows "Claude Code will automatically deny this request
+  in M:SS, …", redrawn every 1000 ms: a change at every other look. Read
+  from 2.1.304's code; not reproduced live (the probe command was refused).
+- A running tool changes it at every look: the spinner (120 ms frames), the
+  tool's blinking ●, the elapsed time.
+- No hook says a prompt was allowed. 2.1.304's events have
+  `PermissionRequest`, `PermissionDenied` and `PostToolUse`, nothing for
+  "allowed". `PermissionRequest` carries no `tool_use_id`.
+
+The change:
+
+- **The screen's motion, not its last change.** Each look notes since when
+  the screen has changed at every look (`Screen::moving_since`). A look
+  that sees no change, or can't capture, ends that. A prompt counts as
+  answered once it has been drawn (2 s) and the screen has kept moving for
+  2 s: five changes in a row at 500 ms looks. Neither a one-off change nor
+  a once-a-second redraw can make that. The motion may have begun before
+  the prompt (approved at once).
+- **Kept once seen.** `answered` is kept with the prompt until a hook or
+  the transcript ends it, so a spinner's hiccup doesn't raise the item
+  again. Going back to blocked would resolve and re-raise it: a new
+  notification each time, and an `otter ack` undone.
+- **Another tool ending isn't the answer.** The prompt keeps the tool it is
+  about. `PostToolUse*` clears it only for that tool, or when either is
+  unknown (a prompt kept by an older otterd).
+- D-035's "attaching reads as answered" is gone: a resize is one change.
+- **Known limits:**
+  - With `prefersReducedMotion` (or a screen reader) Claude Code's spinner
+    stands still, so a running tool may only tick its elapsed time, once a
+    second. An approved long command then stays "needs your approval"
+    until it ends.
+  - Whatever keeps a prompt's screen moving at every look for 2 s still
+    reads as an answer: a window dragged larger that long, an answer typed
+    or navigated that long, two once-a-second redraws out of step.
+  - With looks 750 ms or more apart (an otterd that falls behind), a
+    once-a-second redraw can pass for motion.
+  - Two calls of one tool side by side: the other's `PostToolUse` still
+    clears the prompt.
+- **Verified:**
+  - Unit (`hooks_drive_prompts_and_only_a_moving_screen_tells_an_answer`,
+    which replaces `…_and_the_screen_tells_an_answer`): one change, a
+    countdown (with two changes at neighbouring looks), and the turn's
+    spinner through the draw leave it blocked. Two seconds of motion make
+    it working, kept through a hiccup. Approved at once, it is working
+    once drawn. An `Agent` call's `PostToolUse` leaves the question up.
+    The one-change, countdown and `Agent` cases each fail against the code
+    before.
+  - End to end (`a_ticking_prompt_is_not_an_answer_but_a_running_tool_is`):
+    a fake Claude Code whose prompt redraws once a second is still blocked
+    5 s on, with the screen changed, and the approved tool's spinner reads
+    as working before its `PostToolUse`. Fails against the code before
+    (working by then).
+  - Live, through a dev otterd and Claude Code 2.1.304: a background
+    shell ended while a question was up. otterd as it was resolved the
+    item; this one keeps it.
