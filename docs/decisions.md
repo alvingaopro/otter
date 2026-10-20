@@ -4353,11 +4353,14 @@ grantable. A task on authentication code asked at almost every search.
   (or scratch). Each word is read as the shell passes it, roughly — its
   quotes and backslashes gone — so `"--pre=…"`, `\-\-pre`, `-ex''ec` and
   `\/etc/…` are what they spell; a short acting option with its value
-  glued on (`-Ox`) is still that option.
+  glued on (`-Ox`) is still that option, and so is one with two dashes
+  for one (Go takes either). The word lists read the words that way too,
+  so `dele''te` is `delete`.
 - **Credentials by file name stay read whole:** `.ssh`, `id_rsa`,
   `id_ed25519`, `credentials`, Otter's own state and gh's hosts file ask
   wherever they appear, whatever the command, like `.env` (D-066): a key
-  copied into the workspace is still a key. Grants (D-066) follow the same
+  copied into the workspace is still a key. So `cat src/credentials.rs`
+  still asks, by choice. Grants (D-066) follow the same
   reading, so nothing that deletes, touches credentials or pushes is ever
   granted.
 - **Closed on the way:** where a path points is read the same way, so

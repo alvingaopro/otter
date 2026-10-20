@@ -370,7 +370,6 @@ const ACTING_OPTIONS: &[&str] = &[
     "--pre",
     "--pager",
     "-exec",
-    "--exec",
     "-toolexec",
     "--config",
     "--manifest-path",
@@ -430,12 +429,20 @@ fn unquoted(w: &str) -> String {
         .collect()
 }
 
+/// A piece's text for the word lists, as written and as the shell passes
+/// it: `dele''te` is `delete`, and `-O"sudo"` still says `sudo`.
+fn both_ways(text: &str) -> String {
+    format!("{text} {}", unquoted(text))
+}
+
 /// An option that runs, writes or brings in something: one of
-/// `ACTING_OPTIONS`, or a short one with its value glued on (`-Ox`).
+/// `ACTING_OPTIONS` with one dash or two (Go takes either), or a short one
+/// with its value glued on (`-Ox`).
 fn acting(option: &str) -> bool {
+    let name = option.trim_start_matches('-');
     ACTING_OPTIONS
         .iter()
-        .any(|a| option == *a || (a.len() == 2 && option.starts_with(a)))
+        .any(|a| name == a.trim_start_matches('-') || (a.len() == 2 && option.starts_with(a)))
 }
 
 /// Where a path written by a command points, from `cwd` (`~` is home).
@@ -544,10 +551,10 @@ fn classify_command(line: &str, root: &Path) -> Verdict {
         let routine_delete = deletes_inside(&piece, &cwd, root);
         verdict = worst(
             verdict,
-            classify_words(&doing(&piece, &cwd, root), routine_delete),
+            classify_words(&both_ways(&doing(&piece, &cwd, root)), routine_delete),
         );
         if let Some(f) = names_secrets_file(&piece)
-            .or_else(|| mentions_any(&piece.to_lowercase(), CREDENTIAL_FILES))
+            .or_else(|| mentions_any(&both_ways(&piece).to_lowercase(), CREDENTIAL_FILES))
         {
             verdict = worst(verdict, ask_user(format!("touches credentials (`{f}`)")));
         }
@@ -760,11 +767,11 @@ pub fn grant(call: &ToolCall, root: &Path) -> Option<String> {
             let mut cwd = root.to_path_buf();
             for piece in pieces(line) {
                 if classify_words(
-                    &doing(&piece, &cwd, root),
+                    &both_ways(&doing(&piece, &cwd, root)),
                     deletes_inside(&piece, &cwd, root),
                 ) != Verdict::Allow
                     || names_secrets_file(&piece).is_some()
-                    || mentions_any(&piece.to_lowercase(), CREDENTIAL_FILES).is_some()
+                    || mentions_any(&both_ways(&piece).to_lowercase(), CREDENTIAL_FILES).is_some()
                 {
                     return None;
                 }
@@ -1269,6 +1276,12 @@ mod tests {
             r"rg \-\-pre=./deploy.sh x .",
             "rg --\"pre\"=sudo x .",
             "go test -ex''ec sudo ./...",
+            "go test --toolexec sudo ./...",
+            "go test --toolexec=sudo ./...",
+            // Spelled apart, a word is still that word.
+            "kubectl dele''te pod web",
+            "git pu\"sh\" origin main",
+            r"cat /etc/app/pass\word.txt",
             r"find . -name x \-delete",
             "git grep -O\"sudo\" x",
             r"cat \/etc/app/password.txt",
