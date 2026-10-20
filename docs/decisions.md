@@ -4492,3 +4492,20 @@ the same bytes every time.
   old comparison with "all 6 attempts are used up". Reviewed by a second
   model, which found the npm, logging, Go and line-number cases and the
   cut before redacting.
+
+## D-140 — A lost coding run says why, not what Node warned (2026-10-20)
+
+When the coding agent's Claude worker dies, the run's message quotes the
+end of what it printed. The worker prints the SDK's
+`CLAUDE_SDK_CAN_USE_TOOL_SHADOWED` warning and Node's `--trace-warnings`
+hint on every start, so a run lost to a kill read "worker diagnostics:
+(node:…) Warning: canUseTool will not be invoked…" — 400 characters
+that say nothing about it, in the task's messages. Found by the live task
+bench (B01: the worker SIGKILLed mid-turn).
+
+- The worker's diagnostics leave out Node's own lines, by the rule D-134
+  gave Otter's turn (now one function, `agents::node_warning`); with
+  nothing else said, they read "no diagnostics".
+- **Verified:** the fake worker now prints that warning before failing;
+  `a_failing_worker_says_why` keeps its diagnostic line and drops the
+  warning, and fails against the code before.

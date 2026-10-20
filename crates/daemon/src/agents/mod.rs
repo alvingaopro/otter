@@ -255,6 +255,14 @@ pub fn report(text: &str) -> String {
     }
 }
 
+/// A line of Node's own (a deprecation or the SDK's warning, and the
+/// `--trace-warnings` hint after it): it says nothing about why a worker
+/// failed (D-134, D-140).
+pub fn node_warning(line: &str) -> bool {
+    let l = line.trim();
+    l.starts_with("(Use `node --trace-") || (l.starts_with("(node:") && l.contains("Warning"))
+}
+
 /// A single-line excerpt suitable for a status line.
 pub fn excerpt(text: &str, max: usize) -> String {
     let flat: String = text.split_whitespace().collect::<Vec<_>>().join(" ");
