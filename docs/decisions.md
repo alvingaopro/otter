@@ -4262,7 +4262,11 @@ without changing anything else on the host.
   there). `GH_TOKEN` and the like are taken out of its environment, which
   would otherwise win over it.
   - In the browser: `gh auth login --web` without a terminal prints a code
-    and a page and waits. `git.github_login` returns once it has them; the
+    and a page and waits. *Amended 2026-10-20:* gh 2.101 prints the code
+    as `One-time code (XXXX-XXXX) copied to clipboard`, not after
+    `one-time code:` as before, so the code is read from either: the
+    `XXXX-XXXX` after "one-time code", in any case. Before this, sign-in
+    from a host with gh 2.101 waited 30 s and gave up. `git.github_login` returns once it has them; the
     view carries them (`login: pending {code, url}`) until gh finishes,
     then says who it is.
   - With a token: on gh's stdin.

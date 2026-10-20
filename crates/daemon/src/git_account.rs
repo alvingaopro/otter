@@ -636,14 +636,27 @@ fn config_text(a: &Account, ssh: Option<String>) -> String {
     s
 }
 
-/// `! First copy your one-time code: ABCD-1234`.
+/// The one-time code on a line of gh's that mentions it, however gh puts
+/// it: `! First copy your one-time code: EFB1-6B49` (gh before 2.101) or
+/// `! One-time code (EFB1-6B49) copied to clipboard` (2.101).
 fn device_code(line: &str) -> Option<String> {
-    let rest = line.split("one-time code:").nth(1)?.trim();
-    let code: String = rest
-        .chars()
-        .take_while(|c| c.is_ascii_alphanumeric() || *c == '-')
-        .collect();
-    (code.len() >= 8).then_some(code)
+    // ASCII-lowercased: the same byte offsets as the line.
+    let at = line.to_ascii_lowercase().find("one-time code")?;
+    line[at + "one-time code".len()..]
+        .split(|c: char| !(c.is_ascii_alphanumeric() || c == '-'))
+        .find(|w| is_code(w))
+        .map(str::to_owned)
+}
+
+/// `XXXX-XXXX`, letters and digits: what GitHub's device codes look like.
+fn is_code(w: &str) -> bool {
+    w.split_once('-').is_some_and(|(a, b)| {
+        a.len() == 4
+            && b.len() == 4
+            && a.chars()
+                .chain(b.chars())
+                .all(|c| c.is_ascii_alphanumeric())
+    })
 }
 
 /// The page to enter it at.
@@ -694,6 +707,13 @@ mod tests {
             device_code("! First copy your one-time code: EFB1-6B49").as_deref(),
             Some("EFB1-6B49")
         );
+        // gh 2.101 puts it in parentheses.
+        assert_eq!(
+            device_code("! One-time code (C0DE-4X2Y) copied to clipboard").as_deref(),
+            Some("C0DE-4X2Y")
+        );
+        assert_eq!(device_code("! Authentication complete."), None);
+        assert_eq!(device_code("one-time code: soon"), None);
         assert_eq!(
             device_url(
                 "Open this URL to continue in your web browser: https://github.com/login/device"
