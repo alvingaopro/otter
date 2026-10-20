@@ -4379,8 +4379,8 @@ were settled by an attach, not by the agent moving on.
     `OTTER_BROWSER_NO_SANDBOX` from the main job's environment, and
     without it Chrome can't start on the runner.
   - CI runs them in a "Real browser" job. Its test step is
-    `continue-on-error`, so a failure shows on the step without turning
-    the PR's checks red. On the job, the job's own check would be red.
+    `continue-on-error`, so a failure shows on the step, and the job and
+    its check stay green.
   - Locally, with Chrome or Chromium and python3: `OTTER_TEST_BROWSER=1
     cargo test -p otterd -- browser::tests
     a_browser_check_verifies_the_ui_with_evidence
@@ -4403,6 +4403,8 @@ were settled by an attach, not by the agent moving on.
     - It fails with a look every time (the code before), and with the
       time alone (no mtime).
   - The browser tests skip without the variable, and fail with it when
-    there's no Chrome (none on the machine this was built on).
+    there's no Chrome (none on the machine this was built on). On this
+    PR's CI, the "Real browser" job ran all six and they passed, and the
+    main job skipped them.
   - The whole `cargo test` passes, and the new end-to-end test passed
     three runs in a row.
