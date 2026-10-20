@@ -4393,3 +4393,58 @@ left the task marked as being stepped, never stepped again.
   is resumed instead: by hand, it was Interrupted, then resumed and
   finished on its own. Reviewed by a second model, which found the
   answer-loop, the resume and the bridge.
+
+## D-138 — Looking for a risky word isn't doing it (2026-10-20)
+
+Policy's word lists (D-049, D-066) read each piece of a command line
+whole, so a command that only searched for a word was taken for doing it:
+`grep -rn token src`, `git log --grep delete`, `cat docs/deploy.md`,
+`cargo test prune_old` each asked the developer, every time, never
+grantable. A task on authentication code asked at almost every search.
+
+- **The command, not what it looks for:** when a piece only reads,
+  searches or tests — `grep`, `rg`, `ag`, `ack`, `cat`, `head`, `tail`,
+  `wc`, `ls`, `tree`, `stat`, `file`, `diff`, `find`; `git log`, `show`,
+  `diff`, `grep`, `blame`, `status`, `shortlog`, `ls-files`; `cargo test`,
+  `go test`, `pytest` — the word lists read only the command. Patterns,
+  option values, test names and the workspace's own file names aren't what
+  it does.
+- **Only when nothing can make it do more:** the piece is read whole when
+  an environment is set for it (`GIT_DIR=…`), an operand holds a
+  substitution, a redirection from a file or a variable, an option runs a
+  program, writes or brings in another project (`--pre`, `--pager`,
+  `-exec`, `-toolexec`, `--config`, `--manifest-path`, `--output`,
+  `--ext-diff`, `--textconv`, `-O`), `find` acts (`-delete`, `-exec`, …),
+  or an operand, a short option with a path (`-f/…`), an option's value
+  (`--to-file=…`) or a key's (`cache_dir=…`) reaches outside the workspace
+  (or scratch). Each word is read as the shell passes it, roughly — its
+  quotes and backslashes gone — so `"--pre=…"`, `\-\-pre`, `-ex''ec` and
+  `\/etc/…` are what they spell; a short acting option with its value
+  glued on (`-Ox`) is still that option, and so is one with two dashes
+  for one (Go takes either). The word lists read the words that way too,
+  so `dele''te` is `delete`.
+- **Credentials by file name stay read whole:** `.ssh`, `id_rsa`,
+  `id_ed25519`, `credentials`, Otter's own state and gh's hosts file ask
+  wherever they appear, whatever the command, like `.env` (D-066): a key
+  copied into the workspace is still a key. So `cat src/credentials.rs`
+  still asks, by choice. Grants (D-066) follow the same
+  reading, so nothing that deletes, touches credentials or pushes is ever
+  granted.
+- **Closed on the way:** where a path points is read the same way, so
+  `rm -rf \/home/…` and `cp x \/etc/…` are outside the workspace, not a
+  routine delete and an inside write as they were. What `<(…)` and `>(…)`
+  run is a piece of its own,
+  as `$(…)` was; `--output=<file>` and `--output <file>` are writes,
+  outside the workspace asked about like `>`. The word lists had hidden
+  both.
+- **Left for the task discussion:** `git restore`, `git rebase`,
+  `git checkout -- …` and `git stash drop` in command position still ask
+  every time, though they act only on the work's own repository.
+- **Verified:** a unit test of searches, reads and test runs that now run
+  (fails on the code before), and of what still asks: doing it, reaching
+  outside, a variable, `find -delete`/`-exec`, `.env`, and the ways around
+  a first version a second model found (a substitution, `<~/…`, options'
+  values and glued paths, acting options, an environment, a key copied
+  in; then quoted options and a key's value; then quotes and backslashes
+  inside a word, which also let a delete or a write outside pass before
+  this change). The existing policy tests pass unchanged.
