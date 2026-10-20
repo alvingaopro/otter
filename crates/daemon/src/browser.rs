@@ -37,6 +37,9 @@ use crate::env::{EnvMap, which};
 /// Where a project declares its browser checks.
 pub const CHECKS_FILE: &str = ".otter/browser-checks.json";
 const STEP_TIMEOUT: Duration = Duration::from_secs(15);
+/// A cold start (a fresh profile on a busy machine) can take longer than a
+/// step: the first answer gets this long.
+const START_TIMEOUT: Duration = Duration::from_secs(60);
 const READY_TIMEOUT: Duration = Duration::from_secs(60);
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -417,7 +420,7 @@ impl Browser {
                 }
             }
         });
-        Ok(Browser {
+        let mut b = Browser {
             child,
             profile,
             log,
@@ -427,7 +430,10 @@ impl Browser {
             events: Vec::new(),
             allowed: HashSet::new(),
             blocked: Vec::new(),
-        })
+        };
+        b.call_within(None, "Browser.getVersion", json!({}), START_TIMEOUT)
+            .context("starting the browser")?;
+        Ok(b)
     }
 
     fn send(&mut self, session: Option<&str>, method: &str, params: Value) -> Result<u64> {
@@ -473,8 +479,18 @@ impl Browser {
     }
 
     fn call(&mut self, session: Option<&str>, method: &str, params: Value) -> Result<Value> {
+        self.call_within(session, method, params, STEP_TIMEOUT)
+    }
+
+    fn call_within(
+        &mut self,
+        session: Option<&str>,
+        method: &str,
+        params: Value,
+        timeout: Duration,
+    ) -> Result<Value> {
         let id = self.send(session, method, params)?;
-        let deadline = Instant::now() + STEP_TIMEOUT;
+        let deadline = Instant::now() + timeout;
         loop {
             let left = deadline
                 .checked_duration_since(Instant::now())
@@ -955,6 +971,10 @@ document.getElementById('go').addEventListener('click', () => {
         .unwrap();
     }
 
+    /// One real browser at a time: several cold starts at once, beside the
+    /// rest of the tests, can outlast a step on a CI runner.
+    static ONE_BROWSER: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     /// A real Chrome or Chromium, only with `OTTER_TEST_BROWSER=1` (D-137):
     /// one dying on a shared runner isn't this code failing, so CI runs
     /// these in a job of their own. Asked for, a missing one fails.
@@ -990,6 +1010,7 @@ document.getElementById('go').addEventListener('click', () => {
 
     #[test]
     fn a_real_browser_exercises_the_flow_and_cleans_up() {
+        let _one = ONE_BROWSER.lock().unwrap_or_else(|e| e.into_inner());
         let Some(program) = browser() else { return };
         let app = tempfile::tempdir().unwrap();
         sample_app(app.path());
@@ -1037,6 +1058,7 @@ document.getElementById('go').addEventListener('click', () => {
 
     #[test]
     fn a_broken_ui_fails_the_check() {
+        let _one = ONE_BROWSER.lock().unwrap_or_else(|e| e.into_inner());
         let Some(program) = browser() else { return };
         let app = tempfile::tempdir().unwrap();
         sample_app(app.path());
@@ -1059,7 +1081,7 @@ document.getElementById('go').addEventListener('click', () => {
             artifacts.path(),
         );
         assert!(!out.ok);
-        assert!(!out.steps[2].ok);
+        assert!(out.steps.get(2).is_some_and(|s| !s.ok), "{}", out.report());
         assert!(
             out.screenshots
                 .iter()
@@ -1105,6 +1127,7 @@ document.getElementById('go').addEventListener('click', () => {
 
     #[test]
     fn the_browser_sees_no_secrets() {
+        let _one = ONE_BROWSER.lock().unwrap_or_else(|e| e.into_inner());
         let Some(program) = browser() else { return };
         // Even if the workspace environment has secrets, the browser's own
         // environment is minimal: check the profile is fresh and the

@@ -79,8 +79,12 @@ pub struct Daemon {
     /// Resolved environment per workspace (login env + e.g. direnv). Kept in
     /// memory only: it may contain secrets.
     pub(crate) workspace_env: std::sync::Mutex<HashMap<WorkspaceId, EnvMap>>,
-    /// Running preparation tasks, so deleting a workspace can cancel them.
-    pub(crate) preparing: std::sync::Mutex<HashMap<WorkspaceId, tokio::task::AbortHandle>>,
+    /// Running preparation tasks, so deleting a workspace can cancel them
+    /// and wait until they're gone (D-135).
+    pub(crate) preparing: std::sync::Mutex<HashMap<WorkspaceId, tokio::task::JoinHandle<()>>>,
+    /// Workspaces being deleted: one delete at a time, and no preparation
+    /// starts meanwhile (D-135).
+    pub(crate) deleting: std::sync::Mutex<std::collections::HashSet<WorkspaceId>>,
     /// What each agent's screen showed last (a digest) and since when, by
     /// backend ref (reconcile.rs).
     pub(crate) screens: std::sync::Mutex<HashMap<String, (u64, crate::agents::Screen)>>,
@@ -189,6 +193,7 @@ impl Daemon {
             started_at: Utc::now(),
             workspace_env: Default::default(),
             preparing: Default::default(),
+            deleting: Default::default(),
             screens: Default::default(),
             on_screen: Default::default(),
             metrics,
@@ -676,10 +681,13 @@ impl Daemon {
         let rt = crate::runtime::runtime(crate::runs::DEFAULT_RUNTIME, &backend)
             .ok_or_else(|| RpcError::invalid(format!("unknown coding backend `{backend}`")))?;
         let model = model.map(|m| m.trim().to_owned()).filter(|m| !m.is_empty());
+        // Signed in as a run would be (D-142).
+        let mut env = self.environments.base().clone();
+        self.agent_secrets(crate::runs::DEFAULT_RUNTIME, &mut env);
         crate::runtime::test_run::run(
             rt,
             &backend,
-            self.environments.base().clone(),
+            env,
             &self.paths.state_dir.join("runtime-test"),
             model,
         )

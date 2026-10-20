@@ -845,7 +845,11 @@ Rules (`agents/claude.rs`): `PermissionRequest` → `blocked` + `approval`
 + **`question`** ("claude asks: …"). Cleared by `PostToolUse*` (same
 subagent), `UserPromptSubmit`, `Stop`, or a transcript user record after it
 (a decline). A long approved command shows as the screen changing more than
-2 s after the prompt appeared → `working` before `PostToolUse`. Once any hook
+2 s after the prompt appeared → `working` before `PostToolUse`. *Amended
+2026-10-20:* any change counted, so a prompt that redrew (an auto-deny
+countdown, a background task ending) lost its item; now it takes the screen
+moving at every look for 2 s, and another tool's `PostToolUse` no longer
+clears a prompt (D-136). Once any hook
 has reported for the execution the heuristic is off: a long think with a
 still screen stays `working`.
 
@@ -867,7 +871,9 @@ make it miss; it never fires during the ticking states.
 
 Known limits: attaching resizes the pane, which reads as "answered" (shown
 as working until the tool finishes; the item was resolved by attaching
-anyway, but detaching without answering doesn't re-raise it). Hooks are
+anyway, but detaching without answering doesn't re-raise it). *Amended
+2026-10-20:* no longer; a resize is one change, which is no answer (D-136).
+Hooks are
 trusted for the whole execution once one reports; if they stop (otterd
 moved — the installer keeps it at `~/.local/bin/otterd`) there is no
 fallback until the agent restarts. After an otterd restart the first look
@@ -1638,7 +1644,9 @@ SDK's internals; the worker never decides policy.
 - **Auth:** the host's Claude Code sign-in. Anthropic asks third-party
   products not to offer claude.ai login for SDK apps without approval; the
   developer chose it for their own hosts (the alternative is an API key).
-  No credential manager: Otter never sees or stores it.
+  No credential manager: Otter never sees or stores it. (Since D-142, a
+  token the developer made with `claude setup-token` may be kept in
+  Settings instead.)
 - **Handshake:** nothing reaches Claude before the worker's `ready` (protocol
   checked, SDK initialized), within 90 s (`OTTER_WORKER_INIT_TIMEOUT_MS`).
   The session id arrives with the first turn.
@@ -3256,7 +3264,7 @@ went. That copy is a full clone. The developer asked that deleting clean up.
   force both go: `--force` and the app's checkbox now say so.
 - **The repository's copy goes with the last workspace that used it.** The
   check runs under the store's lock, so a workspace being made on it is
-  counted. The copy stays while any branch in it holds commits on no remote,
+  counted. *(Since D-135: under the copy's Git lock.)* The copy stays while any branch in it holds commits on no remote,
   for example a branch kept by a delete from before this change.
 - **A branch another worktree has checked out stays,** and so does
   everything if removing the worktree failed: nothing half-removed.
@@ -4393,6 +4401,200 @@ left the task marked as being stepped, never stepped again.
   finished on its own. Reviewed by a second model, which found the
   answer-loop, the resume and the bridge.
 
+## D-135 — A checkout cut short is made again; deleting doesn't hold the host (2026-10-20)
+
+otterd killed `git` when it stopped, which it does on each update (D-125),
+and when a workspace was deleted while preparing. A `git worktree add`
+killed mid-checkout leaves its worktree locked "initializing" with files
+missing, and the workspace's record without its branch. The next otterd
+saw the `.git` and called it ready: agents started in a tree with files
+missing, and with no branch recorded, deleting it neither checked for
+unpushed commits nor deleted the branch (D-108). Deleting it failed, too:
+`git worktree remove --force` refuses a locked worktree. Killing `git` didn't
+stop the child that checks out, which went on writing into the tree. A
+worktree whose directory went missing couldn't be made again (git:
+"missing but already registered"), and each try left an `otterd/<name>-2`.
+Apart from that, `workspace.delete` removed the worktree, the directory and
+the repository's copy holding the store's lock, so every request on the
+host and the reconcile loop waited, often for gigabytes; and
+`workspace.create` waited up to 3 s for a Git workspace's fetch and
+checkout, which hardly ever finish that soon, so the app's dialog sat on
+"Creating…" though the workspace opens while it prepares.
+
+- **What git has there decides, not the record alone.** A branch is
+  recorded only once `git worktree add` finishes, so one missing is the
+  sign to look. But before this change a checkout cut short was called
+  ready without its branch, and may have been worked in since (found in
+  review). So a worktree is *nobody's work* only when git says its add
+  never finished (its registration locked "initializing", read from
+  `worktrees/<id>/locked`, which git-worktree(1) documents) and nothing has
+  ever run in the workspace. Sessions start only once it's ready, so one
+  cut short under this otterd has run nothing.
+  - **Nobody's work, or gone:** made again. What's there goes first:
+    `worktree remove --force --force` (git's way to remove a locked one),
+    `worktree prune`, then an empty directory. The branch the cut-short
+    checkout made goes too if nothing is on it (no remote branch of its
+    name, no commit a remote lacks), so the new one has the same name. A
+    worktree made before goes back on its recorded branch, with its
+    commits, and keeps its recorded base.
+  - **Any other worktree is kept as it is,** with whatever is in it,
+    unlocked if git left it locked, and its branch recorded, with a base
+    as `git worktree add` would have given it (the base asked for, or
+    origin's default branch, and their merge base). That covers one
+    finished whose branch otterd never got to record, too.
+  - **Left alone, and the workspace fails saying why:** a directory with
+    files and no worktree of the repository, and a worktree gone from its
+    directory whose registration someone other than git locked (git's
+    lock for a worktree on a disk not always there).
+  - **Known limit:** a worktree moved away by hand, rather than with `git
+    worktree move`, loses its registration when its workspace is prepared
+    again, and `git worktree repair` can't link it back after that. Otter
+    prunes registrations whenever it deletes a worktree anyway, as git's
+    gc does after a while.
+- **Git runs in its own process group,** killed whole when the call is
+  dropped (a preparation cancelled, otterd stopping), so a checkout's child
+  doesn't outlive it.
+- **Deleting** removes a locked worktree, and the registration of one whose
+  directory is gone. Without force it checks for uncommitted changes
+  whenever there's a `.git`, and for unpushed commits on the branch it
+  finds there when none is recorded, unless the worktree is nobody's work
+  (above). A preparation under way is cancelled, and waited for, before
+  anything is removed. If the delete then fails, the workspace is failed,
+  saying so ("deleting it failed: …"), rather than left preparing with
+  nothing preparing it. While a delete is under way, another delete of the
+  workspace, `workspace.prepare` and `workspace.unarchive` get `conflict`
+  ("being deleted"), and a preparation that finishes meanwhile starts
+  nothing.
+- **Deleting holds the store's lock only to stop the processes and to drop
+  the record.** Running sessions stop first and are marked stopped
+  (`SessionStopped`), as when archiving. The worktree, branch and directory
+  then go without the lock, and the record last, under it. A failure on the
+  way still leaves the record, so deleting again retries. The repository's
+  copy goes after that, and its last-workspace check (D-108) is made under
+  the copy's Git lock: a workspace being made on it is either counted, or
+  fetches only once the copy is gone. The store's lock is never held across
+  Git now, so progress messages wait for it rather than being dropped when
+  it's busy. They're set around Git's calls, not from inside them: a first
+  clone reads "cloning repository" until "creating worktree".
+- **`workspace.create` waits** (up to 3 s, as before) **only when there's no
+  Git work:** an empty or existing directory, or for `workspace.prepare` and
+  `workspace.unarchive` a worktree already there. A Git workspace comes back
+  at once, preparing. The CLI already waits for it, and the app already
+  selects the new workspace by its id, which comes back with the response
+  (unchanged). A preparation that ends, ready or failed, wakes the
+  controller, so a task given a worktree of its own (D-080) steps on at
+  once. A task whose workspace failed to prepare waits, saying why
+  ("preparing it failed (…); prepare it again to go on"), rather than
+  starting its agent there. That includes an environment that failed
+  (D-011) over a worktree that is fine, where a task used to run anyway.
+- **A `git worktree add -b` that fails** deletes the branch git made for it,
+  so trying again doesn't take `-2`, `-3`.
+- **Verified:** e2e tests in `crates/daemon/tests/e2e/workspace_prep.rs`.
+  - A checkout cut short, then otterd restarted: made again on
+    `otterd/cut`, whole, unlocked, its session started.
+  - A locked worktree deleted, and a half-made one deleted right after a
+    restart, without force.
+  - A worktree gone: made again on its branch, with its commit. One whose
+    registration the developer locked: failed, lock kept.
+  - With a `git` that sleeps: create returns at once, `workspace.get`
+    answers while a delete removes the worktree, and a delete while
+    cloning leaves no child of git behind.
+  - Each fails against the code before: ready with a file missing,
+    "cannot remove a locked working tree", failed on `otterd/gone-2`,
+    3.0 s, 3.5 s, and a child that wrote after the delete. A unit test for
+    the `-b` branch fails without its cleanup.
+  - The review's case, a record ready without its branch, worked in (a
+    commit, an uncommitted file): delete without force refused, for the
+    file and then for the commit; prepare and unarchive keep both and
+    record `otterd/legacy` from `origin/main`; locked "initializing" as
+    well, it's kept and unlocked. A task on a failed workspace waits
+    saying why, and goes on once it's prepared. A delete that fails after
+    stopping the preparation leaves the workspace failed. These fail
+    against this change's first version: the delete went through and
+    lost the file, the task's agent started in a folder that was gone,
+    the workspace stayed preparing, and a lock was overridden.
+
+## D-136 — A prompt that redraws is still a prompt (2026-10-20)
+
+An approval or a question from an interactive Claude Code session went away
+about 2 s after it was raised and never came back, while Claude still
+waited at its prompt. D-035 took a prompt as answered once the screen
+changed more than 2 s after it appeared, so that a long approved command
+shows as working before it ends. The screen's last change only moves
+forward, so any change after those 2 s counted, for good. In the live
+event log, approval items lasted 1.5–3.0 s: the 2 s plus one look. Two of
+them were `rm -rf` commands stopped by Claude Code's own safety check in
+auto mode: their prompts stayed up for 120 s and then timed out. Another
+question was cleared 0.5 s after it was raised by the `PostToolUse` of an
+`Agent` call made alongside it, then raised again by the 6 s `Notification`
+as an approval with no detail.
+
+Measured on Claude Code 2.1.304 through a dev otterd, capturing the screen
+as otterd does, every 250–500 ms:
+
+- A prompt alone is still: a Bash approval in manual mode for 36 s, a
+  question in auto mode for 42 s, a question with a background shell
+  running for 40 s. Not one change.
+- A background shell ending changes it once (its "· 1 shell still running"
+  goes). otterd as it was resolved the question then, with the question
+  still on the screen.
+- A prompt with an auto-deny window (the safety check; auto mode after
+  repeated denials) shows "Claude Code will automatically deny this request
+  in M:SS, …", redrawn every 1000 ms: a change at every other look. Read
+  from 2.1.304's code; not reproduced live (the probe command was refused).
+- A running tool changes it at every look: the spinner (120 ms frames), the
+  tool's blinking ●, the elapsed time.
+- No hook says a prompt was allowed. 2.1.304's events have
+  `PermissionRequest`, `PermissionDenied` and `PostToolUse`, nothing for
+  "allowed". `PermissionRequest` carries no `tool_use_id`.
+
+The change:
+
+- **The screen's motion, not its last change.** Each look notes since when
+  the screen has changed at every look (`Screen::moving_since`). A look
+  that sees no change, or can't capture, ends that. A prompt counts as
+  answered once it has been drawn (2 s) and the screen has kept moving for
+  2 s: five changes in a row at 500 ms looks. Neither a one-off change nor
+  a once-a-second redraw can make that. The motion may have begun before
+  the prompt (approved at once).
+- **Kept once seen.** `answered` is kept with the prompt until a hook or
+  the transcript ends it, so a spinner's hiccup doesn't raise the item
+  again. Going back to blocked would resolve and re-raise it: a new
+  notification each time, and an `otter ack` undone.
+- **Another tool ending isn't the answer.** The prompt keeps the tool it is
+  about. `PostToolUse*` clears it only for that tool, or when either is
+  unknown (a prompt kept by an older otterd).
+- D-035's "attaching reads as answered" is gone: a resize is one change.
+- **Known limits:**
+  - With `prefersReducedMotion` (or a screen reader) Claude Code's spinner
+    stands still, so a running tool may only tick its elapsed time, once a
+    second. An approved long command then stays "needs your approval"
+    until it ends.
+  - Whatever keeps a prompt's screen moving at every look for 2 s still
+    reads as an answer: a window dragged larger that long, an answer typed
+    or navigated that long, two once-a-second redraws out of step.
+  - With looks 750 ms or more apart (an otterd that falls behind), a
+    once-a-second redraw can pass for motion.
+  - Two calls of one tool side by side: the other's `PostToolUse` still
+    clears the prompt.
+- **Verified:**
+  - Unit (`hooks_drive_prompts_and_only_a_moving_screen_tells_an_answer`,
+    which replaces `…_and_the_screen_tells_an_answer`): one change, a
+    countdown (with two changes at neighbouring looks), and the turn's
+    spinner through the draw leave it blocked. Two seconds of motion make
+    it working, kept through a hiccup. Approved at once, it is working
+    once drawn. An `Agent` call's `PostToolUse` leaves the question up.
+    The one-change, countdown and `Agent` cases each fail against the code
+    before.
+  - End to end (`a_ticking_prompt_is_not_an_answer_but_a_running_tool_is`):
+    a fake Claude Code whose prompt redraws once a second is still blocked
+    5 s on, with the screen changed, and the approved tool's spinner reads
+    as working before its `PostToolUse`. Fails against the code before
+    (working by then).
+  - Live, through a dev otterd and Claude Code 2.1.304: a background
+    shell ended while a question was up. otterd as it was resolved the
+    item; this one keeps it.
+
 ## D-137 — A terminal on screen is looking, and two smaller fixes (2026-10-20)
 
 Amends D-099. Only attaching counted as looking, but the app's terminals
@@ -4517,6 +4719,7 @@ were settled by an attach, not by the agent moving on.
     repeated runs, eight at once included. The command test failed twice
     on its first two runs, as if on screen had been ignored, and never
     again in about 25 runs since. Nothing found explains it.
+
 
 ## D-138 — Looking for a risky word isn't doing it (2026-10-20)
 
@@ -4699,3 +4902,63 @@ no new state:
   `Reasoned`; app tests for Now, the timed activity lines, the reasons in
   the feed, and the source keeping times and re-reading a host with a live
   run.
+
+## D-142 — Claude Code signs in with a token from Settings (2026-10-20)
+
+On a host where Claude Code isn't signed in — a server reached over SSH,
+where its browser login is awkward — the coding agent fails its first run
+with `auth_required`. The fix was to sign in there, or put
+`CLAUDE_CODE_OAUTH_TOKEN` in otterd's login environment and restart it.
+Claude Code's own answer for headless use is a long-lived token from
+`claude setup-token` (`sk-ant-oat01-…`), made wherever the developer is
+signed in. It can now be set in Settings › Coding agent › Claude Code ›
+Sign-in.
+
+- **A secret like the providers' keys** (D-048): `CLAUDE_CODE_OAUTH_TOKEN`
+  in `state/secrets.json` (0600), write-only over the protocol, never
+  logged, in an event or on a command line. Only what `claude setup-token`
+  prints is taken (`sk-ant-oat…`): an API key isn't a sign-in. It is no
+  controller's key, so it doesn't make Anthropic's API "automatic"'s
+  choice.
+- **Only Claude Code's processes get it**, in the environment they start
+  with: a task's run (`sdk` and `legacy_cli`), `runtime.test`, an
+  interactive Claude Code session (through `internal-exec`'s env file),
+  and the `claude` brain — its `claude -p` calls and Otter's turn. A shell,
+  a service or the check in the same workspace never does: an
+  `AgentProvider` names the secrets its processes get (`secrets()`), and
+  generic code passes those, unread. Set here, it wins over the same
+  variable in otterd's environment, as a key does.
+- **Switching a session over:** a Claude Code session started on the
+  host's own sign-in, restarted once a token is set, resumes the same
+  conversation (`--resume`, as any restart) signed in with the token; a
+  task's next run, Otter's next turn and the next test take it up too. A
+  token cleared works the same way back.
+- **Not a login flow.** D-057 left sign-in to Claude Code because Anthropic
+  asks third-party products not to offer claude.ai login. Otter still
+  offers none: the developer makes the token with Claude Code, for their
+  own hosts, and Otter keeps it as it would the environment variable.
+- **Known limits:** Claude Code prefers `ANTHROPIC_API_KEY` (and
+  `ANTHROPIC_AUTH_TOKEN`) to this token, so where otterd's environment has
+  one, that is what signs in; the token isn't checked when set (Run a test
+  does that); work already running keeps how it started.
+- **Verified:** unit tests for the setting (refused unless a token, kept
+  0600, never in the view, no controller) and for the environment it
+  gives; an e2e test with the fake worker, which logs only whether it got
+  one: unset, then set for a test and for a task's run, unset again once
+  cleared, and the token in no file of otterd's home but `secrets.json`. It
+  fails with the run's injection taken out. Another: an interactive
+  session restarted after the token is set resumes its conversation with
+  it, and a command session beside it doesn't get it. The app's test: the Sign-in
+  row with the coding agent, sent once, never shown, not among the API
+  keys.
+
+## D-143 — Apple silicon only (2026-10-20)
+
+Each release ran four macOS jobs (the app and `otterd`/`otter`, per
+architecture) next to CI's macOS job, and runners queued for them: a
+release that builds in about 5 minutes took 9 to 15. Nobody runs Otter on
+an Intel Mac, so the x86_64 app, its update and the `macos-x86_64`
+binaries are gone, and a release runs two macOS jobs. `latest.json` names
+only `darwin-aarch64`. The installer refuses an Intel Mac and, on Apple
+silicon under Rosetta (where `uname -m` says x86_64), installs the arm64
+build. Supersedes the x86_64 half of D-026.

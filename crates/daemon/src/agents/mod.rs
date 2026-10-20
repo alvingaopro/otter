@@ -93,7 +93,8 @@ pub struct ObserveContext<'a> {
     pub claimed: &'a HashSet<String>,
 }
 
-/// How long a session's screen has looked as it does now.
+/// How long a session's screen has looked as it does now. Otter looks once
+/// per reconcile pass, every 500 ms.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Screen {
     /// Since when it has shown what it shows now.
@@ -101,12 +102,41 @@ pub struct Screen {
     /// Whether Otter saw it change to that (false: the first look, e.g.
     /// after otterd restarted, so `since` is only a lower bound).
     pub changed: bool,
+    /// Since when it has changed at every look, if it changed at this one
+    /// (D-136): how long it has kept moving. A clock or a countdown changes
+    /// it once a second, every other look; a spinner, at every one.
+    pub moving_since: Option<Timestamp>,
 }
 
 impl Screen {
-    /// Whether it was seen changing after `t`.
-    pub fn changed_after(&self, t: Timestamp) -> bool {
-        self.changed && self.since > t
+    /// The first look at a screen.
+    pub fn first(now: Timestamp) -> Self {
+        Screen {
+            since: now,
+            changed: false,
+            moving_since: None,
+        }
+    }
+
+    /// The next look, at `now`: `changed` if it shows something else.
+    pub fn next(self, changed: bool, now: Timestamp) -> Self {
+        if changed {
+            Screen {
+                since: now,
+                changed: true,
+                moving_since: Some(self.moving_since.unwrap_or(now)),
+            }
+        } else {
+            Screen {
+                moving_since: None,
+                ..self
+            }
+        }
+    }
+
+    /// Whether it has kept moving, at every look, for `long` by `now`.
+    pub fn moving_for(&self, long: chrono::Duration, now: Timestamp) -> bool {
+        self.moving_since.is_some_and(|t| now - t >= long)
     }
 }
 
@@ -155,6 +185,13 @@ pub trait AgentProvider: Send + Sync {
     /// contents.
     fn hook_record(&self, _input: &serde_json::Value) -> Option<serde_json::Value> {
         None
+    }
+
+    /// Secrets set in the host's Settings that the agent's own processes
+    /// get in their environment — its sign-in (D-142). Nothing else run in
+    /// the workspace (a shell, the check) gets them.
+    fn secrets(&self) -> &'static [&'static str] {
+        &[]
     }
 }
 

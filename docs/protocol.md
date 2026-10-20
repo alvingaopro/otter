@@ -191,7 +191,15 @@ An addition (no protocol bump): daemons before it answer `invalid_request`.
 - The copy is kept, though, while any branch in it holds commits on no
   remote.
 - Without `force`, `conflict` when the worktree has uncommitted changes or
-  the branch has commits not pushed anywhere; `force` discards both.
+  the branch has commits not pushed anywhere; `force` discards both. The
+  branch is the one recorded, or else the one git has checked out there. A
+  checkout git never finished, in a workspace where nothing ever ran, has
+  neither (D-135).
+- Running sessions are stopped first (`SessionStopped`), then the files go,
+  then `WorkspaceDeleted`. Meanwhile another `workspace.delete`,
+  `workspace.prepare` or `workspace.unarchive` of it gets `conflict`
+  (D-135). A delete that fails after stopping the workspace's preparation
+  leaves it `failed` (`WorkspaceFailed`), saying so.
 
 ## Names
 
@@ -240,6 +248,10 @@ The Control Agent's model and API keys on this host (D-048).
   the same view. Fields left out stay as they are; `""` resets the
   controller to automatic and the model to the default; `null` clears a
   secret. Unknown secret names and controllers fail with `invalid_request`.
+- Besides each provider's key, `secrets` lists `CLAUDE_CODE_OAUTH_TOKEN`
+  (D-142): Claude Code's sign-in, the token `claude setup-token` prints
+  (`sk-ant-oat01-…`; anything else fails with `invalid_request`). It is no
+  controller's key. Absent from daemons before it.
 - The view also lists `controllers: [{id, label, secret?, models,
   default_model?}]` — every model provider (with the secret holding its
   key), `claude`, `rules` and `off` — and `active`, the controller in use

@@ -257,6 +257,10 @@ impl Daemon {
         env.insert("OTTER_SESSION_ID".into(), session.id.to_string());
         env.insert("OTTER_SESSION_NAME".into(), session.name.clone());
         env.insert("OTTER_EXECUTION_ID".into(), exec_id.to_string());
+        // An agent's own sign-in from Settings; a shell never gets it (D-142).
+        if let Some(info) = &session.agent {
+            self.agent_secrets(&info.provider, &mut env);
+        }
         // Python's webbrowser only uses xdg-open with a display: point it at
         // the browser stand-in (login.rs) unless the user chose a browser.
         env.entry("BROWSER".into())

@@ -16,6 +16,8 @@ const state = vi.hoisted(() => ({
   // Found by a test of the SDK, saved or not (D-129).
   testWorkerMissing: false,
   noRelease: false,
+  // Claude Code's sign-in (D-142): `undefined` from an otterd before it.
+  token: undefined as boolean | undefined,
 }));
 // Holds back the host's answers to a save or a test until let go.
 const gate = vi.hoisted(() => ({ wait: null as Promise<void> | null }));
@@ -91,6 +93,7 @@ vi.mock("@tauri-apps/api/core", () => ({
       if (coding?.backend && state.backend) state.backend = coding.backend;
       if (coding?.model !== undefined) state.codingModel = coding.model || undefined;
       if (u.secrets && "OPENROUTER_API_KEY" in u.secrets) state.set = u.secrets.OPENROUTER_API_KEY !== null;
+      if (u.secrets && "CLAUDE_CODE_OAUTH_TOKEN" in u.secrets) state.token = u.secrets.CLAUDE_CODE_OAUTH_TOKEN !== null;
       const tools = (args.update as { otter_tools?: boolean }).otter_tools;
       if (tools !== undefined && state.otterTools !== undefined) state.otterTools = tools;
     }
@@ -99,6 +102,7 @@ vi.mock("@tauri-apps/api/core", () => ({
       secrets: [
         { name: "OPENROUTER_API_KEY", purpose: "OpenRouter", set: state.set },
         ...(state.modern ? [{ name: "OPENAI_API_KEY", purpose: "OpenAI", set: false }] : []),
+        ...(state.token !== undefined ? [{ name: "CLAUDE_CODE_OAUTH_TOKEN", purpose: "Signs Claude Code in", set: state.token }] : []),
       ],
       ...(state.backend ? { coding: { backend: state.backend, model: state.codingModel } } : {}),
       ...(state.otterTools !== undefined
@@ -168,6 +172,7 @@ describe("Settings", () => {
     state.noRelease = name.includes("no release");
     state.otterTools = name.includes("Otter's tools") ? false : undefined;
     state.oldTest = name.includes("older otterd");
+    state.token = name.includes("sign-in") ? false : undefined;
     localStorage.removeItem("otter.settings-tab");
     host = document.createElement("div");
     document.body.appendChild(host);
@@ -375,6 +380,33 @@ describe("Settings", () => {
     await flush();
     const last = calls.filter((c) => c.cmd === "settings_set").pop()!;
     expect((last.args.update as { coding: object }).coding).toEqual({ model: "opus" });
+  });
+
+  it("signs the coding agent in with a token, kept on the host and never shown (sign-in)", async () => {
+    await tab("Coding agent");
+    expect(dialog().textContent).toContain("Claude Code's own sign-in on mac");
+    await act(async () => button("Add…").click());
+    const field = dialog().querySelector<HTMLInputElement>('input[aria-label="CLAUDE_CODE_OAUTH_TOKEN"]')!;
+    expect(field.type).toBe("password");
+    expect(field.placeholder).toContain("claude setup-token");
+    type(field, " sk-ant-oat01-abc ");
+    await flush();
+    await act(async () => button("Save").click());
+    await flush();
+    const set = calls.find((c) => c.cmd === "settings_set")!;
+    expect((set.args.update as { secrets: object }).secrets).toEqual({ CLAUDE_CODE_OAUTH_TOKEN: "sk-ant-oat01-abc" });
+    expect(dialog().innerHTML).not.toContain("oat01-abc");
+    expect(dialog().textContent).toContain("Signed in with a token kept on mac");
+    // Not a model provider's key.
+    await tab("API keys");
+    expect(dialog().querySelector('[aria-label="CLAUDE_CODE_OAUTH_TOKEN"]')).toBeNull();
+    expect(dialog().textContent).not.toContain("Signs Claude Code in");
+    // Cleared: Claude Code's own sign-in again.
+    await tab("Coding agent");
+    await act(async () => button("Clear").click());
+    await flush();
+    expect(calls.filter((c) => c.cmd === "settings_set").pop()!.args).toEqual({ host: "mac", update: { secrets: { CLAUDE_CODE_OAUTH_TOKEN: null } } });
+    expect(dialog().textContent).toContain("Claude Code's own sign-in on mac");
   });
 
   it("says why the coding agent can't run where it's not installed", async () => {

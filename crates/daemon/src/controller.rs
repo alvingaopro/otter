@@ -535,6 +535,7 @@ impl Daemon {
                 .iter()
                 .filter_map(|p| Some((p.key.to_owned(), s.secret(p.key)?)))
                 .collect(),
+            claude_token: s.secret(crate::agents::claude::OAUTH_TOKEN),
             v2: s.otter_tools(),
         }
     }
@@ -1520,6 +1521,15 @@ impl Daemon {
             // A workspace still being made (one of its own, D-080).
             if ws.state == otter_core::WorkspaceState::Preparing {
                 return Some(format!("{WAITING}{}: it's being prepared", ws.name));
+            }
+            // Its preparation failed: the developer's to fix (D-135).
+            if ws.state == otter_core::WorkspaceState::Failed {
+                let why = ws.state_message.as_deref().unwrap_or("no reason given");
+                return Some(format!(
+                    "{WAITING}{}: preparing it failed ({}); prepare it again to go on",
+                    ws.name,
+                    why.lines().next().unwrap_or(why)
+                ));
             }
             let busy = ws
                 .sessions

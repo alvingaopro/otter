@@ -89,8 +89,8 @@ yours.
 
 Download the latest [release](https://github.com/alvingaopro/otter/releases):
 
-- **App:** `Otter_<version>_macos_arm64.dmg` (Apple silicon) or
-  `…_x86_64.dmg` (Intel). Drag Otter to Applications. It isn't notarized by
+- **App:** `Otter_<version>_macos_arm64.dmg` (Apple silicon; Intel Macs
+  aren't supported). Drag Otter to Applications. It isn't notarized by
   Apple yet, so the first launch needs **System Settings → Privacy & Security
   → Open Anyway** (or `xattr -dr com.apple.quarantine /Applications/Otter.app`).
 - **Command line:** in the app, **Otter → Install Command Line Tools…**

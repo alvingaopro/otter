@@ -42,6 +42,9 @@ export interface HostSettings {
 }
 
 /** How the coding agent can run on a host (D-057): the SDK first, the default (D-124). */
+/** Claude Code's sign-in, a secret on the host (D-142). */
+const CLAUDE_TOKEN = "CLAUDE_CODE_OAUTH_TOKEN";
+
 const BACKENDS: { id: string; name: string; hint: string }[] = [
   { id: "sdk", name: "Agent SDK", hint: "The Claude Agent SDK, the default. Needs Node.js on the host." },
   { id: "legacy_cli", name: "Claude Code CLI", hint: "The claude command on the host." },
@@ -327,11 +330,42 @@ export function SettingsDialog({
       autoComplete="off"
       spellCheck={false}
       aria-label={s.name}
-      placeholder={s.set ? "Paste the new key" : "Paste the key"}
+      placeholder={s.name === CLAUDE_TOKEN ? "sk-ant-oat01-… from claude setup-token" : s.set ? "Paste the new key" : "Paste the key"}
       value={keys[s.name] ?? ""}
       onChange={(e) => setKeys((k) => ({ ...k, [s.name]: e.target.value }))}
     />
   );
+  /** A secret: whether it's set, Clear, and Add… / Replace… with its field. */
+  const secretRow = (k: HostSettings["secrets"][number], label: ReactNode, hint: ReactNode = <span className="mono">{k.name}</span>) => {
+    const open = replacing === k.name;
+    return (
+      <div key={k.name} className="settings-key">
+        <Row label={label} hint={hint}>
+          <div className="settings-inline">
+            <span className={k.set ? "key-state set" : "key-state"}>{k.set ? "Set" : "Not set"}</span>
+            {k.set && (
+              <button type="button" className="btn ghost" disabled={busy} onClick={() => void save({ secrets: { [k.name]: null } })}>
+                Clear
+              </button>
+            )}
+            <button
+              type="button"
+              className="btn outline"
+              onClick={() => {
+                setReplacing(open ? null : k.name);
+                setKeys(({ [k.name]: _, ...rest }) => rest);
+              }}
+            >
+              {open ? "Cancel" : k.set ? "Replace…" : "Add…"}
+            </button>
+          </div>
+        </Row>
+        {open && <div className="settings-key-field">{keyInput(k, true)}</div>}
+      </div>
+    );
+  };
+  // Claude Code's sign-in (D-142): with the coding agent, not the providers.
+  const claudeToken = settings?.secrets?.find((s) => s.name === CLAUDE_TOKEN);
   const mainKey = settings?.secrets?.find((s) => s.name === info?.secret);
   const chosen = models?.state === "ready" ? models.list.find((m) => m.id === model.trim()) : undefined;
   const coding = codingSaved ? caps : null;
@@ -547,6 +581,14 @@ export function SettingsDialog({
                         onChange={setBackend}
                       />
                     </Row>
+                    {claudeToken &&
+                      secretRow(
+                        claudeToken,
+                        "Sign-in",
+                        claudeToken.set
+                          ? `Signed in with a token kept on ${host}; Clear to use Claude Code's own sign-in there.`
+                          : `Claude Code's own sign-in on ${host}. Or a token: run claude setup-token anywhere you're signed in, and paste what it prints.`,
+                      )}
                     <Row label="Model" hint="Empty: Claude Code's own default.">
                       <input
                         className="settings-input"
@@ -613,42 +655,15 @@ export function SettingsDialog({
               {shown === "keys" && (
                 <>
                   <Group title="Model providers">
-                    {(settings.secrets ?? []).map((k) => {
-                      const open = replacing === k.name;
-                      return (
-                        <div key={k.name} className="settings-key">
-                          <Row
-                            label={
-                              <>
-                                {k.purpose}
-                                {k.name === info?.secret && <span className="settings-tag">In use</span>}
-                              </>
-                            }
-                            hint={<span className="mono">{k.name}</span>}
-                          >
-                            <div className="settings-inline">
-                              <span className={k.set ? "key-state set" : "key-state"}>{k.set ? "Set" : "Not set"}</span>
-                              {k.set && (
-                                <button type="button" className="btn ghost" disabled={busy} onClick={() => void save({ secrets: { [k.name]: null } })}>
-                                  Clear
-                                </button>
-                              )}
-                              <button
-                                type="button"
-                                className="btn outline"
-                                onClick={() => {
-                                  setReplacing(open ? null : k.name);
-                                  setKeys(({ [k.name]: _, ...rest }) => rest);
-                                }}
-                              >
-                                {open ? "Cancel" : k.set ? "Replace…" : "Add…"}
-                              </button>
-                            </div>
-                          </Row>
-                          {open && <div className="settings-key-field">{keyInput(k, true)}</div>}
-                        </div>
-                      );
-                    })}
+                    {(settings.secrets ?? []).filter((k) => k.name !== CLAUDE_TOKEN).map((k) =>
+                      secretRow(
+                        k,
+                        <>
+                          {k.purpose}
+                          {k.name === info?.secret && <span className="settings-tag">In use</span>}
+                        </>,
+                      ),
+                    )}
                   </Group>
                   <p className="muted small">Automatic uses the first provider with a key. Keys go to {host} and stay there; this app only knows whether one is set.</p>
                 </>

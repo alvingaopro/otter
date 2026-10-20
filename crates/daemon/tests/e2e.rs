@@ -28,6 +28,8 @@ mod memory;
 mod otter_turn;
 #[path = "e2e/provider_turn.rs"]
 mod provider_turn;
+#[path = "e2e/workspace_prep.rs"]
+mod workspace_prep;
 
 struct TestHost {
     dir: tempfile::TempDir,
@@ -2162,7 +2164,9 @@ fn tmux_dir() -> String {
 /// at a permission prompt / AskUserQuestion until a line is typed;
 /// `twoprompts` asks again, for another command, right after the first is
 /// answered; `nohooks` ignores the settings (hooks disabled) and stops at a
-/// prompt.
+/// prompt; `countdown` stops at a prompt that redraws once a second (Claude
+/// Code's auto-deny countdown) and, once answered, runs the tool for ~5 s
+/// behind a spinner that redraws ten times a second.
 const FAKE_CLAUDE: &str = r#"#!/bin/sh
 if [ "$1" = --version ]; then echo "2.0.0-fake (Claude Code)"; exit 0; fi
 # Managed runs (`claude -p`, stream-json): fake_claude_stream.sh.
@@ -2174,6 +2178,9 @@ if [ "$1" = --settings ]; then
 fi
 [ "$FAKE_CODEX_MODE" = nohooks ] && hook_cmd=
 echo "claude $*" >> "$FAKE_CODEX_LOG"
+# Whether Settings signed it in (D-142), never the token: a log of its own.
+if [ -n "$CLAUDE_CODE_OAUTH_TOKEN" ]; then t=set; else t=unset; fi
+echo "claude $* (oauth token: $t)" >> "$FAKE_CODEX_LOG.auth"
 dir="$CLAUDE_CONFIG_DIR/projects/$(pwd -P | sed 's/[^A-Za-z0-9]/-/g')"
 mkdir -p "$dir"
 if [ "$1" = --resume ]; then
@@ -2208,6 +2215,19 @@ case "$FAKE_CODEX_MODE" in
     hook PermissionRequest ',"tool_name":"Bash","tool_input":{"command":"touch z","description":"Create empty file z"}'
     echo "Do you want to proceed?"
     read answer
+    hook PostToolUse ',"tool_name":"Bash","tool_response":{"stdout":""}'
+    ;;
+  countdown)
+    rec '{"type":"assistant","timestamp":"'$(now)'","message":{"role":"assistant","stop_reason":"tool_use","content":[{"type":"tool_use","name":"Bash"}]}}'
+    hook PermissionRequest ',"tool_name":"Bash","tool_input":{"command":"make test","description":"Run the tests"}'
+    echo "Do you want to proceed?"
+    ( n=59; while :; do printf '\rautomatically deny this request in 1:%02d ' "$n"; n=$(( (n + 59) % 60 )); sleep 1; done ) &
+    ticking=$!
+    read answer
+    kill $ticking
+    i=0
+    while [ $i -lt 50 ]; do printf '\rrunning %s ' "$i"; i=$((i + 1)); sleep 0.1; done
+    echo
     hook PostToolUse ',"tool_name":"Bash","tool_response":{"stdout":""}'
     ;;
   twoprompts)
@@ -2845,6 +2865,128 @@ async fn an_attach_whose_client_stops_reading_is_let_go() {
     wait_output(&host, "stuck", "sh", "400000").await;
     let ws = host.conn().await.workspace_get("stuck").await.unwrap();
     assert_eq!(ws.sessions[0].status(), SessionStatus::Running);
+}
+
+/// A prompt that redraws once a second (Claude Code's auto-deny countdown)
+/// still needs the developer; approved, the tool's spinner says so before
+/// the tool finishes (D-136).
+#[tokio::test]
+async fn a_ticking_prompt_is_not_an_answer_but_a_running_tool_is() {
+    use otter_core::{AgentState, AttentionKind};
+    let fake = fake_codex_host("countdown").await;
+    let host = &fake.host;
+    create(host, "tick", Some(vec![SessionSpec::agent("claude")])).await;
+    let ws = wait_agent(host, "tick", "claude", AgentState::Blocked).await;
+    let summary = "claude needs your approval: Bash: Run the tests";
+    assert_eq!(ws.attention[0].summary, summary);
+
+    // Well past the 2 s that used to take any change for an answer, and
+    // the screen did change.
+    let screen = || async {
+        host.conn()
+            .await
+            .session_read("tick", "claude", Some(0))
+            .await
+            .unwrap()
+    };
+    let before = screen().await;
+    tokio::time::sleep(Duration::from_secs(5)).await;
+    assert_ne!(screen().await, before, "the prompt ticks");
+    let ws = host.conn().await.workspace_get("tick").await.unwrap();
+    let agent = ws.session("claude").unwrap().agent.clone().unwrap();
+    assert_eq!(agent.state, AgentState::Blocked);
+    assert_eq!(ws.attention.len(), 1, "{:?}", ws.attention);
+    assert_eq!(ws.attention[0].kind, AttentionKind::Approval);
+    assert_eq!(ws.attention[0].summary, summary);
+
+    // Approved: working while the tool runs, before its hook says it ended.
+    host.conn()
+        .await
+        .session_write("tick", "claude", "1", true)
+        .await
+        .unwrap();
+    wait_agent(host, "tick", "claude", AgentState::Working).await;
+    let hooks = host
+        .home()
+        .join("run/agents")
+        .join(ws.session("claude").unwrap().id.as_str())
+        .join("claude-hooks.jsonl");
+    let hooks = std::fs::read_to_string(hooks).unwrap();
+    assert!(hooks.contains("PermissionRequest"), "{hooks}");
+    assert!(!hooks.contains("PostToolUse"), "the tool still runs");
+    let ws = wait_agent(host, "tick", "claude", AgentState::WaitingForInput).await;
+    assert_eq!(ws.attention.len(), 1);
+    assert_eq!(ws.attention[0].kind, AttentionKind::Review);
+}
+
+/// A Claude Code session started on the host's own sign-in, restarted after
+/// a token is set in Settings (D-142): the same conversation resumes,
+/// signed in with the token. A shell beside it never gets it.
+#[tokio::test]
+async fn a_restarted_claude_code_session_signs_in_with_the_token() {
+    use otter_core::AgentState;
+    use otter_protocol::host::SettingsUpdate;
+    let fake = fake_codex_host("ok").await;
+    let host = &fake.host;
+    create(
+        host,
+        "tok",
+        Some(vec![
+            SessionSpec::agent("claude"),
+            SessionSpec {
+                name: Some("sh".into()),
+                command: Some(
+                    "echo \"tok=${CLAUDE_CODE_OAUTH_TOKEN:-none}\" >> tok.txt; sleep 600".into(),
+                ),
+                ..SessionSpec::shell()
+            },
+        ]),
+    )
+    .await;
+    wait_agent(host, "tok", "claude", AgentState::WaitingForInput).await;
+    let auth = fake.log.with_extension("log.auth");
+    let read = || std::fs::read_to_string(&auth).unwrap_or_default();
+    assert!(read().ends_with("(oauth token: unset)\n"), "{}", read());
+    let id = host
+        .conn()
+        .await
+        .workspace_get("tok")
+        .await
+        .unwrap()
+        .session("claude")
+        .and_then(|s| s.agent.as_ref()?.provider_session_id.clone())
+        .expect("bound to its transcript");
+
+    let mut conn = host.conn().await;
+    conn.settings_set(SettingsUpdate {
+        secrets: std::collections::BTreeMap::from([(
+            "CLAUDE_CODE_OAUTH_TOKEN".to_owned(),
+            Some("sk-ant-oat01-RESTARTTOKEN0123456789".to_owned()),
+        )]),
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+    conn.session_restart("tok", "claude").await.unwrap();
+    eventually("it starts again", || async {
+        read().contains("(oauth token: set)").then_some(())
+    })
+    .await;
+    assert!(
+        read().contains(&format!("claude --resume {id} (oauth token: set)")),
+        "{}",
+        read()
+    );
+    // A command beside it, started again with the token set: not for it.
+    conn.session_restart("tok", "sh").await.unwrap();
+    let root = std::path::PathBuf::from(conn.workspace_get("tok").await.unwrap().root);
+    eventually("the command ran twice", || async {
+        let out = std::fs::read_to_string(root.join("tok.txt")).ok()?;
+        (out.lines().count() == 2).then_some(out)
+    })
+    .await
+    .lines()
+    .for_each(|l| assert_eq!(l, "tok=none"));
 }
 
 #[tokio::test]
@@ -7194,6 +7336,76 @@ async fn fake_sdk_host() -> (FakeCodex, std::path::PathBuf) {
     .await;
     let log = log.lock().unwrap().clone();
     (fake, log)
+}
+
+/// Claude Code's sign-in from Settings (D-142): a token from `claude
+/// setup-token` reaches the coding agent's worker, for a test and for a
+/// task's run, and goes when cleared; it is never shown or written out.
+#[tokio::test]
+async fn claude_codes_token_from_settings_signs_its_runs_in() {
+    use otter_protocol::host::SettingsUpdate;
+    let (fake, worker_log) = fake_sdk_host().await;
+    let mut conn = fake.host.conn().await;
+    let token = "sk-ant-oat01-SETTINGSTOKEN0123456789abcdef";
+    let set = |v: Option<&str>| SettingsUpdate {
+        secrets: std::collections::BTreeMap::from([(
+            "CLAUDE_CODE_OAUTH_TOKEN".to_owned(),
+            v.map(String::from),
+        )]),
+        ..Default::default()
+    };
+    // Not a token: refused.
+    let err = conn.settings_set(set(Some("sk-ant-api03-nope"))).await;
+    assert!(format!("{:#}", err.unwrap_err()).contains("claude setup-token"));
+    conn.runtime_test(None, None).await.unwrap();
+    let log = || std::fs::read_to_string(&worker_log).unwrap();
+    assert!(log().contains("oauth token: unset"), "{}", log());
+    assert!(!log().contains("oauth token: set"));
+
+    let s = conn.settings_set(set(Some(token))).await.unwrap();
+    let k = s
+        .secrets
+        .iter()
+        .find(|k| k.name == "CLAUDE_CODE_OAUTH_TOKEN")
+        .unwrap();
+    assert!(k.set && k.purpose.contains("claude setup-token"), "{k:?}");
+    assert!(!serde_json::to_string(&s).unwrap().contains(token));
+    std::fs::write(&worker_log, "").unwrap();
+    conn.runtime_test(None, None).await.unwrap();
+    assert!(log().contains("oauth token: set"), "{}", log());
+
+    // A task's run is signed in the same way.
+    std::fs::write(&worker_log, "").unwrap();
+    let id = started_task(&fake.host, "Export the timeline as CSV").await;
+    wait_task(&fake.host, &id, "a run", |f| !f.runs.is_empty()).await;
+    eventually("the worker started", || async {
+        log().contains("oauth token:").then_some(())
+    })
+    .await;
+    assert!(!log().contains("oauth token: unset"), "{}", log());
+
+    // Nowhere in what otterd writes but its secrets file.
+    fn scan(dir: &std::path::Path, found: &mut Vec<std::path::PathBuf>) {
+        for e in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                scan(&p, found);
+            } else if p.file_name().is_some_and(|n| n != "secrets.json")
+                && std::fs::read(&p).is_ok_and(|b| b.windows(13).any(|w| w == b"SETTINGSTOKEN"))
+            {
+                found.push(p);
+            }
+        }
+    }
+    let mut found = Vec::new();
+    scan(fake.host.home(), &mut found);
+    assert!(found.is_empty(), "{found:?}");
+
+    // Cleared: the host's own sign-in again.
+    conn.settings_set(set(None)).await.unwrap();
+    std::fs::write(&worker_log, "").unwrap();
+    conn.runtime_test(None, None).await.unwrap();
+    assert!(log().contains("oauth token: unset"), "{}", log());
 }
 
 #[tokio::test]
