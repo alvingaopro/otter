@@ -75,6 +75,10 @@ test("results end the turn with the right outcome; EOF never does", () => {
   assert.equal(done({ subtype: "success", is_error: false, result: "ok", terminal_reason: "completed" }, true).outcome, "completed");
   // As observed on SDK 0.3.285: an interrupt ends the turn this way.
   assert.equal(done({ subtype: "error_during_execution", is_error: true, terminal_reason: "aborted_streaming" }).outcome, "interrupted");
+  // …with Claude Code's own diagnostic, which isn't something the agent said (D-140).
+  const cut = done({ subtype: "error_during_execution", is_error: true, errors: ["[ede_diagnostic] result_type=user last_content_type=n/a stop_reason=tool_use"] }, true);
+  assert.equal(cut.outcome, "interrupted");
+  assert.equal(cut.summary, null);
   const failed = done({ subtype: "error_during_execution", is_error: true, api_error_status: 429, errors: ["slow down"] });
   assert.equal(failed.outcome, "failed");
   assert.equal(failed.error, "rate_limited");
