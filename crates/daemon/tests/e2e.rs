@@ -8364,7 +8364,9 @@ async fn an_older_repository_copy_drops_the_branches_it_cloned() {
     git(&origin, &["branch", "-qD", "gone"]);
     commit_file(&origin, "b.txt");
 
-    // Prepared: the cloned `main` goes, so `main` is the remote's now.
+    // Without reflogs a branch with work looks cloned: nothing goes. The
+    // cloned `main`, behind the remote's, is caught up when asked for.
+    git(&base, &["config", "core.logAllRefUpdates", "false"]);
     conn.workspace_create(git_ws("two", &origin, Some("main"), vec![]))
         .await
         .unwrap();
@@ -8373,6 +8375,15 @@ async fn an_older_repository_copy_drops_the_branches_it_cloned() {
         git(Path::new(&two.root), &["rev-parse", "HEAD"]),
         git(&origin, &["rev-parse", "HEAD"])
     );
+    let left = local_branches(&base);
+    assert!(left.contains("gone") && left.contains("kept"), "{left}");
+
+    // With them, preparing drops what was cloned.
+    git(&base, &["config", "--unset", "core.logAllRefUpdates"]);
+    conn.workspace_create(git_ws("three", &origin, None, vec![]))
+        .await
+        .unwrap();
+    ready_git_ws(&host, "three").await;
     let left = local_branches(&base);
     assert!(!left.contains("gone") && left.contains("kept"), "{left}");
 
@@ -8383,38 +8394,45 @@ async fn an_older_repository_copy_drops_the_branches_it_cloned() {
     as_cloned(&["gone2"]);
     git(&origin, &["branch", "-qD", "gone2"]);
     git(&base, &["fetch", "-q", "--prune", "origin"]);
-    conn.workspace_delete("one", false).await.unwrap();
-    conn.workspace_delete("two", false).await.unwrap();
+    for name in ["one", "two", "three"] {
+        conn.workspace_delete(name, false).await.unwrap();
+    }
     assert_eq!(local_branches(&base).trim(), "kept");
 }
 
 /// A branch merged by squash or rebase, then deleted on the remote, has its
 /// work there under other commits: deleting its workspace needs no force
-/// (D-132). Work added since still does.
+/// (D-132). Work added since still does, and so do commits that undo each
+/// other, which an empty commit upstream must not pass for.
 #[tokio::test]
 async fn a_branch_squashed_or_rebased_in_is_not_unpushed_work() {
     let host = TestHost::new();
     let origin = make_repo(&host, "origin", &[("a.txt", "a\n")]);
     let mut conn = host.conn().await;
-    for name in ["squashed", "rebased"] {
+    for name in ["squashed", "rebased", "reverted"] {
         conn.workspace_create(git_ws(name, &origin, None, vec![]))
             .await
             .unwrap();
     }
     let (squashed, base) = ready_git_ws(&host, "squashed").await;
     let (rebased, _) = ready_git_ws(&host, "rebased").await;
+    let (reverted, _) = ready_git_ws(&host, "reverted").await;
     let (s, r) = (Path::new(&squashed.root), Path::new(&rebased.root));
     for (root, name) in [(s, "squashed"), (r, "rebased")] {
         commit_file(root, &format!("{name}-1.txt"));
         commit_file(root, &format!("{name}-2.txt"));
         git(root, &["push", "-q", "origin", &format!("otterd/{name}")]);
     }
+    let v = Path::new(&reverted.root);
+    commit_file(v, "tried.txt");
+    git(v, &["revert", "--no-edit", "HEAD"]);
 
     // main moves on; the pull requests merge; their branches go.
     commit_file(&origin, "m.txt");
     git(&origin, &["merge", "-q", "--squash", "otterd/squashed"]);
     git(&origin, &["commit", "-qm", "squashed"]);
     git(&origin, &["cherry-pick", "main..otterd/rebased"]);
+    git(&origin, &["commit", "-q", "--allow-empty", "-m", "ci"]);
     git(
         &origin,
         &["branch", "-qD", "otterd/squashed", "otterd/rebased"],
@@ -8422,13 +8440,16 @@ async fn a_branch_squashed_or_rebased_in_is_not_unpushed_work() {
     git(&base, &["fetch", "-q", "--prune", "origin"]);
 
     commit_file(s, "since.txt");
-    let err = conn.workspace_delete("squashed", false).await.unwrap_err();
-    assert!(
-        format!("{err:#}").contains("not pushed anywhere"),
-        "{err:#}"
-    );
+    for name in ["squashed", "reverted"] {
+        let err = conn.workspace_delete(name, false).await.unwrap_err();
+        assert!(
+            format!("{err:#}").contains("not pushed anywhere"),
+            "{name}: {err:#}"
+        );
+    }
     git(s, &["reset", "-q", "--hard", "HEAD~1"]);
     conn.workspace_delete("squashed", false).await.unwrap();
     conn.workspace_delete("rebased", false).await.unwrap();
+    conn.workspace_delete("reverted", true).await.unwrap();
     assert!(!base.exists());
 }

@@ -4178,27 +4178,34 @@ workspace went (D-108); and a branch merged by squash or rebase, then
 deleted, looked like unpushed work once a fetch pruned it, so deleting its
 workspace asked for force.
 
-- **New copies:** `git init --bare`, `remote add origin`, fetch. The
-  remote's branches are only `origin/*`; refs/heads holds what workspaces
-  made.
+- **New copies:** `git init --bare`, `remote add origin` (a relative local
+  path made absolute, as `clone` did), fetch with tags. The remote's
+  branches are only `origin/*`; refs/heads holds what workspaces made.
 - **Copies from before** drop what their clone copied, once (marked by
   `otter.ownBranchesOnly` in the copy's config), when a workspace is
   prepared on them or their last one is deleted. A branch goes only when
-  the clone packed it, it has no reflog (nobody committed on it here), and
-  no worktree has it. Branches a workspace made are loose refs, and any
-  committed on have a reflog: they stay.
+  the clone packed it, it has no reflog, and no worktree has it. The reflog
+  is the guard: any branch committed on here has one, even after a gc has
+  packed it (the loose-ref check only spares branches a workspace made and
+  never used). So with `core.logAllRefUpdates` off nothing goes, and each
+  branch dropped is logged with its commit.
 - **A branch asked for by name** that is here but behind `origin/<name>`
   is caught up, with that as its upstream. One with commits of its own is
   left as it is.
 - **Landed work isn't unpushed:** commits on no remote still count unless
   the branch's work is on the default branch under other commits, compared
-  by patch id: each commit (a rebase merge, `git cherry`), or the whole
-  branch as one commit on its merge base (a squash merge). Work added
-  since makes the patches differ, so it still needs force. A merge into
-  another branch than the default, or one whose patch changed on the way
-  in (conflicts resolved, neighbouring lines edited), still asks.
+  by patch id: every one of those commits (a rebase merge, `git cherry`),
+  or the whole branch as one commit on its merge base (a squash merge).
+  Work added since makes the patches differ, so it still needs force. So
+  do: a branch with no net change (an empty patch would match any empty
+  commit upstream), a merge commit of its own under a rebase merge, a
+  merge into another branch than the default, and a patch that changed on
+  the way in (conflicts resolved, neighbouring lines edited).
 - **Verified:** e2e tests for a fresh copy (only its workspaces' branches,
   `--branch main` at the remote's tip, a branch deleted upstream doesn't
   keep it), an older copy (cloned branches dropped when preparing and when
-  deleting, a branch with work kept), and squash and rebase merges (no
-  force; work added since still asks). Each fails against the code before.
+  deleting, a branch with work kept, nothing dropped with reflogs off, a
+  cloned `main` caught up), and squash and rebase merges (no force; work
+  added since and a net-zero branch still ask). Each fails against the code
+  before, and each guard fails its test when taken out. Reviewed by a
+  second model, which found the net-zero and reflogs-off cases.

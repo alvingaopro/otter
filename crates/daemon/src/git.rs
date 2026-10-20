@@ -5,7 +5,7 @@
 //! worktree of it. Worktrees share the object store, so a new workspace costs a
 //! fetch and a checkout, not a clone.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
@@ -82,11 +82,17 @@ impl GitManager {
             // that up); refs/heads holds only the workspaces' own.
             self.git(None, &["init", "--quiet", "--bare", "--", &path_str(&tmp)])
                 .await?;
-            self.git(Some(&tmp), &["remote", "add", "--", "origin", repository])
+            // As `clone` would, a local path made absolute: fetches run in
+            // the copy.
+            let url = match Path::new(repository) {
+                p if p.is_relative() && p.exists() => path_str(&std::path::absolute(p)?),
+                _ => repository.to_owned(),
+            };
+            self.git(Some(&tmp), &["remote", "add", "--", "origin", &url])
                 .await?;
             self.git(Some(&tmp), &["config", OWN_BRANCHES_ONLY, "true"])
                 .await?;
-            self.git(Some(&tmp), &["fetch", "origin"])
+            self.git(Some(&tmp), &["fetch", "--tags", "origin"])
                 .await
                 .context("git clone failed")?;
             std::fs::rename(&tmp, &base)?;
@@ -219,37 +225,50 @@ impl GitManager {
             return Ok(0);
         }
         let out = self
-            .git(
-                Some(repo),
-                &["rev-list", "--count", &head, "--not", "--remotes"],
-            )
+            .git(Some(repo), &["rev-list", &head, "--not", "--remotes"])
             .await?;
-        let n = out.trim().parse().unwrap_or(0);
-        if n > 0 && self.landed(repo, &head).await {
+        let commits: HashSet<&str> = out.lines().collect();
+        if commits.is_empty() || self.landed(repo, &head, &commits).await {
             return Ok(0);
         }
-        Ok(n)
+        Ok(commits.len() as u32)
     }
 
-    /// Whether `head`'s work is on the default branch under other commits:
-    /// each commit re-applied (a rebase merge), or all of them as one (a
-    /// squash merge) — what a merged pull request leaves once its branch is
-    /// deleted. Compared by patch id, so work added since never counts.
-    async fn landed(&self, repo: &Path, head: &str) -> bool {
+    /// Whether `commits` (`head`'s, on no remote) are on the default branch
+    /// under other commits: each one re-applied (a rebase merge), or the
+    /// whole branch as one (a squash merge) — what a merged pull request
+    /// leaves once its branch is deleted. Compared by patch id, so work
+    /// added since never counts.
+    async fn landed(&self, repo: &Path, head: &str, commits: &HashSet<&str>) -> bool {
         let Ok(upstream) = self.default_base(repo).await else {
             return false;
         };
-        // `-` marks a commit with an equivalent upstream.
-        match self.git(Some(repo), &["cherry", &upstream, head]).await {
-            Ok(out) if out.lines().all(|l| l.starts_with('-')) => return true,
-            Ok(_) => {}
-            Err(_) => return false,
+        // `-` marks a commit with an equivalent upstream. Merge commits
+        // aren't listed: a branch with one of its own isn't landed this way.
+        let Ok(cherry) = self.git(Some(repo), &["cherry", &upstream, head]).await else {
+            return false;
+        };
+        let equivalent: HashSet<&str> = cherry
+            .lines()
+            .filter_map(|l| l.strip_prefix("- "))
+            .collect();
+        if commits.is_subset(&equivalent) {
+            return true;
         }
         let squashed = async {
             let base = self
                 .git(Some(repo), &["merge-base", &upstream, head])
                 .await?;
             let tree = self.rev_parse(repo, &format!("{head}^{{tree}}")).await?;
+            // No change at all: nothing a squash could have carried, and an
+            // empty patch would match any empty commit upstream.
+            if tree
+                == self
+                    .rev_parse(repo, &format!("{}^{{tree}}", base.trim()))
+                    .await?
+            {
+                return Ok(String::new());
+            }
             // The whole branch as one commit on its merge base: an object
             // only, on no ref; gc takes it.
             let commit = self
@@ -332,16 +351,29 @@ impl GitManager {
     }
 
     /// A repository cloned before D-132 holds a copy of each branch the
-    /// remote had that day. Drop those once: refs the clone packed, with no
-    /// reflog (never committed on here) and checked out nowhere. Branches a
-    /// workspace made are loose refs, and any committed on have a reflog:
-    /// they stay. Best effort; a failure tries again next time.
+    /// remote had that day. Drop those once: refs the clone packed, checked
+    /// out nowhere, with no reflog. The reflog is what keeps work: a branch
+    /// committed on here has one even once a gc has packed it (the loose
+    /// ref check only spares branches a workspace made and never used), so
+    /// nothing goes while git is set not to write them. Each one dropped is
+    /// logged with its commit. Best effort; a failure tries again next time.
     async fn drop_cloned_branches(&self, repo: &Path) {
         if self
             .git(Some(repo), &["config", "--get", OWN_BRANCHES_ONLY])
             .await
             .is_ok()
         {
+            return;
+        }
+        if let Ok(v) = self
+            .git(Some(repo), &["config", "--get", "core.logAllRefUpdates"])
+            .await
+            && matches!(
+                v.trim().to_ascii_lowercase().as_str(),
+                "false" | "no" | "off" | "0"
+            )
+        {
+            tracing::info!(repo = %repo.display(), "keeping cloned branches: reflogs are off");
             return;
         }
         let checked_out = self
@@ -353,24 +385,27 @@ impl GitManager {
             .filter_map(|l| l.strip_prefix("branch "))
             .collect();
         let packed = std::fs::read_to_string(repo.join("packed-refs")).unwrap_or_default();
-        let cloned: Vec<&str> = packed
+        let cloned: Vec<(&str, &str)> = packed
             .lines()
-            .filter_map(|l| l.split_once(' ').map(|(_, name)| name))
-            .filter(|name| {
-                name.starts_with("refs/heads/")
-                    && !checked_out.contains(name)
-                    && !repo.join(name).exists()
-                    && !repo.join("logs").join(name).exists()
+            .filter_map(|l| l.split_once(' '))
+            .filter_map(|(commit, name)| Some((commit, name.strip_prefix("refs/heads/")?)))
+            .filter(|(_, branch)| {
+                let name = format!("refs/heads/{branch}");
+                !checked_out.contains(&name.as_str())
+                    && !repo.join(&name).exists()
+                    && !repo.join("logs").join(&name).exists()
             })
             .collect();
         if !cloned.is_empty() {
+            for (commit, branch) in &cloned {
+                tracing::info!(repo = %repo.display(), branch, commit, "dropping a cloned branch");
+            }
             let mut args = vec!["branch", "--delete", "--force", "--"];
-            args.extend(cloned.iter().map(|n| &n["refs/heads/".len()..]));
+            args.extend(cloned.iter().map(|(_, branch)| *branch));
             if let Err(e) = self.git(Some(repo), &args).await {
                 tracing::warn!(repo = %repo.display(), "dropping cloned branches: {e:#}");
                 return;
             }
-            tracing::info!(repo = %repo.display(), count = cloned.len(), "dropped cloned branches");
         }
         if let Err(e) = self
             .git(Some(repo), &["config", OWN_BRANCHES_ONLY, "true"])
