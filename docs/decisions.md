@@ -4493,7 +4493,7 @@ the same bytes every time.
   model, which found the npm, logging, Go and line-number cases and the
   cut before redacting.
 
-## D-140 — A lost coding run says why, not what Node warned (2026-10-20)
+## D-140 — What Node and Claude Code print isn't the agent's word (2026-10-20)
 
 When the coding agent's Claude worker dies, the run's message quotes the
 end of what it printed. The worker prints the SDK's
@@ -4506,6 +4506,14 @@ bench (B01: the worker SIGKILLed mid-turn).
 - The worker's diagnostics leave out Node's own lines, by the rule D-134
   gave Otter's turn (now one function, `agents::node_warning`); with
   nothing else said, they read "no diagnostics".
+- **An interrupted turn** ended with Claude Code's own
+  `[ede_diagnostic] result_type=user … stop_reason=tool_use` in the SDK
+  result's `errors`. With no reply, the worker used it as the turn's
+  summary, and the conversation showed it as an Agent message before the
+  redirect's answer (B04). The worker now leaves `[ede_diagnostic]`
+  entries out of a turn's errors: interrupted with nothing said, the
+  summary is empty.
 - **Verified:** the fake worker now prints that warning before failing;
   `a_failing_worker_says_why` keeps its diagnostic line and drops the
-  warning, and fails against the code before.
+  warning. The worker's `map.test.ts` maps an interrupt carrying that
+  diagnostic to no summary. Each fails against the code before.
