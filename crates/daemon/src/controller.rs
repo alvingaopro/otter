@@ -2315,21 +2315,30 @@ impl Daemon {
                     Ok(ci) => dl.ci = ci,
                     Err(e) => tracing::warn!(task = %f.id, "reading CI: {e:#}"),
                 }
-                let failed: Vec<_> = dl
+                let mut failed: Vec<_> = dl
                     .ci
                     .iter()
                     .filter(|c| matches!(c.state.as_str(), "fail" | "cancel"))
                     .cloned()
                     .collect();
+                // In one order, whatever gh's, so failures compare (D-139).
+                failed.sort_by(|a, b| a.name.cmp(&b.name));
                 if !failed.is_empty() {
                     let mut text = String::new();
+                    let mut runs = std::collections::HashSet::new();
                     for c in &failed {
                         text.push_str(&format!(
                             "{}: {}\n",
                             c.name,
                             c.description.clone().unwrap_or_default()
                         ));
-                        if let Some(log) = gh.failed_log(c).await {
+                        // Checks of one run share its log: once.
+                        if c.url
+                            .as_deref()
+                            .and_then(GitHub::run_id)
+                            .is_some_and(|r| runs.insert(r))
+                            && let Some(log) = gh.failed_log(c).await
+                        {
                             text.push_str(&log);
                             text.push('\n');
                         }
@@ -2365,7 +2374,9 @@ impl Daemon {
                             .find(|e| e.kind == EvidenceKind::Ci && e.ok == Some(false));
                         let same = last.is_some_and(|e| {
                             e.title == title
-                                && e.detail.as_deref().map(str::trim) == Some(text.trim())
+                                && e.detail
+                                    .as_deref()
+                                    .is_some_and(|d| delivery::same_ci_failure(d, &text))
                         });
                         let fixed = f
                             .steps
