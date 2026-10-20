@@ -4465,18 +4465,29 @@ the same bytes every time.
   240 characters. Lines, not characters, so a failure whose durations got
   shorter keeps the same lines. The agent's fix turn gets this text too,
   with less noise. Checks of one run share its log: it's added once.
-- **The same failure:** the same lines once what differs between any two
-  runs is set aside — timestamps, times of day, durations (`0.01s`,
-  `12ms`, `1.5 s`), numbers of five digits or more (run ids, processes)
-  and hex hashes. Line numbers, counts and assertion values stay, so a
-  different failure is still different. Logs kept before this were raw:
-  the first comparison against one differs, so that task gets one more
-  fix before the rule applies.
+- **The same failure:** the same lines once what differs between runs of
+  one failure is set aside: dates and times anywhere in a line (npm's log
+  file names, `time="…"`, Python's `18:00:00,123`), durations (`0.01s`,
+  `1.5 s`, Go's `1m02.34s`), where in a file (`lib.rs:42:9`, `line 42`: a
+  fix moves lines), numbers of five digits or more (run ids, processes,
+  ports) and hex hashes. Counts and small values stay, so another assertion
+  is another failure. The cost: an assertion that differs only in a date or
+  a large number counts as the same, and the task goes to the developer
+  after one fix rather than trying again. Failed checks are compared in
+  name order, whatever gh's. Logs kept before this were raw: the first
+  comparison against one differs, so that task gets one more fix before
+  the rule applies.
 - **No credentials:** what git and gh print on failure, the CI log and a
   check's description pass `redact` before they become a task's messages,
-  evidence or otterd's log (invariant 13); they didn't before.
+  evidence or otterd's log (invariant 13); they didn't before. A log line
+  is cut after redacting, so no part of a secret is left. This needs
+  D-134's `redact` (no panic on a multi-byte character before `:` or `=`):
+  it lands after it.
 - **Verified:** unit tests on gh's real shape (two runs of one failure
   differing in times, durations, run id and commit match; another
-  assertion doesn't); the e2e test now gets a log whose times and
-  durations change with every view, and fails against the old comparison
-  with "all 6 attempts are used up".
+  assertion doesn't), on npm, Go, Rust, pytest, unittest and logging
+  output, and on a secret at a line's cut. The e2e test now gets a log
+  whose times and durations change with every view; it fails against the
+  old comparison with "all 6 attempts are used up". Reviewed by a second
+  model, which found the npm, logging, Go and line-number cases and the
+  cut before redacting.

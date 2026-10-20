@@ -2315,14 +2315,17 @@ impl Daemon {
                     Ok(ci) => dl.ci = ci,
                     Err(e) => tracing::warn!(task = %f.id, "reading CI: {e:#}"),
                 }
-                let failed: Vec<_> = dl
+                let mut failed: Vec<_> = dl
                     .ci
                     .iter()
                     .filter(|c| matches!(c.state.as_str(), "fail" | "cancel"))
                     .cloned()
                     .collect();
+                // In one order, whatever gh's, so failures compare (D-139).
+                failed.sort_by(|a, b| a.name.cmp(&b.name));
                 if !failed.is_empty() {
                     let mut text = String::new();
+                    let mut runs = std::collections::HashSet::new();
                     for c in &failed {
                         text.push_str(&format!(
                             "{}: {}\n",
@@ -2330,8 +2333,11 @@ impl Daemon {
                             c.description.clone().unwrap_or_default()
                         ));
                         // Checks of one run share its log: once.
-                        if let Some(log) = gh.failed_log(c).await
-                            && !text.contains(&log)
+                        if c.url
+                            .as_deref()
+                            .and_then(GitHub::run_id)
+                            .is_some_and(|r| runs.insert(r))
+                            && let Some(log) = gh.failed_log(c).await
                         {
                             text.push_str(&log);
                             text.push('\n');
