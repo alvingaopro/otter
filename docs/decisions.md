@@ -4326,3 +4326,70 @@ without changing anything else on the host.
     - The browser sign-in shows its code, then who it is. A cleared
       identity leaves the host's.
 
+
+## D-134 — A task that stops says why, and can go on (2026-10-20)
+
+A task asked in Chinese failed in planning seconds after it started, twice
+more on retry, and was deleted, its history with it. The cause was in
+otterd, not the agent: `redact` (D-075) took the byte after the character
+before a key as the key's start, so text with a multi-byte character just
+before `word:` or `word=` (`修复这个PR，https://…`, a BOM in a CI log)
+panicked. The panic ended the run's actor; the bridge failed the run as
+"ended unexpectedly", and the task said the coding agent's look at the
+code had failed. Retrying couldn't start: the conversation still named the
+lost run as its active one until a restart. Nothing of this was in the log
+but two bare panic lines, and a panic in the controller's step would have
+left the task marked as being stepped, never stepped again.
+
+- **`redact`** finds the key's start by characters. Text in any script
+  reads whole.
+- **A lost run frees its conversation:** when the actor or the bridge goes
+  without ending the run, its conversation's generation ends (outcome
+  unknown; queued turns stay queued, as on a restart) if the run still
+  holds it, and the run ends as one cut off mid-turn (D-061): resumed when
+  its session can carry on, the developer's to decide after three in a
+  row. It says otterd lost it.
+- **Contained:** a task's step, Otter's follow-ups, its turn on the host
+  and a run's bridge each run as a task of their own. A panic there is an
+  error like the others: the task fails with *Otter stopped: an internal
+  error*, the host's turn can run again, a lost bridge lets its run and
+  workspace go. A step that panicked answers what the developer said with
+  that, so it isn't taken up again at once — and so does Otter's turn on
+  the host, and a follow-up that panicked is said plainly instead; failing
+  a task that already failed changes nothing and wakes nothing. A run lost
+  after its last turn completed ends completed, as a restart would find
+  it.
+- **In the log:** a panic, with its time, thread and (with
+  `RUST_BACKTRACE`) backtrace, through the log like the rest; a
+  task failing, with why (redacted); a task deleted, with its last status
+  and why. A failed Otter's turn no longer quotes Node's warning hint as
+  what the worker said.
+- **Wording:** a failed look at the code says *the look at the code
+  failed (why)*, not that the agent's did, and that retrying tries again.
+- **A workspace only the developer can free needs them:** a task waiting
+  because an agent they started works in its workspace, or because the
+  workspace is archived, is *Waiting on you* (Inbox, `otter ls`), not
+  working. Waiting for a workspace being prepared, or for another task,
+  isn't. `WAITING`, `YOUR_AGENT` and `ARCHIVED` move to `otter-core` so
+  the rule and the words are one.
+- **CLI:** `otter task retry`; `resume`, `retry` and `cancel` say what
+  they do.
+- **Known limits:** a step that panics every time on a task still being
+  worked fails it once; one that panics on the developer's every message
+  answers each with the failure. A panic while a lock is held poisons it,
+  which containing can't undo. The *Waiting on you* of a workspace wait
+  counts from when the task entered its status, not from when the wait
+  began. A panic quoting a string (a slice out of bounds) quotes up to 256
+  bytes of it unredacted, as before: redacting in the hook could panic
+  again and abort otterd.
+- **Verified:** unit tests for the scripts (`，https://`, a BOM, `看看token=`,
+  a key after Chinese still masked), a panicking step as an error, and the
+  waits that need the developer. An e2e test (`a_request_in_chinese_is_planned`)
+  with the fake agent saying Chinese back: it fails on the old `redact` with
+  *otterd lost the run*. By hand, with the old `redact` back: the task
+  failed, and Retry planned and went on; with the conversation's release
+  taken out as well, Retry failed with *run … is still serving this
+  conversation*, as on the developer's host. After review, the lost run
+  is resumed instead: by hand, it was Interrupted, then resumed and
+  finished on its own. Reviewed by a second model, which found the
+  answer-loop, the resume and the bridge.

@@ -21,6 +21,13 @@ use crate::ids::{
 };
 use crate::model::{Activity, Timestamp};
 
+/// What a task waiting for its workspace says first (D-079).
+pub const WAITING: &str = "Waiting for ";
+/// How that wait ends when only the developer can end it: their own agent
+/// works there, or the workspace is put away (D-134).
+pub const YOUR_AGENT: &str = ", an agent you started, is working there";
+pub const ARCHIVED: &str = ": it's archived; unarchive it to go on";
+
 /// Version of the persisted [`Task`] document. Bump with a migration in
 /// the daemon's task store.
 pub const TASK_SCHEMA: u32 = 1;
@@ -723,6 +730,14 @@ impl Task {
                 need(NeedKind::Blocked, reason("Waiting on you"))
             }
             TaskStatus::Failed => need(NeedKind::Failed, reason("Stopped")),
+            // Waiting for a workspace only the developer can free (D-134).
+            s if s.is_active()
+                && self.status_reason.as_deref().is_some_and(|r| {
+                    r.starts_with(WAITING) && (r.ends_with(YOUR_AGENT) || r.ends_with(ARCHIVED))
+                }) =>
+            {
+                need(NeedKind::Blocked, reason("Waiting on you"))
+            }
             _ => None,
         }
     }
@@ -1463,6 +1478,32 @@ mod tests {
         old.status = Failed;
         old.status_since = None;
         assert_eq!(old.needs().unwrap().since, old.updated_at);
+    }
+
+    #[test]
+    fn a_workspace_only_the_developer_can_free_waits_on_them() {
+        let t0 = chrono::Utc::now();
+        let mut f = Task::new("t".into(), "r".into(), t0);
+        f.transition(Planning, None, t0).unwrap();
+        let waiting = |what: &str| format!("{WAITING}proj{what}");
+        for (why, theirs) in [
+            (waiting(&format!(": claude{YOUR_AGENT}")), true),
+            (waiting(ARCHIVED), true),
+            (waiting(": it's being prepared"), false),
+            (waiting(": “Other task” is working there"), false),
+        ] {
+            f.status_reason = Some(why.clone());
+            let n = f.needs();
+            assert_eq!(n.is_some(), theirs, "{why}");
+            if let Some(n) = n {
+                assert_eq!((n.kind, n.summary), (NeedKind::Blocked, why));
+                assert_eq!(f.activity(), Activity::NeedsYou);
+            }
+        }
+        // Paused, it waits on nothing.
+        f.status_reason = Some(waiting(&format!(": claude{YOUR_AGENT}")));
+        f.status = Paused;
+        assert_eq!(f.needs(), None);
     }
 
     #[test]
