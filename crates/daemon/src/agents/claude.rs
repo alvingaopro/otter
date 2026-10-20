@@ -485,6 +485,8 @@ static SCANS: std::sync::Mutex<std::collections::BTreeMap<(PathBuf, i64), Scan>>
 struct Scan {
     at: Timestamp,
     dirs: Vec<Option<DateTime<Utc>>>,
+    /// When, by otterd's own clock: what's forgotten goes by it.
+    taken: std::time::Instant,
 }
 
 impl Scan {
@@ -509,7 +511,8 @@ fn newest_transcript(ctx: &ObserveContext<'_>, since: Timestamp) -> Option<(Stri
     {
         let mut scans = SCANS.lock().unwrap();
         // Executions that stopped looking: bound, ended, gone.
-        scans.retain(|_, s| ctx.now - s.at < Duration::seconds(RESCAN_SECS * 12));
+        let forget = std::time::Duration::from_secs(RESCAN_SECS as u64 * 12);
+        scans.retain(|_, s| s.taken.elapsed() < forget);
         if scans.get(&key).is_some_and(|s| !s.due(ctx.now, &stamps)) {
             return None;
         }
@@ -518,6 +521,7 @@ fn newest_transcript(ctx: &ObserveContext<'_>, since: Timestamp) -> Option<(Stri
             Scan {
                 at: ctx.now,
                 dirs: stamps,
+                taken: std::time::Instant::now(),
             },
         );
     }
@@ -772,6 +776,7 @@ mod tests {
         let scan = Scan {
             at: t0,
             dirs: vec![None],
+            taken: std::time::Instant::now(),
         };
         assert!(!scan.due(t0 + ms(4999), &[None]));
         assert!(scan.due(t0 - ms(1), &[None]));
