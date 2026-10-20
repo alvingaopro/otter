@@ -29,6 +29,23 @@ pub struct GitManager {
     locks: std::sync::Mutex<HashMap<String, Arc<Mutex<()>>>>,
 }
 
+/// What is at a workspace's worktree path, as git sees it (D-135).
+#[derive(Debug)]
+pub enum Found {
+    /// No `.git` there: nothing, an empty directory, or the registration of
+    /// a worktree whose directory is gone (and why it's locked, if it is).
+    Nothing { locked: Option<String> },
+    /// A worktree of this repository: its branch (none when detached), and
+    /// whether `git worktree add` never finished it — locked
+    /// "initializing", as git leaves it until its checkout is done.
+    Worktree {
+        branch: Option<String>,
+        cut_short: bool,
+    },
+    /// Files, and no worktree of this repository.
+    Other,
+}
+
 /// What a new worktree ended up on.
 #[derive(Debug, Clone)]
 pub struct Checkout {
@@ -263,15 +280,15 @@ impl GitManager {
         let lock = self.lock_for(repo_id);
         let _guard = lock.lock().await;
         let repo = self.base_dir(repo_id);
-        let branch = match self.registered(&repo, path).await? {
-            Some(branch) => {
+        let branch = match registration(&repo, path) {
+            Some(r) => {
                 // Twice: locked ones too.
                 self.git(
                     Some(&repo),
                     &["worktree", "remove", "--force", "--force", &path_str(path)],
                 )
                 .await?;
-                branch
+                r.branch
             }
             None => None,
         };
@@ -285,28 +302,67 @@ impl GitManager {
         }
     }
 
-    /// Whether a worktree is registered at `path`, and the branch it has
-    /// checked out.
-    async fn registered(&self, repo: &Path, path: &Path) -> Result<Option<Option<String>>> {
-        let list = self
-            .git(Some(repo), &["worktree", "list", "--porcelain"])
-            .await?;
-        let want = real(path);
-        Ok(list
-            .split("\n\n")
-            .find(|entry| {
-                entry
-                    .lines()
-                    .next()
-                    .and_then(|l| l.strip_prefix("worktree "))
-                    .is_some_and(|p| real(Path::new(p)) == want)
-            })
-            .map(|entry| {
-                entry
-                    .lines()
-                    .find_map(|l| l.strip_prefix("branch refs/heads/"))
-                    .map(str::to_owned)
-            }))
+    /// What is at `path`, a workspace's worktree path (D-135).
+    pub fn found(&self, repo_id: &str, path: &Path) -> Found {
+        let registered = registration(&self.base_dir(repo_id), path);
+        if !path.join(".git").exists() {
+            let empty = std::fs::read_dir(path).map_or(true, |mut d| d.next().is_none());
+            return match empty {
+                true => Found::Nothing {
+                    locked: registered.and_then(|r| r.locked),
+                },
+                false => Found::Other,
+            };
+        }
+        match registered {
+            Some(r) => Found::Worktree {
+                cut_short: r.locked.as_deref() == Some("initializing"),
+                branch: r.branch,
+            },
+            None => Found::Other,
+        }
+    }
+
+    /// Unlock the worktree at `path`.
+    pub async fn unlock(&self, repo_id: &str, path: &Path) -> Result<()> {
+        let lock = self.lock_for(repo_id);
+        let _guard = lock.lock().await;
+        self.git(
+            Some(&self.base_dir(repo_id)),
+            &["worktree", "unlock", &path_str(path)],
+        )
+        .await?;
+        Ok(())
+    }
+
+    /// What a worktree found on `branch` came from, as `add_worktree` would
+    /// have said: `base` (default: origin's default branch), and where the
+    /// branch left it. Best effort (D-135).
+    pub async fn base_of(
+        &self,
+        repo_id: &str,
+        branch: &str,
+        base: Option<&str>,
+    ) -> (Option<String>, Option<String>) {
+        let lock = self.lock_for(repo_id);
+        let _guard = lock.lock().await;
+        let repo = self.base_dir(repo_id);
+        let base = match base {
+            Some(b) => Some(b.to_owned()),
+            None => self.default_base(&repo).await.ok(),
+        };
+        let commit = match &base {
+            Some(b) => self
+                .git(
+                    Some(&repo),
+                    &["merge-base", &format!("refs/heads/{branch}"), b],
+                )
+                .await
+                .ok()
+                .map(|c| c.trim().to_owned()),
+            None => None,
+        };
+        (base, commit)
     }
 
     /// Delete `branch` if nothing is on it: no remote branch has its name,
@@ -654,6 +710,37 @@ impl Drop for Group {
             unsafe { libc::killpg(leader as libc::pid_t, libc::SIGKILL) };
         }
     }
+}
+
+/// A worktree's registration in its repository, `worktrees/<id>/`, read
+/// from the files git-worktree(1) documents there.
+struct Registration {
+    /// The branch it has checked out; none when detached.
+    branch: Option<String>,
+    /// Why it's locked, when it is.
+    locked: Option<String>,
+}
+
+/// The registration in `repo` of a worktree at `path`, if there is one.
+fn registration(repo: &Path, path: &Path) -> Option<Registration> {
+    let want = real(path);
+    std::fs::read_dir(repo.join("worktrees"))
+        .ok()?
+        .flatten()
+        .find_map(|e| {
+            let admin = e.path();
+            // `<worktree>/.git`; relative to here when git writes relative paths.
+            let gitdir = std::fs::read_to_string(admin.join("gitdir")).ok()?;
+            let at = admin.join(gitdir.trim());
+            (real(at.parent()?) == want).then(|| Registration {
+                branch: std::fs::read_to_string(admin.join("HEAD"))
+                    .ok()
+                    .and_then(|h| h.trim().strip_prefix("ref: refs/heads/").map(str::to_owned)),
+                locked: std::fs::read_to_string(admin.join("locked"))
+                    .ok()
+                    .map(|r| r.trim().to_owned()),
+            })
+        })
 }
 
 /// `p` with symbolic links resolved, as git records a worktree's path; for

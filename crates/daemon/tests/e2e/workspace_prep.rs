@@ -10,12 +10,23 @@ use std::time::Instant;
 /// What a `git worktree add` killed mid-checkout leaves (reproduced with
 /// plain git): its registration locked "initializing" with the index still
 /// locked, files missing from the tree, and the workspace's record never
-/// told the branch.
+/// told the branch, still preparing, nothing run in it yet.
 fn cut_short(host: &TestHost, base: &Path, ws: &Workspace, missing: &str) {
     let registration = registration(base, &ws.root);
     std::fs::write(registration.join("locked"), "initializing").unwrap();
     std::fs::write(registration.join("index.lock"), "").unwrap();
     std::fs::remove_file(Path::new(&ws.root).join(missing)).unwrap();
+    edit_record(host, &ws.name, |record| {
+        record["state"] = "preparing".into();
+        for session in record["sessions"].as_array_mut().unwrap() {
+            session["executions"] = serde_json::json!([]);
+        }
+    });
+}
+
+/// Change a workspace's record while otterd is stopped: always without
+/// its branch, as preparation left it before D-135.
+fn edit_record(host: &TestHost, name: &str, edit: impl FnOnce(&mut serde_json::Value)) {
     let file = host.home().join("state/state.json");
     let mut state: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
@@ -23,13 +34,13 @@ fn cut_short(host: &TestHost, base: &Path, ws: &Workspace, missing: &str) {
         .as_array_mut()
         .unwrap()
         .iter_mut()
-        .find(|w| w["name"] == ws.name.as_str())
+        .find(|w| w["name"] == name)
         .unwrap();
-    record["state"] = "preparing".into();
     let source = record["source"].as_object_mut().unwrap();
     source.insert("branch".into(), "".into());
     source.remove("base");
     source.remove("base_commit");
+    edit(record);
     std::fs::write(&file, serde_json::to_string_pretty(&state).unwrap()).unwrap();
 }
 
@@ -114,8 +125,9 @@ async fn a_locked_or_half_made_worktree_is_deleted() {
 }
 
 /// A worktree that went missing (deleted by hand), its registration left
-/// locked: preparing the workspace again checks out the branch it had,
+/// behind: preparing the workspace again checks out the branch it had,
 /// with its commits, rather than failing or starting `otterd/<name>-2`.
+/// One the developer locked is theirs: preparing says so and leaves it.
 #[tokio::test]
 async fn a_worktree_that_went_missing_is_made_again_on_its_branch() {
     let host = TestHost::new();
@@ -127,12 +139,7 @@ async fn a_worktree_that_went_missing_is_made_again_on_its_branch() {
     let (ws, base) = ready_git_ws(&host, "gone").await;
     let root = Path::new(&ws.root);
     commit_file(root, "work.txt");
-    std::fs::write(
-        registration(&base, &ws.root).join("locked"),
-        "on a USB disk",
-    )
-    .unwrap();
-    std::fs::rename(root, host.home().join("moved")).unwrap();
+    std::fs::remove_dir_all(root).unwrap();
 
     conn.workspace_prepare("gone").await.unwrap();
     let ws = wait_prepared(&host, "gone").await;
@@ -140,7 +147,134 @@ async fn a_worktree_that_went_missing_is_made_again_on_its_branch() {
     assert_eq!(git_source(&ws).branch, "otterd/gone");
     assert!(root.join("work.txt").is_file(), "its commit is there");
     assert_eq!(local_branches(&base).trim(), "otterd/gone");
-    assert!(!locked(&base));
+
+    let locked_file = registration(&base, &ws.root).join("locked");
+    std::fs::write(&locked_file, "on a USB disk").unwrap();
+    std::fs::rename(root, host.home().join("usb")).unwrap();
+    conn.workspace_prepare("gone").await.unwrap();
+    let ws = wait_prepared(&host, "gone").await;
+    assert_eq!(ws.state, WorkspaceState::Failed);
+    let why = ws.state_message.unwrap_or_default();
+    assert!(why.contains("locked (on a USB disk)"), "{why}");
+    assert!(locked_file.is_file(), "its lock is the developer's");
+}
+
+/// Before D-135 a checkout cut short was called ready without its branch,
+/// and worked in since. Its work is the developer's: deleting it asks for
+/// force (uncommitted changes, then commits on its branch that are on no
+/// remote), and preparing or unarchiving it keeps its files and records
+/// its branch.
+#[tokio::test]
+async fn a_workspace_ready_without_its_branch_keeps_its_work() {
+    let mut host = TestHost::new();
+    let src = make_repo(&host, "src", &[("README.md", "hello\n")]);
+    let mut conn = host.conn().await;
+    conn.workspace_create(git_ws("legacy", &src, None, vec![SessionSpec::shell()]))
+        .await
+        .unwrap();
+    let (ws, base) = ready_git_ws(&host, "legacy").await;
+    wait_status(&host, "legacy", "shell", SessionStatus::Running).await;
+    let root = Path::new(&ws.root).to_owned();
+    commit_file(&root, "work.txt");
+    std::fs::write(root.join("precious.txt"), "uncommitted").unwrap();
+    let restart = async |host: &mut TestHost, edit: &dyn Fn(&mut serde_json::Value)| {
+        host.stop_daemon().await;
+        edit_record(host, "legacy", edit);
+        host.conn().await
+    };
+
+    let mut conn = restart(&mut host, &|_| {}).await;
+    let err = conn.workspace_delete("legacy", false).await.unwrap_err();
+    assert!(err.to_string().contains("uncommitted"), "{err}");
+    conn.workspace_prepare("legacy").await.unwrap();
+    let ws = wait_prepared(&host, "legacy").await;
+    assert_eq!(ws.state, WorkspaceState::Ready, "{:?}", ws.state_message);
+    assert!(root.join("precious.txt").is_file() && root.join("work.txt").is_file());
+    let g = git_source(&ws);
+    assert_eq!(g.branch, "otterd/legacy");
+    assert_eq!(g.base.as_deref(), Some("origin/main"));
+    assert!(g.base_commit.is_some());
+
+    let mut conn = restart(&mut host, &|r| r["state"] = "archived".into()).await;
+    conn.workspace_unarchive("legacy").await.unwrap();
+    let ws = wait_prepared(&host, "legacy").await;
+    assert_eq!(ws.state, WorkspaceState::Ready, "{:?}", ws.state_message);
+    assert!(root.join("precious.txt").is_file());
+    assert_eq!(git_source(&ws).branch, "otterd/legacy");
+
+    // Cut short, then worked in: still kept, and unlocked.
+    let lock = registration(&base, &ws.root).join("locked");
+    std::fs::write(&lock, "initializing").unwrap();
+    let mut conn = restart(&mut host, &|_| {}).await;
+    conn.workspace_prepare("legacy").await.unwrap();
+    let ws = wait_prepared(&host, "legacy").await;
+    assert_eq!(ws.state, WorkspaceState::Ready, "{:?}", ws.state_message);
+    assert!(root.join("precious.txt").is_file() && !lock.exists());
+    assert_eq!(git_source(&ws).branch, "otterd/legacy");
+
+    std::fs::remove_file(root.join("precious.txt")).unwrap();
+    let mut conn = restart(&mut host, &|_| {}).await;
+    let err = conn.workspace_delete("legacy", false).await.unwrap_err();
+    assert!(
+        format!("{err:#}").contains("1 commit not pushed anywhere"),
+        "{err:#}"
+    );
+    conn.workspace_delete("legacy", true).await.unwrap();
+    assert!(!root.exists() && !base.exists());
+}
+
+/// A task whose workspace failed to prepare waits and says why, rather
+/// than starting its agent there; prepared again, it goes on.
+#[tokio::test]
+async fn a_task_on_a_failed_workspace_says_why_and_waits() {
+    use otter_core::task::TaskAction;
+    let fake = fake_agent_host("ok", "rules").await;
+    let host = &fake.host;
+    let dir = host.home().join("proj");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("Makefile"), "test:\n\t@echo all good\n").unwrap();
+    let mut conn = host.conn().await;
+    conn.workspace_create(WorkspaceCreate {
+        name: "proj".into(),
+        source: SourceSpec::Directory {
+            path: dir.to_string_lossy().into_owned(),
+        },
+        sessions: Some(vec![]),
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+    let f = conn
+        .task_create(otter_protocol::task::TaskCreate {
+            command_id: "create-proj".into(),
+            title: "CSV export".into(),
+            request: "Add a README".into(),
+            workspace: Some("proj".into()),
+            answer_only: false,
+        })
+        .await
+        .unwrap();
+    let id = f.id.to_string();
+    let away = host.home().join("away");
+    std::fs::rename(&dir, &away).unwrap();
+    let ws = conn.workspace_prepare("proj").await.unwrap();
+    assert_eq!(ws.state, WorkspaceState::Failed);
+
+    conn.task_act("start", &id, TaskAction::Start)
+        .await
+        .unwrap();
+    let f = wait_task(host, &id, "it waits, saying why", |f| {
+        f.status_reason.as_deref().is_some_and(|r| {
+            r.starts_with("Waiting for proj: preparing it failed") && r.contains("no longer exists")
+        })
+    })
+    .await;
+    assert!(f.runs.is_empty(), "{:?}", f.runs);
+
+    std::fs::rename(&away, &dir).unwrap();
+    let ws = conn.workspace_prepare("proj").await.unwrap();
+    assert_eq!(ws.state, WorkspaceState::Ready, "{:?}", ws.state_message);
+    wait_task(host, &id, "it goes on", |f| !f.runs.is_empty()).await;
 }
 
 /// A `git` that sleeps before the subcommands named in `$SLOW_GIT` (noting
@@ -255,6 +389,42 @@ async fn a_delete_doesnt_hold_up_the_host() {
     deleting.await.unwrap().unwrap();
     assert!(!Path::new(&ws.root).exists());
     assert!(conn.workspace_get("slow").await.is_err());
+}
+
+/// A delete that fails after it stopped the preparation leaves the
+/// workspace failed, saying why — not preparing with nothing preparing it
+/// — so it can be deleted again, or prepared again.
+#[tokio::test]
+async fn a_delete_that_fails_mid_way_leaves_the_workspace_failed() {
+    use std::os::unix::fs::PermissionsExt;
+    let scratch = tempfile::Builder::new().prefix("wdg").tempdir().unwrap();
+    let host = slow_git_host(scratch.path(), "fetch", None).await;
+    let src = make_repo(&host, "src", &[("README.md", "hello\n")]);
+    let mut conn = host.conn().await;
+    let ws = conn
+        .workspace_create(git_ws("stubborn", &src, None, vec![]))
+        .await
+        .unwrap();
+    // Something there that can't be removed.
+    let stuck = host
+        .home()
+        .join("workspaces")
+        .join(ws.id.as_str())
+        .join("repo/stuck");
+    std::fs::create_dir_all(&stuck).unwrap();
+    std::fs::write(stuck.join("file"), "").unwrap();
+    std::fs::set_permissions(&stuck, std::fs::Permissions::from_mode(0o500)).unwrap();
+
+    let err = conn.workspace_delete("stubborn", false).await.unwrap_err();
+    assert!(err.to_string().contains("removing"), "{err}");
+    let ws = conn.workspace_get("stubborn").await.unwrap();
+    assert_eq!(ws.state, WorkspaceState::Failed);
+    let why = ws.state_message.unwrap_or_default();
+    assert!(why.starts_with("deleting it failed"), "{why}");
+
+    std::fs::set_permissions(&stuck, std::fs::Permissions::from_mode(0o700)).unwrap();
+    conn.workspace_delete("stubborn", false).await.unwrap();
+    assert!(conn.workspace_get("stubborn").await.is_err());
 }
 
 /// Deleting a workspace while it prepares stops its Git first, and all of

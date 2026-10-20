@@ -38,7 +38,7 @@ use tokio::sync::oneshot;
 use crate::attention;
 use crate::daemon::{Daemon, RpcResult, internal, save, workspace_not_found};
 use crate::environment::EnvironmentManager;
-use crate::git::{repo_id, slug};
+use crate::git::{Found, repo_id, slug};
 use crate::sessions::{mark_ended, validate_spec};
 
 /// How long `workspace.create` waits for a preparation with no Git work in
@@ -338,17 +338,17 @@ impl Daemon {
         let ws = self.workspace_get(&p.workspace).await?;
         self.not_being_deleted(&ws)?;
 
-        // A worktree never finished holds no one's work (D-135); the
-        // checks are for one that was.
         if let WorkspaceSource::Git(g) = &ws.source
             && !p.force
-            && !g.branch.is_empty()
         {
-            if self
-                .git
-                .is_dirty(Path::new(&ws.root))
-                .await
-                .unwrap_or(false)
+            let root = Path::new(&ws.root);
+            // What git has there decides, not the record alone: one ready
+            // without its branch, from before D-135, may have been worked in.
+            let found = self.git.found(&g.repo_id, root);
+            let nobodys = nobodys_work(&ws, &found);
+            if !nobodys
+                && root.join(".git").exists()
+                && self.git.is_dirty(root).await.unwrap_or(false)
             {
                 return Err(RpcError::conflict(format!(
                     "workspace `{}` has uncommitted changes in {}; delete with force to discard them",
@@ -356,15 +356,21 @@ impl Daemon {
                 )));
             }
             // Its branch goes with it (D-108): not commits that are nowhere else.
-            let n = self.git.unpushed(&g.repo_id, &g.branch).await.unwrap_or(0);
-            if n > 0 {
-                return Err(RpcError::conflict(format!(
-                    "workspace `{}`'s branch `{}` has {n} commit{} not pushed anywhere; delete with force to discard {}",
-                    ws.name,
-                    g.branch,
-                    if n == 1 { "" } else { "s" },
-                    if n == 1 { "it" } else { "them" },
-                )));
+            let branch = match (g.branch.as_str(), found) {
+                ("", Found::Worktree { branch, .. }) if !nobodys => branch,
+                ("", _) => None,
+                (b, _) => Some(b.to_owned()),
+            };
+            if let Some(branch) = branch {
+                let n = self.git.unpushed(&g.repo_id, &branch).await.unwrap_or(0);
+                if n > 0 {
+                    return Err(RpcError::conflict(format!(
+                        "workspace `{}`'s branch `{branch}` has {n} commit{} not pushed anywhere; delete with force to discard {}",
+                        ws.name,
+                        if n == 1 { "" } else { "s" },
+                        if n == 1 { "it" } else { "them" },
+                    )));
+                }
             }
         }
 
@@ -379,11 +385,23 @@ impl Daemon {
         // Its preparation stops, all of its Git with it, and is gone before
         // anything is removed.
         let prep = self.preparing.lock().unwrap().remove(&id);
+        let stopped = prep.is_some();
         if let Some(prep) = prep {
             prep.abort();
             let _ = prep.await;
         }
+        let deleted = self.delete_stopped(p, &id).await;
+        // Its preparation was stopped: say what happened, so it can be
+        // deleted again or prepared again, not left preparing.
+        if stopped && let Err(e) = &deleted {
+            self.fail_preparing(&id, format!("deleting it failed: {}", e.message))
+                .await;
+        }
+        deleted
+    }
 
+    /// Delete a workspace whose preparation isn't running (D-135).
+    async fn delete_stopped(&self, p: &WorkspaceDelete, id: &WorkspaceId) -> RpcResult<()> {
         // Processes, under the lock as when archiving: marked stopped before
         // anything can find them gone.
         let ws = {
@@ -426,12 +444,18 @@ impl Daemon {
                         .remove_worktree(&git.repo_id, Path::new(&ws.root))
                         .await
                         .map_err(|e| RpcError::internal(format!("removing worktree: {e:#}")))?;
-                    if !git.branch.is_empty() {
-                        removed = self.git.delete_branch(&git.repo_id, &git.branch).await;
-                    } else if let Some(branch) = had {
-                        // Never finished: the branch its checkout made, if
-                        // nothing is on it (D-135).
-                        self.git.drop_empty_branch(&git.repo_id, &branch).await;
+                    let branch = match git.branch.as_str() {
+                        "" => had,
+                        b => Some(b.to_owned()),
+                    };
+                    match branch {
+                        // Not recorded: unless forced, only if nothing is on
+                        // it (D-135).
+                        Some(b) if git.branch.is_empty() && !p.force => {
+                            self.git.drop_empty_branch(&git.repo_id, &b).await;
+                        }
+                        Some(b) => removed = self.git.delete_branch(&git.repo_id, &b).await,
+                        None => {}
                     }
                 }
                 remove_managed_dir(&managed_dir).await?;
@@ -487,6 +511,29 @@ impl Daemon {
             .workspaces
             .iter()
             .any(|w| matches!(&w.source, WorkspaceSource::Git(o) if o.repo_id == repo_id))
+    }
+
+    /// A preparation stopped by a delete that then failed: the workspace
+    /// is failed, saying why, rather than preparing with nothing preparing
+    /// it (D-135).
+    async fn fail_preparing(&self, id: &WorkspaceId, message: String) {
+        let mut store = self.store.lock().await;
+        let Some(ws) = store.workspace_mut(id.as_str()) else {
+            return;
+        };
+        if ws.state != WorkspaceState::Preparing {
+            return;
+        }
+        ws.state = WorkspaceState::Failed;
+        ws.state_message = Some(message.clone());
+        ws.updated_at = Utc::now();
+        if let Err(e) = save(&store) {
+            tracing::error!("{e}");
+        }
+        self.events.emit(Event::WorkspaceFailed {
+            workspace_id: id.clone(),
+            message,
+        });
     }
 
     /// A workspace being deleted takes nothing else (D-135).
@@ -567,9 +614,6 @@ impl Daemon {
                 if !self.deleting.lock().unwrap().contains(&id) {
                     self.launch_pending(&mut store, &id).await;
                 }
-                // A task waiting for it goes on now, not at the next tick:
-                // `workspace.create` no longer waits for Git (D-135).
-                self.task_wake.notify_one();
             }
             Err(e) => {
                 // Kept, logged and sent: never a credential in it (D-075).
@@ -593,6 +637,10 @@ impl Daemon {
                 self.emit_all(events);
             }
         }
+        // A task waiting for it goes on, or says why it can't, now rather
+        // than at the next tick: `workspace.create` no longer waits for Git
+        // (D-135).
+        self.task_wake.notify_one();
     }
 
     async fn prepare_steps(&self, id: &WorkspaceId) -> Result<()> {
@@ -628,10 +676,39 @@ impl Daemon {
 
     /// Make the worktree of a Git workspace: again when a checkout was cut
     /// short — otterd stopped mid-way, as each update does (D-125) — or
-    /// the worktree went missing. Whatever such a one left goes first, and
-    /// one made before goes back on its branch, with its commits (D-135).
+    /// the worktree went missing. What git has there decides: a worktree
+    /// that may hold someone's work is kept and its branch recorded; what a
+    /// checkout cut short left goes first; one made before goes back on its
+    /// branch, with its commits (D-135).
     async fn make_worktree(&self, ws: &Workspace, git: &GitSource, root: &Path) -> Result<()> {
         let id = &ws.id;
+        let found = self.git.found(&git.repo_id, root);
+        let nobodys = nobodys_work(ws, &found);
+        match &found {
+            // Kept as it is, with whatever is in it: one finished but never
+            // recorded (otterd stopped first), or one called ready without
+            // its branch before D-135 and worked in since.
+            Found::Worktree { branch, cut_short } if !nobodys => {
+                if *cut_short {
+                    self.git.unlock(&git.repo_id, root).await?;
+                }
+                return self.adopt(ws, git, branch.clone()).await;
+            }
+            // Locked by someone else than git: theirs.
+            Found::Nothing {
+                locked: Some(reason),
+            } if reason != "initializing" => bail!(
+                "{} is gone, and its worktree is locked ({reason}): unlock it (git worktree unlock) to make it again here, or delete the workspace",
+                root.display()
+            ),
+            Found::Other => bail!(
+                "{} holds files but no worktree of {}: move them away, or delete the workspace",
+                root.display(),
+                git.repo_id
+            ),
+            Found::Worktree { .. } | Found::Nothing { .. } => {}
+        }
+
         let fetch = match self.git.cloned(&git.repo_id) {
             true => "fetching",
             false => "cloning repository",
@@ -639,20 +716,16 @@ impl Daemon {
         self.set_progress(id, fetch).await;
         self.git.sync_repo(&git.repository, &git.repo_id).await?;
         self.set_progress(id, "creating worktree").await;
-        // Cleared first: what a checkout cut short left, which was never
-        // anyone's work (no branch was recorded, nothing ran there), or the
-        // registration of one whose directory is gone. Never a directory
-        // that a finished worktree left with its `.git` missing: adding
-        // fails on it, as before.
-        if git.branch.is_empty() || !root.exists() {
-            let had = self.git.remove_worktree(&git.repo_id, root).await?;
-            // The branch a checkout cut short made, if nothing is on it:
-            // made again under the same name, not `-2`.
-            if git.branch.is_empty()
-                && let Some(branch) = had
-            {
-                self.git.drop_empty_branch(&git.repo_id, &branch).await;
-            }
+        // Cut short with nothing run there, gone, or never there: what's
+        // left goes (its registration, an empty directory). The branch a
+        // checkout cut short made goes too if nothing is on it, so the new
+        // one takes the same name, not `-2`.
+        let had = self.git.remove_worktree(&git.repo_id, root).await?;
+        if nobodys
+            && git.branch.is_empty()
+            && let Some(branch) = had
+        {
+            self.git.drop_empty_branch(&git.repo_id, &branch).await;
         }
         std::fs::create_dir_all(root.parent().unwrap())?;
         let default_branch = match slug(&ws.name) {
@@ -683,6 +756,31 @@ impl Daemon {
                 g.base_commit = Some(checkout.base_commit);
             }
             g.branch = checkout.branch;
+        }
+        store.save()?;
+        Ok(())
+    }
+
+    /// Record the branch of a worktree found at the root, and what it came
+    /// from as `add_worktree` would have said (D-135).
+    async fn adopt(&self, ws: &Workspace, git: &GitSource, branch: Option<String>) -> Result<()> {
+        // Detached: no branch to record.
+        let Some(branch) = branch else {
+            return Ok(());
+        };
+        let (base, base_commit) = self
+            .git
+            .base_of(&git.repo_id, &branch, git.base.as_deref())
+            .await;
+        let mut store = self.store.lock().await;
+        if let Some(w) = store.workspace_mut(ws.id.as_str())
+            && let WorkspaceSource::Git(g) = &mut w.source
+            && g.branch.is_empty()
+        {
+            tracing::info!(workspace = %ws.name, branch, "recording the branch of the worktree found there");
+            g.branch = branch;
+            g.base = base;
+            g.base_commit = base_commit;
         }
         store.save()?;
         Ok(())
@@ -759,6 +857,20 @@ impl Daemon {
             let _ = store.save();
         }
     }
+}
+
+/// Whether what git has at `ws`'s root is nobody's work (D-135): a checkout
+/// cut short (git's add never finished it), in a workspace where nothing
+/// ever ran. Sessions start only once a workspace is ready, so one cut short
+/// under this otterd has none; one called ready before D-135 may have.
+fn nobodys_work(ws: &Workspace, found: &Found) -> bool {
+    matches!(
+        found,
+        Found::Worktree {
+            cut_short: true,
+            ..
+        }
+    ) && ws.sessions.iter().all(|s| s.executions.is_empty())
 }
 
 /// Whether preparing `ws` makes its worktree (D-135): a Git workspace whose
