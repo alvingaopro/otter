@@ -405,13 +405,14 @@ fn doing(piece: &str, cwd: &Path, root: &Path) -> String {
         target(cwd, op).is_some_and(|p| inside(root, &p.to_string_lossy()) || scratch(&p))
     };
     let only_reads = operands.iter().all(|w| {
-        // Quoted, an option is still an option (`"--pre=x"`).
-        let w = w.trim_matches(|c| c == '"' || c == '\'');
+        // Quoted or escaped, an option is still an option (`"--pre=x"`).
+        let w = unquoted(w);
+        let w = w.as_str();
         !w.contains(['<', '(', ')', '$', '`'])
             && !(*cmd == "find" && FIND_ACTS.contains(&w))
             && match (w.starts_with('-'), w.split_once('=')) {
-                (true, Some((name, value))) => !ACTING_OPTIONS.contains(&name) && stays(value),
-                (true, None) => !ACTING_OPTIONS.contains(&w) && !w.contains(['/', '~']),
+                (true, Some((name, value))) => !acting(name) && stays(value),
+                (true, None) => !acting(w) && !w.contains(['/', '~']),
                 // `cache_dir=/elsewhere`: both sides stay.
                 (false, Some((name, value))) => stays(name) && stays(value),
                 (false, None) => stays(w),
@@ -420,9 +421,27 @@ fn doing(piece: &str, cwd: &Path, root: &Path) -> String {
     if only_reads { command } else { whole }
 }
 
+/// A word as the shell passes it, roughly: its quotes and backslashes go
+/// (`\-\-pre`, `-ex''ec`, `"--pre"=x`, `\/etc`), so that spelling a word
+/// differently doesn't make it another (D-138).
+fn unquoted(w: &str) -> String {
+    w.chars()
+        .filter(|c| !matches!(c, '"' | '\'' | '\\'))
+        .collect()
+}
+
+/// An option that runs, writes or brings in something: one of
+/// `ACTING_OPTIONS`, or a short one with its value glued on (`-Ox`).
+fn acting(option: &str) -> bool {
+    ACTING_OPTIONS
+        .iter()
+        .any(|a| option == *a || (a.len() == 2 && option.starts_with(a)))
+}
+
 /// Where a path written by a command points, from `cwd` (`~` is home).
 fn target(cwd: &Path, path: &str) -> Option<std::path::PathBuf> {
-    let path = path.trim_matches(|c| c == '"' || c == '\'');
+    let path = unquoted(path);
+    let path = path.as_str();
     if path.is_empty() || path.contains('$') || path.starts_with('&') {
         // A variable or a descriptor: can't tell, or not a file.
         return None;
@@ -902,6 +921,7 @@ mod tests {
             "echo x>/etc/hosts",
             "make 2> ~/err.log",
             "cp build/app /usr/local/bin/app",
+            r"cp x \/etc/cron.d/y",
             "mv out.txt ../out.txt",
             "tee ~/copy.txt < in.txt",
             "touch ~/flag",
@@ -998,6 +1018,8 @@ mod tests {
     fn destructive_credential_and_production_actions_need_the_developer() {
         for line in [
             "rm -rf ../build",
+            r"rm -rf \/home/u/x",
+            r"rm -rf \~/Documents",
             "rm ~/notes.txt",
             "rmdir /opt/old",
             "rm -rf .",
@@ -1243,6 +1265,14 @@ mod tests {
             "git log --output /home/u/notes.txt",
             // A value elsewhere, after a key.
             "pytest -o cache_dir=/etc/app/password tests/",
+            // Quoted or escaped inside the word.
+            r"rg \-\-pre=./deploy.sh x .",
+            "rg --\"pre\"=sudo x .",
+            "go test -ex''ec sudo ./...",
+            r"find . -name x \-delete",
+            "git grep -O\"sudo\" x",
+            r"cat \/etc/app/password.txt",
+            r"pytest -o cache_dir=\/etc/app/password tests/",
             // An environment set for it.
             "GIT_DIR=/home/u/secret/.git git log -p",
             "GIT_EXTERNAL_DIFF=./deploy.sh git diff --ext-diff",

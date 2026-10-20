@@ -4350,14 +4350,20 @@ grantable. A task on authentication code asked at almost every search.
   `--ext-diff`, `--textconv`, `-O`), `find` acts (`-delete`, `-exec`, …),
   or an operand, a short option with a path (`-f/…`), an option's value
   (`--to-file=…`) or a key's (`cache_dir=…`) reaches outside the workspace
-  (or scratch). A quoted option is still an option (`"--pre=…"`).
+  (or scratch). Each word is read as the shell passes it, roughly — its
+  quotes and backslashes gone — so `"--pre=…"`, `\-\-pre`, `-ex''ec` and
+  `\/etc/…` are what they spell; a short acting option with its value
+  glued on (`-Ox`) is still that option.
 - **Credentials by file name stay read whole:** `.ssh`, `id_rsa`,
   `id_ed25519`, `credentials`, Otter's own state and gh's hosts file ask
   wherever they appear, whatever the command, like `.env` (D-066): a key
   copied into the workspace is still a key. Grants (D-066) follow the same
   reading, so nothing that deletes, touches credentials or pushes is ever
   granted.
-- **Closed on the way:** what `<(…)` and `>(…)` run is a piece of its own,
+- **Closed on the way:** where a path points is read the same way, so
+  `rm -rf \/home/…` and `cp x \/etc/…` are outside the workspace, not a
+  routine delete and an inside write as they were. What `<(…)` and `>(…)`
+  run is a piece of its own,
   as `$(…)` was; `--output=<file>` and `--output <file>` are writes,
   outside the workspace asked about like `>`. The word lists had hidden
   both.
@@ -4369,4 +4375,6 @@ grantable. A task on authentication code asked at almost every search.
   outside, a variable, `find -delete`/`-exec`, `.env`, and the ways around
   a first version a second model found (a substitution, `<~/…`, options'
   values and glued paths, acting options, an environment, a key copied
-  in; then quoted options and a key's value). The existing policy tests pass unchanged.
+  in; then quoted options and a key's value; then quotes and backslashes
+  inside a word, which also let a delete or a write outside pass before
+  this change). The existing policy tests pass unchanged.
