@@ -13,8 +13,9 @@
 //! is resolved, and the files, worktree and branch stay where they are.
 //!
 //! Preparation runs in a background task so slow steps (clone, Nix builds) never
-//! block the daemon. `workspace.create` waits briefly so fast cases (an empty
-//! workspace) come back already ready.
+//! block the daemon. `workspace.create` waits briefly when there is no Git work
+//! to do, so fast cases (an empty workspace) come back already ready; a Git
+//! workspace comes back at once and opens while it prepares (D-135).
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -40,8 +41,8 @@ use crate::environment::EnvironmentManager;
 use crate::git::{repo_id, slug};
 use crate::sessions::{mark_ended, validate_spec};
 
-/// How long `workspace.create` waits for preparation before returning a
-/// still-preparing workspace.
+/// How long `workspace.create` waits for a preparation with no Git work in
+/// it before returning a still-preparing workspace.
 const CREATE_WAIT: Duration = Duration::from_secs(3);
 
 impl Daemon {
@@ -57,6 +58,7 @@ impl Daemon {
 
         let id = WorkspaceId::generate();
         let managed_dir = self.paths.workspace_dir(id.as_str());
+        let quick = !matches!(p.source, SourceSpec::Git { .. });
         let (source, root) = match p.source {
             SourceSpec::Empty => (WorkspaceSource::Empty, managed_dir),
             SourceSpec::Git {
@@ -130,7 +132,7 @@ impl Daemon {
         }
 
         let prep = self.spawn_preparation(id.clone());
-        wait_briefly(prep).await;
+        wait_if_quick(quick, prep).await;
         self.workspace_get(id.as_str()).await
     }
 
@@ -146,7 +148,7 @@ impl Daemon {
     /// of a ready one (new executions pick it up) and start sessions that
     /// haven't started.
     pub(crate) async fn workspace_prepare(self: &Arc<Self>, r: &str) -> RpcResult<Workspace> {
-        let id = {
+        let (id, quick) = {
             let mut store = self.store.lock().await;
             let ws = store
                 .workspace_mut(r)
@@ -164,13 +166,13 @@ impl Daemon {
             }
             ws.state = WorkspaceState::Preparing;
             ws.state_message = None;
-            let id = ws.id.clone();
+            let (id, quick) = (ws.id.clone(), !needs_worktree(ws));
             save(&store)?;
-            id
+            (id, quick)
         };
         self.workspace_env.lock().unwrap().remove(&id);
         let prep = self.spawn_preparation(id.clone());
-        wait_briefly(prep).await;
+        wait_if_quick(quick, prep).await;
         self.workspace_get(id.as_str()).await
     }
 
@@ -242,7 +244,7 @@ impl Daemon {
     /// the environment re-resolved). Its stopped sessions stay stopped until
     /// restarted; sessions that never started start when it is ready.
     pub(crate) async fn workspace_unarchive(self: &Arc<Self>, r: &str) -> RpcResult<Workspace> {
-        let id = {
+        let (id, quick) = {
             let mut store = self.store.lock().await;
             let ws = store
                 .workspace_mut(r)
@@ -257,16 +259,16 @@ impl Daemon {
             ws.state = WorkspaceState::Preparing;
             ws.state_message = None;
             ws.updated_at = Utc::now();
-            let id = ws.id.clone();
+            let (id, quick) = (ws.id.clone(), !needs_worktree(ws));
             save(&store)?;
             self.events.emit(Event::WorkspaceUnarchived {
                 workspace_id: id.clone(),
             });
-            id
+            (id, quick)
         };
         self.workspace_env.lock().unwrap().remove(&id);
         let prep = self.spawn_preparation(id.clone());
-        wait_briefly(prep).await;
+        wait_if_quick(quick, prep).await;
         self.workspace_get(id.as_str()).await
     }
 
@@ -565,6 +567,9 @@ impl Daemon {
                 if !self.deleting.lock().unwrap().contains(&id) {
                     self.launch_pending(&mut store, &id).await;
                 }
+                // A task waiting for it goes on now, not at the next tick:
+                // `workspace.create` no longer waits for Git (D-135).
+                self.task_wake.notify_one();
             }
             Err(e) => {
                 // Kept, logged and sent: never a credential in it (D-075).
@@ -764,9 +769,12 @@ fn needs_worktree(ws: &Workspace) -> bool {
         if g.branch.is_empty() || !Path::new(&ws.root).join(".git").exists())
 }
 
-/// Wait a moment for a preparation: a fast one comes back ready.
-async fn wait_briefly(prep: Option<oneshot::Receiver<()>>) {
-    if let Some(ended) = prep {
+/// Wait a moment for a preparation with no Git work in it: an empty or
+/// existing directory, or a worktree already there, is often ready by then.
+/// Fetching and checking out hardly ever were, so a workspace that needs
+/// them comes back at once, preparing (D-135).
+async fn wait_if_quick(quick: bool, prep: Option<oneshot::Receiver<()>>) {
+    if quick && let Some(ended) = prep {
         let _ = tokio::time::timeout(CREATE_WAIT, ended).await;
     }
 }

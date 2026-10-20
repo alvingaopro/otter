@@ -194,6 +194,30 @@ async fn slow_git_host(scratch: &Path, slow: &str, mark: Option<&Path>) -> TestH
     TestHost::with_env(&vars).await
 }
 
+/// `workspace.create` comes back at once for a Git workspace, which opens
+/// while it prepares; an empty one still comes back ready.
+#[tokio::test]
+async fn a_git_workspace_comes_back_at_once() {
+    let scratch = tempfile::Builder::new().prefix("wdg").tempdir().unwrap();
+    let host = slow_git_host(scratch.path(), "fetch", None).await;
+    let src = make_repo(&host, "src", &[("README.md", "hello\n")]);
+    let mut conn = host.conn().await;
+    let started = Instant::now();
+    let ws = conn
+        .workspace_create(git_ws("slow", &src, None, vec![]))
+        .await
+        .unwrap();
+    assert!(
+        started.elapsed() < Duration::from_secs(2),
+        "{:?}",
+        started.elapsed()
+    );
+    assert_eq!(ws.state, WorkspaceState::Preparing);
+    let other = create(&host, "other", Some(vec![])).await;
+    assert_eq!(other.state, WorkspaceState::Ready);
+    ready_git_ws(&host, "slow").await;
+}
+
 /// A delete holds the host's lock only to stop the sessions and to drop
 /// the record: removing the worktree, however long it takes, doesn't hold
 /// up the rest. A second delete of it meanwhile is told so.
