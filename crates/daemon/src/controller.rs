@@ -252,9 +252,15 @@ impl Daemon {
                 let daemon = self.clone();
                 tokio::spawn(async move {
                     let done = {
-                        let daemon = daemon.clone();
+                        let (daemon, task, key) = (daemon.clone(), task.clone(), key.clone());
                         contained(async move { daemon.follow_up(task, key).await }).await
                     };
+                    // Said plainly instead, or it would come up again on
+                    // every tick (D-134).
+                    if matches!(&done, Some(Err(e)) if e.message == PANICKED) {
+                        let text = format!("Otter couldn't follow up on [{task}]: {PANICKED}.");
+                        let _ = daemon.record_follow_up(&task, &key, text).await;
+                    }
                     daemon.controller.lock().unwrap().host_turn = false;
                     match done {
                         Some(Ok(())) => daemon.task_wake.notify_one(),
@@ -270,6 +276,15 @@ impl Daemon {
                         let daemon = daemon.clone();
                         contained(async move { daemon.host_turn().await }).await
                     };
+                    // Answered with that, or it would come up again on every
+                    // tick (D-134).
+                    if matches!(&answered, Some(Err(e)) if e.message == PANICKED) {
+                        let chat = daemon.chat.lock().await.get().clone();
+                        if let Some(last) = crate::chat::unanswered(&chat).pop() {
+                            let text = format!("I couldn't answer that: {PANICKED}.");
+                            let _ = daemon.chat_reply(&last, text).await;
+                        }
+                    }
                     daemon.controller.lock().unwrap().host_turn = false;
                     match answered {
                         // What came in meanwhile is answered next.
@@ -585,14 +600,13 @@ impl Daemon {
         match applied {
             // Why, in the log too: the task's history goes when it's
             // deleted (D-134).
-            Ok(a) if a.from != Some(TaskStatus::Failed) && a.task.status == TaskStatus::Failed => {
+            Ok(a) if a.from != Some(a.task.status) => {
                 let why = a.task.status_reason.as_deref().unwrap_or_default();
                 tracing::warn!(task = %id, "task failed: {}", otter_core::redact::redact(why));
                 self.task_changed(&a);
             }
             // Nothing changed: nothing to tell, nor to step again.
-            Ok(a) if a.from == Some(a.task.status) => {}
-            Ok(a) => self.task_changed(&a),
+            Ok(_) => {}
             Err(e) => tracing::warn!(task = %id, "failing: {e:?}"),
         }
     }
@@ -601,6 +615,13 @@ impl Daemon {
     /// a step that panicked on it would take it up again at once, and
     /// again (D-134).
     async fn could_not_answer(&self, id: &TaskId) {
+        if self
+            .task_get(id.as_str())
+            .await
+            .is_ok_and(|f| unanswered(&f).is_empty())
+        {
+            return;
+        }
         let applied = self.tasks.lock().await.apply(id, None, |f, _| {
             let Some(last) = unanswered(f).pop() else {
                 return Ok(vec![]);

@@ -376,11 +376,12 @@ impl Daemon {
                 )
                 .await
             };
-            // Its mailbox closes with it: the actor stops the agent.
-            daemon.runs.lock().unwrap().remove(&rid);
+            // Before its record goes, so what it did stays with the run.
             if bridged.is_err_and(|e| e.is_panic()) {
                 daemon.lost_run(&fid, &rid, Some(&conversation_id)).await;
             }
+            // Its mailbox closes with it: the actor stops the agent.
+            daemon.runs.lock().unwrap().remove(&rid);
             daemon.task_wake.notify_one();
         });
         Ok(run_id)
@@ -673,10 +674,15 @@ impl Daemon {
     /// that's safe, else the developer's to decide (D-061, D-134).
     async fn lost_run(&self, task: &TaskId, run: &RunId, conversation: Option<&ConversationId>) {
         tracing::warn!(task = %task, run = %run, "otterd lost the run");
-        if let Some(c) = conversation
-            .and_then(|c| self.conversations.get(c.as_str()))
-            .filter(|c| c.active_run.as_ref() == Some(run))
-        {
+        let c = conversation.and_then(|c| self.conversations.get(c.as_str()));
+        // Its work may have finished before it was lost, as a restart
+        // would find in the journal.
+        if let Some(summary) = c.as_ref().and_then(|c| finished_run(c, run)) {
+            self.finish_run(task, run, RunState::Completed, summary, true)
+                .await;
+            return;
+        }
+        if let Some(c) = c.filter(|c| c.active_run.as_ref() == Some(run)) {
             // Queued turns stay queued, as when otterd restarts.
             self.conversations.apply(
                 &c.id,

@@ -4354,8 +4354,11 @@ left the task marked as being stepped, never stepped again.
   error like the others: the task fails with *Otter stopped: an internal
   error*, the host's turn can run again, a lost bridge lets its run and
   workspace go. A step that panicked answers what the developer said with
-  that, so it isn't taken up again at once; failing a task that already
-  failed changes nothing and wakes nothing.
+  that, so it isn't taken up again at once — and so does Otter's turn on
+  the host, and a follow-up that panicked is said plainly instead; failing
+  a task that already failed changes nothing and wakes nothing. A run lost
+  after its last turn completed ends completed, as a restart would find
+  it.
 - **In the log:** a panic, with its time, thread and (with
   `RUST_BACKTRACE`) backtrace, through the log like the rest; a
   task failing, with why (redacted); a task deleted, with its last status
