@@ -6,6 +6,9 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import type { CodingConversation, RuntimeCapabilities } from "./conversation";
 import { daemonMemory, mockMemory, type MemorySource } from "./memory";
+import { WHOLE_FILE } from "./changes";
+import { invokeNewer } from "./newer";
+import type { FileDiff, WorkspaceChanges } from "./types";
 import type { Draft, Task, TaskAction, TaskEventRecord, MessageRole, PlacedTask, Run } from "./tasks";
 
 export interface TaskSource {
@@ -36,6 +39,10 @@ export interface TaskSource {
   capabilities?(host: string): Promise<RuntimeCapabilities | null>;
   /** Otter's memories (D-113). */
   memory?: MemorySource;
+  /** What changed in a workspace of the task's host (D-147); `undefined`: its otterd can't say. */
+  changes?(host: string, workspace: string): Promise<WorkspaceChanges | undefined>;
+  /** One changed file's diff there. */
+  diff?(host: string, workspace: string, path: string): Promise<FileDiff>;
 }
 
 /** The coding agent's work on the sample tasks. */
@@ -347,8 +354,30 @@ export function mockSource(host = "preview", now = Date.now()): TaskSource {
     async artifact() {
       return "";
     },
+    async changes() {
+      return SAMPLE_CHANGES;
+    },
+    async diff(_host, _workspace, path) {
+      return { text: `--- a/${path}\n+++ b/${path}\n@@ -1 +1 @@\n-old\n+new\n`, truncated: false };
+    },
   };
 }
+
+/** What the sample tasks changed. */
+const SAMPLE_CHANGES: WorkspaceChanges = {
+  git: true,
+  branch: "otter/timeline-csv",
+  base: "main",
+  ahead: 2,
+  behind: 0,
+  files: [
+    { path: "apps/desktop/src/TimelinePanel.tsx", change: "modified", insertions: 24, deletions: 3, uncommitted: false },
+    { path: "apps/desktop/src/timelineCsv.ts", change: "added", insertions: 41, deletions: 0, uncommitted: true },
+  ],
+  more: 0,
+  insertions: 65,
+  deletions: 3,
+};
 
 /** A unique id per intent: the daemon applies a command once, so a retry is harmless. */
 export function commandId(): string {
@@ -519,6 +548,13 @@ export function daemonSource(): TaskSource {
       const { host, task } = splitKey(key);
       const data = await invoke<string>("task_artifact", { host, task, name });
       return `data:image/png;base64,${data}`;
+    },
+    changes(host, workspace) {
+      return invokeNewer<WorkspaceChanges>(host, "workspace_changes", { host, workspace });
+    },
+    diff(host, workspace, path) {
+      // The whole file, folded where it's shown (D-111).
+      return invoke<FileDiff>("workspace_diff", { host, workspace, path, context: WHOLE_FILE });
     },
     drafts(key) {
       return [...(drafts.get(key)?.values() ?? [])];

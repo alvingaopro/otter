@@ -11,6 +11,9 @@ export function changesLine(c: WorkspaceChanges): string | undefined {
   return parts.length > 0 ? parts.join(" · ") : undefined;
 }
 
+/** Context enough for any file the host sends: the diff carries the whole of it. */
+export const WHOLE_FILE = 1_000_000;
+
 export const CHANGE_LETTER: Record<ChangeKind, string> = {
   added: "A",
   modified: "M",

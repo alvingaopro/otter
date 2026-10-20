@@ -460,6 +460,27 @@ describe("Tasks view", () => {
     expect([...host.querySelectorAll("button")].some((b) => b.textContent === "Accept")).toBe(true);
   });
 
+  it("shows what the task changed in its workspace, and a file's diff", async () => {
+    await render(mockSource("mac"));
+    await open("Export workspace timeline");
+    await act(async () => new Promise((r) => setTimeout(r, 350)));
+    expect(sections()).toEqual(["Now", "Progress", "Changes", "Checks", "Request"]);
+    const changes = q('.ov-section[aria-label="Changes"]')!;
+    expect(changes.querySelector(".count")?.textContent).toBe("2 files · +65 −3 · ↑2");
+    await act(async () => byText(".files-row", "timelineCsv.ts")!.click());
+    expect(changes.querySelector(".files-where")?.textContent).toBe("apps/desktop/src/timelineCsv.ts");
+    expect(changes.querySelector(".diff-view")).not.toBeNull();
+    await act(async () => q('[aria-label="Back to the changes"]')!.click());
+    expect(changes.querySelectorAll(".files-row")).toHaveLength(2);
+  });
+
+  it("leaves Changes out where the host can't say", async () => {
+    await render({ ...mockSource("mac"), changes: async () => undefined });
+    await open("Export workspace timeline");
+    await act(async () => new Promise((r) => setTimeout(r, 350)));
+    expect(sections()).not.toContain("Changes");
+  });
+
   it("links a task to its workspace and session", async () => {
     await render(mockSource("mac"));
     await open("Export workspace timeline");
