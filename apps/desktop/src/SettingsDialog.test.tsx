@@ -197,7 +197,7 @@ describe("Settings", () => {
   it("opens on this Mac's look, then remembers the tab", async () => {
     expect(dialog().querySelector("h2")?.textContent).toBe("Appearance");
     // This host's otterd has no coding settings: no tab for them.
-    expect(tabs().map((b) => b.textContent)).toEqual(["Appearance", "Sign-in pages", "Developer", "Otter", "API keys0 set"]);
+    expect(tabs().map((b) => b.textContent)).toEqual(["Appearance", "Sign-in pages", "Developer", "Git & GitHub", "Otter", "API keys0 set"]);
     await tab("Otter");
     expect(localStorage.getItem("otter.settings-tab")).toBe("otter");
     expect(dialog().querySelector('[aria-current="page"]')?.textContent).toBe("Otter");

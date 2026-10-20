@@ -49,6 +49,10 @@ pub struct Config {
     /// built in (D-121): `login.example.com`, `*.example.com`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub sign_in_sites: Vec<String>,
+    /// Who commits in the repositories Otter manages on every host (D-132),
+    /// sent to each as it connects.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub git: Option<otter_protocol::host::GitIdentity>,
     #[serde(default, rename = "host")]
     pub hosts: Vec<HostEntry>,
     #[serde(skip)]
@@ -281,6 +285,10 @@ mod tests {
         let config = Config {
             default_host: Some("dev-01".into()),
             sign_in_sites: vec!["*.example.com".into()],
+            git: Some(otter_protocol::host::GitIdentity {
+                name: Some("Alvin Gao".into()),
+                email: Some("alvin@example.com".into()),
+            }),
             hosts: vec![
                 HostEntry {
                     name: "dev-01".into(),

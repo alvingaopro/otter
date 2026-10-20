@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { Dialog } from "./Dialog";
 import type { RuntimeCapabilities, RuntimeTest } from "./conversation";
 import { explain as needsNewer } from "./newer";
+import { GitSettings } from "./GitSettings";
 import { SignInSites } from "./SignIn";
 import { FONT_SUGGESTIONS, fontChoice, fontFamily, fontSize, onFontSize, setFontFamily, setFontSize } from "./terminalFont";
 import { onPerfOverlay, perfOverlay, setPerfOverlay } from "./perf";
@@ -65,8 +66,8 @@ type Test = { state: "running" } | { state: "done"; result: RuntimeTest } | { st
 type Install = { state: "running" } | { state: "done"; output: string } | { state: "error"; error: string };
 
 /** The tabs (D-127): this Mac's, then the chosen host's. */
-export type SettingsTab = "appearance" | "signin" | "developer" | "otter" | "coding" | "keys";
-const TABS: SettingsTab[] = ["appearance", "signin", "developer", "otter", "coding", "keys"];
+export type SettingsTab = "appearance" | "signin" | "developer" | "git" | "otter" | "coding" | "keys";
+const TABS: SettingsTab[] = ["appearance", "signin", "developer", "git", "otter", "coding", "keys"];
 const HOST_TABS: SettingsTab[] = ["otter", "coding", "keys"];
 const TAB_KEY = "otter.settings-tab";
 
@@ -346,6 +347,7 @@ export function SettingsDialog({
     appearance: ["Appearance", "On this Mac. Changes apply right away."],
     signin: ["Sign-in pages", "Pages that tools on your hosts open in this Mac's browser. Kept on this Mac, for every host."],
     developer: ["Developer", "On this Mac. For working on the app itself; changes apply right away."],
+    git: ["Git & GitHub", "For every host, in the repositories Otter manages there; each host's own git stays as it is."],
     otter: ["Otter", host ? `On ${host}. Plans each task, decides, and checks the work, also while this app is closed.` : "Kept on each host."],
     coding: ["Coding agent", host ? `On ${host}. Claude Code, which writes the code.` : "Kept on each host."],
     keys: ["API keys", host ? `On ${host}. Kept there, never read back.` : "Kept on each host."],
@@ -374,6 +376,8 @@ export function SettingsDialog({
         {nav("appearance", "Appearance", <Icon d="appearance" />)}
         {nav("signin", "Sign-in pages", <Icon d="signin" />)}
         {nav("developer", "Developer", <Icon d="developer" />)}
+        <div className="settings-nav-group">All hosts</div>
+        {nav("git", "Git & GitHub", <Icon d="git" />)}
         <div className="settings-nav-group">Host</div>
         <div className="settings-host">
           <span className={host ? "status-dot ok" : "status-dot"} aria-hidden="true" />
@@ -414,6 +418,7 @@ export function SettingsDialog({
           {shown === "appearance" && <Appearance theme={theme} onTheme={onTheme} />}
           {shown === "signin" && <SignInSites />}
           {shown === "developer" && <Developer />}
+          {shown === "git" && <GitSettings hosts={hosts} />}
           {hostTab && !host && (
             <div className="settings-empty">
               <strong>No host connected</strong>
@@ -917,6 +922,15 @@ const ICONS: Record<string, ReactNode> = {
     </>
   ),
   developer: <path d="M1.8 8.5h2.6l1.8-4.3 3.2 7.6 1.8-3.3h3" />,
+  git: (
+    <>
+      <circle cx="4.5" cy="3.8" r="1.6" />
+      <circle cx="4.5" cy="12.2" r="1.6" />
+      <circle cx="11.5" cy="6" r="1.6" />
+      <path d="M4.5 5.4v5.2" />
+      <path d="M11.5 7.6c0 2.4-2.2 3-5.6 3.9" />
+    </>
+  ),
   close: <path d="M4 4l8 8M12 4l-8 8" />,
 };
 

@@ -944,6 +944,16 @@ body.resizing-row { cursor: row-resize; user-select: none; }
 .test-step.passed .test-mark { color: var(--done); }
 .test-step.failed .test-mark { color: var(--failed); }
 .test-step.skipped .test-mark { color: var(--faint); }
+/* Settings › Git & GitHub (D-132). */
+.git-save { justify-content: space-between; }
+.git-host + .git-host { border-top: 1px solid var(--line); }
+.git-code, .git-key { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; padding: 0 14px 12px; }
+.git-code-value { font-family: var(--mono); font-size: 15px; font-weight: 600; letter-spacing: 0.08em; padding: 3px 8px; border-radius: 6px; background: var(--raised); }
+.git-key-value { flex-basis: 100%; order: 1; font-family: var(--mono); font-size: 11px; color: var(--muted); overflow-wrap: anywhere; padding: 6px 8px; border-radius: 6px; background: var(--term); }
+.git-note { margin: 0; padding: 0 14px 12px; }
+.git-setup { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.git-token summary { cursor: pointer; }
+.git-token .sign-in-add { padding: 8px 0 0; }
 .settings-empty { display: flex; flex-direction: column; align-items: center; gap: 10px; padding: 64px 24px; text-align: center; }
 .settings-empty p { margin: 0; max-width: 340px; }
 .settings-foot { display: flex; align-items: center; gap: 10px; min-height: 55px; padding: 0 16px 0 28px; border-top: 1px solid var(--line); }
