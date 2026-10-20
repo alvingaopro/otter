@@ -405,12 +405,16 @@ fn doing(piece: &str, cwd: &Path, root: &Path) -> String {
         target(cwd, op).is_some_and(|p| inside(root, &p.to_string_lossy()) || scratch(&p))
     };
     let only_reads = operands.iter().all(|w| {
+        // Quoted, an option is still an option (`"--pre=x"`).
+        let w = w.trim_matches(|c| c == '"' || c == '\'');
         !w.contains(['<', '(', ')', '$', '`'])
-            && !(*cmd == "find" && FIND_ACTS.contains(w))
+            && !(*cmd == "find" && FIND_ACTS.contains(&w))
             && match (w.starts_with('-'), w.split_once('=')) {
                 (true, Some((name, value))) => !ACTING_OPTIONS.contains(&name) && stays(value),
-                (true, None) => !ACTING_OPTIONS.contains(w) && !w.contains(['/', '~']),
-                (false, _) => stays(w),
+                (true, None) => !ACTING_OPTIONS.contains(&w) && !w.contains(['/', '~']),
+                // `cache_dir=/elsewhere`: both sides stay.
+                (false, Some((name, value))) => stays(name) && stays(value),
+                (false, None) => stays(w),
             }
     });
     if only_reads { command } else { whole }
@@ -484,12 +488,17 @@ fn writes_outside(piece: &str, cwd: &Path, root: &Path) -> Option<String> {
             ),
             _ => {}
         }
-        // `git log --output=f` and the like.
-        targets.extend(
-            rest.iter()
-                .filter_map(|w| w.strip_prefix("--output="))
-                .map(String::from),
-        );
+        // `git log --output=f` (or `--output f`) and the like.
+        for (i, w) in rest.iter().enumerate() {
+            let w = w.trim_matches(|c| c == '"' || c == '\'');
+            if let Some(t) = w.strip_prefix("--output=") {
+                targets.push(t.to_owned());
+            } else if w == "--output"
+                && let Some(t) = rest.get(i + 1)
+            {
+                targets.push((*t).to_owned());
+            }
+        }
     }
     targets.into_iter().find(|t| {
         target(cwd, t).is_some_and(|p| {
@@ -1224,6 +1233,16 @@ mod tests {
             "rg --pre sudo x .",
             "rg --pre=./deploy.sh x .",
             "ack --pager=./deploy.sh x",
+            // Quoted, an option is still one.
+            "rg \"--pre=./deploy.sh\" x .",
+            "rg '--pre=sudo' x .",
+            "go test '-exec' sudo ./...",
+            "cargo test '--manifest-path=/home/u/secret/Cargo.toml'",
+            "find . -name '*.log' \"-delete\"",
+            "diff \"--to-file=/etc/app/password.txt\" README",
+            "git log --output /home/u/notes.txt",
+            // A value elsewhere, after a key.
+            "pytest -o cache_dir=/etc/app/password tests/",
             // An environment set for it.
             "GIT_DIR=/home/u/secret/.git git log -p",
             "GIT_EXTERNAL_DIFF=./deploy.sh git diff --ext-diff",

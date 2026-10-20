@@ -4348,8 +4348,9 @@ grantable. A task on authentication code asked at almost every search.
   program, writes or brings in another project (`--pre`, `--pager`,
   `-exec`, `-toolexec`, `--config`, `--manifest-path`, `--output`,
   `--ext-diff`, `--textconv`, `-O`), `find` acts (`-delete`, `-exec`, …),
-  or an operand, a short option with a path (`-f/…`) or an option's value
-  (`--to-file=…`) reaches outside the workspace (or scratch).
+  or an operand, a short option with a path (`-f/…`), an option's value
+  (`--to-file=…`) or a key's (`cache_dir=…`) reaches outside the workspace
+  (or scratch). A quoted option is still an option (`"--pre=…"`).
 - **Credentials by file name stay read whole:** `.ssh`, `id_rsa`,
   `id_ed25519`, `credentials`, Otter's own state and gh's hosts file ask
   wherever they appear, whatever the command, like `.env` (D-066): a key
@@ -4357,8 +4358,9 @@ grantable. A task on authentication code asked at almost every search.
   reading, so nothing that deletes, touches credentials or pushes is ever
   granted.
 - **Closed on the way:** what `<(…)` and `>(…)` run is a piece of its own,
-  as `$(…)` was; `--output=<file>` is a write, outside the workspace asked
-  about like `>`. The word lists had hidden both.
+  as `$(…)` was; `--output=<file>` and `--output <file>` are writes,
+  outside the workspace asked about like `>`. The word lists had hidden
+  both.
 - **Left for the task discussion:** `git restore`, `git rebase`,
   `git checkout -- …` and `git stash drop` in command position still ask
   every time, though they act only on the work's own repository.
@@ -4367,4 +4369,4 @@ grantable. A task on authentication code asked at almost every search.
   outside, a variable, `find -delete`/`-exec`, `.env`, and the ways around
   a first version a second model found (a substitution, `<~/…`, options'
   values and glued paths, acting options, an environment, a key copied
-  in). The existing policy tests pass unchanged.
+  in; then quoted options and a key's value). The existing policy tests pass unchanged.
