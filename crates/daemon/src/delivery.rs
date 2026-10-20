@@ -151,17 +151,26 @@ fn varying(c: &[char], i: usize) -> usize {
     if prev.is_some_and(|p| p.is_ascii_alphanumeric()) {
         return 0;
     }
-    // A word: a long number or a hash, else maybe a duration.
+    // A word: a long number, a hash, an address or a UUID, else maybe a
+    // duration.
     let word = &c[i..i + c[i..]
         .iter()
         .take_while(|c| c.is_ascii_alphanumeric())
         .count()];
     let digits = word.iter().filter(|c| c.is_ascii_digit()).count();
+    let hex = |w: &[char]| w.iter().all(char::is_ascii_hexdigit);
+    // 8-4-4-4-12 hex digits.
+    let uuid = [8, 4, 4, 4, 12].iter().try_fold(i, |k, &n| {
+        c.get(k..k + n).filter(|g| hex(g))?;
+        let dash = n != 12;
+        (!dash || c.get(k + n) == Some(&'-')).then_some(k + n + usize::from(dash))
+    });
+    if uuid.is_some_and(|end| !c.get(end).is_some_and(char::is_ascii_alphanumeric)) {
+        return 36;
+    }
     if (digits == word.len() && digits >= 5)
-        || (word.len() >= 7
-            && digits > 0
-            && digits < word.len()
-            && word.iter().all(char::is_ascii_hexdigit))
+        || (word.len() >= 7 && digits > 0 && digits < word.len() && hex(word))
+        || (word.len() > 2 && word[..2] == ['0', 'x'] && hex(&word[2..]))
     {
         return word.len();
     }
@@ -224,13 +233,19 @@ fn clock(c: &[char], i: usize) -> usize {
     n
 }
 
-/// Where in a file: `lib.rs:42:9`, `test_x.py:42:`, `line 42`.
+/// Where in a file or a program: `lib.rs:42:9`, `test_x.py:42:`,
+/// `line 42`, `goroutine 18`.
 fn position(c: &[char], i: usize) -> usize {
-    let line = i >= 5
-        && c[i - 5..i]
-            .iter()
-            .collect::<String>()
-            .eq_ignore_ascii_case("line ");
+    let after = |w: &str| {
+        let n = w.len();
+        i >= n
+            && c[i - n..i]
+                .iter()
+                .collect::<String>()
+                .eq_ignore_ascii_case(w)
+            && (i == n || !c[i - n - 1].is_ascii_alphabetic())
+    };
+    let line = after("line ") || after("goroutine ");
     let file = i >= 3 && c[i - 1] == ':' && {
         let ext = c[..i - 1]
             .iter()
@@ -1213,6 +1228,16 @@ mod tests {
                 "see https://github.com/o/r/actions/runs/38677999999/job/1",
             ),
             ("HEAD is now at a512001d4b", "HEAD is now at b2515520aa"),
+            // Addresses, goroutines, records.
+            (
+                "AssertionError: <Foo object at 0x7f3a2b1c4d50> != 3",
+                "AssertionError: <Foo object at 0x7f99e0a1b2c3> != 3",
+            ),
+            ("goroutine 18 [running]:", "goroutine 7 [running]:"),
+            (
+                "no order 550e8400-e29b-41d4-a716-446655440000",
+                "no order 123e4567-e89b-12d3-a456-426614174000",
+            ),
         ] {
             assert!(same_ci_failure(a, b), "{a}\n{b}");
         }
@@ -1236,6 +1261,7 @@ mod tests {
         }
         // Words that look like numbers stay words.
         assert!(!same_ci_failure("test12345 failed", "test54321 failed"));
+        assert!(!same_ci_failure("pipeline 3 failed", "pipeline 4 failed"));
     }
 
     #[test]

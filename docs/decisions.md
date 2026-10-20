@@ -4469,11 +4469,12 @@ the same bytes every time.
   one failure is set aside: dates and times anywhere in a line (npm's log
   file names, `time="…"`, Python's `18:00:00,123`), durations (`0.01s`,
   `1.5 s`, Go's `1m02.34s`), where in a file (`lib.rs:42:9`, `line 42`: a
-  fix moves lines), numbers of five digits or more (run ids, processes,
-  ports) and hex hashes. Counts and small values stay, so another assertion
-  is another failure. The cost: an assertion that differs only in a date or
-  a large number counts as the same, and the task goes to the developer
-  after one fix rather than trying again. Failed checks are compared in
+  fix moves lines), goroutines, numbers of five digits or more (run ids,
+  processes, ports), hex hashes, `0x` addresses and UUIDs. Counts and small
+  values stay, so another assertion is another failure. The cost: an
+  assertion that differs only in a date, a time of day or a large number
+  counts as the same, as does the same message at another line, and the
+  task goes to the developer after one fix rather than trying again. Failed checks are compared in
   name order, whatever gh's. Logs kept before this were raw: the first
   comparison against one differs, so that task gets one more fix before
   the rule applies.
