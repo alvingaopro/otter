@@ -4326,3 +4326,83 @@ without changing anything else on the host.
     - The browser sign-in shows its code, then who it is. A cleared
       identity leaves the host's.
 
+## D-137 — A terminal on screen is looking, and two smaller fixes (2026-10-20)
+
+Amends D-099. Only attaching counted as looking, but the app's terminals
+stay attached (D-100) and say whether they're on screen (D-119). A turn
+that ended in front of the developer raised a review that stayed in the
+sidebar, the tray and the Inbox until they clicked into the session they
+were watching. In dogfooding, of 46 review items that lived under 30 s, 43
+were settled by an attach, not by the agent moving on.
+
+- **On screen is looking.** A stream that takes control frames (the app's
+  terminal) looks from its attach until it says it's off screen (`view`),
+  and again once it says it's back. otterd counts them per session, since
+  two terminals can show one (D-110). It's all in the attach bridge and
+  `attention.rs` (`OnScreen`); the backend knows nothing of it.
+  - Back on screen settles the session's finished turn or completed
+    command, as attaching does.
+  - While a session is on screen, a turn ending or a command completing
+    raises nothing. Raising it and settling it at once would still have
+    the app notify (D-109). The new state still replaces what was open,
+    such as an approval the agent moved past.
+  - Approvals, questions and failures are unchanged: looking never
+    answers them (D-099).
+  - On screen is the app's terminal having a size in a window the system
+    doesn't report hidden (`document.visibilityState`), focused or not. So
+    a turn that ends in a terminal left on screen while the developer
+    works in another app no longer notifies "turn finished".
+  - The CLI's attach doesn't say whether it's on screen, so it still looks
+    only when it attaches.
+  - The app's half of D-100 (showing a workspace again settles by id) now
+    mostly finds nothing to do. It stays for older daemons.
+  - The `view` message is unchanged (protocol.md says what it now means),
+    so there's no version bump.
+- **Claude transcript discovery** (D-023). Until a Claude session's
+  transcript is written during its execution (the trust dialog, or a
+  resumed conversation not yet continued), each reconcile read the
+  project's transcript directory and stat'ed every file in it, twice a
+  second. That directory keeps every conversation had in the cwd.
+  - It's read again only when its mtime changed (a new transcript), or
+    after 5 s. A resumed older conversation (`/resume`) is only appended
+    to, which doesn't change the directory, and neither does a second file
+    made within one clock tick.
+  - A new execution looks at once.
+  - The last look is kept in memory. In `provider_state`, every look would
+    be a save.
+- **Real-browser tests apart.** Chrome on CI's runner sometimes stops
+  answering, which failed the whole test job until rerun.
+  - The tests that drive a real Chrome run only with
+    `OTTER_TEST_BROWSER=1`, and fail if it's set and no Chrome is found.
+    They are `browser::tests`' three and the three end-to-end browser
+    checks. The end-to-end ones are included because they took
+    `OTTER_BROWSER_NO_SANDBOX` from the main job's environment, and
+    without it Chrome can't start on the runner.
+  - CI runs them in a "Real browser" job. Its test step is
+    `continue-on-error`, so a failure shows on the step without turning
+    the PR's checks red. On the job, the job's own check would be red.
+  - Locally, with Chrome or Chromium and python3: `OTTER_TEST_BROWSER=1
+    cargo test -p otterd -- browser::tests
+    a_browser_check_verifies_the_ui_with_evidence
+    a_broken_ui_fails_verification a_preview_runs_as_a_session_on_one_port`.
+    Add `OTTER_BROWSER_NO_SANDBOX=1` where Chrome's sandbox can't start.
+- **Verified:**
+  - End to end (`a_turn_that_ends_on_screen_is_already_seen`):
+    - An approval stays while its terminal is on screen, and when it goes
+      off and back.
+    - Answered in the terminal, the turn ends with nothing raised, while
+      a second terminal on the session is off screen.
+    - A turn that ended off screen is a review until its terminal is back
+      on screen.
+    - Against the code before, both halves fail: a review is raised, and
+      it stays. Counting the terminals as a set fails it too.
+  - Unit (`transcripts_are_looked_for_only_when_there_may_be_a_new_one`):
+    - An appended older transcript is found by the rescan at 5 s, not
+      before. A new transcript is found on the next look.
+    - A new execution looks at once, and a clock gone back looks again.
+    - It fails with a look every time (the code before), and with the
+      time alone (no mtime).
+  - The browser tests skip without the variable, and fail with it when
+    there's no Chrome (none on the machine this was built on).
+  - The whole `cargo test` passes, and the new end-to-end test passed
+    three runs in a row.
