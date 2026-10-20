@@ -348,31 +348,42 @@ export function Terminal({ host, workspace, session, onEnd, generation, label, w
       else if (e.reason === "error") onEndRef.current({ kind: "error", message: e.message ?? "attach failed" });
     };
 
-    invoke<{ id: number; history: boolean; controls?: boolean }>("attach_open", {
-      host,
-      workspace,
-      session,
-      cols: term.cols,
-      rows: term.rows,
-      history: HISTORY,
-      output,
-      events,
-    })
-      .then((opened) => {
-        if (disposed) {
-          void invoke("attach_close", { id: opened.id });
-          return;
-        }
-        id = opened.id;
-        controls = opened.controls === true;
-        if (opened.history) leaveAnswersToTheSession(term);
-        for (const item of held ?? []) deliver(item);
-        held = null;
-        tellView();
+    // Attached once it's on screen at a real size, measured in its own font,
+    // never before: the first size the session gets is this terminal's, not
+    // one of a layout still settling (the app starting, after an update) —
+    // at each size it gets, Claude Code lays its history out again.
+    let started = false;
+    let fontReady = false;
+    const start = () => {
+      if (started || disposed || !fontReady || !onScreen() || !realSize(fit.proposeDimensions())) return;
+      started = true;
+      fit.fit();
+      invoke<{ id: number; history: boolean; controls?: boolean }>("attach_open", {
+        host,
+        workspace,
+        session,
+        cols: term.cols,
+        rows: term.rows,
+        history: HISTORY,
+        output,
+        events,
       })
-      .catch((err) => {
-        if (!disposed) onEndRef.current({ kind: "error", message: String(err) });
-      });
+        .then((opened) => {
+          if (disposed) {
+            void invoke("attach_close", { id: opened.id });
+            return;
+          }
+          id = opened.id;
+          controls = opened.controls === true;
+          if (opened.history) leaveAnswersToTheSession(term);
+          for (const item of held ?? []) deliver(item);
+          held = null;
+          tellView();
+        })
+        .catch((err) => {
+          if (!disposed) onEndRef.current({ kind: "error", message: String(err) });
+        });
+    };
 
     const input = term.onData((data) => {
       if (id !== null) void invoke("attach_input", { id, data });
@@ -393,6 +404,7 @@ export function Terminal({ host, workspace, session, onEnd, generation, label, w
     // it then would shrink the session for everyone attached.
     const observer = new ResizeObserver(() => {
       fitNow();
+      start();
       tellView();
     });
     observer.observe(el.current!);
@@ -422,7 +434,12 @@ export function Terminal({ host, workspace, session, onEnd, generation, label, w
       refont(family);
       void loaded(family).then(() => !disposed && refont(family));
     });
-    void loaded(fontFamily()).then(() => !disposed && refont(fontFamily()));
+    void loaded(fontFamily()).then(() => {
+      if (disposed) return;
+      fontReady = true;
+      refont(fontFamily());
+      start();
+    });
     // ⌘-click a link to open it (D-106): the session has the mouse otherwise,
     // so neither the press nor its release reaches it.
     let swallowUp = false;
