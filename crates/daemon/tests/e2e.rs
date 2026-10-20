@@ -2009,6 +2009,41 @@ async fn direnv_environment_is_resolved_and_inherited() {
     );
 }
 
+/// Every session starts with Claude Code on its classic renderer, a shell too
+/// (where the developer runs `claude` themselves); the host's own setting of
+/// the variable wins (D-144).
+#[tokio::test]
+async fn sessions_start_claude_code_on_its_classic_renderer() {
+    let host = TestHost::new();
+    sh_session(&host, "tui").await;
+    let mut conn = host.conn().await;
+    conn.session_write(
+        "tui",
+        "sh",
+        "echo alt=[$CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN]",
+        true,
+    )
+    .await
+    .unwrap();
+    wait_output(&host, "tui", "sh", "alt=[1]").await;
+    // Through the environment, not a command line or the event log.
+    let log = std::fs::read_to_string(host.home().join("state/events.jsonl")).unwrap();
+    assert!(!log.contains("CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN"));
+
+    let host = TestHost::with_env(&[("CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN", "0".into())]).await;
+    sh_session(&host, "tui").await;
+    let mut conn = host.conn().await;
+    conn.session_write(
+        "tui",
+        "sh",
+        "echo alt=[$CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN]",
+        true,
+    )
+    .await
+    .unwrap();
+    wait_output(&host, "tui", "sh", "alt=[0]").await;
+}
+
 /// A session's shell hook reloads direnv when a file it watches changes
 /// (a refreshed Nix dev shell), and goes back to the PATH the export started
 /// from: otterd's stand-ins (`run/bin`, e.g. the `wl-paste` image paste

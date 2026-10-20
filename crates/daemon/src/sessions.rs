@@ -261,6 +261,13 @@ impl Daemon {
         if let Some(info) = &session.agent {
             self.agent_secrets(&info.provider, &mut env);
         }
+        // What suits an attached terminal, for any agent run here (D-144);
+        // the host's own setting of one comes first.
+        for p in agents::all() {
+            for (name, value) in p.session_env() {
+                env.entry((*name).into()).or_insert_with(|| (*value).into());
+            }
+        }
         // Python's webbrowser only uses xdg-open with a display: point it at
         // the browser stand-in (login.rs) unless the user chose a browser.
         env.entry("BROWSER".into())

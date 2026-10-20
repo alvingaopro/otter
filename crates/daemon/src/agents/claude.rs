@@ -53,6 +53,12 @@ use crate::env::{EnvMap, which};
 /// (D-142). A key in their environment (`ANTHROPIC_API_KEY`) comes first.
 pub const OAUTH_TOKEN: &str = "CLAUDE_CODE_OAUTH_TOKEN";
 
+/// Claude Code's classic renderer, whatever its saved `tui` setting (D-144).
+/// Its fullscreen one takes the mouse, so in an attached session every wheel
+/// step went to the host and came back as a redrawn screen; the classic one
+/// writes the conversation to the scrollback, which the app scrolls itself.
+pub const CLASSIC_RENDERER: (&str, &str) = ("CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN", "1");
+
 /// `env` signed in with `token`, when there is one; else as it is (Claude
 /// Code's own sign-in on the host).
 pub fn signed_in(env: &EnvMap, token: Option<&str>) -> EnvMap {
@@ -147,6 +153,10 @@ impl AgentProvider for ClaudeCode {
 
     fn secrets(&self) -> &'static [&'static str] {
         &[OAUTH_TOKEN]
+    }
+
+    fn session_env(&self) -> &'static [(&'static str, &'static str)] {
+        &[CLASSIC_RENDERER]
     }
 
     async fn detect(&self, env: &EnvMap) -> AgentCapability {

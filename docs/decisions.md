@@ -4962,3 +4962,43 @@ binaries are gone, and a release runs two macOS jobs. `latest.json` names
 only `darwin-aarch64`. The installer refuses an Intel Mac and, on Apple
 silicon under Rosetta (where `uname -m` says x86_64), installs the arm64
 build. Supersedes the x86_64 half of D-026.
+
+## D-144 — Claude Code starts on its classic renderer in every session (2026-10-20)
+
+Scrolling up a long Claude Code conversation in the app was slow, in a
+session on a host reached over SSH: neither `pixelScroll` (D-130) nor the
+WebGL renderer was why, and `seq 1 20000` in a shell on the same host
+scrolled smoothly. Claude Code's fullscreen renderer (its default for
+anyone who started using it from May 2026) draws on the alternate screen
+and takes the mouse, so each wheel step went to the host, Claude Code
+redrew its screen, and the redraw came back — about 500 KB/s while
+scrolling. Its classic renderer writes the conversation to the
+scrollback, which the app keeps and scrolls itself (D-118).
+
+- **Every session gets `CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=1`**, a
+  shell too: the developer runs `claude` in a shell as often as in an
+  agent session. Claude Code documents it as forcing the classic renderer
+  whatever its saved `tui` setting, so `/tui fullscreen` on the host
+  doesn't bring the slow scrolling back. Developers don't set anything.
+- **The agent provider names it** (`AgentProvider::session_env`, in
+  `claude.rs`); generic code passes it unread. Unlike its secrets (D-142),
+  which only its own processes get, these are not secret and go to every
+  session.
+- **The host's own value wins:** the same variable in otterd's login
+  environment or a workspace's direnv is left as it is — `0` there gives
+  fullscreen back.
+- **Known limits:** fullscreen's click-to-expand, in-app selection and
+  flat memory go; under tmux the classic renderer may flicker more while
+  output streams. Sessions already running keep how they started until
+  restarted, and the host's otterd needs this version. Claude Code's
+  `claude attach` / agent view sessions are always fullscreen and aren't
+  affected.
+- **Verified:** an e2e test — a shell session has the variable, and a
+  host that sets it to `0` keeps `0`; it fails with the injection taken
+  out. Manually: with `/tui default` (the same renderer) the slow
+  scrolling went away.
+- **Not verified:** that the variable beats a saved `tui: fullscreen`
+  (from Claude Code's docs only); and that reading an interactive
+  session's prompts from its screen moving (D-136), observed before this
+  on whichever renderer ran, holds on the classic one — the agent tests
+  use a fake `claude`.

@@ -193,6 +193,14 @@ pub trait AgentProvider: Send + Sync {
     fn secrets(&self) -> &'static [&'static str] {
         &[]
     }
+
+    /// Variables every session on the host starts with — a shell too, where
+    /// the developer may run the agent themselves — so it suits a terminal
+    /// that is attached to (D-144). Not secrets: the same variable in the
+    /// host's own environment wins.
+    fn session_env(&self) -> &'static [(&'static str, &'static str)] {
+        &[]
+    }
 }
 
 /// Entry point for `otterd internal-agent-hook <provider> <file>`: an agent
