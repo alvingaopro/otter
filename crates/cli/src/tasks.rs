@@ -25,9 +25,7 @@ pub enum TaskCommand {
     #[command(visible_alias = "ls")]
     List,
     /// A task: where it stands, what waits on you, the latest messages.
-    Show {
-        task: String,
-    },
+    Show { task: String },
     /// Write down a task (a draft until `otter task start`).
     New {
         title: String,
@@ -47,25 +45,15 @@ pub enum TaskCommand {
         host: Option<String>,
     },
     /// Hand a draft to Otter.
-    Start {
-        task: String,
-    },
+    Start { task: String },
     /// A message to Otter, which passes on to the coding agent what it should
     /// know — when it's useful, not necessarily now.
     #[command(visible_alias = "send")]
-    Message {
-        task: String,
-        text: String,
-    },
+    Message { task: String, text: String },
     /// Stop the coding agent's current work now and have it do this next.
-    Redirect {
-        task: String,
-        text: String,
-    },
+    Redirect { task: String, text: String },
     /// Stop the coding agent's current work, and wait for you.
-    Interrupt {
-        task: String,
-    },
+    Interrupt { task: String },
     /// Let the current work finish, then hold.
     Pause {
         /// The task; or `--all`.
@@ -78,6 +66,7 @@ pub enum TaskCommand {
         #[arg(long, requires = "all")]
         host: Option<String>,
     },
+    /// Go on with a paused task, from where it was held.
     Resume {
         /// The task; or `--all`.
         #[arg(required_unless_present = "all")]
@@ -88,15 +77,16 @@ pub enum TaskCommand {
         #[arg(long, requires = "all")]
         host: Option<String>,
     },
-    Cancel {
-        task: String,
-    },
+    /// Try a failed task again, with a fresh budget, from the step that
+    /// failed.
+    Retry { task: String },
+    /// Stop a task for good. Nothing of the work is removed: its files,
+    /// branch and pull request stay.
+    Cancel { task: String },
     /// Give a task a workspace of its own — a worktree of its Git
-    /// workspace's repository, on a branch for it — when another task's
-    /// agent is working in the one it has.
-    OwnWorkspace {
-        task: String,
-    },
+    /// workspace's repository, on a branch for it — when another agent
+    /// (another task's, or one you started) is working in the one it has.
+    OwnWorkspace { task: String },
     /// What happened to a task, oldest first: its history, a line each.
     History {
         task: String,
@@ -463,6 +453,12 @@ pub async fn task_command(config: &Config, cmd: TaskCommand, json: bool) -> Resu
         TaskCommand::Resume { task, .. } => {
             let task = task.expect("clap requires it");
             act(config, &task, TaskAction::Resume, json, |f| {
+                format!("{}: {}", f.title, word(&f.status))
+            })
+            .await
+        }
+        TaskCommand::Retry { task } => {
+            act(config, &task, TaskAction::Retry, json, |f| {
                 format!("{}: {}", f.title, word(&f.status))
             })
             .await
