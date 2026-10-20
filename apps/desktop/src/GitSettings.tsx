@@ -211,6 +211,8 @@ export function GitSettings({ hosts, onUnsaved }: { hosts: string[]; onUnsaved?:
 
   const changed = name.trim() !== saved.name || email.trim() !== saved.email;
   useEffect(() => onUnsaved?.(changed), [changed]);
+  // Gone (another tab): its edit goes with it, so nothing waits to be saved.
+  useEffect(() => () => onUnsaved?.(false), []);
   const ready = hosts.filter((h) => views[h]?.state === "ready");
   const allDone = ready.length > 0 && ready.every((h) => {
     const g = (views[h] as { view: GitView }).view;
@@ -426,9 +428,12 @@ function HostRow({
           <button type="button" className="btn outline" onClick={() => void openUrl(pending.url).catch(() => {})}>
             Open GitHub
           </button>
-          <button type="button" className="btn ghost" onClick={onCancel} disabled={!!busy}>
-            Cancel
-          </button>
+          {/* Signed in already: "Sign out" is the way (it ends this too). */}
+          {!g.github && (
+            <button type="button" className="btn ghost" onClick={onCancel} disabled={!!busy}>
+              Cancel
+            </button>
+          )}
         </div>
       )}
       {g.login?.state === "failed" && !pending && <p className="git-note error-text small">{g.login.error}</p>}

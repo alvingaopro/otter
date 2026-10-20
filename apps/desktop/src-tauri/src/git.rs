@@ -67,9 +67,13 @@ pub async fn git_identity_set(
     Ok(sent)
 }
 
-/// `""` and nothing are the same: no identity of Otter's.
-fn set(v: &Option<String>) -> Option<&str> {
-    v.as_deref().filter(|s| !s.is_empty())
+/// The host has this Mac's identity already (`""` and none alike).
+fn have_same(have: &otter_protocol::host::GitView, id: &GitIdentity) -> bool {
+    GitIdentity {
+        name: have.name.clone(),
+        email: have.email.clone(),
+    }
+    .same_as(id)
 }
 
 /// This Mac's identity on a host that just connected, if it has another.
@@ -81,7 +85,7 @@ pub async fn sync_identity(conn: &mut Connection) {
     let Ok(Some(have)) = conn.settings_get().await.map(|s| s.git) else {
         return;
     };
-    if set(&have.name) == set(&id.name) && set(&have.email) == set(&id.email) {
+    if have_same(&have, &id) {
         return;
     }
     if let Err(e) = conn

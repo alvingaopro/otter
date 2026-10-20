@@ -206,6 +206,14 @@ pub struct GitIdentity {
     pub email: Option<String>,
 }
 
+impl GitIdentity {
+    /// The same identity, `""` and none being the same (no identity).
+    pub fn same_as(&self, other: &GitIdentity) -> bool {
+        let set = |v: &Option<String>| v.clone().filter(|s| !s.is_empty());
+        set(&self.name) == set(&other.name) && set(&self.email) == set(&other.email)
+    }
+}
+
 /// `git.key_create`.
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct GitKeyCreate {
@@ -320,4 +328,21 @@ pub struct CodingSettings {
     /// update, `""` resets.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_cleared_identity_is_none() {
+        let id = |n: Option<&str>, e: Option<&str>| GitIdentity {
+            name: n.map(String::from),
+            email: e.map(String::from),
+        };
+        assert!(id(Some(""), Some("")).same_as(&id(None, None)));
+        assert!(id(Some("Ada"), Some("a@b.c")).same_as(&id(Some("Ada"), Some("a@b.c"))));
+        // A host that still has one isn't cleared yet.
+        assert!(!id(Some(""), Some("")).same_as(&id(Some("Ada"), None)));
+    }
 }
