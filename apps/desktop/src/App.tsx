@@ -403,7 +403,9 @@ export default function App() {
             workspaces={Object.fromEntries(
               (payload?.hosts ?? []).map((h) => [
                 h.name,
-                h.workspaces.filter((w) => w.state !== "archived").map((w) => ({ id: w.id, name: w.name })),
+                h.workspaces
+                  .filter((w) => w.state !== "archived")
+                  .map((w) => ({ id: w.id, name: w.name, sessions: w.sessions.map((s) => ({ id: s.id, name: s.name })) })),
               ]),
             )}
             now={now}

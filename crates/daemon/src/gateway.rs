@@ -606,6 +606,8 @@ impl Gateway {
                 "request": short(&f.request, 2000),
                 "status": f.status.as_str(),
                 "status_reason": f.status_reason.as_deref().map(r),
+                // What only the developer can do now (D-134), if anything.
+                "waits_on_you": f.needs().map(|n| r(&n.summary)),
                 "steps": f.steps.iter().map(|t| json!({
                     "title": r(&t.title),
                     "status": format!("{:?}", t.status).to_lowercase(),

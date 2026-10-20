@@ -21,10 +21,12 @@ import {
   findMatch,
   groupOf,
   heardLine,
+  needsYou,
   taskGlyph,
   pendingDecisions,
   sortTasks,
   statusDetail,
+  waitedSession,
   type DecisionRequest,
   type Evidence,
   type Task,
@@ -219,7 +221,8 @@ function TaskPane({
   onOpenPreview: Props["onOpenPreview"];
 }) {
   const f = placed.task;
-  const wsName = workspaces.find((w) => w.id === f.workspace_id)?.name;
+  const ws = workspaces.find((w) => w.id === f.workspace_id);
+  const wsName = ws?.name;
   const [deleting, setDeleting] = useState(false);
   const [remembering, setRemembering] = useState(false);
   const [tab, setTab] = useState<Tab>("overview");
@@ -260,7 +263,7 @@ function TaskPane({
       <header className="pane-head" data-tauri-drag-region>
         <Glyph kind={taskGlyph(f)} />
         <h1 className="task-title">{f.title}</h1>
-        <span className={`status-pill ${taskGlyph(f)}`}>{STATUS_LABEL[f.status]}</span>
+        <span className={`status-pill ${taskGlyph(f)}`}>{pillLabel(f)}</span>
         {f.answer_only && (
           <span className="chip" title="The coding agent only reads; a plan to change things comes to you first">
             Answer only
@@ -329,7 +332,12 @@ function TaskPane({
           Preview with sample data: nothing here runs.
         </p>
       )}
-      <StatusBanner f={f} act={act} />
+      <StatusBanner
+        f={f}
+        act={act}
+        waited={waitedSession(f, ws)}
+        onOpenSession={(id) => onOpenWorkspace(placed.host, f.workspace_id!, id)}
+      />
       {!f.workspace_id && !ENDED.includes(f.status) && (
         <div className="banner info" role="group" aria-label="Workspace">
           <span className="banner-text">Choose the workspace this task's work happens in.</span>
@@ -500,11 +508,28 @@ function TaskActions({
   );
 }
 
+/** The header's status: Otter's loop is "Working", unless it waits on the developer (D-134). */
+function pillLabel(f: Task): string {
+  const looping = f.status === "planning" || f.status === "implementing" || f.status === "verifying";
+  return looping && needsYou(f) ? "Needs you" : STATUS_LABEL[f.status];
+}
+
 /**
  * Only what has no other place: a stop, a block without a decision to
  * answer, waiting for a workspace. A decision waits above the message box.
  */
-function StatusBanner({ f, act }: { f: Task; act: (a: TaskAction) => void }) {
+function StatusBanner({
+  f,
+  act,
+  waited,
+  onOpenSession,
+}: {
+  f: Task;
+  act: (a: TaskAction) => void;
+  /** The developer's session it waits for, if that's what it waits for. */
+  waited?: { id: string; name: string };
+  onOpenSession: (id: string) => void;
+}) {
   const pending = pendingDecisions(f).length;
   if (f.status === "blocked") {
     if (pending > 0) return null;
@@ -528,15 +553,22 @@ function StatusBanner({ f, act }: { f: Task; act: (a: TaskAction) => void }) {
     );
   }
   // Waiting for its workspace (D-079): or a worktree of its own (D-080).
+  // One only the developer can end (D-134) needs them: it says so.
   if (pending === 0 && f.status_reason?.startsWith("Waiting for ")) {
+    const yours = needsYou(f);
     return (
-      <div className="banner info" role="status">
+      <div className={yours ? "banner needs" : "banner info"} role="status">
         <span className="banner-text">
-          <Glyph kind="working" />
+          <Glyph kind={yours ? "needs" : "working"} />
           <span className="banner-summary">{f.status_reason}</span>
         </span>
         {f.status_reason.endsWith("is working there") && f.runs.length === 0 && (
           <span className="banner-actions">
+            {waited && (
+              <button className="btn outline" title="Let it finish, or stop it, and the task starts" onClick={() => onOpenSession(waited.id)}>
+                Open {waited.name}
+              </button>
+            )}
             <button className="btn" title="A worktree of the same repository, on a branch for this task" onClick={() => act({ action: "own_workspace" })}>
               Work in its own workspace
             </button>
