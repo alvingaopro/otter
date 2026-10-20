@@ -343,6 +343,60 @@ fn deletes_inside(piece: &str, cwd: &Path, root: &Path) -> bool {
         })
 }
 
+/// Commands that only read or search what they're given.
+const READERS: &[&str] = &[
+    "grep", "egrep", "fgrep", "rg", "ag", "ack", "cat", "head", "tail", "less", "more", "wc", "ls",
+    "tree", "stat", "file", "diff", "find",
+];
+/// Git's commands that only read.
+const GIT_READERS: &[&str] = &[
+    "log", "show", "diff", "grep", "blame", "status", "shortlog", "ls-files",
+];
+/// Test runners, whose operands pick tests by name.
+const TESTERS: &[(&str, &str)] = &[("cargo", "test"), ("go", "test"), ("pytest", "")];
+/// What `find` may do besides reading.
+const FIND_ACTS: &[&str] = &[
+    "-delete", "-exec", "-execdir", "-ok", "-okdir", "-fprint", "-fprint0", "-fprintf", "-fls",
+];
+
+/// What of a piece the word lists read (D-138): all of it, unless it only
+/// reads, searches or tests the workspace (`grep -rn token src`, `git log
+/// --grep delete`, `cat docs/deploy.md`, `cargo test prune_old`) — then just
+/// the command, since what it looks for and the names of the files it reads
+/// aren't what it does. An operand outside the workspace (or scratch), or a
+/// variable, keeps all of it.
+fn doing(piece: &str, cwd: &Path, root: &Path) -> String {
+    let words: Vec<&str> = piece.split_whitespace().collect();
+    let args: Vec<&str> = words
+        .iter()
+        .copied()
+        .skip_while(|w| w.contains('=') && !w.starts_with('-'))
+        .collect();
+    let Some((cmd, rest)) = args.split_first() else {
+        return piece.to_owned();
+    };
+    let (command, operands) = match (*cmd, rest.split_first()) {
+        ("git", Some((sub, rest))) if GIT_READERS.contains(sub) => (format!("git {sub}"), rest),
+        (c, Some((sub, rest))) if TESTERS.contains(&(c, *sub)) => (format!("{c} {sub}"), rest),
+        (c, _) if READERS.contains(&c) || TESTERS.contains(&(c, "")) => (c.to_owned(), rest),
+        _ => return piece.to_owned(),
+    };
+    let reads_inside = !(*cmd == "find" && operands.iter().any(|w| FIND_ACTS.contains(w)))
+        && operands
+            .iter()
+            .filter(|w| !w.starts_with('-'))
+            .all(|op| match target(cwd, op) {
+                Some(p) => inside(root, &p.to_string_lossy()) || scratch(&p),
+                None => false,
+            })
+        && !operands.iter().any(|w| w.contains(['$', '`']));
+    if reads_inside {
+        command
+    } else {
+        piece.to_owned()
+    }
+}
+
 /// Where a path written by a command points, from `cwd` (`~` is home).
 fn target(cwd: &Path, path: &str) -> Option<std::path::PathBuf> {
     let path = path.trim_matches(|c| c == '"' || c == '\'');
@@ -435,7 +489,10 @@ fn classify_command(line: &str, root: &Path) -> Verdict {
     for piece in pieces(line) {
         // Deleting the work's own files is routine (D-066).
         let routine_delete = deletes_inside(&piece, &cwd, root);
-        verdict = worst(verdict, classify_words(&piece, routine_delete));
+        verdict = worst(
+            verdict,
+            classify_words(&doing(&piece, &cwd, root), routine_delete),
+        );
         if let Some(f) = names_secrets_file(&piece) {
             verdict = worst(verdict, ask_user(format!("touches credentials (`{f}`)")));
         }
@@ -647,7 +704,10 @@ pub fn grant(call: &ToolCall, root: &Path) -> Option<String> {
         ToolCall::Command { line } => {
             let mut cwd = root.to_path_buf();
             for piece in pieces(line) {
-                if classify_words(&piece, deletes_inside(&piece, &cwd, root)) != Verdict::Allow
+                if classify_words(
+                    &doing(&piece, &cwd, root),
+                    deletes_inside(&piece, &cwd, root),
+                ) != Verdict::Allow
                     || names_secrets_file(&piece).is_some()
                 {
                     return None;
@@ -1072,6 +1132,57 @@ mod tests {
         ] {
             assert!(is_user_only(&cmd(line)), "{line}: {:?}", cmd(line));
         }
+    }
+
+    /// What a command reads, searches or tests by name isn't what it does
+    /// (D-138): the word lists read the command, not its patterns or the
+    /// workspace's files.
+    #[test]
+    fn looking_for_a_risky_word_is_not_doing_it() {
+        for line in [
+            "grep -rn token src",
+            "rg -i 'delete from' crates/",
+            "grep -rn \"password\" . | head -20",
+            "git log --grep delete --oneline",
+            "git log -S password -p -- src/auth",
+            "git grep -n prune",
+            "git show HEAD:src/deploy.rs",
+            "cat docs/deploy.md",
+            "ls deploy/ && tree secrets",
+            "find . -name '*token*'",
+            "cargo test prune_old_branches",
+            "cargo test -p otterd delete -- --nocapture",
+            "go test -run TestDeploy ./...",
+            "pytest -k truncate tests/",
+            "cd src && grep -n destroy lib.rs",
+        ] {
+            assert_eq!(cmd(line), Verdict::Allow, "{line}");
+        }
+        for line in [
+            // Doing it, not looking for it.
+            "git restore src/",
+            "git push origin main",
+            "kubectl delete pod web",
+            "bash scripts/deploy.sh",
+            "find . -name '*.log' -delete",
+            "find . -name x -exec rm {} ;",
+            // Reaching outside the workspace, or through a variable.
+            "grep -r password ~/.aws",
+            "cat ~/.ssh/id_ed25519",
+            "grep -rn token ../other-repo",
+            "grep $API_TOKEN src",
+            "cat /etc/app/password.txt",
+            // Secrets files by name, as before (D-066).
+            "grep -n password .env",
+            "echo $GITHUB_TOKEN",
+        ] {
+            assert!(is_user_only(&cmd(line)), "{line}: {:?}", cmd(line));
+        }
+        // And nothing that does it is granted for the task.
+        let root = Path::new("/home/u/.otter/workspaces/ws_1");
+        let line = |l: &str| grant(&ToolCall::Command { line: l.into() }, root);
+        assert_eq!(line("git restore src/"), None);
+        assert_eq!(line("grep -r password ~/.aws"), None);
     }
 
     #[test]

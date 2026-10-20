@@ -4326,3 +4326,33 @@ without changing anything else on the host.
     - The browser sign-in shows its code, then who it is. A cleared
       identity leaves the host's.
 
+
+## D-138 — Looking for a risky word isn't doing it (2026-10-20)
+
+Policy's word lists (D-049, D-066) read each piece of a command line
+whole, so a command that only searched for a word was taken for doing it:
+`grep -rn token src`, `git log --grep delete`, `cat docs/deploy.md`,
+`cargo test prune_old` each asked the developer, every time, never
+grantable. A task on authentication code asked at almost every search.
+
+- **The command, not what it looks for:** when a piece only reads,
+  searches or tests — `grep`, `rg`, `ag`, `ack`, `cat`, `head`, `tail`,
+  `less`, `wc`, `ls`, `tree`, `stat`, `file`, `diff`, `find`; `git log`,
+  `show`, `diff`, `grep`, `blame`, `status`, `shortlog`, `ls-files`;
+  `cargo test`, `go test`, `pytest` — and every operand stays in the
+  workspace (or scratch), the word lists read only the command. Patterns,
+  option values, test names and the workspace's own file names aren't what
+  it does.
+- **Everything else as before:** an operand outside the workspace
+  (`grep -r password ~/.aws`), a variable (`grep $API_TOKEN src`), `find`
+  with `-delete`, `-exec` and the like, and every other command keep the
+  whole piece. `.env` files still ask by name (D-066), wherever they are.
+  Grants (D-066) follow the same reading, so nothing that deletes, touches
+  credentials or pushes is ever granted.
+- **Left for the task discussion:** `git restore`, `git rebase`,
+  `git checkout -- …` and `git stash drop` in command position still ask
+  every time, though they act only on the work's own repository.
+- **Verified:** a unit test of searches, reads and test runs that now run
+  (fails on the code before), and of what still asks: doing it, reaching
+  outside, a variable, `find -delete`/`-exec`, `.env`. The existing policy
+  tests pass unchanged.
