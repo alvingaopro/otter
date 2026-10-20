@@ -122,6 +122,7 @@ pub fn run() {
             hosts::cli_status,
             updates::update_get,
             updates::update_install,
+            updates::update_check,
             perf::process_stats,
             hosts::host_metrics,
             hosts::host_ports,
