@@ -678,10 +678,13 @@ impl Daemon {
         let rt = crate::runtime::runtime(crate::runs::DEFAULT_RUNTIME, &backend)
             .ok_or_else(|| RpcError::invalid(format!("unknown coding backend `{backend}`")))?;
         let model = model.map(|m| m.trim().to_owned()).filter(|m| !m.is_empty());
+        // Signed in as a run would be (D-142).
+        let mut env = self.environments.base().clone();
+        self.agent_secrets(crate::runs::DEFAULT_RUNTIME, &mut env);
         crate::runtime::test_run::run(
             rt,
             &backend,
-            self.environments.base().clone(),
+            env,
             &self.paths.state_dir.join("runtime-test"),
             model,
         )

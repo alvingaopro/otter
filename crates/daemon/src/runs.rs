@@ -149,6 +149,7 @@ impl Daemon {
         let mut env = self.env_for_launch(&ws).await?;
         env.insert("OTTER_WORKSPACE_ID".into(), ws.id.to_string());
         env.insert("OTTER_TASK_ID".into(), task_id.to_string());
+        self.agent_secrets(DEFAULT_RUNTIME, &mut env);
         let (backend, coding_model) = {
             let s = self.settings.read().unwrap();
             (s.coding_backend(), s.coding_model())

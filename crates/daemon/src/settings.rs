@@ -27,16 +27,24 @@ use serde::{Deserialize, Serialize};
 
 use crate::daemon::{Daemon, RpcResult};
 
+use crate::agents::claude::OAUTH_TOKEN;
 use crate::providers::PROVIDERS;
 
-/// The secrets a client may set (each provider's key), and what they're for.
+/// The secrets a client may set (each provider's key, Claude Code's
+/// sign-in), and what they're for.
 fn secret_names() -> impl Iterator<Item = (&'static str, String)> {
-    PROVIDERS.iter().map(|p| {
-        (
-            p.key,
-            format!("Lets Otter use {} (choice `{}`)", p.label, p.id),
-        )
-    })
+    PROVIDERS
+        .iter()
+        .map(|p| {
+            (
+                p.key,
+                format!("Lets Otter use {} (choice `{}`)", p.label, p.id),
+            )
+        })
+        .chain([(
+            OAUTH_TOKEN,
+            "Signs Claude Code in on this host (a token from `claude setup-token`)".to_owned(),
+        )])
 }
 
 /// Controller choices (`None`: automatic), in the order they're offered.
@@ -270,6 +278,12 @@ impl HostSettings {
                 Some(v) if v.len() > 4096 || v.chars().any(|c| c.is_control() || c == '"') => {
                     return Err(format!("{name} doesn't look like a key"));
                 }
+                // What `claude setup-token` prints; an API key goes elsewhere.
+                Some(v) if name == OAUTH_TOKEN && !v.starts_with("sk-ant-oat") => {
+                    return Err(format!(
+                        "{name} is the token `claude setup-token` prints (sk-ant-oat01-…)"
+                    ));
+                }
                 Some(v) => {
                     secrets.insert(name, v);
                 }
@@ -297,6 +311,20 @@ impl HostSettings {
 }
 
 impl Daemon {
+    /// The agent `provider`'s secrets set here, into the environment its
+    /// process starts with (D-142).
+    pub(crate) fn agent_secrets(&self, provider: &str, env: &mut crate::env::EnvMap) {
+        let Some(p) = crate::agents::provider(provider) else {
+            return;
+        };
+        let s = self.settings.read().unwrap();
+        for name in p.secrets() {
+            if let Some(v) = s.secret(name) {
+                env.insert((*name).to_owned(), v);
+            }
+        }
+    }
+
     pub(crate) fn settings_get(&self) -> Settings {
         let mut view = self.settings.read().unwrap().view();
         view.git = Some(self.git_account.view());
@@ -419,6 +447,33 @@ mod tests {
         s.update(update(Some(""), Some(None))).unwrap();
         assert!(s.secret("OPENROUTER_API_KEY").is_none());
         assert_eq!(s.view().controller, None);
+    }
+
+    /// Claude Code's sign-in (D-142): only what `claude setup-token`
+    /// prints, kept like a key, listed with what it's for.
+    #[test]
+    fn claude_codes_token_is_a_secret_of_its_own() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut s = HostSettings::load(dir.path()).unwrap();
+        let token = |v: &str| SettingsUpdate {
+            secrets: BTreeMap::from([(OAUTH_TOKEN.to_owned(), Some(v.to_owned()))]),
+            ..Default::default()
+        };
+        let err = s.update(token("sk-ant-api03-abc")).unwrap_err();
+        assert!(err.contains("claude setup-token"), "{err}");
+        s.update(token(" sk-ant-oat01-abc ")).unwrap();
+        assert_eq!(s.secret(OAUTH_TOKEN).as_deref(), Some("sk-ant-oat01-abc"));
+        let view = s.view();
+        let k = view.secrets.iter().find(|k| k.name == OAUTH_TOKEN).unwrap();
+        assert!(k.set);
+        assert!(!serde_json::to_string(&view).unwrap().contains("oat01-abc"));
+        // Not a model provider: no controller of its own.
+        assert!(
+            !view
+                .controllers
+                .iter()
+                .any(|c| c.secret.as_deref() == Some(OAUTH_TOKEN))
+        );
     }
 
     fn view_names(s: &HostSettings) -> Vec<String> {

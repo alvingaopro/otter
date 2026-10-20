@@ -24,6 +24,7 @@ use otter_core::task::{Criterion, DecisionKind, DecisionRequest, EvidenceKind, P
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
+use crate::agents::claude::signed_in;
 use crate::env::EnvMap;
 use crate::providers::Provider;
 
@@ -290,6 +291,9 @@ pub struct Choice {
     /// Providers' keys set in Settings, by name (otterd's environment is
     /// looked at too).
     pub keys: std::collections::BTreeMap<String, String>,
+    /// Claude Code's sign-in set in Settings (D-142): the `claude` brain's
+    /// processes get it.
+    pub claude_token: Option<String>,
     /// Otter answers with tools where its brain can (`OTTER_BRAIN_V2=1`,
     /// D-089).
     pub v2: bool,
@@ -308,7 +312,7 @@ pub fn select(env: &EnvMap, choice: &Choice) -> Box<dyn Brain> {
     let model = |backend| {
         let key = match backend {
             Backend::Api(p) => choice.key(p, env),
-            Backend::ClaudeCode => None,
+            Backend::ClaudeCode => choice.claude_token.clone(),
         };
         Box::new(Model {
             backend,
@@ -696,7 +700,7 @@ pub struct Model {
     pub backend: Backend,
     /// The model to ask (`None`: the backend's default).
     pub model: Option<String>,
-    /// The provider's key.
+    /// The provider's key; for Claude Code, its sign-in from Settings.
     pub key: Option<String>,
 }
 
@@ -724,7 +728,7 @@ impl Model {
                     None => prompt.to_owned(),
                 };
                 crate::agents::claude_stream::structured_reading(
-                    cx.env,
+                    &signed_in(cx.env, self.key.as_deref()),
                     cx.root,
                     &prompt,
                     schema,
@@ -781,7 +785,7 @@ impl Brain for Model {
             Backend::ClaudeCode if crate::agents::claude_otter::ready(env).is_ok() => {
                 Some(Box::new(crate::turn::ClaudeTurn {
                     model: self.model.clone(),
-                    env: env.clone(),
+                    env: signed_in(env, self.key.as_deref()),
                     root: root.to_owned(),
                 }))
             }
@@ -1020,7 +1024,7 @@ impl Brain for Model {
         let full = match self.backend {
             Backend::ClaudeCode => {
                 crate::agents::claude_stream::stream_text(
-                    cx.env,
+                    &signed_in(cx.env, self.key.as_deref()),
                     cx.root,
                     &prompt,
                     self.model.as_deref(),

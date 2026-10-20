@@ -2176,6 +2176,9 @@ if [ "$1" = --settings ]; then
 fi
 [ "$FAKE_CODEX_MODE" = nohooks ] && hook_cmd=
 echo "claude $*" >> "$FAKE_CODEX_LOG"
+# Whether Settings signed it in (D-142), never the token: a log of its own.
+if [ -n "$CLAUDE_CODE_OAUTH_TOKEN" ]; then t=set; else t=unset; fi
+echo "claude $* (oauth token: $t)" >> "$FAKE_CODEX_LOG.auth"
 dir="$CLAUDE_CONFIG_DIR/projects/$(pwd -P | sed 's/[^A-Za-z0-9]/-/g')"
 mkdir -p "$dir"
 if [ "$1" = --resume ]; then
@@ -2662,6 +2665,76 @@ async fn looking_at_a_prompt_does_not_answer_it() {
     .await;
     writer.send(&Frame::Detach).await.unwrap();
     read_exit(&mut reader).await;
+}
+
+/// A Claude Code session started on the host's own sign-in, restarted after
+/// a token is set in Settings (D-142): the same conversation resumes,
+/// signed in with the token. A shell beside it never gets it.
+#[tokio::test]
+async fn a_restarted_claude_code_session_signs_in_with_the_token() {
+    use otter_core::AgentState;
+    use otter_protocol::host::SettingsUpdate;
+    let fake = fake_codex_host("ok").await;
+    let host = &fake.host;
+    create(
+        host,
+        "tok",
+        Some(vec![
+            SessionSpec::agent("claude"),
+            SessionSpec {
+                name: Some("sh".into()),
+                command: Some(
+                    "echo \"tok=${CLAUDE_CODE_OAUTH_TOKEN:-none}\" >> tok.txt; sleep 600".into(),
+                ),
+                ..SessionSpec::shell()
+            },
+        ]),
+    )
+    .await;
+    wait_agent(host, "tok", "claude", AgentState::WaitingForInput).await;
+    let auth = fake.log.with_extension("log.auth");
+    let read = || std::fs::read_to_string(&auth).unwrap_or_default();
+    assert!(read().ends_with("(oauth token: unset)\n"), "{}", read());
+    let id = host
+        .conn()
+        .await
+        .workspace_get("tok")
+        .await
+        .unwrap()
+        .session("claude")
+        .and_then(|s| s.agent.as_ref()?.provider_session_id.clone())
+        .expect("bound to its transcript");
+
+    let mut conn = host.conn().await;
+    conn.settings_set(SettingsUpdate {
+        secrets: std::collections::BTreeMap::from([(
+            "CLAUDE_CODE_OAUTH_TOKEN".to_owned(),
+            Some("sk-ant-oat01-RESTARTTOKEN0123456789".to_owned()),
+        )]),
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+    conn.session_restart("tok", "claude").await.unwrap();
+    eventually("it starts again", || async {
+        read().contains("(oauth token: set)").then_some(())
+    })
+    .await;
+    assert!(
+        read().contains(&format!("claude --resume {id} (oauth token: set)")),
+        "{}",
+        read()
+    );
+    // A command beside it, started again with the token set: not for it.
+    conn.session_restart("tok", "sh").await.unwrap();
+    let root = std::path::PathBuf::from(conn.workspace_get("tok").await.unwrap().root);
+    eventually("the command ran twice", || async {
+        let out = std::fs::read_to_string(root.join("tok.txt")).ok()?;
+        (out.lines().count() == 2).then_some(out)
+    })
+    .await
+    .lines()
+    .for_each(|l| assert_eq!(l, "tok=none"));
 }
 
 #[tokio::test]
@@ -7005,6 +7078,76 @@ async fn fake_sdk_host() -> (FakeCodex, std::path::PathBuf) {
     .await;
     let log = log.lock().unwrap().clone();
     (fake, log)
+}
+
+/// Claude Code's sign-in from Settings (D-142): a token from `claude
+/// setup-token` reaches the coding agent's worker, for a test and for a
+/// task's run, and goes when cleared; it is never shown or written out.
+#[tokio::test]
+async fn claude_codes_token_from_settings_signs_its_runs_in() {
+    use otter_protocol::host::SettingsUpdate;
+    let (fake, worker_log) = fake_sdk_host().await;
+    let mut conn = fake.host.conn().await;
+    let token = "sk-ant-oat01-SETTINGSTOKEN0123456789abcdef";
+    let set = |v: Option<&str>| SettingsUpdate {
+        secrets: std::collections::BTreeMap::from([(
+            "CLAUDE_CODE_OAUTH_TOKEN".to_owned(),
+            v.map(String::from),
+        )]),
+        ..Default::default()
+    };
+    // Not a token: refused.
+    let err = conn.settings_set(set(Some("sk-ant-api03-nope"))).await;
+    assert!(format!("{:#}", err.unwrap_err()).contains("claude setup-token"));
+    conn.runtime_test(None, None).await.unwrap();
+    let log = || std::fs::read_to_string(&worker_log).unwrap();
+    assert!(log().contains("oauth token: unset"), "{}", log());
+    assert!(!log().contains("oauth token: set"));
+
+    let s = conn.settings_set(set(Some(token))).await.unwrap();
+    let k = s
+        .secrets
+        .iter()
+        .find(|k| k.name == "CLAUDE_CODE_OAUTH_TOKEN")
+        .unwrap();
+    assert!(k.set && k.purpose.contains("claude setup-token"), "{k:?}");
+    assert!(!serde_json::to_string(&s).unwrap().contains(token));
+    std::fs::write(&worker_log, "").unwrap();
+    conn.runtime_test(None, None).await.unwrap();
+    assert!(log().contains("oauth token: set"), "{}", log());
+
+    // A task's run is signed in the same way.
+    std::fs::write(&worker_log, "").unwrap();
+    let id = started_task(&fake.host, "Export the timeline as CSV").await;
+    wait_task(&fake.host, &id, "a run", |f| !f.runs.is_empty()).await;
+    eventually("the worker started", || async {
+        log().contains("oauth token:").then_some(())
+    })
+    .await;
+    assert!(!log().contains("oauth token: unset"), "{}", log());
+
+    // Nowhere in what otterd writes but its secrets file.
+    fn scan(dir: &std::path::Path, found: &mut Vec<std::path::PathBuf>) {
+        for e in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                scan(&p, found);
+            } else if p.file_name().is_some_and(|n| n != "secrets.json")
+                && std::fs::read(&p).is_ok_and(|b| b.windows(13).any(|w| w == b"SETTINGSTOKEN"))
+            {
+                found.push(p);
+            }
+        }
+    }
+    let mut found = Vec::new();
+    scan(fake.host.home(), &mut found);
+    assert!(found.is_empty(), "{found:?}");
+
+    // Cleared: the host's own sign-in again.
+    conn.settings_set(set(None)).await.unwrap();
+    std::fs::write(&worker_log, "").unwrap();
+    conn.runtime_test(None, None).await.unwrap();
+    assert!(log().contains("oauth token: unset"), "{}", log());
 }
 
 #[tokio::test]
