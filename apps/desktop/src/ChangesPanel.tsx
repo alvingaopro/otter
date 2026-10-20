@@ -1,12 +1,9 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { CHANGE_LETTER } from "./changes";
+import { CHANGE_LETTER, WHOLE_FILE } from "./changes";
 import { DiffView } from "./DiffView";
 import { explain } from "./newer";
 import type { FileDiff, WorkspaceChanges } from "./types";
-
-/** Context enough for any file the host sends: the diff carries the whole of it. */
-const WHOLE_FILE = 1_000_000;
 
 /** What `WorkspacePane` holds of a workspace's changes. */
 export type Changes = { state: "loading" } | { state: "ready"; changes: WorkspaceChanges } | { state: "too_old" } | { state: "error"; error: string };
@@ -29,24 +26,6 @@ export function ChangesPanel({
   onClose: () => void;
 }) {
   const [file, setFile] = useState<string | null>(null);
-  const [diff, setDiff] = useState<FileDiff | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const version = changes.state === "ready" ? changes.changes : null;
-
-  useEffect(() => {
-    if (!file) return;
-    let live = true;
-    setError(null);
-    // The whole file, folded here (D-111); an older otterd sends its usual hunks.
-    invoke<FileDiff>("workspace_diff", { host, workspace, path: file, context: WHOLE_FILE })
-      .then((d) => live && setDiff(d))
-      .catch((e) => live && setError(explain(host, e)));
-    return () => {
-      live = false;
-    };
-  }, [host, workspace, file, version]);
-
-  const c = changes.state === "ready" ? changes.changes : null;
   return (
     <aside className="files changes" aria-label="Changes">
       <div className="files-head">
@@ -65,6 +44,57 @@ export function ChangesPanel({
       {changes.state === "too_old" && (
         <p className="notice">{host}'s otterd is too old to show changes: update it from the host's page.</p>
       )}
+      <ChangesList
+        changes={changes}
+        file={file}
+        onFile={setFile}
+        // The whole file, folded here (D-111); an older otterd sends its usual hunks.
+        diff={(path) => invoke<FileDiff>("workspace_diff", { host, workspace, path, context: WHOLE_FILE })}
+        explain={(e) => explain(host, e)}
+      />
+    </aside>
+  );
+}
+
+/** The changed files, or one file's diff: the Changes panel's body, and a task's (D-147). */
+export function ChangesList({
+  changes,
+  file,
+  onFile,
+  diff: readDiff,
+  explain: why = String,
+}: {
+  changes: Changes;
+  /** The file whose diff is shown, if any. */
+  file: string | null;
+  onFile: (path: string | null) => void;
+  diff: (path: string) => Promise<FileDiff>;
+  explain?: (e: unknown) => string;
+}) {
+  const [diff, setDiff] = useState<FileDiff | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const version = changes.state === "ready" ? changes.changes : null;
+  const read = useRef(readDiff);
+  read.current = readDiff;
+  const explainRef = useRef(why);
+  explainRef.current = why;
+
+  useEffect(() => {
+    if (!file) return;
+    let live = true;
+    setError(null);
+    read
+      .current(file)
+      .then((d) => live && setDiff(d))
+      .catch((e) => live && setError(explainRef.current(e)));
+    return () => {
+      live = false;
+    };
+  }, [file, version]);
+
+  const c = changes.state === "ready" ? changes.changes : null;
+  return (
+    <>
       {changes.state === "error" && <div className="notice error">{changes.error}</div>}
       {c && !c.git && <p className="muted files-empty">Not a Git repository.</p>}
       {c?.git && !file && (
@@ -83,7 +113,7 @@ export function ChangesPanel({
           <ul className="files-list">
             {c.files.map((f) => (
               <li key={f.path}>
-                <button className="files-row" onClick={() => setFile(f.path)} title={`${f.path}: show the diff`}>
+                <button className="files-row" onClick={() => onFile(f.path)} title={`${f.path}: show the diff`}>
                   <span className={`change-letter ${f.change}`} aria-label={f.change}>
                     {CHANGE_LETTER[f.change]}
                   </span>
@@ -111,7 +141,7 @@ export function ChangesPanel({
       {file && (
         <>
           <div className="files-path">
-            <button className="icon-btn" aria-label="Back to the changes" title="Back" onClick={() => setFile(null)}>
+            <button className="icon-btn" aria-label="Back to the changes" title="Back" onClick={() => onFile(null)}>
               ←
             </button>
             <span className="mono files-where" title={file}>
@@ -122,6 +152,6 @@ export function ChangesPanel({
           {diff ? <DiffView text={diff.text} path={file} truncated={diff.truncated} /> : !error && <p className="muted files-empty">Reading…</p>}
         </>
       )}
-    </aside>
+    </>
   );
 }

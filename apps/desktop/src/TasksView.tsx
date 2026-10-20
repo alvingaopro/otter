@@ -1,4 +1,6 @@
 import { Fragment, useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
+import { ChangesList, type Changes } from "./ChangesPanel";
+import { changesLine } from "./changes";
 import { Dialog } from "./Dialog";
 import { Glyph } from "./Glyph";
 import { ComposerGrip, useComposerHeight } from "./composerResize";
@@ -370,7 +372,7 @@ function TaskPane({
           </div>
           <div className="detail-body" role="tabpanel" id={`fpanel-${tab}`} aria-labelledby={`ftab-${tab}`}>
             {tab === "overview" ? (
-              <Overview placed={placed} now={now} onOpenWorkspace={onOpenWorkspace} shot={(name) => source.artifact(placed.key, name)} />
+              <Overview placed={placed} source={source} now={now} onOpenWorkspace={onOpenWorkspace} shot={(name) => source.artifact(placed.key, name)} />
             ) : (
               <ActivityFeed placed={placed} source={source} conversations={conversations} now={now} />
             )}
@@ -889,11 +891,13 @@ function Section({ title, count, children }: { title: string; count?: string; ch
  */
 function Overview({
   placed,
+  source,
   now,
   onOpenWorkspace,
   shot,
 }: {
   placed: PlacedTask;
+  source: TaskSource;
   now: number;
   onOpenWorkspace: Props["onOpenWorkspace"];
   shot: (name: string) => Promise<string>;
@@ -904,6 +908,7 @@ function Overview({
     outcome: <Outcome f={f} />,
     progress: <Progress placed={placed} onOpenWorkspace={onOpenWorkspace} />,
     checks: <Checks f={f} now={now} shot={shot} />,
+    changes: <TaskChanges placed={placed} source={source} />,
     delivery: <DeliveryInfo f={f} />,
     report: f.report ? (
       <Section title="Report">
@@ -914,16 +919,74 @@ function Overview({
     request: <Request f={f} />,
   };
   const order = ENDED.includes(f.status)
-    ? ["outcome", "report", "checks", "delivery", "progress", "decisions", "request"]
+    ? ["outcome", "report", "changes", "checks", "delivery", "progress", "decisions", "request"]
     : f.status === "review"
-      ? ["now", "checks", "delivery", "report", "progress", "decisions", "request"]
-      : ["now", "progress", "checks", "delivery", "report", "decisions", "request"];
+      ? ["now", "changes", "checks", "delivery", "report", "progress", "decisions", "request"]
+      : ["now", "progress", "changes", "checks", "delivery", "report", "decisions", "request"];
   return (
     <div className="overview">
       {order.map((k) => (
         <Fragment key={k}>{parts[k]}</Fragment>
       ))}
     </div>
+  );
+}
+
+/** How often a working task's changes are looked at again (an agent's edits make no event). */
+const CHANGES_EVERY_MS = 30_000;
+
+/**
+ * What the task changed in its workspace (D-147), the files and each one's
+ * diff, without going to the workspace.
+ */
+function TaskChanges({ placed, source }: { placed: PlacedTask; source: TaskSource }) {
+  const f = placed.task;
+  const ws = f.workspace_id;
+  const [changes, setChanges] = useState<Changes | null>(null);
+  const [file, setFile] = useState<string | null>(null);
+  const [tick, setTick] = useState(0);
+  const working = !ENDED.includes(f.status);
+
+  useEffect(() => {
+    setChanges(null);
+    setFile(null);
+  }, [placed.key, ws]);
+  useEffect(() => {
+    if (!ws || !source.changes) return;
+    let live = true;
+    const t = setTimeout(() => {
+      source.changes!(placed.host, ws)
+        .then((c) => live && setChanges(c ? { state: "ready", changes: c } : { state: "too_old" }))
+        .catch((e) => live && setChanges({ state: "error", error: String(e) }));
+    }, 300);
+    return () => {
+      live = false;
+      clearTimeout(t);
+    };
+  }, [source, placed.host, ws, f.updated_at, tick]);
+  useEffect(() => {
+    if (!ws || !working) return;
+    const t = setInterval(() => document.hasFocus() && setTick((n) => n + 1), CHANGES_EVERY_MS);
+    return () => clearInterval(t);
+  }, [ws, working]);
+
+  if (!ws || !source.diff || !changes || changes.state === "too_old") return null;
+  if (changes.state === "ready" && !changes.changes.git) return null;
+  const diff = source.diff;
+  return (
+    <Section title="Changes" count={changes.state === "ready" ? changesLine(changes.changes) : undefined}>
+      <div className="task-changes">
+        <button className="icon-btn task-changes-refresh" aria-label="Refresh changes" title="Refresh" onClick={() => setTick((n) => n + 1)}>
+          ↻
+        </button>
+        <ChangesList
+          changes={changes}
+          file={file}
+          onFile={setFile}
+          diff={(path) => diff(placed.host, ws, path)}
+        />
+      </div>
+    </Section>
   );
 }
 

@@ -5036,3 +5036,17 @@ not done or cancelled), one row each with the task's mark, title and what
 it is doing, above the session tabs; a click opens the task, where the
 agent's work is followed. The rows are read-only; the "Task ↗" chip of a
 workspace made for a task (D-105) stays, also after the task ends.
+
+## D-147 — A task shows what it changed (2026-10-20)
+
+A task's diff was only in its workspace's Changes panel (D-102), so
+checking the work meant leaving the task. The task's Overview now has a
+Changes section: the same list as the panel (branch and base, ahead and
+behind, each file's change and counts) and a file's diff below it on a
+click, read from the task's workspace through the task source
+(`changes`, `diff`). It is looked at again when the task changes, every
+30 s while it works and the app has focus, and on Refresh. It sits after
+Progress while working, first under Now in review, after the report once
+ended. Left out without a workspace, outside Git, or with an otterd that
+can't say. The list and diff are one component (`ChangesList`) shared with
+the panel.
