@@ -120,7 +120,7 @@ const CREDENTIALS: &[&str] = &[
     "id_ed25519",
     // Otter's own: its key, its gh's token, the host's secrets (D-132).
     ".otter/state",
-    "hosts.yml",
+    "gh/hosts.yml",
     "password",
     "secret",
     "token",

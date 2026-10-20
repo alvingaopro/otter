@@ -39,6 +39,7 @@ case "$1 $2" in
     esac
     printf 'github.com:\n    user: alvin\n' > "$GH_CONFIG_DIR/hosts.yml" ;;
   "api user")
+    if [ -f "$dir/api-fails" ]; then echo "error connecting to api.github.com" >&2; exit 1; fi
     if [ -n "$GH_CONFIG_DIR" ] && [ -f "$GH_CONFIG_DIR/hosts.yml" ]; then echo alvin
     else echo "HTTP 401: Requires authentication" >&2; exit 1; fi ;;
   "ssh-key add")

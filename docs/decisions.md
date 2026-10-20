@@ -4240,9 +4240,19 @@ without changing anything else on the host.
   `state/git/known_hosts`, not the host's.
   - The key is used only once it works. `git.check` runs `ssh -T
     git@github.com` with it; at "Hi alvin!" it writes `core.sshCommand`
-    (that key alone: `IdentitiesOnly`, no agent) and
-    `url.git@github.com:.pushInsteadOf=https://github.com/`, so pushes to
-    an https remote go over the key too.
+    and `url.git@github.com:.pushInsteadOf=https://github.com/`, so pushes
+    to an https remote go over the key too.
+  - That key alone: `-F /dev/null` as well as `IdentitiesOnly` and no
+    agent. Without `-F`, ssh would also try the `IdentityFile`s of the
+    host's `~/.ssh/config` after it, and sign in as the host's account
+    (found in review). A GitHub reached only through the host's ssh config
+    (a `ProxyJump`, say) isn't reached this way.
+  - For GitHub alone. A repository's `core.sshCommand` is for all its
+    remotes, so it runs a script Otter writes (`state/git/ssh`, 0700): a
+    `github.com` target goes to the key, anything else to the host's ssh
+    exactly as before.
+  - GitHub's published host key is in `known_hosts` from the start, so the
+    first connection is checked, not trusted.
   - Fetches stay as they were, so a key GitHub doesn't know yet can't
     break them. A key GitHub turns away stops being used; one GitHub
     can't be reached for stays as it was.
@@ -4256,13 +4266,17 @@ without changing anything else on the host.
     view carries them (`login: pending {code, url}`) until gh finishes,
     then says who it is.
   - With a token: on gh's stdin.
+  - A sign-in GitHub won't say the account of isn't kept: its directory
+    goes. Signing out or in again first stops a waiting sign-in and waits
+    for its gh to be gone, so it can't write a token afterwards.
   - It asks for `admin:public_key`, so `git.key_add` can put each host's
     key on the account (`gh ssh-key add`, "Otter on <host>"). Without that
     scope, the client shows the public key to add on GitHub.
   - Only Otter's own delivery uses it (D-047). The agent and the terminals
     don't get the token (the developer's choice). They push with the key,
     and the agent's push still needs the developer (D-059). The agent's
-    policy counts Otter's state directory and `hosts.yml` as credentials.
+    policy counts Otter's state directory and gh's `hosts.yml` as
+    credentials.
 - **Shared across hosts, per host by nature.** The developer sets the
   identity once, and the app sends it to every host (the Settings tab
   comes next). Each host has its own key and its own sign-in: a browser
@@ -4282,7 +4296,12 @@ without changing anything else on the host.
       0600.
     - A bad token says why. Sign-in never takes the host's `GH_TOKEN`.
     - Once the key is added through the sign-in, the repositories push
-      with it, with host keys in Otter's file.
+      with it, through the script: GitHub with `-F /dev/null` and the
+      key, a GitLab remote with the host's ssh untouched. GitHub's host
+      key is there from the start.
+    - A token GitHub won't name the account of isn't kept. Signing out
+      while a browser sign-in waits leaves nothing signed in, even when
+      the code is entered afterwards.
     - The browser sign-in shows its code, then who it is. A cleared
       identity leaves the host's.
 

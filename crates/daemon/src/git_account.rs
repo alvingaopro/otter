@@ -41,6 +41,10 @@ const GH_OVERRIDES: &[&str] = &[
     "GH_HOST",
 ];
 const GITHUB_SSH: &str = "git@github.com";
+/// GitHub's published host key (SHA256:+DiY3wvvV6TuJJhbpZisF/zLDA0zPMSvHdkr4UvCOqU):
+/// the first connection is checked, not trusted.
+const GITHUB_HOST_KEY: &str =
+    "github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl";
 /// GitHub's device codes last 15 minutes.
 const LOGIN_WAIT: Duration = Duration::from_secs(15 * 60);
 
@@ -65,7 +69,7 @@ pub struct GitAccount {
     account: RwLock<Account>,
     login: Mutex<Option<GitHubLogin>>,
     /// The browser sign-in's gh, while it waits.
-    waiting: Mutex<Option<tokio::task::AbortHandle>>,
+    waiting: Mutex<Option<tokio::task::JoinHandle<()>>>,
 }
 
 impl GitAccount {
@@ -177,8 +181,13 @@ impl GitAccount {
         .map_err(|e| format!("{e:#}"))
     }
 
+    /// Otter's key alone: nothing from the host's `~/.ssh/config`, whose
+    /// `IdentityFile`s ssh would try after it (and sign in as the host's
+    /// account), and no agent.
     fn ssh_options(&self) -> Vec<String> {
         vec![
+            "-F".into(),
+            "/dev/null".into(),
             "-i".into(),
             self.key().display().to_string(),
             "-o".into(),
@@ -192,25 +201,48 @@ impl GitAccount {
         ]
     }
 
-    /// `ssh` with Otter's key alone, once it has signed in to GitHub.
+    /// The ssh git runs in Otter's repositories once the key has signed in
+    /// to GitHub: the script that routes GitHub to the key.
     pub fn ssh_command(&self) -> Option<String> {
         self.ssh_command_for(&self.account.read().unwrap())
     }
 
     fn ssh_command_for(&self, a: &Account) -> Option<String> {
-        (a.key_account.is_some() && self.key().exists()).then(|| {
-            let quoted: Vec<String> = self.ssh_options().iter().map(|o| sh_quote(o)).collect();
-            format!("ssh {}", quoted.join(" "))
-        })
+        (a.key_account.is_some() && self.key().exists())
+            .then(|| sh_quote(&self.dir.join("ssh").display().to_string()))
     }
 
-    /// `gitconfig`: the identity, and the key once it works.
+    /// `gitconfig` (the identity, and the key once it works) and the `ssh`
+    /// script it runs: Otter's key for GitHub alone, and the host's ssh as
+    /// it is for any other remote (a repository's sshCommand is for all of
+    /// its remotes).
     fn write_config(&self, a: &Account) -> Result<()> {
+        use std::os::unix::fs::PermissionsExt;
         private_dir(&self.dir)?;
+        let options: Vec<String> = self.ssh_options().iter().map(|o| sh_quote(o)).collect();
+        let script = format!(
+            "#!/bin/sh\n# Written by Otter (D-132): its key for GitHub, the host's ssh for the rest.\nfor a in \"$@\"; do\n  case \"$a\" in\n    github.com|*@github.com) exec ssh {} \"$@\" ;;\n  esac\ndone\nexec ssh \"$@\"\n",
+            options.join(" ")
+        );
+        let path = self.dir.join("ssh");
+        crate::settings::write_private(&path, script.as_bytes())?;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700))?;
         crate::settings::write_private(
             &self.config_file(),
             config_text(a, self.ssh_command_for(a)).as_bytes(),
         )
+    }
+
+    /// GitHub's own host key in Otter's `known_hosts`, unless it has it.
+    fn seed_known_hosts(&self) -> Result<()> {
+        let have = std::fs::read_to_string(self.known_hosts()).unwrap_or_default();
+        if !have.lines().any(|l| l.trim() == GITHUB_HOST_KEY) {
+            crate::settings::write_private(
+                &self.known_hosts(),
+                format!("{have}{GITHUB_HOST_KEY}\n").as_bytes(),
+            )?;
+        }
+        Ok(())
     }
 
     /// The environment for Otter's own gh: its config directory once
@@ -237,6 +269,7 @@ impl GitAccount {
             return Ok(());
         }
         private_dir(&self.dir)?;
+        self.seed_known_hosts()?;
         let keygen = which("ssh-keygen", env)
             .ok_or_else(|| anyhow!("ssh-keygen isn't on this host's PATH"))?;
         let _ = std::fs::remove_file(self.key());
@@ -284,9 +317,9 @@ impl GitAccount {
         let gh = which("gh", env).ok_or_else(|| {
             anyhow!("GitHub CLI (gh) isn't on this host's PATH: install it to sign in")
         })?;
+        self.cancel_login().await;
         private_dir(&self.dir)?;
         private_dir(&self.gh_dir())?;
-        self.cancel_login();
         let mut env = env.clone();
         self.scope(&mut env);
         let mut cmd = Command::new(&gh);
@@ -319,7 +352,7 @@ impl GitAccount {
             if !out.status.success() {
                 bail!("{}", gh_error(&String::from_utf8_lossy(&out.stderr)));
             }
-            return self.signed_in_as(&gh, &env).await.map(|_| ());
+            return self.confirm(&gh, &env).await;
         }
         // The browser: gh prints its code and the page, then waits.
         cmd.args(["--web", "--skip-ssh-key", "--scopes", "admin:public_key"]);
@@ -360,11 +393,9 @@ impl GitAccount {
             })
             .await;
             let outcome = match finished {
-                Ok(Ok(status)) if status.success() => me
-                    .signed_in_as(&gh, &env)
-                    .await
-                    .map(|_| ())
-                    .map_err(|e| format!("{e:#}")),
+                Ok(Ok(status)) if status.success() => {
+                    me.confirm(&gh, &env).await.map_err(|e| format!("{e:#}"))
+                }
                 Ok(Ok(_)) => Err(gh_error(&rest)),
                 Ok(Err(e)) => Err(e.to_string()),
                 Err(_) => {
@@ -373,15 +404,30 @@ impl GitAccount {
             };
             *me.login.lock().unwrap() = outcome.err().map(|error| GitHubLogin::Failed { error });
         });
-        *self.waiting.lock().unwrap() = Some(task.abort_handle());
+        *self.waiting.lock().unwrap() = Some(task);
         Ok(())
     }
 
-    fn cancel_login(&self) {
-        if let Some(task) = self.waiting.lock().unwrap().take() {
+    /// Stop a browser sign-in that waits, and wait until its gh is gone:
+    /// it mustn't finish after this (and write a token) behind our back.
+    async fn cancel_login(&self) {
+        let task = self.waiting.lock().unwrap().take();
+        if let Some(task) = task {
             task.abort();
+            let _ = task.await;
         }
         *self.login.lock().unwrap() = None;
+    }
+
+    /// gh signed in: who it is, or, if that can't be told, not signed in
+    /// after all (never a token Otter doesn't know the account of).
+    async fn confirm(&self, gh: &Path, env: &EnvMap) -> Result<()> {
+        if let Err(e) = self.signed_in_as(gh, env).await {
+            let _ = std::fs::remove_dir_all(self.gh_dir());
+            let _ = self.update(|a| a.github = None);
+            return Err(e.context("signed in, but GitHub didn't say who: not kept"));
+        }
+        Ok(())
     }
 
     /// Who gh says it is; kept for the view.
@@ -398,8 +444,8 @@ impl GitAccount {
     }
 
     /// Sign Otter's gh out: its config directory goes.
-    pub fn logout(&self) -> Result<()> {
-        self.cancel_login();
+    pub async fn logout(&self) -> Result<()> {
+        self.cancel_login().await;
         match std::fs::remove_dir_all(self.gh_dir()) {
             Ok(()) => {}
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
@@ -475,6 +521,7 @@ impl GitAccount {
         let Some(ssh) = which("ssh", env) else {
             return line(false, "ssh isn't on this host's PATH.", None);
         };
+        let _ = self.seed_known_hosts();
         let run = Command::new(ssh)
             .args(self.ssh_options())
             .args([
@@ -679,6 +726,26 @@ mod tests {
         );
         assert!(text.contains("[url \"git@github.com:\"]\n\tpushInsteadOf = https://github.com/"));
         assert_eq!(config_text(&Account::default(), None).lines().count(), 1);
+    }
+
+    #[test]
+    fn its_ssh_script_routes_github_alone_to_the_key() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let account = GitAccount::load(dir.path());
+        let script = std::fs::read_to_string(account.dir.join("ssh")).unwrap();
+        assert!(
+            script.contains("github.com|*@github.com) exec ssh '-F' '/dev/null' '-i' "),
+            "{script}"
+        );
+        assert!(script.trim_end().ends_with("exec ssh \"$@\""), "{script}");
+        let mode = std::fs::metadata(account.dir.join("ssh"))
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o777, 0o700);
+        // Not used until the key has signed in.
+        assert_eq!(account.ssh_command(), None);
     }
 
     #[test]

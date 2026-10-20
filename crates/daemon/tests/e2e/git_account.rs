@@ -27,22 +27,23 @@ fn git_in(dir: &Path, args: &[&str]) -> std::process::Output {
 #[tokio::test]
 async fn otters_git_identity_key_and_github_sign_in_are_its_own() {
     use std::os::unix::fs::PermissionsExt;
-    let fake = fake_agent_host_with("ok", "off", |scratch| {
+    let path = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+    let keep = path.clone();
+    let fake = fake_agent_host_with("ok", "off", move |scratch| {
         let bin = scratch.join("sshbin");
         std::fs::create_dir_all(&bin).unwrap();
         std::fs::write(bin.join("ssh"), FAKE_SSH).unwrap();
         std::fs::set_permissions(bin.join("ssh"), std::fs::Permissions::from_mode(0o755)).unwrap();
         let p = |x: &Path| x.to_string_lossy().into_owned();
+        let path = format!(
+            "{}:{}:{}:/usr/local/bin:/usr/bin:/bin",
+            p(&bin),
+            p(&scratch.join("bin")),
+            tmux_dir()
+        );
+        *keep.lock().unwrap() = path.clone();
         vec![
-            (
-                "PATH",
-                format!(
-                    "{}:{}:{}:/usr/local/bin:/usr/bin:/bin",
-                    p(&bin),
-                    p(&scratch.join("bin")),
-                    tmux_dir()
-                ),
-            ),
+            ("PATH", path),
             // The host's own gh token: Otter's gh never takes it.
             ("GH_TOKEN", "ghp_the_hosts_own".into()),
         ]
@@ -121,9 +122,19 @@ async fn otters_git_identity_key_and_github_sign_in_are_its_own() {
             .success()
     );
 
-    // Signed in with a token: a bad one says why; a good one, as whom.
+    // GitHub's own host key is there from the start.
+    let known = std::fs::read_to_string(state.join("known_hosts")).unwrap();
+    assert!(known.contains("github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl"), "{known}");
+
+    // Signed in with a token: a bad one says why; one GitHub won't say
+    // whose isn't kept; a good one, as whom.
     let err = conn.github_login(Some("bad")).await.unwrap_err();
     assert!(format!("{err}").contains("Bad credentials"), "{err}");
+    std::fs::write(fake.gh.join("api-fails"), "").unwrap();
+    let err = conn.github_login(Some("ghp_whose")).await.unwrap_err();
+    assert!(format!("{err}").contains("not kept"), "{err}");
+    assert!(!state.join("gh/hosts.yml").exists());
+    std::fs::remove_file(fake.gh.join("api-fails")).unwrap();
     let v = conn.github_login(Some("ghp_developers")).await.unwrap();
     assert_eq!(v.github.as_deref(), Some("alvin"));
     assert!(state.join("gh/hosts.yml").exists());
@@ -134,12 +145,27 @@ async fn otters_git_identity_key_and_github_sign_in_are_its_own() {
     assert_eq!(c.git.key_account.as_deref(), Some("alvin"));
     let ssh = git_in(root, &["config", "core.sshCommand"]);
     let ssh = String::from_utf8_lossy(&ssh.stdout);
+    assert_eq!(ssh.trim(), format!("'{}'", state.join("ssh").display()));
+    // Its script: GitHub with Otter's key alone (nothing from the host's
+    // ~/.ssh/config); any other remote with the host's ssh as it is.
+    let route = |dest: &str| {
+        let out = Command::new(state.join("ssh"))
+            .args(["-T", dest])
+            .env("PATH", path.lock().unwrap().as_str())
+            .env("FAKE_GH_DIR", &fake.gh)
+            .output()
+            .unwrap();
+        let log = std::fs::read_to_string(fake.gh.join("ssh.log")).unwrap();
+        (out, log.lines().last().unwrap_or("").to_owned())
+    };
+    let (_, github) = route("git@github.com");
     assert!(
-        ssh.contains("id_ed25519")
-            && ssh.contains("IdentitiesOnly=yes")
-            && ssh.contains("IdentityAgent=none"),
-        "{ssh}"
+        github.starts_with("ssh -F /dev/null -i ")
+            && github.contains("id_ed25519 -o IdentitiesOnly=yes -o IdentityAgent=none"),
+        "{github}"
     );
+    let (_, gitlab) = route("git@gitlab.example.com");
+    assert_eq!(gitlab, "ssh -T git@gitlab.example.com");
     let push = git_in(root, &["config", "url.git@github.com:.pushInsteadOf"]);
     assert_eq!(
         String::from_utf8_lossy(&push.stdout).trim(),
@@ -158,6 +184,18 @@ async fn otters_git_identity_key_and_github_sign_in_are_its_own() {
     // Signed out, then in through the browser: its code while it waits.
     let v = conn.github_logout().await.unwrap();
     assert!(v.github.is_none() && !state.join("gh").exists());
+    // Signed out while it waits: gh is gone, and can't sign in afterwards.
+    let v = conn.github_login(None).await.unwrap();
+    assert!(
+        matches!(v.login, Some(GitHubLogin::Pending { .. })),
+        "{v:?}"
+    );
+    let v = conn.github_logout().await.unwrap();
+    assert!(v.login.is_none() && v.github.is_none());
+    std::fs::write(fake.gh.join("approve"), "").unwrap();
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    assert!(!state.join("gh/hosts.yml").exists());
+    std::fs::remove_file(fake.gh.join("approve")).unwrap();
     let v = conn.github_login(None).await.unwrap();
     assert_eq!(
         v.login,

@@ -334,6 +334,7 @@ impl Daemon {
             Request::GitHubLogout => {
                 self.git_account
                     .logout()
+                    .await
                     .map_err(|e| RpcError::internal(format!("{e:#}")))?;
                 json(self.git_account.view())
             }
