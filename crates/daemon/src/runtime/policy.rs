@@ -430,9 +430,10 @@ fn unquoted(w: &str) -> String {
 }
 
 /// A piece's text for the word lists, as written and as the shell passes
-/// it: `dele''te` is `delete`, and `-O"sudo"` still says `sudo`.
+/// it, a line each: `dele''te` is `delete`, and `-O"sudo"` still says
+/// `sudo`.
 fn both_ways(text: &str) -> String {
-    format!("{text} {}", unquoted(text))
+    format!("{text}\n{}", unquoted(text))
 }
 
 /// An option that runs, writes or brings in something: one of
@@ -606,7 +607,9 @@ fn never(line: &str) -> Verdict {
 /// only the work's own files, which isn't destroying anything.
 fn classify_words(line: &str, routine_delete: bool) -> Verdict {
     let lower = line.to_lowercase();
-    let never = never(line);
+    // What no one may allow, as written: `grep -rn "rm -rf /" docs` only
+    // looks for it.
+    let never = never(line.lines().next().unwrap_or_default());
     if severity(&never) == 3 {
         return never;
     }
@@ -1028,6 +1031,10 @@ mod tests {
             r"rm -rf \/home/u/x",
             r"rm -rf \~/Documents",
             "rm ~/notes.txt",
+            // Looking for what no one may do is the developer's to allow,
+            // not never (D-138).
+            "grep -rn \"rm -rf /\" docs",
+            "echo 'rm -rf /' > notes.txt",
             "rmdir /opt/old",
             "rm -rf .",
             "rm -rf *",
