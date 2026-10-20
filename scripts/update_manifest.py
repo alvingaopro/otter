@@ -17,7 +17,7 @@ from pathlib import Path
 
 RELEASES = "https://github.com/alvingaopro/otter/releases/download"
 # The updater's name for each architecture, and the release's.
-ARCHES = {"darwin-aarch64": "arm64", "darwin-x86_64": "x86_64"}
+ARCHES = {"darwin-aarch64": "arm64"}
 
 
 def manifest(version: str, sigs: Path, now: datetime) -> dict:

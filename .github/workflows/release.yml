@@ -71,7 +71,8 @@ jobs:
           gh release create "v$version" --draft --title "Otter v$version" --generate-notes --verify-tag
           echo "version=$version" >> "$GITHUB_OUTPUT"
 
-  # The app is built and bundled per architecture, in parallel (D-022).
+  # The app is built and bundled per architecture, in parallel (D-022);
+  # Apple silicon only (D-143).
   desktop-build:
     name: Desktop app (${{ matrix.arch }})
     needs: version
@@ -81,8 +82,6 @@ jobs:
         include:
           - target: aarch64-apple-darwin
             arch: arm64
-          - target: x86_64-apple-darwin
-            arch: x86_64
     runs-on: macos-latest
     env:
       VERSION: ${{ needs.version.outputs.version }}
@@ -182,11 +181,6 @@ jobs:
             target: aarch64-apple-darwin
             npm_os: darwin
             npm_cpu: arm64
-          - name: macos-x86_64
-            os: macos-latest
-            target: x86_64-apple-darwin
-            npm_os: darwin
-            npm_cpu: x64
     runs-on: ${{ matrix.os }}
     env:
       VERSION: ${{ needs.version.outputs.version }}
