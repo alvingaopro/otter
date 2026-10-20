@@ -56,15 +56,17 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       # Browser checks (D-046) on the runner's Chrome, which now and then
-      # dies on its own there: a failure shows here, marked on the step,
-      # and doesn't turn the PR's checks red (D-137).
-      - run: >-
-          cargo test --locked -p otterd --
-          browser::tests
-          a_browser_check_verifies_the_ui_with_evidence
-          a_broken_ui_fails_verification
-          a_preview_runs_as_a_session_on_one_port
-        continue-on-error: true
+      # dies on its own there: up to three tries, so a flake passes and a
+      # real break, failing all three, fails the job (D-137).
+      - run: |
+          for try in 1 2 3; do
+            cargo test --locked -p otterd -- browser::tests \
+              a_browser_check_verifies_the_ui_with_evidence \
+              a_broken_ui_fails_verification \
+              a_preview_runs_as_a_session_on_one_port && exit 0
+            echo "::warning::Real-browser tests failed (try $try of 3)"
+          done
+          exit 1
         env:
           OTTER_TEST_BROWSER: "1"
           # Chrome's sandbox can't start where unprivileged user namespaces
