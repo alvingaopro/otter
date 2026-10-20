@@ -355,7 +355,7 @@ impl Daemon {
             },
         );
         let actor = Actor::new(
-            conversation_id,
+            conversation_id.clone(),
             run_id.clone(),
             generation,
             self.conversations.clone(),
@@ -367,10 +367,20 @@ impl Daemon {
         let daemon = self.clone();
         let (fid, rid) = (task_id.clone(), run_id.clone());
         tokio::spawn(async move {
-            daemon
-                .bridge(fid, rid.clone(), root, events, tx, stopping)
-                .await;
+            // A task of its own, so that a panic in it still lets the run
+            // go (D-134).
+            let bridged = {
+                let (daemon, fid, rid) = (daemon.clone(), fid.clone(), rid.clone());
+                tokio::spawn(
+                    async move { daemon.bridge(fid, rid, root, events, tx, stopping).await },
+                )
+                .await
+            };
+            // Its mailbox closes with it: the actor stops the agent.
             daemon.runs.lock().unwrap().remove(&rid);
+            if bridged.is_err_and(|e| e.is_panic()) {
+                daemon.lost_run(&fid, &rid, Some(&conversation_id)).await;
+            }
             daemon.task_wake.notify_one();
         });
         Ok(run_id)
@@ -395,8 +405,7 @@ impl Daemon {
             .or_else(|| self.starting.lock().unwrap().get(workspace).cloned())
     }
 
-    /// A run that never got going, or one otterd lost: its generation ends,
-    /// its turns too.
+    /// A run that never got going: its generation ends, its turns too.
     fn end_conversation_run(
         &self,
         conversation: &ConversationId,
@@ -655,29 +664,33 @@ impl Daemon {
         if self.shutting_down() {
             return;
         }
-        tracing::warn!(task = %task, run = %run, "the run's actor ended without ending the run");
-        // Its conversation is free again, or nothing could ever run in it
-        // until a restart (D-134).
+        self.lost_run(&task, &run, conversation.as_ref()).await;
+    }
+
+    /// A run otterd lost — its actor or its bridge went without ending it.
+    /// Its conversation is free again, or nothing could run in it until a
+    /// restart, and the run ends as one cut off mid-turn: resumed when
+    /// that's safe, else the developer's to decide (D-061, D-134).
+    async fn lost_run(&self, task: &TaskId, run: &RunId, conversation: Option<&ConversationId>) {
+        tracing::warn!(task = %task, run = %run, "otterd lost the run");
         if let Some(c) = conversation
-            .as_ref()
             .and_then(|c| self.conversations.get(c.as_str()))
-            .filter(|c| c.active_run.as_ref() == Some(&run))
+            .filter(|c| c.active_run.as_ref() == Some(run))
         {
-            self.end_conversation_run(
+            // Queued turns stay queued, as when otterd restarts.
+            self.conversations.apply(
                 &c.id,
-                c.generation,
-                TurnOutcome::OutcomeUnknown,
-                "not delivered: otterd lost the run",
+                Op::RunEnded {
+                    generation: c.generation,
+                    outcome: TurnOutcome::OutcomeUnknown,
+                    at: Utc::now(),
+                },
             );
         }
-        self.finish_run(
-            &task,
-            &run,
-            RunState::Failed,
-            Some("otterd lost the run (an internal error; otterd's log says where)".into()),
-            true,
-        )
-        .await;
+        let (state, why) = self
+            .unsettled_state(task, run, "otterd lost it: an internal error, see its log")
+            .await;
+        self.finish_run(task, run, state, Some(why), true).await;
     }
 
     async fn update_run(&self, task: &TaskId, run: &RunId, f: impl FnOnce(&mut Run)) {

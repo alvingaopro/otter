@@ -334,7 +334,7 @@ mod tests {
         // character before it.
         for s in [
             "修复这个PR，https://github.com/o/r/pull/7",
-            "\u{feff}Run tests: cargo test",
+            "\u{feff}Tests: cargo test",
             "看看token=",
             "打开http://localhost:3000",
         ] {

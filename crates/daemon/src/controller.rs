@@ -112,6 +112,9 @@ fn looked_and_failed(why: &str) -> String {
     format!("The look at the code failed ({why}). Retry, or say go on, to try again.")
 }
 
+/// Why a step stopped when it panicked.
+const PANICKED: &str = "an internal error (otterd's log says where)";
+
 /// `work` as a task of its own, so that a panic in it is an error like any
 /// other, not the end of what waits on it (D-134). `None`: otterd is going.
 async fn contained(
@@ -119,9 +122,7 @@ async fn contained(
 ) -> Option<RpcResult<()>> {
     match tokio::spawn(work).await {
         Ok(r) => Some(r),
-        Err(e) if e.is_panic() => Some(Err(RpcError::internal(
-            "an internal error (otterd's log says where)",
-        ))),
+        Err(e) if e.is_panic() => Some(Err(RpcError::internal(PANICKED))),
         Err(_) => None,
     }
 }
@@ -229,6 +230,9 @@ impl Daemon {
                     };
                     if let Some(Err(e)) = stepped {
                         tracing::warn!(task = %id, "controller: {}", e.message);
+                        if e.message == PANICKED {
+                            daemon.could_not_answer(&id).await;
+                        }
                         daemon
                             .fail(&id, &format!("Otter stopped: {}", e.message), None)
                             .await;
@@ -586,8 +590,31 @@ impl Daemon {
                 tracing::warn!(task = %id, "task failed: {}", otter_core::redact::redact(why));
                 self.task_changed(&a);
             }
+            // Nothing changed: nothing to tell, nor to step again.
+            Ok(a) if a.from == Some(a.task.status) => {}
             Ok(a) => self.task_changed(&a),
             Err(e) => tracing::warn!(task = %id, "failing: {e:?}"),
+        }
+    }
+
+    /// What the developer said, answered if only by saying Otter couldn't:
+    /// a step that panicked on it would take it up again at once, and
+    /// again (D-134).
+    async fn could_not_answer(&self, id: &TaskId) {
+        let applied = self.tasks.lock().await.apply(id, None, |f, _| {
+            let Some(last) = unanswered(f).pop() else {
+                return Ok(vec![]);
+            };
+            let (m, c) = message(
+                MessageRole::Controller,
+                format!("Otter couldn't answer that: {PANICKED}."),
+                Some(last.id.to_string()),
+            );
+            f.messages.push(m);
+            Ok(vec![c])
+        });
+        if let Ok(a) = applied {
+            self.task_changed(&a);
         }
     }
 

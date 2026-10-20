@@ -4343,15 +4343,21 @@ left the task marked as being stepped, never stepped again.
 
 - **`redact`** finds the key's start by characters. Text in any script
   reads whole.
-- **A lost run frees its conversation:** when the actor goes without ending
-  the run, the bridge ends the conversation's generation (outcome
-  unknown) if the run still holds it, and the run fails as *otterd lost
-  the run*, which is what happened. Retrying starts a new turn.
-- **Contained:** a task's step, Otter's follow-ups and its turn on the host
-  each run as a task of their own. A panic there is an error like the
-  others: the task fails with *Otter stopped: an internal error*, and the
-  host's turn can run again.
-- **In the log:** a panic, with its time, through the log like the rest; a
+- **A lost run frees its conversation:** when the actor or the bridge goes
+  without ending the run, its conversation's generation ends (outcome
+  unknown; queued turns stay queued, as on a restart) if the run still
+  holds it, and the run ends as one cut off mid-turn (D-061): resumed when
+  its session can carry on, the developer's to decide after three in a
+  row. It says otterd lost it.
+- **Contained:** a task's step, Otter's follow-ups, its turn on the host
+  and a run's bridge each run as a task of their own. A panic there is an
+  error like the others: the task fails with *Otter stopped: an internal
+  error*, the host's turn can run again, a lost bridge lets its run and
+  workspace go. A step that panicked answers what the developer said with
+  that, so it isn't taken up again at once; failing a task that already
+  failed changes nothing and wakes nothing.
+- **In the log:** a panic, with its time, thread and (with
+  `RUST_BACKTRACE`) backtrace, through the log like the rest; a
   task failing, with why (redacted); a task deleted, with its last status
   and why. A failed Otter's turn no longer quotes Node's warning hint as
   what the worker said.
@@ -4365,9 +4371,14 @@ left the task marked as being stepped, never stepped again.
   the rule and the words are one.
 - **CLI:** `otter task retry`; `resume`, `retry` and `cancel` say what
   they do.
-- **Known limits:** a step that panics every time it's stepped fails the
-  task once, then panics again on each tick while a message waits for an
-  answer (each one logged).
+- **Known limits:** a step that panics every time on a task still being
+  worked fails it once; one that panics on the developer's every message
+  answers each with the failure. A panic while a lock is held poisons it,
+  which containing can't undo. The *Waiting on you* of a workspace wait
+  counts from when the task entered its status, not from when the wait
+  began. A panic quoting a string (a slice out of bounds) quotes up to 256
+  bytes of it unredacted, as before: redacting in the hook could panic
+  again and abort otterd.
 - **Verified:** unit tests for the scripts (`，https://`, a BOM, `看看token=`,
   a key after Chinese still masked), a panicking step as an error, and the
   waits that need the developer. An e2e test (`a_request_in_chinese_is_planned`)
@@ -4375,4 +4386,7 @@ left the task marked as being stepped, never stepped again.
   *otterd lost the run*. By hand, with the old `redact` back: the task
   failed, and Retry planned and went on; with the conversation's release
   taken out as well, Retry failed with *run … is still serving this
-  conversation*, as on the developer's host.
+  conversation*, as on the developer's host. After review, the lost run
+  is resumed instead: by hand, it was Interrupted, then resumed and
+  finished on its own. Reviewed by a second model, which found the
+  answer-loop, the resume and the bridge.

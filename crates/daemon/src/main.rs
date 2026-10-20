@@ -148,8 +148,18 @@ fn init_logging() {
         .with_writer(std::io::stderr)
         .with_ansi(false)
         .init();
-    // A panic is in the log like the rest, with its time (D-134).
-    std::panic::set_hook(Box::new(|info| tracing::error!("{info}")));
+    // A panic is in the log like the rest, with its time (D-134): where,
+    // on which thread, and the backtrace when RUST_BACKTRACE asks for one.
+    std::panic::set_hook(Box::new(|info| {
+        let thread = std::thread::current();
+        let backtrace = std::backtrace::Backtrace::capture();
+        match backtrace.status() {
+            std::backtrace::BacktraceStatus::Captured => {
+                tracing::error!(thread = thread.name(), "{info}\n{backtrace}")
+            }
+            _ => tracing::error!(thread = thread.name(), "{info}"),
+        }
+    }));
 }
 
 async fn serve(paths: Paths) -> Result<()> {
