@@ -30,7 +30,7 @@ use std::time::Duration;
 use chrono::Utc;
 use otter_core::task::{
     ARCHIVED, Criterion, Decider, DecisionKind, DecisionRequest, DecisionStatus, Evidence,
-    EvidenceKind, MessageRole, Risk, RunState, Step, StepStatus, Task, TaskEvent, TaskStatus,
+    EvidenceKind, HELD, MessageRole, Risk, RunState, Step, StepStatus, Task, TaskEvent, TaskStatus,
     VerificationMark, WAITING, YOUR_AGENT,
 };
 use otter_core::{DecisionId, EvidenceId, StepId, TaskId};
@@ -1533,7 +1533,11 @@ impl Daemon {
                     })
                 })
                 .map(|s| s.name.clone());
-            let git = std::path::Path::new(&ws.root).join(".git").exists();
+            // Where delivery would commit: in a repository, at its root or
+            // below it.
+            let git = std::path::Path::new(&ws.root)
+                .ancestors()
+                .any(|p| p.join(".git").exists());
             (ws.name.clone(), busy, git)
         };
         if let Some(other) = self.workspace_holder(ws_id).filter(|o| o != &f.id) {
@@ -1545,9 +1549,11 @@ impl Daemon {
             return Some(format!("{WAITING}{name}: “{title}” is working there"));
         }
         // In a Git repository, another task's work there, not done, holds
-        // it between its runs too — in review, paused, blocked or failed —
-        // or publishing it would take this one's edits (D-141). Not when
-        // this one has worked there already: neither would go on.
+        // it between its runs too, or publishing it would take this one's
+        // edits (D-141). At work, it lets go by itself; at rest — in
+        // review, paused, blocked or failed — only the developer can free
+        // it. Not when this one has worked there already: neither would go
+        // on.
         if git
             && f.runs.is_empty()
             && let Some(other) = self.tasks.lock().await.list().into_iter().find(|o| {
@@ -1557,10 +1563,11 @@ impl Daemon {
                     && !matches!(o.status, TaskStatus::Done | TaskStatus::Cancelled)
             })
         {
-            return Some(format!(
-                "{WAITING}{name}: “{}” has work there that isn't done",
-                other.title
-            ));
+            return Some(if other.status.is_active() {
+                format!("{WAITING}{name}: “{}” is working there", other.title)
+            } else {
+                format!("{WAITING}{name}: “{}”{HELD}", other.title)
+            });
         }
         busy_session.map(|s| format!("{WAITING}{name}: {s}{YOUR_AGENT}"))
     }

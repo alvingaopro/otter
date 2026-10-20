@@ -2773,7 +2773,10 @@ async fn a_task_waiting_to_publish_keeps_its_workspace() {
         .unwrap();
     wait_task(host, &second, "waiting for the first", |f| {
         f.status_reason.as_deref()
-            == Some("Waiting for csv: “CSV export” has work there that isn't done")
+            == Some(&*format!(
+                "Waiting for csv: “CSV export”{}",
+                otter_core::task::HELD
+            ))
     })
     .await;
     // Published: still the first one's until it's accepted.

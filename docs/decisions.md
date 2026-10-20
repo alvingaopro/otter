@@ -4463,21 +4463,25 @@ first step).
 
 - **In a Git repository, another task's work there, not done, holds the
   workspace:** a task that has run in it and isn't done or cancelled — at work, in review,
-  paused, blocked or failed. A task wanting it waits as D-079 says
-  ("Waiting for <workspace>: “<task>” has work there that isn't done"),
-  costs no attempt, and goes on by itself when the other is accepted or
-  cancelled. Or it moves to a workspace of its own (D-080), since it hasn't
-  worked yet.
+  paused, blocked or failed. A task wanting it waits as D-079 says, costs
+  no attempt, and goes on by itself when the other is accepted or
+  cancelled, or moves to a workspace of its own (D-080, the app's button),
+  since it hasn't worked yet. While the other is at work the wait reads as
+  D-079's ("… is working there") and ends by itself; while it's at rest
+  only the developer can end it, so it says so ("… has work there you
+  haven't accepted: accept or cancel it, or give this task a workspace of
+  its own") and needs them ("Waiting on you").
 - **Pausing doesn't hand a Git workspace over:** paused, a task's work is
   still in the tree. Cancelling does. A cancelled task's files stay
   (D-068), and the next task's delivery then takes them as the
   workspace's.
-- **Only where delivery commits:** a workspace whose root is a Git
-  repository (a Git workspace, or an attached directory that is a
-  checkout). An empty or plain directory has no commit to mix work into,
-  and can't give a task one of its own (D-080), so it keeps D-079's one run
-  at a time: a daily trigger there goes on while yesterday's task waits in
-  review.
+- **Only where delivery commits:** a workspace in a Git repository (at
+  its root or below it, as delivery finds it). An empty or plain directory
+  has no commit to mix work into, so it keeps D-079's one run at a time.
+- **Triggers on a Git workspace** now wait behind the last occurrence's
+  task until it's accepted (and later occurrences are skipped as still at
+  work), where before each pushed into the same branch and pull request.
+  The wait says it needs the developer.
 - **No deadlock:** the hold applies only to a task that hasn't run in the
   workspace yet. Two that both have (from before this, or another way
   in) fall back to D-079's one run at a time.

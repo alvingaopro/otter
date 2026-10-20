@@ -531,7 +531,7 @@ function StatusBanner({ f, act }: { f: Task; act: (a: TaskAction) => void }) {
           <Glyph kind="working" />
           <span className="banner-summary">{f.status_reason}</span>
         </span>
-        {f.status_reason.endsWith("is working there") && f.runs.length === 0 && (
+        {(f.status_reason.endsWith("is working there") || f.status_reason.endsWith("a workspace of its own")) && f.runs.length === 0 && (
           <span className="banner-actions">
             <button className="btn" title="A worktree of the same repository, on a branch for this task" onClick={() => act({ action: "own_workspace" })}>
               Work in its own workspace
