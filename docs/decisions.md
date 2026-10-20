@@ -5050,3 +5050,25 @@ Progress while working, first under Now in review, after the report once
 ended. Left out without a workspace, outside Git, or with an otterd that
 can't say. The list and diff are one component (`ChangesList`) shared with
 the panel.
+
+## D-148 — A task waiting on your agent says so; a terminal mid-layout doesn't size the session (2026-10-20)
+
+Two things from a day of use.
+
+- **A task waiting for an agent the developer started** (D-079) looked
+  stuck: the header said *Working*, the banner was the blue of a wait that
+  ends by itself, and Otter, asked, said nothing waited on the developer —
+  `status_text` said "I'm planning" whatever the reason. Now the status
+  Otter's turns are given says it hasn't started, why, and whether it waits
+  on the developer (D-134's rule) or starts by itself; `get_task` carries
+  `waits_on_you`. In the app, such a task's header says *Needs you*, the
+  banner is the needs one, and it offers *Open <session>* — the session it
+  waits for, found by name among the workspace's — beside *Work in its own
+  workspace*.
+- **A session's history laid out a dozen columns wide.** A terminal shown
+  as the view switched could be measured mid-layout, a few columns wide,
+  and the size went to the session: tmux shrank the window and Claude Code
+  printed its whole history again at that width, which stayed in the
+  history when the terminal grew back. The terminal now never fits to, or
+  tells the host, less than 20×4, and gives the session its size only once
+  it has held for 150 ms. History already laid out narrow stays so.

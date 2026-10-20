@@ -88,6 +88,17 @@ const MORE_HISTORY = 20000;
 /** On screen is said again this often: the host stops taking a terminal it
  *  hasn't heard that from in 90 s as on screen (D-137). */
 const VIEW_AGAIN_MS = 30_000;
+/** Smaller than this, the element is mid-layout, not a size to give the
+ *  session: its program (Claude Code) lays its history out again at it. */
+const MIN_COLS = 20;
+const MIN_ROWS = 4;
+/** The session takes this terminal's size once it has held this long. */
+const RESIZE_SETTLE_MS = 150;
+
+/** A size the terminal can really be shown at. */
+export function realSize(d: { cols: number; rows: number } | undefined): boolean {
+  return !!d && d.cols >= MIN_COLS && d.rows >= MIN_ROWS;
+}
 
 /** What the host says besides output (D-119). */
 type Control =
@@ -238,7 +249,7 @@ export function Terminal({ host, workspace, session, onEnd, generation, label, w
     } catch {
       // DOM renderer fallback.
     }
-    fit.fit();
+    if (realSize(fit.proposeDimensions())) fit.fit();
     term.focus();
     setSize(`${term.cols}×${term.rows}`);
 
@@ -261,11 +272,12 @@ export function Terminal({ host, workspace, session, onEnd, generation, label, w
     // size, and tell the host what this one would be.
     const fitNow = () => {
       if (!onScreen()) return;
+      const want = fit.proposeDimensions();
+      if (!realSize(want)) return;
       if (!follow) {
         fit.fit();
         return;
       }
-      const want = fit.proposeDimensions();
       if (want && id !== null) void invoke("attach_resize", { id, cols: want.cols, rows: want.rows });
     };
     // Off screen, the host sends nothing; back, it catches up (D-119).
@@ -275,7 +287,8 @@ export function Terminal({ host, workspace, session, onEnd, generation, label, w
       const now = onScreen() && document.visibilityState !== "hidden";
       if (now === visible && !(again && now)) return;
       visible = now;
-      const want = now ? fit.proposeDimensions() : undefined;
+      const proposed = now ? fit.proposeDimensions() : undefined;
+      const want = realSize(proposed) ? proposed : undefined;
       void invoke("attach_view", { id, visible: now, cols: want?.cols ?? term.cols, rows: want?.rows ?? term.rows });
     };
     const offerEarlier = () => {
@@ -364,10 +377,16 @@ export function Terminal({ host, workspace, session, onEnd, generation, label, w
     const input = term.onData((data) => {
       if (id !== null) void invoke("attach_input", { id, data });
     });
+    // The session gets a size once the layout has settled: each one it gets,
+    // its program may lay out its whole history again.
+    let settle: number | undefined;
     const resized = term.onResize(({ cols, rows }) => {
       setSize(`${cols}×${rows}`);
-      // Following another client's size isn't this terminal's own.
-      if (id !== null && !follow) void invoke("attach_resize", { id, cols, rows });
+      window.clearTimeout(settle);
+      settle = window.setTimeout(() => {
+        // Following another client's size isn't this terminal's own.
+        if (id !== null && !follow && !disposed) void invoke("attach_resize", { id, cols: term.cols, rows: term.rows });
+      }, RESIZE_SETTLE_MS);
     });
     const scrolled = term.onScroll(offerEarlier);
     // A hidden terminal (another view in front, D-041) has no size: fitting
@@ -452,6 +471,7 @@ export function Terminal({ host, workspace, session, onEnd, generation, label, w
       unscroll();
       document.removeEventListener("visibilitychange", onVisibility);
       window.clearInterval(viewAgain);
+      window.clearTimeout(settle);
       input.dispose();
       resized.dispose();
       scrolled.dispose();

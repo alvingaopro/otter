@@ -268,6 +268,22 @@ pub fn status_text(f: &Task) -> String {
         ),
         S::Cancelled => "It's cancelled.".to_owned(),
     }];
+    // Waiting for its workspace (D-079): nothing of the above has begun.
+    if let Some(why) = f
+        .status_reason
+        .as_deref()
+        .filter(|r| f.status.is_active() && r.starts_with(otter_core::task::WAITING))
+    {
+        lines[0] = format!("It hasn't started: {why}.");
+        if f.needs().is_some() {
+            lines.push(
+                "That waits on you: only you can free that workspace, or move the task to a workspace of its own (“Work in its own workspace” on the task)."
+                    .into(),
+            );
+        } else {
+            lines.push("It starts by itself when the workspace is free.".into());
+        }
+    }
     let pending: Vec<&str> = f.pending_decisions().map(|d| d.summary.as_str()).collect();
     if !pending.is_empty() {
         lines.push(format!(
@@ -1198,6 +1214,25 @@ mod tests {
         assert!(status_text(&f).contains("draft"));
         f.status = otter_core::task::TaskStatus::Paused;
         assert!(status_text(&f).contains("continue"));
+    }
+
+    #[test]
+    fn a_task_waiting_for_its_workspace_says_so_and_who_can_free_it() {
+        use otter_core::task::{TaskStatus, WAITING, YOUR_AGENT};
+        let mut f = task();
+        f.status = TaskStatus::Planning;
+        f.status_reason = Some(format!("{WAITING}otter: claude{YOUR_AGENT}"));
+        let s = status_text(&f);
+        assert!(
+            s.starts_with("It hasn't started: Waiting for otter: claude, an agent you started"),
+            "{s}"
+        );
+        assert!(s.contains("waits on you"), "{s}");
+        assert!(!s.contains("I'm planning"), "{s}");
+        f.status_reason = Some(format!("{WAITING}otter: “Other” is working there"));
+        let s = status_text(&f);
+        assert!(s.contains("starts by itself"), "{s}");
+        assert!(!s.contains("waits on you"), "{s}");
     }
 
     fn task() -> Task {

@@ -221,6 +221,21 @@ export interface Delivery {
 export interface WorkspaceChoice {
   id: string;
   name: string;
+  /** Its sessions, to open the one a task waits for. */
+  sessions?: { id: string; name: string }[];
+}
+
+/** How a task waiting for an agent the developer started says so (`YOUR_AGENT` in otter-core, D-134). */
+export const YOUR_AGENT = ", an agent you started, is working there";
+
+/** The session a task waits for in its workspace (D-079), by the reason it gives. */
+export function waitedSession(f: Task, ws: WorkspaceChoice | undefined): { id: string; name: string } | undefined {
+  const r = f.status_reason;
+  if (!ws || !r?.endsWith(YOUR_AGENT)) return undefined;
+  const prefix = `Waiting for ${ws.name}: `;
+  if (!r.startsWith(prefix)) return undefined;
+  const name = r.slice(prefix.length, -YOUR_AGENT.length);
+  return ws.sessions?.find((s) => s.name === name);
 }
 
 /** A message being written right now (`TaskStream`, D-051). */

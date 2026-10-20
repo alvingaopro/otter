@@ -481,6 +481,38 @@ describe("Tasks view", () => {
     expect(sections()).not.toContain("Changes");
   });
 
+  it("says a task waiting for an agent you started needs you, and opens that session", async () => {
+    const [active] = sampleTasks(Date.now());
+    const task: Task = {
+      ...active,
+      status: "planning",
+      steps: [],
+      runs: [],
+      workspace_id: "ws_demo",
+      status_reason: "Waiting for demo: claude, an agent you started, is working there",
+      activity: "needs_you",
+      needs: { kind: "blocked", summary: "Waiting on you", since: active.updated_at, decisions: 0 },
+    };
+    const s: TaskSource = { ...mockSource("mac"), list: () => [{ host: "mac", task, key: "mac/" + task.id }], subscribe: () => () => {} };
+    await act(async () =>
+      root.render(
+        <TasksView
+          source={s}
+          hosts={["mac"]}
+          workspaces={{ mac: [{ id: "ws_demo", name: "demo", sessions: [{ id: "ses_c", name: "claude" }] }] }}
+          now={Date.now()}
+          onOpenWorkspace={onOpenWorkspace}
+          onOpenPreview={async () => {}}
+        />,
+      ),
+    );
+    expect(q(".status-pill")?.textContent).toBe("Needs you");
+    expect(q(".banner.needs")?.textContent).toContain("an agent you started");
+    await act(async () => byText(".banner button", "Open claude")!.click());
+    expect(onOpenWorkspace).toHaveBeenCalledWith("mac", "ws_demo", "ses_c");
+    expect(byText(".banner button", "Work in its own workspace")).toBeDefined();
+  });
+
   it("links a task to its workspace and session", async () => {
     await render(mockSource("mac"));
     await open("Export workspace timeline");
