@@ -385,6 +385,20 @@ the task for each tool); when the run ends they are stored with it. A
 client adds each line to the run's `activity` (keeping the last 30) rather
 than reloading the task.
 
+**When, and what next** (D-141; optional fields, old peers ignore them):
+`TaskActivity` carries `at?`, when the line was noted, and a run's
+`activity_at[]` holds each line's time — as many as `activity`, or none
+(a daemon before it: a client then shows no times rather than wrong
+ones). A live run as `task.get`/`task.list`/`task.send`/`task.act`/
+`task.create` show it has `heard_at?` (when its agent last gave any sign of
+work: a word, a tool, a background command — what the no-progress
+watchdog reads, D-063) and `tools_running` (absent: 0); neither is ever
+stored. These calls also give the task's `next?`: what the engine does
+after what it does now (`Task::what_next`), absent when the task waits on
+the developer or isn't being worked. The history has `Reasoned {why}`:
+each of Otter's reasons (`rationale`), at its time; its `text` is the
+reason's first line.
+
 An addition (no protocol bump): daemons before it answer `invalid_request`.
 
 ## Otter on the host

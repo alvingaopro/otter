@@ -2760,10 +2760,17 @@ async fn a_second_task_waits_for_the_workspace() {
     let fake = fake_agent_host("ok", "rules").await;
     let host = &fake.host;
     let first = started_with(host, "shared", "A long job HANG", "test:\n\t@true\n", false).await;
-    wait_task(host, &first, "working", |f| {
+    let a = wait_task(host, &first, "working", |f| {
         f.live_run().is_some_and(|r| r.state == RunState::Running)
     })
     .await;
+    // As clients see it (D-141): when its agent was last heard from, and
+    // what comes after the step under way.
+    assert!(a.live_run().unwrap().heard_at.is_some());
+    assert_eq!(
+        a.next.as_deref(),
+        Some("Then: the work is checked against its 2 acceptance criteria."),
+    );
     let mut conn = host.conn().await;
     let second = conn
         .task_create(otter_protocol::task::TaskCreate {
@@ -4340,6 +4347,19 @@ async fn a_task_goes_from_request_to_review_with_evidence() {
         f.messages
     );
     assert_eq!(f.runs[0].activity, ["$ make test"]);
+    // With its time; when the agent was last heard from isn't kept (D-141).
+    assert_eq!(f.runs[0].activity_at.len(), 1);
+    assert_eq!((f.runs[0].heard_at, f.runs[0].tools_running), (None, 0));
+    // Why Otter did what it did is in the history, at its time.
+    let history = fake.host.conn().await.task_events(&id, None).await.unwrap();
+    assert!(
+        history.iter().any(
+            |e| matches!(&e.event, otter_core::task::TaskEvent::Reasoned { .. })
+                && e.text.starts_with("Why: Plan (")
+        ),
+        "{:?}",
+        history.iter().map(|e| &e.text).collect::<Vec<_>>()
+    );
     assert!(
         f.messages
             .iter()
@@ -5511,6 +5531,27 @@ async fn a_plan_the_brain_faults_goes_back_once_then_to_the_developer() {
     assert_eq!(f.verify_command.as_deref(), Some("make test"));
 }
 
+/// What the agent says in any script reaches the task whole (D-134): a
+/// request in Chinese with a link, said back, once took the run down in
+/// otterd, and the task with it.
+#[tokio::test]
+async fn a_request_in_chinese_is_planned() {
+    let fake = fake_agent_host_with("ok", "rules", |_| vec![("OTTER_PLAN_TURN", "1".into())]).await;
+    let host = &fake.host;
+    let id = started_task(host, "修复这个PR，https://example.com/o/r/pull/7 CJK").await;
+    let f = wait_task(host, &id, "planned", |f| {
+        f.steps.iter().any(|t| t.title == "Write the exporter")
+            || f.status == otter_core::task::TaskStatus::Failed
+    })
+    .await;
+    assert!(
+        f.steps.iter().any(|t| t.title == "Write the exporter"),
+        "{:?}: {:?}",
+        f.status,
+        f.status_reason
+    );
+}
+
 /// A planning turn that fails stops planning and says so (D-084): no plan
 /// is guessed without the agent's look at the code. Retrying looks again,
 /// in the same conversation.
@@ -6305,7 +6346,13 @@ async fn the_same_ci_failure_after_a_fix_goes_to_the_developer() {
     let fake = fake_agent_host("ok", "rules").await;
     let (id, _) = git_task(&fake).await;
     allow_publish(&fake.host, &id).await;
-    std::fs::write(fake.gh.join("log"), "assertion failed: left == right\n").unwrap();
+    // gh's shape: a time on every line, the test run's duration (D-139).
+    std::fs::write(
+        fake.gh.join("log"),
+        "test\tRun make test\t\u{feff}@TIME@ assertion failed: left == right\n\
+         test\tRun make test\t@TIME@ Ran 21 tests in @SECS@\n",
+    )
+    .unwrap();
     write_checks(
         &fake.gh,
         "checks.json",

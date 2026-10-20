@@ -4332,6 +4332,73 @@ without changing anything else on the host.
     - The browser sign-in shows its code, then who it is. A cleared
       identity leaves the host's.
 
+## D-134 — A task that stops says why, and can go on (2026-10-20)
+
+A task asked in Chinese failed in planning seconds after it started, twice
+more on retry, and was deleted, its history with it. The cause was in
+otterd, not the agent: `redact` (D-075) took the byte after the character
+before a key as the key's start, so text with a multi-byte character just
+before `word:` or `word=` (`修复这个PR，https://…`, a BOM in a CI log)
+panicked. The panic ended the run's actor; the bridge failed the run as
+"ended unexpectedly", and the task said the coding agent's look at the
+code had failed. Retrying couldn't start: the conversation still named the
+lost run as its active one until a restart. Nothing of this was in the log
+but two bare panic lines, and a panic in the controller's step would have
+left the task marked as being stepped, never stepped again.
+
+- **`redact`** finds the key's start by characters. Text in any script
+  reads whole.
+- **A lost run frees its conversation:** when the actor or the bridge goes
+  without ending the run, its conversation's generation ends (outcome
+  unknown; queued turns stay queued, as on a restart) if the run still
+  holds it, and the run ends as one cut off mid-turn (D-061): resumed when
+  its session can carry on, the developer's to decide after three in a
+  row. It says otterd lost it.
+- **Contained:** a task's step, Otter's follow-ups, its turn on the host
+  and a run's bridge each run as a task of their own. A panic there is an
+  error like the others: the task fails with *Otter stopped: an internal
+  error*, the host's turn can run again, a lost bridge lets its run and
+  workspace go. A step that panicked answers what the developer said with
+  that, so it isn't taken up again at once — and so does Otter's turn on
+  the host, and a follow-up that panicked is said plainly instead; failing
+  a task that already failed changes nothing and wakes nothing. A run lost
+  after its last turn completed ends completed, as a restart would find
+  it.
+- **In the log:** a panic, with its time, thread and (with
+  `RUST_BACKTRACE`) backtrace, through the log like the rest; a
+  task failing, with why (redacted); a task deleted, with its last status
+  and why. A failed Otter's turn no longer quotes Node's warning hint as
+  what the worker said.
+- **Wording:** a failed look at the code says *the look at the code
+  failed (why)*, not that the agent's did, and that retrying tries again.
+- **A workspace only the developer can free needs them:** a task waiting
+  because an agent they started works in its workspace, or because the
+  workspace is archived, is *Waiting on you* (Inbox, `otter ls`), not
+  working. Waiting for a workspace being prepared, or for another task,
+  isn't. `WAITING`, `YOUR_AGENT` and `ARCHIVED` move to `otter-core` so
+  the rule and the words are one.
+- **CLI:** `otter task retry`; `resume`, `retry` and `cancel` say what
+  they do.
+- **Known limits:** a step that panics every time on a task still being
+  worked fails it once; one that panics on the developer's every message
+  answers each with the failure. A panic while a lock is held poisons it,
+  which containing can't undo. The *Waiting on you* of a workspace wait
+  counts from when the task entered its status, not from when the wait
+  began. A panic quoting a string (a slice out of bounds) quotes up to 256
+  bytes of it unredacted, as before: redacting in the hook could panic
+  again and abort otterd.
+- **Verified:** unit tests for the scripts (`，https://`, a BOM, `看看token=`,
+  a key after Chinese still masked), a panicking step as an error, and the
+  waits that need the developer. An e2e test (`a_request_in_chinese_is_planned`)
+  with the fake agent saying Chinese back: it fails on the old `redact` with
+  *otterd lost the run*. By hand, with the old `redact` back: the task
+  failed, and Retry planned and went on; with the conversation's release
+  taken out as well, Retry failed with *run … is still serving this
+  conversation*, as on the developer's host. After review, the lost run
+  is resumed instead: by hand, it was Interrupted, then resumed and
+  finished on its own. Reviewed by a second model, which found the
+  answer-loop, the resume and the bridge.
+
 ## D-136 — A prompt that redraws is still a prompt (2026-10-20)
 
 An approval or a question from an interactive Claude Code session went away
@@ -4412,3 +4479,185 @@ The change:
   - Live, through a dev otterd and Claude Code 2.1.304: a background
     shell ended while a question was up. otterd as it was resolved the
     item; this one keeps it.
+
+## D-138 — Looking for a risky word isn't doing it (2026-10-20)
+
+Policy's word lists (D-049, D-066) read each piece of a command line
+whole, so a command that only searched for a word was taken for doing it:
+`grep -rn token src`, `git log --grep delete`, `cat docs/deploy.md`,
+`cargo test prune_old` each asked the developer, every time, never
+grantable. A task on authentication code asked at almost every search.
+
+- **The command, not what it looks for:** when a piece only reads,
+  searches or tests — `grep`, `rg`, `ag`, `ack`, `cat`, `head`, `tail`,
+  `wc`, `ls`, `tree`, `stat`, `file`, `diff`, `find`; `git log`, `show`,
+  `diff`, `grep`, `blame`, `status`, `shortlog`, `ls-files`; `cargo test`,
+  `go test`, `pytest` — the word lists read only the command. Patterns,
+  option values, test names and the workspace's own file names aren't what
+  it does.
+- **Only when nothing can make it do more:** the piece is read whole when
+  an environment is set for it (`GIT_DIR=…`), an operand holds a
+  substitution, a redirection from a file or a variable, an option runs a
+  program, writes or brings in another project (`--pre`, `--pager`,
+  `-exec`, `-toolexec`, `--config`, `--manifest-path`, `--output`,
+  `--ext-diff`, `--textconv`, `-O`), `find` acts (`-delete`, `-exec`, …),
+  or an operand, a short option with a path (`-f/…`), an option's value
+  (`--to-file=…`) or a key's (`cache_dir=…`) reaches outside the workspace
+  (or scratch). Each word is read as the shell passes it, roughly — its
+  quotes and backslashes gone — so `"--pre=…"`, `\-\-pre`, `-ex''ec` and
+  `\/etc/…` are what they spell; a short acting option with its value
+  glued on (`-Ox`) is still that option, and so is one with two dashes
+  for one (Go takes either). The word lists read the words that way too,
+  so `dele''te` is `delete`.
+- **Credentials by file name stay read whole:** `.ssh`, `id_rsa`,
+  `id_ed25519`, `credentials`, Otter's own state and gh's hosts file ask
+  wherever they appear, whatever the command, like `.env` (D-066): a key
+  copied into the workspace is still a key. So `cat src/credentials.rs`
+  still asks, by choice. Grants (D-066) follow the same
+  reading, so nothing that deletes, touches credentials or pushes is ever
+  granted.
+- **Closed on the way:** where a path points is read the same way, so
+  `rm -rf \/home/…` and `cp x \/etc/…` are outside the workspace, not a
+  routine delete and an inside write as they were. What `<(…)` and `>(…)`
+  run is a piece of its own,
+  as `$(…)` was; `--output=<file>` and `--output <file>` are writes,
+  outside the workspace asked about like `>`. The word lists had hidden
+  both.
+- **Left for the task discussion:** `git restore`, `git rebase`,
+  `git checkout -- …` and `git stash drop` in command position still ask
+  every time, though they act only on the work's own repository.
+- **Verified:** a unit test of searches, reads and test runs that now run
+  (fails on the code before), and of what still asks: doing it, reaching
+  outside, a variable, `find -delete`/`-exec`, `.env`, and the ways around
+  a first version a second model found (a substitution, `<~/…`, options'
+  values and glued paths, acting options, an environment, a key copied
+  in; then quoted options and a key's value; then quotes and backslashes
+  inside a word, which also let a delete or a write outside pass before
+  this change). The existing policy tests pass unchanged.
+
+## D-139 — A CI failure is the same failure whatever its times (2026-10-20)
+
+D-068 sends the same CI failure after a fix to the developer, comparing
+the failed log with the last one character for character. GitHub's
+`gh run view --log-failed` starts every line with the job, the step and a
+timestamp (and a BOM before the first), so two runs of one failure never
+match: a task fixes, pushes and fails until its six attempts are gone,
+where it should hand over after one fix. Found reading the code for the
+live task bench; the offline test missed it because its fake `gh` printed
+the same bytes every time.
+
+- **The log as it's read:** the job and step head their lines once; times,
+  the BOM and terminal colours go; the last 40 lines are kept, each cut at
+  240 characters. Lines, not characters, so a failure whose durations got
+  shorter keeps the same lines. The agent's fix turn gets this text too,
+  with less noise. Checks of one run share its log: it's added once.
+- **The same failure:** the same lines once what differs between runs of
+  one failure is set aside: dates and times anywhere in a line (npm's log
+  file names, `time="…"`, Python's `18:00:00,123`), durations (`0.01s`,
+  `1.5 s`, Go's `1m02.34s`), where in a file (`lib.rs:42:9`, `line 42`: a
+  fix moves lines), goroutines, numbers of five digits or more (run ids,
+  processes, ports), hex hashes, `0x` addresses and UUIDs. Counts and small
+  values stay, so another assertion is another failure. The cost: an
+  assertion that differs only in a date, a time of day or a large number
+  counts as the same, as does the same message at another line, and the
+  task goes to the developer after one fix rather than trying again. Failed checks are compared in
+  name order, whatever gh's. Logs kept before this were raw: the first
+  comparison against one differs, so that task gets one more fix before
+  the rule applies.
+- **No credentials:** what git and gh print on failure, the CI log and a
+  check's description pass `redact` before they become a task's messages,
+  evidence or otterd's log (invariant 13); they didn't before. A log line
+  is cut after redacting, so no part of a secret is left. This needs
+  D-134's `redact` (no panic on a multi-byte character before `:` or `=`):
+  it lands after it.
+- **Verified:** unit tests on gh's real shape (two runs of one failure
+  differing in times, durations, run id and commit match; another
+  assertion doesn't), on npm, Go, Rust, pytest, unittest and logging
+  output, and on a secret at a line's cut. The e2e test now gets a log
+  whose times and durations change with every view; it fails against the
+  old comparison with "all 6 attempts are used up". Reviewed by a second
+  model, which found the npm, logging, Go and line-number cases and the
+  cut before redacting.
+
+## D-140 — What Node and Claude Code print isn't the agent's word (2026-10-20)
+
+When the coding agent's Claude worker dies, the run's message quotes the
+end of what it printed. The worker prints the SDK's
+`CLAUDE_SDK_CAN_USE_TOOL_SHADOWED` warning and Node's `--trace-warnings`
+hint on every start, so a run lost to a kill read "worker diagnostics:
+(node:…) Warning: canUseTool will not be invoked…" — 400 characters
+that say nothing about it, in the task's messages. Found by the live task
+bench (B01: the worker SIGKILLed mid-turn).
+
+- The worker's diagnostics leave out Node's own lines, by the rule D-134
+  gave Otter's turn (now one function, `agents::node_warning`); with
+  nothing else said, they read "no diagnostics".
+- **An interrupted turn** ended with Claude Code's own
+  `[ede_diagnostic] result_type=user … stop_reason=tool_use` in the SDK
+  result's `errors`. With no reply, the worker used it as the turn's
+  summary, and the conversation showed it as an Agent message before the
+  redirect's answer (B04). The worker now leaves `[ede_diagnostic]`
+  entries out of a turn's errors: interrupted with nothing said, the
+  summary is empty.
+- **Verified:** the fake worker now prints that warning before failing;
+  `a_failing_worker_says_why` keeps its diagnostic line and drops the
+  warning. The worker's `map.test.ts` maps an interrupt carrying that
+  diagnostic to no summary. Each fails against the code before.
+
+## D-141 — A task says when it was last heard from, and what comes next (2026-10-20)
+
+A review of a proposed "Execution Observability Layer" (a second,
+derived state machine with its own Loop States, Health ratings and a
+`ControlDecision` store) found most of it built: the derived activity
+(D-071), the run's activity lines (D-069), Otter's reasons
+(`rationale`), the task's history (D-043, D-114) and the watchdog's
+pulse (D-063). What a developer couldn't see was *when*: an activity line
+had no time, the watchdog's last-heard stayed in otterd, the reasons were
+a list with no times outside the history, and nothing said what the
+engine would do next. Four additions, all compatible (no protocol bump),
+no new state:
+
+- **Each activity line has its time** — `Run.activity_at`, as many as
+  `activity`, or none on runs from before; `TaskActivity` carries `at`.
+  The conversation's working bubble shows each line's age.
+- **When the agent was last heard from** — a live run as clients see it
+  has `heard_at` (the pulse's time, now kept on the clock beside the
+  `Instant`) and `tools_running`; never stored. The Overview's Now says
+  "Last heard from the coding agent 2m ago", or "running a tool" while
+  one runs: never silence then, and no verdict (Healthy, Stalled) — the
+  watchdog already acts on it at `OTTER_RUN_IDLE_MS`. The app reads a host
+  with a live run again every 30 s, and takes the agent's streamed text as
+  hearing from it, so its copy doesn't go stale between task changes and
+  show a silence otterd doesn't believe.
+- **What comes next** — `Task::what_next`, in otter-core so the rule and
+  the words are one (as D-134 did for waiting): derived from the task's
+  own record and the transitions in `task-states.md`, saying both ways
+  where the engine hasn't seen the outcome yet ("review if every
+  criterion is met; a fix step if one isn't and the work changed").
+  Nothing when the task waits on the developer — that is `needs`. Served
+  as `Task.next`; the app computes it itself for an otterd before this. In
+  Now and in `otter task show`.
+- **Reasons in the history** — `Task::reason` keeps the line in
+  `rationale` (delivery's report still reads it) and returns
+  `TaskEvent::Reasoned {why}`, written with the change it explains, so a
+  reason has its time and correlation in the timeline. Redacted (D-075).
+  The Activity feed shows them inline, muted, a reason said again right
+  after itself once with ×N (D-114's repeats); the "Otter's reasons" fold
+  stays only for tasks from before.
+- **Not built:** classifying the agent's tools into reading / editing /
+  testing (that is reading the provider's data: it would belong behind
+  `AgentProvider`, and nothing showed it was needed); a structured
+  observation / decision / next per reason (the record's time, its
+  correlation and the status change beside it carry most of it; 22 call
+  sites didn't justify three fields); health ratings and automatic
+  restarts on them.
+- **Known limit:** a task from before this that gets a reason after it
+  shows only the new ones in Activity: its older reasons aren't in its
+  history, and the fold gives way once one is. They stay in `rationale`.
+- **Verified:** core unit tests for `what_next` by status, `reason` (kept,
+  redacted, first line, read as `Unknown` by an older build) and a run
+  from before; e2e: a live run has `heard_at` and the task its `next`, an
+  ended run keeps `activity_at` but no `heard_at`, the history has
+  `Reasoned`; app tests for Now, the timed activity lines, the reasons in
+  the feed, and the source keeping times and re-reading a host with a live
+  run.

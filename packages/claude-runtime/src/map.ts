@@ -217,7 +217,12 @@ export class Mapper {
           outcome = "failed";
           error = this.lastError ?? category(undefined, m.api_error_status);
         }
-        const errors = arr(m.errors).map(text).filter(Boolean).join("; ");
+        // Claude Code's own diagnostics (`[ede_diagnostic] …`) aren't the
+        // agent's words, nor why a turn failed (D-140).
+        const errors = arr(m.errors)
+          .map(text)
+          .filter((e) => e && !e.startsWith("[ede_diagnostic]"))
+          .join("; ");
         out.push({
           type: "turn_finished",
           turn_id: this.turn,

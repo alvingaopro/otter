@@ -73,6 +73,9 @@ while IFS= read -r line; do
       case "$mode" in
         silent) continue ;;
         fatal)
+          # Node's warning, as the real worker prints it on every start.
+          echo "(node:4242) [CLAUDE_SDK_CAN_USE_TOOL_SHADOWED] Warning: canUseTool will not be invoked for: Glob, Grep." >&2
+          echo '(Use `node --trace-warnings ...` to show where the warning was created)' >&2
           echo "diagnostic line: looking for credentials" >&2
           echo "tried ANTHROPIC_API_KEY=sk-ant-api03-WORKERLEAKWORKERLEAK00" >&2
           out '{"type":"fatal","message":"no credentials","category":"auth_required"}'

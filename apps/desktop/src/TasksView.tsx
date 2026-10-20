@@ -14,9 +14,11 @@ import {
   GROUPS,
   STATUS_LABEL,
   budgetBinds,
+  collapseReasons,
   collapseRepeats,
   findMatch,
   groupOf,
+  heardLine,
   taskGlyph,
   pendingDecisions,
   sortTasks,
@@ -626,6 +628,8 @@ function Conversation({
   );
   const draftText = drafts.map((d) => d.text).join("");
   const activity = live?.activity ?? [];
+  // Each line's time, when the daemon kept them (D-141).
+  const activityAt = live?.activity_at?.length === activity.length ? live.activity_at : undefined;
   // The developer spoke last: Otter's answer is on its way.
   const last = messages[messages.length - 1];
   const replying = drafts.some((d) => d.role === "controller");
@@ -687,9 +691,15 @@ function Conversation({
             </div>
             {activity.length > 0 && (
               <ul className="activity">
-                {activity.slice(-6).map((a, i) => (
-                  <li key={`${activity.length}-${i}`}>{a}</li>
-                ))}
+                {activity.slice(-6).map((a, i) => {
+                  const at = activityAt?.[activity.length - Math.min(6, activity.length) + i];
+                  return (
+                    <li key={`${activity.length}-${i}`}>
+                      {at && <span className="activity-at">{ago(at, now)} </span>}
+                      {a}
+                    </li>
+                  );
+                })}
               </ul>
             )}
           </div>
@@ -890,7 +900,7 @@ function Overview({
 }) {
   const f = placed.task;
   const parts: Record<string, ReactNode> = {
-    now: <Now f={f} />,
+    now: <Now f={f} now={now} />,
     outcome: <Outcome f={f} />,
     progress: <Progress placed={placed} onOpenWorkspace={onOpenWorkspace} />,
     checks: <Checks f={f} now={now} shot={shot} />,
@@ -917,16 +927,23 @@ function Overview({
   );
 }
 
-/** Where it stands; the budget only once it constrains the work. A stop or a block is in the banner. */
-function Now({ f }: { f: Task }) {
+/**
+ * Where it stands, when the coding agent was last heard from, and what
+ * comes next (D-141); the budget only once it constrains the work. A stop
+ * or a block is in the banner.
+ */
+function Now({ f, now }: { f: Task; now: number }) {
   if (ENDED.includes(f.status)) return null;
   const detail = f.status === "failed" || f.status === "blocked" ? undefined : statusDetail(f);
   const line = f.status === "draft" ? "Not started: Start when the request says what you want." : detail;
+  const heard = heardLine(f, now);
   const budget = budgetBinds(f);
-  if (!line && !budget) return null;
+  if (!line && !heard && !f.next && !budget) return null;
   return (
     <Section title="Now">
       {line && <p className="ov-text">{line}</p>}
+      {heard && <p className="muted small ov-heard">{heard}</p>}
+      {f.next && <p className="ov-text ov-next">{f.next}</p>}
       {budget && (
         <p className="muted small ov-budget">
           {f.budget.iterations_used} of {f.budget.max_iterations} attempts used · up to {f.budget.max_minutes} min
@@ -1219,13 +1236,16 @@ function ActivityFeed({
   const items = [
     ...(who === "agent"
       ? []
-      : (events ?? []).map((e) => ({
+      : collapseReasons(events ?? []).map(({ e, times }) => ({
           at: Date.parse(e.ts),
           key: `e${e.seq}`,
           node: (
-            <li className="feed-event">
+            <li className={e.type === "Reasoned" ? "feed-event reason" : "feed-event"}>
               <span className="muted small">{ago(e.ts, now)}</span>
-              <span>{e.text}</span>
+              <span>
+                {e.text}
+                {times > 1 && <span className="muted small"> ×{times}</span>}
+              </span>
             </li>
           ),
         }))),
@@ -1235,7 +1255,10 @@ function ActivityFeed({
           c.turns.map((t) => ({ at: Date.parse(t.started_at ?? t.queued_at), key: `t${c.id}/${t.id}`, node: <Turn c={c} t={t} now={now} /> })),
         )),
   ].sort((a, b) => b.at - a.at);
-  const reasons = collapseRepeats(placed.task.rationale ?? []).reverse();
+  // Reasons are in the history, at their time, from D-141 on; a task from
+  // before keeps them here.
+  const inHistory = (events ?? []).some((e) => e.type === "Reasoned");
+  const reasons = inHistory ? [] : collapseRepeats(placed.task.rationale ?? []).reverse();
   return (
     <div className="feed">
       <div className="seg" role="group" aria-label="Show what happened">
