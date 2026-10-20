@@ -38,28 +38,38 @@ pub async fn git_identity_set(
     let mut sent = Vec::new();
     for host in hosts {
         let error = async {
-            rpc(&app, &host)
+            let s = rpc(&app, &host)
                 .await?
                 .settings_set(SettingsUpdate {
                     git: Some(id.clone()),
                     ..Default::default()
                 })
                 .await
-                .map_err(|e| e.to_string())
+                .map_err(|e| e.to_string())?;
+            // An otterd from before D-132 takes the update and ignores it.
+            match s.git {
+                Some(_) => Ok(()),
+                None => Err(format!("{host}'s otterd is too old for this: update it")),
+            }
         }
         .await
         .err();
         sent.push(Sent { host, error });
     }
     // Kept once a host took it (or with none to send to): what a host
-    // refuses (not an email address, say) isn't kept.
+    // refuses (not an email address, say) isn't kept. Cleared, it's kept
+    // as cleared, so a host that was away is cleared when it's back.
     if sent.iter().any(|s| s.error.is_none()) || sent.is_empty() {
         let mut config = load_config().map_err(|e| format!("{e:#}"))?;
-        let empty = id.name.as_deref() == Some("") && id.email.as_deref() == Some("");
-        config.git = (!empty).then_some(id);
+        config.git = Some(id);
         config.save().map_err(|e| format!("{e:#}"))?;
     }
     Ok(sent)
+}
+
+/// `""` and nothing are the same: no identity of Otter's.
+fn set(v: &Option<String>) -> Option<&str> {
+    v.as_deref().filter(|s| !s.is_empty())
 }
 
 /// This Mac's identity on a host that just connected, if it has another.
@@ -71,7 +81,7 @@ pub async fn sync_identity(conn: &mut Connection) {
     let Ok(Some(have)) = conn.settings_get().await.map(|s| s.git) else {
         return;
     };
-    if have.name == id.name && have.email == id.email {
+    if set(&have.name) == set(&id.name) && set(&have.email) == set(&id.email) {
         return;
     }
     if let Err(e) = conn

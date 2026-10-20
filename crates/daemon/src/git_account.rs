@@ -45,6 +45,8 @@ const GITHUB_SSH: &str = "git@github.com";
 /// the first connection is checked, not trusted.
 const GITHUB_HOST_KEY: &str =
     "github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl";
+/// The same key for GitHub's port-443 address (behind firewalls).
+const GITHUB_443_HOST_KEY: &str = "[ssh.github.com]:443 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl";
 /// GitHub's device codes last 15 minutes.
 const LOGIN_WAIT: Duration = Duration::from_secs(15 * 60);
 
@@ -221,12 +223,15 @@ impl GitAccount {
         private_dir(&self.dir)?;
         let options: Vec<String> = self.ssh_options().iter().map(|o| sh_quote(o)).collect();
         let script = format!(
-            "#!/bin/sh\n# Written by Otter (D-132): its key for GitHub, the host's ssh for the rest.\nfor a in \"$@\"; do\n  case \"$a\" in\n    github.com|*@github.com) exec ssh {} \"$@\" ;;\n  esac\ndone\nexec ssh \"$@\"\n",
+            "#!/bin/sh\n# Written by Otter (D-132): its key for GitHub, the host's ssh for the rest.\nfor a in \"$@\"; do\n  case \"$a\" in\n    github.com|*@github.com|ssh.github.com|*@ssh.github.com) exec ssh {} \"$@\" ;;\n  esac\ndone\nexec ssh \"$@\"\n",
             options.join(" ")
         );
+        // Executable from the moment it's in place: a push may run it then.
         let path = self.dir.join("ssh");
-        crate::settings::write_private(&path, script.as_bytes())?;
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700))?;
+        let tmp = path.with_extension("tmp");
+        std::fs::write(&tmp, script.as_bytes())?;
+        std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o700))?;
+        std::fs::rename(&tmp, &path)?;
         crate::settings::write_private(
             &self.config_file(),
             config_text(a, self.ssh_command_for(a)).as_bytes(),
@@ -235,12 +240,16 @@ impl GitAccount {
 
     /// GitHub's own host key in Otter's `known_hosts`, unless it has it.
     fn seed_known_hosts(&self) -> Result<()> {
-        let have = std::fs::read_to_string(self.known_hosts()).unwrap_or_default();
-        if !have.lines().any(|l| l.trim() == GITHUB_HOST_KEY) {
-            crate::settings::write_private(
-                &self.known_hosts(),
-                format!("{have}{GITHUB_HOST_KEY}\n").as_bytes(),
-            )?;
+        let mut have = std::fs::read_to_string(self.known_hosts()).unwrap_or_default();
+        let before = have.len();
+        for key in [GITHUB_HOST_KEY, GITHUB_443_HOST_KEY] {
+            if !have.lines().any(|l| l.trim() == key) {
+                have.push_str(key);
+                have.push('\n');
+            }
+        }
+        if have.len() != before {
+            crate::settings::write_private(&self.known_hosts(), have.as_bytes())?;
         }
         Ok(())
     }
@@ -735,7 +744,7 @@ mod tests {
         let account = GitAccount::load(dir.path());
         let script = std::fs::read_to_string(account.dir.join("ssh")).unwrap();
         assert!(
-            script.contains("github.com|*@github.com) exec ssh '-F' '/dev/null' '-i' "),
+            script.contains("github.com|*@github.com|ssh.github.com|*@ssh.github.com) exec ssh '-F' '/dev/null' '-i' "),
             "{script}"
         );
         assert!(script.trim_end().ends_with("exec ssh \"$@\""), "{script}");

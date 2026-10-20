@@ -36,7 +36,11 @@ type HostGit = { state: "loading" } | { state: "old" } | { state: "ready"; view:
 
 const ADD_KEY_PAGE = "https://github.com/settings/ssh/new";
 
-export function GitSettings({ hosts }: { hosts: string[] }) {
+/**
+ * `onUnsaved`: whether the identity has changes not saved yet, for the
+ * dialog to ask before closing over them.
+ */
+export function GitSettings({ hosts, onUnsaved }: { hosts: string[]; onUnsaved?: (unsaved: boolean) => void }) {
   const [saved, setSaved] = useState({ name: "", email: "" });
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
@@ -50,6 +54,9 @@ export function GitSettings({ hosts }: { hosts: string[] }) {
   const [carry, setCarry] = useState<Set<string>>(() => new Set());
   const [token, setToken] = useState("");
   const opened = useRef(new Set<string>());
+  // Sign-ins started here: only theirs go to the clipboard and the browser
+  // by themselves (not one begun from another Mac).
+  const started = useRef(new Set<string>());
 
   useEffect(() => {
     void invoke<{ name?: string; email?: string }>("git_identity")
@@ -88,9 +95,11 @@ export function GitSettings({ hosts }: { hosts: string[] }) {
     return () => clearInterval(t);
   }, [waiting.join(",")]);
 
-  // A new code: on the clipboard, and GitHub's page opened, once.
+  // A new code of a sign-in started here: on the clipboard, and GitHub's
+  // page opened, once.
   useEffect(() => {
     for (const h of waiting) {
+      if (!started.current.has(h)) continue;
       const v = views[h];
       if (v?.state !== "ready" || v.view.login?.state !== "pending") continue;
       const { code, url } = v.view.login;
@@ -122,8 +131,12 @@ export function GitSettings({ hosts }: { hosts: string[] }) {
   }
 
   const makeKey = (h: string) => act(h, "Making a key…", () => invoke<GitView>("git_key_create", { host: h, replace: false }));
-  const signIn = (h: string) => act(h, "Starting…", () => invoke("github_login", { host: h, token: null }));
+  const signIn = (h: string) => {
+    started.current.add(h);
+    return act(h, "Starting…", () => invoke("github_login", { host: h, token: null }));
+  };
   const signOut = (h: string) => act(h, "Signing out…", () => invoke("github_logout", { host: h }));
+  const cancel = (h: string) => act(h, "Cancelling…", () => invoke("github_logout", { host: h }));
   const addKey = (h: string) =>
     act(h, "Adding the key…", async () => {
       const c = await invoke<GitCheck>("git_key_add", { host: h });
@@ -164,9 +177,15 @@ export function GitSettings({ hosts }: { hosts: string[] }) {
     const t = token.trim();
     if (!t) return;
     const todo = hosts.filter((h) => views[h]?.state === "ready");
-    await Promise.all(todo.map((h) => act(h, "Signing in…", () => invoke("github_login", { host: h, token: t }))));
     setToken("");
     setCarry(new Set(todo));
+    await Promise.all(
+      todo.map(async (h) => {
+        // A key to add once signed in, as "Set up" makes one.
+        if (!(views[h] as { view: GitView }).view.ssh_key) await makeKey(h);
+        await act(h, "Signing in…", () => invoke("github_login", { host: h, token: t }));
+      }),
+    );
   }
 
   async function saveIdentity() {
@@ -191,6 +210,7 @@ export function GitSettings({ hosts }: { hosts: string[] }) {
   }
 
   const changed = name.trim() !== saved.name || email.trim() !== saved.email;
+  useEffect(() => onUnsaved?.(changed), [changed]);
   const ready = hosts.filter((h) => views[h]?.state === "ready");
   const allDone = ready.length > 0 && ready.every((h) => {
     const g = (views[h] as { view: GitView }).view;
@@ -259,6 +279,7 @@ export function GitSettings({ hosts }: { hosts: string[] }) {
                 onMakeKey={() => void makeKey(h)}
                 onSignIn={() => void signIn(h)}
                 onSignOut={() => void signOut(h)}
+                onCancel={() => void cancel(h)}
                 onAddKey={() => void addKey(h)}
                 onCheck={() => void check(h)}
               />
@@ -316,6 +337,7 @@ function HostRow({
   onMakeKey,
   onSignIn,
   onSignOut,
+  onCancel,
   onAddKey,
   onCheck,
 }: {
@@ -327,6 +349,7 @@ function HostRow({
   onMakeKey: () => void;
   onSignIn: () => void;
   onSignOut: () => void;
+  onCancel: () => void;
   onAddKey: () => void;
   onCheck: () => void;
 }) {
@@ -402,6 +425,9 @@ function HostRow({
           </button>
           <button type="button" className="btn outline" onClick={() => void openUrl(pending.url).catch(() => {})}>
             Open GitHub
+          </button>
+          <button type="button" className="btn ghost" onClick={onCancel} disabled={!!busy}>
+            Cancel
           </button>
         </div>
       )}

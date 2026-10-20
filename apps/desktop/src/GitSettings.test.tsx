@@ -20,7 +20,9 @@ vi.mock("@tauri-apps/api/core", () => ({
       case "git_identity":
         return hosts.identity;
       case "git_identity_set":
-        return (args.hosts as string[]).map((h) => ({ host: h }));
+        return (args.hosts as string[]).map((h) =>
+          h === "old" ? { host: h, error: "old's otterd is too old for this: update it" } : { host: h },
+        );
       case "git_view":
         return v;
       case "git_key_create":
@@ -39,7 +41,7 @@ vi.mock("@tauri-apps/api/core", () => ({
           git: hosts.views[host],
         };
       case "github_logout":
-        hosts.views[host] = { ...v, github: undefined };
+        hosts.views[host] = { ...v, github: undefined, login: undefined };
         return hosts.views[host];
     }
     return undefined;
@@ -155,8 +157,38 @@ describe("Git & GitHub settings (D-132)", () => {
       { host: "code", token: "github_pat_x" },
       { host: "mac", token: "github_pat_x" },
     ]);
+    // Keys made first, then added to the account once signed in.
+    expect(calls.filter((c) => c.cmd === "git_key_create").map((c) => c.args.host)).toEqual(["code", "mac"]);
+    await flush();
+    expect(calls.filter((c) => c.cmd === "git_key_add").map((c) => c.args.host)).toEqual(["code", "mac"]);
     expect(token.value).toBe("");
     expect(el.innerHTML).not.toContain("github_pat_x");
+  });
+
+  it("leaves a sign-in started elsewhere to its buttons, and cancels one", async () => {
+    // Begun from another Mac, say: no clipboard, no browser by itself.
+    hosts.views = {
+      code: { ssh_key: { public: "ssh-ed25519 AAAA otter@code" }, login: { state: "pending", code: "THEIR-CODE", url: "https://github.com/login/device" } },
+    };
+    await render(["code"]);
+    expect(row("code").querySelector(".git-code-value")?.textContent).toBe("THEIR-CODE");
+    expect(copied).toEqual([]);
+    expect(opened).toEqual([]);
+    await act(async () => button("Cancel", row("code"))!.click());
+    await flush();
+    expect(calls).toContainEqual({ cmd: "github_logout", args: { host: "code" } });
+    expect(row("code").querySelector(".git-code-value")).toBeNull();
+    expect(button("Sign in to GitHub", row("code"))).toBeDefined();
+  });
+
+  it("says which host didn't take the identity", async () => {
+    hosts.views = { code: {}, old: null };
+    await render(["code", "old"]);
+    const name = el.querySelector<HTMLInputElement>('input[aria-label="Git name"]')!;
+    await act(async () => type(name, "Ada"));
+    await act(async () => button("Save on all hosts")!.click());
+    await flush();
+    expect(el.textContent).toContain("old: old's otterd is too old for this: update it");
   });
 
   it("says an older otterd can't do this", async () => {

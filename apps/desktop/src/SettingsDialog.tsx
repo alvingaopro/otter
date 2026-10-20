@@ -190,6 +190,8 @@ export function SettingsDialog({
   useEffect(() => setTest(null), [backend, codingModel]);
   // Closing with changes not saved asks first (once).
   const [leaving, setLeaving] = useState(false);
+  // The git identity edited but not saved (D-132).
+  const [gitUnsaved, setGitUnsaved] = useState(false);
 
   const controllers = settings?.controllers?.length ? settings.controllers : OLD_CONTROLLERS;
   // The one the model and key below are for: the choice, else what automatic uses.
@@ -259,8 +261,8 @@ export function SettingsDialog({
       (!!codingSaved && (backend !== codingSaved || codingModel !== (settings.coding?.model ?? ""))) ||
       (toolsShown && otterTools !== settings.otter_tools));
   useEffect(() => {
-    if (!dirty) setLeaving(false);
-  }, [dirty]);
+    if (!dirty && !gitUnsaved) setLeaving(false);
+  }, [dirty, gitUnsaved]);
 
   function submit() {
     if (!settings || busy || (needsModel && !!controller)) return;
@@ -312,7 +314,7 @@ export function SettingsDialog({
   }
 
   function close() {
-    if (dirty && !leaving) return setLeaving(true);
+    if ((dirty || gitUnsaved) && !leaving) return setLeaving(true);
     onClose();
   }
 
@@ -418,7 +420,7 @@ export function SettingsDialog({
           {shown === "appearance" && <Appearance theme={theme} onTheme={onTheme} />}
           {shown === "signin" && <SignInSites />}
           {shown === "developer" && <Developer />}
-          {shown === "git" && <GitSettings hosts={hosts} />}
+          {shown === "git" && <GitSettings hosts={hosts} onUnsaved={setGitUnsaved} />}
           {hostTab && !host && (
             <div className="settings-empty">
               <strong>No host connected</strong>
@@ -678,6 +680,21 @@ export function SettingsDialog({
             </button>
             <button type="button" className="btn primary" disabled={busy || (needsModel && !!controller)} onClick={submit}>
               Save
+            </button>
+          </footer>
+        ) : leaving && gitUnsaved ? (
+          // Only the git identity isn't saved: it has its own Save above.
+          <footer className="settings-foot leaving">
+            <span className="status-dot unsaved" aria-hidden="true" />
+            <span className="muted small" role="alert">
+              Close without saving your git identity?
+            </span>
+            <span className="spacer" />
+            <button type="button" className="btn ghost" onClick={() => setLeaving(false)}>
+              Keep editing
+            </button>
+            <button type="button" className="btn outline" onClick={onClose}>
+              Discard and close
             </button>
           </footer>
         ) : (

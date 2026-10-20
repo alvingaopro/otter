@@ -465,6 +465,19 @@ describe("Settings", () => {
     expect(calls.some((c) => c.cmd === "runtime_capabilities")).toBe(false);
   });
 
+  it("asks before closing over an unsaved git identity", async () => {
+    await tab("Git & GitHub");
+    const email = dialog().querySelector<HTMLInputElement>('input[aria-label="Git email"]')!;
+    await act(async () => type(email, "ada@example.com"));
+    await flush();
+    const esc = () => act(async () => window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" })));
+    await esc();
+    expect(closed).toBe(0);
+    expect(dialog().textContent).toContain("Close without saving your git identity?");
+    await esc();
+    expect(closed).toBe(1);
+  });
+
   it("asks before closing over unsaved changes", async () => {
     await tab("Otter");
     const select = dialog().querySelector<HTMLSelectElement>('select[aria-label="Model provider"]')!;

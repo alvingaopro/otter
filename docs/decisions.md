@@ -4248,9 +4248,9 @@ without changing anything else on the host.
     (found in review). A GitHub reached only through the host's ssh config
     (a `ProxyJump`, say) isn't reached this way.
   - For GitHub alone. A repository's `core.sshCommand` is for all its
-    remotes, so it runs a script Otter writes (`state/git/ssh`, 0700): a
-    `github.com` target goes to the key, anything else to the host's ssh
-    exactly as before.
+    remotes, so it runs a script Otter writes (`state/git/ssh`, 0700, in
+    place already executable): a `github.com` or `ssh.github.com` target
+    goes to the key, anything else to the host's ssh exactly as before.
   - GitHub's published host key is in `known_hosts` from the start, so the
     first connection is checked, not trusted.
   - Fetches stay as they were, so a key GitHub doesn't know yet can't
@@ -4277,15 +4277,32 @@ without changing anything else on the host.
     and the agent's push still needs the developer (D-059). The agent's
     policy counts Otter's state directory and gh's `hosts.yml` as
     credentials.
-- **Shared across hosts, per host by nature.** The developer sets the
-  identity once, and the app sends it to every host (the Settings tab
-  comes next). Each host has its own key and its own sign-in: a browser
-  sign-in is one code per host. A pasted token can go to every host.
+- **Settings › Git & GitHub**, in a group of its own, *All hosts*.
+  - The identity is set once and kept on the Mac in `hosts.toml`, with the
+    CLI's. It's sent to every connected host, and to each host as it
+    connects when that host has another.
+  - It's kept only if a host took it, so one a host refuses (not an email
+    address) isn't kept. An otterd from before D-132 accepts the update and
+    ignores it, so it's reported as too old.
+  - Cleared, it's kept as cleared, so a host that was away is cleared too.
+    Closing Settings over an unsaved identity asks first.
+  - Each host has its own key and its own sign-in, so a browser sign-in is
+    one code per host. Each host's row offers its one next step: make a
+    key, sign in to GitHub, add the key to GitHub, or check. *Set up all
+    hosts* does them all, adding each key as its sign-in ends.
+  - A code of a sign-in started in this window goes to the clipboard and
+    GitHub's page opens. One begun elsewhere only shows its code, with
+    Copy, Open GitHub and Cancel.
+  - A pasted token signs every host in, making missing keys first.
 - **Known limits:** `GIT_AUTHOR_*`/`GIT_COMMITTER_*` in a host's login
   environment win over a repository's identity. A project's `.envrc` can
   still set what it sets. gh 2.40 or newer is needed (older ones are told
   to update).
 - **Verified:**
+  - App tests for the tab: the identity sent to every host and a host
+    that didn't take it, one host step by step, all at once, a token,
+    a sign-in from elsewhere and its Cancel, an older otterd, and closing
+    over an unsaved identity.
   - Unit: the gitconfig written (escaped, the key only once it works),
     what gh and GitHub say, Otter's gh never taking `GH_TOKEN`, and an
     identity on one line.
