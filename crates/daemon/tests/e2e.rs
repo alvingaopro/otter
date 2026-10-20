@@ -2740,6 +2740,113 @@ async fn a_turn_that_ends_on_screen_is_already_seen() {
     read_exit(&mut reader).await;
 }
 
+/// A command that completes on screen is seen completing (D-137); off
+/// screen, its completion waits to be seen.
+#[tokio::test]
+async fn a_command_that_completes_on_screen_is_already_seen() {
+    use otter_core::AttentionKind;
+    let host = TestHost::new();
+    let kinds = |ws: &'static str| {
+        let host = &host;
+        async move {
+            let w = host.conn().await.workspace_get(ws).await.unwrap();
+            w.attention.iter().map(|a| a.kind).collect::<Vec<_>>()
+        }
+    };
+    for (ws, on_screen) in [("cmd-seen", true), ("cmd-away", false)] {
+        create(
+            &host,
+            ws,
+            Some(vec![spec(
+                SessionKind::Command,
+                "ask",
+                "read x; echo got-$x",
+            )]),
+        )
+        .await;
+        wait_status(&host, ws, "ask", SessionStatus::Running).await;
+        let (mut reader, mut writer) = controlled_attach(&host, ws, "ask", (100, 30), 1000).await;
+        read_until_control(&mut reader, snapshot_done).await;
+        if !on_screen {
+            writer
+                .send(&Frame::Control(Control::View {
+                    visible: false,
+                    cols: 100,
+                    rows: 30,
+                }))
+                .await
+                .unwrap();
+            tokio::time::sleep(Duration::from_millis(300)).await;
+        }
+        send(&mut writer, "yes\r").await;
+        assert_eq!(
+            read_exit(&mut reader).await.reason,
+            AttachExitReason::Exited
+        );
+        wait_status(&host, ws, "ask", SessionStatus::Completed).await;
+        let want: &[AttentionKind] = if on_screen {
+            &[]
+        } else {
+            &[AttentionKind::Completion]
+        };
+        let log = std::fs::read_to_string(host.home().join("logs/workd.log")).unwrap_or_default();
+        eprintln!("LOG:\n{log}");
+        assert_eq!(kinds(ws).await, want, "{ws}");
+    }
+}
+
+/// A terminal whose client went without a word (no `view`, no detach) is
+/// no longer on screen (D-137): the turn that ends after it is to review.
+#[tokio::test]
+async fn a_terminal_gone_without_a_word_is_no_longer_on_screen() {
+    use otter_core::{AgentState, AttentionKind};
+    let fake = fake_codex_host("approval").await;
+    let host = &fake.host;
+    create(host, "gone", Some(vec![SessionSpec::agent("claude")])).await;
+    wait_agent(host, "gone", "claude", AgentState::Blocked).await;
+    let (mut reader, writer) = controlled_attach(host, "gone", "claude", (100, 30), 1000).await;
+    read_until_control(&mut reader, snapshot_done).await;
+    drop((reader, writer));
+    eventually("the attach is over", || async {
+        (attach_clients(host) == 0).then_some(())
+    })
+    .await;
+    host.conn()
+        .await
+        .session_write("gone", "claude", "1", true)
+        .await
+        .unwrap();
+    let ws = wait_agent(host, "gone", "claude", AgentState::WaitingForInput).await;
+    let kinds: Vec<_> = ws.attention.iter().map(|a| a.kind).collect();
+    assert_eq!(kinds, [AttentionKind::Review]);
+}
+
+/// A client that stops taking output is let go once a frame can't reach it
+/// (D-137): one whose end vanished (a Mac asleep) would otherwise hold the
+/// attach, and its terminal on screen, until the connection failed.
+#[tokio::test]
+async fn an_attach_whose_client_stops_reading_is_let_go() {
+    let host = TestHost::with_env(&[("OTTER_ATTACH_WRITE_TIMEOUT_MS", "1000".into())]).await;
+    sh_session(&host, "stuck").await;
+    let (mut reader, _writer) = controlled_attach(&host, "stuck", "sh", (100, 30), 1000).await;
+    read_until_control(&mut reader, snapshot_done).await;
+    assert_eq!(attach_clients(&host), 1);
+    // More output than the way to the client holds, never read.
+    host.conn()
+        .await
+        .session_write("stuck", "sh", "seq 1 400000", true)
+        .await
+        .unwrap();
+    eventually("the attach is let go", || async {
+        (attach_clients(&host) == 0).then_some(())
+    })
+    .await;
+    // The session goes on.
+    wait_output(&host, "stuck", "sh", "400000").await;
+    let ws = host.conn().await.workspace_get("stuck").await.unwrap();
+    assert_eq!(ws.sessions[0].status(), SessionStatus::Running);
+}
+
 #[tokio::test]
 async fn claude_code_without_hooks_falls_back_to_the_quiet_turn() {
     use otter_core::{AgentState, AttentionKind};

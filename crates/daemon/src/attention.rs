@@ -11,8 +11,10 @@
 //! session (D-137). Each session has at most one open item; a newer one
 //! replaces it.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration, Instant};
 
 use chrono::Utc;
 use otter_core::{
@@ -272,7 +274,41 @@ impl Daemon {
 
     /// The sessions a client shows on screen now (D-137).
     pub(crate) fn on_screen(&self) -> HashSet<SessionId> {
-        self.on_screen.lock().unwrap().keys().cloned().collect()
+        self.on_screen.lock().unwrap().sessions(Instant::now())
+    }
+}
+
+/// How long a terminal counts as on screen after its client last said so
+/// (D-137). The app says it again every 30 s; a client gone without a word
+/// (a Mac asleep, its connection not yet failed) stops counting after this.
+const ON_SCREEN_FOR: Duration = Duration::from_secs(90);
+
+/// The terminals on screen (D-137): each one's session, and when its client
+/// last said it's on screen.
+#[derive(Default)]
+pub(crate) struct Screens(HashMap<u64, (SessionId, Instant)>);
+
+impl Screens {
+    /// Terminal `id` shows `session` on screen (`Some`), or is off screen or
+    /// gone (`None`). True if it just came on screen; said again, it only
+    /// counts for longer.
+    fn set(&mut self, id: u64, session: Option<&SessionId>, now: Instant) -> bool {
+        match session {
+            Some(s) => self.0.insert(id, (s.clone(), now)).is_none(),
+            None => {
+                self.0.remove(&id);
+                false
+            }
+        }
+    }
+
+    /// The sessions on screen as of `now`.
+    fn sessions(&self, now: Instant) -> HashSet<SessionId> {
+        self.0
+            .values()
+            .filter(|(_, said)| now.saturating_duration_since(*said) < ON_SCREEN_FOR)
+            .map(|(s, _)| s.clone())
+            .collect()
     }
 }
 
@@ -281,42 +317,64 @@ impl Daemon {
 /// (D-137). It starts on screen, as a stream does; dropped, it's gone.
 pub(crate) struct OnScreen {
     daemon: Arc<Daemon>,
+    id: u64,
     session_id: SessionId,
-    shown: bool,
 }
 
 impl OnScreen {
     pub(crate) fn new(daemon: Arc<Daemon>, session_id: SessionId) -> Self {
-        let mut on = OnScreen {
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        let on = OnScreen {
             daemon,
+            id: NEXT.fetch_add(1, Ordering::Relaxed),
             session_id,
-            shown: false,
         };
         on.show(true);
         on
     }
 
-    /// Whether it's on screen now; true if it just came on.
-    pub(crate) fn show(&mut self, shown: bool) -> bool {
-        if shown == self.shown {
-            return false;
-        }
-        self.shown = shown;
-        let mut counts = self.daemon.on_screen.lock().unwrap();
-        if shown {
-            *counts.entry(self.session_id.clone()).or_default() += 1;
-        } else if let Some(n) = counts.get_mut(&self.session_id) {
-            *n -= 1;
-            if *n == 0 {
-                counts.remove(&self.session_id);
-            }
-        }
-        shown
+    /// The client says whether it's on screen; true if it just came on. Said
+    /// again, it only counts for longer: a mark that lapsed comes back, but
+    /// settles nothing, as a timer isn't the developer looking.
+    pub(crate) fn show(&self, shown: bool) -> bool {
+        let session = shown.then_some(&self.session_id);
+        let mut screens = self.daemon.on_screen.lock().unwrap();
+        screens.set(self.id, session, Instant::now())
     }
 }
 
 impl Drop for OnScreen {
     fn drop(&mut self) {
         self.show(false);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_terminal_counts_as_on_screen_while_its_client_says_so() {
+        let mut screens = Screens::default();
+        let (a, b) = (SessionId::generate(), SessionId::generate());
+        let t = Instant::now();
+        let secs = |n| t + Duration::from_secs(n);
+        assert!(screens.set(1, Some(&a), t), "came on screen");
+        assert!(screens.set(2, Some(&a), t), "a second terminal on it");
+        assert!(screens.set(3, Some(&b), t));
+        // Off screen or gone, one terminal; the other still shows `a`.
+        assert!(!screens.set(1, None, t));
+        assert!(!screens.set(3, None, t));
+        assert_eq!(screens.sessions(secs(1)), HashSet::from([a.clone()]));
+        // Not said again: it lapses.
+        assert_eq!(screens.sessions(secs(89)), HashSet::from([a.clone()]));
+        assert!(screens.sessions(secs(90)).is_empty());
+        // Said again, it counts for longer, and isn't coming on screen.
+        assert!(!screens.set(2, Some(&a), secs(60)));
+        assert_eq!(screens.sessions(secs(149)), HashSet::from([a.clone()]));
+        assert!(screens.sessions(secs(150)).is_empty());
+        // A mark that lapsed comes back, still not as coming on screen.
+        assert!(!screens.set(2, Some(&a), secs(200)));
+        assert_eq!(screens.sessions(secs(201)), HashSet::from([a]));
     }
 }

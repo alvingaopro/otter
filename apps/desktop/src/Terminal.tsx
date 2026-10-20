@@ -85,6 +85,9 @@ const LIGHT = {
 const HISTORY = 5000;
 /** Lines of history to keep once earlier ones are asked for (D-119). */
 const MORE_HISTORY = 20000;
+/** On screen is said again this often: the host stops taking a terminal it
+ *  hasn't heard that from in 90 s as on screen (D-137). */
+const VIEW_AGAIN_MS = 30_000;
 
 /** What the host says besides output (D-119). */
 type Control =
@@ -266,10 +269,11 @@ export function Terminal({ host, workspace, session, onEnd, generation, label, w
       if (want && id !== null) void invoke("attach_resize", { id, cols: want.cols, rows: want.rows });
     };
     // Off screen, the host sends nothing; back, it catches up (D-119).
-    const tellView = () => {
+    // Still on screen, it's said `again` now and then (D-137).
+    const tellView = (again = false) => {
       if (id === null || !controls) return;
       const now = onScreen() && document.visibilityState !== "hidden";
-      if (now === visible) return;
+      if (now === visible && !(again && now)) return;
       visible = now;
       const want = now ? fit.proposeDimensions() : undefined;
       void invoke("attach_view", { id, visible: now, cols: want?.cols ?? term.cols, rows: want?.rows ?? term.rows });
@@ -373,7 +377,9 @@ export function Terminal({ host, workspace, session, onEnd, generation, label, w
       tellView();
     });
     observer.observe(el.current!);
-    document.addEventListener("visibilitychange", tellView);
+    const onVisibility = () => tellView();
+    document.addEventListener("visibilitychange", onVisibility);
+    const viewAgain = window.setInterval(() => tellView(true), VIEW_AGAIN_MS);
     // ⌘= / ⌘- anywhere (D-106); a hidden terminal fits when it's shown.
     const unfont = onFontSize((n) => {
       term.options.fontSize = n;
@@ -444,7 +450,8 @@ export function Terminal({ host, workspace, session, onEnd, generation, label, w
       uncopy();
       untake();
       unscroll();
-      document.removeEventListener("visibilitychange", tellView);
+      document.removeEventListener("visibilitychange", onVisibility);
+      window.clearInterval(viewAgain);
       input.dispose();
       resized.dispose();
       scrolled.dispose();

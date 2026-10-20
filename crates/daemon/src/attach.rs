@@ -38,6 +38,27 @@ const DETACH_GRACE: Duration = Duration::from_secs(2);
 /// Output in one frame, at most; a snapshot can be larger (frames take 4 MiB).
 const FRAME_DATA: usize = 1 << 20;
 
+/// How long a frame may take to reach the client before it's taken as gone
+/// (D-137; `OTTER_ATTACH_WRITE_TIMEOUT_MS`). A connection whose other end
+/// vanished (a Mac asleep) can take a quarter of an hour to fail by itself.
+fn write_timeout() -> Duration {
+    Duration::from_millis(
+        std::env::var("OTTER_ATTACH_WRITE_TIMEOUT_MS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(30_000),
+    )
+}
+
+/// Write a frame; false if the client is gone or didn't take it in time.
+/// One cut short leaves the stream broken, so nothing is written after it.
+async fn send(w: &mut OwnedWriteHalf, frame: &Frame, within: Duration) -> bool {
+    matches!(
+        tokio::time::timeout(within, write_frame(w, frame)).await,
+        Ok(Ok(()))
+    )
+}
+
 enum Output {
     Data(Vec<u8>),
     Eof,
@@ -113,9 +134,9 @@ pub async fn run(
     };
     respond(&mut w, id, Ok(serde_json::to_value(&ready)?)).await?;
     // A client that says whether its terminal is on screen looks for as
-    // long as it is (D-137). Counted before settling, so a turn that ends
+    // long as it is (D-137). Marked before settling, so a turn that ends
     // meanwhile is either not raised or settled here.
-    let mut on_screen = ready
+    let on_screen = ready
         .controls
         .then(|| OnScreen::new(daemon.clone(), target.ready.session_id.clone()));
     // Looking at the session settles what was only to be seen (D-099).
@@ -142,6 +163,7 @@ pub async fn run(
         }
     });
 
+    let within = write_timeout();
     let mut ending: Option<AttachExit> = None;
     let mut client_gone = false;
     let mut detach_deadline: Option<tokio::time::Instant> = None;
@@ -178,7 +200,7 @@ pub async fn run(
                         if client_gone {
                             break;
                         }
-                        if write_frame(&mut w, &frame).await.is_err() {
+                        if !send(&mut w, &frame, within).await {
                             client_gone = true;
                             viewer.kill();
                         }
@@ -196,7 +218,7 @@ pub async fn run(
                 }
                 Some(Frame::Control(control)) => {
                     if ready.controls {
-                        let back = match (&control, on_screen.as_mut()) {
+                        let back = match (&control, &on_screen) {
                             (Control::View { visible, .. }, Some(on)) => on.show(*visible),
                             _ => false,
                         };
@@ -250,7 +272,7 @@ pub async fn run(
     viewer.close();
     if !client_gone {
         let ending = ending.unwrap_or_else(|| exit(AttachExitReason::Ended, None));
-        let _ = write_frame(&mut w, &Frame::Exit(ending)).await;
+        send(&mut w, &Frame::Exit(ending), within).await;
     }
     tracing::info!(execution = %target.ready.execution_id, "attach ended");
     Ok(())
