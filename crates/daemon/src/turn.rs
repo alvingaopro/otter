@@ -460,14 +460,25 @@ impl Daemon {
             }
         };
         crate::gateway::crash_point("follow", "post");
+        self.record_follow_up(&task, &key, reply).await
+    }
+
+    /// The follow-up of `task` at `key`, said in the host's conversation,
+    /// once.
+    pub(crate) async fn record_follow_up(
+        &self,
+        task: &otter_core::TaskId,
+        key: &str,
+        reply: String,
+    ) -> RpcResult<()> {
         let applied = self.chat.lock().await.apply(None, |chat, _| {
-            let Some(follow) = chat.follows.iter_mut().find(|x| x.task_id == task) else {
+            let Some(follow) = chat.follows.iter_mut().find(|x| &x.task_id == task) else {
                 return Ok(vec![]);
             };
             if follow.seen == key {
                 return Ok(vec![]);
             }
-            follow.seen = key.clone();
+            follow.seen = key.to_owned();
             let (m, c) = message(
                 MessageRole::Controller,
                 reply,

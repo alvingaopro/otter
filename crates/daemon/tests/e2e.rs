@@ -5444,6 +5444,27 @@ async fn a_plan_the_brain_faults_goes_back_once_then_to_the_developer() {
     assert_eq!(f.verify_command.as_deref(), Some("make test"));
 }
 
+/// What the agent says in any script reaches the task whole (D-134): a
+/// request in Chinese with a link, said back, once took the run down in
+/// otterd, and the task with it.
+#[tokio::test]
+async fn a_request_in_chinese_is_planned() {
+    let fake = fake_agent_host_with("ok", "rules", |_| vec![("OTTER_PLAN_TURN", "1".into())]).await;
+    let host = &fake.host;
+    let id = started_task(host, "修复这个PR，https://example.com/o/r/pull/7 CJK").await;
+    let f = wait_task(host, &id, "planned", |f| {
+        f.steps.iter().any(|t| t.title == "Write the exporter")
+            || f.status == otter_core::task::TaskStatus::Failed
+    })
+    .await;
+    assert!(
+        f.steps.iter().any(|t| t.title == "Write the exporter"),
+        "{:?}: {:?}",
+        f.status,
+        f.status_reason
+    );
+}
+
 /// A planning turn that fails stops planning and says so (D-084): no plan
 /// is guessed without the agent's look at the code. Retrying looks again,
 /// in the same conversation.
