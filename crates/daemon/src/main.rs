@@ -209,7 +209,7 @@ async fn serve(paths: Paths) -> Result<()> {
     daemon.recover_runs().await;
     // The Control Agent steps tasks from here on (D-045).
     tokio::spawn(daemon.clone().run_controller());
-    // Every repository Otter manages takes its git settings (D-132).
+    // Every repository Otter manages takes its git settings (D-133).
     {
         let daemon = daemon.clone();
         tokio::spawn(async move { daemon.git.include_everywhere().await });

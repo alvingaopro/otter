@@ -255,7 +255,7 @@ The Control Agent's model and API keys on this host (D-048).
   answers with the same view as `settings.get`. Absent from older daemons.
 - The view also has `git?: {name?, email?, ssh_key?: {public,
   fingerprint?}, key_account?, github?, login?: {state: pending, code, url} |
-  {state: failed, error}}`: Otter's own git on the host (D-132).
+  {state: failed, error}}`: Otter's own git on the host (D-133).
   `settings.set {git: {name?, email?}}` sets who commits in Otter's
   repositories (`""` clears). Its other calls:
   - `git.key_create {replace?}` → the view: makes Otter's ed25519 key there.

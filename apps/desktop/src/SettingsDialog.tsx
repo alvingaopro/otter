@@ -190,7 +190,7 @@ export function SettingsDialog({
   useEffect(() => setTest(null), [backend, codingModel]);
   // Closing with changes not saved asks first (once).
   const [leaving, setLeaving] = useState(false);
-  // The git identity edited but not saved (D-132).
+  // The git identity edited but not saved (D-133).
   const [gitUnsaved, setGitUnsaved] = useState(false);
 
   const controllers = settings?.controllers?.length ? settings.controllers : OLD_CONTROLLERS;

@@ -1,4 +1,4 @@
-//! Otter's own git on every host (D-132): the identity, kept on this Mac in
+//! Otter's own git on every host (D-133): the identity, kept on this Mac in
 //! `hosts.toml` (with the CLI's) and sent to each host as it connects; each
 //! host's key and GitHub sign-in, driven from Settings › Git & GitHub.
 
@@ -46,7 +46,7 @@ pub async fn git_identity_set(
                 })
                 .await
                 .map_err(|e| e.to_string())?;
-            // An otterd from before D-132 takes the update and ignores it.
+            // An otterd from before D-133 takes the update and ignores it.
             match s.git {
                 Some(_) => Ok(()),
                 None => Err(format!("{host}'s otterd is too old for this: update it")),
@@ -81,7 +81,7 @@ pub async fn sync_identity(conn: &mut Connection) {
     let Some(id) = load_config().ok().and_then(|c| c.git) else {
         return;
     };
-    // An otterd from before D-132 has no git settings.
+    // An otterd from before D-133 has no git settings.
     let Ok(Some(have)) = conn.settings_get().await.map(|s| s.git) else {
         return;
     };
@@ -99,7 +99,7 @@ pub async fn sync_identity(conn: &mut Connection) {
     }
 }
 
-/// A host's git view; `None` from an otterd before D-132.
+/// A host's git view; `None` from an otterd before D-133.
 #[tauri::command]
 pub async fn git_view(app: AppHandle, host: String) -> Result<Option<GitView>, String> {
     let s = rpc(&app, &host)

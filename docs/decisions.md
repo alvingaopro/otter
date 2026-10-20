@@ -178,7 +178,7 @@ after `ssh host`, it should work in Otter".
 - Credentials: whatever `git` on the host already uses; `GIT_TERMINAL_PROMPT=0`
   so a missing credential fails instead of hanging. Error messages are
   scrubbed of `user:token@` in URLs. *Amended 2026-10-20:* Otter's own
-  identity and SSH key, once set, in its repositories only (D-132).
+  identity and SSH key, once set, in its repositories only (D-133).
 - Deleting a workspace removes the worktree but **keeps the branch** (it may
   hold unpushed work) and never touches the backing repository. It refuses if
   the worktree has uncommitted changes unless forced (`--force`).
@@ -1336,7 +1336,7 @@ checked. In review the controller (`review_step`, `delivery.rs`):
   description lists the criteria and the checks; bodies go over stdin.
 - **GitHub through the host's `gh`**: its sign-in and scope; Otter stores
   no token and puts none on a command line. *Amended 2026-10-20:* once
-  Otter's gh is signed in (D-132), its token is in Otter's own gh config
+  Otter's gh is signed in (D-133), its token is in Otter's own gh config
   directory and Otter's calls use that. Still never on a command line.
   Calls: `pr view/create/edit`,
   `pr checks --json`, `run view --log-failed`, `run rerun --failed`,
@@ -2209,7 +2209,7 @@ D-064 a CI fix is a turn in the feature's session. What wasn't:
   by name (the same list as D-062's snapshot); the commit's SHA is evidence
   ("Committed …") and the note names what was left out. Without an
   identity of the host's own, the commit is Otter's. *Amended 2026-10-20:*
-  an identity set in Otter (D-132) is the repository's own, so the
+  an identity set in Otter (D-133) is the repository's own, so the
   commit is the developer's. A tree with work
   still to commit counts as unpublished, so a fix the agent didn't commit
   is pushed too. Idempotent by construction: after a crash between commit
@@ -4282,7 +4282,7 @@ without changing anything else on the host.
     CLI's. It's sent to every connected host, and to each host as it
     connects when that host has another.
   - It's kept only if a host took it, so one a host refuses (not an email
-    address) isn't kept. An otterd from before D-132 accepts the update and
+    address) isn't kept. An otterd from before D-133 accepts the update and
     ignores it, so it's reported as too old.
   - Cleared, it's kept as cleared, so a host that was away is cleared too.
     Closing Settings over an unsaved identity asks first.

@@ -70,7 +70,7 @@ pub struct Daemon {
     pub backend: Arc<dyn ExecutionBackend>,
     pub events: EventLog,
     pub git: GitManager,
-    /// Otter's own git identity, key and GitHub sign-in (D-132).
+    /// Otter's own git identity, key and GitHub sign-in (D-133).
     pub git_account: Arc<crate::git_account::GitAccount>,
     pub environments: EnvironmentManager,
     pub env_source: String,
@@ -684,7 +684,7 @@ impl Daemon {
         .map_err(RpcError::conflict)
     }
 
-    /// `git.check` (D-132): the key and Otter's gh against GitHub.
+    /// `git.check` (D-133): the key and Otter's gh against GitHub.
     async fn git_check(&self) -> otter_protocol::host::GitCheck {
         let (ssh, github) = self.git_account.check(self.environments.base()).await;
         otter_protocol::host::GitCheck {

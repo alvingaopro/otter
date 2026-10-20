@@ -88,7 +88,7 @@ async function render(names = ["code", "mac"]) {
   await flush();
 }
 
-describe("Git & GitHub settings (D-132)", () => {
+describe("Git & GitHub settings (D-133)", () => {
   it("keeps one identity and sends it to every host", async () => {
     await render();
     const email = el.querySelector<HTMLInputElement>('input[aria-label="Git email"]')!;

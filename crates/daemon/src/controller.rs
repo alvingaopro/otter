@@ -2099,7 +2099,7 @@ impl Daemon {
             env: &env,
         };
         let branch = git.publishable_branch().await;
-        // Otter's own GitHub sign-in when it has one (D-132), else the host's.
+        // Otter's own GitHub sign-in when it has one (D-133), else the host's.
         let gh_env = self.git_account.gh_env(&env);
         let gh = GitHub::find(&root, &gh_env);
         let mut cx = delivery::GateContext {

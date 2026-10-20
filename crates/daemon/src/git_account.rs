@@ -1,4 +1,4 @@
-//! Otter's own git on this host (D-132): who commits in the repositories it
+//! Otter's own git on this host (D-133): who commits in the repositories it
 //! manages, the SSH key they push with, and the GitHub account its own `gh`
 //! uses, all apart from the host's own git, ssh and gh.
 //!
@@ -205,10 +205,6 @@ impl GitAccount {
 
     /// The ssh git runs in Otter's repositories once the key has signed in
     /// to GitHub: the script that routes GitHub to the key.
-    pub fn ssh_command(&self) -> Option<String> {
-        self.ssh_command_for(&self.account.read().unwrap())
-    }
-
     fn ssh_command_for(&self, a: &Account) -> Option<String> {
         (a.key_account.is_some() && self.key().exists())
             .then(|| sh_quote(&self.dir.join("ssh").display().to_string()))
@@ -223,7 +219,7 @@ impl GitAccount {
         private_dir(&self.dir)?;
         let options: Vec<String> = self.ssh_options().iter().map(|o| sh_quote(o)).collect();
         let script = format!(
-            "#!/bin/sh\n# Written by Otter (D-132): its key for GitHub, the host's ssh for the rest.\nfor a in \"$@\"; do\n  case \"$a\" in\n    github.com|*@github.com|ssh.github.com|*@ssh.github.com) exec ssh {} \"$@\" ;;\n  esac\ndone\nexec ssh \"$@\"\n",
+            "#!/bin/sh\n# Written by Otter (D-133): its key for GitHub, the host's ssh for the rest.\nfor a in \"$@\"; do\n  case \"$a\" in\n    github.com|*@github.com|ssh.github.com|*@ssh.github.com) exec ssh {} \"$@\" ;;\n  esac\ndone\nexec ssh \"$@\"\n",
             options.join(" ")
         );
         // Executable from the moment it's in place: a push may run it then.
@@ -622,7 +618,7 @@ fn config_value(v: &str) -> String {
 
 fn config_text(a: &Account, ssh: Option<String>) -> String {
     let mut s = String::from(
-        "# Written by Otter (D-132): what its repositories use. Edits are replaced.\n",
+        "# Written by Otter (D-133): what its repositories use. Edits are replaced.\n",
     );
     if a.name.is_some() || a.email.is_some() {
         s.push_str("[user]\n");
@@ -754,7 +750,10 @@ mod tests {
             .mode();
         assert_eq!(mode & 0o777, 0o700);
         // Not used until the key has signed in.
-        assert_eq!(account.ssh_command(), None);
+        assert_eq!(
+            account.ssh_command_for(&account.account.read().unwrap()),
+            None
+        );
     }
 
     #[test]

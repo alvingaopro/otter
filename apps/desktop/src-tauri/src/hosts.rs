@@ -252,7 +252,7 @@ async fn follow(app: &AppHandle, name: &str, transport: &Transport) -> Result<Ne
     // is cheap enough to do once per connection.
     // …and what's wrong with it (D-077), as of connecting.
     let status = rpc.host_status().await?;
-    // This Mac's git identity, on the host (D-132).
+    // This Mac's git identity, on the host (D-133).
     crate::git::sync_identity(&mut rpc).await;
     app.state::<Hosts>().update(name, |v| {
         v.version = Some(version);

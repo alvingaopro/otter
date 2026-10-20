@@ -69,7 +69,7 @@ Inside the daemon (`crates/daemon/src`):
   and `mod.rs` the shared quiet-turn heuristic (`settle`)
 - `backend/` — execution backends; tmux is the only one and nothing else may know about tmux
 - `git.rs` (shared repos + worktrees), `git_account.rs` (Otter's own git identity, key and
-  GitHub sign-in, which its repositories include, D-132), `environment.rs` (direnv), `env.rs` (login env, exec shim)
+  GitHub sign-in, which its repositories include, D-133), `environment.rs` (direnv), `env.rs` (login env, exec shim)
 - `attach.rs` (PTY bridge, or a stream whose client keeps the history:
   `backend/tmux/control.rs`, tmux's control mode, D-118), `server.rs`
   (connections), `dial.rs`, `store.rs` / `events.rs`

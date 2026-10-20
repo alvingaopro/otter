@@ -20,7 +20,7 @@ case "$1 $2" in
   "run rerun")
     echo "$3" >> "$dir/reruns"
     if [ -f "$dir/after-rerun.json" ]; then mv "$dir/after-rerun.json" "$dir/checks.json"; fi ;;
-  # Otter's own sign-in (D-132): only in its config directory, never with
+  # Otter's own sign-in (D-133): only in its config directory, never with
   # a token from the environment (gh would use it, or refuse).
   "auth login")
     if [ -n "$GH_TOKEN$GITHUB_TOKEN" ]; then

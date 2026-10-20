@@ -201,7 +201,7 @@ pub enum Request {
     /// host's key (D-052). Result: `Vec<`[`host::ModelInfo`]`>`.
     #[serde(rename = "settings.models")]
     SettingsModels(host::ModelsQuery),
-    /// Make Otter's SSH key on this host (D-132). Result:
+    /// Make Otter's SSH key on this host (D-133). Result:
     /// [`host::GitView`].
     #[serde(rename = "git.key_create")]
     GitKeyCreate(host::GitKeyCreate),

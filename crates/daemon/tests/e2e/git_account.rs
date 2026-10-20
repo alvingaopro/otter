@@ -1,4 +1,4 @@
-//! Otter's own git on a host (D-132): the developer's identity in the
+//! Otter's own git on a host (D-133): the developer's identity in the
 //! repositories Otter manages, a key made on the host and used once GitHub
 //! knows it, and a GitHub sign-in for Otter's gh alone — the host's own git,
 //! ssh and gh untouched.

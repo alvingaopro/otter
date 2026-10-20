@@ -23,7 +23,7 @@ const OWN_BRANCHES_ONLY: &str = "otter.ownBranchesOnly";
 pub struct GitManager {
     repos_dir: PathBuf,
     env: EnvMap,
-    /// Otter's git identity and key, which every repository includes (D-132).
+    /// Otter's git identity and key, which every repository includes (D-133).
     account: Arc<crate::git_account::GitAccount>,
     /// Serializes fetch/worktree operations per backing repository.
     locks: std::sync::Mutex<HashMap<String, Arc<Mutex<()>>>>,
@@ -54,7 +54,7 @@ impl GitManager {
         }
     }
 
-    /// Make `repo` include Otter's git settings (D-132), once.
+    /// Make `repo` include Otter's git settings (D-133), once.
     async fn include(&self, repo: &Path) -> Result<()> {
         let file = path_str(&self.account.config_file());
         let has = self

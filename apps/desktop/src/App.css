@@ -944,7 +944,7 @@ body.resizing-row { cursor: row-resize; user-select: none; }
 .test-step.passed .test-mark { color: var(--done); }
 .test-step.failed .test-mark { color: var(--failed); }
 .test-step.skipped .test-mark { color: var(--faint); }
-/* Settings › Git & GitHub (D-132). */
+/* Settings › Git & GitHub (D-133). */
 .git-save { justify-content: space-between; }
 .git-host + .git-host { border-top: 1px solid var(--line); }
 .git-code, .git-key { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; padding: 0 14px 12px; }

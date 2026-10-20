@@ -143,12 +143,12 @@ pub struct Settings {
     /// tools…" and why.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub otter_answers: Option<String>,
-    /// Otter's own git on this host (D-132); absent from older daemons.
+    /// Otter's own git on this host (D-133); absent from older daemons.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub git: Option<GitView>,
 }
 
-/// Otter's own git on a host (D-132): who commits in the repositories it
+/// Otter's own git on a host (D-133): who commits in the repositories it
 /// manages, the SSH key they push with, and the GitHub account its own `gh`
 /// uses. The host's own git, ssh and gh are left as they are.
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -311,7 +311,7 @@ pub struct SettingsUpdate {
     /// Otter answers with its tools (D-089); left out: stays.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub otter_tools: Option<bool>,
-    /// Who commits in Otter's repositories (D-132); left out: stays.
+    /// Who commits in Otter's repositories (D-133); left out: stays.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub git: Option<GitIdentity>,
 }

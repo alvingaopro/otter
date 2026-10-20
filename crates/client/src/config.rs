@@ -49,7 +49,7 @@ pub struct Config {
     /// built in (D-121): `login.example.com`, `*.example.com`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub sign_in_sites: Vec<String>,
-    /// Who commits in the repositories Otter manages on every host (D-132),
+    /// Who commits in the repositories Otter manages on every host (D-133),
     /// sent to each as it connects.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub git: Option<otter_protocol::host::GitIdentity>,

@@ -444,7 +444,7 @@ impl Connection {
         self.call(Request::SettingsSet(u)).await
     }
 
-    /// Make Otter's SSH key on the host (D-132).
+    /// Make Otter's SSH key on the host (D-133).
     pub async fn git_key_create(&mut self, replace: bool) -> Result<otter_protocol::host::GitView> {
         self.call(Request::GitKeyCreate(otter_protocol::host::GitKeyCreate {
             replace,

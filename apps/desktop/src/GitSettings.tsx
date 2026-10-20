@@ -1,4 +1,4 @@
-// Settings › Git & GitHub (D-132): who commits in the repositories Otter
+// Settings › Git & GitHub (D-133): who commits in the repositories Otter
 // manages, on every host, and each host's own key and GitHub sign-in. Only
 // those repositories use them; each host's own git, ssh and gh stay as
 // they are.
