@@ -677,13 +677,10 @@ impl Daemon {
         let c = conversation.and_then(|c| self.conversations.get(c.as_str()));
         // Its work may have finished before it was lost, as a restart
         // would find in the journal.
-        if let Some(summary) = c.as_ref().and_then(|c| finished_run(c, run)) {
-            self.finish_run(task, run, RunState::Completed, summary, true)
-                .await;
-            return;
-        }
+        let finished = c.as_ref().and_then(|c| finished_run(c, run));
+        // Free either way: queued turns stay queued, as when otterd
+        // restarts.
         if let Some(c) = c.filter(|c| c.active_run.as_ref() == Some(run)) {
-            // Queued turns stay queued, as when otterd restarts.
             self.conversations.apply(
                 &c.id,
                 Op::RunEnded {
@@ -692,6 +689,11 @@ impl Daemon {
                     at: Utc::now(),
                 },
             );
+        }
+        if let Some(summary) = finished {
+            self.finish_run(task, run, RunState::Completed, summary, true)
+                .await;
+            return;
         }
         let (state, why) = self
             .unsettled_state(task, run, "otterd lost it: an internal error, see its log")
