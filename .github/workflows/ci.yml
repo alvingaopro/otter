@@ -35,18 +35,41 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo fmt --all --check
       - run: cargo clippy --all-targets --locked -- -D warnings
-      # A skipped SSH test is a failure here.
+      # A skipped SSH test is a failure here. The real-browser tests skip:
+      # they have their own job (D-137).
       - run: cargo test --locked
         env:
           OTTER_E2E_REQUIRE_SSH: "1"
-          # Browser checks (D-046) use the runner's Chrome; its sandbox can't
-          # start where unprivileged user namespaces are restricted.
-          OTTER_BROWSER_NO_SANDBOX: "1"
       # Show the SSH test's own output in the log.
       - run: cargo test --locked -p otter --test e2e ssh_host_normal_flow -- --nocapture
         env:
           OTTER_E2E_REQUIRE_SSH: "1"
       - run: python3 scripts/version.py current
+
+  browser:
+    name: Real browser
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      # The end-to-end ones run tasks, so sessions, on a real tmux.
+      - run: sudo apt-get update && sudo apt-get install -y tmux
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      # Browser checks (D-046) on the runner's Chrome, which now and then
+      # dies on its own there: a failure shows here, marked on the step,
+      # and doesn't turn the PR's checks red (D-137).
+      - run: >-
+          cargo test --locked -p otterd --
+          browser::tests
+          a_browser_check_verifies_the_ui_with_evidence
+          a_broken_ui_fails_verification
+          a_preview_runs_as_a_session_on_one_port
+        continue-on-error: true
+        env:
+          OTTER_TEST_BROWSER: "1"
+          # Chrome's sandbox can't start where unprivileged user namespaces
+          # are restricted.
+          OTTER_BROWSER_NO_SANDBOX: "1"
 
   worker:
     name: Claude worker

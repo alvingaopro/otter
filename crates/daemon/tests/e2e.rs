@@ -5837,11 +5837,16 @@ async fn a_run_lost_before_its_conversation_was_kept_starts_over_only_when_allow
 }
 
 // ---------------------------------------------------------------------------
-// Browser verification and previews (D-046). Skipped without a Chrome or
-// Chromium and python3 on this machine.
+// Browser verification and previews (D-046). They drive a real Chrome or
+// Chromium (and python3), so they run only with `OTTER_TEST_BROWSER=1`
+// (D-137), in CI's job of their own; asked for, a missing one fails.
 // ---------------------------------------------------------------------------
 
 fn browser_available() -> bool {
+    if std::env::var("OTTER_TEST_BROWSER").as_deref() != Ok("1") {
+        eprintln!("skipping: drives a real browser; set OTTER_TEST_BROWSER=1");
+        return false;
+    }
     let ok = std::env::var("OTTER_BROWSER").is_ok()
         || [
             "chromium",
@@ -5861,10 +5866,11 @@ fn browser_available() -> bool {
         .arg("--version")
         .output()
         .is_ok_and(|o| o.status.success());
-    if !(ok && python) {
-        eprintln!("skipping: needs Chrome/Chromium and python3");
-    }
-    ok && python
+    assert!(
+        ok && python,
+        "OTTER_TEST_BROWSER=1, but this needs Chrome/Chromium and python3"
+    );
+    true
 }
 
 const PREVIEW: &str = "python3 -m http.server {port} --bind 127.0.0.1";
