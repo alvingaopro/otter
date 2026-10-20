@@ -11,6 +11,9 @@
 # last message by the id the prompt gives it (forward_to_agent); then it
 # answers with what it was told.
 #
+# Whether it started signed in with a token from Settings (D-142) goes to
+# FAKE_WORKER_LOG as `oauth token: set` or `unset` — never the token.
+#
 # A coding turn that is a question ("a question." in it, D-089 M2.5) tries
 # to write a file and to run a command, then answers, saying what Otter's
 # policy said to each. Modes for the work turn: slow (finishes after 2 s),
@@ -24,6 +27,13 @@ profiles='"profiles":["coding","otter"],'
 if [ "${1:-}" = --check ]; then
   out '{"protocol_version":1,"worker_version":"0.1.0","sdk_version":"fake","node_version":"0","node_supported":true,'"$profiles"'"claude_code":true}'
   exit 0
+fi
+if [ -n "$FAKE_WORKER_LOG" ]; then
+  if [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; then
+    printf 'oauth token: set\n' >> "$FAKE_WORKER_LOG"
+  else
+    printf 'oauth token: unset\n' >> "$FAKE_WORKER_LOG"
+  fi
 fi
 otter=
 forward=

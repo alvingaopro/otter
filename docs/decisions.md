@@ -1644,7 +1644,9 @@ SDK's internals; the worker never decides policy.
 - **Auth:** the host's Claude Code sign-in. Anthropic asks third-party
   products not to offer claude.ai login for SDK apps without approval; the
   developer chose it for their own hosts (the alternative is an API key).
-  No credential manager: Otter never sees or stores it.
+  No credential manager: Otter never sees or stores it. (Since D-142, a
+  token the developer made with `claude setup-token` may be kept in
+  Settings instead.)
 - **Handshake:** nothing reaches Claude before the worker's `ready` (protocol
   checked, SDK initialized), within 90 s (`OTTER_WORKER_INIT_TIMEOUT_MS`).
   The session id arrives with the first turn.
@@ -4661,3 +4663,52 @@ no new state:
   `Reasoned`; app tests for Now, the timed activity lines, the reasons in
   the feed, and the source keeping times and re-reading a host with a live
   run.
+
+## D-142 — Claude Code signs in with a token from Settings (2026-10-20)
+
+On a host where Claude Code isn't signed in — a server reached over SSH,
+where its browser login is awkward — the coding agent fails its first run
+with `auth_required`. The fix was to sign in there, or put
+`CLAUDE_CODE_OAUTH_TOKEN` in otterd's login environment and restart it.
+Claude Code's own answer for headless use is a long-lived token from
+`claude setup-token` (`sk-ant-oat01-…`), made wherever the developer is
+signed in. It can now be set in Settings › Coding agent › Claude Code ›
+Sign-in.
+
+- **A secret like the providers' keys** (D-048): `CLAUDE_CODE_OAUTH_TOKEN`
+  in `state/secrets.json` (0600), write-only over the protocol, never
+  logged, in an event or on a command line. Only what `claude setup-token`
+  prints is taken (`sk-ant-oat…`): an API key isn't a sign-in. It is no
+  controller's key, so it doesn't make Anthropic's API "automatic"'s
+  choice.
+- **Only Claude Code's processes get it**, in the environment they start
+  with: a task's run (`sdk` and `legacy_cli`), `runtime.test`, an
+  interactive Claude Code session (through `internal-exec`'s env file),
+  and the `claude` brain — its `claude -p` calls and Otter's turn. A shell,
+  a service or the check in the same workspace never does: an
+  `AgentProvider` names the secrets its processes get (`secrets()`), and
+  generic code passes those, unread. Set here, it wins over the same
+  variable in otterd's environment, as a key does.
+- **Switching a session over:** a Claude Code session started on the
+  host's own sign-in, restarted once a token is set, resumes the same
+  conversation (`--resume`, as any restart) signed in with the token; a
+  task's next run, Otter's next turn and the next test take it up too. A
+  token cleared works the same way back.
+- **Not a login flow.** D-057 left sign-in to Claude Code because Anthropic
+  asks third-party products not to offer claude.ai login. Otter still
+  offers none: the developer makes the token with Claude Code, for their
+  own hosts, and Otter keeps it as it would the environment variable.
+- **Known limits:** Claude Code prefers `ANTHROPIC_API_KEY` (and
+  `ANTHROPIC_AUTH_TOKEN`) to this token, so where otterd's environment has
+  one, that is what signs in; the token isn't checked when set (Run a test
+  does that); work already running keeps how it started.
+- **Verified:** unit tests for the setting (refused unless a token, kept
+  0600, never in the view, no controller) and for the environment it
+  gives; an e2e test with the fake worker, which logs only whether it got
+  one: unset, then set for a test and for a task's run, unset again once
+  cleared, and the token in no file of otterd's home but `secrets.json`. It
+  fails with the run's injection taken out. Another: an interactive
+  session restarted after the token is set resumes its conversation with
+  it, and a command session beside it doesn't get it. The app's test: the Sign-in
+  row with the coding agent, sent once, never shown, not among the API
+  keys.

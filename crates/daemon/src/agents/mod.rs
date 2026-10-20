@@ -186,6 +186,13 @@ pub trait AgentProvider: Send + Sync {
     fn hook_record(&self, _input: &serde_json::Value) -> Option<serde_json::Value> {
         None
     }
+
+    /// Secrets set in the host's Settings that the agent's own processes
+    /// get in their environment — its sign-in (D-142). Nothing else run in
+    /// the workspace (a shell, the check) gets them.
+    fn secrets(&self) -> &'static [&'static str] {
+        &[]
+    }
 }
 
 /// Entry point for `otterd internal-agent-hook <provider> <file>`: an agent
