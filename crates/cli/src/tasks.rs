@@ -711,6 +711,9 @@ fn show(host: &str, f: &Task) {
         status.push_str(&format!(" — {r}"));
     }
     println!("status: {status}");
+    if let Some(next) = &f.next {
+        println!("next: {next}");
+    }
     if let Some(ws) = &f.workspace_id {
         println!("workspace: {ws}");
     }
@@ -753,8 +756,19 @@ fn show(host: &str, f: &Task) {
             word(&run.state),
             ago(&run.started_at)
         );
-        for a in run.activity.iter().rev().take(3).rev() {
-            println!("  {}", one_line(a, 90));
+        // A live run: when its agent was last heard from (D-141).
+        if run.tools_running > 0 {
+            println!("  running a tool");
+        } else if let Some(at) = &run.heard_at {
+            println!("  last heard from {}", ago(at));
+        }
+        // Each line's time when the daemon kept it (D-141).
+        let timed = run.activity_at.len() == run.activity.len();
+        for (i, a) in run.activity.iter().enumerate().rev().take(3).rev() {
+            match run.activity_at.get(i).filter(|_| timed) {
+                Some(at) => println!("  {}  {}", one_line(a, 80), ago(at)),
+                None => println!("  {}", one_line(a, 90)),
+            }
         }
     }
     let recent: Vec<_> = f.messages.iter().rev().take(5).rev().collect();

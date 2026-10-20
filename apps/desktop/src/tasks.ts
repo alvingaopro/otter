@@ -3,6 +3,7 @@
 // be built — owned by a host's daemon and linked to Workspaces and Sessions
 // by id, never embedded in them.
 
+import { ago } from "./model";
 import type { Activity } from "./types";
 
 export type TaskStatus =
@@ -74,6 +75,12 @@ export interface Run {
   provider_session_id?: string;
   /** What the agent did lately (tools it used), newest last. */
   activity?: string[];
+  /** When each `activity` line was noted: as many, or none (an older otterd, D-141). */
+  activity_at?: string[];
+  /** A live run: when its agent was last heard from (D-141). */
+  heard_at?: string;
+  /** A live run: how many of its tools (or background commands) run now. */
+  tools_running?: number;
   /** How long the agent has worked, in ms, up to `working_since` (waits don't count). */
   worked_ms?: number;
   /** When the current stretch of work began; absent while waiting or over. */
@@ -160,6 +167,8 @@ export interface Task {
   verify_command?: string;
   /** Why the Control Agent did what it did, newest last. */
   rationale?: string[];
+  /** What comes next while Otter has the work (D-141). */
+  next?: string;
   /** What the developer allowed once and isn't asked about again (opaque). */
   grants?: string[];
   /** The app's preview for the developer, if running: a port on the host. */
@@ -327,6 +336,36 @@ export function collapseRepeats(lines: string[]): { text: string; times: number 
     const last = out[out.length - 1];
     if (last?.text === text) last.times += 1;
     else out.push({ text, times: 1 });
+  }
+  return out;
+}
+
+/**
+ * When a working run's agent was last heard from (D-141): a sign of work,
+ * not a verdict on it. A tool that runs isn't silence; a run waiting on a
+ * decision says so elsewhere; an older otterd doesn't say.
+ */
+export function heardLine(f: Task, now: number): string | undefined {
+  const run = f.runs.find((r) => r.state === "running");
+  if (!run) return undefined;
+  if ((run.tools_running ?? 0) > 0) return "The coding agent is running a tool.";
+  if (!run.heard_at) return undefined;
+  return `Last heard from the coding agent ${ago(run.heard_at, now)} ago.`;
+}
+
+/**
+ * A task's history with a reason said again right after itself (D-141)
+ * shown once, the last time, with how many times: D-114's repeats, in the
+ * feed. Other events are never folded.
+ */
+export function collapseReasons(events: TaskEventRecord[]): { e: TaskEventRecord; times: number }[] {
+  const out: { e: TaskEventRecord; times: number }[] = [];
+  for (const e of events) {
+    const last = out[out.length - 1];
+    if (e.type === "Reasoned" && last?.e.type === "Reasoned" && last.e.text === e.text) {
+      last.e = e;
+      last.times += 1;
+    } else out.push({ e, times: 1 });
   }
   return out;
 }

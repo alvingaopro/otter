@@ -245,14 +245,11 @@ where
 /// A failure, with what the worker's diagnostics last said (redacted) —
 /// not Node's own warnings, which say nothing about it (D-134).
 fn with_tail(e: anyhow::Error, tail: &str) -> anyhow::Error {
-    let node = |l: &str| {
-        l.starts_with("(Use `node --trace-") || (l.starts_with("(node:") && l.contains("Warning"))
-    };
     match tail
         .lines()
         .map(str::trim)
         .rev()
-        .find(|l| !l.is_empty() && !node(l))
+        .find(|l| !l.is_empty() && !super::node_warning(l))
     {
         Some(l) => anyhow!(
             "{e:#} (the worker said: {})",

@@ -6,7 +6,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import type { CodingConversation, RuntimeCapabilities } from "./conversation";
 import { daemonMemory, mockMemory, type MemorySource } from "./memory";
-import type { Draft, Task, TaskAction, TaskEventRecord, MessageRole, PlacedTask } from "./tasks";
+import type { Draft, Task, TaskAction, TaskEventRecord, MessageRole, PlacedTask, Run } from "./tasks";
 
 export interface TaskSource {
   /** True for the stand-in: the UI says so. */
@@ -364,6 +364,11 @@ const splitKey = (key: string) => {
   return { host: key.slice(0, i), task: key.slice(i + 1) };
 };
 
+/** How often a host with a live run is read again (D-141). */
+const HEARD_REFRESH_MS = 30_000;
+
+const isLive = (r: Run) => r.state === "starting" || r.state === "running" || r.state === "waiting";
+
 /**
  * Tasks from each connected host's daemon. Reloads a host when it says a
  * task changed (`TaskChanged`) or its event stream restarted; a host
@@ -396,6 +401,17 @@ export function daemonSource(): TaskSource {
     if (hosts.includes(host)) rebuild();
   };
   type StreamRecord = { type: string; task_id: string; stream_id: string; role: MessageRole; text: string; done?: boolean };
+  /** A task's live run was just heard from: in place, the stream's redraw shows it. */
+  const heard = (host: string, task: string) => {
+    const f = byHost.get(host)?.find((x) => x.id === task);
+    const run = f?.runs?.find((x) => isLive(x));
+    if (run?.heard_at !== undefined) run.heard_at = new Date().toISOString();
+  };
+  // A live run's "last heard" is the daemon's: read it again now and then,
+  // since not every sign of work reaches the app as an event (D-141).
+  setInterval(() => {
+    for (const host of hosts) if ((byHost.get(host) ?? []).some((f) => f.runs?.some(isLive))) void load(host);
+  }, HEARD_REFRESH_MS);
   /** Put a task the daemon just returned in place, ahead of the event. */
   const put = (host: string, task: Task) => {
     const rest = (byHost.get(host) ?? []).filter((f) => f.id !== task.id);
@@ -417,15 +433,18 @@ export function daemonSource(): TaskSource {
       drafts.delete(`${host}/${(record as { task_id?: string }).task_id}`);
       void load(host);
     }
-    // What the coding agent just did (D-069): transient, onto its live run.
+    // What the coding agent just did (D-069): transient, onto its live run,
+    // with its time when the daemon says it (D-141).
     if (record.type === "TaskActivity") {
-      const r = record as unknown as { task_id: string; run_id: string; line: string };
+      const r = record as unknown as { task_id: string; run_id: string; line: string; at?: string };
       const tasks = byHost.get(host) ?? [];
       const f = tasks.find((x) => x.id === r.task_id);
       const run = f?.runs.find((x) => x.id === r.run_id);
       if (f && run) {
         const activity = [...(run.activity ?? []), r.line].slice(-30);
-        const next = { ...f, runs: f.runs.map((x) => (x.id === run.id ? { ...x, activity } : x)) };
+        const timed = r.at !== undefined && (run.activity_at ?? []).length === (run.activity ?? []).length;
+        const at = timed ? { activity_at: [...(run.activity_at ?? []), r.at!].slice(-30), heard_at: r.at } : { activity_at: undefined };
+        const next = { ...f, runs: f.runs.map((x) => (x.id === run.id ? { ...x, activity, ...at } : x)) };
         byHost.set(
           host,
           tasks.map((x) => (x.id === f.id ? next : x)),
@@ -436,6 +455,8 @@ export function daemonSource(): TaskSource {
     if (record.type === "TaskStream") {
       const r = record as StreamRecord;
       const key = `${host}/${r.task_id}`;
+      // The coding agent writing is it being heard from (D-141).
+      if (r.role === "agent") heard(host, r.task_id);
       const ds = drafts.get(key) ?? new Map<string, Draft>();
       ds.set(r.stream_id, { stream_id: r.stream_id, role: r.role, text: r.text, done: !!r.done });
       drafts.set(key, ds);

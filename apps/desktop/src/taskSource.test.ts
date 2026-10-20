@@ -97,6 +97,56 @@ describe("daemonSource", () => {
     expect(calls.filter((c) => c.cmd === "tasks_list")).toHaveLength(loads);
   });
 
+  it("keeps each activity line's time and when the agent was last heard from", async () => {
+    const run = { id: "run_1", task_id: "t", runtime: "claude", state: "running", started_at: "2026-10-09T00:00:00Z" };
+    served.mac = [
+      { id: "ft_a", title: "A", status: "implementing", updated_at: "2026-10-09T00:00:00Z", runs: [{ ...run, heard_at: "2026-10-09T00:00:01Z" }] },
+    ];
+    const s = daemonSource();
+    s.setHosts!(["mac"]);
+    await flush();
+    const activity = (line: string, at?: string) =>
+      handlers.get("host-event")!({ payload: { host: "mac", record: { type: "TaskActivity", task_id: "ft_a", run_id: "run_1", line, at } } });
+    activity("$ cargo build", "2026-10-09T00:00:05Z");
+    const r = () => s.list()[0].task.runs[0];
+    expect(r().activity_at).toEqual(["2026-10-09T00:00:05Z"]);
+    expect(r().heard_at).toBe("2026-10-09T00:00:05Z");
+    // A line without its time (an older otterd): no times rather than wrong ones.
+    activity("✎ src/a.rs");
+    expect(r().activity).toHaveLength(2);
+    expect(r().activity_at).toBeUndefined();
+  });
+
+  it("reads a host with a live run again now and then", async () => {
+    vi.useFakeTimers();
+    try {
+      served.mac = [
+        {
+          id: "ft_a",
+          title: "A",
+          status: "implementing",
+          updated_at: "2026-10-09T00:00:00Z",
+          runs: [{ id: "run_1", task_id: "t", runtime: "claude", state: "running", started_at: "2026-10-09T00:00:00Z" }],
+        },
+      ];
+      const s = daemonSource();
+      s.setHosts!(["mac"]);
+      await vi.advanceTimersByTimeAsync(0);
+      const loads = () => calls.filter((c) => c.cmd === "tasks_list").length;
+      const before = loads();
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(loads()).toBe(before + 1);
+      // Nothing live: nothing to read again.
+      served.mac = [{ id: "ft_a", title: "A", status: "review", updated_at: "2026-10-09T00:00:00Z", runs: [] }];
+      await vi.advanceTimersByTimeAsync(30_000);
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(loads()).toBe(before + 2);
+      s.setHosts!([]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("sends each action with its own command id", async () => {
     const s = daemonSource();
     s.setHosts!(["mac"]);

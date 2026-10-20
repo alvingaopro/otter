@@ -22,7 +22,9 @@ pub struct TaskView {
 }
 
 impl From<Task> for TaskView {
-    fn from(task: Task) -> Self {
+    fn from(mut task: Task) -> Self {
+        // An otterd before D-141 doesn't say what comes next: the same rule here.
+        task.next = task.next.take().or_else(|| task.what_next());
         TaskView {
             activity: task.activity(),
             needs: task.needs(),

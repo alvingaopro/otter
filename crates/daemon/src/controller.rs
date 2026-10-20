@@ -367,7 +367,7 @@ impl Daemon {
                 d.status = DecisionStatus::Cancelled;
                 d.decided_at = Some(now);
             }
-            f.rationale.push(why.clone());
+            changes.push(Change::new(f.reason(why.clone())));
             if f.status.can_become(TaskStatus::Paused) {
                 changes.push(Change::new(
                     f.transition(TaskStatus::Paused, Some(why.clone()), now)
@@ -820,10 +820,9 @@ impl Daemon {
             {
                 self.controller_apply(&f.id, TaskStatus::Planning, |f, _| {
                     f.answer_only = false;
-                    f.rationale.push(
-                        "You let it change the code: the task is no longer answer-only.".into(),
-                    );
-                    Ok(vec![])
+                    Ok(vec![Change::new(f.reason(
+                        "You let it change the code: the task is no longer answer-only.",
+                    ))])
                 })
                 .await?;
                 self.set_plan(f, plan, "approved by you", root).await
@@ -911,12 +910,12 @@ impl Daemon {
         self.controller_apply(&f.id, TaskStatus::Planning, move |f, now| {
             let (m, c) = message(MessageRole::Agent, report, run);
             f.messages.push(m);
-            f.rationale.push(
-                "The coding agent answered: the request asks no change, so nothing was planned or built."
-                    .into(),
+            let why = f.reason(
+                "The coding agent answered: the request asks no change, so nothing was planned or built.",
             );
             Ok(vec![
                 c,
+                Change::new(why),
                 Change::new(
                     f.transition(TaskStatus::Done, Some(ANSWERED.into()), now)
                         .map_err(RpcError::conflict)?,
@@ -931,17 +930,20 @@ impl Daemon {
     async fn send_plan_back(&self, f: &Task, step: &Step, issues: String) -> RpcResult<()> {
         let id = step.id.clone();
         self.controller_apply(&f.id, TaskStatus::Planning, move |f, _| {
-            f.rationale.push(format!(
+            let why = f.reason(format!(
                 "Sent the plan back to the coding agent:\n{}",
                 issues.trim_end()
             ));
             let t = f.step_mut(&id).expect("found");
             t.status = StepStatus::Pending;
             t.detail = Some(issues);
-            Ok(vec![Change::new(TaskEvent::StepChanged {
-                step_id: id.clone(),
-                status: StepStatus::Pending,
-            })])
+            Ok(vec![
+                Change::new(why),
+                Change::new(TaskEvent::StepChanged {
+                    step_id: id.clone(),
+                    status: StepStatus::Pending,
+                }),
+            ])
         })
         .await?;
         Ok(())
@@ -1077,11 +1079,14 @@ impl Daemon {
                 .collect();
             f.steps = kept.into_iter().chain(fresh).collect();
             f.verify_command = verify.clone();
-            f.rationale.push(format!("Plan ({by}): {}", plan.rationale));
-            let mut changes = vec![Change::new(TaskEvent::PlanSet {
-                steps: f.steps.len(),
-                criteria: f.acceptance.len(),
-            })];
+            let why = f.reason(format!("Plan ({by}): {}", plan.rationale));
+            let mut changes = vec![
+                Change::new(TaskEvent::PlanSet {
+                    steps: f.steps.len(),
+                    criteria: f.acceptance.len(),
+                }),
+                Change::new(why),
+            ];
             // The check runs without asking only if policy says so.
             match (&verify, &check_verdict) {
                 (Some(_), Some(Verdict::Allow)) => f.verify_approved = true,
@@ -1175,9 +1180,9 @@ impl Daemon {
         if let Some(goal) = said.or(answered).filter(|g| !g.trim().is_empty()) {
             self.controller_apply(&f.id, TaskStatus::Planning, move |f, _| {
                 f.request = goal.trim().to_owned();
-                f.rationale
-                    .push("The request is what you said: planning from it.".into());
-                Ok(vec![])
+                Ok(vec![Change::new(f.reason(
+                    "The request is what you said: planning from it.",
+                ))])
             })
             .await?;
             return Ok(()); // The change wakes the next step.
@@ -1337,8 +1342,7 @@ impl Daemon {
             if !f.pending_decisions().any(|x| x.id == did) {
                 return Ok(vec![]);
             }
-            f.rationale.push(line.clone());
-            let mut changes = Vec::new();
+            let mut changes = vec![Change::new(f.reason(line.clone()))];
             if f.status.can_become(TaskStatus::Blocked) {
                 changes.push(Change::new(
                     f.transition(TaskStatus::Blocked, Some(line.clone()), now)
@@ -1561,9 +1565,9 @@ impl Daemon {
             return Ok(());
         }
         self.controller_apply(&f.id, f.status, move |f, _| {
-            f.rationale.push(why.clone());
+            let event = f.reason(why.clone());
             f.status_reason = Some(why);
-            Ok(vec![])
+            Ok(vec![Change::new(event)])
         })
         .await?;
         Ok(())
@@ -1676,22 +1680,21 @@ impl Daemon {
                 .find(|d| &d.id == did)
                 .map(|d| (d.status, d.answer.clone()));
             self.controller_apply(&f.id, TaskStatus::Verifying, |f, _| {
-                match decided {
+                let why = match decided {
                     Some((DecisionStatus::Answered, Some(a))) if a == WITHOUT_CHECK => {
                         f.verify_command = None;
-                        f.rationale
-                            .push("Going on without the check, as you said.".into());
+                        Some(f.reason("Going on without the check, as you said."))
                     }
                     Some((DecisionStatus::Approved | DecisionStatus::Answered, _)) => {
-                        f.verify_approved = true
+                        f.verify_approved = true;
+                        None
                     }
                     _ => {
                         f.verify_command = None;
-                        f.rationale
-                            .push("The check wasn't allowed; judging without it.".into());
+                        Some(f.reason("The check wasn't allowed; judging without it."))
                     }
-                }
-                Ok(vec![])
+                };
+                Ok(why.into_iter().map(Change::new).collect())
             })
             .await?;
             return Ok(()); // The change wakes the next step.
@@ -1816,7 +1819,7 @@ impl Daemon {
             let mark = VerificationMark { fingerprint, unmet };
             if all_met {
                 f.last_verification = None;
-                f.rationale.push("Verified: every criterion is met.".into());
+                changes.push(Change::new(f.reason("Verified: every criterion is met.")));
                 let (m, c) = message(
                     MessageRole::Controller,
                     format!("Verified.\n{summary}"),
@@ -1840,9 +1843,9 @@ impl Daemon {
                 } else {
                     mark.unmet.join("; ")
                 };
-                f.rationale.push(format!(
+                changes.push(Change::new(f.reason(format!(
                     "Not verified: {unproven}; nothing changed after a fix"
-                ));
+                ))));
                 let (m, c) = message(
                     MessageRole::Controller,
                     format!(
@@ -1882,7 +1885,7 @@ impl Daemon {
                     last_error: None,
                     planning: false,
                 });
-                f.rationale.push(format!("Not verified: {fix}"));
+                changes.push(Change::new(f.reason(format!("Not verified: {fix}"))));
                 let (m, c) = message(
                     MessageRole::Controller,
                     format!("Not verified yet.\n{summary}\nNext: {fix}"),
@@ -2481,12 +2484,14 @@ impl Daemon {
                 f.evidence.push(e);
             }
             for n in &notes {
-                f.rationale.push(n.clone());
+                changes.push(Change::new(f.reason(n.clone())));
                 let (m, c) = message(MessageRole::Controller, n.clone(), None);
                 f.messages.push(m);
                 changes.push(c);
             }
-            f.rationale.extend(rationale.iter().cloned());
+            for r in &rationale {
+                changes.push(Change::new(f.reason(r.clone())));
+            }
             f.gates = gates.clone();
             if let Some(fix) = &remediation {
                 let id = StepId::generate();
@@ -2503,7 +2508,7 @@ impl Daemon {
                     planning: false,
                 });
                 f.report = None;
-                f.rationale.push("CI failed: back to implementing.".into());
+                changes.push(Change::new(f.reason("CI failed: back to implementing.")));
                 changes.push(Change::new(TaskEvent::StepChanged { step_id: id, status: StepStatus::Pending }));
                 changes.push(Change::new(
                     f.transition(TaskStatus::Implementing, Some("CI failed".into()), now)
@@ -2849,7 +2854,9 @@ pub(crate) fn intent_step(
             };
             match crate::tasks::apply_action(f, &accept, authority, now) {
                 Ok(c) => changes.extend(c),
-                Err(e) => f.rationale.push(format!("Not done yet: {}", e.message)),
+                Err(e) => changes.push(Change::new(
+                    f.reason(format!("Not done yet: {}", e.message)),
+                )),
             }
             None
         }
@@ -3234,6 +3241,9 @@ mod tests {
                 summary: Some((*s).into()),
                 provider_session_id: None,
                 activity: vec![],
+                activity_at: vec![],
+                heard_at: None,
+                tools_running: 0,
                 conversation_id: None,
                 turn_id: None,
                 worked_ms: 0,
