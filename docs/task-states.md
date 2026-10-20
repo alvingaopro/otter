@@ -74,6 +74,7 @@ journal is the agent's. A restarted otterd reads them and goes on.
 | Pull request | `delivery.pr_number`, `pr_url`, `PullRequest` evidence | An open PR for the branch is adopted (`gh pr view`), never opened twice. |
 | CI | `delivery.ci`, `reruns`, `Ci` evidence (pass per HEAD, failure with its log) | Read again; a failure already acted on isn't acted on twice. |
 | Done | `gates`, `report`, status | — |
+| Every reason | a line in `rationale`, and `Reasoned` in the history at its time (D-141) | — |
 
 External actions — push, pull request, rerun, comment — go through
 `delivery.rs` and are idempotent by what they check first. Otter never
@@ -105,6 +106,7 @@ Deterministic, whatever a model thinks:
   and resumed, not failed (D-063). Silent too long: the same (watchdog).
 - Attempts: new work costs one (`max_iterations`, 6); three per step.
 - Loops: the same failed run three times; the same work and verdict after
-  a fix (→ review); the same CI failure after a fix (→ the developer).
+  a fix (→ review); the same CI failure after a fix, times, durations
+  and ids aside (→ the developer, D-139).
 - CI that looks like the infrastructure's fault: rerun at most twice per
   pushed commit (D-047).

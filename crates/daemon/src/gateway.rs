@@ -596,7 +596,7 @@ impl Gateway {
         let f = self
             .inner
             .daemon
-            .with_live_activity(self.inner.daemon.task_get(task.as_str()).await?);
+            .for_clients(self.inner.daemon.task_get(task.as_str()).await?);
         let r = |s: &str| redact(s);
         let short = |s: &str, n: usize| excerpt(&redact(s), n);
         match name {
@@ -1153,12 +1153,13 @@ impl Gateway {
         .await;
         let applied = d.tasks.lock().await.apply(&f.id, Some(&command), |f, _| {
             f.answer_only = on;
-            f.rationale.push(if on {
-                "You said only an answer is wanted: the coding agent only reads.".into()
+            let why = f.reason(if on {
+                "You said only an answer is wanted: the coding agent only reads."
             } else {
-                "You said changes are fine: the task is no longer answer-only.".into()
+                "You said changes are fine: the task is no longer answer-only."
             });
             Ok(vec![
+                Change::new(why),
                 Change::new(TaskEvent::ToolDone {
                     tool: "set_answer_only".into(),
                     error: None,

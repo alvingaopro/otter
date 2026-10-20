@@ -242,9 +242,15 @@ where
     result.map_err(|e| with_tail(e, &tail))
 }
 
-/// A failure, with what the worker's diagnostics last said (redacted).
+/// A failure, with what the worker's diagnostics last said (redacted) —
+/// not Node's own warnings, which say nothing about it (D-134).
 fn with_tail(e: anyhow::Error, tail: &str) -> anyhow::Error {
-    match tail.lines().rev().find(|l| !l.trim().is_empty()) {
+    match tail
+        .lines()
+        .map(str::trim)
+        .rev()
+        .find(|l| !l.is_empty() && !super::node_warning(l))
+    {
         Some(l) => anyhow!(
             "{e:#} (the worker said: {})",
             super::excerpt(&otter_core::redact::redact(l), 200)
@@ -449,5 +455,14 @@ mod tests {
             "{e}"
         );
         assert!(!e.contains("WORKERLEAK"), "{e}");
+    }
+
+    #[test]
+    fn nodes_own_warnings_are_not_why() {
+        let tail = "tried the key\n(node:42) ExperimentalWarning: a feature\n(Use `node --trace-warnings ...` to show where the warning was created)\n";
+        let e = with_tail(anyhow::anyhow!("Otter's turn ended limit_reached"), tail).to_string();
+        assert!(e.ends_with("(the worker said: tried the key)"), "{e}");
+        let only = "(Use `node --trace-warnings ...` to show where the warning was created)";
+        assert_eq!(with_tail(anyhow::anyhow!("x"), only).to_string(), "x");
     }
 }

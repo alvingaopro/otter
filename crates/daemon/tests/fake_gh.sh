@@ -16,7 +16,11 @@ case "$1 $2" in
     if [ -f "$dir/checks.json" ]; then cat "$dir/checks.json"; exit 8; fi
     echo "no checks reported on the branch" >&2; exit 1 ;;
   "pr comment") cat > "$dir/comment" ;;
-  "run view") cat "$dir/log" 2>/dev/null ;;
+  "run view")
+    # As GitHub prints it, each view later than the last: @TIME@ and
+    # @SECS@ in the log change from one view to the next.
+    n=$(( $(cat "$dir/views" 2>/dev/null || echo 0) + 1 )); echo "$n" > "$dir/views"
+    sed -e "s/@TIME@/2026-10-20T18:0$((n % 10)):00.${n}4598260Z/g" -e "s/@SECS@/0.0${n}s/g" "$dir/log" 2>/dev/null ;;
   "run rerun")
     echo "$3" >> "$dir/reruns"
     if [ -f "$dir/after-rerun.json" ]; then mv "$dir/after-rerun.json" "$dir/checks.json"; fi ;;

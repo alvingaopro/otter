@@ -29,8 +29,9 @@ use std::time::Duration;
 
 use chrono::Utc;
 use otter_core::task::{
-    Criterion, Decider, DecisionKind, DecisionRequest, DecisionStatus, Evidence, EvidenceKind,
-    MessageRole, Risk, RunState, Step, StepStatus, Task, TaskEvent, TaskStatus, VerificationMark,
+    ARCHIVED, Criterion, Decider, DecisionKind, DecisionRequest, DecisionStatus, Evidence,
+    EvidenceKind, MessageRole, Risk, RunState, Step, StepStatus, Task, TaskEvent, TaskStatus,
+    VerificationMark, WAITING, YOUR_AGENT,
 };
 use otter_core::{DecisionId, EvidenceId, StepId, TaskId};
 use otter_protocol::RpcError;
@@ -93,9 +94,6 @@ pub(crate) fn plan_turn() -> bool {
     std::env::var("OTTER_PLAN_TURN").map_or(true, |v| v != "0")
 }
 
-/// How a task waiting for its workspace says so (D-079).
-const WAITING: &str = "Waiting for ";
-
 /// The planning step's title.
 const PLANNING: &str = "Look at the code and plan the work";
 /// The step CI's failure becomes, and what is said when a fix didn't change it.
@@ -108,9 +106,25 @@ const ANSWERED: &str = "Answered: no change was asked for. Say so if you want on
 /// What Otter asks when a revised plan still has problems (D-084).
 const PLAN_QUESTION: &str = "Go ahead with the coding agent's plan?";
 
-/// Why planning stopped when the coding agent's look at the code failed.
+/// Why planning stopped when the look at the code failed — the agent's
+/// doing or otterd's, as `why` says (D-134).
 fn looked_and_failed(why: &str) -> String {
-    format!("The coding agent's look at the code failed ({why}). Say go on to try again.")
+    format!("The look at the code failed ({why}). Retry, or say go on, to try again.")
+}
+
+/// Why a step stopped when it panicked.
+const PANICKED: &str = "an internal error (otterd's log says where)";
+
+/// `work` as a task of its own, so that a panic in it is an error like any
+/// other, not the end of what waits on it (D-134). `None`: otterd is going.
+async fn contained(
+    work: impl std::future::Future<Output = RpcResult<()>> + Send + 'static,
+) -> Option<RpcResult<()>> {
+    match tokio::spawn(work).await {
+        Ok(r) => Some(r),
+        Err(e) if e.is_panic() => Some(Err(RpcError::internal(PANICKED))),
+        Err(_) => None,
+    }
 }
 
 /// The developer's word on the plan the planning turn last came back with:
@@ -210,8 +224,15 @@ impl Daemon {
                 }
                 let daemon = self.clone();
                 tokio::spawn(async move {
-                    if let Err(e) = daemon.step(&id).await {
+                    let stepped = {
+                        let (daemon, id) = (daemon.clone(), id.clone());
+                        contained(async move { daemon.step(&id).await }).await
+                    };
+                    if let Some(Err(e)) = stepped {
                         tracing::warn!(task = %id, "controller: {}", e.message);
+                        if e.message == PANICKED {
+                            daemon.could_not_answer(&id).await;
+                        }
                         daemon
                             .fail(&id, &format!("Otter stopped: {}", e.message), None)
                             .await;
@@ -230,24 +251,47 @@ impl Daemon {
                 self.controller.lock().unwrap().host_turn = true;
                 let daemon = self.clone();
                 tokio::spawn(async move {
-                    let done = daemon.follow_up(task, key).await;
+                    let done = {
+                        let (daemon, task, key) = (daemon.clone(), task.clone(), key.clone());
+                        contained(async move { daemon.follow_up(task, key).await }).await
+                    };
+                    // Said plainly instead, or it would come up again on
+                    // every tick (D-134).
+                    if matches!(&done, Some(Err(e)) if e.message == PANICKED) {
+                        let text = format!("Otter couldn't follow up on [{task}]: {PANICKED}.");
+                        let _ = daemon.record_follow_up(&task, &key, text).await;
+                    }
                     daemon.controller.lock().unwrap().host_turn = false;
                     match done {
-                        Ok(()) => daemon.task_wake.notify_one(),
-                        Err(e) => tracing::warn!("Otter's follow-up: {}", e.message),
+                        Some(Ok(())) => daemon.task_wake.notify_one(),
+                        Some(Err(e)) => tracing::warn!("Otter's follow-up: {}", e.message),
+                        None => {}
                     }
                 });
             }
             if waiting && !std::mem::replace(&mut self.controller.lock().unwrap().host_turn, true) {
                 let daemon = self.clone();
                 tokio::spawn(async move {
-                    let answered = daemon.host_turn().await;
+                    let answered = {
+                        let daemon = daemon.clone();
+                        contained(async move { daemon.host_turn().await }).await
+                    };
+                    // Answered with that, or it would come up again on every
+                    // tick (D-134).
+                    if matches!(&answered, Some(Err(e)) if e.message == PANICKED) {
+                        let chat = daemon.chat.lock().await.get().clone();
+                        if let Some(last) = crate::chat::unanswered(&chat).pop() {
+                            let text = format!("I couldn't answer that: {PANICKED}.");
+                            let _ = daemon.chat_reply(&last, text).await;
+                        }
+                    }
                     daemon.controller.lock().unwrap().host_turn = false;
                     match answered {
                         // What came in meanwhile is answered next.
-                        Ok(()) => daemon.task_wake.notify_one(),
+                        Some(Ok(())) => daemon.task_wake.notify_one(),
                         // Tried again on the next tick, not at once.
-                        Err(e) => tracing::warn!("Otter's turn on the host: {}", e.message),
+                        Some(Err(e)) => tracing::warn!("Otter's turn on the host: {}", e.message),
+                        None => {}
                     }
                 });
             }
@@ -323,7 +367,7 @@ impl Daemon {
                 d.status = DecisionStatus::Cancelled;
                 d.decided_at = Some(now);
             }
-            f.rationale.push(why.clone());
+            changes.push(Change::new(f.reason(why.clone())));
             if f.status.can_become(TaskStatus::Paused) {
                 changes.push(Change::new(
                     f.transition(TaskStatus::Paused, Some(why.clone()), now)
@@ -554,8 +598,44 @@ impl Daemon {
             Ok(changes)
         });
         match applied {
-            Ok(a) => self.task_changed(&a),
+            // Why, in the log too: the task's history goes when it's
+            // deleted (D-134).
+            Ok(a) if a.from != Some(a.task.status) => {
+                let why = a.task.status_reason.as_deref().unwrap_or_default();
+                tracing::warn!(task = %id, "task failed: {}", otter_core::redact::redact(why));
+                self.task_changed(&a);
+            }
+            // Nothing changed: nothing to tell, nor to step again.
+            Ok(_) => {}
             Err(e) => tracing::warn!(task = %id, "failing: {e:?}"),
+        }
+    }
+
+    /// What the developer said, answered if only by saying Otter couldn't:
+    /// a step that panicked on it would take it up again at once, and
+    /// again (D-134).
+    async fn could_not_answer(&self, id: &TaskId) {
+        if self
+            .task_get(id.as_str())
+            .await
+            .is_ok_and(|f| unanswered(&f).is_empty())
+        {
+            return;
+        }
+        let applied = self.tasks.lock().await.apply(id, None, |f, _| {
+            let Some(last) = unanswered(f).pop() else {
+                return Ok(vec![]);
+            };
+            let (m, c) = message(
+                MessageRole::Controller,
+                format!("Otter couldn't answer that: {PANICKED}."),
+                Some(last.id.to_string()),
+            );
+            f.messages.push(m);
+            Ok(vec![c])
+        });
+        if let Ok(a) = applied {
+            self.task_changed(&a);
         }
     }
 
@@ -740,10 +820,9 @@ impl Daemon {
             {
                 self.controller_apply(&f.id, TaskStatus::Planning, |f, _| {
                     f.answer_only = false;
-                    f.rationale.push(
-                        "You let it change the code: the task is no longer answer-only.".into(),
-                    );
-                    Ok(vec![])
+                    Ok(vec![Change::new(f.reason(
+                        "You let it change the code: the task is no longer answer-only.",
+                    ))])
                 })
                 .await?;
                 self.set_plan(f, plan, "approved by you", root).await
@@ -831,12 +910,12 @@ impl Daemon {
         self.controller_apply(&f.id, TaskStatus::Planning, move |f, now| {
             let (m, c) = message(MessageRole::Agent, report, run);
             f.messages.push(m);
-            f.rationale.push(
-                "The coding agent answered: the request asks no change, so nothing was planned or built."
-                    .into(),
+            let why = f.reason(
+                "The coding agent answered: the request asks no change, so nothing was planned or built.",
             );
             Ok(vec![
                 c,
+                Change::new(why),
                 Change::new(
                     f.transition(TaskStatus::Done, Some(ANSWERED.into()), now)
                         .map_err(RpcError::conflict)?,
@@ -851,17 +930,20 @@ impl Daemon {
     async fn send_plan_back(&self, f: &Task, step: &Step, issues: String) -> RpcResult<()> {
         let id = step.id.clone();
         self.controller_apply(&f.id, TaskStatus::Planning, move |f, _| {
-            f.rationale.push(format!(
+            let why = f.reason(format!(
                 "Sent the plan back to the coding agent:\n{}",
                 issues.trim_end()
             ));
             let t = f.step_mut(&id).expect("found");
             t.status = StepStatus::Pending;
             t.detail = Some(issues);
-            Ok(vec![Change::new(TaskEvent::StepChanged {
-                step_id: id.clone(),
-                status: StepStatus::Pending,
-            })])
+            Ok(vec![
+                Change::new(why),
+                Change::new(TaskEvent::StepChanged {
+                    step_id: id.clone(),
+                    status: StepStatus::Pending,
+                }),
+            ])
         })
         .await?;
         Ok(())
@@ -997,11 +1079,14 @@ impl Daemon {
                 .collect();
             f.steps = kept.into_iter().chain(fresh).collect();
             f.verify_command = verify.clone();
-            f.rationale.push(format!("Plan ({by}): {}", plan.rationale));
-            let mut changes = vec![Change::new(TaskEvent::PlanSet {
-                steps: f.steps.len(),
-                criteria: f.acceptance.len(),
-            })];
+            let why = f.reason(format!("Plan ({by}): {}", plan.rationale));
+            let mut changes = vec![
+                Change::new(TaskEvent::PlanSet {
+                    steps: f.steps.len(),
+                    criteria: f.acceptance.len(),
+                }),
+                Change::new(why),
+            ];
             // The check runs without asking only if policy says so.
             match (&verify, &check_verdict) {
                 (Some(_), Some(Verdict::Allow)) => f.verify_approved = true,
@@ -1095,9 +1180,9 @@ impl Daemon {
         if let Some(goal) = said.or(answered).filter(|g| !g.trim().is_empty()) {
             self.controller_apply(&f.id, TaskStatus::Planning, move |f, _| {
                 f.request = goal.trim().to_owned();
-                f.rationale
-                    .push("The request is what you said: planning from it.".into());
-                Ok(vec![])
+                Ok(vec![Change::new(f.reason(
+                    "The request is what you said: planning from it.",
+                ))])
             })
             .await?;
             return Ok(()); // The change wakes the next step.
@@ -1257,8 +1342,7 @@ impl Daemon {
             if !f.pending_decisions().any(|x| x.id == did) {
                 return Ok(vec![]);
             }
-            f.rationale.push(line.clone());
-            let mut changes = Vec::new();
+            let mut changes = vec![Change::new(f.reason(line.clone()))];
             if f.status.can_become(TaskStatus::Blocked) {
                 changes.push(Change::new(
                     f.transition(TaskStatus::Blocked, Some(line.clone()), now)
@@ -1424,10 +1508,7 @@ impl Daemon {
             // is the developer's to bring back.
             if ws.state == otter_core::WorkspaceState::Archived {
                 if ws.task_id.as_ref() != Some(&f.id) {
-                    return Some(format!(
-                        "{WAITING}{}: it's archived; unarchive it to go on",
-                        ws.name
-                    ));
+                    return Some(format!("{WAITING}{}{ARCHIVED}", ws.name));
                 }
                 let name = ws.name.clone();
                 drop(store);
@@ -1465,8 +1546,7 @@ impl Daemon {
                 .unwrap_or_else(|_| other.to_string());
             return Some(format!("{WAITING}{name}: “{title}” is working there"));
         }
-        busy_session
-            .map(|s| format!("{WAITING}{name}: {s}, an agent you started, is working there"))
+        busy_session.map(|s| format!("{WAITING}{name}: {s}{YOUR_AGENT}"))
     }
 
     /// The task waits for its workspace (D-079): said once, on the
@@ -1476,9 +1556,9 @@ impl Daemon {
             return Ok(());
         }
         self.controller_apply(&f.id, f.status, move |f, _| {
-            f.rationale.push(why.clone());
+            let event = f.reason(why.clone());
             f.status_reason = Some(why);
-            Ok(vec![])
+            Ok(vec![Change::new(event)])
         })
         .await?;
         Ok(())
@@ -1591,22 +1671,21 @@ impl Daemon {
                 .find(|d| &d.id == did)
                 .map(|d| (d.status, d.answer.clone()));
             self.controller_apply(&f.id, TaskStatus::Verifying, |f, _| {
-                match decided {
+                let why = match decided {
                     Some((DecisionStatus::Answered, Some(a))) if a == WITHOUT_CHECK => {
                         f.verify_command = None;
-                        f.rationale
-                            .push("Going on without the check, as you said.".into());
+                        Some(f.reason("Going on without the check, as you said."))
                     }
                     Some((DecisionStatus::Approved | DecisionStatus::Answered, _)) => {
-                        f.verify_approved = true
+                        f.verify_approved = true;
+                        None
                     }
                     _ => {
                         f.verify_command = None;
-                        f.rationale
-                            .push("The check wasn't allowed; judging without it.".into());
+                        Some(f.reason("The check wasn't allowed; judging without it."))
                     }
-                }
-                Ok(vec![])
+                };
+                Ok(why.into_iter().map(Change::new).collect())
             })
             .await?;
             return Ok(()); // The change wakes the next step.
@@ -1731,7 +1810,7 @@ impl Daemon {
             let mark = VerificationMark { fingerprint, unmet };
             if all_met {
                 f.last_verification = None;
-                f.rationale.push("Verified: every criterion is met.".into());
+                changes.push(Change::new(f.reason("Verified: every criterion is met.")));
                 let (m, c) = message(
                     MessageRole::Controller,
                     format!("Verified.\n{summary}"),
@@ -1755,9 +1834,9 @@ impl Daemon {
                 } else {
                     mark.unmet.join("; ")
                 };
-                f.rationale.push(format!(
+                changes.push(Change::new(f.reason(format!(
                     "Not verified: {unproven}; nothing changed after a fix"
-                ));
+                ))));
                 let (m, c) = message(
                     MessageRole::Controller,
                     format!(
@@ -1797,7 +1876,7 @@ impl Daemon {
                     last_error: None,
                     planning: false,
                 });
-                f.rationale.push(format!("Not verified: {fix}"));
+                changes.push(Change::new(f.reason(format!("Not verified: {fix}"))));
                 let (m, c) = message(
                     MessageRole::Controller,
                     format!("Not verified yet.\n{summary}\nNext: {fix}"),
@@ -2239,21 +2318,30 @@ impl Daemon {
                     Ok(ci) => dl.ci = ci,
                     Err(e) => tracing::warn!(task = %f.id, "reading CI: {e:#}"),
                 }
-                let failed: Vec<_> = dl
+                let mut failed: Vec<_> = dl
                     .ci
                     .iter()
                     .filter(|c| matches!(c.state.as_str(), "fail" | "cancel"))
                     .cloned()
                     .collect();
+                // In one order, whatever gh's, so failures compare (D-139).
+                failed.sort_by(|a, b| a.name.cmp(&b.name));
                 if !failed.is_empty() {
                     let mut text = String::new();
+                    let mut runs = std::collections::HashSet::new();
                     for c in &failed {
                         text.push_str(&format!(
                             "{}: {}\n",
                             c.name,
                             c.description.clone().unwrap_or_default()
                         ));
-                        if let Some(log) = gh.failed_log(c).await {
+                        // Checks of one run share its log: once.
+                        if c.url
+                            .as_deref()
+                            .and_then(GitHub::run_id)
+                            .is_some_and(|r| runs.insert(r))
+                            && let Some(log) = gh.failed_log(c).await
+                        {
                             text.push_str(&log);
                             text.push('\n');
                         }
@@ -2289,7 +2377,9 @@ impl Daemon {
                             .find(|e| e.kind == EvidenceKind::Ci && e.ok == Some(false));
                         let same = last.is_some_and(|e| {
                             e.title == title
-                                && e.detail.as_deref().map(str::trim) == Some(text.trim())
+                                && e.detail
+                                    .as_deref()
+                                    .is_some_and(|d| delivery::same_ci_failure(d, &text))
                         });
                         let fixed = f
                             .steps
@@ -2385,12 +2475,14 @@ impl Daemon {
                 f.evidence.push(e);
             }
             for n in &notes {
-                f.rationale.push(n.clone());
+                changes.push(Change::new(f.reason(n.clone())));
                 let (m, c) = message(MessageRole::Controller, n.clone(), None);
                 f.messages.push(m);
                 changes.push(c);
             }
-            f.rationale.extend(rationale.iter().cloned());
+            for r in &rationale {
+                changes.push(Change::new(f.reason(r.clone())));
+            }
             f.gates = gates.clone();
             if let Some(fix) = &remediation {
                 let id = StepId::generate();
@@ -2407,7 +2499,7 @@ impl Daemon {
                     planning: false,
                 });
                 f.report = None;
-                f.rationale.push("CI failed: back to implementing.".into());
+                changes.push(Change::new(f.reason("CI failed: back to implementing.")));
                 changes.push(Change::new(TaskEvent::StepChanged { step_id: id, status: StepStatus::Pending }));
                 changes.push(Change::new(
                     f.transition(TaskStatus::Implementing, Some("CI failed".into()), now)
@@ -2753,7 +2845,9 @@ pub(crate) fn intent_step(
             };
             match crate::tasks::apply_action(f, &accept, authority, now) {
                 Ok(c) => changes.extend(c),
-                Err(e) => f.rationale.push(format!("Not done yet: {}", e.message)),
+                Err(e) => changes.push(Change::new(
+                    f.reason(format!("Not done yet: {}", e.message)),
+                )),
             }
             None
         }
@@ -3112,6 +3206,18 @@ mod tests {
     use otter_core::RunId;
     use otter_core::task::Run;
 
+    #[tokio::test]
+    async fn a_panic_in_a_step_is_an_error_like_any_other() {
+        let panicked = contained(async { panic!("byte index 15 is not a char boundary") }).await;
+        let e = panicked.expect("not cancelled").unwrap_err();
+        assert!(
+            e.message.contains("otterd's log says where"),
+            "{}",
+            e.message
+        );
+        assert!(matches!(contained(async { Ok(()) }).await, Some(Ok(()))));
+    }
+
     fn task_with_runs(summaries: &[(&str, RunState)]) -> Task {
         let mut f = Task::new("t".into(), "r".into(), Utc::now());
         let step = StepId::generate();
@@ -3126,6 +3232,9 @@ mod tests {
                 summary: Some((*s).into()),
                 provider_session_id: None,
                 activity: vec![],
+                activity_at: vec![],
+                heard_at: None,
+                tools_running: 0,
                 conversation_id: None,
                 turn_id: None,
                 worked_ms: 0,

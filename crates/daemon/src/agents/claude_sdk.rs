@@ -596,15 +596,20 @@ impl SdkRun {
     }
 
     fn stderr_tail(&self) -> String {
-        let t = self.tail.lock().unwrap();
-        let t = t.trim();
+        let tail = self.tail.lock().unwrap();
+        // Node's warnings are printed on every start: not why it failed.
+        let t: Vec<&str> = tail
+            .lines()
+            .filter(|l| !l.trim().is_empty() && !super::node_warning(l))
+            .collect();
+        let t = t.join("\n");
         if t.is_empty() {
             "no diagnostics".into()
         } else {
             // Whatever the worker printed, never a credential (D-075).
             format!(
                 "worker diagnostics: {}",
-                super::excerpt(&otter_core::redact::redact(t), 1500)
+                super::excerpt(&otter_core::redact::redact(&t), 1500)
             )
         }
     }
@@ -1055,7 +1060,12 @@ mod tests {
         let msg = format!("{err:#}");
         assert!(msg.contains("no credentials"), "{msg}");
         assert!(msg.contains("diagnostic line"), "stderr is kept: {msg}");
-        // …but not a credential in it (D-075).
+        // …not Node's warnings, which say nothing about it (D-140)…
+        assert!(
+            !msg.contains("SHADOWED") && !msg.contains("trace-warnings"),
+            "{msg}"
+        );
+        // …and not a credential in it (D-075).
         assert!(!msg.contains("WORKERLEAK"), "{msg}");
         assert!(msg.contains("ANTHROPIC_API_KEY=***"), "{msg}");
     }

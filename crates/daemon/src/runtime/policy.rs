@@ -115,12 +115,6 @@ const CREDENTIALS: &[&str] = &[
     "aws configure",
     "gcloud auth",
     "printenv",
-    ".ssh/",
-    "id_rsa",
-    "id_ed25519",
-    // Otter's own: its key, its gh's token, the host's secrets (D-133).
-    ".otter/state",
-    "gh/hosts.yml",
     "password",
     "secret",
     "token",
@@ -129,6 +123,16 @@ const CREDENTIALS: &[&str] = &[
     "_password",
     "api_key",
     "apikey",
+];
+/// Credentials by the files they're in: read on the whole piece, whatever
+/// the command (D-138) — a key copied into the workspace is still a key.
+const CREDENTIAL_FILES: &[&str] = &[
+    ".ssh",
+    "id_rsa",
+    "id_ed25519",
+    // Otter's own: its key, its gh's token, the host's secrets (D-133).
+    ".otter/state",
+    "gh/hosts.yml",
     "credentials",
 ];
 /// Commands that push, publish or deploy.
@@ -191,7 +195,8 @@ fn worst(a: Verdict, b: Verdict) -> Verdict {
 }
 
 /// A command line's pieces: split at `;`, `&&`, `||`, `|`, `&` and
-/// newlines; what `$(…)` and backticks run is a piece of its own too.
+/// newlines; what `$(…)`, `<(…)`, `>(…)` and backticks run is a piece of
+/// its own too.
 /// Lexical: quotes aren't understood.
 fn pieces(line: &str) -> Vec<String> {
     let mut out = Vec::new();
@@ -202,7 +207,8 @@ fn pieces(line: &str) -> Vec<String> {
     let chars: Vec<char> = line.chars().collect();
     let mut i = 0;
     while i < chars.len() {
-        if chars[i] == '$' && chars.get(i + 1) == Some(&'(') {
+        // `<(…)` and `>(…)` run what's inside too.
+        if matches!(chars[i], '$' | '<' | '>') && chars.get(i + 1) == Some(&'(') {
             let mut depth = 1;
             let mut j = i + 2;
             while j < chars.len() && depth > 0 {
@@ -343,9 +349,107 @@ fn deletes_inside(piece: &str, cwd: &Path, root: &Path) -> bool {
         })
 }
 
+/// Commands that only read or search what they're given.
+const READERS: &[&str] = &[
+    "grep", "egrep", "fgrep", "rg", "ag", "ack", "cat", "head", "tail", "wc", "ls", "tree", "stat",
+    "file", "diff", "find",
+];
+/// Git's commands that only read.
+const GIT_READERS: &[&str] = &[
+    "log", "show", "diff", "grep", "blame", "status", "shortlog", "ls-files",
+];
+/// Test runners, whose operands pick tests by name.
+const TESTERS: &[(&str, &str)] = &[("cargo", "test"), ("go", "test"), ("pytest", "")];
+/// What `find` may do besides reading.
+const FIND_ACTS: &[&str] = &[
+    "-delete", "-exec", "-execdir", "-ok", "-okdir", "-fprint", "-fprint0", "-fprintf", "-fls",
+];
+/// Options of those that run a program, write a file or bring in another
+/// project or configuration.
+const ACTING_OPTIONS: &[&str] = &[
+    "--pre",
+    "--pager",
+    "-exec",
+    "-toolexec",
+    "--config",
+    "--manifest-path",
+    "--output",
+    "--ext-diff",
+    "--textconv",
+    "-O",
+    "--open-files-in-pager",
+];
+
+/// What of a piece the word lists read (D-138): all of it, unless it only
+/// reads, searches or tests the workspace (`grep -rn token src`, `git log
+/// --grep delete`, `cat docs/deploy.md`, `cargo test prune_old`) — then just
+/// the command, since what it looks for and the names of the files it reads
+/// aren't what it does. All of it, too, when anything could make it do more:
+/// an environment set for it, a substitution, a redirection from a file, a
+/// variable, an option that runs or writes something, or an operand or an
+/// option's value outside the workspace (or scratch).
+fn doing(piece: &str, cwd: &Path, root: &Path) -> String {
+    let whole = piece.to_owned();
+    let words: Vec<&str> = piece.split_whitespace().collect();
+    let Some((cmd, rest)) = words.split_first().filter(|(c, _)| !c.contains('=')) else {
+        return whole;
+    };
+    let (command, operands) = match (*cmd, rest.split_first()) {
+        ("git", Some((sub, rest))) if GIT_READERS.contains(sub) => (format!("git {sub}"), rest),
+        (c, Some((sub, rest))) if TESTERS.contains(&(c, *sub)) => (format!("{c} {sub}"), rest),
+        (c, _) if READERS.contains(&c) || TESTERS.contains(&(c, "")) => (c.to_owned(), rest),
+        _ => return whole,
+    };
+    let stays = |op: &str| {
+        target(cwd, op).is_some_and(|p| inside(root, &p.to_string_lossy()) || scratch(&p))
+    };
+    let only_reads = operands.iter().all(|w| {
+        // Quoted or escaped, an option is still an option (`"--pre=x"`).
+        let w = unquoted(w);
+        let w = w.as_str();
+        !w.contains(['<', '(', ')', '$', '`'])
+            && !(*cmd == "find" && FIND_ACTS.contains(&w))
+            && match (w.starts_with('-'), w.split_once('=')) {
+                (true, Some((name, value))) => !acting(name) && stays(value),
+                (true, None) => !acting(w) && !w.contains(['/', '~']),
+                // `cache_dir=/elsewhere`: both sides stay.
+                (false, Some((name, value))) => stays(name) && stays(value),
+                (false, None) => stays(w),
+            }
+    });
+    if only_reads { command } else { whole }
+}
+
+/// A word as the shell passes it, roughly: its quotes and backslashes go
+/// (`\-\-pre`, `-ex''ec`, `"--pre"=x`, `\/etc`), so that spelling a word
+/// differently doesn't make it another (D-138).
+fn unquoted(w: &str) -> String {
+    w.chars()
+        .filter(|c| !matches!(c, '"' | '\'' | '\\'))
+        .collect()
+}
+
+/// A piece's text for the word lists, as written and as the shell passes
+/// it, a line each: `dele''te` is `delete`, and `-O"sudo"` still says
+/// `sudo`.
+fn both_ways(text: &str) -> String {
+    format!("{text}\n{}", unquoted(text))
+}
+
+/// An option that runs, writes or brings in something: one of
+/// `ACTING_OPTIONS` with one dash or two (Go takes either), or a short one
+/// with its value glued on (`-Ox`).
+fn acting(option: &str) -> bool {
+    let name = option.trim_start_matches('-');
+    ACTING_OPTIONS
+        .iter()
+        .any(|a| name == a.trim_start_matches('-') || (a.len() == 2 && option.starts_with(a)))
+}
+
 /// Where a path written by a command points, from `cwd` (`~` is home).
 fn target(cwd: &Path, path: &str) -> Option<std::path::PathBuf> {
-    let path = path.trim_matches(|c| c == '"' || c == '\'');
+    let path = unquoted(path);
+    let path = path.as_str();
     if path.is_empty() || path.contains('$') || path.starts_with('&') {
         // A variable or a descriptor: can't tell, or not a file.
         return None;
@@ -411,6 +515,17 @@ fn writes_outside(piece: &str, cwd: &Path, root: &Path) -> Option<String> {
             ),
             _ => {}
         }
+        // `git log --output=f` (or `--output f`) and the like.
+        for (i, w) in rest.iter().enumerate() {
+            let w = w.trim_matches(|c| c == '"' || c == '\'');
+            if let Some(t) = w.strip_prefix("--output=") {
+                targets.push(t.to_owned());
+            } else if w == "--output"
+                && let Some(t) = rest.get(i + 1)
+            {
+                targets.push((*t).to_owned());
+            }
+        }
     }
     targets.into_iter().find(|t| {
         target(cwd, t).is_some_and(|p| {
@@ -435,8 +550,13 @@ fn classify_command(line: &str, root: &Path) -> Verdict {
     for piece in pieces(line) {
         // Deleting the work's own files is routine (D-066).
         let routine_delete = deletes_inside(&piece, &cwd, root);
-        verdict = worst(verdict, classify_words(&piece, routine_delete));
-        if let Some(f) = names_secrets_file(&piece) {
+        verdict = worst(
+            verdict,
+            classify_words(&both_ways(&doing(&piece, &cwd, root)), routine_delete),
+        );
+        if let Some(f) = names_secrets_file(&piece)
+            .or_else(|| mentions_any(&both_ways(&piece).to_lowercase(), CREDENTIAL_FILES))
+        {
             verdict = worst(verdict, ask_user(format!("touches credentials (`{f}`)")));
         }
         let words: Vec<&str> = piece.split_whitespace().collect();
@@ -487,7 +607,9 @@ fn never(line: &str) -> Verdict {
 /// only the work's own files, which isn't destroying anything.
 fn classify_words(line: &str, routine_delete: bool) -> Verdict {
     let lower = line.to_lowercase();
-    let never = never(line);
+    // What no one may allow, as written: `grep -rn "rm -rf /" docs` only
+    // looks for it.
+    let never = never(line.lines().next().unwrap_or_default());
     if severity(&never) == 3 {
         return never;
     }
@@ -647,8 +769,12 @@ pub fn grant(call: &ToolCall, root: &Path) -> Option<String> {
         ToolCall::Command { line } => {
             let mut cwd = root.to_path_buf();
             for piece in pieces(line) {
-                if classify_words(&piece, deletes_inside(&piece, &cwd, root)) != Verdict::Allow
+                if classify_words(
+                    &both_ways(&doing(&piece, &cwd, root)),
+                    deletes_inside(&piece, &cwd, root),
+                ) != Verdict::Allow
                     || names_secrets_file(&piece).is_some()
+                    || mentions_any(&both_ways(&piece).to_lowercase(), CREDENTIAL_FILES).is_some()
                 {
                     return None;
                 }
@@ -805,6 +931,7 @@ mod tests {
             "echo x>/etc/hosts",
             "make 2> ~/err.log",
             "cp build/app /usr/local/bin/app",
+            r"cp x \/etc/cron.d/y",
             "mv out.txt ../out.txt",
             "tee ~/copy.txt < in.txt",
             "touch ~/flag",
@@ -901,7 +1028,13 @@ mod tests {
     fn destructive_credential_and_production_actions_need_the_developer() {
         for line in [
             "rm -rf ../build",
+            r"rm -rf \/home/u/x",
+            r"rm -rf \~/Documents",
             "rm ~/notes.txt",
+            // Looking for what no one may do is the developer's to allow,
+            // not never (D-138).
+            "grep -rn \"rm -rf /\" docs",
+            "echo 'rm -rf /' > notes.txt",
             "rmdir /opt/old",
             "rm -rf .",
             "rm -rf *",
@@ -1072,6 +1205,108 @@ mod tests {
         ] {
             assert!(is_user_only(&cmd(line)), "{line}: {:?}", cmd(line));
         }
+    }
+
+    /// What a command reads, searches or tests by name isn't what it does
+    /// (D-138): the word lists read the command, not its patterns or the
+    /// workspace's files.
+    #[test]
+    fn looking_for_a_risky_word_is_not_doing_it() {
+        for line in [
+            "grep -rn token src",
+            "rg -i 'delete from' crates/",
+            "grep -rn \"password\" . | head -20",
+            "git log --grep delete --oneline",
+            "git log -S password -p -- src/auth",
+            "git grep -n prune",
+            "git show HEAD:src/deploy.rs",
+            "cat docs/deploy.md",
+            "ls deploy/ && tree secrets",
+            "find . -name '*token*'",
+            "cargo test prune_old_branches",
+            "cargo test -p otterd delete -- --nocapture",
+            "go test -run TestDeploy ./...",
+            "pytest -k truncate tests/",
+            "cd src && grep -n destroy lib.rs",
+            "git log --grep=delete --oneline",
+            "rg -n token --glob=src/*.rs 2>/dev/null",
+            "git log --output=/tmp/log.txt",
+        ] {
+            assert_eq!(cmd(line), Verdict::Allow, "{line}");
+        }
+        for line in [
+            // Doing it, not looking for it.
+            "git restore src/",
+            "git push origin main",
+            "kubectl delete pod web",
+            "bash scripts/deploy.sh",
+            "find . -name '*.log' -delete",
+            "find . -name x -exec rm {} ;",
+            // Reaching outside the workspace, or through a variable.
+            "grep -r password ~/.aws",
+            "cat ~/.ssh/id_ed25519",
+            "grep -rn token ../other-repo",
+            "grep $API_TOKEN src",
+            "cat /etc/app/password.txt",
+            // Secrets files by name, as before (D-066).
+            "grep -n password .env",
+            "echo $GITHUB_TOKEN",
+            // What a substitution runs, a redirection from a file.
+            "diff <(git push origin main) README",
+            "cat <(kubectl delete pod web)",
+            "cat <(printenv)",
+            "cat <~/.ssh/id_rsa",
+            // Options that reach outside, run a program or bring in more.
+            "diff --to-file=/home/u/.ssh/id_rsa README",
+            "grep --file=/home/u/.aws/credentials -o -r .",
+            "cat -f/home/u/.ssh/id_rsa",
+            "git log --output=/home/u/.ssh/authorized_keys",
+            "git log --output=/home/u/notes.txt",
+            "cargo test --manifest-path=/home/u/secret/Cargo.toml",
+            "cargo test --config build.rustc-wrapper=sudo",
+            "go test -exec sudo ./...",
+            "go test -toolexec sudo ./...",
+            "rg --pre sudo x .",
+            "rg --pre=./deploy.sh x .",
+            "ack --pager=./deploy.sh x",
+            // Quoted, an option is still one.
+            "rg \"--pre=./deploy.sh\" x .",
+            "rg '--pre=sudo' x .",
+            "go test '-exec' sudo ./...",
+            "cargo test '--manifest-path=/home/u/secret/Cargo.toml'",
+            "find . -name '*.log' \"-delete\"",
+            "diff \"--to-file=/etc/app/password.txt\" README",
+            "git log --output /home/u/notes.txt",
+            // A value elsewhere, after a key.
+            "pytest -o cache_dir=/etc/app/password tests/",
+            // Quoted or escaped inside the word.
+            r"rg \-\-pre=./deploy.sh x .",
+            "rg --\"pre\"=sudo x .",
+            "go test -ex''ec sudo ./...",
+            "go test --toolexec sudo ./...",
+            "go test --toolexec=sudo ./...",
+            // Spelled apart, a word is still that word.
+            "kubectl dele''te pod web",
+            "git pu\"sh\" origin main",
+            r"cat /etc/app/pass\word.txt",
+            r"find . -name x \-delete",
+            "git grep -O\"sudo\" x",
+            r"cat \/etc/app/password.txt",
+            r"pytest -o cache_dir=\/etc/app/password tests/",
+            // An environment set for it.
+            "GIT_DIR=/home/u/secret/.git git log -p",
+            "GIT_EXTERNAL_DIFF=./deploy.sh git diff --ext-diff",
+            // A key copied in is still a key.
+            "cp -r ~/.ssh keys && cat keys/id_rsa",
+            "cp -r ~/.aws . && cat .aws/credentials",
+        ] {
+            assert!(is_user_only(&cmd(line)), "{line}: {:?}", cmd(line));
+        }
+        // And nothing that does it is granted for the task.
+        let root = Path::new("/home/u/.otter/workspaces/ws_1");
+        let line = |l: &str| grant(&ToolCall::Command { line: l.into() }, root);
+        assert_eq!(line("git restore src/"), None);
+        assert_eq!(line("grep -r password ~/.aws"), None);
     }
 
     #[test]
