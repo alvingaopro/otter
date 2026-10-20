@@ -698,8 +698,12 @@ impl Daemon {
             Found::Nothing {
                 locked: Some(reason),
             } if reason != "initializing" => bail!(
-                "{} is gone, and its worktree is locked ({reason}): unlock it (git worktree unlock) to make it again here, or delete the workspace",
-                root.display()
+                "{} is gone, and its worktree is locked{}: unlock it (git worktree unlock) to make it again here, or delete the workspace",
+                root.display(),
+                match reason.as_str() {
+                    "" => String::new(),
+                    r => format!(" ({r})"),
+                }
             ),
             Found::Other => bail!(
                 "{} holds files but no worktree of {}: move them away, or delete the workspace",

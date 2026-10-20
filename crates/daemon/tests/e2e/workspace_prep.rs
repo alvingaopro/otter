@@ -393,10 +393,15 @@ async fn a_delete_doesnt_hold_up_the_host() {
 
 /// A delete that fails after it stopped the preparation leaves the
 /// workspace failed, saying why — not preparing with nothing preparing it
-/// — so it can be deleted again, or prepared again.
+/// — so it can be deleted again, or prepared again. (A directory it may not
+/// write makes it fail, so not as root.)
 #[tokio::test]
 async fn a_delete_that_fails_mid_way_leaves_the_workspace_failed() {
     use std::os::unix::fs::PermissionsExt;
+    if unsafe { libc::geteuid() } == 0 {
+        eprintln!("skipping: root may remove anything");
+        return;
+    }
     let scratch = tempfile::Builder::new().prefix("wdg").tempdir().unwrap();
     let host = slow_git_host(scratch.path(), "fetch", None).await;
     let src = make_repo(&host, "src", &[("README.md", "hello\n")]);

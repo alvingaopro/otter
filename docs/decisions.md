@@ -4576,7 +4576,8 @@ checkout, which hardly ever finish that soon, so the app's dialog sat on
   controller, so a task given a worktree of its own (D-080) steps on at
   once. A task whose workspace failed to prepare waits, saying why
   ("preparing it failed (…); prepare it again to go on"), rather than
-  starting its agent there.
+  starting its agent there. That includes an environment that failed
+  (D-011) over a worktree that is fine, where a task used to run anyway.
 - **A `git worktree add -b` that fails** deletes the branch git made for it,
   so trying again doesn't take `-2`, `-3`.
 - **Verified:** e2e tests in `crates/daemon/tests/e2e/workspace_prep.rs`.
