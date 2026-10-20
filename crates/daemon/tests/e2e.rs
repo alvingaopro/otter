@@ -2809,8 +2809,6 @@ async fn a_command_that_completes_on_screen_is_already_seen() {
         } else {
             &[AttentionKind::Completion]
         };
-        let log = std::fs::read_to_string(host.home().join("logs/workd.log")).unwrap_or_default();
-        eprintln!("LOG:\n{log}");
         assert_eq!(kinds(ws).await, want, "{ws}");
     }
 }
