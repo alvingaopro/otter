@@ -28,6 +28,8 @@ mod memory;
 mod otter_turn;
 #[path = "e2e/provider_turn.rs"]
 mod provider_turn;
+#[path = "e2e/workspace_prep.rs"]
+mod workspace_prep;
 
 struct TestHost {
     dir: tempfile::TempDir,

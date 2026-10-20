@@ -100,18 +100,17 @@ impl GitManager {
         self.repos_dir.join(repo_id).join("base")
     }
 
+    /// Whether the backing repository is there, so preparing only fetches.
+    pub fn cloned(&self, repo_id: &str) -> bool {
+        self.base_dir(repo_id).join("HEAD").exists()
+    }
+
     /// Make sure the backing repository exists and is up to date.
-    pub async fn sync_repo(
-        &self,
-        repository: &str,
-        repo_id: &str,
-        progress: impl Fn(&str),
-    ) -> Result<PathBuf> {
+    pub async fn sync_repo(&self, repository: &str, repo_id: &str) -> Result<PathBuf> {
         let lock = self.lock_for(repo_id);
         let _guard = lock.lock().await;
         let base = self.base_dir(repo_id);
         if !base.join("HEAD").exists() {
-            progress("cloning repository");
             std::fs::create_dir_all(base.parent().unwrap())?;
             let tmp = base.with_extension("partial");
             let _ = std::fs::remove_dir_all(&tmp);
@@ -141,7 +140,6 @@ impl GitManager {
             std::fs::rename(&tmp, &base)?;
         }
         self.include(&base).await?;
-        progress("fetching");
         self.git(Some(&base), &["fetch", "--prune", "origin"])
             .await
             .context("git fetch failed")?;
@@ -227,12 +225,27 @@ impl GitManager {
             Some(b) => b.to_owned(),
             None => self.unused_branch_name(&repo, default_branch).await,
         };
-        self.git(
-            Some(&repo),
-            &["worktree", "add", "-b", &new_branch, &path_s, &base_commit],
-        )
-        .await
-        .context("git worktree add failed")?;
+        if let Err(e) = self
+            .git(
+                Some(&repo),
+                &["worktree", "add", "-b", &new_branch, &path_s, &base_commit],
+            )
+            .await
+        {
+            // git makes the branch first and keeps it when the worktree
+            // fails, so each retry would take the next name (D-135). It is
+            // this call's: a name in use is never picked, and none appears
+            // meanwhile under this lock.
+            if self
+                .ref_exists(&repo, &format!("refs/heads/{new_branch}"))
+                .await
+            {
+                let _ = self
+                    .git(Some(&repo), &["branch", "-D", "--", &new_branch])
+                    .await;
+            }
+            return Err(e.context("git worktree add failed"));
+        }
         Ok(Checkout {
             branch: new_branch,
             base,
@@ -240,20 +253,84 @@ impl GitManager {
         })
     }
 
-    /// Remove a worktree (discarding uncommitted changes). The branch is kept.
-    pub async fn remove_worktree(&self, repo_id: &str, path: &Path) -> Result<()> {
+    /// Remove the worktree at `path` (discarding uncommitted changes) and
+    /// whatever else is there. The branch it had checked out is kept, and
+    /// returned. Locked ones go too — a checkout cut short leaves its
+    /// worktree locked "initializing" — and so does the registration of one
+    /// whose directory went missing (D-135). `path` is Otter's own, under
+    /// `~/.otter/workspaces`.
+    pub async fn remove_worktree(&self, repo_id: &str, path: &Path) -> Result<Option<String>> {
         let lock = self.lock_for(repo_id);
         let _guard = lock.lock().await;
         let repo = self.base_dir(repo_id);
-        if path.exists() {
-            self.git(
-                Some(&repo),
-                &["worktree", "remove", "--force", &path_str(path)],
-            )
-            .await?;
-        }
+        let branch = match self.registered(&repo, path).await? {
+            Some(branch) => {
+                // Twice: locked ones too.
+                self.git(
+                    Some(&repo),
+                    &["worktree", "remove", "--force", "--force", &path_str(path)],
+                )
+                .await?;
+                branch
+            }
+            None => None,
+        };
         self.git(Some(&repo), &["worktree", "prune"]).await?;
-        Ok(())
+        // One git doesn't know: a checkout cut short before it wrote `.git`.
+        match tokio::fs::remove_dir_all(path).await {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
+                Err(e).with_context(|| format!("removing {}", path.display()))
+            }
+            _ => Ok(branch),
+        }
+    }
+
+    /// Whether a worktree is registered at `path`, and the branch it has
+    /// checked out.
+    async fn registered(&self, repo: &Path, path: &Path) -> Result<Option<Option<String>>> {
+        let list = self
+            .git(Some(repo), &["worktree", "list", "--porcelain"])
+            .await?;
+        let want = real(path);
+        Ok(list
+            .split("\n\n")
+            .find(|entry| {
+                entry
+                    .lines()
+                    .next()
+                    .and_then(|l| l.strip_prefix("worktree "))
+                    .is_some_and(|p| real(Path::new(p)) == want)
+            })
+            .map(|entry| {
+                entry
+                    .lines()
+                    .find_map(|l| l.strip_prefix("branch refs/heads/"))
+                    .map(str::to_owned)
+            }))
+    }
+
+    /// Delete `branch` if nothing is on it: no remote branch has its name,
+    /// and it holds no commit a remote lacks. What `git worktree add -b`
+    /// made for a checkout that was cut short, so that making it again takes
+    /// the same name (D-135).
+    pub async fn drop_empty_branch(&self, repo_id: &str, branch: &str) {
+        let lock = self.lock_for(repo_id);
+        let _guard = lock.lock().await;
+        let repo = self.base_dir(repo_id);
+        if branch.is_empty()
+            || !self
+                .ref_exists(&repo, &format!("refs/heads/{branch}"))
+                .await
+            || self
+                .ref_exists(&repo, &format!("refs/remotes/origin/{branch}"))
+                .await
+            || !matches!(self.unpushed_in(&repo, branch).await, Ok(0))
+        {
+            return;
+        }
+        if let Err(e) = self.git(Some(&repo), &["branch", "-D", "--", branch]).await {
+            tracing::warn!(repo_id, branch, "keeping the branch: {e:#}");
+        }
     }
 
     /// Commits on `branch` that no remote-tracking branch has: what deleting
@@ -363,10 +440,20 @@ impl GitManager {
 
     /// Remove the backing repository once no workspace uses it (D-108) —
     /// unless a branch in it still holds commits on no remote (one kept by
-    /// a delete from before, say): then it stays, with that work.
-    pub async fn remove_repo(&self, repo_id: &str) -> Result<bool> {
+    /// a delete from before, say): then it stays, with that work. `in_use`
+    /// is awaited with this repository's lock held, so a workspace being
+    /// made on it is either counted or fetches only once the copy is gone
+    /// (D-135).
+    pub async fn remove_repo(
+        &self,
+        repo_id: &str,
+        in_use: impl Future<Output = bool>,
+    ) -> Result<bool> {
         let lock = self.lock_for(repo_id);
         let _guard = lock.lock().await;
+        if in_use.await {
+            return Ok(false);
+        }
         let repo = self.base_dir(repo_id);
         if repo.join("HEAD").exists() {
             self.drop_cloned_branches(&repo).await;
@@ -388,10 +475,12 @@ impl GitManager {
             }
         }
         let dir = self.repos_dir.join(repo_id);
-        if dir.exists() {
-            std::fs::remove_dir_all(&dir).with_context(|| format!("removing {}", dir.display()))?;
+        match tokio::fs::remove_dir_all(&dir).await {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
+                Err(e).with_context(|| format!("removing {}", dir.display()))
+            }
+            _ => Ok(true),
         }
-        Ok(true)
     }
 
     /// A repository cloned before D-132 holds a copy of each branch the
@@ -533,13 +622,49 @@ impl GitManager {
             .env_clear()
             .envs(&self.env)
             .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            // Its own process group, ended whole when this is dropped (a
+            // preparation cancelled, otterd stopping): `worktree add` checks
+            // out in a child that would go on writing into the tree (D-135).
+            .process_group(0)
             .kill_on_drop(true);
-        let out = cmd.output().await.context("running git")?;
+        let child = cmd.spawn().context("running git")?;
+        let mut group = Group(child.id());
+        let out = child.wait_with_output().await.context("running git")?;
+        group.0 = None;
         if !out.status.success() {
             let stderr = String::from_utf8_lossy(&out.stderr);
             bail!("{}", redact_credentials(stderr.trim()));
         }
         Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+    }
+}
+
+/// The process group a running git leads, killed if it is dropped before
+/// git is done (D-135).
+struct Group(Option<u32>);
+
+impl Drop for Group {
+    fn drop(&mut self) {
+        if let Some(leader) = self.0 {
+            // SAFETY: a plain signal to the group this git leads. Not yet
+            // waited for, or waited for while its children still hold its
+            // output open: either way the group's id is still its own.
+            unsafe { libc::killpg(leader as libc::pid_t, libc::SIGKILL) };
+        }
+    }
+}
+
+/// `p` with symbolic links resolved, as git records a worktree's path; for
+/// one that no longer exists, its nearest existing ancestor's.
+fn real(p: &Path) -> PathBuf {
+    if let Ok(r) = std::fs::canonicalize(p) {
+        return r;
+    }
+    match (p.parent(), p.file_name()) {
+        (Some(parent), Some(name)) => real(parent).join(name),
+        _ => p.to_owned(),
     }
 }
 
@@ -623,6 +748,57 @@ mod tests {
             "fix-gcp-renewal-validation"
         );
         assert_eq!(slug("  scratch!! "), "scratch");
+    }
+
+    /// A `git worktree add -b` that fails takes back the branch git made
+    /// for it, so trying again takes the same name, not `-2` (D-135).
+    #[tokio::test]
+    async fn a_failed_worktree_leaves_no_branch_behind() {
+        let dir = tempfile::tempdir().unwrap();
+        let origin = dir.path().join("origin");
+        std::fs::create_dir_all(&origin).unwrap();
+        let run = |args: &[&str]| {
+            let out = std::process::Command::new("git")
+                .arg("-C")
+                .arg(&origin)
+                .args(["-c", "user.name=t", "-c", "user.email=t@t"])
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(out.status.success(), "git {args:?}: {out:?}");
+        };
+        run(&["init", "-q", "-b", "main"]);
+        std::fs::write(origin.join("a.txt"), "a\n").unwrap();
+        run(&["add", "."]);
+        run(&["commit", "-q", "-m", "first"]);
+        let account = Arc::new(crate::git_account::GitAccount::load(
+            &dir.path().join("state"),
+        ));
+        let env = std::env::vars().collect();
+        let git = GitManager::new(dir.path().join("repos"), &env, account);
+        git.sync_repo(&path_str(&origin), "r").await.unwrap();
+        let repo = git.base_dir("r");
+
+        // Something in the way: git makes the branch, then fails.
+        let path = dir.path().join("ws/repo");
+        std::fs::create_dir_all(&path).unwrap();
+        std::fs::write(path.join("in-the-way"), "").unwrap();
+        let made = git.add_worktree("r", &path, None, None, "otterd/x").await;
+        assert!(made.is_err());
+        assert!(!git.ref_exists(&repo, "refs/heads/otterd/x").await);
+        // Asked for by name and not there: the same.
+        let made = git
+            .add_worktree("r", &path, Some("topic"), None, "otterd/x")
+            .await;
+        assert!(made.is_err());
+        assert!(!git.ref_exists(&repo, "refs/heads/topic").await);
+
+        std::fs::remove_dir_all(&path).unwrap();
+        let checkout = git
+            .add_worktree("r", &path, None, None, "otterd/x")
+            .await
+            .unwrap();
+        assert_eq!(checkout.branch, "otterd/x");
     }
 
     #[test]
