@@ -44,14 +44,17 @@ fn edit_record(host: &TestHost, name: &str, edit: impl FnOnce(&mut serde_json::V
     std::fs::write(&file, serde_json::to_string_pretty(&state).unwrap()).unwrap();
 }
 
-/// The copy's registration of the worktree at `root`.
+/// The copy's registration of the worktree at `root`. Compared as real
+/// paths: git writes them resolved (on macOS `/var` is `/private/var`).
 fn registration(base: &Path, root: &str) -> std::path::PathBuf {
+    let real = |p: &Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_owned());
+    let want = real(&Path::new(root).join(".git"));
     std::fs::read_dir(base.join("worktrees"))
         .unwrap()
         .map(|e| e.unwrap().path())
         .find(|d| {
             std::fs::read_to_string(d.join("gitdir"))
-                .is_ok_and(|g| g.trim() == format!("{root}/.git"))
+                .is_ok_and(|g| real(Path::new(g.trim())) == want)
         })
         .unwrap_or_else(|| panic!("no registration of {root}"))
 }
@@ -283,10 +286,20 @@ async fn a_task_on_a_failed_workspace_says_why_and_waits() {
 /// `git` itself is killed.
 fn slow_git(dir: &Path) -> String {
     use std::os::unix::fs::PermissionsExt;
+    // Git itself, from its exec path: `/usr/bin/git` on macOS is a stand-in
+    // that may look `git` up on PATH again — and find this one, forever.
     let path = std::env::var_os("PATH").unwrap_or_default();
-    let real = std::env::split_paths(&path)
-        .map(|d| d.join("git"))
-        .find(|g| g.is_file())
+    let real = std::process::Command::new("git")
+        .arg("--exec-path")
+        .output()
+        .ok()
+        .map(|o| Path::new(String::from_utf8_lossy(&o.stdout).trim()).join("git"))
+        .filter(|g| g.is_file())
+        .or_else(|| {
+            std::env::split_paths(&path)
+                .map(|d| d.join("git"))
+                .find(|g| g.is_file())
+        })
         .expect("git on PATH");
     let bin = dir.join("slowbin");
     std::fs::create_dir_all(&bin).unwrap();
