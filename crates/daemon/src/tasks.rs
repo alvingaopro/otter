@@ -635,8 +635,9 @@ pub fn apply_action(
                         open.join(", ")
                     )));
                 }
-                f.rationale
-                    .push(format!("Accepted by you despite: {}", open.join(", ")));
+                changes.push(Change::new(
+                    f.reason(format!("Accepted by you despite: {}", open.join(", "))),
+                ));
             }
             for g in &mut f.gates {
                 if g.name == crate::delivery::ACCEPTANCE_GATE {

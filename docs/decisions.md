@@ -4517,3 +4517,61 @@ bench (B01: the worker SIGKILLed mid-turn).
   `a_failing_worker_says_why` keeps its diagnostic line and drops the
   warning. The worker's `map.test.ts` maps an interrupt carrying that
   diagnostic to no summary. Each fails against the code before.
+
+## D-141 — A task says when it was last heard from, and what comes next (2026-10-20)
+
+A review of a proposed "Execution Observability Layer" (a second,
+derived state machine with its own Loop States, Health ratings and a
+`ControlDecision` store) found most of it built: the derived activity
+(D-071), the run's activity lines (D-069), Otter's reasons
+(`rationale`), the task's history (D-043, D-114) and the watchdog's
+pulse (D-063). What a developer couldn't see was *when*: an activity line
+had no time, the watchdog's last-heard stayed in otterd, the reasons were
+a list with no times outside the history, and nothing said what the
+engine would do next. Four additions, all compatible (no protocol bump),
+no new state:
+
+- **Each activity line has its time** — `Run.activity_at`, as many as
+  `activity`, or none on runs from before; `TaskActivity` carries `at`.
+  The conversation's working bubble shows each line's age.
+- **When the agent was last heard from** — a live run as clients see it
+  has `heard_at` (the pulse's time, now kept on the clock beside the
+  `Instant`) and `tools_running`; never stored. The Overview's Now says
+  "Last heard from the coding agent 2m ago", or "running a tool" while
+  one runs: never silence then, and no verdict (Healthy, Stalled) — the
+  watchdog already acts on it at `OTTER_RUN_IDLE_MS`. The app reads a host
+  with a live run again every 30 s, and takes the agent's streamed text as
+  hearing from it, so its copy doesn't go stale between task changes and
+  show a silence otterd doesn't believe.
+- **What comes next** — `Task::what_next`, in otter-core so the rule and
+  the words are one (as D-134 did for waiting): derived from the task's
+  own record and the transitions in `task-states.md`, saying both ways
+  where the engine hasn't seen the outcome yet ("review if every
+  criterion is met; a fix step if one isn't and the work changed").
+  Nothing when the task waits on the developer — that is `needs`. Served
+  as `Task.next`; the app computes it itself for an otterd before this. In
+  Now and in `otter task show`.
+- **Reasons in the history** — `Task::reason` keeps the line in
+  `rationale` (delivery's report still reads it) and returns
+  `TaskEvent::Reasoned {why}`, written with the change it explains, so a
+  reason has its time and correlation in the timeline. Redacted (D-075).
+  The Activity feed shows them inline, muted, a reason said again right
+  after itself once with ×N (D-114's repeats); the "Otter's reasons" fold
+  stays only for tasks from before.
+- **Not built:** classifying the agent's tools into reading / editing /
+  testing (that is reading the provider's data: it would belong behind
+  `AgentProvider`, and nothing showed it was needed); a structured
+  observation / decision / next per reason (the record's time, its
+  correlation and the status change beside it carry most of it; 22 call
+  sites didn't justify three fields); health ratings and automatic
+  restarts on them.
+- **Known limit:** a task from before this that gets a reason after it
+  shows only the new ones in Activity: its older reasons aren't in its
+  history, and the fold gives way once one is. They stay in `rationale`.
+- **Verified:** core unit tests for `what_next` by status, `reason` (kept,
+  redacted, first line, read as `Unknown` by an older build) and a run
+  from before; e2e: a live run has `heard_at` and the task its `next`, an
+  ended run keeps `activity_at` but no `heard_at`, the history has
+  `Reasoned`; app tests for Now, the timed activity lines, the reasons in
+  the feed, and the source keeping times and re-reading a host with a live
+  run.

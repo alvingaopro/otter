@@ -176,6 +176,8 @@ pub enum ActorEvent {
 #[derive(Debug)]
 pub struct Pulse {
     pub at: std::time::Instant,
+    /// `at` on the clock, for clients (D-141).
+    pub heard: chrono::DateTime<Utc>,
     pub tools: usize,
 }
 
@@ -184,6 +186,7 @@ pub type SharedPulse = Arc<std::sync::Mutex<Pulse>>;
 pub fn pulse() -> SharedPulse {
     Arc::new(std::sync::Mutex::new(Pulse {
         at: std::time::Instant::now(),
+        heard: Utc::now(),
         tools: 0,
     }))
 }
@@ -312,6 +315,7 @@ impl Actor {
     fn beat(&self) {
         let mut p = self.pulse.lock().unwrap();
         p.at = std::time::Instant::now();
+        p.heard = Utc::now();
         // Background work is work under way, like a tool that runs.
         p.tools = self.running.len() + self.background;
     }

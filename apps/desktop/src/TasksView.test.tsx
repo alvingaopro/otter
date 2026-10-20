@@ -3,7 +3,21 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { TasksView } from "./TasksView";
 import { mockSource, sampleTasks, type TaskSource } from "./taskSource";
-import { STATUS_LABEL, budgetBinds, collapseRepeats, findMatch, groupOf, needsYou, sortTasks, statusDetail, type Task, type PlacedTask } from "./tasks";
+import {
+  STATUS_LABEL,
+  budgetBinds,
+  collapseReasons,
+  collapseRepeats,
+  findMatch,
+  groupOf,
+  heardLine,
+  needsYou,
+  sortTasks,
+  statusDetail,
+  type Task,
+  type TaskEventRecord,
+  type PlacedTask,
+} from "./tasks";
 
 describe("task contract helpers", () => {
   const [active, blocked, failed, done, draft] = sampleTasks(Date.parse("2026-10-09T12:00:00Z"));
@@ -43,6 +57,33 @@ describe("task contract helpers", () => {
       { text: "b", times: 3 },
       { text: "a", times: 1 },
     ]);
+  });
+
+  it("folds a reason said again right after itself in the history, nothing else", () => {
+    const ev = (seq: number, type: string, text: string): TaskEventRecord => ({ seq, ts: `2026-10-20T12:00:0${seq}Z`, v: 1, type, text });
+    const out = collapseReasons([
+      ev(1, "Reasoned", "Why: a"),
+      ev(2, "Reasoned", "Why: a"),
+      ev(3, "StatusChanged", "Review"),
+      ev(4, "StatusChanged", "Review"),
+      ev(5, "Reasoned", "Why: a"),
+    ]);
+    expect(out.map((o) => [o.e.seq, o.times])).toEqual([
+      [2, 2],
+      [3, 1],
+      [4, 1],
+      [5, 1],
+    ]);
+  });
+
+  it("says when a working run's agent was last heard from, never silence while a tool runs", () => {
+    const now = Date.parse("2026-10-20T12:05:00Z");
+    const run = { ...active.runs[0], state: "running" as const, heard_at: "2026-10-20T12:02:00Z" };
+    expect(heardLine({ ...active, runs: [run] }, now)).toBe("Last heard from the coding agent 3m ago.");
+    expect(heardLine({ ...active, runs: [{ ...run, tools_running: 1 }] }, now)).toBe("The coding agent is running a tool.");
+    // An otterd before D-141 doesn't say; a run waiting on a decision says so elsewhere.
+    expect(heardLine({ ...active, runs: [{ ...run, heard_at: undefined }] }, now)).toBeUndefined();
+    expect(heardLine({ ...active, runs: [{ ...run, state: "waiting" }] }, now)).toBeUndefined();
   });
 
   it("shows the budget once half of it is used", () => {
@@ -336,6 +377,43 @@ describe("Tasks view", () => {
     await act(async () => byText(".fold-toggle", "Show all")!.click());
     expect(q(".fold.open")).not.toBeNull();
     expect(byText(".fold-toggle", "Show less")).toBeTruthy();
+  });
+
+  it("says in Now when the agent was last heard from and what comes next", async () => {
+    const [active] = sampleTasks().filter((f) => f.status === "implementing");
+    const heard = new Date(Date.now() - 125_000).toISOString();
+    const run = {
+      ...active.runs[0],
+      heard_at: heard,
+      activity: ["Read src/csv.rs", "Bash cargo test"],
+      activity_at: [new Date(Date.now() - 300_000).toISOString(), heard],
+    };
+    await single({ ...active, runs: [run], next: "Then: the work is checked against its 2 acceptance criteria." });
+    const now = byText(".ov-section", "Last heard")!;
+    expect(now.querySelector(".ov-heard")?.textContent).toBe("Last heard from the coding agent 2m ago.");
+    expect(now.querySelector(".ov-next")?.textContent).toBe("Then: the work is checked against its 2 acceptance criteria.");
+    // Each line of what it did with its time.
+    expect([...host.querySelectorAll(".activity li")].map((l) => l.textContent)).toEqual(["5m Read src/csv.rs", "2m Bash cargo test"]);
+  });
+
+  it("puts Otter's reasons in the history at their time, a repeat once", async () => {
+    const [done] = sampleTasks().filter((f) => f.status === "done");
+    const base = mockSource("mac");
+    const task = { ...done, rationale: ["Planned it.", "Answered.", "Answered."] };
+    const ev = (seq: number, type: string, text: string): TaskEventRecord => ({ seq, ts: new Date(Date.now() - (10 - seq) * 1000).toISOString(), v: 1, type, text });
+    const s: TaskSource = {
+      ...base,
+      list: () => [{ host: "mac", task, key: "mac/" + task.id }],
+      subscribe: () => () => {},
+      history: async () => [ev(1, "Reasoned", "Why: Planned it."), ev(2, "Reasoned", "Why: Answered."), ev(3, "Reasoned", "Why: Answered."), ev(4, "StatusChanged", "Done")],
+    };
+    await render(s);
+    await act(async () => byText('[role="tab"]', "Activity")!.click());
+    const lines = [...host.querySelectorAll(".feed-event.reason")].map((l) => l.textContent);
+    expect(lines).toHaveLength(2);
+    expect(lines[0]).toContain("Why: Answered. ×2");
+    // Already in the feed: no fold of them as well.
+    expect(q(".reasons")).toBeNull();
   });
 
   it("lists Otter's reasons in Activity, a repeated one once", async () => {

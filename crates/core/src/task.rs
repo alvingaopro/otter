@@ -333,6 +333,18 @@ pub struct Run {
     /// What the agent did lately (tools it used), newest last, a line each.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub activity: Vec<String>,
+    /// When each line of `activity` was noted: as many, or none (runs
+    /// from before D-141).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub activity_at: Vec<Timestamp>,
+    /// When the agent was last heard from — any sign of work, a word or a
+    /// tool (D-141). Only on a live run as clients see it; never kept.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub heard_at: Option<Timestamp>,
+    /// How many of its tools (and background commands) run now: a run
+    /// that says nothing while one runs isn't silent (D-063). Live only.
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub tools_running: u32,
     /// The runtime conversation this run served (D-055), and the turn it
     /// started with. Absent on runs from before conversations.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -350,6 +362,10 @@ pub struct Run {
 }
 
 fn is_zero(n: &u64) -> bool {
+    *n == 0
+}
+
+fn is_zero_u32(n: &u32) -> bool {
     *n == 0
 }
 
@@ -590,6 +606,10 @@ pub struct Task {
     /// The last entry of this task's history.
     #[serde(default)]
     pub history_seq: u64,
+    /// What comes next ([`Task::what_next`]), as clients see the task;
+    /// never kept (D-141).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next: Option<String>,
 }
 
 fn schema_one() -> u32 {
@@ -633,6 +653,7 @@ impl Task {
             created_at: now,
             updated_at: now,
             history_seq: 0,
+            next: None,
         }
     }
 
@@ -811,6 +832,84 @@ impl Task {
             self.active_since = Some(now);
         }
         Ok(TaskEvent::StatusChanged { from, to, reason })
+    }
+
+    /// Note why the Control Agent did what it did: kept with the task, and
+    /// the event that puts it in the history, at its time (D-141).
+    pub fn reason(&mut self, why: impl Into<String>) -> TaskEvent {
+        let why = crate::redact::redact(&why.into());
+        self.rationale.push(why.clone());
+        TaskEvent::Reasoned { why }
+    }
+
+    /// What comes next while Otter has the work (D-141): what the engine
+    /// does after what it does now, from the task's own record and the
+    /// transitions in `docs/task-states.md`. Where it depends on what the
+    /// engine hasn't seen yet (the check, CI), both ways are said. `None`
+    /// when the task waits on the developer (that is [`Task::needs`]), or
+    /// isn't being worked.
+    pub fn what_next(&self) -> Option<String> {
+        if self.needs().is_some() {
+            return None;
+        }
+        let work: Vec<&Step> = self.steps.iter().filter(|t| !t.planning).collect();
+        let check = || match self.acceptance.len() {
+            0 => "the work is checked".to_owned(),
+            1 => "the work is checked against its acceptance criterion".to_owned(),
+            n => format!("the work is checked against its {n} acceptance criteria"),
+        };
+        match self.status {
+            TaskStatus::Planning => Some(if self.answer_only {
+                "Then: the coding agent's answer, or its plan for you to approve.".into()
+            } else {
+                "Then: Otter reviews the coding agent's plan and starts on it, or posts its \
+                 answer."
+                    .into()
+            }),
+            TaskStatus::Implementing => {
+                let open: Vec<(usize, &&Step)> = work
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, t)| matches!(t.status, StepStatus::Pending | StepStatus::Running))
+                    .collect();
+                // The one after the step under way (or the first, between steps).
+                let after = match open.first() {
+                    Some((_, t)) if t.status == StepStatus::Running => open.get(1),
+                    first => first,
+                };
+                Some(match after {
+                    Some((i, t)) => {
+                        format!("Then: step {} of {} — {}.", i + 1, work.len(), t.title)
+                    }
+                    None => format!("Then: {}.", check()),
+                })
+            }
+            TaskStatus::Verifying => Some(
+                "Then: review if every criterion is met; a fix step if one isn't and the \
+                 work changed."
+                    .into(),
+            ),
+            TaskStatus::Review => {
+                let waiting: Vec<&str> = self
+                    .gates
+                    .iter()
+                    .filter(|g| g.status == GateStatus::Pending && g.name != "Your acceptance")
+                    .map(|g| g.name.as_str())
+                    .collect();
+                Some(if waiting.is_empty() {
+                    "Then: the report, for your acceptance.".into()
+                } else {
+                    format!(
+                        "Then: the report, once {} {} settled; a fix step if CI fails on the \
+                         code.",
+                        waiting.join(", "),
+                        if waiting.len() == 1 { "is" } else { "are" }
+                    )
+                })
+            }
+            TaskStatus::Paused => Some("Then: Resume carries on where it stopped.".into()),
+            _ => None,
+        }
     }
 }
 
@@ -1078,6 +1177,11 @@ pub enum TaskEvent {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         error: Option<String>,
     },
+    /// Why the Control Agent did what it did (D-141): the line it adds to
+    /// `Task::rationale`, at its time.
+    Reasoned {
+        why: String,
+    },
     /// A kind this build doesn't know.
     #[serde(other)]
     Unknown,
@@ -1129,6 +1233,10 @@ impl TaskEvent {
                 Some(code) => format!("Otter: {tool} — {}", code.replace('_', " ")),
                 None => format!("Otter: {tool} — done"),
             },
+            // A timeline's line: the reason's first; the whole is in `why`.
+            TaskEvent::Reasoned { why } => {
+                format!("Why: {}", why.lines().next().unwrap_or_default().trim_end())
+            }
             TaskEvent::Unknown => "Something happened".into(),
         }
     }
@@ -1164,6 +1272,125 @@ pub struct TaskEventRecord {
 mod tests {
     use super::*;
     use TaskStatus::*;
+
+    fn step(id: &str, title: &str, status: StepStatus) -> Step {
+        Step {
+            id: StepId::from(id),
+            title: title.into(),
+            detail: None,
+            status,
+            depends_on: vec![],
+            workspace_id: None,
+            session_id: None,
+            attempts: 0,
+            last_error: None,
+            planning: false,
+        }
+    }
+
+    #[test]
+    fn what_comes_next_follows_the_transitions() {
+        let now = chrono::Utc::now();
+        let mut f = Task::new("t".into(), "r".into(), now);
+        assert_eq!(f.what_next(), None, "a draft: nothing until Start");
+        f.status = Planning;
+        assert!(
+            f.what_next()
+                .unwrap()
+                .contains("reviews the coding agent's plan")
+        );
+        f.status = Implementing;
+        f.steps = vec![
+            step("s1", "Plan", StepStatus::Done),
+            step("s2", "Write the export", StepStatus::Running),
+            step("s3", "Wire the button", StepStatus::Pending),
+        ];
+        f.steps[0].planning = true;
+        // The planning turn isn't a step of the work.
+        assert_eq!(
+            f.what_next().as_deref(),
+            Some("Then: step 2 of 2 — Wire the button.")
+        );
+        f.steps[2].status = StepStatus::Done;
+        f.acceptance = vec![Criterion {
+            id: "c1".into(),
+            text: "x".into(),
+            met: None,
+            evidence: vec![],
+            how: Proof::default(),
+        }];
+        assert_eq!(
+            f.what_next().as_deref(),
+            Some("Then: the work is checked against its acceptance criterion.")
+        );
+        f.status = Verifying;
+        assert!(f.what_next().unwrap().contains("a fix step"));
+        f.status = Review;
+        f.gates = vec![
+            Gate {
+                name: "CI".into(),
+                status: GateStatus::Pending,
+                detail: None,
+            },
+            Gate {
+                name: "Your acceptance".into(),
+                status: GateStatus::Pending,
+                detail: None,
+            },
+        ];
+        assert_eq!(
+            f.what_next().as_deref(),
+            Some("Then: the report, once CI is settled; a fix step if CI fails on the code.")
+        );
+        // Ready for review: that's what it needs, not what comes next.
+        f.report = Some("## Report".into());
+        assert_eq!(f.what_next(), None);
+        for s in [Blocked, Failed, Done, Cancelled] {
+            f.status = s;
+            f.report = None;
+            assert_eq!(f.what_next(), None, "{s:?}");
+        }
+    }
+
+    #[test]
+    fn a_reason_is_kept_and_goes_in_the_history() {
+        let mut f = Task::new("t".into(), "r".into(), chrono::Utc::now());
+        let e = f.reason("Sent the plan back:\n- no tests\n- token=abc123secret");
+        assert_eq!(f.rationale.len(), 1);
+        assert!(!f.rationale[0].contains("abc123secret"), "redacted");
+        assert_eq!(e.text(), "Why: Sent the plan back:");
+        let TaskEvent::Reasoned { why } = &e else {
+            panic!("{e:?}")
+        };
+        assert_eq!(why, &f.rationale[0]);
+        // An older build reads it as something that happened.
+        #[derive(Deserialize)]
+        #[serde(tag = "type")]
+        enum Old {
+            #[serde(other)]
+            Unknown,
+        }
+        let json = serde_json::to_string(&e).unwrap();
+        assert!(matches!(
+            serde_json::from_str::<Old>(&json),
+            Ok(Old::Unknown)
+        ));
+    }
+
+    #[test]
+    fn a_run_from_before_activity_times_reads() {
+        let r: Run = serde_json::from_str(
+            r#"{"id":"run_1","step_id":"s1","runtime":"claude","state":"completed",
+                "started_at":"2026-10-20T12:00:00Z","activity":["$ make test"]}"#,
+        )
+        .unwrap();
+        assert_eq!(r.activity.len(), 1);
+        assert!(r.activity_at.is_empty());
+        assert_eq!((r.heard_at, r.tools_running), (None, 0));
+        // Nothing live is written back.
+        let out = serde_json::to_value(&r).unwrap();
+        assert!(out.get("heard_at").is_none() && out.get("tools_running").is_none());
+    }
 
     #[test]
     fn a_run_ending_reads_plainly_and_round_trips() {
@@ -1286,6 +1513,9 @@ mod tests {
             summary: None,
             provider_session_id: None,
             activity: vec![],
+            activity_at: vec![],
+            heard_at: None,
+            tools_running: 0,
             conversation_id: None,
             turn_id: None,
             worked_ms: 0,

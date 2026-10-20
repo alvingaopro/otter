@@ -27,7 +27,7 @@ use otter_core::task::{
     Decider, DecisionKind, DecisionRequest, DecisionStatus, MessageRole, Risk, Run, RunState,
     StepStatus, Task, TaskEvent, TaskStatus,
 };
-use otter_core::{ConversationId, DecisionId, RunId, StepId, TaskId};
+use otter_core::{ConversationId, DecisionId, RunId, StepId, TaskId, Timestamp};
 use otter_protocol::RpcError;
 use tokio::sync::{mpsc, oneshot};
 
@@ -52,9 +52,9 @@ pub(crate) struct LiveRun {
     stopping: Arc<std::sync::Mutex<Option<(RunState, String)>>>,
     /// When the agent was last heard from (the no-progress watchdog).
     pulse: SharedPulse,
-    /// What it did lately, newest last: kept here while it runs, not
-    /// rewritten into the task for every tool (D-069).
-    activity: Arc<std::sync::Mutex<Vec<String>>>,
+    /// What it did lately and when, newest last: kept here while it runs,
+    /// not rewritten into the task for every tool (D-069, D-141).
+    activity: Arc<std::sync::Mutex<Vec<(Timestamp, String)>>>,
 }
 
 /// Lines of activity a run keeps.
@@ -306,6 +306,9 @@ impl Daemon {
                 summary: None,
                 provider_session_id: native,
                 activity: vec![],
+                activity_at: vec![],
+                heard_at: None,
+                tools_running: 0,
                 conversation_id: Some(cid),
                 turn_id: Some(turn),
                 worked_ms: 0,
@@ -908,8 +911,9 @@ impl Daemon {
             r.ended_at = Some(now);
             r.stop_clock(now);
             r.summary = summary.clone();
-            if let Some(a) = activity {
+            if let Some((a, at)) = activity {
                 r.activity = a;
+                r.activity_at = at;
             }
             let step_id = r.step_id.clone();
             changes.push(Change::new(TaskEvent::RunChanged {
@@ -1075,12 +1079,13 @@ impl Daemon {
 
     /// Note what the agent just did on its run (kept short: the last
     /// lines): in memory and to the app, as it happens; into the task
-    /// when the run ends (D-069).
+    /// when the run ends (D-069). Each line with its time (D-141).
     async fn run_activity(&self, task: &TaskId, run: &RunId, line: String) {
         let line = otter_core::redact::redact(&line);
+        let at = Utc::now();
         if let Some(live) = self.runs.lock().unwrap().get(run) {
             let mut a = live.activity.lock().unwrap();
-            a.push(line.clone());
+            a.push((at, line.clone()));
             let extra = a.len().saturating_sub(ACTIVITY_LINES);
             a.drain(..extra);
         }
@@ -1089,23 +1094,35 @@ impl Daemon {
                 task_id: task.clone(),
                 run_id: run.clone(),
                 line,
+                at: Some(at),
             });
     }
 
-    /// What a live run did lately (its activity isn't written into the
-    /// task until it ends).
-    fn live_activity(&self, run: &RunId) -> Option<Vec<String>> {
+    /// What a live run did lately, and when (its activity isn't written
+    /// into the task until it ends).
+    fn live_activity(&self, run: &RunId) -> Option<(Vec<String>, Vec<Timestamp>)> {
         let runs = self.runs.lock().unwrap();
-        Some(runs.get(run)?.activity.lock().unwrap().clone())
+        let a = runs.get(run)?.activity.lock().unwrap();
+        Some(a.iter().map(|(at, l)| (l.clone(), *at)).unzip())
     }
 
-    /// A task as clients see it: with its live runs' latest activity.
-    pub(crate) fn with_live_activity(&self, mut f: Task) -> Task {
+    /// A task as clients see it (D-141): its live runs with their latest
+    /// activity, when their agent was last heard from and how many of its
+    /// tools run; and what comes next.
+    pub(crate) fn for_clients(&self, mut f: Task) -> Task {
         for r in f.runs.iter_mut().filter(|r| !r.state.is_over()) {
-            if let Some(a) = self.live_activity(&r.id) {
+            if let Some((a, at)) = self.live_activity(&r.id) {
                 r.activity = a;
+                r.activity_at = at;
+            }
+            let runs = self.runs.lock().unwrap();
+            if let Some(live) = runs.get(&r.id) {
+                let p = live.pulse.lock().unwrap();
+                r.heard_at = Some(p.heard);
+                r.tools_running = p.tools as u32;
             }
         }
+        f.next = f.what_next();
         f
     }
 
@@ -1716,6 +1733,9 @@ mod tests {
             summary: None,
             provider_session_id: None,
             activity: vec![],
+            activity_at: vec![],
+            heard_at: None,
+            tools_running: 0,
             conversation_id: None,
             turn_id: None,
             worked_ms: 0,
@@ -1866,6 +1886,9 @@ mod tests {
             summary: None,
             provider_session_id: None,
             activity: vec![],
+            activity_at: vec![],
+            heard_at: None,
+            tools_running: 0,
             conversation_id: None,
             turn_id: None,
             worked_ms: 0,
