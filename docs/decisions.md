@@ -4346,26 +4346,50 @@ host and the reconcile loop waited, often for gigabytes; and
 checkout, which hardly ever finish that soon, so the app's dialog sat on
 "Creating…" though the workspace opens while it prepares.
 
-- **A worktree is done once its branch is recorded,** which happens only
-  after `git worktree add` finishes. Preparing one without it (a checkout
-  cut short), or whose directory is gone, makes it again. What is there goes
-  first: `worktree remove --force --force` (git's way to remove a locked
-  one), `worktree prune`, then the directory. The branch the cut-short
-  checkout made goes too if nothing is on it (no remote branch of its name,
-  no commit a remote lacks), so the new one has the same name. A worktree
-  made before goes back on its recorded branch, with its commits, and keeps
-  its recorded base. A directory a finished worktree left with its `.git`
-  missing is never cleared: adding fails on it, as before.
+- **What git has there decides, not the record alone.** A branch is
+  recorded only once `git worktree add` finishes, so one missing is the
+  sign to look. But before this change a checkout cut short was called
+  ready without its branch, and may have been worked in since (found in
+  review). So a worktree is *nobody's work* only when git says its add
+  never finished (its registration locked "initializing", read from
+  `worktrees/<id>/locked`, which git-worktree(1) documents) and nothing has
+  ever run in the workspace. Sessions start only once it's ready, so one
+  cut short under this otterd has run nothing.
+  - **Nobody's work, or gone:** made again. What's there goes first:
+    `worktree remove --force --force` (git's way to remove a locked one),
+    `worktree prune`, then an empty directory. The branch the cut-short
+    checkout made goes too if nothing is on it (no remote branch of its
+    name, no commit a remote lacks), so the new one has the same name. A
+    worktree made before goes back on its recorded branch, with its
+    commits, and keeps its recorded base.
+  - **Any other worktree is kept as it is,** with whatever is in it,
+    unlocked if git left it locked, and its branch recorded, with a base
+    as `git worktree add` would have given it (the base asked for, or
+    origin's default branch, and their merge base). That covers one
+    finished whose branch otterd never got to record, too.
+  - **Left alone, and the workspace fails saying why:** a directory with
+    files and no worktree of the repository, and a worktree gone from its
+    directory whose registration someone other than git locked (git's
+    lock for a worktree on a disk not always there).
+  - **Known limit:** a worktree moved away by hand, rather than with `git
+    worktree move`, loses its registration when its workspace is prepared
+    again, and `git worktree repair` can't link it back after that. Otter
+    prunes registrations whenever it deletes a worktree anyway, as git's
+    gc does after a while.
 - **Git runs in its own process group,** killed whole when the call is
   dropped (a preparation cancelled, otterd stopping), so a checkout's child
   doesn't outlive it.
 - **Deleting** removes a locked worktree, and the registration of one whose
-  directory is gone. A worktree never finished goes without force: the
-  uncommitted-changes and unpushed checks are for one that was. A
-  preparation under way is cancelled, and waited for, before anything is
-  removed. While a delete is under way, another delete of the workspace,
-  `workspace.prepare` and `workspace.unarchive` get `conflict` ("being
-  deleted"), and a preparation that finishes meanwhile starts nothing.
+  directory is gone. Without force it checks for uncommitted changes
+  whenever there's a `.git`, and for unpushed commits on the branch it
+  finds there when none is recorded, unless the worktree is nobody's work
+  (above). A preparation under way is cancelled, and waited for, before
+  anything is removed. If the delete then fails, the workspace is failed,
+  saying so ("deleting it failed: …"), rather than left preparing with
+  nothing preparing it. While a delete is under way, another delete of the
+  workspace, `workspace.prepare` and `workspace.unarchive` get `conflict`
+  ("being deleted"), and a preparation that finishes meanwhile starts
+  nothing.
 - **Deleting holds the store's lock only to stop the processes and to drop
   the record.** Running sessions stop first and are marked stopped
   (`SessionStopped`), as when archiving. The worktree, branch and directory
@@ -4380,19 +4404,36 @@ checkout, which hardly ever finish that soon, so the app's dialog sat on
 - **`workspace.create` waits** (up to 3 s, as before) **only when there's no
   Git work:** an empty or existing directory, or for `workspace.prepare` and
   `workspace.unarchive` a worktree already there. A Git workspace comes back
-  at once, preparing. The CLI already waits for it, and the app opens it
-  while it prepares. A workspace becoming ready wakes the controller, so a
-  task given a worktree of its own (D-080) steps on at once.
+  at once, preparing. The CLI already waits for it, and the app already
+  selects the new workspace by its id, which comes back with the response
+  (unchanged). A preparation that ends, ready or failed, wakes the
+  controller, so a task given a worktree of its own (D-080) steps on at
+  once. A task whose workspace failed to prepare waits, saying why
+  ("preparing it failed (…); prepare it again to go on"), rather than
+  starting its agent there.
 - **A `git worktree add -b` that fails** deletes the branch git made for it,
   so trying again doesn't take `-2`, `-3`.
-- **Verified:** e2e tests in `crates/daemon/tests/e2e/workspace_prep.rs`. A
-  checkout cut short, then otterd restarted: made again on `otterd/cut`,
-  whole, unlocked, its session started. A locked worktree deleted, and a
-  half-made one deleted right after a restart, without force. A worktree
-  gone with its registration locked: made again on its branch, with its
-  commit. With a `git` that sleeps: create returns at once, `workspace.get`
-  answers while a delete removes the worktree, and a delete while cloning
-  leaves no child of git behind. Each fails against the code before: ready
-  with a file missing, "cannot remove a locked working tree", failed on
-  `otterd/gone-2`, 3.0 s, 3.5 s, and a child that wrote after the delete. A
-  unit test for the `-b` branch fails without its cleanup.
+- **Verified:** e2e tests in `crates/daemon/tests/e2e/workspace_prep.rs`.
+  - A checkout cut short, then otterd restarted: made again on
+    `otterd/cut`, whole, unlocked, its session started.
+  - A locked worktree deleted, and a half-made one deleted right after a
+    restart, without force.
+  - A worktree gone: made again on its branch, with its commit. One whose
+    registration the developer locked: failed, lock kept.
+  - With a `git` that sleeps: create returns at once, `workspace.get`
+    answers while a delete removes the worktree, and a delete while
+    cloning leaves no child of git behind.
+  - Each fails against the code before: ready with a file missing,
+    "cannot remove a locked working tree", failed on `otterd/gone-2`,
+    3.0 s, 3.5 s, and a child that wrote after the delete. A unit test for
+    the `-b` branch fails without its cleanup.
+  - The review's case, a record ready without its branch, worked in (a
+    commit, an uncommitted file): delete without force refused, for the
+    file and then for the commit; prepare and unarchive keep both and
+    record `otterd/legacy` from `origin/main`; locked "initializing" as
+    well, it's kept and unlocked. A task on a failed workspace waits
+    saying why, and goes on once it's prepared. A delete that fails after
+    stopping the preparation leaves the workspace failed. These fail
+    against this change's first version: the delete went through and
+    lost the file, the task's agent started in a folder that was gone,
+    the workspace stayed preparing, and a lock was overridden.
