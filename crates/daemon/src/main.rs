@@ -18,6 +18,7 @@ mod events;
 mod files;
 mod gateway;
 mod git;
+mod git_account;
 mod history;
 mod login;
 mod memory;
@@ -208,6 +209,11 @@ async fn serve(paths: Paths) -> Result<()> {
     daemon.recover_runs().await;
     // The Control Agent steps tasks from here on (D-045).
     tokio::spawn(daemon.clone().run_controller());
+    // Every repository Otter manages takes its git settings (D-132).
+    {
+        let daemon = daemon.clone();
+        tokio::spawn(async move { daemon.git.include_everywhere().await });
+    }
     tokio::spawn(daemon.clone().run_triggers());
 
     // We hold the lock, so any socket file left behind is stale.

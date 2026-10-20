@@ -201,6 +201,25 @@ pub enum Request {
     /// host's key (D-052). Result: `Vec<`[`host::ModelInfo`]`>`.
     #[serde(rename = "settings.models")]
     SettingsModels(host::ModelsQuery),
+    /// Make Otter's SSH key on this host (D-132). Result:
+    /// [`host::GitView`].
+    #[serde(rename = "git.key_create")]
+    GitKeyCreate(host::GitKeyCreate),
+    /// Add Otter's key to the GitHub account its gh is signed in to, then
+    /// check. Result: [`host::GitCheck`].
+    #[serde(rename = "git.key_add")]
+    GitKeyAdd,
+    /// Whether Otter's key and gh work with GitHub. Result:
+    /// [`host::GitCheck`].
+    #[serde(rename = "git.check")]
+    GitCheck,
+    /// Sign Otter's gh in to GitHub: with a token, or in the browser.
+    /// Result: [`host::GitView`].
+    #[serde(rename = "git.github_login")]
+    GitHubLogin(host::GitHubSignIn),
+    /// Sign Otter's gh out. Result: [`host::GitView`].
+    #[serde(rename = "git.github_logout")]
+    GitHubLogout,
 
     /// Otter's conversation on this host (D-093). Result:
     /// [`otter_core::task::OtterChat`].
@@ -337,6 +356,11 @@ impl Request {
             Request::SettingsGet => "settings.get",
             Request::SettingsSet(_) => "settings.set",
             Request::SettingsModels(_) => "settings.models",
+            Request::GitKeyCreate(_) => "git.key_create",
+            Request::GitKeyAdd => "git.key_add",
+            Request::GitCheck => "git.check",
+            Request::GitHubLogin(_) => "git.github_login",
+            Request::GitHubLogout => "git.github_logout",
             Request::OtterGet => "otter.get",
             Request::OtterSend(_) => "otter.send",
             Request::OtterEvents(_) => "otter.events",

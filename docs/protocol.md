@@ -253,6 +253,22 @@ The Control Agent's model and API keys on this host (D-048).
   `otter_answers` ("with tools (claude)", or "without tools…" and why);
   `settings.set {otter_tools: bool}` turns it on or off. `settings.set`
   answers with the same view as `settings.get`. Absent from older daemons.
+- The view also has `git?: {name?, email?, ssh_key?: {public,
+  fingerprint?}, key_account?, github?, login?: {state: pending, code, url} |
+  {state: failed, error}}`: Otter's own git on the host (D-132).
+  `settings.set {git: {name?, email?}}` sets who commits in Otter's
+  repositories (`""` clears). Its other calls:
+  - `git.key_create {replace?}` → the view: makes Otter's ed25519 key there.
+  - `git.check` → `{ssh, github, git}`, each line `{ok, detail, account?}`:
+    whether the key signs in to GitHub (from then on the repositories use
+    it) and who Otter's gh is.
+  - `git.key_add` → the same, after adding the key to the GitHub account
+    Otter's gh is signed in to.
+  - `git.github_login {token?}` → the view: with a token, signed in at
+    once; without, a browser sign-in starts and `login` carries its code
+    until it ends.
+  - `git.github_logout` → the view.
+  An older daemon answers `invalid_request`.
 - `settings.models {controller}` → `[{id, name?}]`: the models that
   controller offers, as its provider lists them, asked by the host with the
   key set there (OpenRouter's list needs none); `claude` answers Claude

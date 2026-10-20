@@ -70,6 +70,8 @@ pub struct Daemon {
     pub backend: Arc<dyn ExecutionBackend>,
     pub events: EventLog,
     pub git: GitManager,
+    /// Otter's own git identity, key and GitHub sign-in (D-132).
+    pub git_account: Arc<crate::git_account::GitAccount>,
     pub environments: EnvironmentManager,
     pub env_source: String,
     pub shell: String,
@@ -110,6 +112,7 @@ impl Daemon {
         };
         let mut problems = std::collections::BTreeMap::new();
         // A broken settings file mustn't keep the daemon down — but it's said (D-077).
+        let git_account = Arc::new(crate::git_account::GitAccount::load(&paths.state_dir));
         let settings = crate::settings::HostSettings::load(&paths.state_dir).unwrap_or_else(|e| {
             tracing::warn!("settings: {e:#}; using defaults");
             problems.insert(
@@ -163,7 +166,8 @@ impl Daemon {
             dying: Default::default(),
             reconciled_once: Default::default(),
             problems: std::sync::Mutex::new(problems),
-            git: GitManager::new(paths.home.join("repos"), &env.vars),
+            git: GitManager::new(paths.home.join("repos"), &env.vars, git_account.clone()),
+            git_account,
             environments: EnvironmentManager::new(&env.vars, crate::files::shim_dir(&paths)),
             env_source: env.source,
             paths,
@@ -302,6 +306,37 @@ impl Daemon {
             Request::SettingsGet => json(self.settings_get()),
             Request::SettingsModels(q) => json(self.settings_models(&q.controller).await?),
             Request::SettingsSet(u) => json(self.settings_set(u)?),
+            Request::GitKeyCreate(p) => {
+                let env = self.environments.base();
+                self.git_account
+                    .key_create(p.replace, env)
+                    .await
+                    .map_err(|e| RpcError::conflict(format!("{e:#}")))?;
+                json(self.git_account.view())
+            }
+            Request::GitKeyAdd => {
+                let env = self.environments.base();
+                self.git_account
+                    .key_add(env)
+                    .await
+                    .map_err(|e| RpcError::conflict(format!("{e:#}")))?;
+                json(self.git_check().await)
+            }
+            Request::GitCheck => json(self.git_check().await),
+            Request::GitHubLogin(p) => {
+                let env = self.environments.base();
+                self.git_account
+                    .login(p.token, env)
+                    .await
+                    .map_err(|e| RpcError::conflict(format!("{e:#}")))?;
+                json(self.git_account.view())
+            }
+            Request::GitHubLogout => {
+                self.git_account
+                    .logout()
+                    .map_err(|e| RpcError::internal(format!("{e:#}")))?;
+                json(self.git_account.view())
+            }
             Request::TaskList => json(
                 self.task_list()
                     .await
@@ -646,6 +681,16 @@ impl Daemon {
         )
         .await
         .map_err(RpcError::conflict)
+    }
+
+    /// `git.check` (D-132): the key and Otter's gh against GitHub.
+    async fn git_check(&self) -> otter_protocol::host::GitCheck {
+        let (ssh, github) = self.git_account.check(self.environments.base()).await;
+        otter_protocol::host::GitCheck {
+            ssh,
+            github,
+            git: self.git_account.view(),
+        }
     }
 
     /// A browser stand-in on this host asks for a sign-in page on the Mac.

@@ -177,7 +177,8 @@ after `ssh host`, it should work in Otter".
 - Fetch/worktree operations are serialized per repository.
 - Credentials: whatever `git` on the host already uses; `GIT_TERMINAL_PROMPT=0`
   so a missing credential fails instead of hanging. Error messages are
-  scrubbed of `user:token@` in URLs.
+  scrubbed of `user:token@` in URLs. *Amended 2026-10-20:* Otter's own
+  identity and SSH key, once set, in its repositories only (D-132).
 - Deleting a workspace removes the worktree but **keeps the branch** (it may
   hold unpushed work) and never touches the backing repository. It refuses if
   the worktree has uncommitted changes unless forced (`--force`).
@@ -1334,7 +1335,10 @@ checked. In review the controller (`review_step`, `delivery.rs`):
   denial keeps delivery local (the PR and CI gates no longer apply). The PR
   description lists the criteria and the checks; bodies go over stdin.
 - **GitHub through the host's `gh`**: its sign-in and scope; Otter stores
-  no token and puts none on a command line. Calls: `pr view/create/edit`,
+  no token and puts none on a command line. *Amended 2026-10-20:* once
+  Otter's gh is signed in (D-132), its token is in Otter's own gh config
+  directory and Otter's calls use that. Still never on a command line.
+  Calls: `pr view/create/edit`,
   `pr checks --json`, `run view --log-failed`, `run rerun --failed`,
   `pr comment`. Another forge would implement the same few calls.
 - **Follows CI** (every `OTTER_CI_POLL_MS`, 15 s; not within
@@ -2204,7 +2208,9 @@ D-064 a CI fix is a turn in the feature's session. What wasn't:
   feature's title as the message), leaving out files that may hold secrets
   by name (the same list as D-062's snapshot); the commit's SHA is evidence
   ("Committed …") and the note names what was left out. Without an
-  identity of the host's own, the commit is Otter's. A tree with work
+  identity of the host's own, the commit is Otter's. *Amended 2026-10-20:*
+  an identity set in Otter (D-132) is the repository's own, so the
+  commit is the developer's. A tree with work
   still to commit counts as unpublished, so a fix the agent didn't commit
   is pushed too. Idempotent by construction: after a crash between commit
   and push, the tree is clean and the retry only pushes.
@@ -4209,3 +4215,74 @@ workspace asked for force.
   added since and a net-zero branch still ask). Each fails against the code
   before, and each guard fails its test when taken out. Reviewed by a
   second model, which found the net-zero and reflogs-off cases.
+
+## D-133 — Otter's own git on a host: identity, key, GitHub sign-in (2026-10-20)
+
+Otter used the host's git as it found it (D-010, D-047). On a host shared
+with another account, or set up as someone else, Otter's commits, pushes
+and pull requests went out as whoever the host was. The developer wants
+their own identity and credentials set once in Otter, used on every host,
+without changing anything else on the host.
+
+- **Only Otter's repositories.** Each repository under `~/.otter/repos`
+  (its worktrees share its config) includes one file Otter writes,
+  `state/git/gitconfig` (`include.path`, added when a repository is cloned
+  or prepared, and to every one at startup). A change in Settings reaches
+  them all at once. Nothing else changes: not `~/.gitconfig`, `~/.ssh`,
+  the host's agent or the host's gh. Otter's own commits, the coding
+  agent's and the developer's in Otter's terminals all use it, since they
+  all run git there.
+- **Identity:** `user.name` and `user.email`. Cleared, the host's own
+  apply again.
+- **Key: made on the host.** It's ed25519, `state/git/id_ed25519` (0600),
+  and the private half never leaves the host (the developer's choice over
+  copying one from the Mac). GitHub's host keys go to
+  `state/git/known_hosts`, not the host's.
+  - The key is used only once it works. `git.check` runs `ssh -T
+    git@github.com` with it; at "Hi alvin!" it writes `core.sshCommand`
+    (that key alone: `IdentitiesOnly`, no agent) and
+    `url.git@github.com:.pushInsteadOf=https://github.com/`, so pushes to
+    an https remote go over the key too.
+  - Fetches stay as they were, so a key GitHub doesn't know yet can't
+    break them. A key GitHub turns away stops being used; one GitHub
+    can't be reached for stays as it was.
+- **GitHub sign-in: Otter's gh alone.** Its config directory is
+  `state/git/gh` (0700), and its token is stored there rather than in a
+  keychain (`--insecure-storage`, so it can't meet the host's own gh login
+  there). `GH_TOKEN` and the like are taken out of its environment, which
+  would otherwise win over it.
+  - In the browser: `gh auth login --web` without a terminal prints a code
+    and a page and waits. `git.github_login` returns once it has them; the
+    view carries them (`login: pending {code, url}`) until gh finishes,
+    then says who it is.
+  - With a token: on gh's stdin.
+  - It asks for `admin:public_key`, so `git.key_add` can put each host's
+    key on the account (`gh ssh-key add`, "Otter on <host>"). Without that
+    scope, the client shows the public key to add on GitHub.
+  - Only Otter's own delivery uses it (D-047). The agent and the terminals
+    don't get the token (the developer's choice). They push with the key,
+    and the agent's push still needs the developer (D-059). The agent's
+    policy counts Otter's state directory and `hosts.yml` as credentials.
+- **Shared across hosts, per host by nature.** The developer sets the
+  identity once, and the app sends it to every host (the Settings tab
+  comes next). Each host has its own key and its own sign-in: a browser
+  sign-in is one code per host. A pasted token can go to every host.
+- **Known limits:** `GIT_AUTHOR_*`/`GIT_COMMITTER_*` in a host's login
+  environment win over a repository's identity. A project's `.envrc` can
+  still set what it sets. gh 2.40 or newer is needed (older ones are told
+  to update).
+- **Verified:**
+  - Unit: the gitconfig written (escaped, the key only once it works),
+    what gh and GitHub say, Otter's gh never taking `GH_TOKEN`, and an
+    identity on one line.
+  - End to end with a fake gh and ssh (real git and ssh-keygen):
+    - A commit in a worktree is the developer's; the source repository
+      isn't touched.
+    - No `core.sshCommand` until the key works. A key made on the host is
+      0600.
+    - A bad token says why. Sign-in never takes the host's `GH_TOKEN`.
+    - Once the key is added through the sign-in, the repositories push
+      with it, with host keys in Otter's file.
+    - The browser sign-in shows its code, then who it is. A cleared
+      identity leaves the host's.
+

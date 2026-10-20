@@ -18,6 +18,8 @@ use otter_protocol::{
 
 #[path = "e2e/converse.rs"]
 mod converse;
+#[path = "e2e/git_account.rs"]
+mod git_account;
 #[path = "e2e/host_chat.rs"]
 mod host_chat;
 #[path = "e2e/memory.rs"]
@@ -6522,6 +6524,7 @@ async fn settings_take_keys_write_only_and_keep_them() {
             .into(),
             coding: None,
             otter_tools: None,
+            git: None,
         })
         .await
         .unwrap();
