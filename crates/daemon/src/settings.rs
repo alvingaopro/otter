@@ -214,6 +214,7 @@ impl HostSettings {
             otter_tools: Some(self.otter_tools()),
             otter_tools_from_env: otter_tools_from_env(),
             otter_answers: None,
+            git: None,
         }
     }
 
@@ -298,6 +299,7 @@ impl HostSettings {
 impl Daemon {
     pub(crate) fn settings_get(&self) -> Settings {
         let mut view = self.settings.read().unwrap().view();
+        view.git = Some(self.git_account.view());
         let brain = crate::brain::select(self.environments.base(), &self.brain_choice());
         view.active = Some(brain.name().to_owned());
         view.otter_answers = Some(match self.how_otter_answers() {
@@ -332,7 +334,12 @@ impl Daemon {
             .map_err(|e| RpcError::conflict(format!("{e:#}")))
     }
 
-    pub(crate) fn settings_set(&self, u: SettingsUpdate) -> RpcResult<Settings> {
+    pub(crate) fn settings_set(&self, mut u: SettingsUpdate) -> RpcResult<Settings> {
+        if let Some(id) = u.git.take() {
+            self.git_account
+                .set_identity(id)
+                .map_err(RpcError::invalid)?;
+        }
         let mut s = self.settings.write().unwrap();
         s.update(u).map_err(RpcError::invalid)?;
         tracing::info!("settings changed");
@@ -358,6 +365,7 @@ mod tests {
                 .unwrap_or_default(),
             coding: None,
             otter_tools: None,
+            git: None,
         }
     }
 

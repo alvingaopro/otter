@@ -143,6 +143,118 @@ pub struct Settings {
     /// tools…" and why.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub otter_answers: Option<String>,
+    /// Otter's own git on this host (D-133); absent from older daemons.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub git: Option<GitView>,
+}
+
+/// Otter's own git on a host (D-133): who commits in the repositories it
+/// manages, the SSH key they push with, and the GitHub account its own `gh`
+/// uses. The host's own git, ssh and gh are left as they are.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct GitView {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub email: Option<String>,
+    /// Otter's key on this host, once made: its public half. The private
+    /// half never leaves the host.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ssh_key: Option<SshKey>,
+    /// The GitHub account the key signs in as, once checked. From then on
+    /// Otter's repositories use the key.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key_account: Option<String>,
+    /// Who Otter's own gh is signed in as.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub github: Option<String>,
+    /// A browser sign-in under way, or how the last one ended.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub login: Option<GitHubLogin>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SshKey {
+    /// `ssh-ed25519 AAAA… otter@host`, to add to GitHub.
+    pub public: String,
+    /// `SHA256:…`, as GitHub lists it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fingerprint: Option<String>,
+}
+
+/// A browser sign-in to GitHub (`gh`'s device flow).
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum GitHubLogin {
+    /// Waiting: enter `code` at `url`.
+    Pending {
+        code: String,
+        url: String,
+    },
+    Failed {
+        error: String,
+    },
+}
+
+/// `settings.set {git}`: who commits in Otter's repositories; `""` clears
+/// (the host's own git config applies again).
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct GitIdentity {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub email: Option<String>,
+}
+
+impl GitIdentity {
+    /// The same identity, `""` and none being the same (no identity).
+    pub fn same_as(&self, other: &GitIdentity) -> bool {
+        let set = |v: &Option<String>| v.clone().filter(|s| !s.is_empty());
+        set(&self.name) == set(&other.name) && set(&self.email) == set(&other.email)
+    }
+}
+
+/// `git.key_create`.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct GitKeyCreate {
+    /// Make a new one even if there is a key (the old one's gone).
+    #[serde(default)]
+    pub replace: bool,
+}
+
+/// `git.github_login`: with a token, signs in with it at once; without,
+/// starts a browser sign-in (its code in [`GitView::login`]).
+#[derive(Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct GitHubSignIn {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token: Option<String>,
+}
+
+impl std::fmt::Debug for GitHubSignIn {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("GitHubSignIn")
+            .field("token", &self.token.as_ref().map(|_| "***"))
+            .finish()
+    }
+}
+
+/// `git.check` / `git.key_add`: whether the key and gh work with GitHub.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct GitCheck {
+    pub ssh: CheckLine,
+    pub github: CheckLine,
+    /// The view after the check (the key may now be in use).
+    pub git: GitView,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CheckLine {
+    pub ok: bool,
+    /// What was seen, or what to do.
+    pub detail: String,
+    /// The GitHub account it answered as.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account: Option<String>,
 }
 
 /// One choice of Control Agent: a model provider, Claude Code, or none.
@@ -199,6 +311,9 @@ pub struct SettingsUpdate {
     /// Otter answers with its tools (D-089); left out: stays.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub otter_tools: Option<bool>,
+    /// Who commits in Otter's repositories (D-133); left out: stays.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub git: Option<GitIdentity>,
 }
 
 /// How the coding agent runs on this host (D-057) — apart from Otter's own
@@ -206,11 +321,28 @@ pub struct SettingsUpdate {
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct CodingSettings {
     /// `legacy_cli` (Claude Code's stream-json) or `sdk` (the Claude Agent
-    /// SDK worker); absent: `legacy_cli`. In an update, `""` resets.
+    /// SDK worker); absent: `sdk` (D-124). In an update, `""` resets.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub backend: Option<String>,
     /// The Claude model for coding (absent: the provider's default). In an
     /// update, `""` resets.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_cleared_identity_is_none() {
+        let id = |n: Option<&str>, e: Option<&str>| GitIdentity {
+            name: n.map(String::from),
+            email: e.map(String::from),
+        };
+        assert!(id(Some(""), Some("")).same_as(&id(None, None)));
+        assert!(id(Some("Ada"), Some("a@b.c")).same_as(&id(Some("Ada"), Some("a@b.c"))));
+        // A host that still has one isn't cleared yet.
+        assert!(!id(Some(""), Some("")).same_as(&id(Some("Ada"), None)));
+    }
 }

@@ -444,6 +444,40 @@ impl Connection {
         self.call(Request::SettingsSet(u)).await
     }
 
+    /// Make Otter's SSH key on the host (D-133).
+    pub async fn git_key_create(&mut self, replace: bool) -> Result<otter_protocol::host::GitView> {
+        self.call(Request::GitKeyCreate(otter_protocol::host::GitKeyCreate {
+            replace,
+        }))
+        .await
+    }
+
+    /// Add Otter's key to the GitHub account its gh is signed in to, then
+    /// check.
+    pub async fn git_key_add(&mut self) -> Result<otter_protocol::host::GitCheck> {
+        self.call(Request::GitKeyAdd).await
+    }
+
+    /// Whether Otter's key and gh work with GitHub.
+    pub async fn git_check(&mut self) -> Result<otter_protocol::host::GitCheck> {
+        self.call(Request::GitCheck).await
+    }
+
+    /// Sign Otter's gh in: with `token`, or in the browser.
+    pub async fn github_login(
+        &mut self,
+        token: Option<&str>,
+    ) -> Result<otter_protocol::host::GitView> {
+        self.call(Request::GitHubLogin(otter_protocol::host::GitHubSignIn {
+            token: token.map(str::to_owned),
+        }))
+        .await
+    }
+
+    pub async fn github_logout(&mut self) -> Result<otter_protocol::host::GitView> {
+        self.call(Request::GitHubLogout).await
+    }
+
     /// The models a controller offers, as the host's provider lists them.
     pub async fn settings_models(
         &mut self,

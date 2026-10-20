@@ -197,7 +197,7 @@ describe("Settings", () => {
   it("opens on this Mac's look, then remembers the tab", async () => {
     expect(dialog().querySelector("h2")?.textContent).toBe("Appearance");
     // This host's otterd has no coding settings: no tab for them.
-    expect(tabs().map((b) => b.textContent)).toEqual(["Appearance", "Sign-in pages", "Developer", "Otter", "API keys0 set"]);
+    expect(tabs().map((b) => b.textContent)).toEqual(["Appearance", "Sign-in pages", "Developer", "Git & GitHub", "Otter", "API keys0 set"]);
     await tab("Otter");
     expect(localStorage.getItem("otter.settings-tab")).toBe("otter");
     expect(dialog().querySelector('[aria-current="page"]')?.textContent).toBe("Otter");
@@ -463,6 +463,19 @@ describe("Settings", () => {
   it("shows nothing about coding for an older host", async () => {
     expect(tabs().map((b) => b.textContent)).not.toContain("Coding agent");
     expect(calls.some((c) => c.cmd === "runtime_capabilities")).toBe(false);
+  });
+
+  it("asks before closing over an unsaved git identity", async () => {
+    await tab("Git & GitHub");
+    const email = dialog().querySelector<HTMLInputElement>('input[aria-label="Git email"]')!;
+    await act(async () => type(email, "ada@example.com"));
+    await flush();
+    const esc = () => act(async () => window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" })));
+    await esc();
+    expect(closed).toBe(0);
+    expect(dialog().textContent).toContain("Close without saving your git identity?");
+    await esc();
+    expect(closed).toBe(1);
   });
 
   it("asks before closing over unsaved changes", async () => {

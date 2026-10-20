@@ -23,6 +23,8 @@ const OWN_BRANCHES_ONLY: &str = "otter.ownBranchesOnly";
 pub struct GitManager {
     repos_dir: PathBuf,
     env: EnvMap,
+    /// Otter's git identity and key, which every repository includes (D-133).
+    account: Arc<crate::git_account::GitAccount>,
     /// Serializes fetch/worktree operations per backing repository.
     locks: std::sync::Mutex<HashMap<String, Arc<Mutex<()>>>>,
 }
@@ -36,14 +38,52 @@ pub struct Checkout {
 }
 
 impl GitManager {
-    pub fn new(repos_dir: PathBuf, env: &EnvMap) -> Self {
+    pub fn new(
+        repos_dir: PathBuf,
+        env: &EnvMap,
+        account: Arc<crate::git_account::GitAccount>,
+    ) -> Self {
         let mut env = env.clone();
         // Never block on a credential prompt: the daemon has no terminal.
         env.insert("GIT_TERMINAL_PROMPT".into(), "0".into());
         GitManager {
             repos_dir,
             env,
+            account,
             locks: Default::default(),
+        }
+    }
+
+    /// Make `repo` include Otter's git settings (D-133), once.
+    async fn include(&self, repo: &Path) -> Result<()> {
+        let file = path_str(&self.account.config_file());
+        let has = self
+            .git(Some(repo), &["config", "--get-all", "include.path"])
+            .await
+            .unwrap_or_default();
+        if !has.lines().any(|l| l.trim() == file) {
+            self.git(Some(repo), &["config", "--add", "include.path", &file])
+                .await?;
+        }
+        Ok(())
+    }
+
+    /// Every repository Otter manages includes its git settings.
+    pub async fn include_everywhere(&self) {
+        let Ok(entries) = std::fs::read_dir(&self.repos_dir) else {
+            return;
+        };
+        for e in entries.flatten() {
+            let id = e.file_name().to_string_lossy().into_owned();
+            let base = self.base_dir(&id);
+            if !base.join("HEAD").exists() {
+                continue;
+            }
+            let lock = self.lock_for(&id);
+            let _guard = lock.lock().await;
+            if let Err(err) = self.include(&base).await {
+                tracing::warn!(repo = %id, "including Otter's git settings: {err:#}");
+            }
         }
     }
 
@@ -82,6 +122,9 @@ impl GitManager {
             // that up); refs/heads holds only the workspaces' own.
             self.git(None, &["init", "--quiet", "--bare", "--", &path_str(&tmp)])
                 .await?;
+            // Otter's git settings from the start (D-133): its key, once it
+            // works, for the first fetch too.
+            self.include(&tmp).await?;
             // As `clone` would, a local path made absolute: fetches run in
             // the copy.
             let url = match Path::new(repository) {
@@ -97,6 +140,7 @@ impl GitManager {
                 .context("git clone failed")?;
             std::fs::rename(&tmp, &base)?;
         }
+        self.include(&base).await?;
         progress("fetching");
         self.git(Some(&base), &["fetch", "--prune", "origin"])
             .await

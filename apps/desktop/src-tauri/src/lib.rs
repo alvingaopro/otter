@@ -7,6 +7,7 @@
 mod attach;
 mod files;
 mod forwards;
+mod git;
 mod hosts;
 mod perf;
 mod pins;
@@ -109,6 +110,14 @@ pub fn run() {
             hosts::host_remove,
             hosts::host_install,
             hosts::host_install_worker,
+            git::git_identity,
+            git::git_identity_set,
+            git::git_view,
+            git::git_key_create,
+            git::git_key_add,
+            git::git_check,
+            git::github_login,
+            git::github_logout,
             hosts::install_cli,
             hosts::cli_status,
             updates::update_get,

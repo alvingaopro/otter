@@ -118,6 +118,9 @@ const CREDENTIALS: &[&str] = &[
     ".ssh/",
     "id_rsa",
     "id_ed25519",
+    // Otter's own: its key, its gh's token, the host's secrets (D-133).
+    ".otter/state",
+    "gh/hosts.yml",
     "password",
     "secret",
     "token",
@@ -919,6 +922,9 @@ mod tests {
             "psql -c 'DROP TABLE users'",
             "vault kv put secret/db password=x",
             "cat ~/.ssh/id_ed25519",
+            // Otter's own key and gh token (D-133).
+            "cat ~/.otter/state/git/gh/hosts.yml",
+            "cp ~/.otter/state/git/id_ed25519 /tmp/k",
             "printenv",
             "kubectl apply -f deploy.yaml",
             "./deploy.sh prod",
