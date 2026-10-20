@@ -365,13 +365,19 @@ impl GitManager {
         {
             return;
         }
+        // `bool-or-str`: every spelling of false reads `false`; `always` stays.
         if let Ok(v) = self
-            .git(Some(repo), &["config", "--get", "core.logAllRefUpdates"])
-            .await
-            && matches!(
-                v.trim().to_ascii_lowercase().as_str(),
-                "false" | "no" | "off" | "0"
+            .git(
+                Some(repo),
+                &[
+                    "config",
+                    "--type=bool-or-str",
+                    "--get",
+                    "core.logAllRefUpdates",
+                ],
             )
+            .await
+            && v.trim() == "false"
         {
             tracing::info!(repo = %repo.display(), "keeping cloned branches: reflogs are off");
             return;
