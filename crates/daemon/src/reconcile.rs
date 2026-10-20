@@ -136,25 +136,27 @@ impl Daemon {
             .collect();
         let mut digests = Vec::new();
         for r in &watched {
-            if let Ok(text) = self.backend.capture(r, Some(0)).await {
+            let digest = self.backend.capture(r, Some(0)).await.ok().map(|text| {
                 let mut h = std::collections::hash_map::DefaultHasher::new();
                 text.hash(&mut h);
-                digests.push((r.clone(), h.finish()));
-            }
+                h.finish()
+            });
+            digests.push((r.clone(), digest));
         }
         let mut screens = self.screens.lock().unwrap();
         screens.retain(|r, _| watched.contains(r));
         for (r, digest) in digests {
-            let seen = |changed| Screen {
-                since: now,
-                changed,
-            };
-            match screens.get_mut(&r) {
-                Some((d, _)) if *d == digest => {}
-                Some(entry) => *entry = (digest, seen(true)),
-                None => {
-                    screens.insert(r, (digest, seen(false)));
+            match (screens.get_mut(&r), digest) {
+                (Some((d, s)), Some(digest)) => {
+                    *s = s.next(*d != digest, now);
+                    *d = digest;
                 }
+                // Not seen this time, so not seen moving.
+                (Some((_, s)), None) => s.moving_since = None,
+                (None, Some(digest)) => {
+                    screens.insert(r, (digest, Screen::first(now)));
+                }
+                (None, None) => {}
             }
         }
         screens.iter().map(|(r, (_, s))| (r.clone(), *s)).collect()

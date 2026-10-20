@@ -671,6 +671,7 @@ mod tests {
         super::super::Screen {
             since,
             changed: true,
+            moving_since: None,
         }
     }
 

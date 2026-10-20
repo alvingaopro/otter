@@ -20,11 +20,14 @@
 //!   internal-agent-hook claude <file>`, which appends a small record
 //!   (`hook_record`). `PermissionRequest` → blocked on an approval (a
 //!   question for `AskUserQuestion`, also caught by `PreToolUse`, and for
-//!   MCP `Elicitation`); `PostToolUse*` / `UserPromptSubmit` → working
-//!   again; a denial shows up in the transcript as an interruption (idle). A
-//!   prompt answered with "yes" for a long command shows as the screen
-//!   changing (Claude Code's elapsed-time counter) before the tool finishes.
-//!   Observed on Claude Code 2.1.295 (D-035).
+//!   MCP `Elicitation`); `PostToolUse*` of that tool / `UserPromptSubmit`
+//!   → working again; a denial shows up in the transcript as an
+//!   interruption (idle). No hook says a prompt was approved: a long command
+//!   shows as the screen moving at every look (Claude Code's spinner) before
+//!   the tool finishes. A prompt's screen is still, or changes now and then
+//!   (a background task ending, a resize) or once a second (an auto-deny
+//!   countdown), which is no answer. Observed on Claude Code 2.1.295 (D-035)
+//!   and 2.1.304 (D-136).
 //! - **Fallback:** if no hook has reported for this execution (hooks
 //!   disabled by policy, an older Claude Code), the shared quiet-turn
 //!   heuristic (`agents::settle`) applies.
@@ -65,9 +68,12 @@ use otter_core::AttentionKind;
 const CLOCK_SLACK: i64 = 5;
 const MESSAGE_EXCERPT: usize = 240;
 const DETAIL_EXCERPT: usize = 160;
-/// How long after a prompt appeared a screen change still counts as the
-/// prompt being drawn rather than answered.
+/// How long after a prompt appeared the screen moving still counts as the
+/// prompt being drawn (or the turn that led to it) rather than answered.
 const PROMPT_DRAW_MS: i64 = 2000;
+/// How long the screen must keep moving, at every look, for a prompt to
+/// count as answered (D-136): longer than anything once a second can fake.
+const ANSWER_MOTION_MS: i64 = 2000;
 
 const SETTINGS_FILE: &str = "claude-settings.json";
 const HOOKS_FILE: &str = "claude-hooks.jsonl";
@@ -124,6 +130,13 @@ struct Pending {
     /// The subagent that asked, if not the main agent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     agent: Option<String>,
+    /// The tool asked about, if known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    tool: Option<String>,
+    /// Once drawn, the screen kept moving: approved, the tool runs (D-136).
+    /// Kept until a hook or the transcript ends the prompt.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    answered: bool,
 }
 
 #[async_trait]
@@ -261,17 +274,22 @@ impl AgentProvider for ClaudeCode {
         {
             state.pending = None;
         }
+        // Approved in the terminal: once the prompt is drawn, the screen
+        // keeps moving at every look while the tool runs. A change now and
+        // then, or once a second, is no answer (D-136).
+        if let Some(p) = &mut state.pending
+            && !p.answered
+            && ctx.now.timestamp_millis() >= p.at + PROMPT_DRAW_MS
+            && ctx
+                .screen
+                .is_some_and(|s| s.moving_for(Duration::milliseconds(ANSWER_MOTION_MS), ctx.now))
+        {
+            p.answered = true;
+        }
         state_changed |= before != (state.hooks_offset, state.hooks_live, state.pending.clone());
 
         if let Some(p) = &state.pending {
-            // A prompt is a still screen; once it changes after being drawn,
-            // the prompt was answered and the tool is running.
-            let drawn = DateTime::<Utc>::from_timestamp_millis(p.at + PROMPT_DRAW_MS);
-            let answered = ctx
-                .screen
-                .zip(drawn)
-                .is_some_and(|(s, t)| s.changed_after(t));
-            if answered {
+            if p.answered {
                 next = AgentState::Working;
             } else {
                 next = AgentState::Blocked;
@@ -413,18 +431,26 @@ fn read_hooks(path: &Path, state: &mut ClaudeState, execution: i64) -> Option<()
         state.hooks_live = true;
         let detail = record["detail"].as_str().map(str::to_owned);
         let agent = record["agent"].as_str().map(str::to_owned);
+        let tool = record["tool"].as_str();
         let ask = |question: bool| Pending {
             question,
             detail: detail.clone(),
             at,
             agent: agent.clone(),
+            tool: tool.map(str::to_owned),
+            answered: false,
         };
-        match (record["event"].as_str(), record["tool"].as_str()) {
+        match (record["event"].as_str(), tool) {
             (Some("PermissionRequest" | "PreToolUse"), tool) => {
                 // `PreToolUse` is only hooked for questions, which then
                 // also get a `PermissionRequest`: keep the first.
                 let question = tool == Some(ASK_TOOL);
-                if !(question && state.pending.as_ref().is_some_and(|p| p.question)) {
+                if !(question
+                    && state
+                        .pending
+                        .as_ref()
+                        .is_some_and(|p| p.question && !p.answered))
+                {
                     state.pending = Some(ask(question));
                 }
             }
@@ -438,9 +464,14 @@ fn read_hooks(path: &Path, state: &mut ClaudeState, execution: i64) -> Option<()
                 }
                 _ => {}
             },
-            (Some("PostToolUse" | "PostToolUseFailure"), _) => {
-                // A tool finished — unless another agent's prompt is still up.
-                if state.pending.as_ref().is_none_or(|p| p.agent == agent) {
+            (Some("PostToolUse" | "PostToolUseFailure"), tool) => {
+                // A tool finished — unless another agent's prompt is still
+                // up, or it is another tool, called alongside the one asked
+                // about (D-136).
+                if state.pending.as_ref().is_none_or(|p| {
+                    p.agent == agent
+                        && (p.tool.is_none() || tool.is_none() || p.tool.as_deref() == tool)
+                }) {
                     state.pending = None;
                 }
             }
@@ -796,7 +827,8 @@ mod tests {
     }
 
     #[test]
-    fn hooks_drive_prompts_and_the_screen_tells_an_answer() {
+    fn hooks_drive_prompts_and_only_a_moving_screen_tells_an_answer() {
+        use AgentState::{Blocked, Working};
         let dir = tempfile::tempdir().unwrap();
         let env: EnvMap = [(
             "CLAUDE_CONFIG_DIR".to_owned(),
@@ -832,10 +864,12 @@ mod tests {
             prompt: None,
             blocker: None,
         };
-        let seen = |since| {
+        // Changed at `since`, still since.
+        let still = |since| {
             Some(Screen {
                 since,
                 changed: true,
+                moving_since: None,
             })
         };
         let observe = |agent: &mut AgentInfo, now: Timestamp, screen: Option<Screen>| {
@@ -861,6 +895,19 @@ mod tests {
             }
             obs.blocker
         };
+        // Looks every 500 ms from `from`, as reconcile takes them, the
+        // screen changing at each `true`: the states the agent goes through.
+        let looks =
+            |agent: &mut AgentInfo, screen: &mut Screen, from: Timestamp, changes: &[bool]| {
+                let mut states = Vec::new();
+                for (i, &changed) in changes.iter().enumerate() {
+                    let now = from + Duration::milliseconds(500 * i as i64);
+                    *screen = screen.next(changed, now);
+                    observe(agent, now, Some(*screen));
+                    states.push(agent.state);
+                }
+                states
+            };
 
         // A turn calls a tool that needs permission; the transcript stops
         // at the tool call (as observed) and the hook reports the prompt.
@@ -882,6 +929,12 @@ mod tests {
             &log,
             format!(r#"{{"event":"SessionStart","t":{}}}"#, ms(at(0))),
         );
+        // The turn's spinner moves the screen at every look.
+        let mut screen = Screen::first(at(0));
+        assert_eq!(
+            looks(&mut agent, &mut screen, at(1), &[true, true]),
+            [Working, Working]
+        );
         append(
             &log,
             format!(
@@ -889,9 +942,16 @@ mod tests {
                 ms(at(2))
             ),
         );
-        // The prompt being drawn is not an answer.
-        let b = observe(&mut agent, at(3), seen(at(3)));
-        assert_eq!(agent.state, AgentState::Blocked);
+        // Drawing the prompt is a change too, then it stands still: the
+        // moving that led up to it is no answer.
+        let states = looks(
+            &mut agent,
+            &mut screen,
+            at(2),
+            &[true, true, false, false, false, false],
+        );
+        assert!(states.iter().all(|s| *s == Blocked), "{states:?}");
+        let b = observe(&mut agent, at(5), Some(screen.next(false, at(5))));
         assert_eq!(
             b,
             Some(Blocker {
@@ -900,31 +960,80 @@ mod tests {
             })
         );
         // otterd restarted: its first look at the screen is no answer.
-        let first_look = Some(Screen {
-            since: at(30),
-            changed: false,
-        });
-        observe(&mut agent, at(31), first_look);
-        assert_eq!(agent.state, AgentState::Blocked);
+        observe(&mut agent, at(31), Some(Screen::first(at(30))));
+        assert_eq!(agent.state, Blocked);
+        // A background task ending, a resize: the screen changes once while
+        // the prompt is up. No answer (D-136; the old rule took any change
+        // after the draw for one).
+        let mut screen = Screen::first(at(30));
+        let states = looks(
+            &mut agent,
+            &mut screen,
+            at(40),
+            &[true, false, false, false, false, false],
+        );
+        assert!(states.iter().all(|s| *s == Blocked), "{states:?}");
+        // An auto-deny countdown redraws it once a second, every other look
+        // (and now and then at two looks in a row): no answer either.
+        let countdown: Vec<bool> = (0..20).map(|i| i % 2 == 0 || i == 7).collect();
+        let states = looks(&mut agent, &mut screen, at(45), &countdown);
+        assert!(states.iter().all(|s| *s == Blocked), "{states:?}");
         // Hooks are live: a long still screen doesn't matter.
-        observe(&mut agent, at(60), seen(at(3)));
-        assert_eq!(agent.state, AgentState::Blocked);
-        // Approved: the tool runs and the screen ticks before it finishes.
-        observe(&mut agent, at(62), seen(at(61)));
-        assert_eq!(agent.state, AgentState::Working);
+        observe(&mut agent, at(60), still(at(54)));
+        assert_eq!(agent.state, Blocked);
+        // Approved: the tool runs and its spinner moves the screen at every
+        // look. Two seconds of that is an answer, before the tool finishes.
+        let mut screen = Screen::first(at(60));
+        assert_eq!(
+            looks(&mut agent, &mut screen, at(61), &[true; 5]),
+            [Blocked, Blocked, Blocked, Blocked, Working]
+        );
+        // Kept until the tool is done: a hiccup doesn't take it back.
+        assert_eq!(
+            looks(&mut agent, &mut screen, at(64), &[false, false, true]),
+            [Working, Working, Working]
+        );
         append(
             &log,
             format!(
                 r#"{{"event":"PostToolUse","tool":"Bash","t":{}}}"#,
-                ms(at(63))
+                ms(at(66))
             ),
         );
-        observe(&mut agent, at(64), seen(at(64)));
-        assert_eq!(agent.state, AgentState::Working);
+        observe(&mut agent, at(67), still(at(67)));
+        assert_eq!(agent.state, Working);
         // Thinking for a long time with a still screen is still working:
         // nothing asked for the developer.
-        observe(&mut agent, at(200), seen(at(64)));
-        assert_eq!(agent.state, AgentState::Working);
+        observe(&mut agent, at(100), still(at(67)));
+        assert_eq!(agent.state, Working);
+
+        // Approved at once: the screen never stops moving, from the turn
+        // through the prompt to the tool, so it is answered once drawn.
+        let mut screen = Screen::first(at(146));
+        assert_eq!(
+            looks(&mut agent, &mut screen, at(147), &[true; 2]),
+            [Working, Working]
+        );
+        append(
+            &log,
+            format!(
+                r#"{{"event":"PermissionRequest","tool":"Bash","detail":"Bash: Run the tests","t":{}}}"#,
+                ms(at(148))
+            ),
+        );
+        assert_eq!(
+            looks(&mut agent, &mut screen, at(148), &[true; 6]),
+            [Blocked, Blocked, Blocked, Blocked, Working, Working]
+        );
+        append(
+            &log,
+            format!(
+                r#"{{"event":"PostToolUse","tool":"Bash","t":{}}}"#,
+                ms(at(160))
+            ),
+        );
+        observe(&mut agent, at(161), still(at(161)));
+        assert_eq!(agent.state, Working);
 
         // A question.
         append(
@@ -941,8 +1050,20 @@ mod tests {
                 ms(at(201))
             ),
         );
-        let b = observe(&mut agent, at(202), seen(at(201)));
-        assert_eq!(agent.state, AgentState::Blocked);
+        let b = observe(&mut agent, at(202), still(at(201)));
+        assert_eq!(agent.state, Blocked);
+        assert_eq!(b.unwrap().kind, AttentionKind::Question);
+        // Another tool called alongside it (a subagent sent off in the
+        // background) finishes: the question is still up (D-136).
+        append(
+            &log,
+            format!(
+                r#"{{"event":"PostToolUse","tool":"Agent","t":{}}}"#,
+                ms(at(203))
+            ),
+        );
+        let b = observe(&mut agent, at(204), still(at(203)));
+        assert_eq!(agent.state, Blocked);
         assert_eq!(b.unwrap().kind, AttentionKind::Question);
         append(
             &log,
@@ -951,8 +1072,8 @@ mod tests {
                 ms(at(210))
             ),
         );
-        observe(&mut agent, at(211), seen(at(210)));
-        assert_eq!(agent.state, AgentState::Working);
+        observe(&mut agent, at(211), still(at(210)));
+        assert_eq!(agent.state, Working);
 
         // Denied: no hook, the transcript records an interruption.
         append(
@@ -962,8 +1083,8 @@ mod tests {
                 ms(at(220))
             ),
         );
-        observe(&mut agent, at(221), seen(at(220)));
-        assert_eq!(agent.state, AgentState::Blocked);
+        observe(&mut agent, at(221), still(at(220)));
+        assert_eq!(agent.state, Blocked);
         append(
             &transcript,
             format!(
@@ -971,9 +1092,15 @@ mod tests {
                 at(230).to_rfc3339()
             ),
         );
-        let b = observe(&mut agent, at(231), seen(at(230)));
+        let b = observe(&mut agent, at(231), still(at(230)));
         assert_eq!(agent.state, AgentState::Idle);
         assert!(b.is_none());
+
+        // What older otterds kept still reads.
+        let old: ClaudeState =
+            serde_json::from_value(serde_json::json!({"pending": {"at": 1}})).unwrap();
+        let p = old.pending.unwrap();
+        assert!(p.tool.is_none() && !p.answered);
     }
 
     #[test]
@@ -990,6 +1117,7 @@ mod tests {
             screen: Some(Screen {
                 since: started,
                 changed: true,
+                moving_since: None,
             }),
             now: Utc::now(),
             env: &env,
