@@ -273,6 +273,18 @@ describe("Activity Bar navigation", () => {
     expect(button.textContent).toBe("Updating…");
   });
 
+  it("checks for an update from the settings menu (D-125)", async () => {
+    const { invoke } = await import("@tauri-apps/api/core");
+    const calls = vi.mocked(invoke);
+    await act(async () => host.querySelector<HTMLButtonElement>('button[aria-label="Settings"]')!.click());
+    const item = [...document.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')].find(
+      (b) => b.textContent === "Check for updates…",
+    )!;
+    calls.mockClear();
+    await act(async () => item.click());
+    expect(calls.mock.calls.map(([cmd]) => cmd)).toEqual(["update_check"]);
+  });
+
   it("shows the performance overlay only once it's turned on (D-128)", async () => {
     const { setPerfOverlay } = await import("./perf");
     expect(document.querySelector(".perf-overlay")).toBeNull();

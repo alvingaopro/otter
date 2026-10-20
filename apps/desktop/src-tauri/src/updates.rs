@@ -1,7 +1,7 @@
 //! Updating the app where it is (D-125). The latest release's `latest.json`
 //! names a signed `.app.tar.gz` per architecture; a check runs a little after
-//! launch and then hourly, and the app menu's "Check for Updates…" runs one
-//! on demand. What it finds is offered at the bottom of the sidebar
+//! launch and then hourly, and "Check for Updates…" (in the app menu and the
+//! settings menu) runs one on demand. What it finds is offered at the bottom of the sidebar
 //! (`update`); installing is the developer's click, then the app restarts
 //! into the new version.
 //!
@@ -179,6 +179,12 @@ pub fn check_now(app: &AppHandle) {
             }
         }
     });
+}
+
+/// "Check for Updates…" from the settings menu: the app menu's check.
+#[tauri::command]
+pub fn update_check(app: AppHandle) {
+    check_now(&app);
 }
 
 fn say(app: &AppHandle, title: &str, message: &str) {

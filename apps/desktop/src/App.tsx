@@ -374,6 +374,8 @@ export default function App() {
               label: cli?.version ? "Command line tools…" : "Install command line tools…",
               onSelect: () => setOpen({ kind: "cli" }),
             },
+            // What it finds is said in a dialog, as from the app menu (D-125).
+            { label: "Check for updates…", onSelect: () => void invoke("update_check") },
           ]}
         />
         <div className="view" id="view-inbox" role="tabpanel" aria-labelledby="view-tab-inbox" hidden={view !== "inbox"}>
