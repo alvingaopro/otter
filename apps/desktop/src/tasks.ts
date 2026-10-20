@@ -413,6 +413,22 @@ export function taskGlyph(f: Task): "needs" | "working" | "done" | "failed" | "i
   return "idle";
 }
 
+/**
+ * The tasks still going in a workspace: their coding agent works there
+ * without a session of its own, so the workspace shows them instead.
+ */
+export function tasksIn(list: PlacedTask[], host: string, workspaceId: string): PlacedTask[] {
+  return sortTasks(
+    list.filter(
+      (p) =>
+        p.host === host &&
+        p.task.status !== "done" &&
+        p.task.status !== "cancelled" &&
+        (p.task.workspace_id === workspaceId || p.task.steps.some((t) => t.workspace_id === workspaceId)),
+    ),
+  );
+}
+
 /** Tasks that need you on top, longest-waiting first; then newest activity first. */
 export function sortTasks(list: PlacedTask[]): PlacedTask[] {
   return [...list].sort((a, b) => {

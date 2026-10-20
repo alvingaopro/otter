@@ -15,6 +15,7 @@ import { ago, kindLabel, sessionGlyph } from "./model";
 import { explain, invokeNewer } from "./newer";
 import { RenameDialog } from "./RenameDialog";
 import { SessionTerminal } from "./SessionTerminal";
+import { STATUS_LABEL, statusDetail, taskGlyph, type PlacedTask } from "./tasks";
 import type { AttentionView, Placed, SessionPort, SessionView, WorkspaceChanges } from "./types";
 
 type Side = "files" | "timeline" | "changes";
@@ -53,6 +54,8 @@ interface Props {
   onOpenPort: (port: number) => void;
   /** Show the task this workspace was made for (D-105). */
   onOpenTask: (taskId: string) => void;
+  /** The tasks still going here: their coding agent has no session to show. */
+  tasks: PlacedTask[];
 }
 
 type Open = "brief" | "new-session" | "archive-workspace" | "delete-workspace" | "delete-session" | "rename-session" | null;
@@ -69,6 +72,7 @@ export function WorkspacePane({
   active,
   onOpenPort,
   onOpenTask,
+  tasks,
 }: Props) {
   const { host, ws } = placed;
   const current = ws.sessions.find((s) => s.id === session) ?? ws.sessions[0];
@@ -476,6 +480,31 @@ export function WorkspacePane({
         )}
       </div>
 
+      {tasks.length > 0 && (
+        <ul className="ws-tasks" aria-label="Tasks working here">
+          {tasks.map(({ task: t }) => {
+            const detail = statusDetail(t);
+            return (
+              <li key={t.id}>
+                <button
+                  className="ws-task"
+                  title="Otter's coding agent works here for this task, without a session: follow it in the task"
+                  onClick={() => onOpenTask(t.id)}
+                >
+                  <Glyph kind={taskGlyph(t)} size={10} />
+                  <span className="ws-task-label">Task</span>
+                  <span className="ws-task-title">{t.title}</span>
+                  <span className="ws-task-status">
+                    {STATUS_LABEL[t.status]}
+                    {detail && ` · ${detail}`}
+                  </span>
+                  <span className="ws-task-open">Open task ↗</span>
+                </button>
+              </li>
+            );
+          })}
+        </ul>
+      )}
       {attention && (
         <div className={`banner ${attention.kind === "failure" ? "failure" : attention.needsYou ? "needs" : "info"}`} role="status">
           <div className="banner-text">
