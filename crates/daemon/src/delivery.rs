@@ -746,6 +746,19 @@ impl Git<'_> {
         (b != "HEAD").then_some(b)
     }
 
+    /// The other worktrees of this repository (`git worktree list`), as
+    /// directories on this host. Empty when Git can't say.
+    pub async fn worktrees(&self) -> Vec<std::path::PathBuf> {
+        let Ok(out) = self.output(&["worktree", "list", "--porcelain"]).await else {
+            return vec![];
+        };
+        out.lines()
+            .filter_map(|l| l.strip_prefix("worktree "))
+            .map(std::path::PathBuf::from)
+            .filter(|p| p != self.root)
+            .collect()
+    }
+
     pub async fn head(&self) -> Result<String> {
         self.git(&["rev-parse", "HEAD"]).await
     }

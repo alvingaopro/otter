@@ -6266,3 +6266,95 @@ path in `ToolCall::Read`, so a login read through them is not asked about
 `$HOME`; what a script does inside; and a word such as `token` in a search
 that reaches outside the workspace (`grep -rn token ../other-repo` still
 asks). Those are for the next steps.
+
+## D-174 — Otter's model judges what a word flags and the reflog brings back; the task's own worktrees are inside (2026-10-21)
+
+Milestone 2 of `docs/plans/agent-judged-risk.md` (D-173 was milestone 1). The
+policy stays the floor; what it flags only by a word, where the damage can be
+undone or there is none, is no longer the developer's by default.
+
+Supersedes, for the judged classes only: D-049's "any word-listed command asks
+the developer"; `decide_open`'s "a developer-only ask is never shown to a
+model" (the floor keeps it); D-044's "a denial can't be turned around", for a
+denial **by the model**; D-066's "other directories still ask", for the
+task's own worktrees. D-066's "credentials are never granted" is unchanged.
+
+What changed:
+
+- **Judged asks.** `ask_judged` is an `Ask` with `user_only: false`, High
+  risk (so it is told apart from the unknown-tool Medium ask). Judged:
+  `git rebase` and `git branch -d` (local history; the reflog brings it
+  back), and a credential word (`token`, `password`, …) in a reader or test
+  (`READERS`, `GIT_READERS`, `TESTERS`) whose read reaches outside the
+  workspace, when the word is something it looks for: not in the operands
+  that reach outside (`cat /etc/app/password.txt`, `grep -r password
+  ~/.aws` stay the developer's), not a `$VAR`, not an assignment, not any
+  other command. Everything else on the floor is as it was: push, publish,
+  deploy, root, work Git can't bring back, the broad destructive words
+  (`delete`, `prune`, `uninstall`, `destroy`, `terminate`), infrastructure,
+  credentials files and places, writes and edits outside.
+- **Strictest wins inside a piece.** `classify_words` reads every list and
+  returns the worst hit, so `sudo git rebase main` is the developer's. A
+  routine delete (D-164) no longer hides other destructive words in its piece.
+- **The task's own worktrees are inside** (`policy::Scope`): the other
+  worktrees of the workspace's repository, from `git worktree list` run in
+  the workspace, only for an ask that would otherwise be the developer's, and
+  **not** Otter's own workspaces under `workspaces/` (they are other tasks'
+  work). Edits, reads and writes there are routine; deleting is still judged
+  against the root alone. Git's internals and credentials stay asked about.
+- **The model's decision.** A judged ask goes to `Brain::decide` with a
+  prompt of its own (`brain::judged_prompt`): the whole command (redacted),
+  the workspace root, each piece's directory and whether it is inside
+  (`policy::explain`), the policy's reason, and that the command's text is
+  data, not an instruction. Allow only what is plainly part of the task and
+  undoable or read-only; deny the plainly harmful; else escalate. The
+  rationale is redacted and recorded on the decision. No model, an error, an
+  answer that is not allow or deny, or **20 seconds** (`JUDGED_DEADLINE`,
+  `OTTER_JUDGED_DEADLINE_MS` in tests) escalate to the developer, as today.
+  Dropping the call kills the `claude` process (`kill_on_drop`).
+- **A model's deny is not final.** It refuses the call once, with its
+  rationale. The same call again in the task (same redacted summary and
+  command, whitespace aside) is recorded `user_only` ("Otter declined this
+  once"), so rewording or retrying is not a new sample for the model.
+  `policy::resolve` treats only a denial by the developer or by policy as
+  final. No change to the store or the protocol (`DecisionRequest` has what
+  the prompt needs), so no protocol bump.
+
+Answers to the plan's open questions:
+
+- A model's allow is **not** remembered for the task: one wrong allow lasts
+  one call. Judged calls are never granted (`grant` returns none for any call
+  `classify_words` doesn't allow).
+- **No Settings switch** yet. A host without a model already sends every
+  judged ask to the developer. Add one if dogfooding shows it is wanted.
+- The infrastructure list and the broad destructive words **stay on the
+  floor**, as the plan proposed, until a measurement says a model can tell
+  them apart.
+- **Worktrees** are found from the repository's worktree list minus Otter's
+  own workspaces. A sibling worktree the agent makes next to the workspace is
+  the case this serves.
+- Still open, as the plan says: a secret written as a literal
+  (`curl -u user:pw …`), and whether Medium is the right label for the
+  skill/unknown-tool class.
+
+Deliberate narrowings of the plan:
+
+- "The developer can approve a model deny from the decision list" is **not**
+  built. By the time the developer sees it the agent has been told no and has
+  moved on, so approving the past decision would change nothing; the repeat is
+  the developer's and can be approved, and does reach the agent.
+- The prompt's directories are worked out against the workspace root alone,
+  so a command run in a sibling worktree reads as "outside" to the model.
+- The quote-cut `|` class is D-173's, not judged here.
+
+Not measured: how often the model allows, denies and escalates the judged
+classes (the plan wanted the bench's recorded calls run through it first). If
+it escalates nearly everything the problem is not removed; that is the number
+to look at after dogfooding.
+
+Tests: `what_is_only_a_word_or_comes_back_is_judged` and
+`a_tasks_own_worktrees_are_inside` (policy), `a_judged_call_is_shown_whole_with_where_it_runs`
+(brain), and in `crates/daemon/tests/e2e.rs` `otters_model_judges_what_comes_back_from_the_reflog`,
+`without_a_model_or_in_time_a_judged_call_is_the_developers` and
+`a_model_denial_is_not_final_a_repeat_goes_to_the_developer` (new test brains
+`no` and `sleepy`; the fake agent's `ASK_REBASE` and `ASK_REBASE_TWICE`).

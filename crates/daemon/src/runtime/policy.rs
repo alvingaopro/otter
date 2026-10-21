@@ -29,7 +29,15 @@
 //! not understood, and a determined command can hide what it does.
 //!
 //! A denial — by policy or by the developer — is final for that request: no
-//! model decision can turn it into an allow ([`resolve`]).
+//! model decision can turn it into an allow ([`resolve`]). A model's denial
+//! is not: the same call again goes to the developer (D-174).
+//!
+//! What the lists flag only by a word, where the damage can be undone or
+//! there is none, is **judged** (D-174): an ask that is not `user_only`, so
+//! Otter's model decides it and escalates when unsure. A reader's credential
+//! word in a read that reaches outside the workspace, and local history that
+//! comes back from the reflog (`git rebase`, `git branch -d`), are judged.
+//! The strictest hit in a piece decides.
 
 use std::path::Path;
 
@@ -85,10 +93,8 @@ const DESTRUCTIVE: &[&str] = &[
     "git restore",
     "git stash drop",
     "git stash clear",
-    "git branch -d",
     "git push --force",
     "git push -f",
-    "git rebase",
     "git filter-branch",
     // Data and infrastructure.
     "drop table",
@@ -110,6 +116,10 @@ const DESTRUCTIVE: &[&str] = &[
     "kubectl delete",
     "helm uninstall",
 ];
+/// Local history that comes back from the reflog: judged by the model
+/// (D-174), not asked of the developer. A branch's commits are still in it
+/// after `git branch -d`, and so is a branch's old tip after a rebase.
+const RECOVERABLE: &[&str] = &["git branch -d", "git rebase"];
 /// Commands or arguments that touch credentials.
 const CREDENTIALS: &[&str] = &[
     "vault",
@@ -975,7 +985,7 @@ fn deletes_inside(piece: &str, line: &str, cwd: &Path, root: &Path, elsewhere: b
             }
             let real = real_path(&p);
             let glob = op.contains(['*', '?', '[']);
-            inside(root, &p.to_string_lossy())
+            real.starts_with(&real_root)
                 && real != real_root
                 && !real.starts_with(real_root.join(".git"))
                 && !(glob && real.parent() == Some(real_root.as_path()))
@@ -1062,36 +1072,70 @@ const ACTING_OPTIONS: &[&str] = &[
 /// an environment set for it, a substitution, a redirection from a file, a
 /// variable, an option that runs or writes something, or an operand or an
 /// option's value outside the workspace (or scratch).
-fn doing(piece: &str, cwd: &Path, root: &Path) -> String {
-    let whole = piece.to_owned();
+fn doing(piece: &str, cwd: &Path, root: &Scope) -> String {
+    match reads(piece, cwd, root) {
+        Reads::Inside(command) => command,
+        Reads::Beyond(_) | Reads::Not => piece.to_owned(),
+    }
+}
+
+/// What a piece does with what it is given.
+enum Reads {
+    /// It does more than read, search or test, or could (see [`doing`]).
+    Not,
+    /// It only reads the workspace (or scratch): this is the command.
+    Inside(String),
+    /// It only reads, but something it is given is outside the workspace
+    /// (the text of those operands): a credential word anywhere else in it
+    /// is a word it looks for, which the model may judge (D-174).
+    Beyond(String),
+}
+
+fn reads(piece: &str, cwd: &Path, root: &Scope) -> Reads {
     let words: Vec<&str> = piece.split_whitespace().collect();
     let Some((cmd, rest)) = words.split_first().filter(|(c, _)| !c.contains('=')) else {
-        return whole;
+        return Reads::Not;
     };
     let (command, operands) = match (*cmd, rest.split_first()) {
         ("git", Some((sub, rest))) if GIT_READERS.contains(sub) => (format!("git {sub}"), rest),
         (c, Some((sub, rest))) if TESTERS.contains(&(c, *sub)) => (format!("{c} {sub}"), rest),
         (c, _) if READERS.contains(&c) || TESTERS.contains(&(c, "")) => (c.to_owned(), rest),
-        _ => return whole,
+        _ => return Reads::Not,
     };
     let stays = |op: &str| {
         target(cwd, op).is_some_and(|p| inside(root, &p.to_string_lossy()) || scratch(&p))
     };
-    let only_reads = operands.iter().all(|w| {
+    // Per operand: `None` when it could make the piece do more; else
+    // whether it stays in the workspace.
+    let operand = |op: &&str| -> Option<(bool, String)> {
         // Quoted or escaped, an option is still an option (`"--pre=x"`).
-        let w = unquoted(w);
+        let w = unquoted(op);
         let w = w.as_str();
-        !w.contains(['<', '(', ')', '$', '`'])
-            && !(*cmd == "find" && FIND_ACTS.contains(&w))
-            && match (w.starts_with('-'), w.split_once('=')) {
-                (true, Some((name, value))) => !acting(name) && stays(value),
-                (true, None) => !acting(w) && !w.contains(['/', '~']),
-                // `cache_dir=/elsewhere`: both sides stay.
-                (false, Some((name, value))) => stays(name) && stays(value),
-                (false, None) => stays(w),
-            }
-    });
-    if only_reads { command } else { whole }
+        if w.contains(['<', '(', ')', '$', '`']) || (*cmd == "find" && FIND_ACTS.contains(&w)) {
+            return None;
+        }
+        let stayed = match (w.starts_with('-'), w.split_once('=')) {
+            (true, Some((name, value))) => (!acting(name)).then(|| stays(value))?,
+            (true, None) => (!acting(w) && !w.contains(['/', '~'])).then_some(true)?,
+            // `cache_dir=/elsewhere`: both sides stay.
+            (false, Some((name, value))) => stays(name) && stays(value),
+            (false, None) => stays(w),
+        };
+        Some((stayed, (*op).to_owned()))
+    };
+    let Some(seen) = operands.iter().map(operand).collect::<Option<Vec<_>>>() else {
+        return Reads::Not;
+    };
+    let outside: Vec<&str> = seen
+        .iter()
+        .filter(|(s, _)| !s)
+        .map(|(_, w)| w.as_str())
+        .collect();
+    if outside.is_empty() {
+        Reads::Inside(command)
+    } else {
+        Reads::Beyond(outside.join(" "))
+    }
 }
 
 /// A word as the shell passes it, roughly: its quotes and backslashes go
@@ -1181,7 +1225,7 @@ fn cd(piece: &str, line: &str, cwd: &Path, known: bool) -> Option<(std::path::Pa
 
 /// What one piece of a command line writes outside the workspace, if it
 /// does (`cwd`: where it runs).
-fn writes_outside(piece: &str, cwd: &Path, root: &Path) -> Option<String> {
+fn writes_outside(piece: &str, cwd: &Path, root: &Scope) -> Option<String> {
     let words: Vec<&str> = piece.split_whitespace().collect();
     let mut targets: Vec<String> = Vec::new();
     // Redirections: `> f`, `>> f`, `>f`, `2> f`, `&> f`.
@@ -1257,7 +1301,7 @@ fn writes_outside(piece: &str, cwd: &Path, root: &Path) -> Option<String> {
 /// Classify a command line: allowed unless a piece of it deletes,
 /// destroys, touches credentials, pushes or publishes, runs as root, or
 /// writes outside the workspace.
-fn classify_command(line: &str, root: &Path) -> Verdict {
+fn classify_command(line: &str, root: &Scope) -> Verdict {
     // What spans pieces (a pipe into a shell) is read on the whole line;
     // the rest piece by piece.
     let mut verdict = never(line);
@@ -1273,9 +1317,17 @@ fn classify_command(line: &str, root: &Path) -> Verdict {
         // tell they are (D-164).
         let routine_delete =
             step.known && deletes_inside(piece, line, &step.cwd, root, step.shell.is_some());
+        let beyond = match reads(piece, &step.cwd, root) {
+            Reads::Beyond(outside) => Some(outside),
+            _ => None,
+        };
         verdict = worst(
             verdict,
-            classify_words(&both_ways(&doing(piece, &step.cwd, root)), routine_delete),
+            classify_words(
+                &both_ways(&doing(piece, &step.cwd, root)),
+                routine_delete,
+                beyond.as_deref(),
+            ),
         );
         if let Some(f) = names_secrets_file(piece)
             .or_else(|| mentions_any(&both_ways(piece).to_lowercase(), CREDENTIAL_FILES))
@@ -1297,7 +1349,7 @@ fn classify_command(line: &str, root: &Path) -> Verdict {
 }
 
 /// What a line that only prints does: what its redirection writes.
-fn prints(line: &str, root: &Path) -> Verdict {
+fn prints(line: &str, root: &Scope) -> Verdict {
     if let Some(f) = names_secrets_file(line) {
         return ask_user(format!("touches credentials (`{f}`)"));
     }
@@ -1336,7 +1388,7 @@ fn never(line: &str) -> Verdict {
 
 /// The word lists, over one piece of a line; `routine_delete`: it deletes
 /// only the work's own files, which isn't destroying anything.
-fn classify_words(line: &str, routine_delete: bool) -> Verdict {
+fn classify_words(line: &str, routine_delete: bool, beyond: Option<&str>) -> Verdict {
     let lower = line.to_lowercase();
     // What no one may allow, as written: `grep -rn "rm -rf /" docs` only
     // looks for it.
@@ -1344,21 +1396,64 @@ fn classify_words(line: &str, routine_delete: bool) -> Verdict {
     if severity(&never) == 3 {
         return never;
     }
-    if let Some(m) = mentions_any(&lower, DESTRUCTIVE)
-        && !(routine_delete && matches!(m.as_str(), "rm" | "rmdir" | "unlink"))
-    {
-        return ask_user(format!("deletes or destroys something (`{m}`)"));
+    // Every list is read, and the strictest hit decides (D-174): a judged
+    // hit never lowers a hit the developer decides, whatever the order.
+    let destructive: Vec<&str> = DESTRUCTIVE
+        .iter()
+        .copied()
+        .filter(|n| !(routine_delete && matches!(*n, "rm" | "rmdir" | "unlink")))
+        .collect();
+    let mut verdict = Verdict::Allow;
+    if let Some(m) = mentions_any(&lower, &destructive) {
+        verdict = worst(
+            verdict,
+            ask_user(format!("deletes or destroys something (`{m}`)")),
+        );
+    }
+    if let Some(m) = mentions_any(&lower, RECOVERABLE) {
+        verdict = worst(
+            verdict,
+            ask_judged(format!("changes local history (`{m}`), which comes back")),
+        );
     }
     if let Some(m) = mentions_any(&lower, CREDENTIALS) {
-        return ask_user(format!("touches credentials (`{m}`)"));
+        let why = format!("touches credentials (`{m}`)");
+        // A word a reader or a test looks for, in a read that reaches
+        // outside the workspace: not a secret in itself, unless it is
+        // in what is read (`cat /etc/app/password.txt`).
+        let looks_for = beyond.is_some_and(|outside| {
+            mentions_any(&both_ways(outside).to_lowercase(), CREDENTIALS).is_none()
+        });
+        verdict = worst(
+            verdict,
+            if looks_for {
+                ask_judged(format!("{why}, as a word in a read outside the workspace"))
+            } else {
+                ask_user(why)
+            },
+        );
     }
     if let Some(m) = mentions_any(&lower, PRODUCTION) {
-        return ask_user(format!("pushes, publishes or deploys (`{m}`)"));
+        verdict = worst(
+            verdict,
+            ask_user(format!("pushes, publishes or deploys (`{m}`)")),
+        );
     }
     if mentions_any(&lower, &["sudo", "doas"]).is_some() {
-        return ask_user("runs as root".into());
+        verdict = worst(verdict, ask_user("runs as root".into()));
     }
-    Verdict::Allow
+    verdict
+}
+
+/// Asked of Otter's model rather than the developer (D-174): high risk, so
+/// it is not mistaken for a tool policy doesn't know.
+fn ask_judged(why: String) -> Verdict {
+    Verdict::Ask {
+        risk: Risk::High,
+        kind: DecisionKind::ToolPermission,
+        user_only: false,
+        why,
+    }
 }
 
 fn ask_user(why: String) -> Verdict {
@@ -1409,14 +1504,57 @@ fn real_path(path: &Path) -> std::path::PathBuf {
 /// Is `path` inside `root` — where it really is, symlinks resolved on both
 /// sides? (A workspace reached through a symlink is still the workspace; a
 /// symlink inside it pointing elsewhere isn't.)
-fn inside(root: &Path, path: &str) -> bool {
+fn inside(scope: &Scope, path: &str) -> bool {
     let p = Path::new(path);
     let joined = if p.is_absolute() {
         p.to_path_buf()
     } else {
-        root.join(p)
+        scope.root.join(p)
     };
-    real_path(&joined).starts_with(real_path(root))
+    let real = real_path(&joined);
+    std::iter::once(&scope.root)
+        .chain(&scope.trees)
+        .any(|r| real.starts_with(real_path(r)))
+}
+
+/// Where a task's work is, for the policy: the workspace's root, and the
+/// other worktrees of the workspace's own repository (D-174), which are the
+/// same project and count as inside it. For edits, reads and writes only:
+/// what is deleted is still judged against the root alone (D-066).
+#[derive(Clone, Debug)]
+pub struct Scope {
+    root: std::path::PathBuf,
+    trees: Vec<std::path::PathBuf>,
+}
+
+impl Scope {
+    /// The root and nothing else.
+    pub fn alone(root: &Path) -> Scope {
+        Scope {
+            root: root.to_path_buf(),
+            trees: vec![],
+        }
+    }
+
+    pub fn with_trees(root: &Path, trees: Vec<std::path::PathBuf>) -> Scope {
+        Scope {
+            root: root.to_path_buf(),
+            trees: trees.into_iter().filter(|t| t != root).collect(),
+        }
+    }
+
+    /// The other worktrees counted as inside.
+    #[cfg(test)]
+    pub fn trees(&self) -> &[std::path::PathBuf] {
+        &self.trees
+    }
+}
+
+impl std::ops::Deref for Scope {
+    type Target = Path;
+    fn deref(&self) -> &Path {
+        &self.root
+    }
 }
 
 /// What policy says about a tool call in a workspace rooted at `root`.
@@ -1441,6 +1579,11 @@ pub fn read_only(call: &ToolCall) -> Option<Verdict> {
 }
 
 pub fn classify(call: &ToolCall, root: &Path) -> Verdict {
+    classify_in(call, &Scope::alone(root))
+}
+
+/// [`classify`] in a task's [`Scope`]: its own worktrees are inside.
+pub fn classify_in(call: &ToolCall, root: &Scope) -> Verdict {
     match call {
         ToolCall::Read => Verdict::Allow,
         ToolCall::Edit { path } => {
@@ -1492,6 +1635,29 @@ pub fn classify(call: &ToolCall, root: &Path) -> Verdict {
     }
 }
 
+/// Where each piece of a command line runs, for the model that judges it
+/// (D-174): the piece (redacted), its directory after the line's `cd`s, and
+/// whether that is inside the workspace. What the policy would not say
+/// is said as unknown.
+pub fn explain(line: &str, root: &Path) -> String {
+    let scope = Scope::alone(root);
+    let mut out = format!("Workspace root: {}\n", root.display());
+    for step in walk(line, root) {
+        let where_ = if !step.known {
+            "somewhere not known (after a `cd` the policy cannot follow)".to_owned()
+        } else if inside(&scope, &step.cwd.to_string_lossy()) {
+            format!("{}, inside the workspace", step.cwd.display())
+        } else {
+            format!("{}, outside the workspace", step.cwd.display())
+        };
+        out.push_str(&format!(
+            "- `{}` runs in {where_}\n",
+            otter_core::redact::redact(&step.piece)
+        ));
+    }
+    out
+}
+
 /// What the developer's approval of `call` may let through for the rest of
 /// the task (D-066), as a key: the same command line, edits in the same
 /// directory outside the workspace, the same tool. Only for what is asked
@@ -1499,7 +1665,13 @@ pub fn classify(call: &ToolCall, root: &Path) -> Verdict {
 /// credentials, pushing and deploying, root are asked every time. A line
 /// with a credential in it is too: its key would keep the credential
 /// (D-157).
+#[cfg(test)]
 pub fn grant(call: &ToolCall, root: &Path) -> Option<String> {
+    grant_in(call, &Scope::alone(root))
+}
+
+/// [`grant`] in a task's [`Scope`].
+pub fn grant_in(call: &ToolCall, root: &Scope) -> Option<String> {
     match call {
         ToolCall::Command { line } => {
             if otter_core::redact::has_secret(line) {
@@ -1511,6 +1683,7 @@ pub fn grant(call: &ToolCall, root: &Path) -> Option<String> {
                     &both_ways(&doing(piece, &step.cwd, root)),
                     step.known
                         && deletes_inside(piece, line, &step.cwd, root, step.shell.is_some()),
+                    None,
                 ) != Verdict::Allow
                     || names_secrets_file(piece).is_some()
                     || mentions_any(&both_ways(piece).to_lowercase(), CREDENTIAL_FILES).is_some()
@@ -1550,7 +1723,8 @@ pub struct Proposal {
 
 /// Whether a proposal may stand. The only way to allow a `user_only`
 /// request is the developer; a policy denial can't be allowed by anyone; a
-/// request the developer already denied stays denied.
+/// request the developer already denied stays denied (`previously_denied`:
+/// not one that Otter's model denied, D-174).
 pub fn resolve(verdict: &Verdict, previously_denied: bool, p: &Proposal) -> Result<(), String> {
     if !p.allow {
         return Ok(()); // Anyone may say no.
@@ -2318,7 +2492,6 @@ mod tests {
             // Reaching outside the workspace, or through a variable.
             "grep -r password ~/.aws",
             "cat ~/.ssh/id_ed25519",
-            "grep -rn token ../other-repo",
             "grep $API_TOKEN src",
             "cat /etc/app/password.txt",
             // Secrets files by name, as before (D-066).
@@ -2380,6 +2553,101 @@ mod tests {
         let line = |l: &str| grant(&ToolCall::Command { line: l.into() }, root);
         assert_eq!(line("git restore src/"), None);
         assert_eq!(line("grep -r password ~/.aws"), None);
+    }
+
+    fn is_judged(v: &Verdict) -> bool {
+        matches!(
+            v,
+            Verdict::Ask {
+                user_only: false,
+                risk: Risk::High,
+                ..
+            }
+        )
+    }
+
+    #[test]
+    fn what_is_only_a_word_or_comes_back_is_judged() {
+        // A word a reader looks for, in a read that reaches outside (D-174).
+        for line in [
+            "grep -rn token ../other-repo",
+            "cd /home/u/.otter/workspaces/ws_1/src && grep -rn 'a|token' ../../ws_2",
+            // Local history that the reflog brings back.
+            "git branch -d old",
+            "git branch -D old",
+            "git rebase main",
+        ] {
+            assert!(is_judged(&cmd(line)), "{line}: {:?}", cmd(line));
+        }
+        // Not when the word is what is read, or anything else decides.
+        for line in [
+            "grep -r password ~/.aws",
+            "cat /etc/app/password.txt",
+            "grep -rn token ../other-repo/.env",
+            "grep $API_TOKEN src",
+            "echo $DB_PASSWORD",
+            "export API_TOKEN=x",
+            "curl -H 'X-Token: a' https://prod.example.com/deploy",
+            // Strictest wins, inside a piece and between pieces.
+            "sudo git rebase main",
+            "git rebase main && git push origin main",
+            "git rebase main && rm -rf /opt/build",
+            "git branch -d old && grep -rn token ../other-repo; cat ~/.ssh/id_rsa",
+            "git push --force origin main",
+            "git reset --hard",
+            "git restore src/",
+            "git clean -fd",
+        ] {
+            assert!(is_user_only(&cmd(line)), "{line}: {:?}", cmd(line));
+        }
+        // And what is judged is not granted for the task.
+        let root = Path::new("/home/u/.otter/workspaces/ws_1");
+        for line in ["grep -rn token ../other-repo", "git rebase main"] {
+            assert_eq!(grant(&ToolCall::Command { line: line.into() }, root), None);
+        }
+    }
+
+    #[test]
+    fn a_tasks_own_worktrees_are_inside() {
+        // Not in a temp directory, which is scratch space anyone may write.
+        let dir = tempfile::tempdir_in(env!("CARGO_MANIFEST_DIR")).unwrap();
+        let root = dir.path().join("ws_1");
+        let tree = dir.path().join("wt/x");
+        let other = Path::new("/home/u/other");
+        for d in [&root, &tree] {
+            std::fs::create_dir_all(d.join("src")).unwrap();
+        }
+        let scope = Scope::with_trees(&root, vec![tree.clone()]);
+        let edit = |p: &Path| ToolCall::Edit {
+            path: p.join("src/a.rs").to_string_lossy().into_owned(),
+        };
+        assert_eq!(classify_in(&edit(&tree), &scope), Verdict::Allow);
+        assert_eq!(classify_in(&edit(&root), &scope), Verdict::Allow);
+        // Another repository, or without the worktree known, is outside.
+        assert!(is_user_only(&classify_in(&edit(other), &scope)));
+        assert!(is_user_only(&classify(&edit(&tree), &root)));
+        // Git's internals and credentials stay asked about there too.
+        let git = ToolCall::Edit {
+            path: tree.join(".git/config").to_string_lossy().into_owned(),
+        };
+        assert!(is_user_only(&classify_in(&git, &scope)));
+        // A command writes there and a reader reads there.
+        let write = ToolCall::Command {
+            line: format!("echo x > {}/src/a.rs", tree.display()),
+        };
+        assert_eq!(classify_in(&write, &scope), Verdict::Allow);
+        assert!(is_user_only(&classify(&write, &root)));
+        // Deleting is still judged against the root alone (D-066).
+        let rm = ToolCall::Command {
+            line: format!("rm {}/src/a.rs", tree.display()),
+        };
+        assert!(is_user_only(&classify_in(&rm, &scope)));
+        // The root itself is not a worktree to count twice.
+        assert!(
+            Scope::with_trees(&root, vec![root.clone()])
+                .trees()
+                .is_empty()
+        );
     }
 
     #[test]

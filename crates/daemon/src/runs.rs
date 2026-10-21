@@ -541,12 +541,10 @@ impl Daemon {
                         .await;
                 }
                 ActorEvent::Ask { interaction, ask } => {
-                    let verdict = (self.reads_only(conversation.as_ref(), None)
-                        || self.answer_only(&task).await)
-                        .then(|| policy::read_only(&ask.call))
-                        .flatten()
-                        .unwrap_or_else(|| policy::classify(&ask.call, &root));
-                    let grant = policy::grant(&ask.call, &root);
+                    let only_reads = self.reads_only(conversation.as_ref(), None)
+                        || self.answer_only(&task).await;
+                    let (verdict, scope) = self.verdict_of(&ask.call, &root, only_reads).await;
+                    let grant = policy::grant_in(&ask.call, &scope);
                     // Routine work goes on, recorded as the tool it is (in
                     // the conversation), not as a decision (D-069).
                     let waiting = verdict != Verdict::Allow
@@ -576,11 +574,9 @@ impl Daemon {
                     call,
                     ..
                 } => {
-                    let verdict = (self.reads_only(conversation.as_ref(), None)
-                        || self.answer_only(&task).await)
-                        .then(|| policy::read_only(&call))
-                        .flatten()
-                        .unwrap_or_else(|| policy::classify(&call, &root));
+                    let only_reads = self.reads_only(conversation.as_ref(), None)
+                        || self.answer_only(&task).await;
+                    let (verdict, scope) = self.verdict_of(&call, &root, only_reads).await;
                     let decision = match &verdict {
                         Verdict::Allow => CheckDecision::Allow,
                         Verdict::Deny { why } => {
@@ -608,7 +604,7 @@ impl Daemon {
                         }
                         // Allowed already in this task (D-066): goes on.
                         Verdict::Ask { .. }
-                            if self.granted(&task, policy::grant(&call, &root)).await =>
+                            if self.granted(&task, policy::grant_in(&call, &scope)).await =>
                         {
                             CheckDecision::Allow
                         }
@@ -768,6 +764,44 @@ impl Daemon {
     /// Record a permission request under the interaction's id. True when
     /// someone has to decide; false when policy decided (the request is
     /// recorded as decided, for the audit trail).
+    /// What policy says about a call, and the [`policy::Scope`] it said it in.
+    /// The task's own worktrees (D-174) can only make a developer-only ask
+    /// routine, so Git is asked about them only for such an ask.
+    async fn verdict_of(
+        &self,
+        call: &crate::runtime::ToolCall,
+        root: &std::path::Path,
+        only_reads: bool,
+    ) -> (Verdict, policy::Scope) {
+        let scope = policy::Scope::alone(root);
+        if only_reads && let Some(v) = policy::read_only(call) {
+            return (v, scope);
+        }
+        let verdict = policy::classify_in(call, &scope);
+        if !matches!(
+            verdict,
+            Verdict::Ask {
+                user_only: true,
+                ..
+            }
+        ) {
+            return (verdict, scope);
+        }
+        let env = std::env::vars().collect();
+        let trees = crate::delivery::Git { root, env: &env }.worktrees().await;
+        // Not the other workspaces Otter made from the same repository: they
+        // are other tasks' work.
+        let trees: Vec<_> = trees
+            .into_iter()
+            .filter(|t| !t.starts_with(&self.paths.workspaces_dir))
+            .collect();
+        if trees.is_empty() {
+            return (verdict, scope);
+        }
+        let scope = policy::Scope::with_trees(root, trees);
+        (policy::classify_in(call, &scope), scope)
+    }
+
     /// Whether the developer allowed `grant` earlier in this task.
     async fn granted(&self, task: &TaskId, grant: Option<String>) -> bool {
         let Some(g) = grant else {
@@ -776,6 +810,24 @@ impl Daemon {
         self.task_get(task.as_str())
             .await
             .is_ok_and(|f| f.grants.contains(&g))
+    }
+
+    /// Whether Otter's model already denied this same call in this task.
+    async fn declined_before(&self, task: &TaskId, ask: &crate::runtime::DecisionAsk) -> bool {
+        let same = |a: &str, b: &str| a.split_whitespace().eq(b.split_whitespace());
+        let summary = otter_core::redact::redact(&ask.summary);
+        let command = whole_command(&ask.call);
+        self.task_get(task.as_str()).await.is_ok_and(|f| {
+            f.decisions.iter().any(|d| {
+                d.status == DecisionStatus::Denied
+                    && d.decided_by == Some(Decider::Controller)
+                    && same(&d.summary, &summary)
+                    && same(
+                        d.command.as_deref().unwrap_or_default(),
+                        command.as_deref().unwrap_or_default(),
+                    )
+            })
+        })
     }
 
     async fn record_ask(
@@ -788,7 +840,7 @@ impl Daemon {
         grant: Option<String>,
     ) -> bool {
         let now = Utc::now();
-        let (kind, risk, user_only, why, status) = match verdict {
+        let (kind, risk, mut user_only, why, status) = match verdict {
             Verdict::Allow => (
                 DecisionKind::ToolPermission,
                 Risk::Low,
@@ -818,7 +870,7 @@ impl Daemon {
         };
         let did = interaction.clone();
         // The developer allowed it earlier in this task (D-066).
-        let (status, why) =
+        let (status, mut why) =
             if status == DecisionStatus::Pending && self.granted(task, grant.clone()).await {
                 (
                     DecisionStatus::Approved,
@@ -827,6 +879,16 @@ impl Daemon {
             } else {
                 (status, why)
             };
+        // Otter's model said no to this call once: asking it again would be
+        // another sample, so the developer decides (D-174).
+        if status == DecisionStatus::Pending
+            && !user_only
+            && risk == Risk::High
+            && self.declined_before(task, ask).await
+        {
+            user_only = true;
+            why = format!("Otter declined this once; it is yours to decide. {why}");
+        }
         let grant = grant.filter(|_| status == DecisionStatus::Pending);
         let options = match &ask.call {
             crate::runtime::ToolCall::Question { options, .. } => options.clone(),
@@ -1040,7 +1102,10 @@ impl Daemon {
             user_only: d.user_only,
             why: d.detail.clone().unwrap_or_default(),
         };
-        let previously_denied = d.status == DecisionStatus::Denied;
+        // Final when the developer or policy denied it; Otter's model's
+        // denial is not (D-174): a repeat of the call goes to the developer.
+        let previously_denied =
+            d.status == DecisionStatus::Denied && d.decided_by != Some(Decider::Controller);
         policy::resolve(&verdict, previously_denied, &Proposal { by, allow })
             .map_err(RpcError::conflict)?;
         if d.status != DecisionStatus::Pending {
