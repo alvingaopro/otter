@@ -187,6 +187,7 @@ impl Daemon {
             .workspace(r)
             .cloned()
             .ok_or_else(|| workspace_not_found(r))?;
+        self.not_being_deleted(&ws)?;
         match ws.state {
             WorkspaceState::Ready | WorkspaceState::Failed => {}
             // Preparation would mark it ready and start its sessions when it
@@ -205,13 +206,16 @@ impl Daemon {
             }
         }
 
+        // Every session is tried: those stopped are saved and announced even
+        // when another can't be, and then it stays as it was.
         let mut events = Vec::new();
+        let mut failed = None;
         for session in &ws.sessions {
             if let Some(exec) = session.current_execution().filter(|e| e.is_running()) {
-                self.backend
-                    .terminate(&exec.backend_ref)
-                    .await
-                    .map_err(internal)?;
+                if let Err(e) = self.backend.terminate(&exec.backend_ref).await {
+                    failed.get_or_insert(internal(e));
+                    continue;
+                }
                 mark_ended(
                     &mut store,
                     &ws.id,
@@ -226,6 +230,11 @@ impl Daemon {
             }
             // Exited processes keep their retained output (D-027), as after
             // `session.stop`: their last screen stays readable.
+        }
+        if let Some(e) = failed {
+            save(&store)?;
+            self.emit_all(events);
+            return Err(e);
         }
 
         let w = store.workspace_mut(ws.id.as_str()).expect("exists");
@@ -414,8 +423,12 @@ impl Daemon {
                 .cloned()
                 .ok_or_else(|| workspace_not_found(&p.workspace))?;
             let mut events = Vec::new();
+            let mut failed = None;
             for session in &ws.sessions {
-                self.terminate_all(session).await?;
+                if let Err(e) = self.terminate_all(session).await {
+                    failed.get_or_insert(e);
+                    continue;
+                }
                 if let Some(exec) = session.current_execution().filter(|e| e.is_running()) {
                     mark_ended(
                         &mut store,
@@ -432,6 +445,11 @@ impl Daemon {
             }
             save(&store)?;
             self.emit_all(events);
+            // Those stopped are saved and announced even when another can't
+            // be; then the delete stops.
+            if let Some(e) = failed {
+                return Err(e);
+            }
             ws
         };
 
@@ -540,7 +558,7 @@ impl Daemon {
     }
 
     /// A workspace being deleted takes nothing else (D-135).
-    fn not_being_deleted(&self, ws: &Workspace) -> RpcResult<()> {
+    pub(crate) fn not_being_deleted(&self, ws: &Workspace) -> RpcResult<()> {
         if self.deleting.lock().unwrap().contains(&ws.id) {
             return Err(being_deleted(ws));
         }
@@ -670,6 +688,27 @@ impl Daemon {
                 authorize_env = true;
                 if needs_worktree(&ws) {
                     self.make_worktree(&ws, git, &root).await?;
+                } else {
+                    // Preparing a worktree already there again (a retry, an
+                    // unarchive) brings the repository up to date, so its
+                    // "behind" is as of now (D-154). It failing, say offline,
+                    // doesn't fail the workspace.
+                    self.set_progress(id, "fetching").await;
+                    // Bounded: a network that never answers must not hold a
+                    // workspace in Preparing, where archive and publish refuse.
+                    let fetched = tokio::time::timeout(
+                        std::time::Duration::from_secs(60),
+                        self.git.sync_repo(&git.repository, &git.repo_id),
+                    )
+                    .await
+                    .unwrap_or_else(|_| Err(anyhow::anyhow!("timed out")));
+                    if let Err(e) = fetched {
+                        tracing::warn!(
+                            workspace = %ws.name,
+                            "fetching: {}",
+                            otter_core::redact::redact(&format!("{e:#}"))
+                        );
+                    }
                 }
             }
         }

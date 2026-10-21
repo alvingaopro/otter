@@ -231,7 +231,10 @@ An addition (no protocol bump): daemons before it answer `invalid_request`.
   (`change`: `added`, `modified`, `deleted`, `renamed`, `untracked`; no
   counts for a binary file). Paths are relative to the workspace root and
   limited to it. At most 500 files; `more` counts the rest. Outside Git only
-  `git: false`. Read-only: the index is never touched.
+  `git: false`. Read-only: the index is never touched. `unpushed` (D-154) is
+  the commits on HEAD that no remote has, whatever the base; absent from an
+  older otterd. New files' lines are counted for at most 2000 files and
+  64 MiB in all (D-151); past that they are listed without counts.
 - `workspace.diff {workspace, path, context?}` → `{text, truncated}`: that
   file's unified diff since the same base (a new file against nothing), at
   most 512 KiB, with `context` lines around each change (git's 3 when
@@ -243,6 +246,18 @@ An addition (no protocol bump): daemons before it answer `invalid_request`.
   (D-104): the TCP ports listened on by a process in one of the workspace's
   running sessions' process trees, found from `host.ports` and each
   process's ancestry. Read when asked, never in the background.
+
+- `workspace.publish {workspace, pull_request?, title?, body?}` →
+  `{branch, uncommitted, pull_request?: {number, url, opened}, note?}`
+  (D-154): `git push -u origin HEAD:refs/heads/<branch>` from the worktree
+  and, with `pull_request`, the branch's open pull request — found and left as
+  it is (`opened: false`), else opened through `gh` (Otter's sign-in when it
+  has one, D-133) with `title` (the last commit's subject if absent). A
+  developer's action asked for by a client: nothing is committed for them
+  (`uncommitted` says what was left out), and Otter's own tools cannot call it
+  (D-047). `conflict` unless a Ready Git workspace on a branch with an
+  `origin`; without `gh` the branch is pushed and `note` says why there is no
+  pull request.
 
 Additions (no protocol bump): daemons before them answer `invalid_request`
 (`unknown variant`), which clients take as "update this host".

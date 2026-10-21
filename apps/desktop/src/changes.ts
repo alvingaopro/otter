@@ -8,6 +8,7 @@ export function changesLine(c: WorkspaceChanges): string | undefined {
   if (n > 0) parts.push(`${n} file${n === 1 ? "" : "s"}`, `+${c.insertions} −${c.deletions}`);
   if (c.ahead > 0) parts.push(`↑${c.ahead}`);
   if (c.behind > 0) parts.push(`↓${c.behind}`);
+  if (c.unpushed) parts.push(`${c.unpushed} not pushed`);
   return parts.length > 0 ? parts.join(" · ") : undefined;
 }
 

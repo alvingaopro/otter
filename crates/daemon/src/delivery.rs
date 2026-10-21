@@ -682,6 +682,33 @@ impl Git<'_> {
         self.git(&["rev-parse", "HEAD"]).await
     }
 
+    /// Whether anything is changed or new, secrets' names included.
+    pub async fn dirty(&self) -> bool {
+        self.git(&["status", "--porcelain=v1", "--untracked-files=all"])
+            .await
+            .is_ok_and(|s| !s.trim().is_empty())
+    }
+
+    /// Whether `origin` has the branch `name` (as last fetched).
+    pub async fn remote_branch_exists(&self, name: &str) -> bool {
+        self.git(&[
+            "rev-parse",
+            "--verify",
+            "-q",
+            &format!("refs/remotes/origin/{name}"),
+        ])
+        .await
+        .is_ok()
+    }
+
+    /// The last commit's subject.
+    pub async fn subject(&self) -> Option<String> {
+        self.git(&["log", "-1", "--format=%s"])
+            .await
+            .ok()
+            .filter(|s| !s.is_empty())
+    }
+
     /// What the branch changes against its base, by file.
     pub async fn diffstat(&self, base: Option<&str>) -> Option<String> {
         let base = base.unwrap_or("origin/HEAD");
@@ -807,6 +834,17 @@ impl<'a> GitHub<'a> {
             .await?;
             return Ok((n, url));
         }
+        self.create(branch, base, title, body).await
+    }
+
+    /// Open a pull request, never touching one that exists.
+    pub async fn create(
+        &self,
+        branch: &str,
+        base: Option<&str>,
+        title: &str,
+        body: &str,
+    ) -> Result<(u64, String)> {
         let mut args = vec![
             "pr",
             "create",

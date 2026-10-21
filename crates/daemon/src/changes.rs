@@ -10,14 +10,15 @@ use std::path::{Path, PathBuf};
 
 use otter_core::{Workspace, WorkspaceSource};
 use otter_protocol::work::{
-    ChangeKind, ChangedFile, FileDiff, MAX_CHANGED_FILES, MAX_DIFF_BYTES, SessionPort,
-    WorkspaceChanges,
+    ChangeKind, ChangedFile, FileDiff, MAX_CHANGED_FILES, MAX_DIFF_BYTES, Published, PullRequest,
+    SessionPort, WorkspaceChanges, WorkspacePublish,
 };
 
 use crate::daemon::{Daemon, RpcResult};
 use crate::delivery::run;
 use crate::env::{EnvMap, which};
 use crate::work_state::merge_base;
+use otter_protocol::RpcError;
 
 /// New files whose lines are counted, up to this size each, this many of
 /// them and this much in all; past that they are listed without counts, as
@@ -108,6 +109,19 @@ pub(crate) async fn changes(root: &Path, env: &EnvMap, base: Option<&str>) -> Wo
             out.behind = n.next().unwrap_or(0);
             out.ahead = n.next().unwrap_or(0);
         }
+    }
+    // Work no remote has, whatever the base: after a push (the branch's
+    // remote-tracking ref moves) it is gone, a new branch's included.
+    // Only where there is a remote to have it: with none, every commit would
+    // be "not pushed", for good.
+    if g.out(&["for-each-ref", "--count=1", "refs/remotes"])
+        .await
+        .is_some()
+    {
+        out.unpushed = g
+            .out(&["rev-list", "--count", "HEAD", "--not", "--remotes"])
+            .await
+            .and_then(|n| n.parse().ok());
     }
     // Since the starting point, committed or not; with no commits yet, what
     // is staged.
@@ -335,6 +349,105 @@ impl Daemon {
         let ws = self.workspace_get(r).await?;
         let env = self.environments.base().clone();
         Ok(changes(Path::new(&ws.root), &env, base_of(&ws).as_deref()).await)
+    }
+
+    /// Push the workspace's branch, and open its pull request if asked
+    /// (D-154). The developer asked for it, in a client: that is the
+    /// allowance a task asks for (D-047). Nothing is committed for them, and
+    /// a pull request that exists keeps its description.
+    pub(crate) async fn workspace_publish(&self, p: WorkspacePublish) -> RpcResult<Published> {
+        use crate::delivery::{Git, GitHub};
+        let ws = self.workspace_get(&p.workspace).await?;
+        self.not_being_deleted(&ws)?;
+        if ws.state != otter_core::WorkspaceState::Ready {
+            return Err(RpcError::conflict(format!(
+                "workspace `{}` is not ready",
+                ws.name
+            )));
+        }
+        if !matches!(ws.source, WorkspaceSource::Git(_)) {
+            return Err(RpcError::conflict(format!(
+                "workspace `{}` is not a Git workspace",
+                ws.name
+            )));
+        }
+        let root = PathBuf::from(&ws.root);
+        let env = self.env_for_launch(&ws).await?;
+        let git = Git {
+            root: &root,
+            env: &env,
+        };
+        let Some(branch) = git.publishable_branch().await else {
+            return Err(RpcError::conflict(
+                "there is no branch to push, or no `origin` to push it to",
+            ));
+        };
+        git.push(&branch)
+            .await
+            .map_err(|e| RpcError::internal(format!("pushing {branch}: {e:#}")))?;
+        let mut out = Published {
+            branch: branch.clone(),
+            uncommitted: git.dirty().await,
+            pull_request: None,
+            note: None,
+        };
+        if !p.pull_request {
+            return Ok(out);
+        }
+        // Otter's own GitHub sign-in when it has one (D-133), else the host's.
+        let gh_env = self.git_account.gh_env(&env);
+        let Some(gh) = GitHub::find(&root, &gh_env) else {
+            out.note = Some(
+                "`gh` is not installed on this host: the branch is pushed, no pull request opened"
+                    .into(),
+            );
+            return Ok(out);
+        };
+        if let Some((number, url)) = gh.find_pr(&branch).await {
+            out.pull_request = Some(PullRequest {
+                number,
+                url,
+                opened: false,
+            });
+            return Ok(out);
+        }
+        // A workspace on an existing branch has that branch for its base:
+        // the pull request goes to the repository's default.
+        // …and only a branch of the remote is a base for one.
+        let base = match base_of(&ws).filter(|b| *b != branch) {
+            Some(b) if git.remote_branch_exists(&b).await => Some(b),
+            _ => None,
+        };
+        let title = match p.title.as_deref().map(str::trim).filter(|t| !t.is_empty()) {
+            Some(t) => t.to_owned(),
+            None => git.subject().await.unwrap_or_else(|| branch.clone()),
+        };
+        // Create only: one opened meanwhile, in a browser, keeps its words.
+        let (number, url, opened) = match gh
+            .create(
+                &branch,
+                base.as_deref(),
+                &title,
+                p.body.as_deref().unwrap_or(""),
+            )
+            .await
+        {
+            Ok((n, u)) => (n, u, true),
+            Err(e) => match gh.find_pr(&branch).await {
+                Some((n, u)) => (n, u, false),
+                None => {
+                    return Err(RpcError::internal(format!(
+                        "opening the pull request: {e:#}"
+                    )));
+                }
+            },
+        };
+        out.pull_request = Some(PullRequest {
+            number,
+            url,
+            opened,
+        });
+        Ok(out)
     }
 
     pub(crate) async fn workspace_diff(

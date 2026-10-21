@@ -2,7 +2,7 @@
 // upload (button or drop files on the window), rename and delete (D-103).
 // Transfers stream through otterd.
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
@@ -79,6 +79,8 @@ export function FilesPanel({
   const [path, setPath] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [transfers, setTransfers] = useState<Record<string, Transfer>>({});
+  // The ids of the transfers this panel started.
+  const own = useRef(new Set<string>());
   const [dropping, setDropping] = useState(false);
   // Dotfiles shown (as before) unless turned off; remembered on this Mac.
   const [hidden, setHidden] = useState(storedHidden);
@@ -104,13 +106,18 @@ export function FilesPanel({
   }, [host, workspace]);
 
   useEffect(() => {
-    const un = listen<Transfer>("transfer", (e) => setTransfers((t) => ({ ...t, [e.payload.id]: e.payload })));
+    // Only this panel's own: the others' (kept workspaces are mounted too,
+    // D-100) would never be cleared from here.
+    const un = listen<Transfer>("transfer", (e) => {
+      if (own.current.has(e.payload.id)) setTransfers((t) => ({ ...t, [e.payload.id]: e.payload }));
+    });
     return () => void un.then((f) => f());
   }, []);
 
   async function upload(sources: string[], dir: string) {
     if (sources.length === 0) return;
     const id = `up-${nextId++}`;
+    own.current.add(id);
     setError(null);
     try {
       await invoke("file_upload", { host, workspace, dir, sources, overwrite: false, id });
@@ -124,6 +131,7 @@ export function FilesPanel({
         setError(msg);
       }
     }
+    own.current.delete(id);
     setTransfers((t) => {
       const { [id]: _, ...rest } = t;
       return rest;
@@ -187,12 +195,14 @@ export function FilesPanel({
     const dest = await saveDialog({ defaultPath: entry.name });
     if (!dest) return;
     const id = `down-${nextId++}`;
+    own.current.add(id);
     setError(null);
     try {
       await invoke("file_download", { host, workspace, path: `${path}/${entry.name}`, dest, id });
     } catch (e) {
       setError(String(e));
     }
+    own.current.delete(id);
     setTransfers((t) => {
       const { [id]: _, ...rest } = t;
       return rest;

@@ -156,6 +156,7 @@ pub fn run() {
             hosts::workspace_set_brief,
             hosts::workspace_rename,
             hosts::workspace_changes,
+            hosts::workspace_publish,
             hosts::workspace_diff,
             hosts::workspace_ports,
             hosts::workspace_events,

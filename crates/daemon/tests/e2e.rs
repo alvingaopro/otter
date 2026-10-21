@@ -3422,10 +3422,22 @@ async fn a_workspace_shows_its_changes() {
     assert!(c.git);
     assert_eq!(c.branch.as_deref(), Some("feature/x"));
     assert_eq!((c.ahead, c.behind, c.files.len()), (0, 0, 0));
+    assert_eq!(c.unpushed, Some(0));
 
     let root = Path::new(&ws.root);
     std::fs::write(root.join("a.txt"), "one\n2\nthree\n").unwrap();
     git(root, &["commit", "-qam", "edit a"]);
+    // Work no remote has (D-154): until it is pushed, whatever the base.
+    assert_eq!(
+        conn.workspace_changes("work").await.unwrap().unpushed,
+        Some(1)
+    );
+    git(
+        root,
+        &["push", "-q", "-u", "origin", "HEAD:refs/heads/feature/x"],
+    );
+    let c = conn.workspace_changes("work").await.unwrap();
+    assert_eq!((c.ahead, c.unpushed), (1, Some(0)));
     std::fs::write(root.join("b.txt"), "keep\nmore\n").unwrap();
     std::fs::write(root.join("new.md"), "# new\nline\n").unwrap();
     let c = conn.workspace_changes("work").await.unwrap();
@@ -3481,6 +3493,96 @@ async fn a_workspace_shows_its_changes() {
 
     create(&host, "plain", Some(vec![])).await;
     assert!(!conn.workspace_changes("plain").await.unwrap().git);
+}
+
+/// How far behind its base a workspace is, is as of the last fetch: preparing
+/// it again fetches (D-154).
+#[tokio::test]
+async fn preparing_a_workspace_again_brings_its_repository_up_to_date() {
+    let host = TestHost::new();
+    let repo = make_repo(&host, "origin", &[("a.txt", "one\n")]);
+    let mut conn = host.conn().await;
+    conn.workspace_create(git_ws("work", &repo, Some("feature/y"), vec![]))
+        .await
+        .unwrap();
+    wait_prepared(&host, "work").await;
+    assert_eq!(conn.workspace_changes("work").await.unwrap().behind, 0);
+
+    std::fs::write(repo.join("b.txt"), "two\n").unwrap();
+    git(&repo, &["add", "b.txt"]);
+    git(&repo, &["commit", "-qm", "more upstream"]);
+    // Not fetched yet: the workspace can't know.
+    assert_eq!(conn.workspace_changes("work").await.unwrap().behind, 0);
+
+    conn.workspace_prepare("work").await.unwrap();
+    eventually("fetched", || async {
+        let ws = host.conn().await.workspace_get("work").await.unwrap();
+        let c = host.conn().await.workspace_changes("work").await.unwrap();
+        (ws.state == WorkspaceState::Ready && c.behind == 1).then_some(())
+    })
+    .await;
+}
+
+/// A workspace driven by hand can be pushed, and its pull request opened
+/// (D-154): the developer's own action. Nothing is committed for them, and a
+/// pull request that exists keeps its description.
+#[tokio::test]
+async fn a_workspace_is_pushed_and_its_pull_request_opened() {
+    use otter_protocol::work::WorkspacePublish;
+    let fake = fake_codex_host("normal").await;
+    let host = &fake.host;
+    let repo = make_repo(host, "origin", &[("a.txt", "one\n")]);
+    let mut conn = host.conn().await;
+    conn.workspace_create(git_ws("work", &repo, Some("feature/p"), vec![]))
+        .await
+        .unwrap();
+    let ws = wait_prepared(host, "work").await;
+    let root = Path::new(&ws.root);
+    let publish = |pull_request: bool, title: Option<&str>| WorkspacePublish {
+        workspace: "work".into(),
+        pull_request,
+        title: title.map(str::to_owned),
+        body: None,
+    };
+    let calls = || std::fs::read_to_string(fake.gh.join("calls.log")).unwrap_or_default();
+
+    std::fs::write(root.join("a.txt"), "one\ntwo\n").unwrap();
+    git(root, &["commit", "-qam", "edit a"]);
+    std::fs::write(root.join("left.txt"), "not committed\n").unwrap();
+    // Pushed, and what is not committed said so; no pull request unless asked.
+    let out = conn.workspace_publish(publish(false, None)).await.unwrap();
+    assert_eq!(out.branch, "feature/p");
+    assert!(out.uncommitted && out.pull_request.is_none(), "{out:?}");
+    assert!(git(&repo, &["branch", "--list", "feature/p"]).contains("feature/p"));
+    assert_eq!(
+        conn.workspace_changes("work").await.unwrap().unpushed,
+        Some(0)
+    );
+    assert!(calls().is_empty(), "{}", calls());
+
+    // Opened, titled by the last commit; again, found, not edited.
+    let out = conn.workspace_publish(publish(true, None)).await.unwrap();
+    let pr = out.pull_request.unwrap();
+    assert_eq!((pr.number, pr.opened), (7, true));
+    assert!(calls().contains("--title edit a"), "{}", calls());
+    // To the branch it was cut from, which the remote has.
+    assert!(calls().contains("--base main"), "{}", calls());
+    let out = conn
+        .workspace_publish(publish(true, Some("another")))
+        .await
+        .unwrap();
+    assert_eq!(out.pull_request.map(|p| p.opened), Some(false));
+    assert!(!calls().contains("pr edit"), "{}", calls());
+
+    create(host, "plain", Some(vec![])).await;
+    let err = conn
+        .workspace_publish(WorkspacePublish {
+            workspace: "plain".into(),
+            ..publish(false, None)
+        })
+        .await
+        .unwrap_err();
+    assert!(err.to_string().contains("not a Git workspace"), "{err}");
 }
 
 /// Files are removed and renamed inside the workspace only (D-103): never

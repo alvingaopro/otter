@@ -819,6 +819,15 @@ impl Connection {
         .await
     }
 
+    /// Push the workspace's branch, and open its pull request if asked
+    /// (D-154).
+    pub async fn workspace_publish(
+        &mut self,
+        publish: otter_protocol::work::WorkspacePublish,
+    ) -> Result<otter_protocol::work::Published> {
+        self.call(Request::WorkspacePublish(publish)).await
+    }
+
     /// One changed file's diff (D-102), with `context` lines around each
     /// change (git's 3 if `None`; D-111).
     pub async fn workspace_diff(

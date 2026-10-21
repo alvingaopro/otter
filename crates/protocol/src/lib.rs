@@ -144,6 +144,11 @@ pub enum Request {
     /// `Vec<`[`work::SessionPort`]`>`.
     #[serde(rename = "workspace.ports")]
     WorkspacePorts(WorkspaceRef),
+    /// Push the workspace's branch to `origin`, and open its pull request if
+    /// asked (D-154). What isn't committed is not taken. Result:
+    /// [`work::Published`].
+    #[serde(rename = "workspace.publish")]
+    WorkspacePublish(work::WorkspacePublish),
 
     /// Create and start a session. Result: [`otter_core::Session`].
     #[serde(rename = "session.create")]
@@ -345,6 +350,7 @@ impl Request {
             Request::WorkspaceChanges(_) => "workspace.changes",
             Request::WorkspaceDiff(_) => "workspace.diff",
             Request::WorkspacePorts(_) => "workspace.ports",
+            Request::WorkspacePublish(_) => "workspace.publish",
             Request::SessionCreate(_) => "session.create",
             Request::SessionStop(_) => "session.stop",
             Request::SessionRestart(_) => "session.restart",

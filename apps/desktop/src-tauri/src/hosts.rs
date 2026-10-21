@@ -845,6 +845,28 @@ pub async fn workspace_changes(
         .map_err(err)
 }
 
+/// Push a workspace's branch, and open its pull request if asked (D-154).
+#[tauri::command]
+pub async fn workspace_publish(
+    app: AppHandle,
+    host: String,
+    workspace: String,
+    pull_request: bool,
+    title: Option<String>,
+    body: Option<String>,
+) -> Result<otter_protocol::work::Published, String> {
+    rpc(&app, &host)
+        .await?
+        .workspace_publish(otter_protocol::work::WorkspacePublish {
+            workspace,
+            pull_request,
+            title,
+            body,
+        })
+        .await
+        .map_err(err)
+}
+
 /// One changed file's diff (D-102).
 #[tauri::command]
 pub async fn workspace_diff(

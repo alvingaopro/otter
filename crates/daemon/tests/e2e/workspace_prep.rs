@@ -399,6 +399,9 @@ async fn a_delete_doesnt_hold_up_the_host() {
     );
     let err = conn.workspace_delete("slow", false).await.unwrap_err();
     assert!(err.to_string().contains("being deleted"), "{err}");
+    // Nor can it be put away meanwhile.
+    let err = conn.workspace_archive("slow").await.unwrap_err();
+    assert!(err.to_string().contains("being deleted"), "{err}");
     deleting.await.unwrap().unwrap();
     assert!(!Path::new(&ws.root).exists());
     assert!(conn.workspace_get("slow").await.is_err());
