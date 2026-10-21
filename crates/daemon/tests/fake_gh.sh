@@ -10,7 +10,13 @@ case "$1 $2" in
     else
       echo "no pull requests found for branch" >&2; exit 1
     fi ;;
-  "pr create") cat > "$dir/body"; touch "$dir/pr"; echo "https://github.com/o/r/pull/7" ;;
+  "pr create")
+    # no-commits: GitHub has every commit of the branch on its base already.
+    if [ -f "$dir/no-commits" ]; then
+      cat > /dev/null
+      echo "pull request create failed: GraphQL: No commits between main and $4 (createPullRequest)" >&2; exit 1
+    fi
+    cat > "$dir/body"; touch "$dir/pr"; echo "https://github.com/o/r/pull/7" ;;
   "pr edit") cat > "$dir/body" ;;
   "pr checks")
     if [ -f "$dir/checks.json" ]; then cat "$dir/checks.json"; exit 8; fi

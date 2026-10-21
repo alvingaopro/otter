@@ -11,7 +11,9 @@
 # resumed run finishes, logging what it was told), DIE_ALWAYS (dies every
 # time); anything else finishes the turn. Asked to plan the work, it proposes
 # two steps as JSON (NOPLAN: it answers in prose instead; PLANFAIL: the turn
-# fails; CJK: it says something in Chinese first). A `skip-init` file
+# fails; CJK: it says something in Chinese first). WRITE:<file> in a step's
+# prompt makes it change the code: it writes <file> in its directory (the
+# same each time, so doing it again changes nothing). A `skip-init` file
 # next to the log keeps the session id back (as if it died before saying it).
 [ -n "$FAKE_CODEX_LOG" ] && echo "claude-stream $*" >> "$FAKE_CODEX_LOG"
 sid="fake-session-$$"
@@ -57,6 +59,11 @@ while read -r line; do
           *'Your step ('*) printf '%s' "$line" > "$memory" ;;
         esac
       fi
+      case "$line" in
+        *WRITE:*'Your step ('*|*'Your step ('*WRITE:*)
+          f=$(printf '%s' "$line" | sed -n 's/.*WRITE:\([A-Za-z0-9_.-]*\).*/\1/p')
+          [ -n "$f" ] && printf 'echo id\n' > "$f" ;;
+      esac
       # CJK: it says a request in Chinese back first.
       case "$line" in *CJK*) text "修复这个PR，https://example.com/o/r/pull/7" ;; esac
       case "$line" in

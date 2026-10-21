@@ -418,6 +418,14 @@ written — redacted, at most 16 KiB, and when longer a last line `… N more
 bytes, not kept`. Absent when the summary shows it all. `detail` stays the
 reason it is asked.
 
+**Where a task's own work starts** (D-167; an optional field, old peers
+ignore it): a task has `started_from? {workspace_id, revision}`, the
+revision its workspace was at when the task first worked there — absent
+until then, outside Git, and in older documents. Verification's `Working
+tree` evidence is the change since it; a task with nothing of its own to
+publish there (D-166) has its `Pull request` and `CI` gates
+`not_applicable`, detail `nothing to publish`.
+
 **Commands are idempotent.** `command_id` is the client's id for one intent
 (a random string). A command the daemon has applied is not applied again: a
 retry returns the task as it is. A command that failed was not applied,

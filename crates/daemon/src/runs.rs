@@ -253,6 +253,29 @@ impl Daemon {
         );
         tracing::info!(runtime = rt.id(), task = %task_id, conversation = %conversation_id, generation, resume = native.is_some(), "starting a managed run");
         let root = PathBuf::from(&ws.root);
+        // Where the task's own work starts (D-167): the workspace's revision
+        // as its first run there begins, before the agent can move it. Not
+        // for a task that ran before this was kept: its work may be
+        // committed already.
+        let first_here = match &task.started_from {
+            Some(s) => s.workspace_id != ws.id,
+            None => task.runs.is_empty(),
+        };
+        let start_point = if first_here {
+            let git = crate::delivery::Git {
+                root: &root,
+                env: &env,
+            };
+            git.head()
+                .await
+                .ok()
+                .map(|revision| otter_core::task::StartPoint {
+                    workspace_id: ws.id.clone(),
+                    revision,
+                })
+        } else {
+            None
+        };
         let handle = match rt
             .start(RunSpec {
                 conversation_id: conversation_id.clone(),
@@ -283,6 +306,9 @@ impl Daemon {
         let tid = step_id.clone();
         let (cid, turn) = (conversation_id.clone(), turn_id.clone());
         let applied = self.tasks.lock().await.apply(task_id, None, move |f, now| {
+            if let Some(s) = start_point {
+                f.started_from = Some(s);
+            }
             let step = f
                 .step_mut(&tid)
                 .ok_or_else(|| RpcError::not_found(format!("no step `{tid}`")))?;

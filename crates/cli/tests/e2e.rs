@@ -721,7 +721,8 @@ fn a_task_goes_from_the_terminal_to_an_accepted_pull_request() {
         "new",
         "CSV export",
         "--request",
-        "Export the timeline as CSV",
+        // WRITE: the fake agent writes the file (something to publish).
+        "Export the timeline as CSV WRITE:export.sh",
         "--workspace",
         "csv",
     ]);
@@ -762,13 +763,7 @@ fn a_task_goes_from_the_terminal_to_an_accepted_pull_request() {
         .as_str()
         .unwrap()
         .to_owned();
-    // Something the agent left uncommitted, to see it published.
-    let ws = cli.workspace("csv");
-    std::fs::write(
-        Path::new(ws["root"].as_str().unwrap()).join("export.sh"),
-        "echo id\n",
-    )
-    .unwrap();
+    // The agent left its work (export.sh) uncommitted: publishing commits it.
     cli.ok(&["task", "decide", "csv export", &decision]);
     wait("the pull request", &|f| f["delivery"]["pr_url"].is_string());
     std::fs::write(
