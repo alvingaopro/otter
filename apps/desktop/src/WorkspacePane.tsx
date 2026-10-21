@@ -409,7 +409,7 @@ export function WorkspacePane({
             {
               // Its branch goes to origin, and its pull request is opened (D-154).
               label: "Push branch…",
-              hidden: archived || ws.state !== "ready" || changes.state !== "ready" || !changes.changes.branch,
+              hidden: archived || ws.sourceKind !== "git" || ws.state !== "ready" || changes.state !== "ready" || !changes.changes.branch,
               onSelect: () => setOpen("publish"),
             },
             { label: "Delete workspace…", danger: true, onSelect: () => setOpen("delete-workspace") },

@@ -3565,6 +3565,8 @@ async fn a_workspace_is_pushed_and_its_pull_request_opened() {
     let pr = out.pull_request.unwrap();
     assert_eq!((pr.number, pr.opened), (7, true));
     assert!(calls().contains("--title edit a"), "{}", calls());
+    // To the branch it was cut from, which the remote has.
+    assert!(calls().contains("--base main"), "{}", calls());
     let out = conn
         .workspace_publish(publish(true, Some("another")))
         .await

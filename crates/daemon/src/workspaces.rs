@@ -694,7 +694,15 @@ impl Daemon {
                     // "behind" is as of now (D-154). It failing, say offline,
                     // doesn't fail the workspace.
                     self.set_progress(id, "fetching").await;
-                    if let Err(e) = self.git.sync_repo(&git.repository, &git.repo_id).await {
+                    // Bounded: a network that never answers must not hold a
+                    // workspace in Preparing, where archive and publish refuse.
+                    let fetched = tokio::time::timeout(
+                        std::time::Duration::from_secs(60),
+                        self.git.sync_repo(&git.repository, &git.repo_id),
+                    )
+                    .await
+                    .unwrap_or_else(|_| Err(anyhow::anyhow!("timed out")));
+                    if let Err(e) = fetched {
                         tracing::warn!(
                             workspace = %ws.name,
                             "fetching: {}",

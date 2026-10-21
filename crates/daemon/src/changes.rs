@@ -112,10 +112,17 @@ pub(crate) async fn changes(root: &Path, env: &EnvMap, base: Option<&str>) -> Wo
     }
     // Work no remote has, whatever the base: after a push (the branch's
     // remote-tracking ref moves) it is gone, a new branch's included.
-    out.unpushed = g
-        .out(&["rev-list", "--count", "HEAD", "--not", "--remotes"])
+    // Only where there is a remote to have it: with none, every commit would
+    // be "not pushed", for good.
+    if g.out(&["for-each-ref", "--count=1", "refs/remotes"])
         .await
-        .and_then(|n| n.parse().ok());
+        .is_some()
+    {
+        out.unpushed = g
+            .out(&["rev-list", "--count", "HEAD", "--not", "--remotes"])
+            .await
+            .and_then(|n| n.parse().ok());
+    }
     // Since the starting point, committed or not; with no commits yet, what
     // is staged.
     let (numstat, status, uncommitted) = match &from {
@@ -380,7 +387,7 @@ impl Daemon {
             .map_err(|e| RpcError::internal(format!("pushing {branch}: {e:#}")))?;
         let mut out = Published {
             branch: branch.clone(),
-            uncommitted: git.committable().await,
+            uncommitted: git.dirty().await,
             pull_request: None,
             note: None,
         };
@@ -406,24 +413,39 @@ impl Daemon {
         }
         // A workspace on an existing branch has that branch for its base:
         // the pull request goes to the repository's default.
-        let base = base_of(&ws).filter(|b| *b != branch);
+        // …and only a branch of the remote is a base for one.
+        let base = match base_of(&ws).filter(|b| *b != branch) {
+            Some(b) if git.remote_branch_exists(&b).await => Some(b),
+            _ => None,
+        };
         let title = match p.title.as_deref().map(str::trim).filter(|t| !t.is_empty()) {
             Some(t) => t.to_owned(),
             None => git.subject().await.unwrap_or_else(|| branch.clone()),
         };
-        let (number, url) = gh
-            .publish(
+        // Create only: one opened meanwhile, in a browser, keeps its words.
+        let (number, url, opened) = match gh
+            .create(
                 &branch,
                 base.as_deref(),
                 &title,
                 p.body.as_deref().unwrap_or(""),
             )
             .await
-            .map_err(|e| RpcError::internal(format!("opening the pull request: {e:#}")))?;
+        {
+            Ok((n, u)) => (n, u, true),
+            Err(e) => match gh.find_pr(&branch).await {
+                Some((n, u)) => (n, u, false),
+                None => {
+                    return Err(RpcError::internal(format!(
+                        "opening the pull request: {e:#}"
+                    )));
+                }
+            },
+        };
         out.pull_request = Some(PullRequest {
             number,
             url,
-            opened: true,
+            opened,
         });
         Ok(out)
     }

@@ -5222,16 +5222,21 @@ ahead of the *base* it was — still the same after a push, on a new branch.
   out, and a hand-driven workspace has no task title for the message): what
   isn't committed is left out, and said so. And a pull request that exists is
   **left as it is**, not edited (`publish` rewrites the description of the
-  one it finds; a developer's own words are not the report of a task). A
+  one it finds; a developer's own words are not the report of a task), and
+  creates without looking first, so one opened meanwhile keeps its words too.
+  What was left out counts every change, secrets' names included. A
   workspace on an existing branch has that branch as its base, so its pull
-  request goes to the repository's default. Otter's tools still cannot
+  request goes to the repository's default, as does one whose base isn't a
+  branch of the remote (a tag, a commit). Otter's tools still cannot
   publish (gateway test).
 - **`WorkspaceChanges.unpushed`**: `git rev-list --count HEAD --not
   --remotes`, commits no remote has — what the delete dialog calls "not
-  pushed anywhere". A push brings it to 0, a new branch's included. The app
+  pushed anywhere". A push brings it to 0, a new branch's included; with no
+  remote at all it is absent, not every commit. The app
   adds "N not pushed" to the Changes header and the pane's line.
 - **Preparing a workspace again fetches** its repository (best effort; offline
-  doesn't fail it), so "behind" is as of the retry, an unarchive or
+  doesn't fail it, and it gives up after 60 s: a network that never answers
+  must not hold a workspace in Preparing), so "behind" is as of the retry, an unarchive or
   "Prepare again" (now also in a Ready workspace's menu: the environment is
   read again and sessions not started start). `workspace.changes` itself
   never fetches: it is read every 30 s.
