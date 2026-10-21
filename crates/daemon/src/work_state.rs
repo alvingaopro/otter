@@ -2,8 +2,9 @@
 //! what verification shows the judge instead of the coding agent's word,
 //! and a fingerprint that tells whether a fix changed anything.
 //!
-//! In a Git repository: the change since the base the work started from
-//! (committed or not, new files included), never touching the index — no
+//! In a Git repository: the change since where the task's own work started
+//! (D-167), else since the base the work started from (committed or not,
+//! new files included), never touching the index — no
 //! `git add -N`, it's the agent's. Files that may hold secrets (`.env`, keys,
 //! credentials) count towards the fingerprint but their content is never
 //! shown: the report is kept in the task and read by the judge's model.
@@ -49,8 +50,22 @@ pub struct WorkState {
 
 /// Read the work's state in `root`. `base`: the branch the work started
 /// from, if known (else the change since HEAD is shown).
+#[cfg(test)]
 pub async fn snapshot(root: &Path, env: &EnvMap, base: Option<&str>) -> WorkState {
-    if let Some(state) = git_state(root, env, base).await {
+    snapshot_since(root, env, base, None).await
+}
+
+/// [`snapshot`] of a task's own work (D-167): the change since `own`, the
+/// revision the task started from, when HEAD still descends from it; else
+/// (not recorded, or the history was rewritten) since the merge base with
+/// `base`, as [`snapshot`] reads it.
+pub async fn snapshot_since(
+    root: &Path,
+    env: &EnvMap,
+    base: Option<&str>,
+    own: Option<&str>,
+) -> WorkState {
+    if let Some(state) = git_state(root, env, base, own).await {
         return state;
     }
     let dir = root.to_path_buf();
@@ -64,7 +79,30 @@ pub async fn snapshot(root: &Path, env: &EnvMap, base: Option<&str>) -> WorkStat
     }
 }
 
-async fn git_state(root: &Path, env: &EnvMap, base: Option<&str>) -> Option<WorkState> {
+/// Where a snapshot's change starts.
+enum Since {
+    /// Where the task's own work started (D-167).
+    Task(String),
+    /// The merge base with the work's base branch, named.
+    Base { name: String, rev: String },
+    /// HEAD: only what isn't committed.
+    Head(String),
+}
+
+impl Since {
+    fn rev(&self) -> &str {
+        match self {
+            Since::Task(rev) | Since::Base { rev, .. } | Since::Head(rev) => rev,
+        }
+    }
+}
+
+async fn git_state(
+    root: &Path,
+    env: &EnvMap,
+    base: Option<&str>,
+    own: Option<&str>,
+) -> Option<WorkState> {
     let git = which("git", env)?;
     // Exit status and stdout; paths limited to the workspace (`-- .`), which
     // may be a directory inside a larger repository.
@@ -85,13 +123,20 @@ async fn git_state(root: &Path, env: &EnvMap, base: Option<&str>) -> Option<Work
     }
     let (has_head, head) = g(s(&["rev-parse", "HEAD"])).await;
     let head = has_head.then(|| head.trim().to_owned());
-    // Where the change starts: the merge base with the work's base branch,
-    // else HEAD (only what isn't committed), else nothing (no commits yet).
-    let from = match head {
-        Some(_) => merge_base(&git, root, env, base).await,
-        None => None,
+    // Where the change starts: where the task's own work did, if HEAD
+    // still descends from it; else the merge base with the work's base
+    // branch; else HEAD (only what isn't committed); else nothing (no
+    // commits yet).
+    let from = match (&head, own) {
+        (Some(_), Some(own)) if descends(&git, root, env, own).await => {
+            Some(Since::Task(own.to_owned()))
+        }
+        (Some(_), _) => merge_base(&git, root, env, base)
+            .await
+            .map(|(name, rev)| Since::Base { name, rev }),
+        (None, _) => None,
     };
-    let from = from.or_else(|| head.clone().map(|h| ("HEAD".to_owned(), h)));
+    let from = from.or_else(|| head.clone().map(Since::Head));
     let (_, status) = g(s(&["status", "--porcelain=v1", "--", "."])).await;
     let (_, untracked) = g(s(&[
         "ls-files",
@@ -109,8 +154,8 @@ async fn git_state(root: &Path, env: &EnvMap, base: Option<&str>) -> Option<Work
         args.extend(secret_pathspecs());
         args
     };
-    let (diff, stat, binary) = match &from {
-        Some((_, rev)) => {
+    let (diff, stat, binary) = match from.as_ref().map(Since::rev) {
+        Some(rev) => {
             let (_, diff) = g(shown(s(&["diff", rev]))).await;
             let (_, stat) = g(s(&["diff", "--stat", rev, "--", "."])).await;
             let (_, binary) = g(s(&["diff", "--binary", rev, "--", "."])).await;
@@ -164,7 +209,12 @@ async fn git_state(root: &Path, env: &EnvMap, base: Option<&str>) -> Option<Work
         (false, n) => format!("{stat_line}; {n} new file{}", plural(n)),
     };
     let mut report = match (&head, &from) {
-        (Some(h), Some((name, rev))) if name != "HEAD" => format!(
+        (Some(h), Some(Since::Task(rev))) => format!(
+            "HEAD {}; changes since this task started (at {})\n",
+            short(h),
+            short(rev)
+        ),
+        (Some(h), Some(Since::Base { name, rev })) => format!(
             "HEAD {}; changes since {name} (merge base {})\n",
             short(h),
             short(rev)
@@ -226,6 +276,21 @@ pub(crate) async fn merge_base(
         }
     }
     None
+}
+
+/// Whether HEAD is `rev` or descends from it.
+pub(crate) async fn descends(git: &Path, root: &Path, env: &EnvMap, rev: &str) -> bool {
+    matches!(
+        run(
+            git,
+            &["merge-base", "--is-ancestor", rev, "HEAD"],
+            root,
+            env,
+            None
+        )
+        .await,
+        Ok((true, _, _))
+    )
 }
 
 /// A path whose content may be a secret (by its file name).
@@ -432,6 +497,78 @@ mod tests {
         let report = snapshot(root, &env(), Some("main")).await.report.unwrap();
         assert!(report.contains("changes since main"), "{report}");
         assert!(report.contains("+two"), "{report}");
+    }
+
+    /// B09's shape (D-167): the branch carries an earlier task's commit that
+    /// the base, as last fetched, doesn't have. A task started after it is
+    /// diffed from where it started, not from the merge base, so the earlier
+    /// commit isn't its change. Without that start, or with a history that
+    /// no longer descends from it, the merge base it is.
+    #[tokio::test]
+    async fn a_task_is_diffed_from_where_it_started() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        git(root, &["init", "-q", "-b", "main"]);
+        std::fs::write(
+            root.join("money.py"),
+            "def parse(): pass\ndef format(): pass\n",
+        )
+        .unwrap();
+        git(root, &["add", "."]);
+        git(root, &["commit", "-q", "-m", "first"]);
+        git(root, &["checkout", "-q", "-b", "otterd/ws"]);
+        // The earlier task's work, committed on the shared branch.
+        std::fs::write(
+            root.join("money.py"),
+            "def parse(): return EARLIER\ndef format(): pass\n",
+        )
+        .unwrap();
+        git(root, &["commit", "-q", "-am", "the earlier task"]);
+        let start = String::from_utf8(
+            std::process::Command::new("git")
+                .args(["rev-parse", "HEAD"])
+                .current_dir(root)
+                .output()
+                .unwrap()
+                .stdout,
+        )
+        .unwrap()
+        .trim()
+        .to_owned();
+        // This task's own change.
+        std::fs::write(
+            root.join("money.py"),
+            "def parse(): return EARLIER\ndef format(): return MINE\n",
+        )
+        .unwrap();
+
+        let own = snapshot_since(root, &env(), Some("main"), Some(&start)).await;
+        let report = own.report.unwrap();
+        assert!(report.contains("+def format(): return MINE"), "{report}");
+        assert!(!report.contains("+def parse"), "{report}");
+        assert!(
+            report.starts_with(&format!(
+                "HEAD {}; changes since this task started (at {})",
+                &start[..10],
+                &start[..10]
+            )),
+            "{report}"
+        );
+        // No start recorded: the merge base with the base branch, the earlier
+        // task's commit included.
+        let report = snapshot_since(root, &env(), Some("main"), None)
+            .await
+            .report
+            .unwrap();
+        assert!(report.contains("changes since main"), "{report}");
+        assert!(report.contains("+def parse(): return EARLIER"), "{report}");
+        // A start HEAD doesn't descend from (a rewritten history): the same.
+        git(root, &["commit", "-q", "--amend", "-am", "rewritten"]);
+        let report = snapshot_since(root, &env(), Some("main"), Some(&start))
+            .await
+            .report
+            .unwrap();
+        assert!(report.contains("changes since main"), "{report}");
     }
 
     /// A secret's content never reaches the report, but changing it is

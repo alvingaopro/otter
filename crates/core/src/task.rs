@@ -305,6 +305,15 @@ pub struct PausedFrom {
     pub reason: Option<String>,
 }
 
+/// Where a task's own work starts (D-167): the revision its workspace was
+/// at when the task first worked there. What the task changed is measured
+/// from it, not from wherever the workspace's base happens to be.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct StartPoint {
+    pub workspace_id: WorkspaceId,
+    pub revision: String,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct Step {
     pub id: StepId,
@@ -608,6 +617,10 @@ pub struct Task {
     /// verdict's judge sees the commands of the runs after them (D-165).
     #[serde(default, skip_serializing_if = "is_zero_usize")]
     pub judged_runs: usize,
+    /// Where its own work starts (D-167): set at its first run in a
+    /// workspace with revisions. Absent in older documents.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub started_from: Option<StartPoint>,
     /// What the developer allowed once and isn't asked about again in this
     /// task (D-066): `DecisionRequest::grant`s they approved.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -674,6 +687,7 @@ impl Task {
             verify_decision: None,
             last_verification: None,
             judged_runs: 0,
+            started_from: None,
             grants: vec![],
             rationale: Vec::new(),
             allowed_commands: Vec::new(),
@@ -690,6 +704,15 @@ impl Task {
 
     pub fn step(&self, id: &StepId) -> Option<&Step> {
         self.steps.iter().find(|t| &t.id == id)
+    }
+
+    /// The revision its own work starts from in its current workspace
+    /// (D-167), if it was recorded there.
+    pub fn own_base(&self) -> Option<&str> {
+        self.started_from
+            .as_ref()
+            .filter(|s| self.workspace_id.as_ref() == Some(&s.workspace_id))
+            .map(|s| s.revision.as_str())
     }
 
     pub fn step_mut(&mut self, id: &StepId) -> Option<&mut Step> {

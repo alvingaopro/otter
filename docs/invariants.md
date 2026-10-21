@@ -163,5 +163,6 @@ record it in [`decisions.md`](decisions.md) first.
   command line, the env file gone), `credentials_in_failures_stay_out_of_what_otter_keeps`,
   `a_long_command_is_there_whole_for_the_developer` (a decision's whole
   command, D-157), `a_failing_worker_says_why`, the `redact` unit tests,
+  `a_tools_failure_says_no_secret` (delivery's Git and gh errors, D-166),
   `settings_take_keys_write_only_and_keep_them` (keys), and
   `the_developer_reads_and_edits_otters_memory` (Otter's memory, D-113).

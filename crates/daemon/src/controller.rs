@@ -50,6 +50,11 @@ const LOOP_REPEATS: usize = 3;
 const CHECK_OUTPUT: usize = 3000;
 /// The title of delivery's diffstat evidence, before the branch.
 const CHANGES_ON: &str = "Changes on ";
+/// What publishing asks to do, after the push (D-047).
+const AND_OPEN_A_PR: &str = "and open a pull request";
+/// A task with nothing of its own to publish (D-166): said once, and kept
+/// in the rationale with the commit it was said of.
+const NOTHING_TO_PUBLISH: &str = "Nothing to publish";
 /// The answers to "the check can't run here" (D-062).
 const RUN_AGAIN: &str = "Run it again";
 const WITHOUT_CHECK: &str = "Go on without it";
@@ -248,7 +253,7 @@ impl Daemon {
                         contained(async move { daemon.step(&id).await }).await
                     };
                     if let Some(Err(e)) = stepped {
-                        tracing::warn!(task = %id, "controller: {}", e.message);
+                        tracing::warn!(task = %id, "controller: {}", otter_core::redact::redact(&e.message));
                         if e.message == PANICKED {
                             daemon.could_not_answer(&id).await;
                         }
@@ -598,7 +603,8 @@ impl Daemon {
 
     /// Stop the task with a reason (a limit, or an error), keeping the plan.
     pub(crate) async fn fail(&self, id: &TaskId, reason: &str, limit: Option<&str>) {
-        let reason = reason.to_owned();
+        // What a tool said may be in it (invariant 13).
+        let reason = otter_core::redact::redact(reason);
         let limit = limit.map(String::from);
         let applied = self.tasks.lock().await.apply(id, None, |f, now| {
             if !f.status.can_become(TaskStatus::Failed) {
@@ -1822,7 +1828,8 @@ impl Daemon {
         // The work itself, read deterministically: what the judge looks at,
         // and whether a fix changed anything.
         let base = self.workspace_base(f).await;
-        let tree = crate::work_state::snapshot(&root, &env, base.as_deref()).await;
+        let tree =
+            crate::work_state::snapshot_since(&root, &env, base.as_deref(), f.own_base()).await;
         let outcomes: String = evidence
             .iter()
             .filter(|e| !e.uncertain)
@@ -2333,6 +2340,7 @@ impl Daemon {
             has_ci: root.join(".github/workflows").is_dir(),
             browser_checks: crate::browser::load_checks(&root).is_ok_and(|c| !c.is_empty()),
             ci_settling: false,
+            nothing_to_publish: false,
         };
         let mut d = f.delivery.clone();
         let mut evidence = Vec::new();
@@ -2340,6 +2348,8 @@ impl Daemon {
         let mut notes: Vec<String> = Vec::new();
         // Lines for the record only.
         let mut rationale: Vec<String> = Vec::new();
+        // Asks to publish that nothing is left to publish for (D-166).
+        let mut moot: Vec<DecisionId> = Vec::new();
         if let (Some(branch), Some(gh)) = (&branch, &gh)
             && !d.as_ref().is_some_and(|d| d.declined)
         {
@@ -2347,13 +2357,38 @@ impl Daemon {
             let published = d.as_ref().is_some_and(|d| d.pr_url.is_some());
             // Work not yet committed is work not yet published (D-068).
             let unpublished = git.committable().await;
-            if !published || d.as_ref().and_then(|d| d.head.clone()) != head || unpublished {
-                // Pushing is an external action: the developer allows it once.
-                let cmd = format!("git push origin {branch}");
-                match self
-                    .allowance(f, &cmd, "and open a pull request", &root)
-                    .await?
-                {
+            // Pushing is an external action: the developer allows it once.
+            let cmd = format!("git push origin {branch}");
+            // Nothing of this task's own to publish (D-166): not asked, no
+            // pull request; it goes on to the report as finished work does.
+            let marker = head
+                .as_deref()
+                .map(|h| format!("{NOTHING_TO_PUBLISH} ({h})"));
+            let said = marker.as_ref().is_some_and(|m| f.rationale.contains(m));
+            let nothing = match &head {
+                Some(_) if published || unpublished => None,
+                Some(_) if said => Some(None),
+                Some(h) => nothing_to_publish(f, &git, h, self.workspace_base(f).await.as_deref())
+                    .await
+                    .map(Some),
+                None => None,
+            };
+            if let Some(why) = nothing {
+                cx.nothing_to_publish = true;
+                if let (Some(why), Some(marker)) = (why, marker) {
+                    notes.push(format!(
+                        "{NOTHING_TO_PUBLISH}: {why}, so there's no pull request to open."
+                    ));
+                    rationale.push(marker);
+                }
+                let ask = format!("Run `{cmd}` {AND_OPEN_A_PR}");
+                moot.extend(
+                    f.pending_decisions()
+                        .filter(|d| d.summary == ask)
+                        .map(|d| d.id.clone()),
+                );
+            } else if !published || d.as_ref().and_then(|d| d.head.clone()) != head || unpublished {
+                match self.allowance(f, &cmd, AND_OPEN_A_PR, &root).await? {
                     Allowance::Pending => {}
                     Allowance::Denied(_) => {
                         d = Some(otter_core::task::Delivery {
@@ -2369,14 +2404,15 @@ impl Daemon {
                         });
                         notes.push("You chose not to publish: delivery stays local.".into());
                     }
-                    Allowance::Allowed => {
+                    Allowance::Allowed => 'publish: {
                         let base = self.workspace_base(f).await;
                         // What the agent left uncommitted is committed first
                         // (files that may hold secrets left out, D-068): a
                         // retry finds a clean tree and only pushes.
-                        let committed = git.commit_work(&f.title).await.map_err(|e| {
-                            RpcError::internal(format!("committing the work: {e:#}"))
-                        })?;
+                        let committed = git
+                            .commit_work(&f.title)
+                            .await
+                            .map_err(|e| failure(format!("committing the work: {e:#}")))?;
                         if let Some((sha, left_out)) = &committed {
                             head = Some(sha.clone());
                             let short: String = sha.chars().take(10).collect();
@@ -2399,14 +2435,30 @@ impl Daemon {
                         }
                         git.push(branch)
                             .await
-                            .map_err(|e| RpcError::internal(format!("pushing {branch}: {e:#}")))?;
+                            .map_err(|e| failure(format!("pushing {branch}: {e:#}")))?;
                         let body = pr_body(f);
-                        let (number, url) = gh
+                        let (number, url) = match gh
                             .publish(branch, base.as_deref(), &f.title, &body)
                             .await
-                            .map_err(|e| {
-                                RpcError::internal(format!("opening the pull request: {e:#}"))
-                            })?;
+                        {
+                            Ok(pr) => pr,
+                            // The forge has every commit already: nothing to
+                            // publish after all, not a failure (D-166).
+                            Err(e) if delivery::no_commits_between(&format!("{e:#}")) => {
+                                cx.nothing_to_publish = true;
+                                notes.push(format!(
+                                    "{NOTHING_TO_PUBLISH}: {} already has every commit of {branch}, so there's no pull request to open.",
+                                    base.as_deref().unwrap_or("the base branch")
+                                ));
+                                if let Some(h) = &head {
+                                    rationale.push(format!("{NOTHING_TO_PUBLISH} ({h})"));
+                                }
+                                break 'publish;
+                            }
+                            Err(e) => {
+                                return Err(failure(format!("opening the pull request: {e:#}")));
+                            }
+                        };
                         let first = !published;
                         d = Some(otter_core::task::Delivery {
                             branch: branch.clone(),
@@ -2428,10 +2480,13 @@ impl Daemon {
                             e.uri = Some(url);
                             evidence.push(e);
                         }
-                        if let Some(stat) = git
-                            .diffstat(base.as_deref().map(|b| format!("origin/{b}")).as_deref())
-                            .await
-                        {
+                        // The task's own change when it's known where that
+                        // started (D-167), else the branch's.
+                        let since = match f.own_base() {
+                            Some(own) if git.descends_from(own).await => Some(own.to_owned()),
+                            _ => base.as_deref().map(|b| format!("origin/{b}")),
+                        };
+                        if let Some(stat) = git.diffstat(since.as_deref()).await {
                             evidence.push(evidence_item(
                                 EvidenceKind::Diff,
                                 &format!("{CHANGES_ON}{branch}"),
@@ -2606,6 +2661,7 @@ impl Daemon {
             && !write_report
             && notes.is_empty()
             && rationale.is_empty()
+            && moot.is_empty()
         {
             return Ok(());
         }
@@ -2629,6 +2685,19 @@ impl Daemon {
             }
             for r in &rationale {
                 changes.push(Change::new(f.reason(r.clone())));
+            }
+            for id in &moot {
+                if let Some(d) = f.decision_mut(id)
+                    && d.status == DecisionStatus::Pending
+                {
+                    d.status = DecisionStatus::Cancelled;
+                    d.decided_at = Some(now);
+                    changes.push(Change::new(TaskEvent::DecisionResolved {
+                        decision_id: id.clone(),
+                        status: DecisionStatus::Cancelled,
+                        by: Decider::Policy,
+                    }));
+                }
             }
             f.gates = gates.clone();
             if let Some(fix) = &remediation {
@@ -2705,6 +2774,30 @@ impl Daemon {
             }
         }
     }
+}
+
+/// Delivery couldn't go on: what Git or the forge said, without
+/// credentials, as the task's reason (invariant 13).
+fn failure(what: String) -> RpcError {
+    RpcError::internal(otter_core::redact::redact(&what))
+}
+
+/// Why a clean tree at `head` has nothing of the task's own to publish
+/// (D-166), if it hasn't: HEAD is where the task started (another task's
+/// commit below it isn't this one's to publish), or the base branch, as
+/// last fetched, has every commit of it — all a task with no recorded
+/// start can be judged by.
+async fn nothing_to_publish(
+    f: &Task,
+    git: &crate::delivery::Git<'_>,
+    head: &str,
+    base: Option<&str>,
+) -> Option<String> {
+    if f.own_base() == Some(head) {
+        return Some("this task left the code as it found it".into());
+    }
+    let base = base?;
+    (git.ahead_of(base).await? == 0).then(|| format!("everything here is on {base} already"))
 }
 
 fn evidence_item(kind: EvidenceKind, title: &str, detail: Option<String>) -> Evidence {

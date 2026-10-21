@@ -5882,3 +5882,130 @@ added a test file only to give the diff something to show.
   (`commands_ran`: a run's `conversation_id`, the conversation, its
   tools), since the end-to-end brains don't read the commands. Not tried
   with a live model judging.
+
+## D-166 — A task with nothing of its own to publish isn't asked to (2026-10-21)
+
+The live task bench (B11, R03br): a task found its fix already on main,
+changed nothing ("Working tree: no changes") and was verified. Review still
+asked the developer to publish (`git push … and open a pull request`).
+Allowed, delivery pushed a branch equal to main and ran `gh pr create`,
+which GitHub refused ("No commits between main and otterd/r03br"), and the
+task failed with gh's command line as its reason. A trigger allowed to
+publish (D-083) takes the same path without asking, so a nightly check
+that finds everything green would fail every night.
+
+- **Nothing to publish:** in review, before anything is asked, a tree with
+  nothing to commit (`committable`, which leaves secrets' names out as
+  committing does) whose HEAD is where the task started (`started_from`,
+  D-167) has nothing of the task's own to publish. So does one whose HEAD
+  is no further than the base branch, as last fetched (`rev-list --count
+  origin/<base>..HEAD` is 0): that is all a task from before D-167 can be
+  judged by, and it holds for any task. A previous task's commit below it,
+  unmerged (D-156), is not this task's to publish.
+- **Then nothing is asked or pushed** and no pull request is opened: the
+  pull request and CI gates are not applicable, "nothing to publish"; one
+  message says so ("Nothing to publish: this task left the code as it found
+  it, so there's no pull request to open."); and the task goes on to its
+  report and waits for acceptance, as finished work does. A publish ask
+  still pending from before is cancelled. A trigger's allowance doesn't push
+  either: the check comes before the allowance.
+- **Said once:** the rationale keeps `Nothing to publish (<HEAD>)`. Review
+  is stepped on every tick and says it only for a HEAD it hasn't said it
+  for. A new commit or uncommitted work afterwards (a new ask, an edit by
+  hand) is something to publish again, asked as before.
+- **GitHub's word, as a backstop:** `gh pr create` refused with "No commits
+  between" (GitHub's base already holds every commit: the local base is
+  stale, or a pull request was merged since) is the same case, not a
+  failure. It gets the same gates and a message ("Nothing to publish: main
+  already has every commit of <branch>, …"), and the marker keeps the next
+  step from pushing and asking GitHub again. The branch has been pushed by
+  then, holding only commits its base has.
+- **No fetch.** The decision needs no network: with a recorded start the
+  base branch isn't needed for it, and without one a stale base means
+  asking to publish as before, after which GitHub's answer settles it.
+- **Delivery's errors are redacted whole.** What Git and gh printed was
+  already redacted (`tail`); the command line before it wasn't. `failed`
+  now redacts both, review's commit, push and pull request errors are
+  redacted as they become a reason, and so is every reason `fail` records
+  and otterd's log line for a step's error (invariant 13).
+- **A CI log's colours go in gh's spelling too.** gh writes ESC as `^[`
+  (caret notation) when its output isn't a terminal, so "Fix what CI found"
+  carried `^[[36;1mmake check^[[0m`: D-139 removed only the escape byte.
+  `without_colours` removes a control sequence in either spelling. A stray
+  `^[` that starts no sequence stays.
+- **Not done:** a triggered task with nothing to publish still waits for the
+  developer's acceptance (D-156's note on triggers); the workspace's Changes
+  panel (D-102, D-147) still counts "ahead" from the base as last fetched.
+- **Verified:** e2e `a_task_that_changes_nothing_has_nothing_to_publish`
+  (B11's shape: no publish decision, nothing pushed, no `gh pr create`, the
+  PR and CI gates `not_applicable: nothing to publish`, said once, accepted
+  without an override). With the check taken out it times out waiting for
+  the report, the publish ask raised as on the bench. E2e
+  `no_commits_between_is_nothing_to_publish` (the fake `gh` refusing as
+  GitHub did) fails with the backstop taken out, with the bench's own
+  reason: "Otter stopped: opening the pull request: gh pr create … No
+  commits between main and feature/csv". Unit tests
+  `colours_go_in_either_spelling` and `a_tools_failure_says_no_secret` fail
+  with their part taken out, and `no_commits_is_told_apart` reads gh's
+  refusal. The fake agent changed nothing, so the delivery tests that
+  publish now ask it to write a file (`WRITE:<file>` in the request):
+  something to publish.
+- **On upgrading:** a task in review whose last CI failure was stored with
+  `^[[…` in its log reads the next, cleaned, log as a different failure
+  once: one more fix step, not a loop.
+
+## D-167 — What a task changed is measured from where it started (2026-10-21)
+
+B09 in the task bench: P02rb worked in workspace p02r after P02ra, on the
+same branch; P02ra had been published, merged on GitHub and accepted.
+P02rb's "Working tree" evidence diffed since `merge-base origin/main HEAD`,
+and nothing had fetched `origin/main` since the merge, so P02ra's commit
+counted as P02rb's change. The judge failed "the only code change to
+money.py is …", a fix step had nothing to fix, and a correct task ended
+"Not verified". (P01rc's evidence was wrong the same way; its criteria
+didn't say "only".) D-156 holds the workspace so that the next task's work
+is its own, but verification still read the previous task's commit as
+this one's.
+
+- **A task's start, `Task.started_from {workspace_id, revision}`:** the
+  workspace's HEAD as the task's first run there begins (the planning turn
+  or a step, `start_run`), read before the agent starts. It is kept for the
+  task, and taken again only if the task works in another workspace
+  (`SetWorkspace` after it ran). Not taken outside Git or before a first
+  commit, and not for a task that ran before this was kept: its work may
+  be committed already, and a start taken now would hide it.
+- **Verification's diff is since the task's start**, while HEAD descends
+  from it (`merge-base --is-ancestor`); else (no start recorded, a history
+  rewritten) since the merge base with the base branch, as before. The
+  evidence says which: "HEAD …; changes since this task started (at …)", or
+  "changes since origin/main (merge base …)". The title stays "Working
+  tree: …" (the judge reads the newest by it). Older tasks have no start,
+  so their fingerprints don't change mid-task.
+- **The report's changed files** are the task's own as well: delivery's
+  "Changes on <branch>" stat is since the start, when HEAD descends from it.
+- **No fetch:** with the start, the base branch's tip doesn't enter the
+  diff, so verification still talks to no remote. (Delivery's fallback for
+  a task without a start doesn't fetch either: D-166.)
+- **An optional field**, absent in older documents. `Task` crosses the
+  wire, and old peers ignore an unknown field: no protocol bump
+  (protocol.md).
+- **D-156's gap, partly closed:** a task after one whose pull request isn't
+  merged yet is now verified, reported and judged for publishing on its own
+  change. When it does have something to publish, it still pushes to that
+  branch and adopts that open pull request (and rewrites its description).
+- **Not done:** a task asked for more after it's done (D-050) keeps its
+  first start, so its diff holds its earlier rounds too. The workspace's
+  Changes panel and the task's Changes section (D-102, D-147) still count
+  from the base branch as last fetched. A previous task's edits left
+  uncommitted (D-156's first gap) are in the tree when the next task
+  starts, so they are still its change.
+- **Verified:** unit test `a_task_is_diffed_from_where_it_started` (B09's
+  shape in a repository: an earlier commit on the branch that the base
+  doesn't have, then this task's edit; since the start only the edit shows;
+  with no start, or a rewritten history, the merge base) fails with the
+  start ignored. E2e `a_second_task_on_the_branch_is_measured_from_where_it_started`
+  (the first task publishes on `feature/csv` and is accepted, unmerged; the
+  second changes nothing): with verification ignoring the start, the
+  second's evidence reads "Working tree: 1 file changed, 1 insertion(+)",
+  the first's file, B09's error; with no start recorded, the second is
+  also asked to publish the first's commit.

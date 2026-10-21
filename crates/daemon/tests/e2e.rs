@@ -5049,6 +5049,174 @@ async fn started_with(
     f.id.to_string()
 }
 
+/// A task that changes nothing has nothing to publish (B11, D-166): it
+/// isn't asked to, nothing is pushed and no pull request is opened; the
+/// pull request and CI gates don't apply, and it waits for acceptance with
+/// its report, as finished work does.
+#[tokio::test]
+async fn a_task_that_changes_nothing_has_nothing_to_publish() {
+    use otter_core::task::{GateStatus, MessageRole, TaskAction, TaskStatus};
+    let fake = fake_agent_host("ok", "rules").await;
+    let (id, origin) = git_task_asking(&fake, "Check the export is already there").await;
+    let f = wait_task(&fake.host, &id, "the report", |f| f.report.is_some()).await;
+    assert_eq!(f.status, TaskStatus::Review, "{:?}", f.status_reason);
+    assert!(
+        !f.decisions.iter().any(|d| d.summary.contains("git push")),
+        "not asked to publish: {:?}",
+        f.decisions
+    );
+    for name in ["Pull request", "CI"] {
+        let g = f.gates.iter().find(|g| g.name == name).unwrap();
+        assert_eq!(g.status, GateStatus::NotApplicable, "{g:?}");
+        assert_eq!(g.detail.as_deref(), Some("nothing to publish"), "{g:?}");
+    }
+    assert!(f.delivery.is_none());
+    // Where its own work started: the workspace's commit as it began (D-167).
+    let main = git(&origin, &["rev-parse", "main"]).trim().to_owned();
+    assert_eq!(
+        f.started_from.as_ref().map(|s| s.revision.as_str()),
+        Some(main.as_str())
+    );
+    // Said once, however often review is stepped.
+    tokio::time::sleep(Duration::from_millis(1000)).await;
+    let f = fake.host.conn().await.task_get(&id).await.unwrap();
+    let said: Vec<&str> = f
+        .messages
+        .iter()
+        .filter(|m| m.role == MessageRole::Controller && m.text.starts_with("Nothing to publish"))
+        .map(|m| m.text.as_str())
+        .collect();
+    assert_eq!(
+        said,
+        [
+            "Nothing to publish: this task left the code as it found it, so there's no pull request to open."
+        ]
+    );
+    assert!(
+        git(&origin, &["branch", "--list", "feature/csv"])
+            .trim()
+            .is_empty(),
+        "nothing pushed"
+    );
+    let calls = std::fs::read_to_string(fake.gh.join("calls.log")).unwrap_or_default();
+    assert!(!calls.contains("pr create"), "{calls}");
+    let f = fake
+        .host
+        .conn()
+        .await
+        .task_act(
+            "accept",
+            &id,
+            TaskAction::Accept {
+                override_gates: false,
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(f.status, TaskStatus::Done);
+}
+
+/// The second task on a branch the first published to (B09, B11): the
+/// first's commit is below it and not on the base it was made from (as
+/// when the base is stale, or the pull request not merged yet). The second
+/// changes nothing: measured from where it started (D-167), its working
+/// tree has no changes, and it has nothing of its own to publish (D-166).
+#[tokio::test]
+async fn a_second_task_on_the_branch_is_measured_from_where_it_started() {
+    use otter_core::task::{EvidenceKind, TaskAction, TaskStatus};
+    let fake = fake_agent_host("ok", "rules").await;
+    let host = &fake.host;
+    let (first, origin) = git_task(&fake).await;
+    allow_publish(host, &first).await;
+    let a = wait_task(host, &first, "published", |f| {
+        f.delivery.as_ref().is_some_and(|d| d.pr_url.is_some())
+    })
+    .await;
+    let pushed = a.delivery.unwrap().head.unwrap();
+    let mut conn = host.conn().await;
+    conn.task_act(
+        "accept-first",
+        &first,
+        TaskAction::Accept {
+            override_gates: true,
+        },
+    )
+    .await
+    .unwrap();
+    let second = conn
+        .task_create(otter_protocol::task::TaskCreate {
+            command_id: "create-second".into(),
+            title: "Check the export".into(),
+            request: "Check the export is there".into(),
+            workspace: Some("csv".into()),
+            answer_only: false,
+        })
+        .await
+        .unwrap()
+        .id
+        .to_string();
+    conn.task_act("start-second", &second, TaskAction::Start)
+        .await
+        .unwrap();
+    let f = wait_task(host, &second, "the report", |f| f.report.is_some()).await;
+    assert_eq!(f.status, TaskStatus::Review, "{:?}", f.status_reason);
+    assert_eq!(
+        f.started_from.as_ref().map(|s| s.revision.as_str()),
+        Some(pushed.as_str())
+    );
+    let tree = f
+        .evidence
+        .iter()
+        .rev()
+        .find(|e| e.kind == EvidenceKind::Diff && e.title.starts_with("Working tree"))
+        .unwrap();
+    assert_eq!(tree.title, "Working tree: no changes");
+    let detail = tree.detail.as_deref().unwrap();
+    assert!(
+        detail.contains("changes since this task started"),
+        "{detail}"
+    );
+    assert!(!detail.contains("timeline.csv"), "{detail}");
+    assert!(
+        !f.decisions.iter().any(|d| d.summary.contains("git push")),
+        "{:?}",
+        f.decisions
+    );
+    let calls = std::fs::read_to_string(fake.gh.join("calls.log")).unwrap();
+    assert_eq!(calls.matches("gh pr create").count(), 1, "{calls}");
+    assert_eq!(git(&origin, &["rev-parse", "feature/csv"]).trim(), pushed);
+}
+
+/// GitHub refusing the pull request because the branch has no commit its
+/// base doesn't is nothing to publish, not a failure (B11, D-166), and it
+/// isn't tried again.
+#[tokio::test]
+async fn no_commits_between_is_nothing_to_publish() {
+    use otter_core::task::{GateStatus, MessageRole, TaskStatus};
+    let fake = fake_agent_host("ok", "rules").await;
+    std::fs::write(fake.gh.join("no-commits"), "").unwrap();
+    let (id, _) = git_task(&fake).await;
+    allow_publish(&fake.host, &id).await;
+    let f = wait_task(&fake.host, &id, "the report", |f| f.report.is_some()).await;
+    assert_eq!(f.status, TaskStatus::Review, "{:?}", f.status_reason);
+    for name in ["Pull request", "CI"] {
+        let g = f.gates.iter().find(|g| g.name == name).unwrap();
+        assert_eq!(g.status, GateStatus::NotApplicable, "{g:?}");
+    }
+    assert!(
+        f.messages.iter().any(|m| m.role == MessageRole::Controller
+            && m.text
+                == "Nothing to publish: main already has every commit of feature/csv, so there's no pull request to open."),
+        "{:?}",
+        f.messages
+    );
+    tokio::time::sleep(Duration::from_millis(1000)).await;
+    let f = fake.host.conn().await.task_get(&id).await.unwrap();
+    assert_eq!(f.status, TaskStatus::Review);
+    let calls = std::fs::read_to_string(fake.gh.join("calls.log")).unwrap();
+    assert_eq!(calls.matches("gh pr create").count(), 1, "{calls}");
+}
+
 async fn wait_task(
     host: &TestHost,
     id: &str,
@@ -6960,8 +7128,14 @@ async fn a_preview_runs_as_a_session_on_one_port() {
 // ---------------------------------------------------------------------------
 
 /// A Git workspace (a worktree on `feature/csv`) whose origin is a real
-/// repository with CI configured, and a task on it, started.
+/// repository with CI configured, and a task on it, started: its agent
+/// writes `timeline.csv`, something to publish.
 async fn git_task(fake: &FakeCodex) -> (String, std::path::PathBuf) {
+    git_task_asking(fake, "Export the timeline as CSV WRITE:timeline.csv").await
+}
+
+/// [`git_task`], asking for `request`.
+async fn git_task_asking(fake: &FakeCodex, request: &str) -> (String, std::path::PathBuf) {
     use otter_core::task::TaskAction;
     let src = fake.host.home().join("origin");
     std::fs::create_dir_all(src.join(".github/workflows")).unwrap();
@@ -6983,7 +7157,7 @@ async fn git_task(fake: &FakeCodex) -> (String, std::path::PathBuf) {
         .task_create(otter_protocol::task::TaskCreate {
             command_id: "create".into(),
             title: "CSV export".into(),
-            request: "Export the timeline as CSV".into(),
+            request: request.into(),
             workspace: Some("csv".into()),
             answer_only: false,
         })
@@ -8927,7 +9101,7 @@ async fn an_unattended_task_publishes_when_its_trigger_allows_it() {
         .trigger_create(trigger(
             "nightly",
             "nightly",
-            "Export the timeline as CSV",
+            "Export the timeline as CSV WRITE:timeline.csv",
             policy,
         ))
         .await
@@ -8962,7 +9136,7 @@ async fn an_unattended_task_pauses_when_it_waits_too_long() {
         .trigger_create(trigger(
             "weekly",
             "weekly",
-            "Export the timeline as CSV",
+            "Export the timeline as CSV WRITE:timeline.csv",
             policy,
         ))
         .await

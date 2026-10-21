@@ -26,6 +26,9 @@ use tokio::io::AsyncWriteExt;
 use crate::env::{EnvMap, which};
 
 pub const ACCEPTANCE_GATE: &str = "Your acceptance";
+/// Why the pull request and CI gates don't apply to a task with nothing
+/// of its own to publish (D-166).
+const NOTHING_TO_PUBLISH: &str = "nothing to publish";
 /// Reruns of a failure that looks like infrastructure, per pushed commit.
 pub const MAX_RERUNS: u32 = 2;
 /// A failed CI log keeps its last lines, each cut at so many characters.
@@ -51,6 +54,13 @@ const FLAKY: &[&str] = &[
 pub fn looks_flaky(text: &str) -> bool {
     let lower = text.to_lowercase();
     FLAKY.iter().any(|p| lower.contains(p))
+}
+
+/// GitHub refused a pull request because the branch has no commit its
+/// base doesn't (`No commits between main and <branch>`): there is nothing
+/// to publish, which isn't a failure (D-166).
+pub fn no_commits_between(error: &str) -> bool {
+    error.to_lowercase().contains("no commits between")
 }
 
 /// A failed run's log (`gh run view --log-failed`) as the agent and the
@@ -93,14 +103,47 @@ fn ci_line(text: &str) -> String {
     } else {
         0
     };
-    let mut out = String::new();
-    let mut chars = c[start..].iter();
-    while let Some(&c) = chars.next() {
-        if c != '\x1b' {
-            out.push(c);
-        } else if chars.clone().next() == Some(&'[') {
-            // A colour: `ESC [`, its parameters, a final byte.
-            chars.by_ref().skip(1).find(|c| ('@'..='~').contains(*c));
+    without_colours(&c[start..].iter().collect::<String>())
+}
+
+/// `text` without a terminal's colours and cursor moves: `ESC [`, its
+/// parameters and a final byte. gh writes the escape as `^[` (caret
+/// notation) where the log isn't going to a terminal, so that form goes
+/// too; any other `ESC` is dropped.
+pub fn without_colours(text: &str) -> String {
+    let c: Vec<char> = text.chars().collect();
+    let mut out = String::with_capacity(text.len());
+    let mut i = 0;
+    while i < c.len() {
+        let escape = match c[i] {
+            '\x1b' => Some(1),
+            '^' if c.get(i + 1) == Some(&'[') && c.get(i + 2) == Some(&'[') => Some(2),
+            _ => None,
+        };
+        let Some(n) = escape else {
+            out.push(c[i]);
+            i += 1;
+            continue;
+        };
+        let csi = i + n;
+        if c.get(csi) != Some(&'[') {
+            i = csi;
+            continue;
+        }
+        // Parameters and intermediates, then the final byte.
+        let end = c[csi + 1..]
+            .iter()
+            .position(|c| !('\x20'..='\x3f').contains(c))
+            .map(|k| csi + 1 + k);
+        match end {
+            Some(e) if ('@'..='~').contains(&c[e]) => i = e + 1,
+            // Not a sequence after all: an escape goes, `^[` stays.
+            _ => {
+                if n == 2 {
+                    out.extend(&c[i..csi]);
+                }
+                i = csi;
+            }
         }
     }
     out
@@ -331,6 +374,8 @@ pub struct GateContext {
     pub browser_checks: bool,
     /// A push just happened: CI hasn't caught up with it yet.
     pub ci_settling: bool,
+    /// The task has nothing of its own to publish (D-166).
+    pub nothing_to_publish: bool,
 }
 
 fn gate(name: &str, status: GateStatus, detail: impl Into<String>) -> Gate {
@@ -425,6 +470,11 @@ pub fn gates(f: &Task, cx: &GateContext) -> Vec<Gate> {
             GateStatus::Passed,
             d.pr_url.clone().unwrap_or_default(),
         ),
+        _ if cx.nothing_to_publish => gate(
+            "Pull request",
+            GateStatus::NotApplicable,
+            NOTHING_TO_PUBLISH,
+        ),
         _ => gate("Pull request", GateStatus::Pending, "waiting to publish"),
     });
     // CI on the pull request.
@@ -463,6 +513,7 @@ pub fn gates(f: &Task, cx: &GateContext) -> Vec<Gate> {
         _ if !cx.publishable || d.is_some_and(|d| d.declined) => {
             gate("CI", GateStatus::NotApplicable, "nothing published")
         }
+        _ if cx.nothing_to_publish => gate("CI", GateStatus::NotApplicable, NOTHING_TO_PUBLISH),
         _ => gate("CI", GateStatus::Pending, "after the pull request"),
     });
     let accepted = f
@@ -645,6 +696,17 @@ pub(crate) async fn run(
     ))
 }
 
+/// A tool's failure as Otter says it: the command and the end of what it
+/// printed, without credentials in either (invariant 13): it becomes a
+/// task's reason and message.
+fn failed(program: &str, args: &[&str], stderr: &str, n: usize) -> String {
+    otter_core::redact::redact(&format!(
+        "{program} {}: {}",
+        args.join(" "),
+        tail(stderr.trim(), n)
+    ))
+}
+
 /// The end of what a tool printed, without credentials (invariant 13).
 fn tail(s: &str, n: usize) -> String {
     let s = otter_core::redact::redact(s);
@@ -663,7 +725,7 @@ impl Git<'_> {
         let git = which("git", self.env).ok_or_else(|| anyhow!("git is not installed"))?;
         let (ok, out, err) = run(&git, args, self.root, self.env, None).await?;
         if !ok {
-            bail!("git {}: {}", args.join(" "), tail(err.trim(), 500));
+            bail!(failed("git", args, &err, 500));
         }
         Ok(out.trim().to_owned())
     }
@@ -680,6 +742,27 @@ impl Git<'_> {
 
     pub async fn head(&self) -> Result<String> {
         self.git(&["rev-parse", "HEAD"]).await
+    }
+
+    /// Whether HEAD is `rev` or descends from it.
+    pub async fn descends_from(&self, rev: &str) -> bool {
+        self.git(&["merge-base", "--is-ancestor", rev, "HEAD"])
+            .await
+            .is_ok()
+    }
+
+    /// How many commits HEAD has that the branch `base` doesn't, as last
+    /// fetched (`origin/<base>`, else `<base>`). `None`: no such branch here.
+    pub async fn ahead_of(&self, base: &str) -> Option<u64> {
+        for b in [format!("origin/{base}"), base.to_owned()] {
+            if let Ok(n) = self
+                .git(&["rev-list", "--count", &format!("{b}..HEAD")])
+                .await
+            {
+                return n.parse().ok();
+            }
+        }
+        None
     }
 
     /// Whether anything is changed or new, secrets' names included.
@@ -798,7 +881,7 @@ impl<'a> GitHub<'a> {
     async fn gh(&self, args: &[&str], input: Option<&str>) -> Result<String> {
         let (ok, out, err) = run(&self.gh, args, self.root, self.env, input).await?;
         if !ok {
-            bail!("gh {}: {}", args.join(" "), tail(err.trim(), 500));
+            bail!(failed("gh", args, &err, 500));
         }
         Ok(out)
     }
@@ -1020,6 +1103,7 @@ mod tests {
                 has_ci: false,
                 browser_checks: false,
                 ci_settling: false,
+                nothing_to_publish: false,
             },
         );
         assert_eq!(status(&g, "Requirements met"), GateStatus::Passed);
@@ -1038,6 +1122,7 @@ mod tests {
             has_ci: true,
             browser_checks: true,
             ci_settling: false,
+            nothing_to_publish: false,
         };
         let g = gates(&f, &cx);
         assert_eq!(status(&g, "Pull request"), GateStatus::Pending);
@@ -1104,6 +1189,7 @@ mod tests {
                 has_ci: true,
                 browser_checks: false,
                 ci_settling: false,
+                nothing_to_publish: false,
             },
         );
         f.rationale
@@ -1119,6 +1205,50 @@ mod tests {
         ] {
             assert!(r.contains(want), "{want} in\n{r}");
         }
+    }
+
+    /// gh writes a log's colours as `^[[…m` where it isn't going to a
+    /// terminal: those go too, as escapes do (B11's note; D-139).
+    #[test]
+    fn colours_go_in_either_spelling() {
+        let log = ci_log(
+            "check\tRun make check\t2026-10-21T15:18:50.1Z ^[[36;1mmake check^[[0m\n\
+             check\tRun make check\t2026-10-21T15:18:51.1Z \x1b[31mError 1\x1b[0m\n",
+        );
+        assert_eq!(
+            log, "[check › Run make check]\nmake check\nError 1\n",
+            "{log:?}"
+        );
+        // Not a colour: kept.
+        assert_eq!(without_colours("x ^[ y [1] ^[["), "x ^[ y [1] ^[[");
+        assert_eq!(without_colours("a\x1bb"), "ab");
+        assert_eq!(without_colours("^[[2K^[[1;32mok"), "ok");
+    }
+
+    /// What Git or gh said, and the command it was, become a task's reason
+    /// without credentials (invariant 13).
+    #[test]
+    fn a_tools_failure_says_no_secret() {
+        let said = failed(
+            "git",
+            &[
+                "push",
+                "https://bob:ghp_abcdefghijklmnopqrstuvwxyz0123456789@github.com/o/r",
+            ],
+            "remote: Invalid username or token ghp_abcdefghijklmnopqrstuvwxyz0123456789\n",
+            500,
+        );
+        assert!(said.starts_with("git push https://"), "{said}");
+        assert!(!said.contains("ghp_abcdef"), "{said}");
+        assert!(!said.contains("bob:"), "{said}");
+    }
+
+    #[test]
+    fn no_commits_is_told_apart() {
+        assert!(no_commits_between(
+            "gh pr create --head otterd/r03br: pull request create failed: GraphQL: No commits between main and otterd/r03br (createPullRequest)"
+        ));
+        assert!(!no_commits_between("pull request create failed: HTTP 422"));
     }
 
     #[test]

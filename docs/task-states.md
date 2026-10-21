@@ -44,7 +44,7 @@ D-066).
 | verifying → review | engine | All criteria met; or, after a fix, the same work with no fewer unmet, whatever the verdict says (unverified, D-062, D-165). |
 | verifying → blocked | engine | The check can't run here (D-062). |
 | review → implementing | engine | CI failed on the code: a fix step, unless it failed the same way after a fix (D-068). |
-| review → done | developer | Accept (every gate passed, or `--anyway`, on record). |
+| review → done | developer | Accept (every gate passed or not applicable — nothing to publish is, D-166 — or `--anyway`, on record). |
 | done → planning | developer | A new ask (any message asking for work, D-084): the agent looks again. |
 | any active → blocked | engine | A decision only the developer may make (policy `user_only`). |
 | blocked → previous | engine | Nothing pending any more (`resume_status`). |
@@ -64,14 +64,16 @@ journal is the agent's. A restarted otterd reads them and goes on.
 | Step | What is kept | On resume |
 |---|---|---|
 | Goal | `request`, or the answered "What should this task do?" decision | Plans from it; asks again only if nothing was said. |
+| First run | `started_from`: the workspace's revision as the task's first run there begins (D-167) | Kept; taken again only in another workspace. |
 | Planning turn | the planning step's run, its report (a proposal or an answer); a plan sent back carries the review's points (`Step.detail`), an answer-only plan turned down the ask to answer in words (D-158); a plan approval names the planning task | Continues the turn if cut off; else reviews the proposal (or reads the developer's word on it), or posts the answer. |
 | Plan | `requirements`, `acceptance` (typed), `steps`, `verify_command` (+ its decision) | Carries on with the next step. |
 | Each turn | a `Run`: state, `provider_session_id`, `worked_ms`, summary; the turn in the journal | A cut-off turn continues the same session with a notice (D-063); a finished one isn't repeated (recovered from the journal). |
 | Check | `Test` evidence: command, exit, output tail | Re-run on the next verification (cheap, local). |
-| Work state | `Working tree` evidence, `last_verification` (fingerprint + unmet), `judged_runs` (the runs at the last verdict) | The loop stop compares against the mark; the judge sees the commands of the runs after the count (D-165). |
+| Work state | `Working tree` evidence (the change since `started_from` while HEAD descends from it, else since the merge base with the base branch, D-167), `last_verification` (fingerprint + unmet), `judged_runs` (the runs at the last verdict) | The loop stop compares against the mark; the judge sees the commands of the runs after the count (D-165). |
+| Nothing to publish | `Nothing to publish (<HEAD>)` in the rationale; the PR and CI gates `not_applicable` (D-166) | Nothing to commit and HEAD where the task started (or no further than the base branch): not asked, not pushed; said once per HEAD. |
 | Commit | `Committed <sha>` evidence | A clean tree: nothing to commit again. |
-| Push | `delivery.branch`, `head`, `pushed_at` | Pushes only if HEAD moved or work is uncommitted; a push is idempotent. |
-| Pull request | `delivery.pr_number`, `pr_url`, `PullRequest` evidence | An open PR for the branch is adopted (`gh pr view`), never opened twice. |
+| Push | `delivery.branch`, `head`, `pushed_at` | Pushes only if HEAD moved or work is uncommitted; a push is idempotent; never with nothing of the task's own to publish (D-166). |
+| Pull request | `delivery.pr_number`, `pr_url`, `PullRequest` evidence | An open PR for the branch is adopted (`gh pr view`), never opened twice. The forge's "No commits between" is nothing to publish, not a failure (D-166). |
 | CI | `delivery.ci`, `reruns`, `Ci` evidence (pass per HEAD, failure with its log) | Read again; a failure already acted on isn't acted on twice. |
 | Done | `gates`, `report`, status | — |
 | Every reason | a line in `rationale`, and `Reasoned` in the history at its time (D-141) | — |
