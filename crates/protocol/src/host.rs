@@ -347,7 +347,7 @@ mod tests {
     }
 }
 
-/// `host.processes` (D-156): the processes Otter started or must answer for,
+/// `host.processes` (D-161): the processes Otter started or must answer for,
 /// each with what owns it. Never a command line, which can carry a token.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct HostProcesses {

@@ -212,14 +212,14 @@ export interface Published {
   note?: string;
 }
 
-/** What a process belongs to (D-156). */
+/** What a process belongs to (D-161). */
 export type ProcessOwner =
   | { kind: "daemon"; this?: boolean }
   | { kind: "execution"; workspace_id: string; session_id: string; execution_id: string }
   | { kind: "run"; task_id?: string; workspace_id: string }
   | { kind: "orphan"; why: string };
 
-/** A process Otter started or must answer for (`host.processes`, D-156). */
+/** A process Otter started or must answer for (`host.processes`, D-161). */
 export interface OtterProcess {
   pid: number;
   started: number;

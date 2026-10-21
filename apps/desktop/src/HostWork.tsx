@@ -68,7 +68,7 @@ export function treeText(procs: OtterProcess[]): string {
 }
 
 /**
- * What Otter runs on a host, by kind (D-156): its tasks, workspaces,
+ * What Otter runs on a host, by kind (D-161): its tasks, workspaces,
  * sessions, coding agents, and the processes nothing else owns. A row opens
  * into who owns it and its processes; its actions are the commands that
  * exist, asked again in the row before they end anything.

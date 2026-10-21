@@ -145,7 +145,7 @@ Both are additions (no protocol bump); daemons before them answer
 `invalid_request`.
 
 - `host.processes` → `{sampled_at, processes: [{pid, started, parent?, name,
-  exe?, cwd?, cpu_percent, memory, busy_secs, owner, stoppable}]}` (D-156): the
+  exe?, cwd?, cpu_percent, memory, busy_secs, owner, stoppable}]}` (D-161): the
   processes Otter started or must answer for, as of the last 5 s sample
   (`unavailable` until the first). `started` (seconds since the epoch) with
   `pid` names a process. `owner` is `{kind: "daemon", this}` (an otterd: this
@@ -156,7 +156,7 @@ Both are additions (no protocol bump); daemons before them answer
   workspace folder of this host whose workspace is gone or archived, with no
   such tree above it). `busy_secs`: how long it has used 25% of a CPU or more.
   A command line is never sent: it can carry a token.
-- `host.processes.stop {pid, started, force?}` → `null` (D-156). Ends what
+- `host.processes.stop {pid, started, force?}` → `null` (D-161). Ends what
   `host.processes` lists with `stoppable: true` — an otterd that isn't this
   one, or an orphan — by SIGTERM, or SIGKILL with `force`, to its process
   group when it leads one. `conflict` for this otterd, for a session's or a

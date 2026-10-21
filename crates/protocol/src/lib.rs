@@ -62,11 +62,11 @@ pub enum Request {
     #[serde(rename = "host.ports")]
     HostPorts,
     /// The processes Otter started or must answer for, with their owners
-    /// (D-156). Result: [`host::HostProcesses`].
+    /// (D-161). Result: [`host::HostProcesses`].
     #[serde(rename = "host.processes")]
     HostProcesses,
     /// End another otterd, or an orphan, named by the pid and
-    /// start time `host.processes` gave (D-156). `conflict` for anything
+    /// start time `host.processes` gave (D-161). `conflict` for anything
     /// else. Result: `null`.
     #[serde(rename = "host.processes.stop")]
     HostProcessStop(host::ProcessStop),

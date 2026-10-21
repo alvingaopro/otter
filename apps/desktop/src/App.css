@@ -1040,7 +1040,7 @@ body.resizing-row { cursor: row-resize; user-select: none; }
 .perf-fps.fair { color: #facc15; }
 .perf-fps.poor { color: #f87171; }
 
-/* A host page's tabs and its Work tab (D-156) */
+/* A host page's tabs and its Work tab (D-161) */
 .host-tabs { display: flex; gap: 2px; border-bottom: 1px solid var(--line); margin: 6px 0 0; }
 .host-tab { padding: 9px 14px; color: var(--muted); border-bottom: 2px solid transparent; margin-bottom: -1px; display: flex; align-items: center; gap: 8px; font-weight: 500; }
 .host-tab:hover { color: var(--text); }

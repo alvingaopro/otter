@@ -1190,7 +1190,7 @@ pub async fn host_ports(
 }
 
 /// The processes Otter started or must answer for on a host, with their
-/// owners (D-156).
+/// owners (D-161).
 #[tauri::command]
 pub async fn host_processes(
     app: AppHandle,
@@ -1199,7 +1199,7 @@ pub async fn host_processes(
     rpc(&app, &host).await?.host_processes().await.map_err(err)
 }
 
-/// End an otterd of another build, or an orphan (D-156).
+/// End an otterd of another build, or an orphan (D-161).
 #[tauri::command]
 pub async fn host_process_stop(
     app: AppHandle,

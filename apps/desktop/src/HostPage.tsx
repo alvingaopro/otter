@@ -58,7 +58,7 @@ export function HostPage({
   host: HostView;
   version?: string;
   forwards: ForwardView[];
-  /** This host's tasks (D-156: the Work tab). */
+  /** This host's tasks (D-161: the Work tab). */
   tasks: Task[];
   now: number;
   onTask: (task: string, action: TaskAction) => Promise<unknown>;
@@ -127,7 +127,7 @@ export function HostPage({
     };
   }, [host.name, connected]);
 
-  // The processes Otter runs here (D-156), while the page is open and the
+  // The processes Otter runs here (D-161), while the page is open and the
   // window has focus: the Work tab's badge needs them on the Overview too.
   useEffect(() => {
     if (!connected) return;

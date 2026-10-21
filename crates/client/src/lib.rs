@@ -428,13 +428,13 @@ impl Connection {
     }
 
     /// The processes Otter started or must answer for, with their owners
-    /// (D-156).
+    /// (D-161).
     pub async fn host_processes(&mut self) -> Result<otter_protocol::host::HostProcesses> {
         self.call(Request::HostProcesses).await
     }
 
     /// End an otterd of another build, or an orphan, named by what
-    /// [`Connection::host_processes`] gave (D-156).
+    /// [`Connection::host_processes`] gave (D-161).
     pub async fn host_process_stop(
         &mut self,
         stop: otter_protocol::host::ProcessStop,

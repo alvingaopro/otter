@@ -3585,7 +3585,7 @@ async fn a_workspace_is_pushed_and_its_pull_request_opened() {
     assert!(err.to_string().contains("not a Git workspace"), "{err}");
 }
 
-/// The host lists what Otter runs and who owns it (D-156): a session's
+/// The host lists what Otter runs and who owns it (D-161): a session's
 /// process, and what it started, belong to the session.
 #[tokio::test]
 async fn the_host_lists_its_processes_with_their_owners() {
@@ -3615,7 +3615,7 @@ async fn the_host_lists_its_processes_with_their_owners() {
 }
 
 /// Stopping a process by hand reaches only what nothing owns, named by pid
-/// and start time (D-156): never this otterd, a session's process, a pid
+/// and start time (D-161): never this otterd, a session's process, a pid
 /// with another start time, or anything unlisted.
 #[tokio::test]
 async fn only_an_orphan_can_be_stopped_by_pid_and_start_time() {
@@ -3695,7 +3695,7 @@ async fn only_an_orphan_can_be_stopped_by_pid_and_start_time() {
     }
 }
 
-/// An orphan that leads a group of its own is ended with its group (D-156),
+/// An orphan that leads a group of its own is ended with its group (D-161),
 /// and nothing outside it: not this test's own group.
 #[tokio::test]
 async fn stopping_an_orphan_ends_its_group_only() {

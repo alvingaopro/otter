@@ -29,7 +29,7 @@ pub struct Sampler {
     recorder: Arc<Mutex<Recorder>>,
 }
 
-/// One process as of the last sample (D-156). Never its command line: only
+/// One process as of the last sample (D-161). Never its command line: only
 /// what the sampler itself reads from it, like whether it is an otterd.
 #[derive(Clone, Debug)]
 pub struct ProcSample {

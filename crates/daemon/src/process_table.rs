@@ -1,4 +1,4 @@
-//! The processes Otter started or must answer for (`host.processes`, D-156),
+//! The processes Otter started or must answer for (`host.processes`, D-161),
 //! and ending the ones that nothing owns (`host.processes.stop`).
 //!
 //! Ownership is found as `workspace.ports` finds it: by walking each process's

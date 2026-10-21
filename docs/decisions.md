@@ -5261,7 +5261,7 @@ host and took a row from the terminal. The workspace pane no longer shows it.
 A host too old for a command still says so where the command is used
 (`explain`).
 
-## D-156 — A host's Work tab shows what Otter runs there, strays included (2026-10-21)
+## D-161 — A host's Work tab shows what Otter runs there, strays included (2026-10-21)
 
 During an otterd update, otterds of other builds (one from a bench's home, one
 a debug build) were found running for more than ten hours, using CPU, with no
