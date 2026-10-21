@@ -1324,6 +1324,7 @@ mod process_tests {
             .send_turn(&TurnSpec {
                 turn_id: "turn_1".into(),
                 text: prompt.into(),
+                images: vec![],
             })
             .await
             .unwrap();

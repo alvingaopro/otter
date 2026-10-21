@@ -21,7 +21,7 @@ use std::sync::Arc;
 
 use chrono::Utc;
 use otter_core::conversation::{
-    Applied, Command, Conversation, Initiator, InputBlock, NativeBinding, Op, TurnOutcome,
+    Applied, Command, Conversation, Initiator, NativeBinding, Op, TurnOutcome,
 };
 use otter_core::task::{
     Decider, DecisionKind, DecisionRequest, DecisionStatus, MessageRole, Risk, Run, RunState,
@@ -32,7 +32,7 @@ use otter_protocol::RpcError;
 use tokio::sync::{mpsc, oneshot};
 
 use crate::daemon::{Daemon, RpcResult, workspace_not_found};
-use crate::runtime::actor::{Actor, ActorCmd, ActorEvent, SharedPulse};
+use crate::runtime::actor::{Actor, ActorCmd, ActorEvent, SharedPulse, input_blocks};
 use crate::runtime::policy::{self, Proposal, Verdict};
 use crate::runtime::{CheckDecision, DecisionAsk, DecisionReply, RunLimits, RunSpec, runtime};
 use crate::tasks::{Change, message};
@@ -88,6 +88,7 @@ impl Daemon {
         task_id: &TaskId,
         step_id: &StepId,
         prompt: String,
+        pictures: Vec<(String, PathBuf)>,
         resume: Option<String>,
         counts: bool,
     ) -> RpcResult<RunId> {
@@ -190,6 +191,19 @@ impl Daemon {
         })?;
         // The turn, then the run takes the conversation (a new generation).
         let run_id = RunId::generate();
+        // The messages' pictures, if the agent can see them; else each message
+        // they came with is told so, once.
+        let pictures: Vec<PathBuf> = if sees_pictures(&backend) {
+            pictures.into_iter().map(|(_, path)| path).collect()
+        } else {
+            let mut told = std::collections::HashSet::new();
+            for (message, _) in &pictures {
+                if told.insert(message.clone()) {
+                    self.pictures_unseen(task_id, message).await;
+                }
+            }
+            vec![]
+        };
         let missing = || RpcError::internal("the conversation went missing");
         let current = self
             .conversations
@@ -224,9 +238,7 @@ impl Daemon {
                     fingerprint: prompt.clone(),
                     command: Command::SendTurn {
                         initiator: Initiator::Controller,
-                        input: vec![InputBlock::Text {
-                            text: prompt.clone(),
-                        }],
+                        input: input_blocks(prompt.clone(), host_paths(&pictures)),
                         read_only: false,
                     },
                     turn_id: Some(turn_id.clone()),
@@ -1157,9 +1169,16 @@ impl Daemon {
     /// Hand the developer's message to a run in progress: a turn of its
     /// own, delivered after the current one (never merged with another).
     /// `command_id` is the message's own, so a repeat is queued once.
-    pub(crate) async fn tell_runs(&self, task_id: &TaskId, command_id: &str, text: &str) {
+    pub(crate) async fn tell_runs(
+        &self,
+        task_id: &TaskId,
+        command_id: &str,
+        text: &str,
+        pictures: Vec<PathBuf>,
+    ) {
         let input = format!("From the developer:\n{text}");
-        self.queue_turn(task_id, command_id, input, false).await;
+        self.queue_turn(task_id, command_id, input, pictures, false)
+            .await;
     }
 
     /// Ask a run in progress the developer's question (D-089 M2.5): a turn
@@ -1167,11 +1186,18 @@ impl Daemon {
     /// ([`policy::read_only`]); its answer is its message, not the run's
     /// result. Only runs on the SDK runtime, where Otter's policy sees every
     /// tool call; how many it went to.
-    pub(crate) async fn ask_runs(&self, task_id: &TaskId, command_id: &str, text: &str) -> usize {
+    pub(crate) async fn ask_runs(
+        &self,
+        task_id: &TaskId,
+        command_id: &str,
+        text: &str,
+        pictures: Vec<PathBuf>,
+    ) -> usize {
         let input = format!(
             "From the developer, a question. This turn can only read: Read, Grep and Glob work; writing files and running commands are refused. Answer what you can, pointing to the code (path:line); if part of it asks for a change, say that needs a turn of its own:\n{text}"
         );
-        self.queue_turn(task_id, command_id, input, true).await
+        self.queue_turn(task_id, command_id, input, pictures, true)
+            .await
     }
 
     /// The runtime backend of the task's run in progress, if one is.
@@ -1195,6 +1221,7 @@ impl Daemon {
         task_id: &TaskId,
         command_id: &str,
         input: String,
+        pictures: Vec<PathBuf>,
         read_only: bool,
     ) -> usize {
         let live: Vec<_> = self
@@ -1214,16 +1241,26 @@ impl Daemon {
             .collect();
         let mut queued_in = 0;
         for (conversation, tx) in live {
+            // Only a runtime that can see pictures is given them; for the
+            // others the developer is told, once.
+            let takes = self
+                .conversations
+                .get(conversation.as_str())
+                .is_some_and(|c| sees_pictures(&c.backend));
+            let pictures = if takes || pictures.is_empty() {
+                host_paths(&pictures)
+            } else {
+                self.pictures_unseen(task_id, command_id).await;
+                vec![]
+            };
             let queued = self.conversations.apply(
                 &conversation,
                 Op::Accept {
                     command_id: command_id.into(),
-                    fingerprint: input.clone(),
+                    fingerprint: format!("{input}{}", pictures.join("\n")),
                     command: Command::SendTurn {
                         initiator: Initiator::User,
-                        input: vec![InputBlock::Text {
-                            text: input.clone(),
-                        }],
+                        input: input_blocks(input.clone(), pictures),
                         read_only,
                     },
                     turn_id: Some(otter_core::TurnId::generate()),
@@ -1345,7 +1382,13 @@ impl Daemon {
     }
 
     /// Guidance that can't wait: the current turn stops and this goes next.
-    pub(crate) async fn redirect_runs(&self, task_id: &TaskId, command_id: &str, text: &str) {
+    pub(crate) async fn redirect_runs(
+        &self,
+        task_id: &TaskId,
+        command_id: &str,
+        text: &str,
+        pictures: Vec<PathBuf>,
+    ) {
         let live: Vec<_> = self
             .runs
             .lock()
@@ -1354,6 +1397,16 @@ impl Daemon {
             .filter(|r| &r.task == task_id)
             .map(|r| r.tx.clone())
             .collect();
+        let pictures = if pictures.is_empty()
+            || self
+                .live_backend(task_id)
+                .is_some_and(|b| sees_pictures(&b))
+        {
+            host_paths(&pictures)
+        } else {
+            self.pictures_unseen(task_id, command_id).await;
+            vec![]
+        };
         for tx in live {
             let _ = tx
                 .send(ActorCmd::Redirect {
@@ -1362,9 +1415,29 @@ impl Daemon {
                     text: format!(
                         "From the developer — a change of direction, before anything else:\n{text}"
                     ),
+                    pictures: pictures.clone(),
                 })
                 .await;
         }
+    }
+
+    /// The developer's pictures went with a message, and the coding agent
+    /// here can't see them: said once on the task, so it isn't a surprise.
+    async fn pictures_unseen(&self, task_id: &TaskId, key: &str) {
+        let correlation = format!("pictures:{key}");
+        let _ = self
+            .tasks
+            .lock()
+            .await
+            .apply(task_id, Some(&correlation), |f, _| {
+                let (m, c) = message(
+                    MessageRole::System,
+                    "The coding agent on this host can't see pictures, so it wasn't given the ones you sent. Describe what they show, or use the SDK runtime in Settings.".into(),
+                    Some(correlation.clone()),
+                );
+                f.messages.push(m);
+                Ok(vec![c])
+            });
     }
 
     /// Stop every run of a task and wait until each has ended. What it
@@ -1774,9 +1847,24 @@ impl Draft {
     }
 }
 
+/// Whether a runtime backend gives the agent the pictures of a message:
+/// the SDK worker does (`features.attachments`); the others don't.
+fn sees_pictures(backend: &str) -> bool {
+    backend == "sdk"
+}
+
+/// Host paths of files, as a turn's attachments name them.
+fn host_paths(files: &[PathBuf]) -> Vec<String> {
+    files
+        .iter()
+        .map(|p| p.to_string_lossy().into_owned())
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use otter_core::conversation::InputBlock;
 
     fn run_of(step: &StepId, state: RunState) -> Run {
         Run {

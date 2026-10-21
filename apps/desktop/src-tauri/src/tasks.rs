@@ -3,7 +3,7 @@
 
 use otter_core::Activity;
 use otter_core::task::{Need, Task, TaskAction, TaskEventRecord};
-use otter_protocol::task::TaskCreate;
+use otter_protocol::task::{TaskCreate, TaskImage};
 use serde::Serialize;
 use tauri::AppHandle;
 
@@ -76,10 +76,11 @@ pub async fn task_send(
     command_id: String,
     task: String,
     text: String,
+    images: Option<Vec<TaskImage>>,
 ) -> Result<TaskView, String> {
     rpc(&app, &host)
         .await?
-        .task_send(&command_id, &task, &text)
+        .task_send_with_images(&command_id, &task, &text, images.unwrap_or_default())
         .await
         .map(TaskView::from)
         .map_err(|e| e.to_string())

@@ -505,12 +505,19 @@ impl Daemon {
             Routing::Queue => {
                 let carried = self.carried(f);
                 for m in messages.iter().filter(|m| !carried.contains(m.id.as_str())) {
-                    self.tell_runs(&f.id, m.id.as_str(), &m.text).await;
+                    self.tell_runs(&f.id, m.id.as_str(), &m.text, self.pictures_of(&f.id, m))
+                        .await;
                 }
             }
             Routing::Redirect => {
                 if let Some(last) = messages.last() {
-                    self.redirect_runs(&f.id, last.id.as_str(), redirect).await;
+                    self.redirect_runs(
+                        &f.id,
+                        last.id.as_str(),
+                        redirect,
+                        self.pictures_of(&f.id, last),
+                    )
+                    .await;
                 }
             }
             Routing::Nothing => {}
@@ -1739,9 +1746,25 @@ impl Daemon {
             ),
             (None, _) => step_prompt(f, &step, developer_notes(f, None, &carried), false),
         };
+        // The pictures the developer sent that no earlier prompt or turn has
+        // carried: the same messages as the notes in the prompt.
+        let since = match &session {
+            Some(_) if continuing => last.map(|r| r.started_at),
+            Some((run, _)) => Some(run.started_at),
+            None => None,
+        };
+        let pictures: Vec<(String, std::path::PathBuf)> = developer_messages(f, since, &carried)
+            .into_iter()
+            .flat_map(|m| {
+                let id = m.id.to_string();
+                self.pictures_of(&f.id, m)
+                    .into_iter()
+                    .map(move |p| (id.clone(), p))
+            })
+            .collect();
         let resume = session.and_then(|(run, _)| run.provider_session_id.clone());
         match self
-            .start_run(&f.id, &step.id, prompt, resume, counts)
+            .start_run(&f.id, &step.id, prompt, pictures, resume, counts)
             .await
         {
             // Taken in the meantime: wait, as above.
@@ -3046,6 +3069,16 @@ impl Daemon {
         (!gone).then(|| (run.clone(), c))
     }
 
+    /// The files of a message's pictures, in the task's artifacts.
+    pub(crate) fn pictures_of(
+        &self,
+        task: &TaskId,
+        m: &otter_core::task::Message,
+    ) -> Vec<std::path::PathBuf> {
+        let dir = self.artifacts_dir(task);
+        m.attachments.iter().map(|name| dir.join(name)).collect()
+    }
+
     /// The messages the task's live runs' conversations already carry.
     pub(crate) fn carried(&self, f: &Task) -> std::collections::HashSet<String> {
         f.runs
@@ -3226,13 +3259,24 @@ fn developer_notes(
     since: Option<chrono::DateTime<Utc>>,
     carried: &std::collections::HashSet<String>,
 ) -> Vec<String> {
+    developer_messages(f, since, carried)
+        .into_iter()
+        .map(|m| m.text.clone())
+        .collect()
+}
+
+/// The messages `developer_notes` says, themselves.
+fn developer_messages<'a>(
+    f: &'a Task,
+    since: Option<chrono::DateTime<Utc>>,
+    carried: &std::collections::HashSet<String>,
+) -> Vec<&'a otter_core::task::Message> {
     let request = f.request_message();
     f.messages
         .iter()
         .filter(|m| Some(&m.id) != request)
         .filter(|m| m.role == MessageRole::User && since.is_none_or(|s| m.at > s))
         .filter(|m| !carried.contains(m.id.as_str()))
-        .map(|m| m.text.clone())
         .collect()
 }
 

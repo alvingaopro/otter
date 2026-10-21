@@ -39,6 +39,15 @@ use crate::env::EnvMap;
 pub struct TurnSpec {
     pub turn_id: TurnId,
     pub text: String,
+    /// Pictures that go with the text (pasted screenshots).
+    pub images: Vec<TurnImage>,
+}
+
+/// A picture in a turn: its type, and its content in base64.
+#[derive(Clone, Debug, PartialEq)]
+pub struct TurnImage {
+    pub media_type: String,
+    pub data: String,
 }
 
 /// Limits the provider enforces on a run, if it can.

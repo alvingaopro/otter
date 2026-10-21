@@ -131,7 +131,7 @@ export function worker(write: (s: string) => void, exit: (code: number) => void,
     try {
       switch (c.type) {
         case "send_turn":
-          session.sendTurn(c.payload.turn_id, c.payload.text);
+          session.sendTurn(c.payload.turn_id, c.payload.text, c.payload.images);
           return ack(c.request_id);
         case "interrupt":
           await session.interrupt(c.payload.turn_id);

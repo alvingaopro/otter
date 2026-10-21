@@ -12,6 +12,8 @@ import otterIcon from "./assets/otter.png";
 import type { CodingConversation, Interaction, RuntimeCapabilities } from "./conversation";
 import type { TaskSource } from "./taskSource";
 import { QuestionForm, Turn, WorkHead } from "./Work";
+import { useComposition } from "./composing";
+import { MAX_IMAGES, PICTURES_ONLY, pastedFiles, prepareImage, type PastedImage } from "./pastedImage";
 import {
   GROUPS,
   HELD,
@@ -642,6 +644,15 @@ function Conversation({
   onError?: (e: string) => void;
 }) {
   const [text, setText] = useState("");
+  const [images, setImages] = useState<PastedImage[]>([]);
+  // What is in the box now, for what must be read at once (a state read is a render behind).
+  const imagesNow = useRef<PastedImage[]>([]);
+  const putImages = (next: PastedImage[]) => {
+    imagesNow.current = next;
+    setImages(next);
+  };
+  // Pictures being made to fit: a message waits for them.
+  const [preparing, setPreparing] = useState(0);
   const [busy, setBusy] = useState(false);
   const [inputHeight, setInputHeight] = useComposerHeight();
   const end = useRef<HTMLDivElement>(null);
@@ -675,16 +686,39 @@ function Conversation({
     [messages.length, activity.length, awaitingReply, draftText.length],
   );
 
+  const composition = useComposition();
+
   async function submit(e: FormEvent) {
     e.preventDefault();
     const t = text.trim();
-    if (!t || busy) return;
+    if ((!t && images.length === 0) || busy || preparing > 0) return;
     setBusy(true);
     try {
-      await source.send(placed.key, t);
+      const sending = imagesNow.current;
+      await source.send(placed.key, t, sending);
       setText("");
+      // Only what went: a picture pasted while the send was away stays.
+      putImages(imagesNow.current.filter((i) => !sending.includes(i)));
     } finally {
       setBusy(false);
+    }
+  }
+
+  // Pictures on the clipboard join the message; anything else pastes as text.
+  async function takePictures(files: File[]) {
+    setPreparing((n) => n + 1);
+    try {
+      // One that can't be made to fit doesn't cost the others of the paste.
+      const prepared = await Promise.allSettled(files.slice(0, MAX_IMAGES).map(prepareImage));
+      const made = prepared.flatMap((p) => (p.status === "fulfilled" ? [p.value] : []));
+      const failed = prepared.find((p): p is PromiseRejectedResult => p.status === "rejected");
+      // The room is what is left when they are ready, not when they were pasted.
+      const room = Math.max(0, MAX_IMAGES - imagesNow.current.length);
+      putImages([...imagesNow.current, ...made.slice(0, room)]);
+      if (failed) onError?.(failed.reason instanceof Error ? failed.reason.message : String(failed.reason));
+      else if (files.length > MAX_IMAGES || made.length > room) onError?.(`A message takes at most ${MAX_IMAGES} pictures.`);
+    } finally {
+      setPreparing((n) => n - 1);
     }
   }
 
@@ -699,9 +733,18 @@ function Conversation({
                 <Speaker role={m.role} />
                 <span className="message-at">{ago(m.at, now)}</span>
               </div>
-              <Folded long={m.role === "agent" && m.text.length > FOLD_CHARS}>
-                <MessageText role={m.role} text={m.text} />
-              </Folded>
+              {m.text && !(m.attachments?.length && m.text === PICTURES_ONLY) && (
+                <Folded long={m.role === "agent" && m.text.length > FOLD_CHARS}>
+                  <MessageText role={m.role} text={m.text} />
+                </Folded>
+              )}
+              {m.attachments && m.attachments.length > 0 && (
+                <div className="message-pictures">
+                  {m.attachments.map((name, i) => (
+                    <Shot key={name} load={() => source.artifact(placed.key, name)} alt={`Picture ${i + 1} you sent`} className="message-picture" />
+                  ))}
+                </div>
+              )}
             </div>
           ) : (
             <DecidedNote key={key} d={decision!} now={now} />
@@ -753,25 +796,53 @@ function Conversation({
       )}
       <form className="composer" onSubmit={submit}>
         <ComposerGrip height={inputHeight} onResize={setInputHeight} />
-        <textarea
-          aria-label="Message to Otter"
-          style={{ height: inputHeight }}
-          placeholder={
-            placed.task.status === "review" || placed.task.status === "done"
-              ? "Happy with it? Or say what to change…"
-              : "Tell Otter what you want…"
-          }
-          value={text}
-          onChange={(e) => setText(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter" && !e.shiftKey) {
-              e.preventDefault();
-              void submit(e as unknown as FormEvent);
+        <div className="composer-box">
+          {preparing > 0 && <p className="muted small replying">Getting the picture ready…</p>}
+          {images.length > 0 && (
+            <ul className="plain-list pasted-images" aria-label="Pictures to send">
+              {images.map((img, i) => (
+                <li key={i} className="pasted-image">
+                  <img src={`data:${img.media_type};base64,${img.data}`} alt={`Picture ${i + 1}`} />
+                  <button
+                    type="button"
+                    className="pasted-image-remove"
+                    aria-label={`Remove picture ${i + 1}`}
+                    onClick={() => putImages(imagesNow.current.filter((_, j) => j !== i))}
+                  >
+                    ×
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+          <textarea
+            aria-label="Message to Otter"
+            style={{ height: inputHeight }}
+            placeholder={
+              placed.task.status === "review" || placed.task.status === "done"
+                ? "Happy with it? Or say what to change…"
+                : "Tell Otter what you want…"
             }
-          }}
-        />
+            value={text}
+            onChange={(e) => setText(e.target.value)}
+            onPaste={(e) => {
+              const files = pastedFiles(e.clipboardData);
+              if (files.length === 0) return;
+              e.preventDefault();
+              void takePictures(files);
+            }}
+            onCompositionStart={composition.onCompositionStart}
+            onCompositionEnd={composition.onCompositionEnd}
+            onKeyDown={(e) => {
+              if (composition.enterSubmits(e)) {
+                e.preventDefault();
+                void submit(e as unknown as FormEvent);
+              }
+            }}
+          />
+        </div>
         <span className="composer-actions">
-          <button className="btn primary" type="submit" disabled={busy || !text.trim()}>
+          <button className="btn primary" type="submit" disabled={busy || preparing > 0 || (!text.trim() && images.length === 0)}>
             Send
           </button>
           {live && caps?.features.redirect && (
@@ -1289,7 +1360,7 @@ function Request({ f }: { f: Task }) {
 }
 
 /** A screenshot, fetched from the host when shown. */
-function Shot({ load, alt }: { load: () => Promise<string>; alt: string }) {
+function Shot({ load, alt, className = "evidence-shot" }: { load: () => Promise<string>; alt: string; className?: string }) {
   const [src, setSrc] = useState<string | null>(null);
   useEffect(() => {
     let live = true;
@@ -1300,7 +1371,7 @@ function Shot({ load, alt }: { load: () => Promise<string>; alt: string }) {
       live = false;
     };
   }, []);
-  return src ? <img className="evidence-shot" src={src} alt={alt} /> : null;
+  return src ? <img className={className} src={src} alt={alt} /> : null;
 }
 
 type Who = "all" | "agent" | "task";

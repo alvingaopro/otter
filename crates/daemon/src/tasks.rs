@@ -27,7 +27,10 @@ use otter_core::task::{
     TASK_SCHEMA, Task, TaskAction, TaskEvent, TaskEventRecord, TaskStatus,
 };
 use otter_core::{MessageId, TaskId, Timestamp, WorkspaceId};
-use otter_protocol::task::{TaskAct, TaskCreate, TaskEvents, TaskSend};
+use otter_protocol::task::{
+    MAX_IMAGE_BYTES, MAX_IMAGES, MAX_IMAGES_TOTAL, TaskAct, TaskCreate, TaskEvents, TaskImage,
+    TaskSend,
+};
 use otter_protocol::{Event, RpcError};
 use serde::{Deserialize, Serialize};
 
@@ -401,6 +404,64 @@ pub(crate) fn task_not_found(r: &str) -> RpcError {
     RpcError::not_found(format!("no task `{r}`"))
 }
 
+/// The pictures of a message, checked: each one's file extension and bytes.
+/// Their type must be one we know and the bytes must be that type.
+fn check_images(images: &[TaskImage]) -> RpcResult<Vec<(&'static str, Vec<u8>)>> {
+    use base64::Engine;
+    if images.len() > MAX_IMAGES {
+        return Err(RpcError::invalid(format!(
+            "at most {MAX_IMAGES} pictures on a message"
+        )));
+    }
+    let mut total = 0;
+    let mut out = vec![];
+    for image in images {
+        let (ext, magic): (&str, fn(&[u8]) -> bool) = match image.media_type.as_str() {
+            "image/png" => ("png", |b| b.starts_with(b"\x89PNG\r\n\x1a\n")),
+            "image/jpeg" => ("jpg", |b| b.starts_with(&[0xff, 0xd8, 0xff])),
+            "image/webp" => ("webp", |b| {
+                b.len() > 12 && &b[..4] == b"RIFF" && &b[8..12] == b"WEBP"
+            }),
+            other => {
+                return Err(RpcError::invalid(format!(
+                    "a picture can be png, jpeg or webp, not `{other}`"
+                )));
+            }
+        };
+        // A bound on the text first, so a huge string is never decoded.
+        if image.data.len() > MAX_IMAGE_BYTES / 3 * 4 + 4 {
+            return Err(RpcError::invalid(format!(
+                "a picture is too large (max {} KB)",
+                MAX_IMAGE_BYTES / 1024
+            )));
+        }
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(image.data.as_bytes())
+            .map_err(|_| RpcError::invalid("a picture isn't valid base64"))?;
+        if bytes.len() > MAX_IMAGE_BYTES {
+            return Err(RpcError::invalid(format!(
+                "a picture is too large (max {} KB)",
+                MAX_IMAGE_BYTES / 1024
+            )));
+        }
+        if !magic(&bytes) {
+            return Err(RpcError::invalid(format!(
+                "a picture isn't a {}",
+                image.media_type
+            )));
+        }
+        total += bytes.len();
+        if total > MAX_IMAGES_TOTAL {
+            return Err(RpcError::invalid(format!(
+                "the pictures are too large together (max {} MB)",
+                MAX_IMAGES_TOTAL >> 20
+            )));
+        }
+        out.push((ext, bytes));
+    }
+    Ok(out)
+}
+
 pub(crate) fn check_command_id(id: &str) -> RpcResult<()> {
     if id.is_empty() || id.len() > 128 || id.chars().any(char::is_control) {
         return Err(RpcError::invalid(
@@ -461,12 +522,24 @@ pub fn resume_to(f: &Task) -> (TaskStatus, Option<String>) {
 }
 
 pub fn message(role: MessageRole, text: String, correlation: Option<String>) -> (Message, Change) {
+    message_with_id(MessageId::generate(), role, text, correlation)
+}
+
+/// [`message`] with an id chosen beforehand (a message whose files are
+/// named for it).
+pub fn message_with_id(
+    id: MessageId,
+    role: MessageRole,
+    text: String,
+    correlation: Option<String>,
+) -> (Message, Change) {
     let m = Message {
-        id: MessageId::generate(),
+        id,
         role,
         text,
         at: Utc::now(),
         correlation_id: correlation.clone(),
+        attachments: vec![],
     };
     let change = Change {
         event: TaskEvent::MessageAdded {
@@ -863,12 +936,43 @@ impl Daemon {
     pub(crate) async fn task_send(&self, p: TaskSend) -> RpcResult<Task> {
         check_command_id(&p.command_id)?;
         let text = p.text.trim().to_owned();
-        if text.is_empty() {
+        if text.is_empty() && p.images.is_empty() {
             return Err(RpcError::invalid("the message is empty"));
         }
         check_text("message", &text, MAX_TEXT)?;
+        let pictures = check_images(&p.images)?;
         let cmd = p.command_id.clone();
         let id = TaskId::from(p.task.as_str());
+        // Named for the message, so no command can overwrite another's files.
+        // Written first (a message never points at files that aren't there),
+        // and taken away again if no message was added: the command was
+        // refused, or it was one already done (a lost reply, sent again).
+        let message_id = MessageId::generate();
+        let names: Vec<String> = pictures
+            .iter()
+            .enumerate()
+            .map(|(n, (ext, _))| format!("attachment-{message_id}-{n}.{ext}"))
+            .collect();
+        let kept = if pictures.is_empty() {
+            vec![]
+        } else {
+            let task = self.task_get(&p.task).await?;
+            let dir = self.artifacts_dir(&task.id);
+            tokio::fs::create_dir_all(&dir)
+                .await
+                .map_err(|e| RpcError::internal(e.to_string()))?;
+            let paths: Vec<_> = names.iter().map(|name| dir.join(name)).collect();
+            for (path, (_, bytes)) in paths.iter().zip(&pictures) {
+                if let Err(e) = tokio::fs::write(path, bytes).await {
+                    for path in &paths {
+                        let _ = tokio::fs::remove_file(path).await;
+                    }
+                    return Err(RpcError::internal(e.to_string()));
+                }
+            }
+            paths
+        };
+        let mut added = false;
         let applied = self.tasks.lock().await.apply(&id, Some(&cmd), |f, _| {
             if f.status.is_terminal() {
                 return Err(RpcError::conflict(format!(
@@ -876,10 +980,31 @@ impl Daemon {
                     f.status.as_str()
                 )));
             }
-            let (m, c) = message(MessageRole::User, text, Some(cmd.clone()));
+            let text = if text.is_empty() {
+                otter_core::task::PICTURES_ONLY.to_owned()
+            } else {
+                text
+            };
+            let (mut m, c) = message_with_id(
+                message_id.clone(),
+                MessageRole::User,
+                text,
+                Some(cmd.clone()),
+            );
+            m.attachments = names.clone();
             f.messages.push(m);
+            added = true;
             Ok(vec![c])
-        })?;
+        });
+        let applied = match applied {
+            Ok(applied) if added || kept.is_empty() => applied,
+            other => {
+                for path in &kept {
+                    let _ = tokio::fs::remove_file(path).await;
+                }
+                other?
+            }
+        };
         self.task_changed(&applied);
         // Otter reads it first and decides what reaches the coding agent
         // (controller.rs, D-059).
@@ -1093,7 +1218,7 @@ impl Daemon {
                     .find(|m| m.correlation_id.as_deref() == Some(p.command_id.as_str()))
                     .map(|m| m.id.to_string())
                     .unwrap_or_else(|| p.command_id.clone());
-                self.redirect_runs(&id, &message, text.trim()).await
+                self.redirect_runs(&id, &message, text.trim(), vec![]).await
             }
             // The plan is about to change: the step in progress may not be in it.
             TaskAction::RequestChanges { .. } => {

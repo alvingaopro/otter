@@ -155,6 +155,7 @@ async fn reply(h: &mut dyn RunHandle, deadline: tokio::time::Instant) -> Result<
     let turn = TurnSpec {
         turn_id: TurnId::generate(),
         text: PROMPT.into(),
+        images: vec![],
     };
     h.send_turn(&turn)
         .await

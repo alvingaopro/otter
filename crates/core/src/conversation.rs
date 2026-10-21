@@ -366,7 +366,10 @@ impl Turn {
             .iter()
             .map(|b| match b {
                 InputBlock::Text { text } => text.clone(),
-                InputBlock::Attachment { artifact } => format!("[attachment {artifact}]"),
+                InputBlock::Attachment { artifact } => {
+                    let name = artifact.rsplit('/').next().unwrap_or(artifact);
+                    format!("[attachment {name}]")
+                }
             })
             .collect::<Vec<_>>()
             .join("\n")

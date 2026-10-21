@@ -673,10 +673,23 @@ impl Connection {
         task: &str,
         text: &str,
     ) -> Result<otter_core::task::Task> {
+        self.task_send_with_images(command_id, task, text, vec![])
+            .await
+    }
+
+    /// A message with pictures (pasted screenshots) that go with it.
+    pub async fn task_send_with_images(
+        &mut self,
+        command_id: &str,
+        task: &str,
+        text: &str,
+        images: Vec<otter_protocol::task::TaskImage>,
+    ) -> Result<otter_core::task::Task> {
         self.call(Request::TaskSend(otter_protocol::task::TaskSend {
             command_id: command_id.to_owned(),
             task: task.to_owned(),
             text: text.to_owned(),
+            images,
         }))
         .await
     }

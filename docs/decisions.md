@@ -6115,3 +6115,55 @@ the pieces that run first (`cd /srv && echo $(rm -rf x)`).
   with each part taken out: the printer rule, the `cat`/`tee` body as data,
   the guard reading bodies, one `cd` for every shell (with the D-164 test),
   and a heredoc's start read inside quotes.
+
+## D-171 — A message can carry pictures (2026-10-21)
+
+**Why.** A screenshot says what a paragraph can't, and the task's message box
+took only text. The terminal already takes a pasted image (D-145); the task
+conversation did not.
+
+**Decision.**
+- **`task.send` takes `images`**: up to 4, each `{media_type, data}` (`image/png`,
+  `image/jpeg`, `image/webp`; base64). At most 700 KB each and 2 MB in all,
+  decoded. The bytes must be the type they say (a magic-number check); a
+  picture that isn't, isn't base64, or is over a limit refuses the whole
+  message, and nothing is written. A message may be pictures alone.
+- **They are kept in the task's artifacts** (`task.artifact` serves them) under
+  names of the message's own (`attachment-<message id>-<n>.<ext>`), written
+  once the message is added, and the message lists them in `attachments`. A
+  refused command, or a resend of one already done (a lost reply), writes
+  nothing and changes no file: the resend is the message it already made.
+  Deleting the task deletes them with its artifacts. The files are written
+  first, so a message never names files that aren't there, and taken away
+  again when no message was added. A message of pictures alone has the text
+  "(pictures, no words)" (`PICTURES_ONLY`), so nothing that reads a message
+  as words sees it blank; the app doesn't show that text over the pictures.
+- **To the coding agent**: the message's pictures go with the words, in the
+  same places the words go — a new run's first prompt, guidance to a live run,
+  a redirect — and only the ones no earlier turn carried (the rule the notes
+  in the prompt follow). A turn names them as `InputBlock::Attachment` (a file
+  on the host); the run's actor reads the file and hands the runtime the
+  bytes. On the SDK runtime the worker's `send_turn` takes `images` and builds
+  image blocks before the text. `MAX_FRAME`, both sides, goes from 1 MiB to
+  4 MiB so a turn with 2 MB of pictures fits one frame; the worker checks the
+  same limits again (a command that breaks them is refused whole, as a
+  `nack` of category `invalid_input`).
+- **A runtime that can't see pictures** (`features.attachments` false: Claude
+  Code's stream mode, Codex) is not given them, and the developer is told on
+  the task, once per message that had pictures, in a system message —
+  never dropped without a word. A picture whose file can't be read or isn't a picture is said in the
+  turn's text the same way.
+- **The app** takes pictures from the clipboard into the message box only when
+  the clipboard has pictures and no text (a copied table has both, and means
+  the text), shrinks each to a longest side of 1600 px and under 500 KB (four
+  of those are under the total), shows them removable above the box, and
+  shows a message's pictures in the conversation. There is no drag-and-drop.
+  A message waits while a picture is still being made to fit. Also in
+  this change, for the same message box: the Enter that confirms an input
+  method's candidate (macOS Pinyin and the like) no longer sends the message
+  (it and an Enter within 50 ms of the composition's end are the method's).
+
+**Not done.** Otter's own reply turn (the brain) is not shown the pictures;
+the coding agent is. Pictures on a task's first request (`task.create`) and
+on Otter's host conversation. The stop-redirect action (`redirect {text}`)
+takes no pictures.

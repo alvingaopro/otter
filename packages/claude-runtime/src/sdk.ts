@@ -29,7 +29,7 @@ import { z } from "zod";
 
 import { Pending } from "./interactions.js";
 import { Mapper } from "./map.js";
-import type { Event, InitializePayload, OtterTool, PolicyReplyPayload, Resolution, ToolResultPayload } from "./protocol.js";
+import type { Event, InitializePayload, OtterTool, PolicyReplyPayload, Resolution, ToolResultPayload, TurnImage } from "./protocol.js";
 
 export type QueryFn = (params: { prompt: AsyncIterable<SDKUserMessage>; options?: Options }) => Query;
 
@@ -299,13 +299,26 @@ export class Session {
   };
 
   /** Send a turn. One at a time: an error while another runs. */
-  sendTurn(turn_id: string, text: string) {
+  sendTurn(turn_id: string, text: string, images: TurnImage[] = []) {
     if (this.mapper.turn) throw new Error(`turn ${this.mapper.turn} is still running`);
     const uuid = randomUUID();
     this.mapper.sent(turn_id, uuid);
     this.input.push({
       type: "user",
-      message: { role: "user", content: text },
+      message: {
+        role: "user",
+        // The pictures first, as Claude reads them best, then what was said.
+        content:
+          images.length === 0
+            ? text
+            : [
+                ...images.map((i) => ({
+                  type: "image" as const,
+                  source: { type: "base64" as const, media_type: i.media_type, data: i.data },
+                })),
+                { type: "text" as const, text },
+              ],
+      },
       parent_tool_use_id: null,
       uuid: uuid as SDKUserMessage["uuid"],
       session_id: "",

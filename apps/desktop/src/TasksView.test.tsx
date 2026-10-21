@@ -3,6 +3,12 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { TasksView } from "./TasksView";
 import { mockSource, sampleTasks, type TaskSource } from "./taskSource";
+
+// A browser shrinks the picture with a canvas; here it is a stand-in.
+vi.mock("./pastedImage", async (orig) => ({
+  ...(await orig<typeof import("./pastedImage")>()),
+  prepareImage: vi.fn(async () => ({ media_type: "image/png", data: "AAAA" })),
+}));
 import {
   STATUS_LABEL,
   budgetBinds,
@@ -249,6 +255,165 @@ describe("Tasks view", () => {
     await act(async () => byText("button", "Start")!.click());
     expect(q(".status-pill")?.textContent).toBe("Working");
     expect(byText("button", "Take over")).toBeUndefined();
+  });
+
+  it("sends on Enter, but not the Enter that confirms an input method's candidate", async () => {
+    const base = mockSource("mac");
+    const sent: string[] = [];
+    const s: TaskSource = {
+      ...base,
+      send: async (key, text) => {
+        sent.push(text);
+        return base.send(key, text);
+      },
+    };
+    await render(s);
+    await act(async () => q('[aria-label="New task"]')!.click());
+    const dialog = document.querySelector('[role="dialog"]')!;
+    type(dialog.querySelector("input")!, "CSV export");
+    await act(async () => byText("button", "Create draft")!.click());
+    const composer = q<HTMLTextAreaElement>('textarea[aria-label="Message to Otter"]')!;
+    const press = async (init: KeyboardEventInit & { keyCode?: number }) => {
+      const e = new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true, ...init });
+      if (init.keyCode !== undefined) Object.defineProperty(e, "keyCode", { get: () => init.keyCode });
+      await act(async () => composer.dispatchEvent(e));
+    };
+    const compose = async (type: "compositionstart" | "compositionend") =>
+      act(async () => composer.dispatchEvent(new CompositionEvent(type, { bubbles: true })));
+    const typeIn = async (t: string) => act(async () => type(composer, t));
+    const wait = () => act(async () => new Promise((r) => setTimeout(r, 80)));
+
+    await typeIn("还没写完");
+    await press({ isComposing: true });
+    await press({ keyCode: 229 });
+    // WebKit: the confirming Enter comes after compositionend, flags cleared.
+    await compose("compositionstart");
+    await compose("compositionend");
+    await press({});
+    expect(sent).toEqual([]);
+    expect(composer.value).toBe("还没写完");
+
+    // Shift+Enter is a newline, not a send.
+    await wait();
+    await press({ shiftKey: true });
+    expect(sent).toEqual([]);
+
+    // A later, plain Enter sends.
+    await press({});
+    expect(sent).toEqual(["还没写完"]);
+  });
+
+  it("takes a pasted picture into the message, shows it, and sends it with or without words", async () => {
+    const base = mockSource("mac");
+    const sent: { text: string; images: unknown }[] = [];
+    const s: TaskSource = {
+      ...base,
+      send: async (key, text, images) => {
+        sent.push({ text, images });
+        return base.send(key, text, images);
+      },
+      artifact: async () => "data:image/png;base64,AAAA",
+    };
+    await render(s);
+    await act(async () => q('[aria-label="New task"]')!.click());
+    const dialog = document.querySelector('[role="dialog"]')!;
+    type(dialog.querySelector("input")!, "Match the mock");
+    await act(async () => byText("button", "Create draft")!.click());
+    const composer = q<HTMLTextAreaElement>('textarea[aria-label="Message to Otter"]')!;
+    const paste = async (items: { kind: string; type: string; getAsFile?: () => File | null }[]) => {
+      const e = new Event("paste", { bubbles: true, cancelable: true });
+      Object.defineProperty(e, "clipboardData", { value: { items } });
+      await act(async () => composer.dispatchEvent(e));
+      return e;
+    };
+    const picture = () => ({ kind: "file", type: "image/png", getAsFile: () => new File(["x"], "s.png", { type: "image/png" }) });
+    const thumbs = () => host.querySelectorAll('[aria-label="Pictures to send"] img');
+    const send = () => byText("button", "Send") as HTMLButtonElement;
+
+    // Text on the clipboard (alone, or with a picture, as a copied table has) pastes as text.
+    expect((await paste([{ kind: "string", type: "text/plain" }])).defaultPrevented).toBe(false);
+    expect((await paste([{ kind: "string", type: "text/plain" }, picture()])).defaultPrevented).toBe(false);
+    expect(thumbs()).toHaveLength(0);
+    expect(send().disabled).toBe(true);
+
+    // A picture alone is taken, shown, and is enough to send.
+    expect((await paste([picture()])).defaultPrevented).toBe(true);
+    expect(thumbs()).toHaveLength(1);
+    expect(send().disabled).toBe(false);
+    // And it can be taken back out.
+    await act(async () => q<HTMLButtonElement>('[aria-label="Remove picture 1"]')!.click());
+    expect(thumbs()).toHaveLength(0);
+    expect(send().disabled).toBe(true);
+
+    // Sent with words: both go, the box is empty after, and the conversation shows the picture.
+    await paste([picture()]);
+    await act(async () => type(composer, "make it look like this"));
+    await act(async () => send().click());
+    expect(sent).toEqual([{ text: "make it look like this", images: [{ media_type: "image/png", data: "AAAA" }] }]);
+    expect(thumbs()).toHaveLength(0);
+    expect(composer.value).toBe("");
+    await vi.waitFor(() => expect(host.querySelector(".message-picture")).toBeTruthy());
+
+    // Sent with no words at all.
+    await paste([picture()]);
+    await act(async () => send().click());
+    expect(sent[1]).toEqual({ text: "", images: [{ media_type: "image/png", data: "AAAA" }] });
+  });
+
+  it("waits for a picture still being made to fit, and doesn't show the placeholder over pictures", async () => {
+    const { prepareImage } = await import("./pastedImage");
+    let ready: (v: { media_type: string; data: string }) => void = () => {};
+    vi.mocked(prepareImage).mockImplementationOnce(() => new Promise((r) => (ready = r)));
+    const base = mockSource("mac");
+    const sent: string[] = [];
+    const s: TaskSource = {
+      ...base,
+      send: async (key, text, images) => {
+        sent.push(`${text}|${images?.length ?? 0}`);
+        return base.send(key, text, images);
+      },
+      artifact: async () => "data:image/png;base64,AAAA",
+    };
+    await render(s);
+    await act(async () => q('[aria-label="New task"]')!.click());
+    const dialog = document.querySelector('[role="dialog"]')!;
+    type(dialog.querySelector("input")!, "Slow picture");
+    await act(async () => byText("button", "Create draft")!.click());
+    const composer = q<HTMLTextAreaElement>('textarea[aria-label="Message to Otter"]')!;
+    const e = new Event("paste", { bubbles: true, cancelable: true });
+    const item = { kind: "file", type: "image/png", getAsFile: () => new File(["x"], "s.png", { type: "image/png" }) };
+    Object.defineProperty(e, "clipboardData", { value: { items: [item] } });
+    await act(async () => composer.dispatchEvent(e));
+    await act(async () => type(composer, "see this"));
+    // Still being made: neither the button nor Enter sends the words alone.
+    const send = byText("button", "Send") as HTMLButtonElement;
+    expect(send.disabled).toBe(true);
+    await act(async () => composer.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true })));
+    expect(sent).toEqual([]);
+    await act(async () => ready({ media_type: "image/png", data: "AAAA" }));
+    expect(send.disabled).toBe(false);
+    await act(async () => send.click());
+    expect(sent).toEqual(["see this|1"]);
+
+    // Pictures alone: the placeholder the host stores isn't printed over them.
+    await act(async () => composer.dispatchEvent(e));
+    await act(async () => send.click());
+    await vi.waitFor(() => expect(host.querySelectorAll(".message-picture").length).toBe(2));
+    expect(host.textContent).not.toContain("(pictures, no words)");
+  });
+
+  it("takes at most four pictures in a message", async () => {
+    await render(mockSource("mac"));
+    await act(async () => q('[aria-label="New task"]')!.click());
+    const dialog = document.querySelector('[role="dialog"]')!;
+    type(dialog.querySelector("input")!, "Many pictures");
+    await act(async () => byText("button", "Create draft")!.click());
+    const composer = q<HTMLTextAreaElement>('textarea[aria-label="Message to Otter"]')!;
+    const e = new Event("paste", { bubbles: true, cancelable: true });
+    const item = { kind: "file", type: "image/png", getAsFile: () => new File(["x"], "s.png", { type: "image/png" }) };
+    Object.defineProperty(e, "clipboardData", { value: { items: Array(6).fill(item) } });
+    await act(async () => composer.dispatchEvent(e));
+    expect(host.querySelectorAll('[aria-label="Pictures to send"] img')).toHaveLength(4);
   });
 
   it("creates an answer-only task, and says so on it", async () => {

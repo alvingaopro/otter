@@ -5,7 +5,7 @@ import type { Options, Query, SDKUserMessage } from "@anthropic-ai/claude-agent-
 
 import { Pending } from "./interactions.js";
 import { Frames, bundledClaude, check, worker } from "./main.js";
-import { MAX_FRAME, PROFILES, PROTOCOL_VERSION, parseCommand } from "./protocol.js";
+import { MAX_FRAME, MAX_IMAGE_BYTES, PROFILES, PROTOCOL_VERSION, parseCommand } from "./protocol.js";
 import { DISALLOWED_TOOLS, SEARCH_TOOLS, Session, otterToolName, shapeOf } from "./sdk.js";
 
 const env = (type: string, payload: unknown, request_id = `r-${type}`) =>
@@ -24,6 +24,66 @@ test("commands are validated before anything reaches the SDK", () => {
   assert.equal(wrong.ok, false);
   assert.match((wrong as { error: string }).error, /protocol/);
   assert.equal(parseCommand(env("teleport", {})).ok, false);
+});
+
+test("a turn's pictures are checked: type, base64, count and size", () => {
+  const png = Buffer.from("png bytes").toString("base64");
+  const turn = (images: unknown) => parseCommand(env("send_turn", { turn_id: "t", text: "see", images })).ok;
+  assert.equal(turn(undefined), true);
+  assert.equal(turn([{ media_type: "image/png", data: png }]), true);
+  assert.equal(turn("nope"), false);
+  assert.equal(turn([{ media_type: "image/gif", data: png }]), false, "a type we don't take");
+  assert.equal(turn([{ media_type: "image/png", data: "not base64!" }]), false);
+  assert.equal(turn([{ media_type: "image/png", data: "" }]), false);
+  assert.equal(turn(Array(5).fill({ media_type: "image/png", data: png })), false, "five");
+  const big = Buffer.alloc(MAX_IMAGE_BYTES + 1).toString("base64");
+  assert.equal(turn([{ media_type: "image/png", data: big }]), false, "one over the limit");
+  const large = Buffer.alloc(600 * 1024).toString("base64");
+  assert.equal(turn(Array(4).fill({ media_type: "image/png", data: large })), false, "over the limit together");
+});
+
+test("a turn with pictures reaches Claude as image blocks before the text", async () => {
+  const png = Buffer.from("png bytes").toString("base64");
+  let seen: unknown;
+  const { out } = await drive(
+    async function* (_text, _uuid, _opts, content) {
+      seen = content;
+      yield { type: "result", subtype: "success", is_error: false, result: "ok", total_cost_usd: 0 };
+    },
+    async (send, out) => {
+      send(env("initialize", init));
+      await until(out, (e) => e.type === "ready");
+      send(env("send_turn", { turn_id: "turn_1", text: "match this", images: [{ media_type: "image/png", data: png }] }));
+      await until(out, (e) => e.type === "turn_finished");
+      send(env("shutdown", {}));
+    },
+  );
+  assert.ok(out.length > 0);
+  assert.deepEqual(seen, [
+    { type: "image", source: { type: "base64", media_type: "image/png", data: png } },
+    { type: "text", text: "match this" },
+  ]);
+});
+
+test("a turn with a bad picture is refused as invalid_input and never reaches the SDK", async () => {
+  let reached = false;
+  const { out } = await drive(
+    async function* () {
+      reached = true;
+      yield { type: "result", subtype: "success", is_error: false, result: "ok", total_cost_usd: 0 };
+    },
+    async (send, out) => {
+      send(env("initialize", init));
+      await until(out, (e) => e.type === "ready");
+      send(env("send_turn", { turn_id: "turn_1", text: "see", images: [{ media_type: "image/gif", data: "AAAA" }] }, "r-bad"));
+      await until(out, (e) => e.type === "nack" && e.request_id === "r-bad");
+      send(env("shutdown", {}));
+    },
+  );
+  const nack = out.find((e) => (e as Record<string, unknown>).type === "nack") as Record<string, unknown>;
+  assert.equal(nack.category, "invalid_input");
+  assert.match(String(nack.error), /image/);
+  assert.equal(reached, false);
 });
 
 test("frames over the limit are dropped and reported, the next one still read", () => {
@@ -67,12 +127,12 @@ test("the SDK is asked for isolation-safe options", () => {
 });
 
 /** A stand-in for the SDK's `query`: replays scripted messages per turn. */
-function fakeQuery(script: (text: string, uuid: string, opts: Options) => AsyncGenerator<unknown>) {
+function fakeQuery(script: (text: string, uuid: string, opts: Options, content: unknown) => AsyncGenerator<unknown>) {
   return ({ prompt, options }: { prompt: AsyncIterable<SDKUserMessage>; options?: Options }) => {
     async function* run() {
       yield { type: "system", subtype: "init", session_id: "s-9", model: "m", claude_code_version: "2.1.285", apiKeySource: "none" };
       for await (const m of prompt) {
-        yield* script(String((m.message as { content: string }).content), String(m.uuid), options!);
+        yield* script(String((m.message as { content: string }).content), String(m.uuid), options!, m.message.content);
       }
     }
     const gen = run() as unknown as Query;
