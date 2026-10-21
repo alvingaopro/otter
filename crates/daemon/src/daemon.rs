@@ -45,6 +45,8 @@ pub struct Daemon {
     /// The first reconciliation is done: what died while otterd was down has
     /// long settled.
     pub(crate) reconciled_once: std::sync::atomic::AtomicBool,
+    /// Held for a reconciliation pass: one at a time (reconcile.rs).
+    pub(crate) reconciling: Mutex<()>,
     /// Problems otterd met and keeps until they're gone (D-077), by kind.
     pub(crate) problems:
         std::sync::Mutex<std::collections::BTreeMap<&'static str, otter_core::Problem>>,
@@ -173,6 +175,7 @@ impl Daemon {
             starting: Default::default(),
             dying: Default::default(),
             reconciled_once: Default::default(),
+            reconciling: Mutex::new(()),
             problems: std::sync::Mutex::new(problems),
             git: GitManager::new(paths.home.join("repos"), &env.vars, git_account.clone()),
             git_account,

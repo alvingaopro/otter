@@ -10,6 +10,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
@@ -55,6 +56,8 @@ pub struct TmuxBackend {
     /// Dead panes whose exit status isn't available yet, and when they were
     /// first seen.
     awaiting_status: Mutex<HashMap<String, Instant>>,
+    /// Captures asked of one tmux together have come back in pieces.
+    batch_failed: AtomicBool,
 }
 
 impl TmuxBackend {
@@ -68,6 +71,7 @@ impl TmuxBackend {
             otterd: self_exe()?,
             env: env.clone(),
             awaiting_status: Mutex::new(HashMap::new()),
+            batch_failed: AtomicBool::new(false),
         };
         let term = if backend.has_terminfo("tmux-256color").await {
             "tmux-256color"
@@ -258,9 +262,9 @@ impl TmuxBackend {
 
     /// Several captures in one tmux command, each followed by a line of its
     /// own that no pane can know to print (a number new to this call), which
-    /// is where its output ends. `None` unless every one came back: tmux
+    /// is where its output ends. An error unless every one came back: tmux
     /// stops at a command that fails.
-    async fn capture_batch(&self, targets: &[(&str, Option<u32>)]) -> Option<Vec<String>> {
+    async fn capture_batch(&self, targets: &[(&str, Option<u32>)]) -> Result<Vec<String>> {
         let nonce: u64 = rand::random();
         let ends: Vec<String> = (0..targets.len())
             .map(|i| format!("otter-{nonce:016x}-{i}"))
@@ -284,7 +288,7 @@ impl TmuxBackend {
                 end.as_str(),
             ]);
         }
-        let out = self.run(&args).await.ok()?;
+        let out = self.run(&args).await?;
         let mut texts = Vec::with_capacity(targets.len());
         let mut text = String::new();
         for line in out.split_inclusive('\n') {
@@ -297,7 +301,14 @@ impl TmuxBackend {
                 text.push_str(line);
             }
         }
-        (texts.len() == targets.len() && text.is_empty()).then_some(texts)
+        if texts.len() != targets.len() || !text.is_empty() {
+            bail!(
+                "{} of {} captures came back whole",
+                texts.len(),
+                targets.len()
+            );
+        }
+        Ok(texts)
     }
 }
 
@@ -392,14 +403,24 @@ impl ExecutionBackend for TmuxBackend {
     async fn capture_each(&self, targets: &[(&str, Option<u32>)]) -> Vec<Result<String>> {
         let mut out = Vec::with_capacity(targets.len());
         for chunk in targets.chunks(CAPTURE_BATCH) {
-            if chunk.len() > 1
-                && let Some(texts) = self.capture_batch(chunk).await
-            {
-                out.extend(texts.into_iter().map(Ok));
-                continue;
+            if chunk.len() > 1 {
+                match self.capture_batch(chunk).await {
+                    Ok(texts) => {
+                        out.extend(texts.into_iter().map(Ok));
+                        continue;
+                    }
+                    // A pane gone since it was asked for stops tmux there:
+                    // each on its own, so the others still come back. Said
+                    // once out loud: a tmux that never takes them together
+                    // costs a command a capture, every pass.
+                    Err(e) if !self.batch_failed.swap(true, Ordering::Relaxed) => {
+                        tracing::warn!("captures asked together, taken one by one: {e:#}")
+                    }
+                    Err(e) => {
+                        tracing::debug!("captures asked together, taken one by one: {e:#}")
+                    }
+                }
             }
-            // A pane gone since it was asked for stops tmux there: each on
-            // its own, so the others still come back.
             for (r, lines) in chunk {
                 out.push(self.capture(r, *lines).await);
             }
@@ -663,7 +684,7 @@ mod tests {
         );
         // Without the missing one, one tmux takes them all.
         let all = [("a", Some(0)), ("b", Some(40)), ("c", None)];
-        let batch = backend.capture_batch(&all).await.expect("all came back");
+        let batch = backend.capture_batch(&all).await.unwrap();
         assert_eq!(
             batch,
             [
@@ -673,7 +694,7 @@ mod tests {
             ]
         );
         // With it, tmux stops there, and nothing is taken from a half answer.
-        assert!(backend.capture_batch(&targets).await.is_none());
+        assert!(backend.capture_batch(&targets).await.is_err());
     }
 
     #[test]

@@ -5273,7 +5273,8 @@ attach, a task's step) waited for all of it, and a tmux command costs about
 - **Look, ask, apply.** What runs is read under the lock: the running
   executions, by id, and which agents among them are watched. The lock is
   let go, the backend asked, and the lock taken again to apply what it said,
-  with no wait on anything while it's held.
+  with no backend call while it's held. Passes still run one at a time,
+  now also by a lock of their own.
 - **Only to what is still as it was.** An execution is decided on only if it
   was asked about and is still the current one, running, with the same
   backend ref. One started meanwhile (a restart, a new session) isn't in the

@@ -281,8 +281,9 @@ pub trait ExecutionBackend: Send + Sync {
     /// Screen contents plus up to `lines` lines of scrollback (`None` = all).
     async fn capture(&self, backend_ref: &str, lines: Option<u32>) -> Result<String>;
 
-    /// [`capture`](Self::capture) for each of `targets`, in order, each with
-    /// its own result: one that fails costs the others nothing.
+    /// [`capture`](Self::capture) for each of `targets`: exactly one result
+    /// a target, in their order, each its own, so one that fails costs the
+    /// others nothing.
     async fn capture_each(&self, targets: &[(&str, Option<u32>)]) -> Vec<Result<String>> {
         let mut out = Vec::with_capacity(targets.len());
         for (r, lines) in targets {

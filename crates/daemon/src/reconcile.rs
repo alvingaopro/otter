@@ -17,13 +17,16 @@ use crate::env::EnvMap;
 
 impl Daemon {
     /// Runs at startup (recovering from a daemon restart) and then
-    /// periodically, one pass at a time.
+    /// periodically. One pass at a time: what one leaves for the next
+    /// (`dying`, `screens`, `reconciled_once`) assumes it, so a pass waits
+    /// for one still going.
     ///
     /// The backend is asked without the store's lock (D-159): what runs is
     /// read under it, the backend asked about that, and what it says applied
     /// under the lock again, only to executions still running as they were.
     /// One started meanwhile is the next pass's to look at.
     pub async fn reconcile(&self) -> anyhow::Result<()> {
+        let _pass = self.reconciling.lock().await;
         let mut looked = Looked::at(&self.store.lock().await.state.workspaces);
         let observed = self.backend.inspect().await?;
         let now = Utc::now();
@@ -78,6 +81,9 @@ impl Daemon {
             )
             .collect();
         let mut captures = self.backend.capture_each(&targets).await;
+        // One result a target; any missing is a look that saw nothing.
+        debug_assert_eq!(captures.len(), targets.len());
+        captures.resize_with(targets.len(), || Err(anyhow::anyhow!("not captured")));
         let last_lines = captures.split_off(shown.len());
         let digests: HashMap<&str, u64> = shown
             .into_iter()
