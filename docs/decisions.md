@@ -6055,3 +6055,63 @@ seconds each, so the badge jumped by four or five each time a task ran
 Not done: a rule by the home's place (a temporary directory is a test); a
 test daemon that outlives its test for more than two minutes is still shown
 as one to look at, which is the case worth a look.
+
+## D-170 — What a line only prints or hands over isn't what it does; each shell keeps its own `cd` (2026-10-21)
+
+On 0.7.57 the live task bench (H02v) still saw developer-only asks for
+the work's own deletion. B12: the coding agent handed over its plan with
+`echo '{… "git rm data/sample.csv" …}' >/dev/null`, and the word lists
+matched `rm` inside the quoted text. B13: a `python3 - <<'E' … E` heredoc
+before `git rm -q data/sample.csv` made D-163's guard read the Python as
+shell (`p='…'` as an assignment, `()` as a function). Reviewing the fix
+found that D-164's "a `cd` in a substitution stays there" also kept it
+from moving the substitution's own shell (`echo $(cd /srv && rm -rf x)`
+was read from the workspace), and that substitutions were read before
+the pieces that run first (`cd /srv && echo $(rm -rf x)`).
+
+- **A line that only prints does what its redirection does.** One `echo`
+  or `printf`, on one line, with no other command, comment, pipe,
+  substitution, variable, group or heredoc: its words run nothing, so it
+  asks only for where it writes (outside the workspace, a secrets file).
+  A printer anywhere else (in a substitution, piped on, next to another
+  command) is read as before, since its output may run.
+- **A heredoc's body is the input of the command that starts it.** Given
+  to `cat` or `tee` whose output runs nowhere, it is the file they write:
+  data, not read by the word lists. That is when the `cat` or `tee` isn't in
+  a substitution (whose output the line may run: `$(cat <<E …)`), is the
+  line's only command (nothing else on it may run what it wrote, by any
+  name: `… > run.sh; bash r*.sh`), with no pipe, no process substitution
+  (`tee >(sh)`, `> >(bash)`) nor any other on it, and no copy to another
+  descriptor (`>&3`); and its word is quoted (`<<'EOF'`) or the body has
+  no `$` or backtick: unquoted, the shell expands the body first, and a
+  `$(…)` in it runs. Given to anything else (`python3 -`, `bash`) its
+  lines are read as before, as a shell of their own. Where a heredoc
+  starts is read outside quotes (`'…'`, `"…"`, `$'…'`), backslashes and
+  comments, and not in `((…))` or for a word starting with a digit (a
+  shift).
+- **D-163's guard reads the line's own shell:** not a heredoc's body, and
+  not a substitution's assignments, which don't reach it; a command that a
+  substitution or a variable names (`$(…) …`, `$X …`) may be anything, so
+  it counts. A `git rm` inside a substitution or a heredoc's body is never
+  routine: that shell's Git isn't on the line.
+- **Each shell keeps its own `cd`, in the order things run.** A
+  substitution runs before the piece it stands in, starting where the
+  line's shell is by then; a heredoc's body runs with its command. A `cd`
+  moves only its own shell. A command a substitution or a variable names
+  makes where the shell is unknown (it may be a `cd`).
+- D-138's test expected `echo 'rm -rf /' > notes.txt` to ask; it now
+  runs: it writes text in the workspace, as an edit would.
+- **Not done:** splitting a line into pieces still doesn't understand
+  quotes (a `;` in a quoted argument starts a piece), so an argument of
+  another command can still trip the word lists; only a line that only
+  prints is read whole. A file the agent writes and runs in another call is
+  read only as its command (`bash run.sh`), as an edit and a run always
+  were (D-059). A command writing into `.git` (`echo hook >
+  .git/hooks/pre-commit`) or into a shell through a process substitution
+  (`echo x > >(sh)`) isn't asked, though an edit of `.git` is and a `| sh`
+  pipe is denied: unchanged, as before this.
+- **Verified:** `what_a_line_only_prints_or_hands_over_is_not_what_it_does`
+  replays B12's and B13's commands and the routes that still ask, and fails
+  with each part taken out: the printer rule, the `cat`/`tee` body as data,
+  the guard reading bodies, one `cd` for every shell (with the D-164 test),
+  and a heredoc's start read inside quotes.
