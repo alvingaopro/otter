@@ -494,6 +494,7 @@ mod tests {
             now: Utc::now(),
             env,
             claimed,
+            managed: claimed,
         }
     }
 

@@ -105,12 +105,18 @@ impl Daemon {
         // this settles what this pass raises (D-137).
         let on_screen = self.on_screen();
         let screens = self.watch_screens(&looked.watched, &digests, &store.state.workspaces, now);
+        // The native sessions of managed runs' conversations (D-162): a run
+        // works in the same directory as a session and writes a transcript
+        // there; a session that took it for its own would follow the run's
+        // turns, and resume its conversation.
+        let managed: HashSet<String> = self.conversations.native_sessions().into_iter().collect();
         let claimed: HashSet<String> = store
             .state
             .workspaces
             .iter()
             .flat_map(|w| &w.sessions)
             .filter_map(|s| s.agent.as_ref()?.provider_session_id.clone())
+            .chain(managed.iter().cloned())
             .collect();
         let mut events = Vec::new();
         let mut changed = false;
@@ -140,6 +146,7 @@ impl Daemon {
                 let seen = Seen {
                     now,
                     claimed: &claimed,
+                    managed: &managed,
                     env: &env,
                     screens: &screens,
                     on_screen: &on_screen,
@@ -231,6 +238,7 @@ impl Looked {
 struct Seen<'a> {
     now: DateTime<Utc>,
     claimed: &'a HashSet<String>,
+    managed: &'a HashSet<String>,
     env: &'a EnvMap,
     /// How long each agent's screen has looked as it does, by backend ref.
     screens: &'a HashMap<String, Screen>,
@@ -332,6 +340,7 @@ fn observe_agent(ws: &mut Workspace, i: usize, seen: &Seen<'_>, events: &mut Vec
             now,
             env: seen.env,
             claimed: seen.claimed,
+            managed: seen.managed,
         };
         let obs = provider.observe(&ctx, &info);
         if let Some(id) = obs.provider_session_id {
