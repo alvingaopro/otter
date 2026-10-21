@@ -96,7 +96,7 @@ export function DeleteWorkspaceDialog({ host, ws, onClose }: { host: string; ws:
         {ws.sourceKind === "directory"
           ? "The folder itself is kept."
           : ws.sourceKind === "git"
-            ? `Its worktree and its branch ${ws.source} are removed, and the repository's copy on ${host} once no workspace uses it.`
+            ? `Its worktree and its branch${ws.source ? ` ${ws.source}` : ""} are removed, and the repository's copy on ${host} once no workspace uses it.`
             : "Its files are deleted."}
       </p>
       {ws.sourceKind === "git" && (

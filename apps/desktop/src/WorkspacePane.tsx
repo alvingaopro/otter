@@ -338,7 +338,7 @@ export function WorkspacePane({
             <span className={`host-dot ${host.status}`} />
             {host.name}
           </span>
-          {ws.sourceKind === "git" && <span className="chip mono">{ws.source}</span>}
+          {ws.sourceKind === "git" && <span className="chip mono">{ws.source || "git"}</span>}
           {ws.sourceKind === "directory" && <span className="chip">directory</span>}
           {ws.sourceKind === "empty" && <span className="chip">scratch</span>}
           {changes.state === "ready" && changesLine(changes.changes) && (
@@ -392,8 +392,10 @@ export function WorkspacePane({
           label="Workspace actions"
           items={[
             {
-              label: "Retry preparation",
-              hidden: ws.state !== "failed",
+              // Failed: again from the start. Ready: its environment is read
+              // again (new commands pick it up) and sessions not started start.
+              label: ws.state === "failed" ? "Retry preparation" : "Prepare again",
+              hidden: ws.state !== "failed" && ws.state !== "ready",
               onSelect: () => void act("workspace_prepare", { host: host.name, workspace: ws.id }),
             },
             {
