@@ -5,7 +5,6 @@ import { ContextMenu, type MenuItem } from "./Menu";
 import { ago, groups, headline, matchScore, pinnedOf, workspaceGlyph } from "./model";
 import type { HostView, Placed } from "./types";
 import { installing, updateLabel, type UpdateOffer } from "./update";
-import otterIcon from "./assets/otter.png";
 
 interface Props {
   placed: Placed[];
@@ -217,7 +216,7 @@ export function Sidebar(props: Props) {
       </div>
 
       <div className="brand" data-tauri-drag-region>
-        <img src={otterIcon} width={24} height={24} alt="" className="brand-icon" />
+        <span className="otter-mark brand-icon" aria-hidden="true" />
         <span className="brand-name" data-tauri-drag-region>Otter</span>
         <span className="spacer" data-tauri-drag-region />
         <CountBadge kind="needs" count={needs.length} label="need you" onClick={() => onSelect(needs[0].key)} />

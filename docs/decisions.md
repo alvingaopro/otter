@@ -6383,3 +6383,38 @@ Tests: `what_is_only_a_word_or_comes_back_is_judged` and
 `without_a_model_or_in_time_a_judged_call_is_the_developers` and
 `a_model_denial_is_not_final_a_repeat_goes_to_the_developer` (new test brains
 `no` and `sleepy`; the fake agent's `ASK_REBASE` and `ASK_REBASE_TWICE`).
+
+## D-176 — The light theme is white and neutral; Otter's mark is one colour (2026-10-21)
+
+The light theme's grounds were warm greige (`#f2f1ed`, `#ebeae5`, `#fbfaf7`:
+red over green over blue), so the app read as yellow, and several text roles
+fell under 4.5:1 on the ground they sit on (`--faint` 3.72 on a selected row,
+`--hl-comment` 3.18, `--failed` 4.36 on its banner, `--done` 4.11 on the
+sidebar). The grounds are now neutral, as macOS draws them: the sidebar, bars
+and fields `#f5f5f7`, the terminal, panels and cards `#ffffff`, lines
+`#e5e5ea`/`#d1d1d6`. Every text colour reads at 4.5:1 or better on its own
+ground; `--working` (`#007aff`), `--needs` and `--idle` are fills and glyphs
+only (3:1), and the three places that wrote text in `--working` use
+`--working-text`. Dark is unchanged. The proposal, with each ratio:
+https://claude.ai/artifact/Qh1BhCMK284Ccf1RwVqiwc.
+
+The terminal follows: `LIGHT`'s background is `#FFFFFF` (with `--term`, which
+`.xterm-viewport` is forced to), and on light only xterm's
+`minimumContrastRatio` is 4.5, so a program's own colours meant for a dark
+ground (Claude Code's dark theme: its greys, its yellow at 1.3:1) are lifted
+until they read. It changes foregrounds only: the dark bar behind a submitted
+prompt and the dark green of an added line are Claude Code's theme, chosen in
+Claude Code (`/theme`).
+
+Not done here: making Claude Code's *auto* theme follow the app. Auto asks
+the terminal its background (OSC 11); in Otter the session's tmux answers
+(D-118's client leaves those answers to it), and with no client terminal
+behind it tmux answers black, so auto always picks dark. With a pane
+`window-style` background tmux answers that colour instead — the way to do
+it, measured on tmux 3.7, left for its own change.
+
+The mark is the monochrome otter (concept art traced to curves): the app icon
+is it on a white tile on the macOS grid; in the menu bar it is a template
+image (macOS colours it for its bar) when nothing needs you and orange when
+something does; in the app it is `assets/otter-mark.svg` used as a mask, so
+it takes the colour of the text around it in either theme.
