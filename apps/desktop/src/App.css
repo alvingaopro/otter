@@ -273,6 +273,9 @@ code, .mono { font-family: var(--mono); }
   box-shadow: inset 0 1px 0 var(--line), inset 1px 0 0 var(--line), inset -1px 0 0 var(--line);
 }
 .tab.selected .tab-name { font-weight: 600; }
+.tab-main { touch-action: none; }
+.tab.dragging { background: var(--raised); box-shadow: 0 4px 14px var(--shadow); cursor: grabbing; position: relative; z-index: 1; }
+.tabs.reordering .tab:not(.dragging) { pointer-events: none; }
 .tabs-kind { align-self: center; color: var(--faint); font-size: 11.5px; margin-right: 4px; }
 .tab-name { font-weight: 500; }
 .tab-kind { color: var(--faint); font-size: 12px; }

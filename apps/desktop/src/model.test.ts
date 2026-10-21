@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { glance, trayLabels } from "./model";
+import { dropPlace, glance, movePin, moveTo, trayLabels } from "./model";
 
 const line = (name: string, what: string, host = "code", key = name) => ({ key, name, what, host });
 
@@ -36,5 +36,34 @@ describe("menu bar glance", () => {
       line("web", "agent finished", "box", "c"),
     ]).map((l) => l.label);
     expect(labels).toEqual(["api (mac) · agent finished", "api (box) · build failed (status 1)", "web · agent finished"]);
+  });
+});
+
+describe("putting things in order", () => {
+  it("moves one among the others", () => {
+    expect(moveTo(["a", "b", "c"], "c", 0)).toEqual(["c", "a", "b"]);
+    expect(moveTo(["a", "b", "c"], "a", 1)).toEqual(["b", "a", "c"]);
+    expect(moveTo(["a", "b", "c"], "a", 9)).toEqual(["b", "c", "a"]);
+    // A pin whose workspace isn't loaded keeps its place.
+    expect(movePin(["a", "x", "b", "c"], ["a", "b", "c"], "c", 0)).toEqual(["c", "x", "a", "b"]);
+  });
+
+  // Two rows of tabs 80 wide: a b c on the first, d on the second.
+  const tab = (col: number, row: number) => ({ left: col * 82, top: row * 38, width: 80, bottom: row * 38 + 32 });
+  const others = [tab(0, 0), tab(1, 0), tab(2, 0), tab(0, 1)];
+
+  it("drops a tab in reading order, over rows", () => {
+    expect(dropPlace(others, 10, 16)).toBe(0);
+    expect(dropPlace(others, 100, 16)).toBe(1);
+    expect(dropPlace(others, 400, 16)).toBe(3);
+    expect(dropPlace(others, 10, 50)).toBe(3);
+    expect(dropPlace(others, 60, 50)).toBe(4);
+  });
+
+  it("takes a pointer above or below the tabs as on the first or last row", () => {
+    expect(dropPlace(others, 100, -30)).toBe(1);
+    expect(dropPlace(others, 10, 400)).toBe(3);
+    expect(dropPlace([tab(0, 0), tab(1, 0)], 100, 300)).toBe(1);
+    expect(dropPlace([], 100, 16)).toBe(0);
   });
 });

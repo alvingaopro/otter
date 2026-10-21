@@ -814,6 +814,23 @@ pub async fn session_rename(
         .map_err(err)
 }
 
+/// Another place for a session among its workspace's (D-150).
+#[tauri::command]
+pub async fn session_move(
+    app: AppHandle,
+    host: String,
+    workspace: String,
+    session: String,
+    to: usize,
+) -> Result<(), String> {
+    rpc(&app, &host)
+        .await?
+        .session_move(&workspace, &session, to)
+        .await
+        .map(|_| ())
+        .map_err(err)
+}
+
 /// A workspace's Git work (D-102).
 #[tauri::command]
 pub async fn workspace_changes(

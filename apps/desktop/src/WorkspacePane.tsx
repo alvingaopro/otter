@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type CSSProperties } from "react";
+import { useEffect, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { Glyph } from "./Glyph";
 import { Dialog } from "./Dialog";
@@ -11,7 +11,7 @@ import { BriefDialog, briefSummary } from "./BriefDialog";
 import { ChangesPanel, type Changes } from "./ChangesPanel";
 import { changesLine } from "./changes";
 import { FindPanel } from "./FindPanel";
-import { ago, kindLabel, sessionGlyph } from "./model";
+import { ago, dropPlace, kindLabel, moveTo, sessionGlyph } from "./model";
 import { explain, invokeNewer } from "./newer";
 import { RenameDialog } from "./RenameDialog";
 import { SessionTerminal } from "./SessionTerminal";
@@ -146,6 +146,21 @@ export function WorkspacePane({
 
   useEffect(() => setError(null), [placed.key, current?.id]);
 
+  // Reordering tabs with the pointer (D-150), as the sidebar's pins do. The
+  // order is the host's: one dropped shows until the host's changes (to it,
+  // as a rule) or the move fails.
+  const [drag, setDrag] = useState<{ id: string; to: number } | null>(null);
+  const [pending, setPending] = useState<{ order: string[]; base: string } | null>(null);
+  const dragged = useRef(false);
+  const tabEls = useRef(new Map<string, HTMLElement>());
+  const sessionIds = ws.sessions.map((s) => s.id).join(",");
+  useEffect(() => {
+    if (pending && pending.base !== sessionIds) setPending(null);
+  }, [sessionIds]);
+  const order = pending?.base === sessionIds ? pending.order : ws.sessions.map((s) => s.id);
+  const tabs = (drag ? moveTo(order, drag.id, drag.to) : order).flatMap((id) => ws.sessions.find((s) => s.id === id) ?? []);
+  const place = current ? order.indexOf(current.id) : -1;
+
   // Split (D-110): a second session on the right, its own terminal; the one
   // clicked last has the keyboard. Not remembered: a session gone since
   // would be worse than no split.
@@ -166,9 +181,7 @@ export function WorkspacePane({
       setRight(false);
       return;
     }
-    const ids = ws.sessions.map((s) => s.id);
-    const at = current ? ids.indexOf(current.id) : -1;
-    const next = ids.length > 1 ? ids[(at + 1) % ids.length] : undefined;
+    const next = order.length > 1 ? order[(place + 1) % order.length] : undefined;
     if (next && next !== current?.id) setSplit(next);
   }
   /** A tab: shown on the left; the one on the right trades places. */
@@ -206,8 +219,8 @@ export function WorkspacePane({
 
   // Its shortcuts, while it's in front and no dialog is open (D-106):
   // ⌘T a new session, ⌘⇧[ / ⌘⇧] the session before / after, ⌥1…⌥9 the
-  // session in that place (D-122), ⌘F find.
-  const sessionIds = ws.sessions.map((s) => s.id).join(",");
+  // session in that place (D-122), ⌘F find. In the tabs' order, a dropped
+  // one too.
   useEffect(() => {
     if (!active || open !== null) return;
     const onKey = (e: KeyboardEvent) => {
@@ -217,7 +230,7 @@ export function WorkspacePane({
         if (document.querySelector('[aria-modal="true"]')) return;
         e.preventDefault();
         e.stopPropagation();
-        const id = ws.sessions[Number(e.code.slice("Digit".length)) - 1]?.id;
+        const id = order[Number(e.code.slice("Digit".length)) - 1];
         if (id) choose(id);
         return;
       }
@@ -240,16 +253,56 @@ export function WorkspacePane({
       } else if (e.shiftKey && (e.code === "BracketLeft" || e.code === "BracketRight") && current) {
         e.preventDefault();
         e.stopPropagation();
-        const ids = ws.sessions.map((s) => s.id);
-        const at = ids.indexOf(current.id);
-        const next = ids[(at + (e.code === "BracketRight" ? 1 : ids.length - 1)) % ids.length];
+        const next = order[(place + (e.code === "BracketRight" ? 1 : order.length - 1)) % order.length];
         if (next) onSession(next);
       }
     };
     window.addEventListener("keydown", onKey, true);
     return () => window.removeEventListener("keydown", onKey, true);
-  }, [active, open, archived, current?.id, sessionIds, split]);
+  }, [active, open, archived, current?.id, order.join(","), split]);
   useEffect(() => setFinding(false), [current?.id]);
+
+  /** Put a session at `to` among the tabs. */
+  function moveSession(id: string, to: number) {
+    setPending({ order: moveTo(order, id, to), base: sessionIds });
+    setError(null);
+    invoke("session_move", { host: host.name, workspace: ws.id, session: id, to }).catch((e) => {
+      setPending(null);
+      setError(explain(host.name, e));
+    });
+  }
+
+  function startDrag(e: ReactPointerEvent, id: string) {
+    if (e.button !== 0 || host.status !== "connected") return;
+    const [x0, y0] = [e.clientX, e.clientY];
+    const from = order.indexOf(id);
+    let to = from;
+    let active = false;
+    // The others as laid out when the drag starts.
+    const others = order.filter((k) => k !== id).flatMap((k) => tabEls.current.get(k)?.getBoundingClientRect() ?? []);
+    const move = (ev: PointerEvent) => {
+      if (!active && Math.abs(ev.clientX - x0) < 4 && Math.abs(ev.clientY - y0) < 4) return;
+      active = true;
+      dragged.current = true;
+      to = dropPlace(others, ev.clientX, ev.clientY);
+      setDrag({ id, to });
+    };
+    const end = (drop: boolean) => () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+      window.removeEventListener("pointercancel", cancel);
+      if (!active) return;
+      setDrag(null);
+      if (drop && to !== from) moveSession(id, to);
+      // The click that ends a drag doesn't choose.
+      setTimeout(() => (dragged.current = false), 0);
+    };
+    const up = end(true);
+    const cancel = end(false);
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+    window.addEventListener("pointercancel", cancel);
+  }
 
   async function act(command: string, args: Record<string, unknown>): Promise<boolean> {
     setBusy(true);
@@ -380,23 +433,30 @@ export function WorkspacePane({
         </div>
       )}
 
-      <div className="tabs" role="tablist" aria-label="Sessions">
-        {ws.sessions.map((s, i) => (
+      <div className={drag ? "tabs reordering" : "tabs"} role="tablist" aria-label="Sessions">
+        {tabs.map((s, i) => (
           <div
             key={s.id}
-            className={s.id === current?.id ? "tab selected" : s.id === beside?.id ? "tab beside" : "tab"}
+            ref={(el) => void (el ? tabEls.current.set(s.id, el) : tabEls.current.delete(s.id))}
+            className={[
+              s.id === current?.id ? "tab selected" : s.id === beside?.id ? "tab beside" : "tab",
+              drag?.id === s.id && "dragging",
+            ]
+              .filter(Boolean)
+              .join(" ")}
             title={[s.id === beside?.id && "On the right", i < 9 && `⌥${i + 1}`].filter(Boolean).join(" · ") || undefined}
           >
             <button
               role="tab"
               aria-selected={s.id === current?.id}
               className="tab-main"
-              onClick={() => choose(s.id)}
+              onClick={() => !dragged.current && choose(s.id)}
+              onPointerDown={(e) => startDrag(e, s.id)}
               onDoubleClick={() => {
                 setRenaming(s);
                 setOpen("rename-session");
               }}
-              title="Double-click to rename"
+              title="Drag to move; double-click to rename"
             >
               <Glyph kind={sessionGlyph(s)} size={10} />
               <span className="tab-name">{s.name}</span>
@@ -464,6 +524,12 @@ export function WorkspacePane({
                   setRenaming(current);
                   setOpen("rename-session");
                 },
+              },
+              { label: "Move left", hidden: place <= 0, onSelect: () => moveSession(current.id, place - 1) },
+              {
+                label: "Move right",
+                hidden: place < 0 || place >= order.length - 1,
+                onSelect: () => moveSession(current.id, place + 1),
               },
               { label: "Find in its history… (⌘F)", onSelect: () => setFinding(true) },
               { label: "Stop", hidden: current.status !== "running", onSelect: () => void act("session_stop", sessionArgs()) },

@@ -19,7 +19,7 @@ use otter_protocol::frame::{Frame, read_frame, write_frame};
 use otter_protocol::wire::{read_json, write_json};
 use otter_protocol::{
     AttachReady, AttentionResolve, ClientMessage, Cursor, EventRecord, EventsList, EventsSubscribe,
-    PROTOCOL_VERSION, Request, RpcError, ServerMessage, SessionAttach, SessionCreate,
+    PROTOCOL_VERSION, Request, RpcError, ServerMessage, SessionAttach, SessionCreate, SessionMove,
     SessionOutput, SessionRead, SessionRef, SessionRename, SessionWrite, StateSnapshot, Subscribed,
     WorkspaceCreate, WorkspaceDelete, WorkspaceRef, WorkspaceRename, WorkspaceSetBrief,
 };
@@ -790,6 +790,20 @@ impl Connection {
         self.call(Request::SessionRename(SessionRename {
             session: session_ref(workspace, session),
             name: name.to_owned(),
+        }))
+        .await
+    }
+
+    /// Put a session in another place among the workspace's (D-150).
+    pub async fn session_move(
+        &mut self,
+        workspace: &str,
+        session: &str,
+        to: usize,
+    ) -> Result<Workspace> {
+        self.call(Request::SessionMove(SessionMove {
+            session: session_ref(workspace, session),
+            to,
         }))
         .await
     }

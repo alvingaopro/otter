@@ -207,11 +207,16 @@ export function togglePin(pins: string[], key: string): string[] {
   return pins.includes(key) ? pins.filter((k) => k !== key) : [...pins, key];
 }
 
+/** `ids` with `id` put at `to` among the others (past the end: last). */
+export function moveTo(ids: string[], id: string, to: number): string[] {
+  const order = ids.filter((k) => k !== id);
+  order.splice(Math.max(0, Math.min(to, order.length)), 0, id);
+  return order;
+}
+
 /** Move a pinned workspace to `to` among the loaded ones (`shown`, in order). */
 export function movePin(pins: string[], shown: string[], key: string, to: number): string[] {
-  const order = shown.filter((k) => k !== key);
-  order.splice(Math.max(0, Math.min(to, order.length)), 0, key);
-  const next = order[Symbol.iterator]();
+  const next = moveTo(shown, key, to)[Symbol.iterator]();
   const visible = new Set(shown);
   return pins.map((k) => (visible.has(k) ? next.next().value! : k));
 }
@@ -279,4 +284,27 @@ export function trayLabels(lines: TrayLine[]): { key: string; label: string }[] 
     if ((hosts.get(l.name)?.size ?? 0) > 1) name += ` (${l.host})`;
     return { key: l.key, label: `${name} · ${glance(l.what, Math.max(TRAY_LINE - name.length - 3, 16))}` };
   });
+}
+
+/** Where a box was laid out (a `DOMRect`'s). */
+export interface Box {
+  left: number;
+  top: number;
+  width: number;
+  bottom: number;
+}
+
+/**
+ * The place a tab dragged to (x, y) goes among the others (D-150): how many
+ * of them, as laid out when the drag started, come before the pointer in
+ * reading order, on a row above it or on its row with their middle to its
+ * left. Tabs wrap onto more rows; above the first or below the last counts
+ * as on it.
+ */
+export function dropPlace(others: Box[], x: number, y: number): number {
+  if (others.length === 0) return 0;
+  const top = Math.min(...others.map((b) => b.top));
+  const bottom = Math.max(...others.map((b) => b.bottom));
+  const at = Math.min(Math.max(y, top), bottom - 1);
+  return others.filter((b) => b.bottom <= at || (b.top <= at && b.left + b.width / 2 < x)).length;
 }

@@ -292,6 +292,7 @@ impl Daemon {
             Request::SessionRestart(r) => json(self.session_restart(&r).await?),
             Request::SessionDelete(r) => json(self.session_delete(&r).await?),
             Request::SessionRename(p) => json(self.session_rename(&p).await?),
+            Request::SessionMove(p) => json(self.session_move(&p).await?),
             Request::SessionRead(p) => json(self.session_read(&p).await?),
             Request::SessionWrite(p) => json(self.session_write(&p).await?),
             Request::AttentionResolve(p) => json(self.attention_resolve(&p).await?),

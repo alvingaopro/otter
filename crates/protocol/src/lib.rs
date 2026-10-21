@@ -161,6 +161,10 @@ pub enum Request {
     /// [`otter_core::Session`].
     #[serde(rename = "session.rename")]
     SessionRename(SessionRename),
+    /// Put the session in another place among the workspace's (D-150).
+    /// Result: [`otter_core::Workspace`].
+    #[serde(rename = "session.move")]
+    SessionMove(SessionMove),
     /// Read the session's screen + scrollback. Result: [`SessionOutput`].
     #[serde(rename = "session.read")]
     SessionRead(SessionRead),
@@ -346,6 +350,7 @@ impl Request {
             Request::SessionRestart(_) => "session.restart",
             Request::SessionDelete(_) => "session.delete",
             Request::SessionRename(_) => "session.rename",
+            Request::SessionMove(_) => "session.move",
             Request::SessionRead(_) => "session.read",
             Request::SessionWrite(_) => "session.write",
             Request::SessionAttach(_) => "session.attach",
@@ -458,6 +463,15 @@ pub struct SessionRename {
     #[serde(flatten)]
     pub session: SessionRef,
     pub name: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SessionMove {
+    #[serde(flatten)]
+    pub session: SessionRef,
+    /// Its place among the workspace's sessions, from 0; past the end is
+    /// the last.
+    pub to: usize,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
