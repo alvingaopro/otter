@@ -127,7 +127,7 @@ pub async fn update_install(app: AppHandle) -> Result<(), String> {
         return Err(message);
     }
     // The new copy is started by this one, which macOS doesn't make the front
-    // app: it says so to itself, to come forward (D-170).
+    // app: it says so to itself, to come forward (D-171).
     if let Some(marker) = marker(&app)
         && let Some(dir) = marker.parent()
     {
@@ -143,7 +143,7 @@ fn marker(app: &AppHandle) -> Option<std::path::PathBuf> {
     Some(app.path().app_local_data_dir().ok()?.join(AFTER_UPDATE))
 }
 
-/// Started by an update's restart (D-170): bring the window to the front, as
+/// Started by an update's restart (D-171): bring the window to the front, as
 /// the menu bar's Open does. Called once, when the app starts.
 pub fn after_update(app: &AppHandle) {
     let Some(marker) = marker(app) else {
