@@ -464,6 +464,26 @@ impl Conversations {
         out
     }
 
+    /// The native session each conversation is bound to (D-162), without
+    /// copying the conversations: asked every reconcile pass.
+    pub fn native_sessions(&self) -> Vec<String> {
+        let entries: Vec<_> = self.map.lock().unwrap().values().cloned().collect();
+        entries
+            .iter()
+            .filter_map(|e| {
+                Some(
+                    e.lock()
+                        .unwrap()
+                        .conversation
+                        .binding
+                        .as_ref()?
+                        .session_id
+                        .clone(),
+                )
+            })
+            .collect()
+    }
+
     /// Apply a change: journaled first (see the module docs). `None` if
     /// there's no such conversation; a rejected change changes nothing; a
     /// journal that can't be written is `Rejection::Storage`.
@@ -645,6 +665,19 @@ mod tests {
         let id = c.id.clone();
         convs.insert(c).unwrap();
         id
+    }
+
+    #[test]
+    fn it_lists_the_native_sessions_its_conversations_are_bound_to() {
+        let dir = tempfile::tempdir().unwrap();
+        let convs = Conversations::empty(dir.path());
+        let mut bound = Conversation::new("claude", "sdk", "ws_1".into(), Utc::now());
+        bound.binding = Some(otter_core::conversation::NativeBinding {
+            session_id: "native-1".into(),
+        });
+        convs.insert(bound).unwrap();
+        new_conv(&convs);
+        assert_eq!(convs.native_sessions(), ["native-1"]);
     }
 
     fn accept(cmd: &str, text: &str, turn: &TurnId) -> Op {

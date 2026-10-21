@@ -100,6 +100,12 @@ impl Daemon {
             .filter_map(|(r, text)| Some((r, otter_core::tail_of(&text.ok()?)?)))
             .collect();
 
+        // The native sessions of managed runs' conversations (D-162): a run
+        // works in the same directory as a session and writes a transcript
+        // there; a session that took it for its own would follow the run's
+        // turns, and resume its conversation. Asked before the store's lock:
+        // it waits on conversations being written.
+        let managed: HashSet<String> = self.conversations.native_sessions().into_iter().collect();
         let mut store = self.store.lock().await;
         // Read under the store's lock: a terminal that comes on screen after
         // this settles what this pass raises (D-137).
@@ -111,6 +117,7 @@ impl Daemon {
             .iter()
             .flat_map(|w| &w.sessions)
             .filter_map(|s| s.agent.as_ref()?.provider_session_id.clone())
+            .chain(managed.iter().cloned())
             .collect();
         let mut events = Vec::new();
         let mut changed = false;
@@ -140,6 +147,7 @@ impl Daemon {
                 let seen = Seen {
                     now,
                     claimed: &claimed,
+                    managed: &managed,
                     env: &env,
                     screens: &screens,
                     on_screen: &on_screen,
@@ -231,6 +239,7 @@ impl Looked {
 struct Seen<'a> {
     now: DateTime<Utc>,
     claimed: &'a HashSet<String>,
+    managed: &'a HashSet<String>,
     env: &'a EnvMap,
     /// How long each agent's screen has looked as it does, by backend ref.
     screens: &'a HashMap<String, Screen>,
@@ -332,8 +341,14 @@ fn observe_agent(ws: &mut Workspace, i: usize, seen: &Seen<'_>, events: &mut Vec
             now,
             env: seen.env,
             claimed: seen.claimed,
+            managed: seen.managed,
         };
         let obs = provider.observe(&ctx, &info);
+        if obs.unbind && obs.provider_session_id.is_none() {
+            tracing::info!(session = %session.name, "agent session let go: it was another's");
+            info.provider_session_id = None;
+            changed = true;
+        }
         if let Some(id) = obs.provider_session_id {
             tracing::info!(session = %session.name, "agent session identified");
             info.provider_session_id = Some(id);

@@ -5606,3 +5606,39 @@ Not done: a Problems line for other otterds (D-077); stale tmux sessions
 (needs the backend to list its sessions); disk size per workspace; stopping a
 session's or run's process other than through its own commands; a task
 agent's "Interrupt" shows only for runs that are live.
+
+## D-162 — A session doesn't take a managed run's transcript for its own (2026-10-21)
+
+A task waited on the developer's `claude` session, saying it was working
+there, while the session sat at its prompt. Its agent state was `working`
+since the task's last run had started and stayed so. The cause: both write
+their Claude Code transcripts in the project's directory, and a session looks
+for "the newest transcript written since it started" that no other session
+has taken (D-137). A task's run was writing its conversation there when the
+session started, so the session took the run's transcript for its own,
+followed the run's turns — which ended on a tool result no assistant
+answered when the run was interrupted — and stayed *working* with nothing
+to end it. It would also have resumed the task's conversation if restarted.
+
+- **`claimed` includes the native sessions of managed runs' conversations**
+  (`Conversations::native_sessions`, read each pass without copying them), so
+  a session never takes one.
+- **A session already bound to one lets go and binds its own** (`managed` in
+  the observe context): what its terminal is doing is not known until its own
+  transcript says, so it is *idle* until then. A hook said it started and
+  nothing since, so the quiet-turn fallback stays off, as before. The
+  session id it held is **forgotten** (`Observation::unbind`) unless its own
+  is found in the same look, so a restart doesn't resume the run's
+  conversation.
+- Tested at the observer (a transcript of a run, one of the terminal's own,
+  hooks that said only that it started) and on the conversations' list.
+  Not tested end to end: a real run and a real terminal in one directory.
+
+Known and left: a terminal that deliberately continues a task's conversation
+(Claude Code's `/resume` picker lists the run's transcripts too) never binds
+to it now, for the id is claimed for good; and a run's transcript can exist
+a moment before the conversation records its id, so a session may take it
+and let go of it a pass later (self-correcting, a little noisy). Taking the
+identity from the hooks' `transcript_path` would settle both. Also not done:
+whether an answer-only task (D-092), which only reads, needs to wait for the
+developer's agent at all.

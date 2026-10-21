@@ -220,6 +220,23 @@ impl AgentProvider for ClaudeCode {
         let mut state_changed = false;
         let earliest: Timestamp = ctx.started_at - Duration::seconds(CLOCK_SLACK);
 
+        // Bound to a managed run's conversation (D-162): it was taken for this
+        // session's own while the run wrote it in the same directory. Its
+        // turns are not this terminal's, and it would resume that
+        // conversation. Let go of it, and look again; what the terminal is
+        // doing is not known until its own transcript says.
+        let misbound = state
+            .transcript
+            .as_deref()
+            .and_then(|p| p.file_stem()?.to_str())
+            .is_some_and(|id| ctx.managed.contains(id));
+        if misbound {
+            tracing::warn!("claude session was bound to a managed run's transcript; binding again");
+            state.transcript = None;
+            state.offset = 0;
+            state_changed = true;
+        }
+
         // Follow the transcript this execution writes. A resumed session may
         // continue its old file or start a new one, so until the current file
         // is written during this execution, look for a newer one.
@@ -241,7 +258,14 @@ impl AgentProvider for ClaudeCode {
             state_changed = true;
         }
 
-        let mut next = info.state;
+        if misbound {
+            obs.unbind = true;
+        }
+        let mut next = if misbound {
+            AgentState::Idle
+        } else {
+            info.state
+        };
         let mut grew = false;
         let mut transcript_mtime = None;
         let mut last_user_at = None;
@@ -821,6 +845,7 @@ mod tests {
                 now,
                 env: &env,
                 claimed: &none,
+                managed: &none,
             };
             newest_transcript(&ctx, started - Duration::seconds(CLOCK_SLACK)).map(|(id, _)| id)
         };
@@ -1029,6 +1054,7 @@ mod tests {
                 now,
                 env: &env,
                 claimed: &none,
+                managed: &none,
             };
             let obs = ClaudeCode.observe(&ctx, agent);
             if let Some(s) = obs.state {
@@ -1250,6 +1276,100 @@ mod tests {
         assert!(p.tool.is_none() && !p.answered);
     }
 
+    /// A managed run writes its transcript in the session's directory too
+    /// (D-162): a session that took it for its own followed the run's turns,
+    /// stuck "working" on a tool result no one answered, and would have
+    /// resumed the run's conversation. It lets go of it and binds its own.
+    #[test]
+    fn a_session_bound_to_a_managed_runs_transcript_binds_its_own() {
+        let dir = tempfile::tempdir().unwrap();
+        let env: EnvMap = [(
+            "CLAUDE_CONFIG_DIR".to_owned(),
+            dir.path().join("config").display().to_string(),
+        )]
+        .into();
+        let cwd = dir.path().join("w");
+        std::fs::create_dir_all(&cwd).unwrap();
+        let cwd = cwd.to_string_lossy().into_owned();
+        let transcripts = transcript_dirs(&env, &cwd).remove(0);
+        std::fs::create_dir_all(&transcripts).unwrap();
+        // The run's: ends on a tool result no assistant answered.
+        let run = transcripts.join("run-conv.jsonl");
+        std::fs::write(
+            &run,
+            concat!(
+                r#"{"type":"user","message":{"role":"user","content":"go"}}"#,
+                "\n",
+                r#"{"type":"assistant","message":{"stop_reason":"tool_use","content":[{"type":"tool_use","name":"Bash"}]}}"#,
+                "\n",
+                r#"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","content":"ok"}]}}"#,
+                "\n",
+            ),
+        )
+        .unwrap();
+        // The terminal's own: a local command, nothing the model answers.
+        std::fs::write(transcripts.join("own.jsonl"), "{\"type\":\"system\"}\n").unwrap();
+
+        let started = Utc::now() - Duration::seconds(60);
+        let managed: HashSet<String> = ["run-conv".to_owned()].into();
+        let claimed = managed.clone();
+        let ctx = ObserveContext {
+            cwd: &cwd,
+            dir: dir.path(),
+            started_at: started,
+            pid: None,
+            screen: None,
+            now: Utc::now(),
+            env: &env,
+            claimed: &claimed,
+            managed: &managed,
+        };
+        let state = ClaudeState {
+            transcript: Some(run.clone()),
+            // Hooks said it started, and nothing since: as it is in use.
+            hooks_live: true,
+            hooks_execution: Some(started.timestamp_millis()),
+            ..ClaudeState::default()
+        };
+        let agent = AgentInfo {
+            provider: "claude".into(),
+            provider_session_id: Some("run-conv".into()),
+            provider_state: serde_json::to_value(&state).unwrap(),
+            state: AgentState::Working,
+            state_since: started,
+            last_message: None,
+            prompt: None,
+            blocker: None,
+        };
+        let obs = ClaudeCode.observe(&ctx, &agent);
+        assert_eq!(obs.state, Some(AgentState::Idle), "{obs:?}");
+        assert_eq!(obs.provider_session_id.as_deref(), Some("own"));
+        let bound: ClaudeState = serde_json::from_value(obs.provider_state.unwrap()).unwrap();
+        assert_eq!(
+            bound.transcript.as_deref(),
+            Some(transcripts.join("own.jsonl").as_path())
+        );
+
+        // Its own transcript not written yet: nothing to bind, and the run's
+        // conversation is let go of, not kept to be resumed by a restart.
+        std::fs::remove_file(transcripts.join("own.jsonl")).unwrap();
+        let obs = ClaudeCode.observe(&ctx, &agent);
+        assert!(obs.unbind && obs.provider_session_id.is_none(), "{obs:?}");
+        assert_eq!(obs.state, Some(AgentState::Idle));
+
+        // Not bound to a run's: left as it is.
+        let none = HashSet::new();
+        let ctx = ObserveContext {
+            managed: &none,
+            claimed: &none,
+            ..ctx
+        };
+        std::fs::write(transcripts.join("own.jsonl"), "{\"type\":\"system\"}\n").unwrap();
+        let obs = ClaudeCode.observe(&ctx, &agent);
+        assert_eq!(obs.state, None, "{obs:?}");
+        assert!(!obs.unbind);
+    }
+
     #[test]
     fn without_hooks_a_still_turn_falls_back_to_the_heuristic() {
         let dir = tempfile::tempdir().unwrap();
@@ -1269,6 +1389,7 @@ mod tests {
             now: Utc::now(),
             env: &env,
             claimed: &none,
+            managed: &none,
         };
         let agent = AgentInfo {
             provider: "claude".into(),

@@ -89,8 +89,13 @@ pub struct ObserveContext<'a> {
     pub now: Timestamp,
     /// The environment the agent was launched with (login + workspace env).
     pub env: &'a EnvMap,
-    /// `provider_session_id`s already bound to other sessions.
+    /// `provider_session_id`s already bound to other sessions, and the
+    /// native sessions of managed runs' conversations (D-162): a managed run
+    /// works in the same directory, and writes its own transcript there.
     pub claimed: &'a HashSet<String>,
+    /// The native sessions of managed runs' conversations alone: a session
+    /// bound to one of these was bound wrongly.
+    pub managed: &'a HashSet<String>,
 }
 
 /// How long a session's screen has looked as it does now. Otter looks once
@@ -145,6 +150,10 @@ impl Screen {
 pub struct Observation {
     pub state: Option<AgentState>,
     pub provider_session_id: Option<String>,
+    /// The session id it holds is not this agent's (D-162): forget it, so a
+    /// restart doesn't resume someone else's conversation. A
+    /// `provider_session_id` found in the same look replaces it.
+    pub unbind: bool,
     pub provider_state: Option<serde_json::Value>,
     /// Excerpt of the agent's latest message.
     pub last_message: Option<String>,
