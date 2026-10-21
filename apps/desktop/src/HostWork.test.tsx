@@ -43,7 +43,7 @@ const procs: OtterProcess[] = [
   proc({ pid: 10, name: "otterd" }),
   proc({ pid: 20, parent: 5, name: "zsh", cpu_percent: 2, owner: owned }),
   proc({ pid: 21, parent: 20, name: "vite", cpu_percent: 30, busy_secs: 900, memory: 4 * 1024 * 1024, owner: owned }),
-  proc({ pid: 88, name: "otterd", owner: { kind: "daemon", this: false }, stoppable: true, exe: "/old/otterd", busy_secs: 3600 }),
+  proc({ pid: 88, name: "otterd", owner: { kind: "daemon", this: false }, stoppable: true, exe: "/old/otterd", home: "/work/.dev/bench/home", busy_secs: 3600 }),
   proc({ pid: 90, name: "node", owner: { kind: "orphan", why: "its workspace is gone" }, stoppable: true }),
 ];
 
@@ -70,11 +70,32 @@ describe("what the Work tab is built from", () => {
   });
 
   it("lists strays: another otterd and an orphan, never this otterd or a session's process", () => {
-    expect(strays(procs).map((p) => p.pid)).toEqual([88, 90]);
-    const rows = processRows(procs);
+    expect(strays(procs, Date.now()).map((p) => p.pid)).toEqual([88, 90]);
+    const rows = processRows(procs, Date.now());
     expect(rows.map((r) => r.proc.pid)).toEqual([88, 90, 10]);
     expect(rows[0].flags).toEqual(["other", "busy"]);
     expect(rows[1].flags).toEqual(["orphan"]);
+  });
+});
+
+describe("another otterd that has only just started", () => {
+  it("is listed, but isn't a stray yet: a task's tests start one per test, for seconds", () => {
+    const now = Date.now();
+    const young = proc({
+      pid: 70,
+      name: "otterd",
+      owner: { kind: "daemon", this: false },
+      stoppable: true,
+      started: Math.floor(now / 1000) - 5,
+    });
+    const old = { ...young, pid: 71, started: Math.floor(now / 1000) - 600 };
+    expect(strays([young, old], now).map((p) => p.pid)).toEqual([71]);
+    const rows = processRows([young, old], now);
+    expect(rows.map((r) => r.proc.pid)).toEqual([70, 71]);
+    expect(rows.map((r) => r.flags)).toEqual([[], ["other"]]);
+    // An orphan is one at once.
+    const orphan = proc({ pid: 72, owner: { kind: "orphan", why: "x" }, stoppable: true, started: Math.floor(now / 1000) - 1 });
+    expect(strays([orphan], now)).toHaveLength(1);
   });
 });
 
@@ -104,6 +125,8 @@ describe("the Work tab", () => {
     vi.mocked(invoke).mockResolvedValue(null);
     await work({ state: "ready", procs });
     expect(text()).toContain("2 processes nothing here owns");
+    // Which otterd it is: its home, not only where its binary is.
+    expect(text()).toContain("home /work/.dev/bench/home");
     // The first Stop in the strip: asked, not sent.
     await act(async () => button("Stop").click());
     expect(invoke).not.toHaveBeenCalled();

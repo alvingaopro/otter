@@ -149,7 +149,7 @@ export function HostPage({
       clearInterval(t);
     };
   }, [host.name, connected]);
-  const stray = procs.state === "ready" ? strays(procs.procs).length : 0;
+  const stray = procs.state === "ready" ? strays(procs.procs, now).length : 0;
 
   // Recorded history for the chosen range, refreshed every minute.
   useEffect(() => {

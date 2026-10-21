@@ -227,6 +227,8 @@ export interface OtterProcess {
   name: string;
   exe?: string;
   cwd?: string;
+  /** An otterd's `--home`: which one it is. */
+  home?: string;
   cpu_percent: number;
   memory: number;
   busy_secs: number;

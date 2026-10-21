@@ -148,7 +148,7 @@ Both are additions (no protocol bump); daemons before them answer
   exe?, cwd?, cpu_percent, memory, busy_secs, owner, stoppable}]}` (D-161): the
   processes Otter started or must answer for, as of the last 5 s sample
   (`unavailable` until the first). `started` (seconds since the epoch) with
-  `pid` names a process. `owner` is `{kind: "daemon", this}` (an otterd: this
+  `pid` names a process. `home` (D-169) is an otterd's `--home`, which one it is. `owner` is `{kind: "daemon", this}` (an otterd: this
   one, or another), `{kind: "execution", workspace_id, session_id,
   execution_id}` or `{kind: "run", task_id?, workspace_id}` (in the process
   tree of a session's running execution, or of a coding agent's run, found

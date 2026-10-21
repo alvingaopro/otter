@@ -116,6 +116,7 @@ pub(crate) fn classify(procs: &[ProcSample], roots: &Roots) -> Vec<OtterProcess>
                 name: p.name.clone(),
                 exe: p.exe.clone(),
                 cwd: p.cwd.clone(),
+                home: p.home.clone(),
                 cpu_percent: p.cpu,
                 memory: p.memory,
                 busy_secs: p.busy_samples * crate::metrics::INTERVAL.as_secs() as u32,
@@ -279,6 +280,7 @@ mod tests {
             memory: 1,
             started: 100 + pid as u64,
             otterd,
+            home: None,
             busy_samples: 0,
         }
     }

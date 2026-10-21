@@ -17,6 +17,17 @@ export const KINDS: { id: Kind; label: string }[] = [
 /** Busy this long (25% of a CPU or more) is worth a flag. */
 export const BUSY_FLAG_SECS = 600;
 
+/**
+ * Another otterd younger than this isn't a stray yet: the end-to-end tests of
+ * a task's work start one per test, for seconds. It is still listed.
+ */
+export const STRAY_AFTER_SECS = 120;
+
+/** An otterd that isn't this one and has been running long enough to be looked at. */
+function lingering(p: OtterProcess, nowMs: number): boolean {
+  return p.owner.kind !== "daemon" || nowMs / 1000 - p.started >= STRAY_AFTER_SECS;
+}
+
 export type Flag = "busy" | "orphan" | "stale" | "other";
 
 export interface Usage {
@@ -76,13 +87,13 @@ export interface ProcessRow {
 }
 
 /** Other otterds, orphans, and this otterd: the rows nothing but the host owns. */
-export function processRows(procs: OtterProcess[]): ProcessRow[] {
+export function processRows(procs: OtterProcess[], nowMs: number): ProcessRow[] {
   return procs
     .filter((p) => p.owner.kind === "daemon" || p.owner.kind === "orphan")
     .map((proc) => {
       const flags: Flag[] = [];
       if (proc.owner.kind === "orphan") flags.push("orphan");
-      if (proc.owner.kind === "daemon" && !proc.owner.this) flags.push("other");
+      if (proc.owner.kind === "daemon" && !proc.owner.this && lingering(proc, nowMs)) flags.push("other");
       if (proc.busy_secs >= BUSY_FLAG_SECS) flags.push("busy");
       return { proc, flags };
     })
@@ -90,8 +101,8 @@ export function processRows(procs: OtterProcess[]): ProcessRow[] {
 }
 
 /** What the strip above the tabs lists, and the Work tab's badge counts. */
-export function strays(procs: OtterProcess[]): OtterProcess[] {
-  return procs.filter((p) => p.stoppable);
+export function strays(procs: OtterProcess[], nowMs: number): OtterProcess[] {
+  return procs.filter((p) => p.stoppable && lingering(p, nowMs));
 }
 
 export interface AgentRow {

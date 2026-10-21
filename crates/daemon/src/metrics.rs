@@ -44,8 +44,24 @@ pub struct ProcSample {
     pub started: u64,
     /// An otterd serving (`otterd serve`).
     pub otterd: bool,
+    /// An otterd's `--home` (a directory, not a secret): which it is.
+    pub home: Option<String>,
     /// Samples in a row at 25% of a CPU or more.
     pub busy_samples: u32,
+}
+
+/// The `--home` an otterd was started with, as `--home dir` or `--home=dir`.
+pub(crate) fn home_of(cmd: &[std::ffi::OsString]) -> Option<String> {
+    let mut args = cmd.iter();
+    while let Some(a) = args.next() {
+        if a == "--home" {
+            return args.next().map(|h| h.to_string_lossy().into_owned());
+        }
+        if let Some(h) = a.to_str().and_then(|a| a.strip_prefix("--home=")) {
+            return Some(h.to_owned());
+        }
+    }
+    None
 }
 
 /// An otterd serving: its executable (or what it was started as) is
@@ -77,6 +93,9 @@ fn sample_of(p: &sysinfo::Process, busy_samples: u32) -> ProcSample {
         memory: p.memory(),
         started: p.start_time(),
         otterd: otterd_serving(p.exe(), p.cmd()),
+        home: otterd_serving(p.exe(), p.cmd())
+            .then(|| home_of(p.cmd()))
+            .flatten(),
         busy_samples,
     }
 }
@@ -538,6 +557,22 @@ mod tests {
         assert!(!otterd_serving(otterd, &cmd(&["otterd", "dial"])));
         // The executable unreadable: what it was started as.
         assert!(otterd_serving(None, &cmd(&["/x/otterd", "serve"])));
+    }
+
+    #[test]
+    fn an_otterds_home_is_read_from_its_arguments() {
+        use std::ffi::OsString;
+        let cmd = |a: &[&str]| a.iter().map(OsString::from).collect::<Vec<_>>();
+        assert_eq!(
+            home_of(&cmd(&["otterd", "--home", "/h/x", "serve"])).as_deref(),
+            Some("/h/x")
+        );
+        assert_eq!(
+            home_of(&cmd(&["otterd", "--home=/h/y", "serve"])).as_deref(),
+            Some("/h/y")
+        );
+        assert_eq!(home_of(&cmd(&["otterd", "serve"])), None);
+        assert_eq!(home_of(&cmd(&["otterd", "serve", "--home"])), None);
     }
 
     #[test]
