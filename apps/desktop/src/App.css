@@ -18,6 +18,10 @@
   --line-strong: #2e3036;
   --raised: #202227;
   --selected: #23252b;
+  /* Who speaks in a task's conversation (D-175): you, and the coding agent; Otter is --raised. */
+  --you-bg: #1d3150;
+  --agent-bg: #251f33;
+  --agent-text: #b9a4e8;
   --text: #e8e6e1;
   --muted: #a1a3aa;
   --faint: #8b8e95;
@@ -81,6 +85,9 @@
   --line-strong: #cfccc4;
   --raised: #e7e5df;
   --selected: #dedcd5;
+  --you-bg: #d6e5fa;
+  --agent-bg: #e8e2f3;
+  --agent-text: #6a4fb0;
   --text: #1d1e21;
   --muted: #55585f;
   --faint: #6b6e75;
@@ -550,18 +557,36 @@ body.resizing-col { cursor: col-resize; user-select: none; }
 .task-where { flex: none; font-family: var(--mono); font-size: 12px; color: var(--faint); white-space: nowrap; }
 .task-where .link-btn { font-family: var(--mono); font-size: 12px; }
 
-.task-body { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr) minmax(300px, 380px); gap: 0; margin-top: 10px; border-top: 1px solid var(--line); }
-@media (max-width: 1000px) { .task-body { grid-template-columns: 1fr; grid-template-rows: minmax(240px, 1fr) minmax(240px, 1fr); } }
+.task-body { flex: 1; min-height: 0; display: flex; margin-top: 10px; border-top: 1px solid var(--line); }
+/* Overview/Activity: resizable like the Files panel (TASK_DETAIL, D-175); the conversation keeps 360px. */
+.task-detail { width: var(--detail-width, 380px); min-width: 260px; max-width: calc(100% - 360px); flex: none; }
+@media (max-width: 1000px) {
+  .task-body { flex-direction: column; }
+  .task-body > .conversation, .task-body > .task-detail { flex: 1 1 0; min-height: 240px; }
+  .task-body > .task-detail { width: auto; min-width: 0; max-width: none; border-top: 1px solid var(--line); }
+  .task-body > .panel-grip { display: none; }
+}
 
-.conversation { display: flex; flex-direction: column; min-height: 0; border-right: 1px solid var(--line); }
-.messages { flex: 1; min-height: 0; overflow-y: auto; padding: 14px 16px; display: flex; flex-direction: column; gap: 12px; }
-.message { max-width: 720px; padding: 8px 12px; border-radius: 10px; background: var(--raised); }
-.message.user { align-self: flex-end; background: var(--selected); }
+/* The thread (D-175): close together, in a column of reading width, each
+   speaker by the colour of its bubble. */
+.conversation {
+  --gutter: max(16px, calc((100% - 820px) / 2));
+  flex: 1; min-width: 0; display: flex; flex-direction: column; min-height: 0; border-right: 1px solid var(--line);
+}
+.messages { flex: 1; min-height: 0; overflow-y: auto; padding: 14px var(--gutter); display: flex; flex-direction: column; gap: 6px; }
+/* As wide as what it says, with room beside it for its time. */
+.message { position: relative; align-self: flex-start; max-width: min(720px, calc(100% - 56px)); padding: 7px 12px; border-radius: 14px; background: var(--raised); }
+.message.user { align-self: flex-end; background: var(--you-bg); }
+.message.agent { background: var(--agent-bg); }
 .message.system { background: none; border: 1px dashed var(--line-strong); color: var(--muted); }
-.message-head { display: flex; gap: 8px; align-items: center; margin-bottom: 3px; }
+.messages > .message.user + :not(.message.user), .messages > :not(.message.user) + .message.user { margin-top: 8px; }
+.message-head { display: flex; gap: 8px; align-items: center; margin-bottom: 2px; }
 .message-role { font-size: 12px; font-weight: 600; color: var(--muted); }
-.message.controller .message-role { color: var(--working-text); }
+.message.agent .message-role { color: var(--agent-text); }
 .message-at { font-size: 11.5px; color: var(--faint); }
+.message-at.aside { position: absolute; bottom: 7px; left: calc(100% + 8px); white-space: nowrap; opacity: 0; transition: opacity 0.15s; }
+.message.user > .message-at.aside { left: auto; right: calc(100% + 8px); }
+.message:hover > .message-at.aside { opacity: 1; }
 .message-text { white-space: pre-wrap; line-height: 1.45; user-select: text; }
 .markdown { user-select: text; line-height: 1.5; overflow-wrap: anywhere; }
 .markdown.message-text, .markdown.report { white-space: normal; }
@@ -581,7 +606,7 @@ body.resizing-col { cursor: col-resize; user-select: none; }
 .markdown table { border-collapse: collapse; display: block; overflow-x: auto; }
 .markdown th, .markdown td { border: 1px solid var(--line); padding: 3px 8px; text-align: left; }
 .markdown hr { border: 0; border-top: 1px solid var(--line); margin: 10px 0; }
-.composer { position: relative; display: flex; gap: 8px; align-items: flex-end; padding: 10px 16px 14px; border-top: 1px solid var(--line); }
+.composer { position: relative; display: flex; gap: 8px; align-items: flex-end; padding: 10px var(--gutter) 14px; border-top: 1px solid var(--line); }
 .composer-box { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 6px; }
 .composer-box textarea { flex: none; width: 100%; box-sizing: border-box; }
 .pasted-images { display: flex; flex-wrap: wrap; gap: 6px; margin: 0; padding: 0; }
@@ -593,8 +618,10 @@ body.resizing-col { cursor: col-resize; user-select: none; }
 }
 .message-pictures { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
 .message-picture { max-width: 240px; max-height: 160px; border-radius: 6px; border: 1px solid var(--line); }
+/* No `flex` here: in the box's column a flex basis sizes the textarea by
+   its rows, not the height it is given (D-175). */
 .composer textarea {
-  flex: 1; resize: none; padding: 8px 10px; border-radius: 8px; border: 1px solid var(--line-strong);
+  resize: none; padding: 8px 10px; border-radius: 8px; border: 1px solid var(--line-strong);
   background: var(--bg); color: var(--text); font: inherit; font-size: 13.5px; line-height: 1.45;
 }
 /* The top edge: drag it to make the message box taller or shorter. */
@@ -662,11 +689,14 @@ body.resizing-row { cursor: row-resize; user-select: none; }
 .reasons ul { margin-top: 8px; font-size: 12.5px; }
 
 /* Decisions in the conversation: taken ones where they were asked, waiting ones above the message box. */
-.decided { max-width: 720px; padding: 8px 12px; border-radius: 10px; border: 1px solid var(--line-strong); display: flex; flex-direction: column; gap: 3px; }
-.decided-head { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
-.decided-verdict { font-size: 12px; font-weight: 600; color: var(--muted); }
-.decided-summary { font-family: var(--mono); font-size: 12px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.pending-decisions { flex: none; max-height: 45%; overflow-y: auto; padding: 10px 16px 0; border-top: 1px solid var(--line); }
+/* A taken one is a line: the verdict, what it was on (cut), and when. */
+.decided { max-width: min(720px, calc(100% - 56px)); padding: 2px 12px; display: flex; flex-wrap: wrap; align-items: center; gap: 2px 8px; font-size: 12px; color: var(--muted); }
+.decided > .glyph { flex: none; }
+.decided-verdict { flex: none; font-weight: 600; }
+.decided-summary { flex: 1 1 0; min-width: 60px; font-family: var(--mono); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.decided-meta { flex: none; color: var(--faint); }
+.decided-answer { flex-basis: 100%; padding-left: 20px; }
+.pending-decisions { flex: none; max-height: 45%; overflow-y: auto; padding: 10px var(--gutter) 0; border-top: 1px solid var(--line); }
 .fold:not(.open) { max-height: 260px; overflow: hidden; }
 .fold-toggle { margin-top: 6px; }
 .evidence-item a { color: var(--working-text); }

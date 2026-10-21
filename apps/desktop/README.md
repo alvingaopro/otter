@@ -55,7 +55,7 @@ Layout:
   (diffs side by side, folded, highlighted, D-111), `Terminal` (xterm.js, which keeps the session's history, D-118; `imeCommit.ts` for Pinyin's punctuation, D-126; `pixelScroll.ts` for scrolling by the pixel, D-130; `links.ts` for ⌘-click,
   `terminalFont.ts` for ⌘=/⌘- and the font in Settings › Appearance, D-116; `SettingsDialog`, tabs by kind, D-127; `PerfOverlay` + `perf.ts`, Settings › Developer's readout, D-128), `newer.ts` (requests older hosts don't
   know), `panelResize` (the
-  list's and the Files/Timeline panel's widths, D-097; `composerResize` is
-  the message box's height), `model.ts`
+  list's and the Files/Timeline panel's widths, D-097, and a task's details,
+  D-175; `composerResize` is the message box's height), `model.ts`
   (grouping and wording only), `TimelinePanel` + `timeline.ts` (a workspace's
   events as one line each).

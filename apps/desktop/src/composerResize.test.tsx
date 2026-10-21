@@ -37,7 +37,7 @@ describe("message box height", () => {
   });
 
   it("stays between a few lines and most of the window", () => {
-    expect(clampHeight(10, 800)).toBe(56);
+    expect(clampHeight(10, 800)).toBe(84);
     expect(clampHeight(200, 800)).toBe(200);
     expect(clampHeight(2000, 800)).toBe(480);
   });
@@ -58,5 +58,11 @@ describe("message box height", () => {
 
     await act(async () => grip().dispatchEvent(new MouseEvent("dblclick", { bubbles: true })));
     expect(box().style.height).toBe(`${DEFAULT_HEIGHT}px`);
+  });
+
+  it("opens at the least when one remembered from before is smaller (D-175)", async () => {
+    localStorage.setItem("otter.composer-height", "56");
+    await act(async () => root.render(<Box />));
+    expect(box().style.height).toBe("84px");
   });
 });
