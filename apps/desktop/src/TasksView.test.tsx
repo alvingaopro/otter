@@ -10,6 +10,7 @@ import {
   collapseRepeats,
   findMatch,
   groupOf,
+  HELD,
   heardLine,
   needsYou,
   sortTasks,
@@ -532,6 +533,36 @@ describe("Tasks view", () => {
     expect(q(".banner.needs")?.textContent).toContain("an agent you started");
     await act(async () => byText(".banner button", "Open claude")!.click());
     expect(onOpenWorkspace).toHaveBeenCalledWith("mac", "ws_demo", "ses_c");
+    expect(byText(".banner button", "Work in its own workspace")).toBeDefined();
+  });
+
+  it("says a task waiting behind another task's unfinished work needs you, and offers its own workspace (D-156)", async () => {
+    const [active] = sampleTasks(Date.now());
+    const task: Task = {
+      ...active,
+      status: "planning",
+      steps: [],
+      runs: [],
+      workspace_id: "ws_demo",
+      status_reason: `Waiting for demo: “Fix the export”${HELD}`,
+      activity: "needs_you",
+      needs: { kind: "blocked", summary: "Waiting on you", since: active.updated_at, decisions: 0 },
+    };
+    const s: TaskSource = { ...mockSource("mac"), list: () => [{ host: "mac", task, key: "mac/" + task.id }], subscribe: () => () => {} };
+    await act(async () =>
+      root.render(
+        <TasksView
+          source={s}
+          hosts={["mac"]}
+          workspaces={{ mac: [{ id: "ws_demo", name: "demo", sessions: [] }] }}
+          now={Date.now()}
+          onOpenWorkspace={async () => {}}
+          onOpenPreview={async () => {}}
+        />,
+      ),
+    );
+    expect(q(".status-pill")?.textContent).toBe("Needs you");
+    expect(q(".banner.needs")?.textContent).toContain("has unfinished work there");
     expect(byText(".banner button", "Work in its own workspace")).toBeDefined();
   });
 

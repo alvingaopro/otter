@@ -3671,6 +3671,9 @@ Follows D-118, with what dogfooding it left open.
   just goes on. This isn't tmux's `refresh-client -A pane:off`: once every
   client turns a pane off, tmux stops reading it and the program blocks.
   Tested: the program runs on while the client gets nothing.
+  *Amended 2026-10-21 (D-160):* the output is kept for the terminal, up to
+  1 MiB, and sent when it's back; a snapshot past that, or when it comes
+  back at another size.
 - **SSH is compressed.** Snapshots are escape-heavy text. Real Claude Code
   ones went from 203 KiB to 29 KiB with zlib, which is what SSH uses.
   Otter's ssh passes `Compression=yes` after the host's `ssh_args`, so an
@@ -5155,6 +5158,8 @@ this between workspaces; this is the same between sessions.
   *Amended 2026-10-21 (D-153):* "just shown" holds only for a session that
   printed nothing while hidden. One that did gets a full snapshot when
   shown (D-119), as an attach would, and loses earlier lines it had loaded.
+  *Amended again (D-160):* now it gets what it missed, up to 1 MiB, at the
+  same size; a snapshot past that or at another size.
 - **Hidden means idle,** as in D-100: a hidden terminal never fits, tells
   the host it isn't on screen and gets nothing until it is (D-119, D-137),
   and takes no keys.
@@ -5202,6 +5207,7 @@ DOM renderer from then on.
   - Catching up a session that printed a little while hidden without a
     snapshot (the daemon keeping that output, to a budget, instead of
     dropping it). That is D-119's off-screen rule and the next step.
+    *Done in D-160.*
   - Each attach is a session on one SSH connection per host, and sshd allows
     ten by default (`MaxSessions`). Not measured past that.
   - Checked in tests only: the renderer switch isn't exercised there (the
@@ -5261,6 +5267,67 @@ host and took a row from the terminal. The workspace pane no longer shows it.
 A host too old for a command still says so where the command is used
 (`explain`).
 
+## D-156 — A task holds its workspace until it's done (2026-10-21)
+
+D-079 gave a workspace one managed run at a time, so delivery wouldn't push
+one branch with two tasks' work. But the claim lasted only as long as a
+run. A task in review keeps its verified work uncommitted until the
+developer allows publishing (D-068), with no run at all. The live task
+bench (B03) started a second task in that workspace, then allowed the
+first to publish: `git add -A` committed the second's half-made edits under
+the first's title and into its pull request. The same gap let a waiting
+task slip in between two of a task's runs (its planning turn and its
+first step).
+
+- **In a Git repository, another task's work there, not done, holds the
+  workspace:** a task that has run in it and isn't done or cancelled — at work, in review,
+  paused, blocked or failed. A task wanting it waits as D-079 says, costs
+  no attempt, and goes on by itself when the other is accepted or
+  cancelled, or moves to a workspace of its own (D-080, the app's button),
+  since it hasn't worked yet. While the other is at work the wait reads as
+  D-079's ("… is working there") and ends by itself; while it's at rest
+  only the developer can end it, so it says so ("… has unfinished work
+  there: finish or cancel it, or give this task a workspace of its own")
+  and needs them ("Waiting on you").
+- **Pausing doesn't hand a Git workspace over:** paused, a task's work is
+  still in the tree. Cancelling does. A cancelled task's files stay
+  (D-068), and the next task's delivery then takes them as the
+  workspace's.
+- **Only where delivery commits:** a workspace in a Git repository (at
+  its root or below it, as delivery finds it). An empty or plain directory
+  has no commit to mix work into, so it keeps D-079's one run at a time.
+- **Triggers on a Git workspace** now wait behind the last occurrence's
+  task until it's accepted (and later occurrences are skipped as still at
+  work), where before each pushed into the same branch and pull request.
+  The wait says it needs the developer.
+- **No deadlock:** the hold applies only to a task that hasn't run in the
+  workspace yet. Two that both have (from before this, or another way
+  in) fall back to D-079's one run at a time.
+- **Not done** (from the review, 2026-10-21):
+  - The hold is about when tasks start, not what is committed: publishing
+    still commits whatever is in the tree. A task accepted or cancelled
+    without publishing leaves its edits there, and the next task's
+    delivery takes them under its own title. A check before committing that
+    the tree is the one verified would catch more, but not this case (the
+    next task verified with those edits in the tree).
+  - A trigger on a Git workspace makes one task and then waits behind it
+    until it's accepted; the trigger's wait limit doesn't apply to that
+    wait, so an unattended trigger needs the developer each time.
+  - Done isn't final (the goal can change after it, D-050): a task
+    re-planned after another started in the workspace has runs, so both
+    fall back to D-079.
+  - A task that has run counts wherever its runs were; a task moved to
+    this workspace after running elsewhere isn't held.
+- **Not done:** a task accepted but whose pull request isn't merged yet
+  leaves its branch with that PR open; a next task in the same workspace
+  pushes to that branch and finds that PR. Waiting for the merge would
+  need GitHub's word on every step; it's the developer's call when to
+  start the next.
+- **Verified:** e2e `a_task_waiting_to_publish_keeps_its_workspace` (B03's
+  shape: the first asked to publish, the second waits through the publish
+  and starts once the first is accepted) fails against the code before;
+  D-079's and D-083's tests on plain directories pass unchanged.
+
 ## D-157 — A command to decide on is there whole (2026-10-21)
 
 B06 in the task bench: the coding agent ran a long `python3 - <<'E' … E`
@@ -5317,3 +5384,42 @@ reason. The Control Agent never decides what only the developer may
 (D-066), and policy reads the whole line either way. A tool's output is
 still cut at 2,000 characters before it is redacted: by otterd for
 `claude -p`, by the worker for the SDK (which has no `redact`).
+
+## D-160 — A terminal back on screen gets what it missed, not a snapshot (2026-10-21)
+
+D-119 dropped a stream's output while its terminal was off screen and sent
+a snapshot when it came back. With D-152 keeping a workspace's sessions'
+terminals, that is most switches: a session that printed anything while
+hidden came back as a snapshot (5,000 lines, up to 1 MiB, about 150 KiB
+over compressed SSH), and the snapshot's reset cleared the terminal's
+history, earlier lines asked for (D-119) and where the reader was.
+
+- **Kept, then sent.** Off screen, the daemon keeps the pane's output for
+  the terminal; back on screen at the same size it sends it, as it would
+  have gone. Nothing is reset; its history stays as it was.
+- **At another size, a snapshot.** A hidden terminal doesn't fit, but it
+  fits itself to its place as soon as it's shown, before it says it's back
+  (the window, a panel or the font changed meanwhile). Output kept at the
+  old width would wrap wrong in it and stay in its history, so then it gets
+  a snapshot at the new size, as before.
+- **Up to 1 MiB** (`HELD_BYTES`, a snapshot's own cap): past that a snapshot
+  is the cheaper way back, and the terminal gets one, as before. Measured
+  with Claude Code launched as Otter launches it (D-144), at 200×50: about
+  1.1 KiB a second while it works, nothing while it waits. So about a
+  quarter of an hour of work is kept, longer than D-152 keeps a hidden
+  session by default (ten minutes). About 1 MiB a hidden terminal in
+  otterd (its buffer may briefly be twice that while it grows).
+- **Given up, for a snapshot,** when the window's size changes while the
+  terminal is hidden (another client sized it: what was kept was laid out
+  at the size before, and the client would hear of the new size first),
+  when it fell behind, and when a snapshot is asked for meanwhile (it has
+  it all, so nothing is sent twice).
+- Same path as live output: the user's own terminal's queries are kept out
+  of it (D-120), and the client falling behind still gets a fresh snapshot.
+- **Verified:** unit tests for kept and sent, too much, back at another
+  size, the window sized by another client, and a snapshot asked for or
+  come meanwhile; the end-to-end test against real tmux now expects the
+  missed output without a reset, and a snapshot after 3 MB printed while
+  away. The kept-output tests fail with output dropped as before.
+- Not done: an older host still sends a snapshot; the app doesn't need to
+  know which it got.
