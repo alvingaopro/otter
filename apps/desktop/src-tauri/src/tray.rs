@@ -101,6 +101,26 @@ pub fn show(app: &AppHandle) {
     }
 }
 
+/// Bring the main window forward once it exists, and again a moment later:
+/// an app started by another process isn't active yet at the first try, and
+/// a window raised before the app has finished starting is left behind
+/// (D-172).
+pub fn show_when_ready(app: &AppHandle) {
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        for _ in 0..50 {
+            if app.get_webview_window("main").is_some() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+        for wait in [300, 1200] {
+            tokio::time::sleep(std::time::Duration::from_millis(wait)).await;
+            show(&app);
+        }
+    });
+}
+
 /// The UI reports what needs you; the menu bar shows the count and the list.
 #[tauri::command]
 pub fn tray_update(app: AppHandle, waiting: Vec<Waiting>) -> Result<(), String> {

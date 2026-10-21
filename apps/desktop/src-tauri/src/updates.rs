@@ -126,7 +126,32 @@ pub async fn update_install(app: AppHandle) -> Result<(), String> {
         let _ = app.emit("update-failed", &message);
         return Err(message);
     }
+    // The new copy is started by this one, which macOS doesn't make the front
+    // app: it says so to itself, to come forward (D-172).
+    if let Some(marker) = marker(&app)
+        && let Some(dir) = marker.parent()
+    {
+        let _ = std::fs::create_dir_all(dir);
+        let _ = std::fs::write(marker, b"");
+    }
     app.restart()
+}
+
+const AFTER_UPDATE: &str = "after-update";
+
+fn marker(app: &AppHandle) -> Option<std::path::PathBuf> {
+    Some(app.path().app_local_data_dir().ok()?.join(AFTER_UPDATE))
+}
+
+/// Started by an update's restart (D-172): bring the window to the front, as
+/// the menu bar's Open does. Called once, when the app starts.
+pub fn after_update(app: &AppHandle) {
+    let Some(marker) = marker(app) else {
+        return;
+    };
+    if std::fs::remove_file(&marker).is_ok() {
+        crate::tray::show_when_ready(app);
+    }
 }
 
 /// The app menu's "Check for Updates…": says what it found, and offers to

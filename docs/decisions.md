@@ -6167,3 +6167,24 @@ conversation did not.
 the coding agent is. Pictures on a task's first request (`task.create`) and
 on Otter's host conversation. The stop-redirect action (`redirect {text}`)
 takes no pictures.
+
+## D-172 — The app comes to the front after it updates itself (2026-10-21)
+
+After "Update", the app was replaced and started again, but its window didn't
+come forward: Otter was running (its menu bar item showed) with no window in
+sight, until Open was chosen there. The new copy is started by the old one
+(`restart`), a background process that macOS doesn't make the front app; the
+window opened behind, or not at all.
+
+- Before it restarts, the app leaves a marker in its local data folder. A
+  copy that finds it at start removes it and brings the window forward as the
+  menu bar's Open does (`show`: show, unminimize, focus — which activates the
+  app), once the window exists and a moment later, since a raise before the
+  app has finished starting is lost. An app started any other way is left as
+  it was: closed to the menu bar stays closed.
+- A marker, not an environment variable or an argument: a restart runs the
+  same command, and setting the environment of a running process isn't safe.
+
+Not tested: it is the macOS app being started by another process, and the
+tests don't start one. The Tauri crate isn't built on Linux either; CI's
+macOS job compiles it.
