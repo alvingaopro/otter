@@ -129,7 +129,9 @@ record it in [`decisions.md`](decisions.md) first.
 
 - Durable state is `state.json` + `events.jsonl`, owned by the daemon. Clients
   hold no runtime state; reconciliation corrects the record from what is
-  actually running.
+  actually running. It asks the backend without the store's lock, so what
+  it applies goes only to executions still as they were asked about (D-159)
+  — `what_changes_while_the_backend_is_asked_is_left_as_it_is`.
 
 ### 12. The UI is disposable and reconnectable.
 

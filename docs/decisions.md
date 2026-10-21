@@ -5260,3 +5260,69 @@ on the host's page), once per host, so it repeated on every workspace of that
 host and took a row from the terminal. The workspace pane no longer shows it.
 A host too old for a command still says so where the command is used
 (`explain`).
+
+## D-159 — Reconciling asks the backend without holding the store (2026-10-21)
+
+Twice a second, reconciliation took the store's lock and, holding it, asked
+the backend what runs (`tmux list-panes`), captured each agent screen it
+watches (D-035), one `tmux capture-pane` each, and the last lines of what had
+just ended (D-076). Every request that needs the store (a listing, an
+attach, a task's step) waited for all of it, and a tmux command costs about
+5 ms from otterd, whatever it does.
+
+- **Look, ask, apply.** What runs is read under the lock: the running
+  executions, by id, and which agents among them are watched. The lock is
+  let go, the backend asked, and the lock taken again to apply what it said,
+  with no wait on anything while it's held.
+- **Only to what is still as it was.** An execution is decided on only if it
+  was asked about and is still the current one, running, with the same
+  backend ref. One started meanwhile (a restart, a new session) isn't in the
+  backend's answer, and would have been taken as lost. One stopped or
+  deleted meanwhile isn't running any more, and its screen, seen before it
+  went, isn't kept. Backend refs are execution ids, never reused, so an old
+  answer can't land on a new process. `daemon.rs` said the lock kept the
+  reconciler from seeing an execution in the store and not yet the backend;
+  that is now this rule.
+- **D-137 holds.** Who is on screen is still read after the lock is taken
+  again, in the hold that raises attention, so a terminal that comes on
+  screen after it still settles what the pass raised.
+- **`settle`'s timing is unchanged.** Each watched screen is still looked at
+  once a pass, stamped with the pass's time, taken after the backend said
+  what runs. One started while the backend was asked is looked at first by
+  the next pass, 500 ms later, against an 8 s quiet threshold.
+- **One tmux for all the captures of a pass** (`capture_each`, in
+  `backend/`; another backend captures one by one). Each capture is followed
+  in the same command by a line made of a number new to that call, which is
+  where its output ends; `display-message -p` prints it. tmux stops at a
+  command that fails, so the batch is taken only if it exits cleanly with
+  every end line and nothing after; otherwise each is captured on its own,
+  and one gone costs the others nothing. Only screens the backend just
+  listed are asked for, so that is a pane gone in between, not routine. At
+  most 32 a command, well within what tmux takes.
+- **Measured** with the end-to-end tests' fake Codex held at an approval
+  prompt (watched as `blocked`) plus a shell, 40 passes a case, before and
+  after back to back, on the 16-core dev VM with a load average of 4 to 12
+  from other work. Lock held per pass, average (median):
+
+  | agents watched | before | after | tmux commands a pass |
+  |---|---|---|---|
+  | 0 | 4.8–5.5 ms (4.8–5.1) | 0.06 ms (0.06) | 1 → 1 |
+  | 1 | 9.0–10.7 ms (9.0–9.3) | 0.28 ms (0.27) | 2 → 2 |
+  | 5 | 30–54 ms (26–55) | 0.60–0.67 ms (0.60–0.64) | 6 → 2 |
+
+  What's left under the lock is observing agents (reading their
+  transcripts) and saving. A client listing workspaces as fast as it could
+  waited 1.9–2.2 ms on average with five agents, 1.2–1.4 ms after; its worst
+  wait went from 32–65 ms to 2–7 ms. A whole pass, now mostly without the
+  lock, takes about 10 ms with five agents (30–54 ms before) and 5 ms with
+  none, as before.
+- **CPU:** otterd with its tmux clients, in the test's environment (whose
+  controller ticks every 200 ms): 2.7% with no agents, before and after;
+  with five, 8.5–10.1% before, 3.7–4.3% after. With no agents nothing
+  changes: the one `list-panes` a pass stays (about 3 ms of CPU, timed
+  from a shell).
+
+Not done: telling otterd when a pane changes instead of asking twice a
+second (D-007's revisit: tmux hooks or one control-mode client), which is
+what an idle host would need; and reading agents' transcripts outside the
+lock.

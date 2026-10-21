@@ -255,6 +255,86 @@ impl TmuxBackend {
         *awaiting = still_awaiting;
         Ok(map)
     }
+
+    /// Several captures in one tmux command, each followed by a line of its
+    /// own that no pane can know to print (a number new to this call), which
+    /// is where its output ends. `None` unless every one came back: tmux
+    /// stops at a command that fails.
+    async fn capture_batch(&self, targets: &[(&str, Option<u32>)]) -> Option<Vec<String>> {
+        let nonce: u64 = rand::random();
+        let ends: Vec<String> = (0..targets.len())
+            .map(|i| format!("otter-{nonce:016x}-{i}"))
+            .collect();
+        let panes: Vec<(String, String)> = targets
+            .iter()
+            .map(|(r, lines)| (target_pane(r), capture_start(*lines)))
+            .collect();
+        let mut args = Vec::new();
+        for ((pane, start), end) in panes.iter().zip(&ends) {
+            if !args.is_empty() {
+                args.push(";");
+            }
+            args.extend(["capture-pane", "-p", "-J", "-t", pane.as_str()]);
+            args.extend([
+                "-S",
+                start.as_str(),
+                ";",
+                "display-message",
+                "-p",
+                end.as_str(),
+            ]);
+        }
+        let out = self.run(&args).await.ok()?;
+        let mut texts = Vec::with_capacity(targets.len());
+        let mut text = String::new();
+        for line in out.split_inclusive('\n') {
+            if ends
+                .get(texts.len())
+                .is_some_and(|end| line.strip_suffix('\n') == Some(end))
+            {
+                texts.push(captured(&std::mem::take(&mut text)));
+            } else {
+                text.push_str(line);
+            }
+        }
+        (texts.len() == targets.len() && text.is_empty()).then_some(texts)
+    }
+}
+
+/// Captures asked of one tmux at most (`capture_each`): well within the
+/// size of a command tmux takes.
+const CAPTURE_BATCH: usize = 32;
+
+/// `capture-pane -S` for `lines` lines of scrollback (`None` = all).
+fn capture_start(lines: Option<u32>) -> String {
+    match lines {
+        Some(n) => format!("-{n}"),
+        None => "-".to_owned(),
+    }
+}
+
+/// A capture as `capture-pane -p` printed it, trimmed.
+fn captured(out: &str) -> String {
+    let mut trimmed: Vec<&str> = out.lines().map(str::trim_end).collect();
+    // Drop the exited-process marker tmux draws under the output.
+    while trimmed.last().is_some_and(|l| l.is_empty()) {
+        trimmed.pop();
+    }
+    if trimmed
+        .last()
+        .is_some_and(|l| l.starts_with(EXIT_MARKER) || l.starts_with(OLD_EXIT_MARKER))
+    {
+        trimmed.pop();
+    }
+    let end = trimmed
+        .iter()
+        .rposition(|l| !l.is_empty())
+        .map_or(0, |i| i + 1);
+    let mut text = trimmed[..end].join("\n");
+    if !text.is_empty() {
+        text.push('\n');
+    }
+    text
 }
 
 #[async_trait]
@@ -294,10 +374,7 @@ impl ExecutionBackend for TmuxBackend {
     }
 
     async fn capture(&self, backend_ref: &str, lines: Option<u32>) -> Result<String> {
-        let start = match lines {
-            Some(n) => format!("-{n}"),
-            None => "-".to_owned(),
-        };
+        let start = capture_start(lines);
         let out = self
             .run(&[
                 "capture-pane",
@@ -309,26 +386,25 @@ impl ExecutionBackend for TmuxBackend {
                 &start,
             ])
             .await?;
-        let mut trimmed: Vec<&str> = out.lines().map(str::trim_end).collect();
-        // Drop the exited-process marker tmux draws under the output.
-        while trimmed.last().is_some_and(|l| l.is_empty()) {
-            trimmed.pop();
+        Ok(captured(&out))
+    }
+
+    async fn capture_each(&self, targets: &[(&str, Option<u32>)]) -> Vec<Result<String>> {
+        let mut out = Vec::with_capacity(targets.len());
+        for chunk in targets.chunks(CAPTURE_BATCH) {
+            if chunk.len() > 1
+                && let Some(texts) = self.capture_batch(chunk).await
+            {
+                out.extend(texts.into_iter().map(Ok));
+                continue;
+            }
+            // A pane gone since it was asked for stops tmux there: each on
+            // its own, so the others still come back.
+            for (r, lines) in chunk {
+                out.push(self.capture(r, *lines).await);
+            }
         }
-        if trimmed
-            .last()
-            .is_some_and(|l| l.starts_with(EXIT_MARKER) || l.starts_with(OLD_EXIT_MARKER))
-        {
-            trimmed.pop();
-        }
-        let end = trimmed
-            .iter()
-            .rposition(|l| !l.is_empty())
-            .map_or(0, |i| i + 1);
-        let mut text = trimmed[..end].join("\n");
-        if !text.is_empty() {
-            text.push('\n');
-        }
-        Ok(text)
+        out
     }
 
     async fn send_text(&self, backend_ref: &str, text: &str, enter: bool) -> Result<()> {
@@ -515,6 +591,89 @@ mod tests {
                 assert!(config.contains(&line), "{line}");
             }
         }
+    }
+
+    #[tokio::test]
+    async fn captures_asked_together_come_back_each_as_its_own() {
+        // Short path: Unix socket paths are length-limited.
+        let dir = tempfile::Builder::new().prefix("wd").tempdir().unwrap();
+        let paths = Paths::new(dir.path().to_path_buf());
+        paths.ensure_dirs().unwrap();
+        let mut env: EnvMap = std::env::vars().filter(|(k, _)| k != "TMUX").collect();
+        // The panes' commands run with no one's startup files.
+        env.insert("SHELL".into(), "/bin/sh".into());
+        let backend = TmuxBackend::new(&paths, &env).await.unwrap();
+        struct Server<'a>(&'a TmuxBackend);
+        impl Drop for Server<'_> {
+            fn drop(&mut self) {
+                let _ = std::process::Command::new(&self.0.tmux)
+                    .arg("-S")
+                    .arg(&self.0.socket)
+                    .arg("kill-server")
+                    .status();
+            }
+        }
+        let _server = Server(&backend);
+        for (name, script) in [
+            ("a", "printf 'one\\n'; exec sleep 60"),
+            // Ended: its exit marker is dropped as from a capture of its own.
+            ("b", "printf 'two\\n\\nthree\\n'; exit 3"),
+            // A line like the ones that end each capture, but not this call's.
+            (
+                "c",
+                "printf 'otter-0000000000000000-0\\nfour\\n'; exec sleep 60",
+            ),
+        ] {
+            backend
+                .run(&["new-session", "-d", "-s", name, script])
+                .await
+                .unwrap();
+        }
+        let deadline = Instant::now() + Duration::from_secs(10);
+        for (name, last) in [("a", "one"), ("b", "three"), ("c", "four")] {
+            while !backend
+                .capture(name, None)
+                .await
+                .is_ok_and(|t| t.ends_with(&format!("{last}\n")))
+            {
+                assert!(Instant::now() < deadline, "{name} never printed");
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        }
+
+        let targets = [
+            ("a", Some(0)),
+            ("missing", Some(0)),
+            ("b", Some(40)),
+            ("c", None),
+        ];
+        let each = backend.capture_each(&targets).await;
+        assert_eq!(each.len(), targets.len());
+        for ((r, lines), got) in targets.iter().zip(&each) {
+            match backend.capture(r, *lines).await {
+                Ok(text) => assert_eq!(got.as_ref().unwrap(), &text, "{r}"),
+                Err(_) => assert!(got.is_err(), "{r}: {got:?}"),
+            }
+        }
+        assert!(each[1].is_err());
+        assert_eq!(each[2].as_ref().unwrap(), "two\n\nthree\n");
+        assert_eq!(
+            each[3].as_ref().unwrap(),
+            "otter-0000000000000000-0\nfour\n"
+        );
+        // Without the missing one, one tmux takes them all.
+        let all = [("a", Some(0)), ("b", Some(40)), ("c", None)];
+        let batch = backend.capture_batch(&all).await.expect("all came back");
+        assert_eq!(
+            batch,
+            [
+                "one\n",
+                "two\n\nthree\n",
+                "otter-0000000000000000-0\nfour\n"
+            ]
+        );
+        // With it, tmux stops there, and nothing is taken from a half answer.
+        assert!(backend.capture_batch(&targets).await.is_none());
     }
 
     #[test]

@@ -7,9 +7,11 @@
 //! All durable state lives in one [`Store`] behind an async mutex. Operations
 //! that touch the execution backend hold the lock while they do so; backend
 //! calls are short (spawning a tmux command), and holding the lock keeps the
-//! store and the backend consistent with each other — in particular, the
-//! reconciler never observes an execution that exists in one but not yet the
-//! other. Slow work (git, direnv) never runs under the lock.
+//! store and the backend consistent with each other. The reconciler, which
+//! only looks, twice a second, asks the backend without the lock about the
+//! executions it read under it, and applies the answer only to those still
+//! running as they were (D-159). Slow work (git, direnv) never runs under
+//! the lock.
 
 use std::collections::HashMap;
 use std::sync::Arc;
