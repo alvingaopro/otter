@@ -192,7 +192,7 @@ export function WorkspacePane({
   }
   /** The session the keyboard goes to (⌘F finds in it). */
   const keyed = beside && right ? beside : current;
-  // The terminals of sessions shown before stay attached, hidden (D-154).
+  // The terminals of sessions shown before stay attached, hidden (D-152).
   const keptIds = useKeptSessions(
     current ? [current.id, ...(beside ? [beside.id] : [])] : [],
     ws.sessions.map((s) => s.id),
