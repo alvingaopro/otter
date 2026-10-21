@@ -37,7 +37,7 @@ D-066).
 | draft → planning | developer | Start. |
 | planning → blocked | engine | No workspace; or no request and no message (asks "What should this task do?", D-067); or the agent's plan, sent back once, still has problems (asks "Go ahead with the coding agent's plan?", D-084). |
 | planning → implementing | engine | The plan is set — the agent's proposal, reviewed by the brain (D-064, D-084). |
-| planning → done | engine | The look at the code came back with no plan: the request was a question, and the agent's words are the answer (D-084). Answer-only, with a plan the developer turned down: the agent's next turn answers in words; if it plans again, Otter says there is no answer without the change, and doesn't ask twice (D-158). |
+| planning → done | engine | The look at the code came back with no plan: the request was a question, and the agent's words are the answer (D-084). Answer-only, with a plan the developer turned down: the agent's next turn answers in words; if it plans again, the developer isn't asked twice: Otter shows what it said and the plan, not carried out, or says there is no answer without the change (D-158). |
 | planning → failed | engine | The look at the code failed or said nothing: no plan is guessed (D-084). |
 | implementing → verifying | engine | Every step done or skipped. |
 | verifying → implementing | engine | Something unmet, and the work changed since the last verdict: a fix step (D-062). |

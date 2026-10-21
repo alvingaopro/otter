@@ -21,8 +21,9 @@
 # file, then answers in prose (NOPLAN) or proposes a two-step plan as JSON,
 # saying what Otter's policy said to the write. Told its plan was turned
 # down on an answer-only task ("turned down changing the code", D-158), it
-# tries the write again, then answers in prose — or, in mode replans,
-# proposes the plan again.
+# tries the write again, then answers in prose — or proposes the plan again
+# (mode replans; replans-bare: the plan alone), or never finishes
+# (answerhangs: carried on after that, it plans).
 mode="${FAKE_WORKER_MODE:-ok}"
 out() { printf '%s\n' "$1"; }
 profiles='"profiles":["coding","otter"],'
@@ -47,6 +48,7 @@ question=
 q1=
 planning=
 noplan=
+bare=
 while IFS= read -r line; do
   [ -n "$FAKE_WORKER_LOG" ] && printf '%s\n' "$line" >> "$FAKE_WORKER_LOG"
   if [ -n "$planning" ]; then
@@ -56,10 +58,13 @@ while IFS= read -r line; do
         if [ -n "$noplan" ]; then
           out '{"type":"turn_finished","turn_id":"'"$turn"'","outcome":"completed","summary":"The export lives in export.sh:3. (Write: '"$d"'.)","error":null,"session_cost_usd":0.01}'
         else
-          out '{"type":"turn_finished","turn_id":"'"$turn"'","outcome":"completed","summary":"(Write: '"$d"'.)\n```json\n{\"summary\": \"Add an exporter, then cover it\", \"steps\": [{\"title\": \"Write the exporter\", \"detail\": \"in export.sh\"}, {\"title\": \"Cover it with a test\", \"detail\": \"in the Makefile\"}], \"criteria\": [{\"text\": \"Rows export as CSV with a header\", \"how\": \"diff\"}, {\"text\": \"make test passes\", \"how\": \"check\"}], \"check\": \"make test\"}\n```","error":null,"session_cost_usd":0.01}'
+          said='(Write: '"$d"'.)\n'
+          [ -n "$bare" ] && said=
+          out '{"type":"turn_finished","turn_id":"'"$turn"'","outcome":"completed","summary":"'"$said"'```json\n{\"summary\": \"Add an exporter, then cover it\", \"steps\": [{\"title\": \"Write the exporter\", \"detail\": \"in export.sh\"}, {\"title\": \"Cover it with a test\", \"detail\": \"in the Makefile\"}], \"criteria\": [{\"text\": \"Rows export as CSV with a header\", \"how\": \"diff\"}, {\"text\": \"make test passes\", \"how\": \"check\"}], \"check\": \"make test\"}\n```","error":null,"session_cost_usd":0.01}'
         fi
         planning=
         noplan=
+        bare=
         continue
         ;;
     esac
@@ -120,10 +125,22 @@ while IFS= read -r line; do
           continue
           ;;
         *'turned down changing the code'*)
+          [ "$mode" = answerhangs ] && continue
           planning=1
-          [ "$mode" = replans ] || noplan=1
+          case "$mode" in
+            replans) ;;
+            replans-bare) bare=1 ;;
+            *) noplan=1 ;;
+          esac
           out '{"type":"policy_check","check_id":"chk-p1","tool":"Write","input":{"file_path":"export.sh","content":"x"},"tool_use_id":"tu_p1"}'
           continue
+          ;;
+        *'Continue the step where you left off'*)
+          if [ "$mode" = answerhangs ]; then
+            planning=1
+            out '{"type":"policy_check","check_id":"chk-p1","tool":"Write","input":{"file_path":"export.sh","content":"x"},"tool_use_id":"tu_p1"}'
+            continue
+          fi
           ;;
         *'a question.'*)
           question=1

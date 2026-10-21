@@ -5282,17 +5282,30 @@ had read the Makefile and the tests to plan.
   Its reply is the answer (`planning → done`, "Answered"), as a look at the
   code that found a question is.
 - **Not asked twice.** If that turn plans the change again, the developer
-  isn't asked again: Otter says plainly that the agent couldn't answer
-  without changing the code, which they turned down, and what it would do,
-  not carried out; the task is done, "Not answered: it needs the change you
-  turned down". The mark is the guard, kept in the task document, so a
-  restart doesn't ask again either. A turn that fails or says nothing fails
-  the look as before, and Retry asks for the answer again.
-- **A new ask clears it.** Planning again (D-050, "then change it") looks
-  at the code afresh: a plan then is asked about as any is.
+  isn't asked again. What it said besides the plan (the JSON and its fence
+  left out) is shown, then what it would do, not carried out; with nothing
+  besides, Otter says plainly that the agent couldn't answer without
+  changing the code, which they turned down. The task is done, "Not
+  carried out: the coding agent planned the change you turned down". The
+  mark is the guard, kept in the task document, so a restart doesn't ask
+  again either. A turn that fails or says nothing fails the look as
+  before, and Retry asks for the answer again.
+- **A decline that no longer stands is forgotten** (`forget_decline`),
+  whatever the planning step is doing — even mid-turn:
+  - a new ask (D-050, "then change it", `replan`): a turn under way is
+    cut off and carried on with it, and a plan from it is asked about as
+    any is;
+  - changes allowed (`set_answer_only` off): what comes back is read as
+    any look's — a plan goes to the brain's review — and a look still to
+    start is an ordinary one.
+  The mark is never taken for a plan sent back, so the review's points
+  still go back to the agent once before the developer is asked (D-084).
 - The question itself now says so: turned down, the agent "answers from
   what it found, changing nothing".
-- Known limit: a goal changed while that turn runs carries on in it (as a
-  plan sent back does), so a plan from it isn't asked about either. Tested
-  with the fake worker only (both ways: an answer in words, and a plan
-  again); not yet with live Claude.
+- Known limit: a **redirect** during that turn (D-059) doesn't change the
+  goal, so the mark stays, and a plan in the reply ends the task as above
+  rather than being asked about — unlike a plan sent back, which still
+  reaches the developer's plan question. Saying so again, as a new ask,
+  plans again. Tested with the fake worker only (an answer in words; a
+  plan again, bare and with words; a new goal and changes allowed while
+  that turn runs); not yet with live Claude.
