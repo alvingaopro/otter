@@ -311,6 +311,8 @@ impl Event {
             Event::SessionCreated { session_id, .. }
             | Event::SessionStopped { session_id, .. }
             | Event::SessionDeleted { session_id, .. }
+            | Event::SessionRenamed { session_id, .. }
+            | Event::SessionMoved { session_id, .. }
             | Event::ExecutionStarted { session_id, .. }
             | Event::ExecutionExited { session_id, .. }
             | Event::ExecutionLost { session_id, .. }

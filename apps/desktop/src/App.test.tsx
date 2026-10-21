@@ -317,6 +317,13 @@ describe("Activity Bar navigation", () => {
       // Shown so until the host's order comes back.
       expect(names()).toEqual(["logs", "shell"]);
       expect(pane().querySelector(".tab")?.getAttribute("title")).toContain("⌥1");
+      // The keys go by the tabs' order, the dropped one too.
+      const option = (code: string) =>
+        window.dispatchEvent(new KeyboardEvent("keydown", { code, key: "¡", altKey: true, bubbles: true, cancelable: true }));
+      await act(async () => void option("Digit1"));
+      expect(selected()).toContain("logs");
+      await act(async () => void option("Digit2"));
+      expect(selected()).toContain("shell");
 
       // A press that doesn't go anywhere is a click.
       await flush();

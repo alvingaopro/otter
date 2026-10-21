@@ -146,6 +146,21 @@ export function WorkspacePane({
 
   useEffect(() => setError(null), [placed.key, current?.id]);
 
+  // Reordering tabs with the pointer (D-150), as the sidebar's pins do. The
+  // order is the host's: one dropped shows until the host's changes (to it,
+  // as a rule) or the move fails.
+  const [drag, setDrag] = useState<{ id: string; to: number } | null>(null);
+  const [pending, setPending] = useState<{ order: string[]; base: string } | null>(null);
+  const dragged = useRef(false);
+  const tabEls = useRef(new Map<string, HTMLElement>());
+  const sessionIds = ws.sessions.map((s) => s.id).join(",");
+  useEffect(() => {
+    if (pending && pending.base !== sessionIds) setPending(null);
+  }, [sessionIds]);
+  const order = pending?.base === sessionIds ? pending.order : ws.sessions.map((s) => s.id);
+  const tabs = (drag ? moveTo(order, drag.id, drag.to) : order).flatMap((id) => ws.sessions.find((s) => s.id === id) ?? []);
+  const place = current ? order.indexOf(current.id) : -1;
+
   // Split (D-110): a second session on the right, its own terminal; the one
   // clicked last has the keyboard. Not remembered: a session gone since
   // would be worse than no split.
@@ -166,9 +181,7 @@ export function WorkspacePane({
       setRight(false);
       return;
     }
-    const ids = ws.sessions.map((s) => s.id);
-    const at = current ? ids.indexOf(current.id) : -1;
-    const next = ids.length > 1 ? ids[(at + 1) % ids.length] : undefined;
+    const next = order.length > 1 ? order[(place + 1) % order.length] : undefined;
     if (next && next !== current?.id) setSplit(next);
   }
   /** A tab: shown on the left; the one on the right trades places. */
@@ -206,8 +219,8 @@ export function WorkspacePane({
 
   // Its shortcuts, while it's in front and no dialog is open (D-106):
   // ⌘T a new session, ⌘⇧[ / ⌘⇧] the session before / after, ⌥1…⌥9 the
-  // session in that place (D-122), ⌘F find.
-  const sessionIds = ws.sessions.map((s) => s.id).join(",");
+  // session in that place (D-122), ⌘F find. In the tabs' order, a dropped
+  // one too.
   useEffect(() => {
     if (!active || open !== null) return;
     const onKey = (e: KeyboardEvent) => {
@@ -217,7 +230,7 @@ export function WorkspacePane({
         if (document.querySelector('[aria-modal="true"]')) return;
         e.preventDefault();
         e.stopPropagation();
-        const id = ws.sessions[Number(e.code.slice("Digit".length)) - 1]?.id;
+        const id = order[Number(e.code.slice("Digit".length)) - 1];
         if (id) choose(id);
         return;
       }
@@ -240,30 +253,14 @@ export function WorkspacePane({
       } else if (e.shiftKey && (e.code === "BracketLeft" || e.code === "BracketRight") && current) {
         e.preventDefault();
         e.stopPropagation();
-        const ids = ws.sessions.map((s) => s.id);
-        const at = ids.indexOf(current.id);
-        const next = ids[(at + (e.code === "BracketRight" ? 1 : ids.length - 1)) % ids.length];
+        const next = order[(place + (e.code === "BracketRight" ? 1 : order.length - 1)) % order.length];
         if (next) onSession(next);
       }
     };
     window.addEventListener("keydown", onKey, true);
     return () => window.removeEventListener("keydown", onKey, true);
-  }, [active, open, archived, current?.id, sessionIds, split]);
+  }, [active, open, archived, current?.id, order.join(","), split]);
   useEffect(() => setFinding(false), [current?.id]);
-
-  // Reordering tabs with the pointer (D-150), as the sidebar's pins do. The
-  // order is the host's: one dropped shows until the host's changes (to it,
-  // as a rule) or the move fails.
-  const [drag, setDrag] = useState<{ id: string; to: number } | null>(null);
-  const [pending, setPending] = useState<{ order: string[]; base: string } | null>(null);
-  const dragged = useRef(false);
-  const tabEls = useRef(new Map<string, HTMLElement>());
-  useEffect(() => {
-    if (pending && pending.base !== sessionIds) setPending(null);
-  }, [sessionIds]);
-  const order = pending?.base === sessionIds ? pending.order : ws.sessions.map((s) => s.id);
-  const tabs = (drag ? moveTo(order, drag.id, drag.to) : order).flatMap((id) => ws.sessions.find((s) => s.id === id) ?? []);
-  const place = current ? order.indexOf(current.id) : -1;
 
   /** Put a session at `to` among the tabs. */
   function moveSession(id: string, to: number) {
