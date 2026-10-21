@@ -5206,3 +5206,42 @@ DOM renderer from then on.
     ten by default (`MaxSessions`). Not measured past that.
   - Checked in tests only: the renderer switch isn't exercised there (the
     terminal is mocked), and not yet in WebKit.
+
+## D-154 — A workspace can be pushed by hand; it says what no remote has (2026-10-21)
+
+A review of the workspace view (D-151's second half). A task publishes its
+work through the controller (D-047), after the developer allows it; a
+workspace driven by hand had only a terminal for it, and its ↑ said how far
+ahead of the *base* it was — still the same after a push, on a new branch.
+
+- **`workspace.publish {workspace, pull_request?, title?, body?}`**: pushes
+  the branch to `origin` and, asked to, opens its pull request, with the
+  controller's own calls (`delivery::Git::push`, `GitHub::publish`, Otter's
+  `gh` sign-in first, D-133). The dialog in the app is the allowance. Not
+  taken from the controller: it **commits nothing** (D-102 left committing
+  out, and a hand-driven workspace has no task title for the message): what
+  isn't committed is left out, and said so. And a pull request that exists is
+  **left as it is**, not edited (`publish` rewrites the description of the
+  one it finds; a developer's own words are not the report of a task). A
+  workspace on an existing branch has that branch as its base, so its pull
+  request goes to the repository's default. Otter's tools still cannot
+  publish (gateway test).
+- **`WorkspaceChanges.unpushed`**: `git rev-list --count HEAD --not
+  --remotes`, commits no remote has — what the delete dialog calls "not
+  pushed anywhere". A push brings it to 0, a new branch's included. The app
+  adds "N not pushed" to the Changes header and the pane's line.
+- **Preparing a workspace again fetches** its repository (best effort; offline
+  doesn't fail it), so "behind" is as of the retry, an unarchive or
+  "Prepare again" (now also in a Ready workspace's menu: the environment is
+  read again and sessions not started start). `workspace.changes` itself
+  never fetches: it is read every 30 s.
+- **Archive and delete** try every session and save and announce the ones
+  stopped when another won't; the archive stays as it was, the delete stops
+  there. Archive also refuses a workspace being deleted, as the others do.
+- **App:** a Files panel keeps only the transfers it started (the others'
+  were never cleared from a kept pane); the workspace's dialogs are
+  components of their own, each with its own state; a branch not yet known is
+  shown as "git", not blank.
+
+Not done: `otter push` in the CLI; committing from the app (D-102); a pull
+request's description written from the work.
