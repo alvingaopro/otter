@@ -43,8 +43,6 @@ interface Props {
   onSession: (id: string) => void;
   now: number;
   theme: "light" | "dark";
-  /** This app's version: a host on another otterd version is offered an update. */
-  appVersion?: string;
   /** Pin, unpin, move and rename items for the workspace menu. */
   pinItems: MenuItem[];
   /** The workspace shown in the Workspaces view (D-100): kept panes are mounted but hidden. */
@@ -67,7 +65,6 @@ export function WorkspacePane({
   onSession,
   now,
   theme,
-  appVersion,
   pinItems,
   shown,
   active,
@@ -417,21 +414,6 @@ export function WorkspacePane({
         />
       </div>
 
-      {host.status === "connected" && host.version && appVersion && host.version !== appVersion && (
-        <div className="notice notice-row">
-          <span>
-            {host.name} runs otterd {host.version}; this app is {appVersion}. Fixes in this version may need the
-            host updated (running sessions keep going).
-          </span>
-          <button
-            className="btn primary"
-            disabled={busy}
-            onClick={() => void act("host_install", { name: host.name })}
-          >
-            {busy ? "Updating…" : `Update otterd on ${host.name}`}
-          </button>
-        </div>
-      )}
       {ws.state === "preparing" && <div className="notice">{ws.stateMessage ?? "Preparing workspace…"}</div>}
       {ws.state === "failed" && ws.stateMessage && (
         // Why, not only that it failed (D-076); "Retry preparation" is in the menu.

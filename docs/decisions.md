@@ -5250,3 +5250,13 @@ ahead of the *base* it was — still the same after a push, on a new branch.
 
 Not done: `otter push` in the CLI; committing from the app (D-102); a pull
 request's description written from the work.
+
+## D-155 — The update offer is in the sidebar, not in each workspace (2026-10-21)
+
+A workspace's pane showed "<host> runs otterd X; this app is Y" with an
+**Update otterd** button above its tabs whenever the host's otterd differed
+from the app's. The same offer is already at the bottom of the sidebar (and
+on the host's page), once per host, so it repeated on every workspace of that
+host and took a row from the terminal. The workspace pane no longer shows it.
+A host too old for a command still says so where the command is used
+(`explain`).
