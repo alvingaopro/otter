@@ -1216,6 +1216,9 @@ function DeliveryInfo({ f }: { f: Task }) {
           </a>{" "}
           <span className="muted">· {d.branch}</span>
         </p>
+      ) : d.pushed_at ? (
+        // Pushed, and GitHub had every commit already (D-166).
+        <p className="small muted">Pushed {d.branch}; nothing to publish, so no pull request.</p>
       ) : (
         <p className="small muted">Waiting to publish {d.branch}.</p>
       )}

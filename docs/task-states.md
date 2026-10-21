@@ -70,10 +70,10 @@ journal is the agent's. A restarted otterd reads them and goes on.
 | Each turn | a `Run`: state, `provider_session_id`, `worked_ms`, summary; the turn in the journal | A cut-off turn continues the same session with a notice (D-063); a finished one isn't repeated (recovered from the journal). |
 | Check | `Test` evidence: command, exit, output tail | Re-run on the next verification (cheap, local). |
 | Work state | `Working tree` evidence (the change since `started_from` while HEAD descends from it, else since the merge base with the base branch, D-167), `last_verification` (fingerprint + unmet), `judged_runs` (the runs at the last verdict) | The loop stop compares against the mark; the judge sees the commands of the runs after the count (D-165). |
-| Nothing to publish | `Nothing to publish (<HEAD>)` in the rationale; the PR and CI gates `not_applicable` (D-166) | Nothing to commit and HEAD where the task started (or no further than the base branch): not asked, not pushed; said once per HEAD. |
+| Nothing to publish | `Nothing to publish (<HEAD>)` in the rationale; the PR and CI gates `not_applicable` (D-166) | Git says nothing to commit, and HEAD is where the task started (or no further than `origin`'s base branch): not asked, not pushed; said once per HEAD. |
 | Commit | `Committed <sha>` evidence | A clean tree: nothing to commit again. |
-| Push | `delivery.branch`, `head`, `pushed_at` | Pushes only if HEAD moved or work is uncommitted; a push is idempotent; never with nothing of the task's own to publish (D-166). |
-| Pull request | `delivery.pr_number`, `pr_url`, `PullRequest` evidence | An open PR for the branch is adopted (`gh pr view`), never opened twice. The forge's "No commits between" is nothing to publish, not a failure (D-166). |
+| Push | `delivery.branch`, `head`, `pushed_at` | Pushes only if HEAD moved or work is uncommitted; a push is idempotent. Not pushed when nothing of the task's own is known to be unpublished; the forge's refusal of the pull request after a push is nothing to publish, the push kept (D-166). |
+| Pull request | `delivery.pr_number`, `pr_url`, `PullRequest` evidence | An open PR for the branch is adopted (`gh pr view`), never opened twice. |
 | CI | `delivery.ci`, `reruns`, `Ci` evidence (pass per HEAD, failure with its log) | Read again; a failure already acted on isn't acted on twice. |
 | Done | `gates`, `report`, status | — |
 | Every reason | a line in `rationale`, and `Reasoned` in the history at its time (D-141) | — |

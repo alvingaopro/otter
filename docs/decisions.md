@@ -5898,16 +5898,26 @@ that finds everything green would fail every night.
   nothing to commit (`committable`, which leaves secrets' names out as
   committing does) whose HEAD is where the task started (`started_from`,
   D-167) has nothing of the task's own to publish. So does one whose HEAD
-  is no further than the base branch, as last fetched (`rev-list --count
-  origin/<base>..HEAD` is 0): that is all a task from before D-167 can be
-  judged by, and it holds for any task. A previous task's commit below it,
+  is no further than `origin`'s base branch, as last fetched (`rev-list
+  --count origin/<base>..HEAD` is 0): that is all a task from before D-167
+  can be judged by, and it holds for any task. A local `<base>` is no
+  stand-in (in a worktree of a shared repository it can be anywhere):
+  without `origin/<base>` it asks. A previous task's commit below HEAD,
   unmerged (D-156), is not this task's to publish.
+- **Only when Git says so:** "nothing to commit" is what `git status` said
+  (`committable` is a `Result` now). A status that fails (an index held by
+  another, an I/O error) asks to publish, as before; so does a failure to
+  read what a commit would leave out. One transient error must not make a
+  task acceptable with work unpublished.
 - **Then nothing is asked or pushed** and no pull request is opened: the
   pull request and CI gates are not applicable, "nothing to publish"; one
   message says so ("Nothing to publish: this task left the code as it found
   it, so there's no pull request to open."); and the task goes on to its
-  report and waits for acceptance, as finished work does. A publish ask
-  still pending from before is cancelled. A trigger's allowance doesn't push
+  report and waits for acceptance, as finished work does. When the only
+  changes are files a commit leaves out, it says that instead ("Nothing to
+  publish: only files that may hold secrets changed (.env), which aren't
+  committed, …"; the names redacted, at most five). A publish ask still
+  pending from before is cancelled. A trigger's allowance doesn't push
   either: the check comes before the allowance.
 - **Said once:** the rationale keeps `Nothing to publish (<HEAD>)`. Review
   is stepped on every tick and says it only for a HEAD it hasn't said it
@@ -5918,8 +5928,11 @@ that finds everything green would fail every night.
   stale, or a pull request was merged since) is the same case, not a
   failure. It gets the same gates and a message ("Nothing to publish: main
   already has every commit of <branch>, …"), and the marker keeps the next
-  step from pushing and asking GitHub again. The branch has been pushed by
-  then, holding only commits its base has.
+  step from pushing and asking GitHub again. The branch is on the remote by
+  then, holding only commits its base has, so the push is recorded
+  (`delivery` with its branch, head and `pushed_at`, no pull request):
+  cancelling names the branch as it names anything it leaves (D-068), and
+  the app says it was pushed with nothing to publish.
 - **No fetch.** The decision needs no network: with a recorded start the
   base branch isn't needed for it, and without one a stale base means
   asking to publish as before, after which GitHub's answer settles it.
@@ -5933,6 +5946,11 @@ that finds everything green would fail every night.
   carried `^[[36;1mmake check^[[0m`: D-139 removed only the escape byte.
   `without_colours` removes a control sequence in either spelling. A stray
   `^[` that starts no sequence stays.
+- **The files a commit leaves out are named right.** `commit_work` read
+  Git's status trimmed, so a first line for a tracked file changed in the
+  tree (` M .env`) lost its leading space and the file wasn't named in
+  "leaving out what may hold secrets". It reads the status as printed
+  (`left_out`, shared with the message above).
 - **Not done:** a triggered task with nothing to publish still waits for the
   developer's acceptance (D-156's note on triggers); the workspace's Changes
   panel (D-102, D-147) still counts "ahead" from the base as last fetched.
@@ -5944,7 +5962,13 @@ that finds everything green would fail every night.
   `no_commits_between_is_nothing_to_publish` (the fake `gh` refusing as
   GitHub did) fails with the backstop taken out, with the bench's own
   reason: "Otter stopped: opening the pull request: gh pr create … No
-  commits between main and feature/csv". Unit tests
+  commits between main and feature/csv"; with the push not recorded, it
+  fails on the delivery. E2e `a_status_git_cant_read_is_not_nothing_to_publish`
+  (a broken index) times out, said to have nothing to publish, with a failed
+  status read as clean and a failed read of what a commit leaves out read as
+  none (with only the first, the second still asks). E2e
+  `only_secrets_changed_is_nothing_to_publish_and_says_so` gets "this task
+  left the code as it found it" without its part. Unit tests
   `colours_go_in_either_spelling` and `a_tools_failure_says_no_secret` fail
   with their part taken out, and `no_commits_is_told_apart` reads gh's
   refusal. The fake agent changed nothing, so the delivery tests that
@@ -5998,7 +6022,9 @@ this one's.
   Changes panel and the task's Changes section (D-102, D-147) still count
   from the base branch as last fetched. A previous task's edits left
   uncommitted (D-156's first gap) are in the tree when the next task
-  starts, so they are still its change.
+  starts, so they are still its change. A task from before this, moved
+  to another workspace afterwards, takes no start there either (it has
+  runs): it is measured from the merge base, as before.
 - **Verified:** unit test `a_task_is_diffed_from_where_it_started` (B09's
   shape in a repository: an earlier commit on the branch that the base
   doesn't have, then this task's edit; since the start only the edit shows;

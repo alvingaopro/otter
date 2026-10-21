@@ -2356,7 +2356,10 @@ impl Daemon {
             let mut head = git.head().await.ok();
             let published = d.as_ref().is_some_and(|d| d.pr_url.is_some());
             // Work not yet committed is work not yet published (D-068).
-            let unpublished = git.committable().await;
+            // Nothing to commit only when Git says so (D-166).
+            let committable = git.committable().await;
+            let unpublished = matches!(committable, Ok(true));
+            let clean = matches!(committable, Ok(false));
             // Pushing is an external action: the developer allows it once.
             let cmd = format!("git push origin {branch}");
             // Nothing of this task's own to publish (D-166): not asked, no
@@ -2366,7 +2369,7 @@ impl Daemon {
                 .map(|h| format!("{NOTHING_TO_PUBLISH} ({h})"));
             let said = marker.as_ref().is_some_and(|m| f.rationale.contains(m));
             let nothing = match &head {
-                Some(_) if published || unpublished => None,
+                Some(_) if published || !clean => None,
                 Some(_) if said => Some(None),
                 Some(h) => nothing_to_publish(f, &git, h, self.workspace_base(f).await.as_deref())
                     .await
@@ -2453,6 +2456,19 @@ impl Daemon {
                                 if let Some(h) = &head {
                                     rationale.push(format!("{NOTHING_TO_PUBLISH} ({h})"));
                                 }
+                                // The branch is on the remote now: kept,
+                                // with the push (D-068's cancel names it).
+                                d = Some(otter_core::task::Delivery {
+                                    branch: branch.clone(),
+                                    base: base.clone(),
+                                    head: head.clone(),
+                                    pushed_at: Some(Utc::now()),
+                                    pr_url: None,
+                                    pr_number: None,
+                                    ci: vec![],
+                                    reruns: 0,
+                                    declined: false,
+                                });
                                 break 'publish;
                             }
                             Err(e) => {
@@ -2782,22 +2798,38 @@ fn failure(what: String) -> RpcError {
     RpcError::internal(otter_core::redact::redact(&what))
 }
 
-/// Why a clean tree at `head` has nothing of the task's own to publish
-/// (D-166), if it hasn't: HEAD is where the task started (another task's
-/// commit below it isn't this one's to publish), or the base branch, as
-/// last fetched, has every commit of it — all a task with no recorded
-/// start can be judged by.
+/// Why a tree with nothing to commit at `head` has nothing of the task's
+/// own to publish (D-166), if it hasn't: HEAD is where the task started
+/// (another task's commit below it isn't this one's to publish), or
+/// `origin`'s base branch, as last fetched, has every commit of it — all a
+/// task with no recorded start can be judged by. Files a commit leaves out
+/// (they may hold secrets) are named: they changed, and stay unpublished.
 async fn nothing_to_publish(
     f: &Task,
     git: &crate::delivery::Git<'_>,
     head: &str,
     base: Option<&str>,
 ) -> Option<String> {
-    if f.own_base() == Some(head) {
-        return Some("this task left the code as it found it".into());
+    let why = if f.own_base() == Some(head) {
+        "this task left the code as it found it".to_owned()
+    } else {
+        let base = base?;
+        (git.ahead_of(base).await? == 0).then(|| format!("everything here is on {base} already"))?
+    };
+    // Git can't say what a commit would leave out: ask, as before.
+    let left_out = git.left_out().await.ok()?;
+    if left_out.is_empty() {
+        return Some(why);
     }
-    let base = base?;
-    (git.ahead_of(base).await? == 0).then(|| format!("everything here is on {base} already"))
+    const NAMED: usize = 5;
+    let mut names = left_out[..left_out.len().min(NAMED)].join(", ");
+    if left_out.len() > NAMED {
+        names.push_str(&format!(" and {} more", left_out.len() - NAMED));
+    }
+    Some(format!(
+        "only files that may hold secrets changed ({}), which aren't committed",
+        otter_core::redact::redact(&names)
+    ))
 }
 
 fn evidence_item(kind: EvidenceKind, title: &str, detail: Option<String>) -> Evidence {

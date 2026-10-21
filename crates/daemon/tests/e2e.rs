@@ -5192,10 +5192,10 @@ async fn a_second_task_on_the_branch_is_measured_from_where_it_started() {
 /// isn't tried again.
 #[tokio::test]
 async fn no_commits_between_is_nothing_to_publish() {
-    use otter_core::task::{GateStatus, MessageRole, TaskStatus};
+    use otter_core::task::{GateStatus, MessageRole, TaskAction, TaskStatus};
     let fake = fake_agent_host("ok", "rules").await;
     std::fs::write(fake.gh.join("no-commits"), "").unwrap();
-    let (id, _) = git_task(&fake).await;
+    let (id, origin) = git_task(&fake).await;
     allow_publish(&fake.host, &id).await;
     let f = wait_task(&fake.host, &id, "the report", |f| f.report.is_some()).await;
     assert_eq!(f.status, TaskStatus::Review, "{:?}", f.status_reason);
@@ -5215,6 +5215,90 @@ async fn no_commits_between_is_nothing_to_publish() {
     assert_eq!(f.status, TaskStatus::Review);
     let calls = std::fs::read_to_string(fake.gh.join("calls.log")).unwrap();
     assert_eq!(calls.matches("gh pr create").count(), 1, "{calls}");
+    // The push happened: the branch is on the remote, and kept with it.
+    let d = f.delivery.clone().expect("the push is recorded");
+    assert_eq!(d.branch, "feature/csv");
+    assert!(d.pushed_at.is_some() && d.pr_url.is_none(), "{d:?}");
+    assert_eq!(
+        d.head.as_deref(),
+        Some(git(&origin, &["rev-parse", "feature/csv"]).trim())
+    );
+    // So cancelling names it, as it names anything it leaves (D-068).
+    let f = fake
+        .host
+        .conn()
+        .await
+        .task_act("cancel", &id, TaskAction::Cancel)
+        .await
+        .unwrap();
+    let said = f
+        .messages
+        .iter()
+        .rev()
+        .find(|m| m.role == MessageRole::Controller)
+        .unwrap();
+    assert!(
+        said.text.contains("its branch `feature/csv`"),
+        "{}",
+        said.text
+    );
+}
+
+/// Only files that may hold secrets changed: a commit leaves them out, so
+/// there is nothing to publish, and the message says what changed rather
+/// than that nothing did (D-166).
+#[tokio::test]
+async fn only_secrets_changed_is_nothing_to_publish_and_says_so() {
+    use otter_core::task::{MessageRole, TaskStatus};
+    let fake = fake_agent_host("ok", "rules").await;
+    let (id, _) = git_task_asking(&fake, "Set the local settings WRITE:.env").await;
+    let f = wait_task(&fake.host, &id, "the report", |f| f.report.is_some()).await;
+    assert_eq!(f.status, TaskStatus::Review, "{:?}", f.status_reason);
+    assert!(!f.decisions.iter().any(|d| d.summary.contains("git push")));
+    let said: Vec<&str> = f
+        .messages
+        .iter()
+        .filter(|m| m.role == MessageRole::Controller && m.text.starts_with("Nothing to publish"))
+        .map(|m| m.text.as_str())
+        .collect();
+    assert_eq!(
+        said,
+        [
+            "Nothing to publish: only files that may hold secrets changed (.env), which aren't committed, so there's no pull request to open."
+        ]
+    );
+}
+
+/// What a commit would take can't be read (here, a broken index): that is
+/// not "nothing to commit", so the developer is asked to publish as before
+/// (D-166).
+#[tokio::test]
+async fn a_status_git_cant_read_is_not_nothing_to_publish() {
+    use otter_core::task::{MessageRole, TaskStatus};
+    let fake = fake_agent_host("ok", "rules").await;
+    let (id, _) = git_task_asking(&fake, "Check the export is already there").await;
+    let ws = fake.host.conn().await.workspace_get("csv").await.unwrap();
+    let root = std::path::PathBuf::from(&ws.root);
+    let index = root.join(git(&root, &["rev-parse", "--git-path", "index"]).trim());
+    std::fs::write(&index, "not an index").unwrap();
+    let f = wait_task(&fake.host, &id, "asked to publish", |f| {
+        f.status == TaskStatus::Review
+            && f.pending_decisions()
+                .any(|d| d.summary.contains("git push"))
+    })
+    .await;
+    assert!(
+        !f.messages
+            .iter()
+            .any(|m| m.role == MessageRole::Controller && m.text.starts_with("Nothing to publish")),
+        "{:?}",
+        f.messages
+    );
+    assert!(
+        !f.rationale
+            .iter()
+            .any(|r| r.starts_with("Nothing to publish"))
+    );
 }
 
 async fn wait_task(

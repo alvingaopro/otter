@@ -722,12 +722,18 @@ pub struct Git<'a> {
 
 impl Git<'_> {
     async fn git(&self, args: &[&str]) -> Result<String> {
+        Ok(self.output(args).await?.trim().to_owned())
+    }
+
+    /// What Git printed, as it printed it (a status line starts with a
+    /// space).
+    async fn output(&self, args: &[&str]) -> Result<String> {
         let git = which("git", self.env).ok_or_else(|| anyhow!("git is not installed"))?;
         let (ok, out, err) = run(&git, args, self.root, self.env, None).await?;
         if !ok {
             bail!(failed("git", args, &err, 500));
         }
-        Ok(out.trim().to_owned())
+        Ok(out)
     }
 
     /// The branch checked out, if this is a repository with an `origin`.
@@ -751,18 +757,15 @@ impl Git<'_> {
             .is_ok()
     }
 
-    /// How many commits HEAD has that the branch `base` doesn't, as last
-    /// fetched (`origin/<base>`, else `<base>`). `None`: no such branch here.
+    /// How many commits HEAD has that `origin`'s branch `base` doesn't, as
+    /// last fetched. `None`: no such branch known here. A local `<base>` is
+    /// no stand-in: in a worktree of a shared repository it can be anywhere.
     pub async fn ahead_of(&self, base: &str) -> Option<u64> {
-        for b in [format!("origin/{base}"), base.to_owned()] {
-            if let Ok(n) = self
-                .git(&["rev-list", "--count", &format!("{b}..HEAD")])
-                .await
-            {
-                return n.parse().ok();
-            }
-        }
-        None
+        self.git(&["rev-list", "--count", &format!("origin/{base}..HEAD")])
+            .await
+            .ok()?
+            .parse()
+            .ok()
     }
 
     /// Whether anything is changed or new, secrets' names included.
@@ -801,8 +804,9 @@ impl Git<'_> {
     }
 
     /// Changes a commit would take: anything changed or new but files that
-    /// may hold secrets (by name, as `work_state` reads them).
-    pub async fn committable(&self) -> bool {
+    /// may hold secrets (by name, as `work_state` reads them). An error when
+    /// Git can't say (an index held by another, an I/O error): not "nothing".
+    pub async fn committable(&self) -> Result<bool> {
         let mut args = vec![
             "status",
             "--porcelain=v1",
@@ -812,18 +816,16 @@ impl Git<'_> {
         ];
         let excluded = crate::work_state::secret_pathspecs();
         args.extend(excluded.iter().map(String::as_str));
-        self.git(&args).await.is_ok_and(|s| !s.trim().is_empty())
+        Ok(!self.git(&args).await?.is_empty())
     }
 
-    /// Commit what the work left uncommitted, as `message` (D-068): the new
-    /// HEAD, and the files left out because they may hold secrets. `None`:
-    /// nothing to commit. Without an identity of the host's own, the commit
-    /// is Otter's.
-    pub async fn commit_work(&self, message: &str) -> Result<Option<(String, Vec<String>)>> {
+    /// Files changed or new that a commit leaves out because they may hold
+    /// secrets (by name).
+    pub async fn left_out(&self) -> Result<Vec<String>> {
         let status = self
-            .git(&["status", "--porcelain=v1", "--untracked-files=all"])
+            .output(&["status", "--porcelain=v1", "--untracked-files=all"])
             .await?;
-        let left_out: Vec<String> = status
+        Ok(status
             .lines()
             .filter_map(|l| l.get(3..))
             .map(|p| {
@@ -834,8 +836,16 @@ impl Git<'_> {
                     .to_owned()
             })
             .filter(|p| crate::work_state::secret_like(p))
-            .collect();
-        if !self.committable().await {
+            .collect())
+    }
+
+    /// Commit what the work left uncommitted, as `message` (D-068): the new
+    /// HEAD, and the files left out because they may hold secrets. `None`:
+    /// nothing to commit. Without an identity of the host's own, the commit
+    /// is Otter's.
+    pub async fn commit_work(&self, message: &str) -> Result<Option<(String, Vec<String>)>> {
+        let left_out = self.left_out().await?;
+        if !self.committable().await? {
             return Ok(None);
         }
         let mut add = vec!["add", "-A", "--", "."];
