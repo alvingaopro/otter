@@ -8,7 +8,6 @@ import { Markdown } from "./Markdown";
 import { MemoryDialog } from "./MemoryDialog";
 import { Menu } from "./Menu";
 import { ago } from "./model";
-import otterIcon from "./assets/otter.png";
 import type { CodingConversation, Interaction, RuntimeCapabilities } from "./conversation";
 import type { TaskSource } from "./taskSource";
 import { QuestionForm, Turn, WorkHead } from "./Work";
@@ -589,7 +588,7 @@ const ROLE: Record<string, string> = { user: "You", controller: "Otter", agent: 
 export function Speaker({ role }: { role: string }) {
   return (
     <span className="message-role">
-      {role === "controller" && <img src={otterIcon} width={16} height={16} alt="" className="message-avatar" />}
+      {role === "controller" && <span className="otter-mark message-avatar" aria-hidden="true" />}
       {ROLE[role] ?? role}
     </span>
   );
