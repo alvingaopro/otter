@@ -251,9 +251,16 @@ fn pieces_cut(
     let mut subs: Vec<(usize, String)> = Vec::new();
     let mut outer = String::new();
     let chars: Vec<char> = text.chars().collect();
+    let mut lexer = Lexer::default();
     let mut i = 0;
     while i < chars.len() {
-        if matches!(chars[i], '$' | '<' | '>') && chars.get(i + 1) == Some(&'(') {
+        // In single quotes, in `$'…'` or behind a backslash `$(` and a
+        // backtick are only characters: the shell runs nothing there. Pulled
+        // out as if it did, the text after one would be read as a command
+        // of its own and hide what the real line runs. In double quotes a
+        // substitution does run.
+        let literal = lexer.single || lexer.ansi || lexer.escaped;
+        if !literal && matches!(chars[i], '$' | '<' | '>') && chars.get(i + 1) == Some(&'(') {
             let mut inner = String::new();
             let mut depth = 1;
             let mut j = i + 2;
@@ -271,7 +278,7 @@ fn pieces_cut(
             subs.push((outer.len(), inner));
             outer.push_str(SUB_WORD);
             i = j;
-        } else if chars[i] == '`' {
+        } else if !literal && chars[i] == '`' {
             let mut inner = String::new();
             let mut j = i + 1;
             while j < chars.len() && chars[j] != '`' {
@@ -282,6 +289,8 @@ fn pieces_cut(
             outer.push_str(SUB_WORD);
             i = j + 1;
         } else {
+            let prev = i.checked_sub(1).map(|p| chars[p]);
+            lexer.read(chars[i], prev, chars.get(i + 1).copied());
             outer.push(chars[i]);
             i += 1;
         }
@@ -388,7 +397,12 @@ fn separators(text: &str) -> Vec<(usize, char)> {
     let read: Vec<Quoted> = chars
         .iter()
         .enumerate()
-        .map(|(k, &(_, c))| {
+        .map(|(k, &(at, c))| {
+            // A `#` right after a substitution (`$(x)#y`) is mid-word, not a
+            // comment, though the substitution's stand-in ends in a space.
+            if c == '#' && text[..at].ends_with(SUB_WORD) {
+                lexer.prev_quoted = true;
+            }
             let prev = k.checked_sub(1).map(|p| chars[p].1);
             lexer.read(c, prev, chars.get(k + 1).map(|&(_, n)| n))
         })
@@ -495,10 +509,19 @@ struct Lexer {
     escaped: bool,
     comment: bool,
     arith: usize,
+    /// The character before was quoted or escaped: it is part of a word
+    /// whatever it is (`a\ #b` has no comment, nor does `\;#x`).
+    prev_quoted: bool,
 }
 
 impl Lexer {
     fn read(&mut self, c: char, prev: Option<char>, next: Option<char>) -> Quoted {
+        let read = self.step(c, prev, next);
+        self.prev_quoted = read != Quoted::No;
+        read
+    }
+
+    fn step(&mut self, c: char, prev: Option<char>, next: Option<char>) -> Quoted {
         if c == '\n' {
             self.comment = false;
             self.escaped = false;
@@ -540,7 +563,7 @@ impl Lexer {
                 self.escaped = true;
                 Quoted::Yes
             }
-            '\'' if prev == Some('$') => {
+            '\'' if prev == Some('$') && !self.prev_quoted => {
                 self.ansi = true;
                 Quoted::Yes
             }
@@ -552,7 +575,9 @@ impl Lexer {
                 self.double = true;
                 Quoted::Yes
             }
-            '#' if prev.is_none_or(|p| p.is_whitespace() || ";&|(".contains(p)) => {
+            '#' if !self.prev_quoted
+                && prev.is_none_or(|p| p.is_whitespace() || ";&|(".contains(p)) =>
+            {
                 self.comment = true;
                 Quoted::Comment
             }
@@ -768,12 +793,20 @@ fn names_secrets_file(piece: &str) -> Option<String> {
 /// so a file of these names is a credential only where it is below a home.
 const CREDENTIAL_PLACES: &[&[&str]] = &[
     &[".aws"],
+    &[".azure"],
+    &[".oci"],
     &[".kube"],
+    &[".gnupg"],
     &[".config", "gcloud"],
+    &[".config", "gh"],
+    &[".config", "doctl"],
     &[".docker", "config.json"],
     &[".netrc"],
     &[".npmrc"],
     &[".pypirc"],
+    &[".pgpass"],
+    &[".git-credentials"],
+    &[".vault-token"],
 ];
 
 /// What is left of an absolute path below a home directory: this user's
@@ -805,43 +838,69 @@ fn below_home(path: &Path) -> Option<std::path::PathBuf> {
 
 /// Whether a word of a command line, or an edit's path, is one of the
 /// [`CREDENTIAL_PLACES`] in a home directory: `~/.aws/config`,
-/// `$HOME/.netrc`, `/home/u/.kube/config`, or a relative path from where the
-/// line has `cd`ed to. A word with another variable in it can't be told.
+/// `$HOME/.netrc`, `~root/.aws`, `/home/u/.kube/config`, or a relative path
+/// from where the line has `cd`ed to. A word with another variable in it
+/// can't be told. Names are compared without regard to case: a Mac's disk
+/// is not case-sensitive, and `.AWS` is `.aws` there.
 fn in_credential_place(word: &str, cwd: &Path) -> bool {
     let word = unquoted(word);
     let word = word.as_str();
-    let below = if let Some(rest) = ["~/", "$HOME/", "${HOME}/"]
+    // Where the word may be below a home: more than one, for `~name/`.
+    let below: Vec<std::path::PathBuf> = if let Some(rest) = ["~/", "$HOME/", "${HOME}/"]
         .iter()
         .find_map(|p| word.strip_prefix(p))
     {
-        Some(normalize(Path::new(rest)))
-    } else if word.is_empty() || word.contains('$') || word.starts_with('~') {
-        None
+        // `~//.aws` is `~/.aws`: no leading slash on what follows the home.
+        vec![normalize(Path::new(rest.trim_start_matches('/')))]
+    } else if let Some(named) = word.strip_prefix('~') {
+        let (name, rest) = named.split_once('/').unwrap_or((named, ""));
+        let rest = rest.trim_start_matches('/');
+        if name.is_empty() || name.contains(['$', '~', '\\']) {
+            vec![]
+        } else {
+            let mut homes = vec![
+                Path::new("/home").join(name),
+                Path::new("/Users").join(name),
+            ];
+            if name == "root" {
+                homes.push(std::path::PathBuf::from("/root"));
+            }
+            homes
+                .into_iter()
+                .filter_map(|home| below_home(&normalize(&home.join(rest))))
+                .collect()
+        }
+    } else if word.is_empty() || word.contains('$') {
+        vec![]
     } else {
         let abs = if word.starts_with('/') {
             std::path::PathBuf::from(word)
         } else {
             cwd.join(word)
         };
-        below_home(&normalize(&abs))
+        below_home(&normalize(&abs)).into_iter().collect()
     };
-    let Some(below) = below else {
-        return false;
-    };
-    let parts: Vec<String> = below
-        .components()
-        .map(|c| c.as_os_str().to_string_lossy().into_owned())
-        .collect();
-    CREDENTIAL_PLACES
-        .iter()
-        .any(|place| parts.len() >= place.len() && parts.iter().zip(*place).all(|(a, b)| a == b))
+    below.iter().any(|below| {
+        let parts: Vec<String> = below
+            .components()
+            .map(|c| c.as_os_str().to_string_lossy().into_owned())
+            .collect();
+        CREDENTIAL_PLACES.iter().any(|place| {
+            parts.len() >= place.len()
+                && parts
+                    .iter()
+                    .zip(*place)
+                    .all(|(a, b)| a.eq_ignore_ascii_case(b))
+        })
+    })
 }
 
 /// The credentials place in a home directory a piece of a command line
-/// names, if it names one (`cwd`: where the piece runs).
+/// names, if it names one (`cwd`: where the piece runs). A `:` also parts
+/// words (`-v ~/.aws:/root/.aws` hands a container the login).
 fn names_credential_place(piece: &str, cwd: &Path) -> Option<String> {
     piece
-        .split(|c: char| c.is_whitespace() || matches!(c, '=' | '<' | '>' | '(' | ')' | ','))
+        .split(|c: char| c.is_whitespace() || matches!(c, '=' | '<' | '>' | '(' | ')' | ',' | ':'))
         .find(|w| in_credential_place(w, cwd))
         .map(|w| w.trim_matches(|c| c == '"' || c == '\'').to_owned())
 }
@@ -2099,9 +2158,30 @@ mod tests {
             "echo 'x' ; sudo make install",
             "bash -c 'git push origin main'",
             "grep \"$(git push origin main)\" x",
+            // A `$(` or a backtick in single quotes is only characters: the
+            // text after it is not a substitution's, and the `;` still cuts.
+            "echo '$(cat x' ; git push origin main ; echo x')'",
+            "echo '`cat x' ; git push origin main ; echo 'y`'",
         ] {
             assert!(is_user_only(&cmd(line)), "{line}: {:?}", cmd(line));
         }
+        // A `#` in the middle of a word is not a comment: after an escaped
+        // space or `;`, or right after a substitution, what follows still
+        // runs.
+        for line in [
+            "cat a\\ #b;git push origin main",
+            "cat \\;#x; git push origin main",
+            "cat $(true)#x; git push origin main",
+            "cat `true`#x; git push origin main",
+            "cat a\\ #|sudo make install",
+        ] {
+            assert!(is_user_only(&cmd(line)), "{line}: {:?}", cmd(line));
+        }
+        // A real comment does hide what follows it, as in the shell.
+        assert_eq!(
+            cmd("grep -rn x src # ; git push origin main"),
+            Verdict::Allow
+        );
         // Quotes left open, or escaped: cut at every separator, as before.
         for line in [
             format!("grep 'a{pipe}token x"),
@@ -2144,6 +2224,25 @@ mod tests {
             "cd /home/u && cat .aws/config",
             "cd ~/.aws && cat config",
             "head -n1 --file=/home/u/.netrc x",
+            // However it is spelled: a doubled slash, a named user's home,
+            // another case, a bind mount that hands a container the login.
+            "cat ~//.aws/config",
+            "cat $HOME//.aws/config",
+            "cat ${HOME}//.netrc",
+            "cat ~/.docker//config.json",
+            "cat ~root/.aws/config",
+            "cat ~/.AWS/config",
+            "docker run -v ~/.aws:/root/.aws img",
+            "docker run -v $HOME/.kube:/root/.kube:ro img",
+            // Other places a login is kept.
+            "cat ~/.gnupg/private-keys-v1.d/x",
+            "cat ~/.azure/accessTokens.json",
+            "cat ~/.config/gh/hosts.yml",
+            "cat ~/.oci/config",
+            "cat ~/.config/doctl/config.yaml",
+            "cat ~/.git-credentials",
+            "cat ~/.pgpass",
+            "cat ~/.vault-token",
         ] {
             assert!(is_user_only(&cmd(line)), "{line}: {:?}", cmd(line));
         }
@@ -2156,6 +2255,8 @@ mod tests {
             "ls ~/.config/other",
             "cat /home/u/proj/.npmrc",
             "cat /home/u/.otter/workspaces/ws_1/.npmrc",
+            "cat ~/.config/other",
+            "cat ~/.gnupg-notes.txt",
         ] {
             assert_eq!(cmd(line), Verdict::Allow, "{line}");
         }
