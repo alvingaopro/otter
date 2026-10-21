@@ -29,7 +29,7 @@ pub struct WorkspaceChanges {
     /// Commits on the base that HEAD doesn't have.
     #[serde(default)]
     pub behind: u32,
-    /// Commits on HEAD that no remote has: work not pushed anywhere (D-152).
+    /// Commits on HEAD that no remote has: work not pushed anywhere (D-154).
     /// Absent from an older otterd, and when there are no commits yet.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub unpushed: Option<u32>,
@@ -104,7 +104,7 @@ pub struct SessionPort {
 }
 
 /// `workspace.publish`: push the workspace's branch, and with
-/// `pull_request` open (or find) its pull request (D-152). The developer's own
+/// `pull_request` open (or find) its pull request (D-154). The developer's own
 /// action, asked for by a client; Otter's tools cannot (D-047).
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct WorkspacePublish {

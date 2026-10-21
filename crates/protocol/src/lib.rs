@@ -145,7 +145,7 @@ pub enum Request {
     #[serde(rename = "workspace.ports")]
     WorkspacePorts(WorkspaceRef),
     /// Push the workspace's branch to `origin`, and open its pull request if
-    /// asked (D-152). What isn't committed is not taken. Result:
+    /// asked (D-154). What isn't committed is not taken. Result:
     /// [`work::Published`].
     #[serde(rename = "workspace.publish")]
     WorkspacePublish(work::WorkspacePublish),

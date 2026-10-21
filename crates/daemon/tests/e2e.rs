@@ -3427,7 +3427,7 @@ async fn a_workspace_shows_its_changes() {
     let root = Path::new(&ws.root);
     std::fs::write(root.join("a.txt"), "one\n2\nthree\n").unwrap();
     git(root, &["commit", "-qam", "edit a"]);
-    // Work no remote has (D-152): until it is pushed, whatever the base.
+    // Work no remote has (D-154): until it is pushed, whatever the base.
     assert_eq!(
         conn.workspace_changes("work").await.unwrap().unpushed,
         Some(1)
@@ -3496,7 +3496,7 @@ async fn a_workspace_shows_its_changes() {
 }
 
 /// How far behind its base a workspace is, is as of the last fetch: preparing
-/// it again fetches (D-152).
+/// it again fetches (D-154).
 #[tokio::test]
 async fn preparing_a_workspace_again_brings_its_repository_up_to_date() {
     let host = TestHost::new();
@@ -3524,7 +3524,7 @@ async fn preparing_a_workspace_again_brings_its_repository_up_to_date() {
 }
 
 /// A workspace driven by hand can be pushed, and its pull request opened
-/// (D-152): the developer's own action. Nothing is committed for them, and a
+/// (D-154): the developer's own action. Nothing is committed for them, and a
 /// pull request that exists keeps its description.
 #[tokio::test]
 async fn a_workspace_is_pushed_and_its_pull_request_opened() {

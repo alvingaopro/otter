@@ -140,7 +140,7 @@ export function DeleteSessionDialog({
 }
 
 /**
- * Push the workspace's branch, and open its pull request (D-152): the
+ * Push the workspace's branch, and open its pull request (D-154): the
  * developer's own action, so this dialog is the allowance. Nothing is
  * committed for them.
  */

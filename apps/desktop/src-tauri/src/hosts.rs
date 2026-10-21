@@ -845,7 +845,7 @@ pub async fn workspace_changes(
         .map_err(err)
 }
 
-/// Push a workspace's branch, and open its pull request if asked (D-152).
+/// Push a workspace's branch, and open its pull request if asked (D-154).
 #[tauri::command]
 pub async fn workspace_publish(
     app: AppHandle,

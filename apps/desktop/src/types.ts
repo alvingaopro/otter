@@ -184,7 +184,7 @@ export interface WorkspaceChanges {
   base?: string;
   ahead: number;
   behind: number;
-  /** Commits no remote has (D-152); absent from an older otterd. */
+  /** Commits no remote has (D-154); absent from an older otterd. */
   unpushed?: number;
   files: ChangedFile[];
   more: number;
@@ -204,7 +204,7 @@ export interface SessionPort {
   process?: string;
 }
 
-/** What `workspace_publish` did (D-152). */
+/** What `workspace_publish` did (D-154). */
 export interface Published {
   branch: string;
   uncommitted: boolean;

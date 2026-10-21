@@ -192,7 +192,7 @@ export function WorkspacePane({
   }
   /** The session the keyboard goes to (⌘F finds in it). */
   const keyed = beside && right ? beside : current;
-  // The terminals of sessions shown before stay attached, hidden (D-152).
+  // The terminals of sessions shown before stay attached, hidden (D-154).
   const keptIds = useKeptSessions(
     current ? [current.id, ...(beside ? [beside.id] : [])] : [],
     ws.sessions.map((s) => s.id),
@@ -407,7 +407,7 @@ export function WorkspacePane({
             ...pinItems,
             { label: brief.text || brief.more > 0 ? "Edit brief…" : "Add a brief…", onSelect: () => setOpen("brief") },
             {
-              // Its branch goes to origin, and its pull request is opened (D-152).
+              // Its branch goes to origin, and its pull request is opened (D-154).
               label: "Push branch…",
               hidden: archived || ws.state !== "ready" || changes.state !== "ready" || !changes.changes.branch,
               onSelect: () => setOpen("publish"),

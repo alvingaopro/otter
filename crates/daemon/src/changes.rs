@@ -345,7 +345,7 @@ impl Daemon {
     }
 
     /// Push the workspace's branch, and open its pull request if asked
-    /// (D-152). The developer asked for it, in a client: that is the
+    /// (D-154). The developer asked for it, in a client: that is the
     /// allowance a task asks for (D-047). Nothing is committed for them, and
     /// a pull request that exists keeps its description.
     pub(crate) async fn workspace_publish(&self, p: WorkspacePublish) -> RpcResult<Published> {

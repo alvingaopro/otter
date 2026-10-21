@@ -691,7 +691,7 @@ impl Daemon {
                 } else {
                     // Preparing a worktree already there again (a retry, an
                     // unarchive) brings the repository up to date, so its
-                    // "behind" is as of now (D-152). It failing, say offline,
+                    // "behind" is as of now (D-154). It failing, say offline,
                     // doesn't fail the workspace.
                     self.set_progress(id, "fetching").await;
                     if let Err(e) = self.git.sync_repo(&git.repository, &git.repo_id).await {

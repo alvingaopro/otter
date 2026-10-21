@@ -820,7 +820,7 @@ impl Connection {
     }
 
     /// Push the workspace's branch, and open its pull request if asked
-    /// (D-152).
+    /// (D-154).
     pub async fn workspace_publish(
         &mut self,
         publish: otter_protocol::work::WorkspacePublish,
