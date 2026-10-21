@@ -721,6 +721,9 @@ function Conversation({
   const [busy, setBusy] = useState(false);
   // The conversation scrolls under the message box, which floats on it (D-177).
   const thread = useRef<HTMLDivElement>(null);
+  const dock = useRef<HTMLDivElement>(null);
+  // At its end as last scrolled: what grows below (a decision, pictures, the box) keeps it there.
+  const pinned = useRef(true);
   const input = useRef<HTMLTextAreaElement>(null);
   const picker = useRef<HTMLInputElement>(null);
   const messages = placed.task.messages;
@@ -766,21 +769,33 @@ function Conversation({
     if (t) t.scrollTop = t.scrollHeight;
   }, [messages.length, activity.length, awaitingReply, draftText.length]);
 
-  // One line, growing with what is written; at the end, the end stays in view.
+  useEffect(() => {
+    const t = thread.current;
+    const d = dock.current;
+    if (!t || !d || typeof ResizeObserver === "undefined") return;
+    const keep = new ResizeObserver(() => {
+      if (pinned.current) t.scrollTop = t.scrollHeight;
+    });
+    keep.observe(d);
+    return () => keep.disconnect();
+  }, []);
+
+  // One line, growing with what is written. Measuring shrinks it for a moment,
+  // which would move a conversation scrolled up: its place is put back.
   useLayoutEffect(() => {
     const box = input.current;
     const t = thread.current;
     if (!box || !t) return;
-    const stay = atEnd(t);
+    const top = t.scrollTop;
     box.style.height = "auto";
     if (box.scrollHeight > 0) {
-      const { height, scrolls } = fitHeight(box.scrollHeight, window.innerHeight);
+      const { height, scrolls } = fitHeight(box.scrollHeight, t.clientHeight || window.innerHeight);
       box.style.height = `${height}px`;
       box.style.overflowY = scrolls ? "auto" : "hidden";
     } else {
       box.style.height = "";
     }
-    if (stay) t.scrollTop = t.scrollHeight;
+    t.scrollTop = pinned.current ? t.scrollHeight : top;
   }, [text]);
 
   const composition = useComposition();
@@ -821,7 +836,13 @@ function Conversation({
 
   return (
     <section className="conversation" aria-label="Conversation">
-      <div className="thread" ref={thread}>
+      <div
+        className="thread"
+        ref={thread}
+        onScroll={() => {
+          pinned.current = atEnd(thread.current!);
+        }}
+      >
         <div className="thread-head">
           <button
             type="button"
@@ -894,14 +915,15 @@ function Conversation({
             </div>
           )}
           {awaitingReply && (
-            <div className="message controller typing" role="status" aria-label="Otter is replying">
-              <span />
-              <span />
-              <span />
+            <div className="message controller typing" role="status">
+              <span className="visually-hidden">Otter is replying…</span>
+              <i aria-hidden="true" />
+              <i aria-hidden="true" />
+              <i aria-hidden="true" />
             </div>
           )}
         </div>
-        <div className="composer-dock">
+        <div className="composer-dock" ref={dock}>
           {pending.length > 0 && (
             <section className="pending-decisions" aria-label="Waiting for your decision">
               <ul className="plain-list decisions">

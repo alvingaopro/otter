@@ -6472,12 +6472,14 @@ developer asked, after Muse and iMessage:
 
 - The message box is one line in a pill, with **+** (pictures, as a paste
   takes them, D-171) on its left and a round send on its right; it grows with
-  what is written, up to 60% of the window, then scrolls. This replaces
+  what is written, up to half the conversation's height, then scrolls. This replaces
   D-175's taller box and its drag handle (`composerResize`): the developer
   chose the growing box over a fixed height.
 - The box, and a decision waiting above it, float at the bottom of the
   conversation, which scrolls under them (a sticky block, last in the
-  scroll); scrolled to its end, the last message sits just above them.
+  scroll); scrolled to its end, the last message sits just above them, and
+  stays there when what floats grows (a decision arrives, a picture is
+  added). Scrolled up, the conversation stays where it was.
 - Otter sits at the top, floating the same way: its mark, its name, and what
   it is doing — working (a ring turns and Otter bobs; still if the Mac asks
   for less motion), needs you (an orange ring), replying, or the task's

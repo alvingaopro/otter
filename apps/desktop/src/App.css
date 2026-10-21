@@ -145,6 +145,8 @@ button:focus-visible { outline: 2px solid var(--working); outline-offset: -2px; 
 button:disabled { opacity: 0.6; cursor: default; }
 code, .mono { font-family: var(--mono); }
 .muted { color: var(--muted); }
+/* Read out, not shown. */
+.visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 
 .app { height: 100%; display: flex; flex-direction: column; }
 
@@ -620,13 +622,13 @@ body.resizing-col { cursor: col-resize; user-select: none; }
 @keyframes otter-bob { 50% { transform: translateY(-2px) rotate(-5deg); } }
 /* Otter writing its answer. */
 .message.typing { display: inline-flex; align-items: center; gap: 4px; padding: 12px 14px; }
-.message.typing span { width: 6px; height: 6px; border-radius: 50%; background: var(--muted); opacity: 0.35; animation: typing 1.2s ease-in-out infinite; }
-.message.typing span:nth-child(2) { animation-delay: 0.15s; }
-.message.typing span:nth-child(3) { animation-delay: 0.3s; }
+.message.typing i { width: 6px; height: 6px; border-radius: 50%; background: var(--muted); opacity: 0.35; animation: typing 1.2s ease-in-out infinite; }
+.message.typing i:nth-of-type(2) { animation-delay: 0.15s; }
+.message.typing i:nth-of-type(3) { animation-delay: 0.3s; }
 @keyframes typing { 30% { opacity: 1; transform: translateY(-2px); } }
 @media (prefers-reduced-motion: reduce) {
-  .otter-chip-face::before, .otter-chip .otter-mark, .message.typing span { animation: none; }
-  .message.typing span { opacity: 0.7; }
+  .otter-chip-face::before, .otter-chip .otter-mark, .message.typing i { animation: none; }
+  .message.typing i { opacity: 0.7; }
 }
 /* As wide as what it says, with room beside it for its time. */
 .message { position: relative; align-self: flex-start; max-width: min(720px, calc(100% - 56px)); padding: 7px 12px; border-radius: 14px; background: var(--raised); }
@@ -671,7 +673,7 @@ body.resizing-col { cursor: col-resize; user-select: none; }
   display: flex; flex-direction: column; gap: 6px; padding: 5px; border-radius: 22px;
   background: var(--card); border: 1px solid var(--line); box-shadow: 0 2px 12px var(--shadow);
 }
-.composer:focus-within { border-color: var(--line-strong); }
+.composer:focus-within { border-color: var(--working); }
 .composer > .replying { padding: 4px 10px 0; }
 .composer-row { display: flex; align-items: flex-end; gap: 4px; }
 .composer-add, .composer-send { flex: none; width: 34px; height: 34px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; }
@@ -763,7 +765,7 @@ body.resizing-col { cursor: col-resize; user-select: none; }
 .decided-summary { flex: 1 1 0; min-width: 60px; font-family: var(--mono); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .decided-meta { flex: none; color: var(--faint); }
 .decided-answer { flex-basis: 100%; padding-left: 20px; }
-.pending-decisions { max-height: 40vh; overflow-y: auto; margin-bottom: 10px; }
+.pending-decisions { max-height: 35vh; overflow-y: auto; margin-bottom: 10px; }
 .fold:not(.open) { max-height: 260px; overflow: hidden; }
 .fold-toggle { margin-top: 6px; }
 .evidence-item a { color: var(--working-text); }

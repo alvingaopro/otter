@@ -274,6 +274,7 @@ describe("Tasks view", () => {
 
   it("makes the details beside the conversation as wide as you drag them (D-175)", async () => {
     localStorage.removeItem("otter.task-detail-width");
+    localStorage.removeItem("otter.task-details");
     await render(mockSource("mac"));
     const body = q(".task-body")!;
     expect(body.style.getPropertyValue("--detail-width")).toBe("380px");
@@ -348,7 +349,11 @@ describe("Tasks view", () => {
     expect(otter.getAttribute("aria-expanded")).toBe("true");
     expect(details.hidden).toBe(false);
     expect(localStorage.getItem("otter.task-details")).toBe("open");
-
+    // Otter again closes them; so does ×.
+    await act(async () => otter.click());
+    expect(details.hidden).toBe(true);
+    await act(async () => otter.click());
+    expect(details.hidden).toBe(false);
     await act(async () => q<HTMLButtonElement>('[aria-label="Hide details"]')!.click());
     expect(details.hidden).toBe(true);
     expect(localStorage.getItem("otter.task-details")).toBe("closed");

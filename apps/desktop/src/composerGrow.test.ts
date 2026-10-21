@@ -2,9 +2,9 @@ import { describe, expect, it } from "vitest";
 import { atEnd, fitHeight, MAX_SHARE } from "./composerGrow";
 
 describe("the message box growing (D-177)", () => {
-  it("is as tall as what is written, up to its share of the window, then scrolls", () => {
+  it("is as tall as what is written, up to its share of the conversation, then scrolls", () => {
     expect(fitHeight(34, 1000)).toEqual({ height: 34, scrolls: false });
-    expect(fitHeight(600, 1000)).toEqual({ height: 600, scrolls: false });
+    expect(fitHeight(500, 1000)).toEqual({ height: 500, scrolls: false });
     expect(fitHeight(900, 1000)).toEqual({ height: 1000 * MAX_SHARE, scrolls: true });
   });
 
