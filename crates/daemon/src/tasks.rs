@@ -739,6 +739,8 @@ pub fn replan(f: &mut Task, why: &str, now: Timestamp) -> Vec<Change> {
             status: StepStatus::Pending,
         }));
     }
+    // A plan turned down was turned down for the old goal (D-158).
+    crate::controller::forget_decline(f);
     for d in f.decisions.iter_mut().filter(|d| {
         d.kind == DecisionKind::PlanApproval
             && d.run_id.is_none()
@@ -1325,6 +1327,7 @@ mod tests {
             risk: Risk::Low,
             summary: "Go ahead?".into(),
             detail: None,
+            command: None,
             options: vec![],
             status: DecisionStatus::Pending,
             decided_by: None,
@@ -1459,6 +1462,7 @@ mod tests {
                 risk: Risk::High,
                 summary: "rm -rf build".into(),
                 detail: None,
+                command: None,
                 options: vec![],
                 status: DecisionStatus::Pending,
                 decided_by: None,
@@ -1524,6 +1528,7 @@ mod tests {
                     risk: Risk::High,
                     summary: "Start “t” over?".into(),
                     detail: None,
+                    command: None,
                     options: vec![],
                     status: DecisionStatus::Pending,
                     decided_by: None,

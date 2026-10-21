@@ -24,6 +24,7 @@ mod login;
 mod memory;
 mod metrics;
 mod paths;
+mod process_table;
 mod providers;
 mod reconcile;
 mod runs;

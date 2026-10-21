@@ -1132,12 +1132,34 @@ async fn stream_attach_off_screen_gets_nothing_and_catches_up_on_return() {
             .await
             .is_empty()
     );
-    // Back on screen: a snapshot with what was missed.
+    // Back on screen: what was missed comes, without a snapshot, so the
+    // client's history stays as it is (D-160).
+    writer.send(&view(true)).await.unwrap();
+    let back = read_until(&mut reader, "while-away-4").await;
+    assert!(!back.contains("\x1bc"), "{back:?}");
+    quiet_for(&mut reader, Duration::from_millis(300)).await;
+
+    // More than is kept for it: back on screen, a snapshot instead.
+    writer.send(&view(false)).await.unwrap();
+    host.conn()
+        .await
+        .session_write(
+            "vw",
+            "sh",
+            "head -c 3000000 /dev/zero | tr '\\0' x; echo; echo much-$((3+3))",
+            true,
+        )
+        .await
+        .unwrap();
+    wait_output(&host, "vw", "sh", "much-6").await;
+    // The pane has it; give the daemon a moment to have read past the limit.
+    tokio::time::sleep(Duration::from_millis(500)).await;
     writer.send(&view(true)).await.unwrap();
     let (back, _) = read_until_control(&mut reader, snapshot_done).await;
     assert!(
-        back.contains("\x18\x1bc") && back.contains("while-away-4"),
-        "{back:?}"
+        back.contains("\x18\x1bc") && back.contains("much-6"),
+        "{}",
+        back.len()
     );
 }
 
@@ -3124,6 +3146,69 @@ async fn a_second_task_waits_for_the_workspace() {
     assert!(!f.rationale.is_empty());
 }
 
+/// A task in review keeps its Git workspace (D-156): its verified work
+/// isn't committed until it's published, so another task started there
+/// waits — else publishing the first would commit the second's edits
+/// under its title (the live bench's B03). Accepted, the first lets go.
+#[tokio::test]
+async fn a_task_waiting_to_publish_keeps_its_workspace() {
+    use otter_core::task::{TaskAction, TaskStatus};
+    let fake = fake_agent_host("ok", "rules").await;
+    let host = &fake.host;
+    let (first, _) = git_task(&fake).await;
+    wait_task(host, &first, "asked to publish", |f| {
+        f.status == TaskStatus::Review
+            && f.pending_decisions()
+                .any(|d| d.summary.contains("git push"))
+    })
+    .await;
+    let mut conn = host.conn().await;
+    let second = conn
+        .task_create(otter_protocol::task::TaskCreate {
+            command_id: "create-second".into(),
+            title: "Second".into(),
+            request: "Add a README".into(),
+            workspace: Some("csv".into()),
+            answer_only: false,
+        })
+        .await
+        .unwrap()
+        .id
+        .to_string();
+    conn.task_act("start-second", &second, TaskAction::Start)
+        .await
+        .unwrap();
+    wait_task(host, &second, "waiting for the first", |f| {
+        f.status_reason.as_deref()
+            == Some(&*format!(
+                "Waiting for csv: “CSV export”{}",
+                otter_core::task::HELD
+            ))
+    })
+    .await;
+    // Published: still the first one's until it's accepted.
+    allow_publish(host, &first).await;
+    wait_task(host, &first, "published", |f| {
+        f.delivery.as_ref().is_some_and(|d| d.pr_url.is_some())
+    })
+    .await;
+    tokio::time::sleep(Duration::from_millis(1000)).await;
+    assert!(conn.task_get(&second).await.unwrap().runs.is_empty());
+    conn.task_act(
+        "accept-first",
+        &first,
+        TaskAction::Accept {
+            override_gates: true,
+        },
+    )
+    .await
+    .unwrap();
+    let f = wait_task(host, &second, "the second at work", |f| !f.runs.is_empty()).await;
+    let a = conn.task_get(&first).await.unwrap();
+    assert_eq!(a.status, TaskStatus::Done);
+    assert!(f.runs[0].started_at >= a.delivery.unwrap().pushed_at.unwrap());
+}
+
 /// A task waiting for a Git workspace gets one of its own (D-080): a
 /// worktree of the same repository on a branch for it, and both tasks'
 /// agents work at once, each in its own directory.
@@ -3583,6 +3668,178 @@ async fn a_workspace_is_pushed_and_its_pull_request_opened() {
         .await
         .unwrap_err();
     assert!(err.to_string().contains("not a Git workspace"), "{err}");
+}
+
+/// The host lists what Otter runs and who owns it (D-161): a session's
+/// process, and what it started, belong to the session.
+#[tokio::test]
+async fn the_host_lists_its_processes_with_their_owners() {
+    use otter_protocol::host::ProcessOwner;
+    let host = TestHost::new();
+    let ws = create(
+        &host,
+        "owned",
+        Some(vec![spec(SessionKind::Command, "sleeper", "sleep 300")]),
+    )
+    .await;
+    wait_status(&host, "owned", "sleeper", SessionStatus::Running).await;
+    let own = host.conn().await.host_status().await.unwrap().pid;
+    let found = eventually("the session's process is listed", || async {
+        let all = host.conn().await.host_processes().await.ok()?;
+        let session = all.processes.iter().find(|p| {
+            matches!(&p.owner, ProcessOwner::Execution { workspace_id, .. } if *workspace_id == ws.id)
+        })?;
+        let daemon = all.processes.iter().find(|p| p.pid == own)?;
+        Some((session.clone(), daemon.clone()))
+    })
+    .await;
+    let (session, daemon) = found;
+    assert!(!session.stoppable, "a session is stopped as a session");
+    assert!(matches!(daemon.owner, ProcessOwner::Daemon { this: true }));
+    assert!(!daemon.stoppable);
+}
+
+/// Stopping a process by hand reaches only what nothing owns, named by pid
+/// and start time (D-161): never this otterd, a session's process, a pid
+/// with another start time, or anything unlisted.
+#[tokio::test]
+async fn only_an_orphan_can_be_stopped_by_pid_and_start_time() {
+    use otter_protocol::host::{ProcessOwner, ProcessStop};
+    let host = TestHost::new();
+    let ws = create(
+        &host,
+        "owned",
+        Some(vec![spec(SessionKind::Command, "sleeper", "sleep 300")]),
+    )
+    .await;
+    wait_status(&host, "owned", "sleeper", SessionStatus::Running).await;
+    // Something started in a workspace directory that no workspace has.
+    let gone = host.home().join("workspaces/ws_gone");
+    std::fs::create_dir_all(&gone).unwrap();
+    let mut orphan = std::process::Command::new("sleep")
+        .arg("300")
+        .current_dir(&gone)
+        .spawn()
+        .unwrap();
+    let pid = orphan.id();
+    let all = eventually("the orphan is listed", || async {
+        let all = host.conn().await.host_processes().await.ok()?;
+        all.processes
+            .iter()
+            .any(|p| p.pid == pid && matches!(p.owner, ProcessOwner::Orphan { .. }))
+            .then_some(all)
+    })
+    .await;
+    let me = host.conn().await.host_status().await.unwrap().pid;
+    let row = |pid: u32| all.processes.iter().find(|p| p.pid == pid).unwrap().clone();
+    let stop = |pid: u32, started: u64| ProcessStop {
+        pid,
+        started,
+        force: false,
+    };
+    let mut conn = host.conn().await;
+
+    // This otterd, and a session's process: refused.
+    let err = conn
+        .host_process_stop(stop(me, row(me).started))
+        .await
+        .unwrap_err();
+    assert!(err.to_string().contains("this otterd"), "{err}");
+    let session = all
+        .processes
+        .iter()
+        .find(|p| matches!(&p.owner, ProcessOwner::Execution { workspace_id, .. } if *workspace_id == ws.id))
+        .unwrap();
+    let err = conn
+        .host_process_stop(stop(session.pid, session.started))
+        .await
+        .unwrap_err();
+    assert!(err.to_string().contains("session or a run"), "{err}");
+    // The orphan's pid with another start time (a reused id), or a pid
+    // nobody listed: refused, and the orphan still runs.
+    let err = conn
+        .host_process_stop(stop(pid, row(pid).started + 1))
+        .await
+        .unwrap_err();
+    assert!(err.to_string().contains("no such process"), "{err}");
+    let err = conn.host_process_stop(stop(1, 0)).await.unwrap_err();
+    assert!(err.to_string().contains("no such process"), "{err}");
+    assert!(orphan.try_wait().unwrap().is_none());
+
+    // The orphan itself, by both: ended.
+    conn.host_process_stop(stop(pid, row(pid).started))
+        .await
+        .unwrap();
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while orphan.try_wait().unwrap().is_none() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the orphan did not end"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
+/// An orphan that leads a group of its own is ended with its group (D-161),
+/// and nothing outside it: not this test's own group.
+#[tokio::test]
+async fn stopping_an_orphan_ends_its_group_only() {
+    use otter_protocol::host::{ProcessOwner, ProcessStop};
+    use std::io::BufRead;
+    use std::os::unix::process::CommandExt;
+    let host = TestHost::new();
+    let gone = host.home().join("workspaces/ws_gone");
+    std::fs::create_dir_all(&gone).unwrap();
+    // A leader in its own group, with a child that prints its pid.
+    let mut leader = std::process::Command::new("sh")
+        .args(["-c", "sleep 300 & echo $!; wait"])
+        .current_dir(&gone)
+        .stdout(std::process::Stdio::piped())
+        .process_group(0)
+        .spawn()
+        .unwrap();
+    let mut line = String::new();
+    std::io::BufReader::new(leader.stdout.take().unwrap())
+        .read_line(&mut line)
+        .unwrap();
+    let child: u32 = line.trim().parse().unwrap();
+    let pid = leader.id();
+    let all = eventually("the leader is listed", || async {
+        let all = host.conn().await.host_processes().await.ok()?;
+        all.processes
+            .iter()
+            .any(|p| p.pid == pid && matches!(p.owner, ProcessOwner::Orphan { .. }))
+            .then_some(all)
+    })
+    .await;
+    let started = all.processes.iter().find(|p| p.pid == pid).unwrap().started;
+    host.conn()
+        .await
+        .host_process_stop(ProcessStop {
+            pid,
+            started,
+            force: false,
+        })
+        .await
+        .unwrap();
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while leader.try_wait().unwrap().is_none() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the leader did not end"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    // Its child went with the group (a zombie until reaped is gone for us:
+    // signal 0 fails once it has been reaped by init).
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while unsafe { libc::kill(child as libc::pid_t, 0) } == 0 {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the child did not end"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
 }
 
 /// Files are removed and renamed inside the workspace only (D-103): never
@@ -5052,6 +5309,71 @@ async fn a_model_cannot_approve_what_only_the_developer_may() {
         (d.status, d.decided_by),
         (DecisionStatus::Denied, Some(Decider::User))
     );
+}
+
+/// B06 (D-157): a command too long for a decision's one line is there whole
+/// for the developer who decides it, and its credential in nothing Otter
+/// keeps.
+#[tokio::test]
+async fn a_long_command_is_there_whole_for_the_developer() {
+    use otter_core::task::TaskStatus;
+    let fake = fake_agent_host("ok", "rules").await;
+    let host = &fake.host;
+    let id = started_task(host, "Rename the storage path ASK_LONG").await;
+    let f = wait_task(host, &id, "blocked on the developer", |f| {
+        f.status == TaskStatus::Blocked && f.pending_decisions().next().is_some()
+    })
+    .await;
+    let d = f.pending_decisions().next().unwrap();
+    assert!(d.user_only, "{d:?}");
+    // Its one line stops before the `rm` policy matched…
+    assert!(
+        d.summary.starts_with("Run `python3 - <<'E' import re") && d.summary.ends_with('…'),
+        "{}",
+        d.summary
+    );
+    assert!(!d.summary.contains("rm -rf"), "{}", d.summary);
+    // …so the whole command is there too, as written, without its credential.
+    let command = d.command.as_deref().expect("the whole command");
+    assert!(
+        command.starts_with("python3 - <<'E'\nimport re\np = \"taskbench/cli.py\"\n"),
+        "{command}"
+    );
+    assert!(command.ends_with(" rm -rf /opt/shared"), "{command}");
+    // Kept with its decision, and only there: what comes past the cut goes
+    // neither to the host's event log nor to the task's history.
+    let state = host.home().join("state");
+    let read = |p: std::path::PathBuf| {
+        std::fs::read_to_string(&p).unwrap_or_else(|e| panic!("{}: {e}", p.display()))
+    };
+    let task_dir = state.join("tasks").join(&id);
+    let doc = read(task_dir.join("task.json"));
+    assert!(doc.contains(" rm -rf /opt/shared"), "{doc}");
+    let history = read(task_dir.join("history.jsonl"));
+    assert!(
+        history.contains("Run `python3 - <<'E' import re"),
+        "{history}"
+    );
+    let events = read(state.join("events.jsonl"));
+    assert!(events.contains(&id), "{events}");
+    for log in [&history, &events] {
+        assert!(!log.contains("rm -rf"), "{log}");
+    }
+    let mut kept = String::new();
+    let mut stack = vec![host.home().to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        for e in std::fs::read_dir(&dir).unwrap().flatten() {
+            let path = e.path();
+            if path.is_dir() {
+                stack.push(path);
+            } else if let Ok(text) = std::fs::read_to_string(&path) {
+                kept.push_str(&text);
+            }
+        }
+    }
+    let answered = serde_json::to_string(&f).unwrap();
+    assert!(!answered.contains("LONGLONG"), "{answered}");
+    assert!(!kept.contains("LONGLONG"), "{kept}");
 }
 
 /// Invariant 13 (D-075): a credential printed by what fails — the coding

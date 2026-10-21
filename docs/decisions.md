@@ -2881,6 +2881,8 @@ decided here by default, to revisit with the transcripts.
   and the plan is set; turned down, the plan, written out, is the answer
   and the task is done ("Not carried out: this task only answers"). The
   brain doesn't review such a plan: nothing is built unless it's allowed.
+  *Amended 2026-10-21 (D-158):* turned down, the agent answers the
+  question in words in one more turn; a plan again isn't asked about twice.
 - `answer_only` is a new field with a default: no schema bump (D-061).
 
 ## D-093 — Otter on the host: a conversation of its own (2026-10-15)
@@ -3671,6 +3673,9 @@ Follows D-118, with what dogfooding it left open.
   just goes on. This isn't tmux's `refresh-client -A pane:off`: once every
   client turns a pane off, tmux stops reading it and the program blocks.
   Tested: the program runs on while the client gets nothing.
+  *Amended 2026-10-21 (D-160):* the output is kept for the terminal, up to
+  1 MiB, and sent when it's back; a snapshot past that, or when it comes
+  back at another size.
 - **SSH is compressed.** Snapshots are escape-heavy text. Real Claude Code
   ones went from 203 KiB to 29 KiB with zlib, which is what SSH uses.
   Otter's ssh passes `Compression=yes` after the host's `ssh_args`, so an
@@ -5155,6 +5160,8 @@ this between workspaces; this is the same between sessions.
   *Amended 2026-10-21 (D-153):* "just shown" holds only for a session that
   printed nothing while hidden. One that did gets a full snapshot when
   shown (D-119), as an attach would, and loses earlier lines it had loaded.
+  *Amended again (D-160):* now it gets what it missed, up to 1 MiB, at the
+  same size; a snapshot past that or at another size.
 - **Hidden means idle,** as in D-100: a hidden terminal never fits, tells
   the host it isn't on screen and gets nothing until it is (D-119, D-137),
   and takes no keys.
@@ -5202,6 +5209,7 @@ DOM renderer from then on.
   - Catching up a session that printed a little while hidden without a
     snapshot (the daemon keeping that output, to a budget, instead of
     dropping it). That is D-119's off-screen rule and the next step.
+    *Done in D-160.*
   - Each attach is a session on one SSH connection per host, and sshd allows
     ten by default (`MaxSessions`). Not measured past that.
   - Checked in tests only: the renderer switch isn't exercised there (the
@@ -5260,6 +5268,172 @@ on the host's page), once per host, so it repeated on every workspace of that
 host and took a row from the terminal. The workspace pane no longer shows it.
 A host too old for a command still says so where the command is used
 (`explain`).
+
+## D-156 — A task holds its workspace until it's done (2026-10-21)
+
+D-079 gave a workspace one managed run at a time, so delivery wouldn't push
+one branch with two tasks' work. But the claim lasted only as long as a
+run. A task in review keeps its verified work uncommitted until the
+developer allows publishing (D-068), with no run at all. The live task
+bench (B03) started a second task in that workspace, then allowed the
+first to publish: `git add -A` committed the second's half-made edits under
+the first's title and into its pull request. The same gap let a waiting
+task slip in between two of a task's runs (its planning turn and its
+first step).
+
+- **In a Git repository, another task's work there, not done, holds the
+  workspace:** a task that has run in it and isn't done or cancelled — at work, in review,
+  paused, blocked or failed. A task wanting it waits as D-079 says, costs
+  no attempt, and goes on by itself when the other is accepted or
+  cancelled, or moves to a workspace of its own (D-080, the app's button),
+  since it hasn't worked yet. While the other is at work the wait reads as
+  D-079's ("… is working there") and ends by itself; while it's at rest
+  only the developer can end it, so it says so ("… has unfinished work
+  there: finish or cancel it, or give this task a workspace of its own")
+  and needs them ("Waiting on you").
+- **Pausing doesn't hand a Git workspace over:** paused, a task's work is
+  still in the tree. Cancelling does. A cancelled task's files stay
+  (D-068), and the next task's delivery then takes them as the
+  workspace's.
+- **Only where delivery commits:** a workspace in a Git repository (at
+  its root or below it, as delivery finds it). An empty or plain directory
+  has no commit to mix work into, so it keeps D-079's one run at a time.
+- **Triggers on a Git workspace** now wait behind the last occurrence's
+  task until it's accepted (and later occurrences are skipped as still at
+  work), where before each pushed into the same branch and pull request.
+  The wait says it needs the developer.
+- **No deadlock:** the hold applies only to a task that hasn't run in the
+  workspace yet. Two that both have (from before this, or another way
+  in) fall back to D-079's one run at a time.
+- **Not done** (from the review, 2026-10-21):
+  - The hold is about when tasks start, not what is committed: publishing
+    still commits whatever is in the tree. A task accepted or cancelled
+    without publishing leaves its edits there, and the next task's
+    delivery takes them under its own title. A check before committing that
+    the tree is the one verified would catch more, but not this case (the
+    next task verified with those edits in the tree).
+  - A trigger on a Git workspace makes one task and then waits behind it
+    until it's accepted; the trigger's wait limit doesn't apply to that
+    wait, so an unattended trigger needs the developer each time.
+  - Done isn't final (the goal can change after it, D-050): a task
+    re-planned after another started in the workspace has runs, so both
+    fall back to D-079.
+  - A task that has run counts wherever its runs were; a task moved to
+    this workspace after running elsewhere isn't held.
+- **Not done:** a task accepted but whose pull request isn't merged yet
+  leaves its branch with that PR open; a next task in the same workspace
+  pushes to that branch and finds that PR. Waiting for the merge would
+  need GitHub's word on every step; it's the developer's call when to
+  start the next.
+- **Verified:** e2e `a_task_waiting_to_publish_keeps_its_workspace` (B03's
+  shape: the first asked to publish, the second waits through the publish
+  and starts once the first is accepted) fails against the code before;
+  D-079's and D-083's tests on plain directories pass unchanged.
+
+## D-157 — A command to decide on is there whole (2026-10-21)
+
+B06 in the task bench: the coding agent ran a long `python3 - <<'E' … E`
+script that ended in an `rm`, and policy asked the developer, as it does
+for deleting. The decision's `summary` is one line, cut at 200 characters
+(`claude_stream::summarize`), and its `detail` only policy's reason. The
+`rm` policy matched came after the cut, and the command was nowhere else:
+not in the app, not in `otter task show`, not in the conversation's tool
+record (cut the same way). The only safe answer was to deny.
+
+- **`DecisionRequest.command`**: the whole command line, when the summary
+  doesn't show it as it is (cut, or on several lines). Redacted, then
+  bounded at 16 KiB on a character, with a last line saying how many bytes
+  more there were (`… N more bytes, not kept`). Redacted first, so a cut
+  can't leave half a credential that no longer looks like one. It is set
+  where a run's every ask is recorded (`record_ask`), so it holds on both
+  backends: `claude -p` and the SDK worker both send the tool's input
+  whole. The summary stays the short line it was.
+- **A field of its own, not `detail`.** `detail` is policy's reason and is
+  read back as that: deciding rebuilds policy's verdict from it, the
+  Control Agent's prompt quotes it as the policy note, and the app shows it
+  as prose. A command is shown as written, its lines kept. The field is
+  optional and absent when the summary says it all, so older clients
+  ignore it and an older otterd never sends it: no protocol bump.
+- **Where the developer decides:** the app's decision (in the task and in
+  the Inbox, one component) shows it under the reason, as written, and
+  scrolls past 240 px. `otter task show` prints, under each decision
+  waiting on you, its reason (it printed only the summary) and the whole
+  command, indented.
+- Nothing new goes to `events.jsonl` or the task's history:
+  `DecisionRequested` carries no text, and the Blocked reason is still the
+  summary. The e2e test reads both and checks.
+- **Two leaks next to it, closed** (found in review, older than this):
+  - *The summary was cut, then redacted.* A cut inside a URL's password
+    (before its `@`), or one that left a token shorter than its shape, was
+    no longer seen as a credential, and its start went into the summary,
+    the Blocked reason in the task's history, the conversation's permission
+    interaction and Otter's prompts. `summarize` now redacts before it
+    cuts, as the conversation's tool record already did, and so does a
+    run's activity line (`$ …`).
+  - *A grant key kept the command as written.* The key (D-066) is the
+    command line, kept on the decision and, once approved, in the task's
+    grants: `HTTPS_PROXY=http://bob:hunter2@proxy:8080 cargo build >
+    /opt/build.log` matched no word list, so it was grantable with the
+    password in its key. A line with a credential in it
+    (`redact::has_secret`) is now never granted: it is asked every time, as
+    D-066 already asks about credentials. Keys keep their format.
+
+Not done: the conversation's tool record and its permission interaction
+still carry the 200-character line, so the coding agent's feed in the app
+cuts the command as before. Otter's tools (`get_pending_decisions`) and
+the Control Agent's decision prompt still see only the summary and the
+reason. The Control Agent never decides what only the developer may
+(D-066), and policy reads the whole line either way. A tool's output from
+`claude -p` is redacted before otterd cuts it to 2,000 characters too;
+the SDK worker still cuts it first (it has no `redact`), so that cut
+should move to otterd.
+
+## D-158 — A plan turned down on an answer-only task still gets the question answered (2026-10-21)
+
+Bench (B05): an answer-only task asked what `make test` runs and how many
+tests there are. The coding agent's look at the code came back with a plan
+(confirm the count, write it down), which came to the developer as D-092
+says; they turned it down. The task went done, "Answered", and the answer
+posted was the plan's own steps and criteria with "Not carried out: this
+task only answers." The question was never answered, although the agent
+had read the Makefile and the tests to plan.
+
+- **Turned down, the agent answers in words.** The planning step goes back
+  to the coding agent once more, marked in its `detail` (as a plan sent back
+  is, D-084): its next turn, in the same conversation, is told the developer
+  turned down changing the code and to answer the request from what it
+  found, pointing to the code, changing nothing, with no JSON. It only reads,
+  as every turn of an answer-only task does (D-092), and costs no attempt.
+  Its reply is the answer (`planning → done`, "Answered"), as a look at the
+  code that found a question is.
+- **Not asked twice.** If that turn plans the change again, the developer
+  isn't asked again. What it said besides the plan (the JSON and its fence
+  left out) is shown, then what it would do, not carried out; with nothing
+  besides, Otter says plainly that the agent couldn't answer without
+  changing the code, which they turned down. The task is done, "Not
+  carried out: the coding agent planned the change you turned down". The
+  mark is the guard, kept in the task document, so a restart doesn't ask
+  again either. A turn that fails or says nothing fails the look as
+  before, and Retry asks for the answer again.
+- **A decline that no longer stands is forgotten** (`forget_decline`),
+  whatever the planning step is doing — even mid-turn:
+  - a new ask (D-050, "then change it", `replan`): a turn under way is
+    cut off and carried on with it, and a plan from it is asked about as
+    any is;
+  - changes allowed (`set_answer_only` off): what comes back is read as
+    any look's — a plan goes to the brain's review — and a look still to
+    start is an ordinary one.
+  The mark is never taken for a plan sent back, so the review's points
+  still go back to the agent once before the developer is asked (D-084).
+- The question itself now says so: turned down, the agent "answers from
+  what it found, changing nothing".
+- Known limit: a **redirect** during that turn (D-059) doesn't change the
+  goal, so the mark stays, and a plan in the reply ends the task as above
+  rather than being asked about — unlike a plan sent back, which still
+  reaches the developer's plan question. Saying so again, as a new ask,
+  plans again. Tested with the fake worker only (an answer in words; a
+  plan again, bare and with words; a new goal and changes allowed while
+  that turn runs); not yet with live Claude.
 
 ## D-159 — Reconciling asks the backend without holding the store (2026-10-21)
 
@@ -5327,3 +5501,99 @@ Not done: telling otterd when a pane changes instead of asking twice a
 second (D-007's revisit: tmux hooks or one control-mode client), which is
 what an idle host would need; and reading agents' transcripts outside the
 lock.
+
+## D-160 — A terminal back on screen gets what it missed, not a snapshot (2026-10-21)
+
+D-119 dropped a stream's output while its terminal was off screen and sent
+a snapshot when it came back. With D-152 keeping a workspace's sessions'
+terminals, that is most switches: a session that printed anything while
+hidden came back as a snapshot (5,000 lines, up to 1 MiB, about 150 KiB
+over compressed SSH), and the snapshot's reset cleared the terminal's
+history, earlier lines asked for (D-119) and where the reader was.
+
+- **Kept, then sent.** Off screen, the daemon keeps the pane's output for
+  the terminal; back on screen at the same size it sends it, as it would
+  have gone. Nothing is reset; its history stays as it was.
+- **At another size, a snapshot.** A hidden terminal doesn't fit, but it
+  fits itself to its place as soon as it's shown, before it says it's back
+  (the window, a panel or the font changed meanwhile). Output kept at the
+  old width would wrap wrong in it and stay in its history, so then it gets
+  a snapshot at the new size, as before.
+- **Up to 1 MiB** (`HELD_BYTES`, a snapshot's own cap): past that a snapshot
+  is the cheaper way back, and the terminal gets one, as before. Measured
+  with Claude Code launched as Otter launches it (D-144), at 200×50: about
+  1.1 KiB a second while it works, nothing while it waits. So about a
+  quarter of an hour of work is kept, longer than D-152 keeps a hidden
+  session by default (ten minutes). About 1 MiB a hidden terminal in
+  otterd (its buffer may briefly be twice that while it grows).
+- **Given up, for a snapshot,** when the window's size changes while the
+  terminal is hidden (another client sized it: what was kept was laid out
+  at the size before, and the client would hear of the new size first),
+  when it fell behind, and when a snapshot is asked for meanwhile (it has
+  it all, so nothing is sent twice).
+- Same path as live output: the user's own terminal's queries are kept out
+  of it (D-120), and the client falling behind still gets a fresh snapshot.
+- **Verified:** unit tests for kept and sent, too much, back at another
+  size, the window sized by another client, and a snapshot asked for or
+  come meanwhile; the end-to-end test against real tmux now expects the
+  missed output without a reset, and a snapshot after 3 MB printed while
+  away. The kept-output tests fail with output dropped as before.
+- Not done: an older host still sends a snapshot; the app doesn't need to
+  know which it got.
+
+## D-161 — A host's Work tab shows what Otter runs there, strays included (2026-10-21)
+
+During an otterd update, otterds of other builds (one from a bench's home, one
+a debug build) were found running for more than ten hours, using CPU, with no
+client and no sessions; nothing in the app showed them. A host's page now has
+two tabs: **Overview** (what it was: problems, usage, ports) and **Work**.
+
+- **Work** lists by kind: Tasks, Workspaces, Sessions, Agents (a task's coding
+  agent, an agent in a session) and Processes (this otterd, other ones,
+  orphans). The first three come from what the app already has; their
+  processes, owners, CPU and memory come from the new **`host.processes`**. A
+  row opens into who owns it and its process tree. The actions are the
+  commands that exist (`task.act`, `workspace.*`, `session.*`), asked again
+  in the row before they end anything. The tab is remembered per host. A
+  badge on the tab counts the strays, so one is seen from the Overview.
+- **Strays** are decided conservatively and on the daemon: an `otterd serving`
+  that isn't this process, or a process whose working directory is in this
+  host's `workspaces/` folder under an id that no workspace has (or whose
+  workspace is archived), with no session's or run's process above it. What
+  holds owned work up (the parents of a session's or a run's process) and the
+  backend's server (a process named `tmux`, daemonized, which keeps the
+  directory the otterd was started in) are never strays; a worker this otterd
+  started that outlived its run is one. A shell of the developer's own that
+  merely sits in such a folder is called a stray too, by the directory it is
+  in now; stopping it asks first and says what it is. A
+  session of an archived workspace that still runs is not a stray (it is a
+  session): the row says so ("Archived, still running").
+- **`host.processes.stop {pid, started, force?}`** is the one new thing that
+  can end a process, so it is narrow: it takes the pid *and start time*
+  `host.processes` gave, finds the process again now and classifies it again,
+  and refuses this otterd, a session's or a run's process (stop those where
+  they are shown, through `session.stop` and `task.act`), a start time that
+  isn't the process's (a reused id), and anything not listed. SIGTERM, or
+  SIGKILL when forced, to its process group if it leads one; a signal that
+  can't be sent (the process ended, or isn't this user's) is an error, not
+  a success, and with no sample yet (the first 5 s after a start) it is
+  refused, for the owners can't be found without the tree. The target is **read again at that moment** (executable,
+  arguments, directory), not taken from the 5 s sample: a session starts as
+  `otterd internal-exec … -- argv` and execs in place, so a sample taken then
+  would call its shell "another otterd". The sampler reads those fields anew
+  each time, and an `internal-exec` is never an otterd serving. The sample's
+  command lines never leave the daemon (invariant 13); an otterd is told from
+  other processes by its name and `serve` argument, read in the sampler.
+- **Another otterd can be stopped** from here with SIGTERM or SIGKILL. That
+  loses no work: `daemon.shutdown` is already "managed processes keep
+  running", and the page says its sessions keep running. The version of
+  another otterd isn't shown: it would need running its binary; its path and
+  start are.
+- **Busy** (25% of a CPU or more for ten minutes) is shown on any row, never
+  made a stray by itself: a build can be busy for that long. Output isn't
+  known to the sampler, so "no output" is not claimed.
+
+Not done: a Problems line for other otterds (D-077); stale tmux sessions
+(needs the backend to list its sessions); disk size per workspace; stopping a
+session's or run's process other than through its own commands; a task
+agent's "Interrupt" shows only for runs that are live.

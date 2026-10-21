@@ -10,6 +10,7 @@ import {
   collapseRepeats,
   findMatch,
   groupOf,
+  HELD,
   heardLine,
   needsYou,
   sortTasks,
@@ -328,6 +329,8 @@ describe("Tasks view", () => {
   it("answers an approval and shows it where it was asked", async () => {
     await render(mockSource("mac"));
     await open("Rotate the staging");
+    // Its one line says it all: no block for the whole command.
+    expect(q(".pending-decisions .decision-command")).toBeNull();
     await act(async () => byText(".pending-decisions button", "Approve")!.click());
     const blocked = source.list().find((p) => p.task.title.startsWith("Rotate"))!;
     expect(blocked.task.decisions[0].status).toBe("approved");
@@ -339,6 +342,26 @@ describe("Tasks view", () => {
     expect(log.slice(0, 3)).toEqual(["message user", "message controller", "decided"]);
     expect(q(".decided")?.textContent).toContain("Approved by you");
     expect(sections()).toContain("Decisions");
+  });
+
+  it("shows the whole command an approval is about when its one line cuts it (D-157)", async () => {
+    const [blocked] = sampleTasks().filter((f) => f.status === "blocked");
+    const command = "python3 - <<'E'\nimport re\nprint('rewrote')\nE\nGITHUB_TOKEN=*** rm -rf /opt/shared";
+    const d = {
+      ...blocked.decisions[0],
+      summary: "Run `python3 - <<'E' import re print('rewrote') E …`",
+      detail: "deletes or destroys something (`rm`)",
+      command,
+    };
+    const acts = await single({ ...blocked, decisions: [d] });
+    const pending = q(".pending-decisions")!;
+    expect(pending.querySelector(".decision-summary")?.textContent).toBe(d.summary);
+    // As written, its lines kept, under the one line and the reason.
+    const block = pending.querySelector('[aria-label="The whole command"]');
+    expect(block?.textContent).toBe(command);
+    expect(block?.previousElementSibling?.textContent).toBe(d.detail);
+    await act(async () => byText(".pending-decisions button", "Deny")!.click());
+    expect(acts).toContainEqual({ action: "decide", decision_id: d.id, approve: false });
   });
 
   it("handles failed and completed tasks", async () => {
@@ -510,6 +533,36 @@ describe("Tasks view", () => {
     expect(q(".banner.needs")?.textContent).toContain("an agent you started");
     await act(async () => byText(".banner button", "Open claude")!.click());
     expect(onOpenWorkspace).toHaveBeenCalledWith("mac", "ws_demo", "ses_c");
+    expect(byText(".banner button", "Work in its own workspace")).toBeDefined();
+  });
+
+  it("says a task waiting behind another task's unfinished work needs you, and offers its own workspace (D-156)", async () => {
+    const [active] = sampleTasks(Date.now());
+    const task: Task = {
+      ...active,
+      status: "planning",
+      steps: [],
+      runs: [],
+      workspace_id: "ws_demo",
+      status_reason: `Waiting for demo: “Fix the export”${HELD}`,
+      activity: "needs_you",
+      needs: { kind: "blocked", summary: "Waiting on you", since: active.updated_at, decisions: 0 },
+    };
+    const s: TaskSource = { ...mockSource("mac"), list: () => [{ host: "mac", task, key: "mac/" + task.id }], subscribe: () => () => {} };
+    await act(async () =>
+      root.render(
+        <TasksView
+          source={s}
+          hosts={["mac"]}
+          workspaces={{ mac: [{ id: "ws_demo", name: "demo", sessions: [] }] }}
+          now={Date.now()}
+          onOpenWorkspace={async () => {}}
+          onOpenPreview={async () => {}}
+        />,
+      ),
+    );
+    expect(q(".status-pill")?.textContent).toBe("Needs you");
+    expect(q(".banner.needs")?.textContent).toContain("has unfinished work there");
     expect(byText(".banner button", "Work in its own workspace")).toBeDefined();
   });
 

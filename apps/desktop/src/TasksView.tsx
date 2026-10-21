@@ -14,6 +14,7 @@ import type { TaskSource } from "./taskSource";
 import { QuestionForm, Turn, WorkHead } from "./Work";
 import {
   GROUPS,
+  HELD,
   STATUS_LABEL,
   budgetBinds,
   collapseReasons,
@@ -562,7 +563,7 @@ function StatusBanner({
           <Glyph kind={yours ? "needs" : "working"} />
           <span className="banner-summary">{f.status_reason}</span>
         </span>
-        {f.status_reason.endsWith("is working there") && f.runs.length === 0 && (
+        {(f.status_reason.endsWith("is working there") || f.status_reason.endsWith(HELD)) && f.runs.length === 0 && (
           <span className="banner-actions">
             {waited && (
               <button className="btn outline" title="Let it finish, or stop it, and the task starts" onClick={() => onOpenSession(waited.id)}>
@@ -855,6 +856,12 @@ export function Decision({
       </div>
       <div className="decision-summary">{d.summary}</div>
       {d.detail && <div className="muted small">{d.detail}</div>}
+      {/* What the one line cuts: the whole command, to decide on (D-157). */}
+      {d.command && (
+        <pre className="decision-command" aria-label="The whole command">
+          {d.command}
+        </pre>
+      )}
       {form ? (
         <QuestionForm
           interaction={interaction!}

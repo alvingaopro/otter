@@ -479,6 +479,17 @@ export default function App() {
             host={payload.hosts.find((h) => h.name === hostPage)!}
             version={version}
             forwards={forwards}
+            tasks={tasks.filter((t) => t.host === hostPage).map((t) => t.task)}
+            now={now}
+            onTask={(task, action) => taskSource.act(`${hostPage}/${task}`, action)}
+            onOpenWorkspace={(workspace, session) => {
+              const key = `${hostPage}/${workspace}`;
+              wanted.current = key;
+              setSelected(key);
+              setHostPage(null);
+              if (session) setSessions((m) => ({ ...m, [key]: session }));
+              setView("workspaces");
+            }}
             onRemoved={() => setHostPage(null)}
           />
         ) : current ? null : (

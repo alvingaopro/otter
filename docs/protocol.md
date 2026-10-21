@@ -144,6 +144,25 @@ display; it is not a sync mechanism.
 Both are additions (no protocol bump); daemons before them answer
 `invalid_request`.
 
+- `host.processes` → `{sampled_at, processes: [{pid, started, parent?, name,
+  exe?, cwd?, cpu_percent, memory, busy_secs, owner, stoppable}]}` (D-161): the
+  processes Otter started or must answer for, as of the last 5 s sample
+  (`unavailable` until the first). `started` (seconds since the epoch) with
+  `pid` names a process. `owner` is `{kind: "daemon", this}` (an otterd: this
+  one, or another), `{kind: "execution", workspace_id, session_id,
+  execution_id}` or `{kind: "run", task_id?, workspace_id}` (in the process
+  tree of a session's running execution, or of a coding agent's run, found
+  through each process's parents), or `{kind: "orphan", why}` (working in a
+  workspace folder of this host whose workspace is gone or archived, with no
+  such tree above it). `busy_secs`: how long it has used 25% of a CPU or more.
+  A command line is never sent: it can carry a token.
+- `host.processes.stop {pid, started, force?}` → `null` (D-161). Ends what
+  `host.processes` lists with `stoppable: true` — an otterd that isn't this
+  one, or an orphan — by SIGTERM, or SIGKILL with `force`, to its process
+  group when it leads one. `conflict` for this otterd, for a session's or a
+  run's process ("stop it there"), for a `started` that isn't the process's
+  now (a reused id), and for anything not listed.
+
 ## Archiving workspaces
 
 - `workspace.archive {workspace}` → the workspace, now `state: "archived"`.
@@ -391,6 +410,13 @@ a `recovery` decision, `user_only`: `decide {approve: true}` starts the step
 over, `approve: false` pauses the task. States and the crash matrix:
 [`runtime-states.md`](runtime-states.md). Clients treat an unknown run state
 as ended.
+
+**A decision's whole command** (D-157; an optional field, old peers ignore
+it): a decision on a coding agent's command that its one-line `summary`
+cuts, or that runs over several lines, carries `command?`, the command as
+written — redacted, at most 16 KiB, and when longer a last line `… N more
+bytes, not kept`. Absent when the summary shows it all. `detail` stays the
+reason it is asked.
 
 **Commands are idempotent.** `command_id` is the client's id for one intent
 (a random string). A command the daemon has applied is not applied again: a

@@ -1,7 +1,7 @@
 //! Host-level views: resource usage (`host.metrics`), listening ports
 //! (`host.ports`), and the host's settings (`settings.get` / `settings.set`).
 
-use otter_core::Timestamp;
+use otter_core::{ExecutionId, SessionId, TaskId, Timestamp, WorkspaceId};
 use serde::{Deserialize, Serialize};
 
 /// Usage now, plus recent history for charts.
@@ -345,4 +345,75 @@ mod tests {
         // A host that still has one isn't cleared yet.
         assert!(!id(Some(""), Some("")).same_as(&id(Some("Ada"), None)));
     }
+}
+
+/// `host.processes` (D-161): the processes Otter started or must answer for,
+/// each with what owns it. Never a command line, which can carry a token.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct HostProcesses {
+    pub sampled_at: Timestamp,
+    pub processes: Vec<OtterProcess>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct OtterProcess {
+    pub pid: u32,
+    /// Seconds since the epoch, as the system reports it: with the pid it
+    /// names the process (an id alone can be reused).
+    pub started: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent: Option<u32>,
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exe: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cwd: Option<String>,
+    /// Percent of one CPU, as of the last sample.
+    pub cpu_percent: f32,
+    pub memory: u64,
+    /// How long it has used 25% of a CPU or more, in whole seconds; 0 when
+    /// it isn't busy now.
+    #[serde(default)]
+    pub busy_secs: u32,
+    pub owner: ProcessOwner,
+    /// `host.processes.stop` accepts it.
+    #[serde(default)]
+    pub stoppable: bool,
+}
+
+/// What a process belongs to.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ProcessOwner {
+    /// An otterd: the one answering (`this`), or another on the host.
+    Daemon {
+        #[serde(default)]
+        this: bool,
+    },
+    /// In the process tree of a session's running execution.
+    Execution {
+        workspace_id: WorkspaceId,
+        session_id: SessionId,
+        execution_id: ExecutionId,
+    },
+    /// In the process tree of a coding agent's run.
+    Run {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        task_id: Option<TaskId>,
+        workspace_id: WorkspaceId,
+    },
+    /// Started in a workspace that is gone or archived, owned by nothing
+    /// that runs.
+    Orphan { why: String },
+}
+
+/// `host.processes.stop`: end another otterd, or an orphan, by
+/// the pid and start time `host.processes` gave. Anything else is refused.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProcessStop {
+    pub pid: u32,
+    pub started: u64,
+    /// SIGKILL instead of SIGTERM.
+    #[serde(default)]
+    pub force: bool,
 }

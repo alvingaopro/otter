@@ -1173,12 +1173,9 @@ async fn a_plan_under_answer_only_waits_for_the_developer() {
     );
 }
 
-/// Turned down, the plan is the answer, and nothing is built (D-092).
-#[tokio::test]
-async fn a_plan_turned_down_under_answer_only_is_the_answer() {
+/// An answer-only task whose plan the developer turned down: its id.
+async fn turn_the_plan_down(host: &TestHost) -> String {
     use otter_core::task::{DecisionKind, TaskAction};
-    let fake = sdk_host_with("ok", vec![("OTTER_PLAN_TURN", "1".into())]).await;
-    let host = &fake.host;
     let id = answer_only_task(host, "Add CSV export").await.unwrap();
     let f = wait_task(host, &id, "asking about the plan", |f| {
         f.pending_decisions()
@@ -1200,26 +1197,162 @@ async fn a_plan_turned_down_under_answer_only_is_the_answer() {
         )
         .await
         .unwrap();
-    let f = wait_task(host, &id, "answered", |f| f.status == TaskStatus::Done).await;
-    assert!(f.answer_only);
-    let answer = f
-        .messages
+    id
+}
+
+/// How many times the developer was asked about a plan.
+fn plan_questions(f: &Task) -> usize {
+    f.decisions
         .iter()
-        .rev()
-        .find(|m| m.role == MessageRole::Agent)
-        .unwrap();
-    assert!(
-        answer.text.contains("1. Write the exporter"),
-        "{}",
-        answer.text
-    );
-    assert!(answer.text.contains("Not carried out"), "{}", answer.text);
+        .filter(|d| d.kind == otter_core::task::DecisionKind::PlanApproval)
+        .count()
+}
+
+/// An answer-only task whose plan the developer turned down, done.
+async fn plan_turned_down(host: &TestHost) -> Task {
+    let id = turn_the_plan_down(host).await;
+    let f = wait_task(host, &id, "done", |f| f.status == TaskStatus::Done).await;
+    assert!(f.answer_only);
+    assert_eq!(plan_questions(&f), 1, "asked once: {:?}", f.decisions);
     assert!(
         f.steps.iter().all(|t| t.planning),
         "nothing planned: {:?}",
         f.steps
     );
     assert_eq!(f.budget.iterations_used, 0);
+    f
+}
+
+/// The same task, its answer turn under way (fake mode `answerhangs`).
+async fn answering_after_a_decline(host: &TestHost) -> String {
+    let id = turn_the_plan_down(host).await;
+    wait_task(host, &id, "the answer turn at work", |f| {
+        f.runs.len() == 2 && f.runs[1].state == RunState::Running && f.steps[0].detail.is_some()
+    })
+    .await;
+    id
+}
+
+/// Turned down, the plan isn't the answer (B05): the agent answers in
+/// words from what it found, still only reading, in the same conversation,
+/// and nothing is built (D-092, D-158).
+#[tokio::test]
+async fn a_plan_turned_down_under_answer_only_is_answered_in_words() {
+    let fake = sdk_host_with("ok", vec![("OTTER_PLAN_TURN", "1".into())]).await;
+    let f = plan_turned_down(&fake.host).await;
+    let agent: Vec<&str> = f
+        .messages
+        .iter()
+        .filter(|m| m.role == MessageRole::Agent)
+        .map(|m| m.text.as_str())
+        .collect();
+    assert_eq!(
+        agent,
+        ["The export lives in export.sh:3. (Write: deny.)"],
+        "{:#?}",
+        f.messages
+    );
+    assert!(f.status_reason.unwrap().starts_with("Answered"));
+    assert!(
+        f.rationale.iter().any(|r| r.contains("answers in words")),
+        "{:?}",
+        f.rationale
+    );
+    let [look, answer] = &f.runs[..] else {
+        panic!("two turns: {:?}", f.runs);
+    };
+    assert_eq!(answer.conversation_id, look.conversation_id);
+    assert!(answer.provider_session_id.is_some());
+    assert_eq!(answer.provider_session_id, look.provider_session_id);
+}
+
+/// Asked to answer in words, the agent plans the change again, and says
+/// nothing else: the developer isn't asked twice, and is told plainly
+/// there is no answer without it (D-158).
+#[tokio::test]
+async fn a_plan_proposed_again_after_a_decline_is_not_asked_twice() {
+    let fake = sdk_host_with("replans-bare", vec![("OTTER_PLAN_TURN", "1".into())]).await;
+    let f = plan_turned_down(&fake.host).await;
+    assert!(
+        !f.messages.iter().any(|m| m.role == MessageRole::Agent),
+        "the plan isn't an answer: {:#?}",
+        f.messages
+    );
+    let last = f.messages.last().unwrap();
+    assert_eq!(last.role, MessageRole::Controller);
+    assert!(
+        last.text
+            .starts_with("The coding agent couldn't answer this without changing the code"),
+        "{}",
+        last.text
+    );
+    assert!(last.text.contains("1. Write the exporter"), "{}", last.text);
+    assert!(!last.text.contains("```"), "{}", last.text);
+    assert!(f.status_reason.unwrap().starts_with("Not carried out"));
+}
+
+/// What it says besides a plan proposed again is kept, not dropped (D-158).
+#[tokio::test]
+async fn what_is_said_besides_a_plan_proposed_again_is_kept() {
+    let fake = sdk_host_with("replans", vec![("OTTER_PLAN_TURN", "1".into())]).await;
+    let f = plan_turned_down(&fake.host).await;
+    let last = f.messages.last().unwrap();
+    assert_eq!(last.role, MessageRole::Controller);
+    assert!(
+        last.text.starts_with(
+            "Asked to answer without changes, the coding agent said:\n\n(Write: deny.)\n\n"
+        ),
+        "{}",
+        last.text
+    );
+    assert!(last.text.contains("1. Write the exporter"), "{}", last.text);
+    assert!(!last.text.contains("\"steps\""), "{}", last.text);
+}
+
+/// A new goal while the answer turn runs forgets the decline: the plan
+/// that turn comes back with is asked about, not taken for no answer
+/// (D-158).
+#[tokio::test]
+async fn a_goal_changed_during_the_answer_is_asked_about_again() {
+    use otter_core::task::TaskAction;
+    let fake = sdk_host_with("answerhangs", vec![("OTTER_PLAN_TURN", "1".into())]).await;
+    let host = &fake.host;
+    let id = answering_after_a_decline(host).await;
+    host.conn()
+        .await
+        .task_act(
+            "then-change-it",
+            &id,
+            TaskAction::RequestChanges { note: None },
+        )
+        .await
+        .unwrap();
+    let f = wait_task(host, &id, "asked again", |f| {
+        plan_questions(f) == 2 || f.status == TaskStatus::Done
+    })
+    .await;
+    assert_eq!(f.status, TaskStatus::Blocked, "{:?}", f.status_reason);
+    assert!(f.pending_decisions().next().is_some(), "{:?}", f.decisions);
+    assert_eq!(f.steps[0].detail, None);
+}
+
+/// Changes allowed while the answer turn runs: the decline is forgotten,
+/// so its mark is never taken for a plan sent back (D-158).
+#[tokio::test]
+async fn allowing_changes_during_the_answer_forgets_the_decline() {
+    let fake = sdk_host_with("answerhangs", vec![("OTTER_PLAN_TURN", "1".into())]).await;
+    let host = &fake.host;
+    let id = answering_after_a_decline(host).await;
+    let (f, answers) = run(
+        host,
+        &id,
+        "changes-fine",
+        "Changes are fine\nCALL: set_answer_only {\"on\": false}",
+    )
+    .await;
+    assert_eq!(answers[0]["data"]["done"], "changes allowed", "{answers:?}");
+    assert!(!f.answer_only);
+    assert_eq!(f.steps[0].detail, None);
 }
 
 /// Never an answer-only task that can't be kept to reading (D-092).
