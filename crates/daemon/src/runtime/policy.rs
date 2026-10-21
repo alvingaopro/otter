@@ -7,22 +7,26 @@
 //! - **ask the developer** — what is hard to undo or reaches beyond the
 //!   workspace: deleting things (`rm`, `git clean`, `git reset --hard`, …),
 //!   destroying resources (`kubectl delete`, `terraform destroy`, `DROP
-//!   TABLE`, `docker rm`, …), credentials, pushing / publishing / deploying,
-//!   `sudo`, and edits outside the workspace. Only the developer may allow
-//!   these.
+//!   TABLE`, `docker rm`, …), credentials (`.env` files, a home directory's
+//!   `.ssh`, `.aws`, `.kube`, `.netrc`, … by where they are, not only by a
+//!   word), pushing / publishing / deploying, `sudo`, and edits outside the
+//!   workspace. Only the developer may allow these.
 //! - **the Control Agent decides** — the agent's questions, plans, and tools
 //!   policy doesn't know (an MCP tool).
 //! - **never** — a few commands no one may allow (`rm -rf /`, piping a
 //!   download into a shell, …) — and, for now, starting a subagent (D-059).
 //!
-//! A command line is read piece by piece (D-059): split at `;`, `&&`, `||`,
-//! `|`, `&` and newlines, with `$(…)` and backticks read as commands too; a
-//! `cd` moves where later relative paths point; a write to a file outside
-//! the workspace — by `>`/`>>` or by `cp`, `mv`, `tee`, `touch`, `mkdir`,
-//! `ln`, `chmod`, `chown`, `install`, `dd of=` — asks the developer. The most
-//! severe piece decides. This is a lexical reading for usability, not a
-//! sandbox: quotes, variables and what a script does inside are not
-//! understood, and a determined command can hide what it does.
+//! A command line is read piece by piece (D-059): split at the `;`, `&&`,
+//! `||`, `|`, `&` and newlines that are outside quotes, with `$(…)` and
+//! backticks read as commands too; a `cd` moves where later relative paths
+//! point; a write to a file outside the workspace — by `>`/`>>` or by `cp`,
+//! `mv`, `tee`, `touch`, `mkdir`, `ln`, `chmod`, `chown`, `install`,
+//! `dd of=` — asks the developer. The most severe piece decides. Quotes are
+//! read for one thing, where a line is cut: a `|` inside `'…'` or `"…"` is
+//! part of a word, and a line whose quotes are not plainly balanced is cut at
+//! every separator as if it had none. This is a lexical reading for
+//! usability, not a sandbox: variables and what a script does inside are
+//! not understood, and a determined command can hide what it does.
 //!
 //! A denial — by policy or by the developer — is final for that request: no
 //! model decision can turn it into an allow ([`resolve`]).
@@ -199,10 +203,12 @@ const SUB: &str = "__sub__";
 const SUB_WORD: &str = " __sub__ ";
 
 /// A piece of a command line, and the shell it runs in. A line is split
-/// at `;`, `&&`, `||`, `|`, `&` and newlines; what `$(…)`, `<(…)`, `>(…)`,
-/// backticks and a heredoc's body run are pieces too, and [`SUB`] stands
-/// where a substitution was. Lexical: quotes aren't understood, except
-/// where a heredoc starts.
+/// at the `;`, `&&`, `||`, `|`, `&` and newlines outside quotes
+/// ([`separators`]); what `$(…)`, `<(…)`, `>(…)`, backticks and a heredoc's
+/// body run are pieces too, and [`SUB`] stands where a substitution was.
+/// Lexical: quotes are read for where a line is cut and where a heredoc
+/// starts, and nothing else in them is understood; a substitution is read
+/// as a command wherever it stands, even in single quotes.
 struct Piece {
     text: String,
     /// `None`: the line's own shell. `Some(n)`: a substitution's or a
@@ -300,20 +306,25 @@ fn pieces_cut(
     };
     let mut start = 0;
     let mut before = '\n';
-    let ends: Vec<(usize, char)> = outer
-        .char_indices()
-        .filter(|(_, c)| matches!(c, ';' | '|' | '&' | '\n'))
-        .chain(std::iter::once((outer.len(), '\n')))
-        .collect();
+    let cuts = separators(&outer);
     // How many commands this shell runs, besides what it pulled out.
-    let commands = outer
-        .split([';', '|', '&', '\n'])
-        .filter(|p| {
-            p.chars().any(|c| {
+    let commands = std::iter::once(0)
+        .chain(cuts.iter().map(|(at, _)| at + 1))
+        .zip(
+            cuts.iter()
+                .map(|(at, _)| *at)
+                .chain(std::iter::once(outer.len())),
+        )
+        .filter(|&(from, to)| {
+            outer[from..to].chars().any(|c| {
                 !c.is_whitespace() && !(BODY_MARK..BODY_MARK + 0x100).contains(&(c as u32))
             })
         })
         .count();
+    let ends: Vec<(usize, char)> = cuts
+        .into_iter()
+        .chain(std::iter::once((outer.len(), '\n')))
+        .collect();
     for (end, after) in ends {
         let span = &outer[start..end];
         for (_, inner) in subs.iter().filter(|(at, _)| (start..end).contains(at)) {
@@ -362,6 +373,33 @@ fn pieces_cut(
         start = end + after.len_utf8();
     }
     out
+}
+
+/// Where a text is cut into commands: each `;`, `|`, `&` and newline the
+/// shell reads as its own, with its byte offset. One inside quotes, behind a
+/// backslash or in a comment is part of a word, not a cut (`grep -E 'a|b' x`
+/// is one command). The [`Lexer`] has to be sure of the quotes: when one is
+/// left open at the end, or a backslash or `((` is, the text is cut at every
+/// separator as if it had no quotes, so a line is only read as fewer pieces
+/// where its quotes are plainly balanced.
+fn separators(text: &str) -> Vec<(usize, char)> {
+    let chars: Vec<(usize, char)> = text.char_indices().collect();
+    let mut lexer = Lexer::default();
+    let read: Vec<Quoted> = chars
+        .iter()
+        .enumerate()
+        .map(|(k, &(_, c))| {
+            let prev = k.checked_sub(1).map(|p| chars[p].1);
+            lexer.read(c, prev, chars.get(k + 1).map(|&(_, n)| n))
+        })
+        .collect();
+    let unsure = lexer.single || lexer.double || lexer.ansi || lexer.escaped || lexer.arith > 0;
+    chars
+        .iter()
+        .zip(read)
+        .filter(|&(&(_, c), q)| matches!(c, ';' | '|' | '&' | '\n') && (unsure || q == Quoted::No))
+        .map(|(&cut, _)| cut)
+        .collect()
 }
 
 /// Whether a piece copies its output to a descriptor other than 1 or 2
@@ -722,6 +760,89 @@ fn names_secrets_file(piece: &str) -> Option<String> {
     piece
         .split(|c: char| c.is_whitespace() || matches!(c, '=' | '<' | '>' | '(' | ')' | ','))
         .find(|w| secrets_file(w))
+        .map(|w| w.trim_matches(|c| c == '"' || c == '\'').to_owned())
+}
+
+/// Logins kept in a home directory, by their path from it: cloud and cluster
+/// credentials, registry tokens. A project may have an `.npmrc` of its own,
+/// so a file of these names is a credential only where it is below a home.
+const CREDENTIAL_PLACES: &[&[&str]] = &[
+    &[".aws"],
+    &[".kube"],
+    &[".config", "gcloud"],
+    &[".docker", "config.json"],
+    &[".netrc"],
+    &[".npmrc"],
+    &[".pypirc"],
+];
+
+/// What is left of an absolute path below a home directory: this user's
+/// (`$HOME`), `/home/<user>`, `/Users/<user>` or `/root`.
+fn below_home(path: &Path) -> Option<std::path::PathBuf> {
+    if let Ok(home) = std::env::var("HOME")
+        && !home.is_empty()
+        && let Ok(rest) = path.strip_prefix(normalize(Path::new(&home)))
+    {
+        return Some(rest.to_path_buf());
+    }
+    if !path.is_absolute() {
+        return None;
+    }
+    let parts: Vec<String> = path
+        .components()
+        .filter_map(|c| match c {
+            std::path::Component::Normal(s) => Some(s.to_string_lossy().into_owned()),
+            _ => None,
+        })
+        .collect();
+    let skip = match parts.first().map(String::as_str) {
+        Some("home" | "Users") if parts.len() > 1 => 2,
+        Some("root") => 1,
+        _ => return None,
+    };
+    Some(parts[skip..].iter().collect())
+}
+
+/// Whether a word of a command line, or an edit's path, is one of the
+/// [`CREDENTIAL_PLACES`] in a home directory: `~/.aws/config`,
+/// `$HOME/.netrc`, `/home/u/.kube/config`, or a relative path from where the
+/// line has `cd`ed to. A word with another variable in it can't be told.
+fn in_credential_place(word: &str, cwd: &Path) -> bool {
+    let word = unquoted(word);
+    let word = word.as_str();
+    let below = if let Some(rest) = ["~/", "$HOME/", "${HOME}/"]
+        .iter()
+        .find_map(|p| word.strip_prefix(p))
+    {
+        Some(normalize(Path::new(rest)))
+    } else if word.is_empty() || word.contains('$') || word.starts_with('~') {
+        None
+    } else {
+        let abs = if word.starts_with('/') {
+            std::path::PathBuf::from(word)
+        } else {
+            cwd.join(word)
+        };
+        below_home(&normalize(&abs))
+    };
+    let Some(below) = below else {
+        return false;
+    };
+    let parts: Vec<String> = below
+        .components()
+        .map(|c| c.as_os_str().to_string_lossy().into_owned())
+        .collect();
+    CREDENTIAL_PLACES
+        .iter()
+        .any(|place| parts.len() >= place.len() && parts.iter().zip(*place).all(|(a, b)| a == b))
+}
+
+/// The credentials place in a home directory a piece of a command line
+/// names, if it names one (`cwd`: where the piece runs).
+fn names_credential_place(piece: &str, cwd: &Path) -> Option<String> {
+    piece
+        .split(|c: char| c.is_whitespace() || matches!(c, '=' | '<' | '>' | '(' | ')' | ','))
+        .find(|w| in_credential_place(w, cwd))
         .map(|w| w.trim_matches(|c| c == '"' || c == '\'').to_owned())
 }
 
@@ -1097,6 +1218,7 @@ fn classify_command(line: &str, root: &Path) -> Verdict {
         );
         if let Some(f) = names_secrets_file(piece)
             .or_else(|| mentions_any(&both_ways(piece).to_lowercase(), CREDENTIAL_FILES))
+            .or_else(|| names_credential_place(piece, &step.cwd))
         {
             verdict = worst(verdict, ask_user(format!("touches credentials (`{f}`)")));
         }
@@ -1262,7 +1384,9 @@ pub fn classify(call: &ToolCall, root: &Path) -> Verdict {
         ToolCall::Read => Verdict::Allow,
         ToolCall::Edit { path } => {
             let lower = path.to_lowercase();
-            if !inside(root, path) && !scratch(Path::new(path)) {
+            if in_credential_place(path, root) {
+                ask_user(format!("edits a credentials file ({path})"))
+            } else if !inside(root, path) && !scratch(Path::new(path)) {
                 ask_user(format!("edits outside the workspace ({path})"))
             } else if secrets_file(path) || lower.contains(".ssh") || lower.contains("credentials")
             {
@@ -1329,6 +1453,7 @@ pub fn grant(call: &ToolCall, root: &Path) -> Option<String> {
                 ) != Verdict::Allow
                     || names_secrets_file(piece).is_some()
                     || mentions_any(&both_ways(piece).to_lowercase(), CREDENTIAL_FILES).is_some()
+                    || names_credential_place(piece, &step.cwd).is_some()
                 {
                     return None;
                 }
@@ -1343,6 +1468,7 @@ pub fn grant(call: &ToolCall, root: &Path) -> Option<String> {
         ToolCall::Edit { path } => {
             let lower = path.to_lowercase();
             let sensitive = secrets_file(path)
+                || in_credential_place(path, root)
                 || lower.contains(".ssh")
                 || lower.contains("credentials")
                 || lower.contains("/.git/");
@@ -1939,6 +2065,116 @@ mod tests {
         ] {
             assert!(is_user_only(&cmd(line)), "{line}: {:?}", cmd(line));
         }
+    }
+
+    /// A `;`, `|` or `&` inside quotes is part of a word, not a cut: a
+    /// pattern with several alternatives is one search. A command behind
+    /// quotes (`sh -c '…'`) is still read whole, and a line whose quotes are
+    /// not plainly balanced is cut at every separator, as it always was.
+    #[test]
+    fn a_quoted_separator_does_not_cut_a_line() {
+        let pipe = '|';
+        // One search, though its pattern has a `|` and a risky word after it.
+        for line in [
+            format!("grep -E 'a{pipe}token' x"),
+            format!("cd crates && grep -rn 'delete\\{pipe}token' src"),
+            format!("grep -rn \"a{pipe}token\" src"),
+            format!("git log --grep 'delete{pipe}token' --oneline"),
+            format!("cd /work/wt/x && grep -nE 'onDrop{pipe}onDragOver' src/TasksView.tsx"),
+            // A newline inside quotes is part of the word too.
+            "grep -rn 'x\ntoken' src".to_owned(),
+        ] {
+            assert_eq!(cmd(&line), Verdict::Allow, "{line}");
+        }
+        // An escaped `;` is the shell's argument to `find`, not a cut, and
+        // what `-exec` runs is still read.
+        assert!(is_user_only(&cmd("find . -name x -exec rm {} \\;")));
+        // A command behind quotes: its piece is not a reader, so it is read
+        // whole (these were read as a delete inside the workspace before,
+        // for the first two, because the quoted `;` cut off `rm -rf etc'`).
+        for line in [
+            "sh -c 'cd /; rm -rf etc'",
+            "bash -c \"cd /etc && rm passwd\"",
+            "grep 'a;b' x && git push origin main",
+            "echo 'x' ; sudo make install",
+            "bash -c 'git push origin main'",
+            "grep \"$(git push origin main)\" x",
+        ] {
+            assert!(is_user_only(&cmd(line)), "{line}: {:?}", cmd(line));
+        }
+        // Quotes left open, or escaped: cut at every separator, as before.
+        for line in [
+            format!("grep 'a{pipe}token x"),
+            format!("grep \\'a{pipe}token x"),
+        ] {
+            assert!(is_user_only(&cmd(&line)), "{line}: {:?}", cmd(&line));
+        }
+        // A separator outside quotes still cuts.
+        let to_sh = format!("grep -rn x src {pipe} sh");
+        let to_bash = format!("cat x {pipe} bash");
+        for line in [to_sh.as_str(), to_bash.as_str()] {
+            assert!(matches!(cmd(line), Verdict::Deny { .. }), "{line}");
+        }
+        for line in [
+            "grep -rn x src; sudo make install",
+            "ls && git push origin main",
+            "grep -rn 'x' src; git clean -fd",
+        ] {
+            assert!(is_user_only(&cmd(line)), "{line}: {:?}", cmd(line));
+        }
+    }
+
+    /// Logins in a home directory are credentials by where they are, not
+    /// only when a word says so; the same names in a project, or in a URL,
+    /// are not.
+    #[test]
+    fn a_home_directorys_logins_are_credentials_by_where_they_are() {
+        for line in [
+            "cat ~/.aws/config",
+            "ls ~/.kube/",
+            "cat $HOME/.netrc",
+            "cat ${HOME}/.pypirc",
+            "cat ~/.docker/config.json",
+            "cat /home/u/.config/gcloud/credentials.db",
+            "cat /home/u/.config/gcloud/application_default_credentials.json",
+            "cat ~/.npmrc",
+            "cat /root/.aws/credentials",
+            "cat /Users/x/.kube/config",
+            "cat ~/proj/../.aws/config",
+            "cd /home/u && cat .aws/config",
+            "cd ~/.aws && cat config",
+            "head -n1 --file=/home/u/.netrc x",
+        ] {
+            assert!(is_user_only(&cmd(line)), "{line}: {:?}", cmd(line));
+        }
+        for line in [
+            "curl https://s3.aws.amazon.com/x",
+            "cat .npmrc",
+            "cat ~/notes.txt",
+            "cat ~/.docker/other.json",
+            "cat ~/.dockerignore",
+            "ls ~/.config/other",
+            "cat /home/u/proj/.npmrc",
+            "cat /home/u/.otter/workspaces/ws_1/.npmrc",
+        ] {
+            assert_eq!(cmd(line), Verdict::Allow, "{line}");
+        }
+        // An edit of one asks, and is never granted for the rest of the task;
+        // the workspace's own `.npmrc` is an ordinary file.
+        let root = Path::new("/home/u/.otter/workspaces/ws_1");
+        for path in [
+            "/home/u/.aws/config",
+            "/home/u/.kube/config",
+            "/home/u/.config/gcloud/a.json",
+        ] {
+            let edit = ToolCall::Edit { path: path.into() };
+            assert!(is_user_only(&classify(&edit, root)), "{path}");
+            assert_eq!(grant(&edit, root), None, "{path}");
+        }
+        let own = ToolCall::Edit {
+            path: "/home/u/.otter/workspaces/ws_1/.npmrc".into(),
+        };
+        assert_eq!(classify(&own, root), Verdict::Allow);
     }
 
     /// What a command reads, searches or tests by name isn't what it does

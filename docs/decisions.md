@@ -6188,3 +6188,68 @@ window opened behind, or not at all.
 Not tested: it is the macOS app being started by another process, and the
 tests don't start one. The Tauri crate isn't built on Linux either; CI's
 macOS job compiles it.
+
+## D-173 — A quoted separator doesn't cut a command; a home directory's logins are credentials by where they are (2026-10-21)
+
+Milestone 1 of `docs/plans/agent-judged-risk.md`: what can be fixed in the
+policy's own code, without a model, before anything is judged by one. (The
+design names D-173 for the whole of it; this is the next free number, and the
+judged-by-the-agent decision, if it is built, takes the one after.)
+
+Two things the policy got wrong, both found by running lines through
+`policy::classify`:
+
+- `grep -E 'a|token' x`, `grep -rn "a|token" src`, `git log --grep
+  'delete|token' --oneline` asked the developer ("touches credentials
+  (`token`)"). The line was cut at every `|`, quoted or not, so the text after
+  it was a command of its own, and its word counted. A search for one word
+  (`grep -rn token src`) was fine since D-138; a search for two was not.
+- `cat ~/.aws/config`, `ls ~/.kube/`, `cat ~/.netrc`, `cat ~/.docker/config.json`
+  and `cat ~/.npmrc` were allowed: only the files in `CREDENTIAL_FILES` and
+  the words (`token`, `password`, …) kept a login from being read, and these
+  files hold logins without either.
+
+What changed (`crates/daemon/src/runtime/policy.rs`):
+
+- **Quotes decide where a line is cut.** `pieces_cut` cuts a line only at
+  the `;`, `&`, `|` and newlines the existing `Lexer` reads as the shell's
+  own, so one inside `'…'`, `"…"`, `$'…'`, behind a backslash or in a comment
+  is part of a word. `grep -E 'a|token' x` is one piece whose command is
+  `grep`, and D-138 reads only the command. A newline inside quotes is part
+  of the word too.
+- **The fallback.** When the text ends with a quote still open, a trailing
+  backslash or an unbalanced `((`, the Lexer isn't sure how the shell reads
+  it, and the line is cut at every separator as it always was. A line is
+  only read as fewer pieces where its quotes are plainly balanced
+  (`grep 'a|token x` and `grep \'a|token x` still ask).
+- **A command behind quotes is read whole.** `sh -c 'cd /; rm -rf etc'` is
+  one piece that isn't a reader, so the word lists read all of it and `rm`
+  asks. It was allowed before: the quoted `;` cut off `rm -rf etc'`, which
+  read as a delete inside the workspace, while the shell ran `rm -rf /etc`
+  (the same for `bash -c "cd /etc && rm passwd"`). Substitutions
+  (`$(…)`, backticks) are still pulled out wherever they stand, even in single
+  quotes, so a quoted `$(git push origin main)` is still read as a command.
+- **Home-directory credential places.** `~/.aws`, `~/.kube`, `~/.config/gcloud`,
+  `~/.docker/config.json`, `~/.netrc`, `~/.npmrc` and `~/.pypirc` are
+  credentials for a read and an edit alike, by their path from a home
+  directory (`~/`, `$HOME/`, the user's `$HOME`, `/home/<user>/`,
+  `/Users/<user>/`, `/root/`), also when the line has `cd`ed there and names
+  them relative to it. They are never granted for the rest of the task
+  (D-066). A project's own `.npmrc`, a hostname such as `s3.aws.amazon.com`
+  and `~/.dockerignore` are not them.
+
+What this does not change: no model is asked anything; the word lists, the
+reader and test exemptions (D-138), the routine delete (D-164) and what a
+line only prints (D-170) are as they were; the grant rules (D-066) are as
+they were except that the new places are never granted; `policy::resolve`
+and the denials that are final are untouched.
+
+Tests (`crates/daemon/src/runtime/policy.rs`, next to
+`looking_for_a_risky_word_is_not_doing_it`): `a_quoted_separator_does_not_cut_a_line`
+(the quoted-pipe searches are `Allow`; a command behind quotes, an open or
+escaped quote, and a separator outside quotes still ask or are refused) and
+`a_home_directorys_logins_are_credentials_by_where_they_are` (both ways, edits
+and grants too). Not done: reading `$VAR`-built paths, what a script does
+inside, and a word such as `token` in a search that reaches outside the
+workspace (`grep -rn token ../other-repo` still asks); those are for the
+judged-by-the-agent step.
