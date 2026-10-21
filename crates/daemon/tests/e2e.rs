@@ -1132,12 +1132,32 @@ async fn stream_attach_off_screen_gets_nothing_and_catches_up_on_return() {
             .await
             .is_empty()
     );
-    // Back on screen: a snapshot with what was missed.
+    // Back on screen: what was missed comes, without a snapshot, so the
+    // client's history stays as it is (D-160).
+    writer.send(&view(true)).await.unwrap();
+    let back = read_until(&mut reader, "while-away-4").await;
+    assert!(!back.contains("\x1bc"), "{back:?}");
+    quiet_for(&mut reader, Duration::from_millis(300)).await;
+
+    // More than is kept for it: back on screen, a snapshot instead.
+    writer.send(&view(false)).await.unwrap();
+    host.conn()
+        .await
+        .session_write(
+            "vw",
+            "sh",
+            "head -c 1200000 /dev/zero | tr '\\0' x; echo; echo much-$((3+3))",
+            true,
+        )
+        .await
+        .unwrap();
+    wait_output(&host, "vw", "sh", "much-6").await;
     writer.send(&view(true)).await.unwrap();
     let (back, _) = read_until_control(&mut reader, snapshot_done).await;
     assert!(
-        back.contains("\x18\x1bc") && back.contains("while-away-4"),
-        "{back:?}"
+        back.contains("\x18\x1bc") && back.contains("much-6"),
+        "{}",
+        back.len()
     );
 }
 

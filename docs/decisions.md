@@ -3671,6 +3671,8 @@ Follows D-118, with what dogfooding it left open.
   just goes on. This isn't tmux's `refresh-client -A pane:off`: once every
   client turns a pane off, tmux stops reading it and the program blocks.
   Tested: the program runs on while the client gets nothing.
+  *Amended 2026-10-21 (D-160):* the output is kept for the terminal, up to
+  1 MiB, and sent when it's back; a snapshot only past that.
 - **SSH is compressed.** Snapshots are escape-heavy text. Real Claude Code
   ones went from 203 KiB to 29 KiB with zlib, which is what SSH uses.
   Otter's ssh passes `Compression=yes` after the host's `ssh_args`, so an
@@ -5260,3 +5262,36 @@ on the host's page), once per host, so it repeated on every workspace of that
 host and took a row from the terminal. The workspace pane no longer shows it.
 A host too old for a command still says so where the command is used
 (`explain`).
+
+## D-160 — A terminal back on screen gets what it missed, not a snapshot (2026-10-21)
+
+D-119 dropped a stream's output while its terminal was off screen and sent
+a snapshot when it came back. With D-152 keeping a workspace's sessions'
+terminals, that is most switches: a session that printed anything while
+hidden came back as a snapshot (5,000 lines, up to 1 MiB, about 150 KiB
+over compressed SSH), and the snapshot's reset cleared the terminal's
+history, earlier lines asked for (D-119) and where the reader was.
+
+- **Kept, then sent.** Off screen, the daemon keeps the pane's output for
+  the terminal; back on screen it sends it, as it would have gone, then
+  the new size. The terminal never resized while hidden, so the output fits
+  it. Nothing is reset; its history stays as it was.
+- **Up to 1 MiB** (`HELD_BYTES`, a snapshot's own cap): past that a snapshot
+  is the cheaper way back, and the terminal gets one, as before. Measured
+  with Claude Code launched as Otter launches it (D-144), at 200×50: about
+  1.1 KiB a second while it works, nothing while it waits. So about a
+  quarter of an hour of work is kept, longer than D-152 keeps a hidden
+  session by default (ten minutes). At most 1 MiB a hidden terminal in
+  otterd.
+- **Given up, for a snapshot,** when the window's size changes while the
+  terminal is hidden (another client sized it: what was kept was laid out
+  at the size before, and the client would hear of the new size first),
+  when it fell behind, and when a snapshot comes meanwhile (it has it all).
+- Same path as live output: the user's own terminal's queries are kept out
+  of it (D-120), and the client falling behind still gets a fresh snapshot.
+- **Verified:** unit tests for kept and sent, too much, another size, and a
+  snapshot meanwhile; the end-to-end test against real tmux now expects the
+  missed output without a reset, and a snapshot after 1.2 MB printed while
+  away. The new unit tests fail with output dropped as before.
+- Not done: an older host still sends a snapshot; the app doesn't need to
+  know which it got.

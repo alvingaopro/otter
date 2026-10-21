@@ -61,6 +61,9 @@ const RESYNC_GAP: Duration = Duration::from_millis(500);
 const HISTORY_BYTES: usize = 1 << 20;
 /// History the client asked for itself, at most: it waits for it.
 const MORE_HISTORY_BYTES: usize = 4 << 20;
+/// Output kept for a client off screen, at most (D-160): past a snapshot's
+/// size, a snapshot is the cheaper way back.
+const HELD_BYTES: usize = HISTORY_BYTES;
 /// The largest window tmux makes, either way.
 const MAX_SIZE: u16 = 10000;
 /// Input bytes per `send-keys`; paste bytes per `set-buffer`.
@@ -319,7 +322,7 @@ impl Reader {
                         self.take(self.regular(true));
                     } else {
                         // Off screen: the snapshot can wait for it to be back.
-                        self.relay.dropped = true;
+                        self.relay.give_up();
                     }
                     continue;
                 }
@@ -335,33 +338,13 @@ impl Reader {
             line.clear();
             match event {
                 Some(Event::Output { pane, data }) => {
-                    match self
-                        .relay
-                        .output(&pane, data)
-                        .map(|data| match &mut self.queries {
-                            Some(queries) => queries.filter(&data),
-                            None => data,
-                        }) {
-                        Some(data) if data.is_empty() => {}
-                        Some(data)
-                            if flow.bytes() + data.len() > BEHIND && self.relay.fell_behind() =>
-                        {
-                            // Not taken in time: a snapshot replaces all of it.
-                            flow.clear();
-                            self.resync = true;
-                        }
-                        Some(data) => {
-                            if !flow.push_output(data) {
-                                break;
-                            }
-                        }
-                        None => {}
+                    if let Some(data) = self.relay.output(&pane, data)
+                        && !self.forward(data)
+                    {
+                        break;
                     }
                 }
-                Some(Event::Layout { size }) => {
-                    self.window = Some(size);
-                    self.tell();
-                }
+                Some(Event::Layout { size }) => self.layout(size),
                 Some(Event::Reply { ok, lines }) => {
                     while let Ok(record) = sent.try_recv() {
                         pending.push_back((record, Vec::new()));
@@ -416,6 +399,7 @@ impl Reader {
                 // It has everything up to its capture; what came before it,
                 // cut off or not, is gone.
                 self.relay.dropped = false;
+                self.relay.held = Vec::new();
                 self.shown = true;
                 if self.queries.is_some() {
                     self.queries = Some(Queries::default());
@@ -453,12 +437,18 @@ impl Reader {
                 if !visible {
                     return;
                 }
-                // Back on screen at this size; a snapshot if output was missed.
+                // Back on screen at this size: what it missed, kept, then the
+                // size; a snapshot if it was too much to keep (D-160).
                 let size = size(cols, rows);
                 if std::mem::take(&mut self.relay.dropped) {
                     self.size = size;
                     self.take(self.regular(true));
                 } else {
+                    let held = std::mem::take(&mut self.relay.held);
+                    if !held.is_empty() {
+                        // A client gone shows when the next output can't go.
+                        self.forward(held);
+                    }
                     self.resize(size);
                 }
             }
@@ -471,6 +461,25 @@ impl Reader {
             }
             StreamInput::Data(_) => {}
         }
+    }
+
+    /// Output to the client, kept out of the user's own terminal's queries;
+    /// `false` once the client has left.
+    fn forward(&mut self, data: Vec<u8>) -> bool {
+        let data = match &mut self.queries {
+            Some(queries) => queries.filter(&data),
+            None => data,
+        };
+        if data.is_empty() {
+            return true;
+        }
+        if self.flow.bytes() + data.len() > BEHIND && self.relay.fell_behind() {
+            // Not taken in time: a snapshot replaces all of it.
+            self.flow.clear();
+            self.resync = true;
+            return true;
+        }
+        self.flow.push_output(data)
     }
 
     fn regular(&self, screen_first: bool) -> Take {
@@ -525,6 +534,17 @@ impl Reader {
 
     /// Tell the client the window's size if another client sizes it, or that
     /// it no longer does, once our own resizes have settled.
+    /// tmux says the window's size.
+    fn layout(&mut self, size: (u16, u16)) {
+        // Kept output was laid out at the size before; told of the new one
+        // first, the client would lay it out wrong (D-160).
+        if !self.relay.visible && self.window.is_some_and(|w| w != size) {
+            self.relay.give_up();
+        }
+        self.window = Some(size);
+        self.tell();
+    }
+
     fn tell(&mut self) {
         if self.resizing > 0 {
             return;
@@ -759,9 +779,12 @@ struct Relay {
     /// A snapshot is coming; output until it is in it.
     coming: bool,
     pane: Vec<u8>,
-    /// The client's terminal is on screen; not, its output is dropped.
+    /// The client's terminal is on screen; not, its output is kept for it,
+    /// up to [`HELD_BYTES`] (D-160).
     visible: bool,
-    /// Output was dropped while it wasn't.
+    /// What it missed while it wasn't, to send when it's back.
+    held: Vec<u8>,
+    /// Too much was missed to keep: a snapshot when it's back.
     dropped: bool,
 }
 
@@ -771,8 +794,16 @@ impl Relay {
             coming: true,
             pane: Vec::new(),
             visible: true,
+            held: Vec::new(),
             dropped: false,
         }
+    }
+
+    /// What was kept for the client off screen won't do: a snapshot when
+    /// it's back.
+    fn give_up(&mut self) {
+        self.held = Vec::new();
+        self.dropped = true;
     }
 
     /// A snapshot was asked for: skip output until it.
@@ -786,7 +817,13 @@ impl Relay {
             return None;
         }
         if !self.visible {
-            self.dropped = true;
+            if !self.dropped {
+                if self.held.len() + data.len() > HELD_BYTES {
+                    self.give_up();
+                } else {
+                    self.held.extend_from_slice(&data);
+                }
+            }
             return None;
         }
         Some(data)
@@ -1769,46 +1806,99 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn off_screen_output_is_dropped_and_a_snapshot_catches_up() {
+    /// A reader whose client has its first snapshot, then went off screen.
+    async fn reader_off_screen() -> (Reader, mpsc::UnboundedReceiver<Ask>, Stream) {
         let (mut reader, mut asked, mut stream) = reader();
         reader.take(reader.regular(true));
         let first = snapshot_asked(&mut asked);
         reader.answered(Line::Snapshot(first), shot_replies((100, 30)));
         let _ = (next(&mut stream).await, next(&mut stream).await);
-
-        // Off screen, nothing missed: back on, only the size goes.
         reader.control(StreamInput::View {
             visible: false,
             cols: 100,
             rows: 30,
         });
-        reader.control(StreamInput::View {
-            visible: true,
-            cols: 120,
-            rows: 40,
-        });
-        assert!(matches!(asked.try_recv(), Ok(Ask::Resize((120, 40)))));
-        reader.answered(Line::Resize, vec![reply(&[]), reply(&["120x40"])]);
+        (reader, asked, stream)
+    }
 
-        // Off screen while the program writes: dropped, then a snapshot.
-        reader.control(StreamInput::View {
-            visible: false,
-            cols: 120,
-            rows: 40,
-        });
-        assert_eq!(reader.relay.output(b"%0", b"while away".to_vec()), None);
+    fn back_on_screen(reader: &mut Reader, cols: u16, rows: u16) {
         reader.control(StreamInput::View {
             visible: true,
-            cols: 120,
-            rows: 40,
+            cols,
+            rows,
         });
+    }
+
+    #[tokio::test]
+    async fn off_screen_and_back_with_nothing_missed_only_resizes() {
+        let (mut reader, mut asked, _stream) = reader_off_screen().await;
+        back_on_screen(&mut reader, 120, 40);
+        assert!(matches!(asked.try_recv(), Ok(Ask::Resize((120, 40)))));
+    }
+
+    #[tokio::test]
+    async fn output_off_screen_is_kept_and_sent_when_back() {
+        let (mut reader, mut asked, mut stream) = reader_off_screen().await;
+        assert_eq!(reader.relay.output(b"%0", b"while ".to_vec()), None);
+        assert_eq!(reader.relay.output(b"%0", b"away".to_vec()), None);
+        back_on_screen(&mut reader, 120, 40);
+        // What it missed, in order, laid out at the size it had; then the
+        // new size. No snapshot, so its history stays as it is (D-160).
+        assert_eq!(
+            next(&mut stream).await,
+            StreamOutput::Data(b"while away".to_vec())
+        );
+        assert!(matches!(asked.try_recv(), Ok(Ask::Resize((120, 40)))));
+        assert!(asked.try_recv().is_err(), "no snapshot");
+        assert_eq!(
+            reader.relay.output(b"%0", b"live".to_vec()),
+            Some(b"live".to_vec())
+        );
+    }
+
+    #[tokio::test]
+    async fn too_much_off_screen_is_caught_up_by_a_snapshot() {
+        let (mut reader, mut asked, _stream) = reader_off_screen().await;
+        assert_eq!(reader.relay.output(b"%0", vec![b'x'; HELD_BYTES]), None);
+        assert!(!reader.relay.dropped, "up to the limit is kept");
+        assert_eq!(reader.relay.output(b"%0", b"one more".to_vec()), None);
+        assert!(reader.relay.held.is_empty() && reader.relay.dropped);
+        back_on_screen(&mut reader, 120, 40);
         let back = snapshot_asked(&mut asked);
         assert_eq!((back.size, back.screen_first), ((120, 40), true));
         assert_eq!(
             reader.relay.output(b"%0", b"in the snapshot".to_vec()),
             None
         );
+    }
+
+    #[tokio::test]
+    async fn another_size_off_screen_gives_up_what_was_kept() {
+        let (mut reader, mut asked, _stream) = reader_off_screen().await;
+        assert_eq!(reader.relay.output(b"%0", b"at 100x30".to_vec()), None);
+        // The same size again is no change.
+        reader.layout((100, 30));
+        assert!(!reader.relay.dropped && !reader.relay.held.is_empty());
+        // Another client sizes the window: what was kept was laid out at the
+        // size before, so it won't do.
+        reader.layout((80, 24));
+        assert!(reader.relay.dropped && reader.relay.held.is_empty());
+        back_on_screen(&mut reader, 100, 30);
+        snapshot_asked(&mut asked);
+    }
+
+    #[tokio::test]
+    async fn a_snapshot_off_screen_replaces_what_was_kept() {
+        let (mut reader, mut asked, mut stream) = reader_off_screen().await;
+        assert_eq!(reader.relay.output(b"%0", b"before".to_vec()), None);
+        // More history asked for while hidden: the snapshot has it all.
+        reader.control(StreamInput::History(20000));
+        let more = snapshot_asked(&mut asked);
+        reader.answered(Line::Snapshot(more), shot_replies((100, 30)));
+        let _ = (next(&mut stream).await, next(&mut stream).await);
+        assert!(reader.relay.held.is_empty());
+        back_on_screen(&mut reader, 100, 30);
+        assert!(asked.try_recv().is_err(), "nothing more to send or take");
     }
 
     #[tokio::test]
