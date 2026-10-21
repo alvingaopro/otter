@@ -194,11 +194,21 @@ fn worst(a: Verdict, b: Verdict) -> Verdict {
     if severity(&b) > severity(&a) { b } else { a }
 }
 
+/// What stands in a piece where a substitution was.
+const SUB: &str = "__sub__";
+const SUB_WORD: &str = " __sub__ ";
+
 /// A command line's pieces: split at `;`, `&&`, `||`, `|`, `&` and
 /// newlines; what `$(…)`, `<(…)`, `>(…)` and backticks run is a piece of
-/// its own too.
+/// its own too, and [`SUB`] stands where it was.
 /// Lexical: quotes aren't understood.
 fn pieces(line: &str) -> Vec<String> {
+    pieces_in(line).into_iter().map(|(p, _)| p).collect()
+}
+
+/// [`pieces`], each with whether it runs in a substitution's subshell,
+/// where a `cd` doesn't move the line's shell (D-164).
+fn pieces_in(line: &str) -> Vec<(String, bool)> {
     let mut out = Vec::new();
     let mut inner = String::new();
     let mut outer = String::new();
@@ -222,9 +232,9 @@ fn pieces(line: &str) -> Vec<String> {
                 }
                 j += 1;
             }
-            out.extend(pieces(&inner));
+            out.extend(pieces(&inner).into_iter().map(|p| (p, true)));
             inner.clear();
-            outer.push_str(" __sub__ ");
+            outer.push_str(SUB_WORD);
             i = j;
         } else if chars[i] == '`' {
             let mut j = i + 1;
@@ -232,9 +242,9 @@ fn pieces(line: &str) -> Vec<String> {
                 inner.push(chars[j]);
                 j += 1;
             }
-            out.extend(pieces(&inner));
+            out.extend(pieces(&inner).into_iter().map(|p| (p, true)));
             inner.clear();
-            outer.push_str(" __sub__ ");
+            outer.push_str(SUB_WORD);
             i = j + 1;
         } else {
             outer.push(chars[i]);
@@ -247,7 +257,7 @@ fn pieces(line: &str) -> Vec<String> {
         let piece = piece.replace('\u{1}', "&");
         let piece = piece.trim();
         if !piece.is_empty() {
-            out.push(piece.to_owned());
+            out.push((piece.to_owned(), false));
         }
     }
     out
@@ -313,32 +323,50 @@ fn scratch(path: &Path) -> bool {
 
 /// A piece that only deletes files inside the workspace (or scratch): not
 /// the workspace itself, not Git's internals, no glob at its top (D-066).
-fn deletes_inside(piece: &str, cwd: &Path, root: &Path) -> bool {
+/// `git rm` too: it takes the files out of the tree and the index, and
+/// they're still in the history (D-163) — unless the `line` it's in moves
+/// where Git works.
+fn deletes_inside(piece: &str, line: &str, cwd: &Path, root: &Path) -> bool {
     let words: Vec<&str> = piece.split_whitespace().collect();
     let args: Vec<&str> = words
         .iter()
         .copied()
         .skip_while(|w| w.contains('=') && !w.starts_with('-'))
         .collect();
-    let Some((cmd, rest)) = args.split_first() else {
-        return false;
+    let git = args.first() == Some(&"git");
+    let rest = match args.split_first() {
+        Some((&("rm" | "rmdir" | "unlink"), rest)) => rest,
+        Some((&"git", [sub, rest @ ..])) if *sub == "rm" && !moves_git(line) => rest,
+        _ => return false,
     };
-    if !matches!(*cmd, "rm" | "rmdir" | "unlink") {
-        return false;
-    }
+    // Quoted or escaped, an option is still an option (`'-r'`).
     let operands: Vec<&str> = rest
         .iter()
         .copied()
-        .filter(|w| !w.starts_with('-'))
+        .filter(|w| !unquoted(w).starts_with('-'))
         .collect();
+    // Git reads some paths itself: a pathspec's magic (`:/x` is from the
+    // repository's top) or a file of them (`--pathspec-from-file`).
+    if operands.iter().any(|op| unquoted(op).starts_with(':'))
+        || rest.iter().any(|w| unquoted(w).contains("pathspec"))
+    {
+        return false;
+    }
     let real_root = real_path(root);
     !operands.is_empty()
         && operands.iter().all(|op| {
+            // What a substitution prints (`rm -rf $(…)`) can't be told
+            // (D-164).
+            if op.contains(SUB) {
+                return false;
+            }
             let Some(p) = target(cwd, op) else {
                 return false;
             };
             if scratch(&p) {
-                return true;
+                // Anyone's to delete in, but a repository there is
+                // another's, and its work tree may be anywhere.
+                return !git;
             }
             let real = real_path(&p);
             let glob = op.contains(['*', '?', '[']);
@@ -346,6 +374,39 @@ fn deletes_inside(piece: &str, cwd: &Path, root: &Path) -> bool {
                 && real != real_root
                 && !real.starts_with(real_root.join(".git"))
                 && !(glob && real.parent() == Some(real_root.as_path()))
+        })
+}
+
+/// Whether Git may work somewhere other than the workspace on this line:
+/// an environment (`GIT_DIR=… git rm x`, `export GIT_DIR=…; git rm x`, a
+/// file sourced, `eval`) moves its repository, work tree and index, and so
+/// do `core.worktree` (in any case: Git's keys don't have one) and a
+/// `gitdir:` pointer; a function or alias may make `git` another command.
+fn moves_git(line: &str) -> bool {
+    let lower = unquoted(line).to_lowercase();
+    [
+        "git_",
+        "worktree",
+        "work-tree",
+        "git-dir",
+        "gitdir",
+        "()",
+        "function",
+        "alias",
+    ]
+    .iter()
+    .any(|w| lower.contains(w))
+        || pieces(line).iter().any(|piece| {
+            let words: Vec<&str> = piece.split_whitespace().collect();
+            match words.as_slice() {
+                [first, ..] if first.contains('=') && !first.starts_with('-') => true,
+                [".", ..] | ["source" | "eval" | "export" | "declare" | "typeset", ..] => true,
+                ["set", options @ ..] => options.iter().any(|o| {
+                    *o == "allexport"
+                        || (o.starts_with('-') && !o.starts_with("--") && o.contains('a'))
+                }),
+                _ => false,
+            }
         })
 }
 
@@ -461,6 +522,48 @@ fn target(cwd: &Path, path: &str) -> Option<std::path::PathBuf> {
     Some(cwd.join(path))
 }
 
+/// Where a piece that moves the shell (`cd`, `pushd`, `popd`, also as
+/// `builtin cd`, `{ cd`, `(cd`) leaves it, and whether that is known: not
+/// for `cd "$X"`, `cd $(…)`, `cd -`, with an option, `popd`, a subshell's
+/// `(cd`, a line that sets `CDPATH`, or `eval`, nor for a relative move
+/// from somewhere not known (D-164). `None`: it doesn't move the shell.
+fn cd(piece: &str, line: &str, cwd: &Path, known: bool) -> Option<(std::path::PathBuf, bool)> {
+    let mut words: Vec<&str> = piece.split_whitespace().collect();
+    let subshell = piece.starts_with('(');
+    if let Some(first) = words.first_mut() {
+        *first = first.trim_start_matches(['(', '{']);
+    }
+    words.retain(|w| !w.is_empty());
+    // An environment for it (`CDPATH=… cd x`), `builtin cd`, `command cd`.
+    let env = words
+        .iter()
+        .take_while(|w| w.contains('=') && !w.starts_with('-'))
+        .count();
+    words.drain(..env);
+    if matches!(words.first(), Some(&("builtin" | "command"))) {
+        words.remove(0);
+    }
+    let cdpath = unquoted(line).to_lowercase().contains("cdpath");
+    let to = match words.as_slice() {
+        ["eval" | "popd", ..] => None,
+        ["cd" | "pushd", ..] if subshell => None,
+        ["cd"] => target(cwd, "~"),
+        // `pushd +1` turns the stack, like `cd -`.
+        ["cd" | "pushd", dir] if !dir.contains(SUB) && !unquoted(dir).starts_with(['-', '+']) => {
+            let d = unquoted(dir);
+            (d.starts_with(['/', '~']) || (known && !cdpath))
+                .then(|| target(cwd, dir))
+                .flatten()
+        }
+        ["cd" | "pushd", ..] => None,
+        _ => return None,
+    };
+    Some(match to {
+        Some(p) => (p, true),
+        None => (cwd.to_path_buf(), false),
+    })
+}
+
 /// What one piece of a command line writes outside the workspace, if it
 /// does (`cwd`: where it runs).
 fn writes_outside(piece: &str, cwd: &Path, root: &Path) -> Option<String> {
@@ -546,10 +649,11 @@ fn classify_command(line: &str, root: &Path) -> Verdict {
     if severity(&verdict) == 3 {
         return verdict;
     }
-    let mut cwd = root.to_path_buf();
-    for piece in pieces(line) {
-        // Deleting the work's own files is routine (D-066).
-        let routine_delete = deletes_inside(&piece, &cwd, root);
+    let (mut cwd, mut known) = (root.to_path_buf(), true);
+    for (piece, in_sub) in pieces_in(line) {
+        // Deleting the work's own files is routine (D-066), where it can
+        // tell they are (D-164).
+        let routine_delete = known && deletes_inside(&piece, line, &cwd, root);
         verdict = worst(
             verdict,
             classify_words(&both_ways(&doing(&piece, &cwd, root)), routine_delete),
@@ -559,11 +663,10 @@ fn classify_command(line: &str, root: &Path) -> Verdict {
         {
             verdict = worst(verdict, ask_user(format!("touches credentials (`{f}`)")));
         }
-        let words: Vec<&str> = piece.split_whitespace().collect();
-        if let ["cd", dir] = words.as_slice()
-            && let Some(p) = target(&cwd, dir)
-        {
-            cwd = p;
+        if let Some((to, k)) = cd(&piece, line, &cwd, known) {
+            if !in_sub {
+                (cwd, known) = (to, k);
+            }
             continue;
         }
         if let Some(t) = writes_outside(&piece, &cwd, root) {
@@ -772,21 +875,21 @@ pub fn grant(call: &ToolCall, root: &Path) -> Option<String> {
             if otter_core::redact::has_secret(line) {
                 return None;
             }
-            let mut cwd = root.to_path_buf();
-            for piece in pieces(line) {
+            let (mut cwd, mut known) = (root.to_path_buf(), true);
+            for (piece, in_sub) in pieces_in(line) {
                 if classify_words(
                     &both_ways(&doing(&piece, &cwd, root)),
-                    deletes_inside(&piece, &cwd, root),
+                    known && deletes_inside(&piece, line, &cwd, root),
                 ) != Verdict::Allow
                     || names_secrets_file(&piece).is_some()
                     || mentions_any(&both_ways(&piece).to_lowercase(), CREDENTIAL_FILES).is_some()
                 {
                     return None;
                 }
-                if let ["cd", dir] = piece.split_whitespace().collect::<Vec<_>>().as_slice()
-                    && let Some(p) = target(&cwd, dir)
+                if let Some((to, k)) = cd(&piece, line, &cwd, known)
+                    && !in_sub
                 {
-                    cwd = p;
+                    (cwd, known) = (to, k);
                 }
             }
             (never(line) == Verdict::Allow).then(|| {
@@ -1122,6 +1225,103 @@ mod tests {
             "rm -f /tmp/otter-build.log",
             "cd src && rm -rf generated",
             "rm -rf target/debug/*.d",
+            // D-163: `git rm` of them as well (the task bench's B07).
+            "git rm -q data/sample.csv && git status --short && make test 2>&1 | tail -5",
+            "git rm -r --cached tests/old",
+            "git rm -- notes.txt",
+            "cd src && git rm -f old.rs",
+        ] {
+            assert_eq!(cmd(line), Verdict::Allow, "{line}");
+        }
+        // Not the workspace, its top by glob, outside it, a pathspec's
+        // magic, Git's internals or another directory's repository.
+        for line in [
+            "git rm -r .",
+            "git rm -r '*'",
+            "git rm -rf ../other",
+            "git rm ':/elsewhere'",
+            "git rm ':(top)x'",
+            "git rm --pathspec-from-file=/tmp/list",
+            "git rm '--pathspec-from-file=/tmp/list' a.txt",
+            "git rm '-r' .",
+            "git rm -r .git/hooks",
+            // Git working elsewhere: the paths aren't the workspace's.
+            "GIT_DIR=/elsewhere git rm x",
+            "GIT_DIR=/tmp/evil/.git GIT_WORK_TREE=/home/u/other git rm -rf src",
+            "GIT_INDEX_FILE=/home/u/other/.git/index git rm --cached src",
+            "export GIT_DIR=/srv/o/.git GIT_WORK_TREE=/srv/o; git rm -rf src",
+            "git config core.worktree /srv/o && git rm -rf src",
+            "git config core.WorkTree /srv/o && git rm -rf src",
+            "git --work-tree=/srv/o rm -rf src",
+            "echo 'gitdir: /tmp/evil/.git' > .git && git rm -rf docs",
+            "source vars && git rm -rf docs",
+            ". vars; git rm -rf docs",
+            "set -a; . ./vars; git rm -rf docs",
+            "eval \"$(cat vars)\"; git rm -rf docs",
+            "export $(cat vars); git rm -rf docs",
+            "FOO=1 git rm x",
+            // A repository in scratch is another's.
+            "cd /tmp/x && git rm -rf docs",
+            "git rm -rf /tmp/evil/docs",
+            "git -C /srv/other rm x",
+            "git() { command git -C /srv/o \"$@\"; }; git rm x",
+            "function git { command git -C /srv/o \"$@\"; }; git rm x",
+            "alias git='git -C /srv/o'; git rm x",
+            "{ function git { command git -C /srv/o \"$@\"; }; }; git rm x",
+            "if true; then function git { command git -C /srv/o \"$@\"; }; fi; git rm x",
+        ] {
+            assert!(is_user_only(&cmd(line)), "{line}: {:?}", cmd(line));
+        }
+    }
+
+    /// D-164: a delete is routine only where the policy can tell what it
+    /// deletes — not what a substitution prints, nor after a `cd` it can't
+    /// follow.
+    #[test]
+    fn a_path_the_policy_cannot_read_is_not_the_workspaces() {
+        for line in [
+            "rm -rf $(echo /)",
+            "rm -rf `echo /`",
+            "rm -rf \"$(git rev-parse --show-toplevel)/build\"",
+            "git rm -rf $(echo ../sibling)",
+            "cd $(echo /) && rm -rf x",
+            "cd \"$HOME\" && rm -rf x",
+            "cd $X; rm -rf x",
+            "cd - && rm -rf x",
+            "cd -P /srv && rm -rf x",
+            "cd \"$X\" && cd sub && rm -rf x",
+            "cd && rm -rf x",
+            // A `cd` in a substitution's subshell leaves the line's shell
+            // where it was; the other ways to move it.
+            "echo $(cd /tmp/a/b/c) && rm -rf ../../../other",
+            "echo `cd /tmp/a/b/c`; rm -rf ../../../other",
+            "pushd /srv/o && rm -rf x",
+            "pushd /srv/o; git rm -rf src",
+            "popd && rm -rf x",
+            "(cd /srv/o && rm -rf x)",
+            "(cd src); rm -rf ../x",
+            "{ cd /srv/o; rm -rf x; }",
+            "builtin cd /srv/o; rm -rf x",
+            "command cd /srv/o; rm -rf x",
+            "eval 'cd /srv/o'; rm -rf x",
+            "export CDPATH=/srv; cd o; rm -rf x",
+            "CDPATH=/srv cd o; rm -rf x",
+            "pushd /srv/o; pushd /home/u/.otter/workspaces/ws_1; pushd +1; rm -rf x",
+        ] {
+            assert!(is_user_only(&cmd(line)), "{line}: {:?}", cmd(line));
+        }
+        // A `cd` it can follow, and reading what a substitution names, as
+        // before.
+        for line in [
+            "cd src && cd generated && rm -rf out",
+            "cd $X && cd /home/u/.otter/workspaces/ws_1/src && rm -rf out",
+            "cd /tmp && rm -rf otter-x",
+            "grep -n delete $(git ls-files '*.py')",
+            "cd \"$(git rev-parse --show-toplevel)\" && make test",
+            "echo $(cd src && ls) && rm -rf build",
+            "(make test); rm -rf build",
+            "{ cd src; rm -rf gen; }",
+            "pushd src && rm -rf gen",
         ] {
             assert_eq!(cmd(line), Verdict::Allow, "{line}");
         }
