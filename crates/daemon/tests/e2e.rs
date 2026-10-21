@@ -1146,12 +1146,14 @@ async fn stream_attach_off_screen_gets_nothing_and_catches_up_on_return() {
         .session_write(
             "vw",
             "sh",
-            "head -c 1200000 /dev/zero | tr '\\0' x; echo; echo much-$((3+3))",
+            "head -c 3000000 /dev/zero | tr '\\0' x; echo; echo much-$((3+3))",
             true,
         )
         .await
         .unwrap();
     wait_output(&host, "vw", "sh", "much-6").await;
+    // The pane has it; give the daemon a moment to have read past the limit.
+    tokio::time::sleep(Duration::from_millis(500)).await;
     writer.send(&view(true)).await.unwrap();
     let (back, _) = read_until_control(&mut reader, snapshot_done).await;
     assert!(

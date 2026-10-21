@@ -438,8 +438,13 @@ impl Reader {
                     return;
                 }
                 // Back on screen at this size: what it missed, kept, then the
-                // size; a snapshot if it was too much to keep (D-160).
+                // size; a snapshot if it was too much to keep, or if the
+                // terminal comes back at another size (D-160): it has fitted
+                // itself already, and what was kept was laid out for the old.
                 let size = size(cols, rows);
+                if size != self.size && !self.relay.held.is_empty() {
+                    self.relay.give_up();
+                }
                 if std::mem::take(&mut self.relay.dropped) {
                     self.size = size;
                     self.take(self.regular(true));
@@ -532,8 +537,6 @@ impl Reader {
         let _ = self.asks.send(Ask::Resize(size));
     }
 
-    /// Tell the client the window's size if another client sizes it, or that
-    /// it no longer does, once our own resizes have settled.
     /// tmux says the window's size.
     fn layout(&mut self, size: (u16, u16)) {
         // Kept output was laid out at the size before; told of the new one
@@ -545,6 +548,8 @@ impl Reader {
         self.tell();
     }
 
+    /// Tell the client the window's size if another client sizes it, or that
+    /// it no longer does, once our own resizes have settled.
     fn tell(&mut self) {
         if self.resizing > 0 {
             return;
@@ -806,9 +811,11 @@ impl Relay {
         self.dropped = true;
     }
 
-    /// A snapshot was asked for: skip output until it.
+    /// A snapshot was asked for: skip output until it. It has what was
+    /// kept, too.
     fn wait(&mut self) {
         self.coming = true;
+        self.held = Vec::new();
     }
 
     /// A session has one pane; its id is known unless its state wasn't.
@@ -877,6 +884,7 @@ impl Relay {
     fn fell_behind(&mut self) -> bool {
         let streaming = !self.coming;
         self.coming = true;
+        self.held = Vec::new();
         streaming
     }
 }
@@ -1841,18 +1849,46 @@ mod tests {
         let (mut reader, mut asked, mut stream) = reader_off_screen().await;
         assert_eq!(reader.relay.output(b"%0", b"while ".to_vec()), None);
         assert_eq!(reader.relay.output(b"%0", b"away".to_vec()), None);
-        back_on_screen(&mut reader, 120, 40);
-        // What it missed, in order, laid out at the size it had; then the
-        // new size. No snapshot, so its history stays as it is (D-160).
+        back_on_screen(&mut reader, 100, 30);
+        // What it missed, in order, at the size it still has. No snapshot,
+        // so its history stays as it is (D-160).
         assert_eq!(
             next(&mut stream).await,
             StreamOutput::Data(b"while away".to_vec())
         );
-        assert!(matches!(asked.try_recv(), Ok(Ask::Resize((120, 40)))));
-        assert!(asked.try_recv().is_err(), "no snapshot");
+        assert!(asked.try_recv().is_err(), "no snapshot, no resize");
         assert_eq!(
             reader.relay.output(b"%0", b"live".to_vec()),
             Some(b"live".to_vec())
+        );
+    }
+
+    #[tokio::test]
+    async fn back_at_another_size_with_output_kept_is_a_snapshot() {
+        let (mut reader, mut asked, _stream) = reader_off_screen().await;
+        assert_eq!(reader.relay.output(b"%0", b"at 100x30".to_vec()), None);
+        // The terminal fitted itself to its new place before saying so:
+        // output laid out at 100 columns would wrap wrong in it.
+        back_on_screen(&mut reader, 120, 40);
+        let back = snapshot_asked(&mut asked);
+        assert_eq!(back.size, (120, 40));
+        assert!(reader.relay.held.is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_snapshot_asked_off_screen_drops_what_was_kept() {
+        let (mut reader, mut asked, mut stream) = reader_off_screen().await;
+        assert_eq!(reader.relay.output(b"%0", b"before".to_vec()), None);
+        reader.control(StreamInput::History(20000));
+        snapshot_asked(&mut asked);
+        // Back before the snapshot's replies: nothing sent twice.
+        back_on_screen(&mut reader, 100, 30);
+        assert!(reader.relay.held.is_empty());
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), stream.recv())
+                .await
+                .is_err(),
+            "nothing until the snapshot"
         );
     }
 

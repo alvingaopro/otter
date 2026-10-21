@@ -5157,6 +5157,8 @@ this between workspaces; this is the same between sessions.
   *Amended 2026-10-21 (D-153):* "just shown" holds only for a session that
   printed nothing while hidden. One that did gets a full snapshot when
   shown (D-119), as an attach would, and loses earlier lines it had loaded.
+  *Amended again (D-160):* now it gets what it missed, up to 1 MiB, at the
+  same size; a snapshot past that or at another size.
 - **Hidden means idle,** as in D-100: a hidden terminal never fits, tells
   the host it isn't on screen and gets nothing until it is (D-119, D-137),
   and takes no keys.
@@ -5204,6 +5206,7 @@ DOM renderer from then on.
   - Catching up a session that printed a little while hidden without a
     snapshot (the daemon keeping that output, to a budget, instead of
     dropping it). That is D-119's off-screen rule and the next step.
+    *Done in D-160.*
   - Each attach is a session on one SSH connection per host, and sshd allows
     ten by default (`MaxSessions`). Not measured past that.
   - Checked in tests only: the renderer switch isn't exercised there (the
@@ -5273,25 +5276,31 @@ over compressed SSH), and the snapshot's reset cleared the terminal's
 history, earlier lines asked for (D-119) and where the reader was.
 
 - **Kept, then sent.** Off screen, the daemon keeps the pane's output for
-  the terminal; back on screen it sends it, as it would have gone, then
-  the new size. The terminal never resized while hidden, so the output fits
-  it. Nothing is reset; its history stays as it was.
+  the terminal; back on screen at the same size it sends it, as it would
+  have gone. Nothing is reset; its history stays as it was.
+- **At another size, a snapshot.** A hidden terminal doesn't fit, but it
+  fits itself to its place as soon as it's shown, before it says it's back
+  (the window, a panel or the font changed meanwhile). Output kept at the
+  old width would wrap wrong in it and stay in its history, so then it gets
+  a snapshot at the new size, as before.
 - **Up to 1 MiB** (`HELD_BYTES`, a snapshot's own cap): past that a snapshot
   is the cheaper way back, and the terminal gets one, as before. Measured
   with Claude Code launched as Otter launches it (D-144), at 200×50: about
   1.1 KiB a second while it works, nothing while it waits. So about a
   quarter of an hour of work is kept, longer than D-152 keeps a hidden
-  session by default (ten minutes). At most 1 MiB a hidden terminal in
-  otterd.
+  session by default (ten minutes). About 1 MiB a hidden terminal in
+  otterd (its buffer may briefly be twice that while it grows).
 - **Given up, for a snapshot,** when the window's size changes while the
   terminal is hidden (another client sized it: what was kept was laid out
   at the size before, and the client would hear of the new size first),
-  when it fell behind, and when a snapshot comes meanwhile (it has it all).
+  when it fell behind, and when a snapshot is asked for meanwhile (it has
+  it all, so nothing is sent twice).
 - Same path as live output: the user's own terminal's queries are kept out
   of it (D-120), and the client falling behind still gets a fresh snapshot.
-- **Verified:** unit tests for kept and sent, too much, another size, and a
-  snapshot meanwhile; the end-to-end test against real tmux now expects the
-  missed output without a reset, and a snapshot after 1.2 MB printed while
-  away. The new unit tests fail with output dropped as before.
+- **Verified:** unit tests for kept and sent, too much, back at another
+  size, the window sized by another client, and a snapshot asked for or
+  come meanwhile; the end-to-end test against real tmux now expects the
+  missed output without a reset, and a snapshot after 3 MB printed while
+  away. The kept-output tests fail with output dropped as before.
 - Not done: an older host still sends a snapshot; the app doesn't need to
   know which it got.
