@@ -1155,6 +1155,11 @@ impl Gateway {
         .await;
         let applied = d.tasks.lock().await.apply(&f.id, Some(&command), |f, _| {
             f.answer_only = on;
+            // Changes are fine: a plan turned down needn't be answered in
+            // words any more (D-158).
+            if !on {
+                crate::controller::forget_decline(f);
+            }
             let why = f.reason(if on {
                 "You said only an answer is wanted: the coding agent only reads."
             } else {
