@@ -856,6 +856,12 @@ export function Decision({
       </div>
       <div className="decision-summary">{d.summary}</div>
       {d.detail && <div className="muted small">{d.detail}</div>}
+      {/* What the one line cuts: the whole command, to decide on (D-157). */}
+      {d.command && (
+        <pre className="decision-command" aria-label="The whole command">
+          {d.command}
+        </pre>
+      )}
       {form ? (
         <QuestionForm
           interaction={interaction!}

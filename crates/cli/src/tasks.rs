@@ -10,7 +10,7 @@ use anyhow::{Context, Result, bail};
 use clap::Subcommand;
 use otter_client::Connection;
 use otter_core::conversation::{Delivery, Turn, TurnState};
-use otter_core::task::{DecisionStatus, Task, TaskAction};
+use otter_core::task::{DecisionRequest, DecisionStatus, Task, TaskAction};
 use otter_protocol::conversation::{ConversationView, HistoryCursor, HistoryQuery};
 use otter_protocol::task::TaskCreate;
 use tokio::task::JoinSet;
@@ -317,6 +317,26 @@ fn word<T: serde::Serialize>(v: &T) -> String {
         Ok(serde_json::Value::String(s)) => s.replace('_', " "),
         _ => "?".into(),
     }
+}
+
+/// A decision waiting on the developer, with what they need to make it:
+/// why it is asked, and the whole command when its summary can't show it
+/// (D-157).
+fn waiting(d: &DecisionRequest) -> String {
+    let mut out = format!("  {}  {} ({})\n", d.id, d.summary, word(&d.kind));
+    for line in d.detail.iter().flat_map(|w| w.trim().lines()) {
+        out.push_str(&format!("      {line}\n"));
+    }
+    if let Some(command) = &d.command {
+        out.push_str("      the whole command:\n");
+        for line in command.lines() {
+            out.push_str(&format!("        {line}\n"));
+        }
+    }
+    if !d.options.is_empty() {
+        out.push_str(&format!("      options: {}\n", d.options.join(" | ")));
+    }
+    out
 }
 
 fn ago(at: &chrono::DateTime<chrono::Utc>) -> String {
@@ -725,10 +745,7 @@ fn show(host: &str, f: &Task) {
     if !pending.is_empty() {
         println!("\nWaiting on you:");
         for d in pending {
-            println!("  {}  {} ({})", d.id, d.summary, word(&d.kind));
-            if !d.options.is_empty() {
-                println!("      options: {}", d.options.join(" | "));
-            }
+            print!("{}", waiting(d));
         }
         println!(
             "  answer with `otter task decide {} <decision> [--deny | --answer …]`",
@@ -1145,5 +1162,43 @@ mod tests {
             split_host("Bug: the CSV export", known),
             (None, "Bug: the CSV export")
         );
+    }
+
+    #[test]
+    fn a_decision_waiting_on_you_says_why_with_the_whole_command() {
+        use otter_core::task::{DecisionKind, Risk};
+        let d = DecisionRequest {
+            id: otter_core::DecisionId::generate(),
+            step_id: None,
+            run_id: None,
+            kind: DecisionKind::ToolPermission,
+            risk: Risk::High,
+            summary: "Run `python3 - <<'E' import re p='a.py' …`".into(),
+            detail: Some("deletes or destroys something (`rm`)".into()),
+            command: Some("python3 - <<'E'\nimport re\nE\nrm -rf /opt/shared".into()),
+            options: vec![],
+            status: DecisionStatus::Pending,
+            decided_by: None,
+            answer: None,
+            rationale: None,
+            created_at: chrono::Utc::now(),
+            decided_at: None,
+            user_only: true,
+            grant: None,
+        };
+        let shown = waiting(&d);
+        assert!(
+            shown.contains(
+                "(tool permission)\n      deletes or destroys something (`rm`)\n      the whole command:\n        python3 - <<'E'\n        import re\n        E\n        rm -rf /opt/shared\n"
+            ),
+            "{shown}"
+        );
+        // A decision with neither is its one line, as before.
+        let plain = DecisionRequest {
+            detail: None,
+            command: None,
+            ..d
+        };
+        assert_eq!(waiting(&plain).lines().count(), 1);
     }
 }

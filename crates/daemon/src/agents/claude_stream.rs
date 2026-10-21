@@ -705,6 +705,8 @@ pub fn questions(input: &Value) -> Vec<Question> {
         .collect()
 }
 
+/// One line for a decision on `call`: redacted before it is cut, so a cut
+/// can't leave half a credential that no longer looks like one (D-157).
 pub fn summarize(call: &ToolCall, tool: &str) -> String {
     let text = match call {
         ToolCall::Read => format!("{tool}: read"),
@@ -716,7 +718,7 @@ pub fn summarize(call: &ToolCall, tool: &str) -> String {
         ToolCall::Delegate { description } => format!("Start a subagent: {description}"),
         ToolCall::Outside { name } | ToolCall::Other { name } => format!("Use {name}"),
     };
-    super::excerpt(&text, SUMMARY_LEN)
+    super::excerpt(&otter_core::redact::redact(&text), SUMMARY_LEN)
 }
 
 /// A tool result's text: a string, or text blocks.
@@ -885,7 +887,12 @@ fn parse(v: &Value, shared: &Mutex<Shared>) -> Vec<RuntimeEvent> {
                 out.push(RuntimeEvent::ToolFinished {
                     call: call.to_owned(),
                     ok: block["is_error"] != true,
-                    output: super::excerpt(&result_text(&block["content"]), OUTPUT_LEN),
+                    // Redacted before it's cut, so a cut can't leave half
+                    // a credential (D-157).
+                    output: super::excerpt(
+                        &otter_core::redact::redact(&result_text(&block["content"])),
+                        OUTPUT_LEN,
+                    ),
                 });
             }
         }
@@ -979,6 +986,42 @@ mod tests {
         assert!(has(["--model", "sonnet"]));
         assert!(has(["--max-turns", "30"]));
         assert!(a.iter().any(|x| x == "--include-partial-messages"));
+    }
+
+    /// Wherever the cut lands, it leaves no part of a credential (D-157):
+    /// cut first, a URL's password before its `@`, or a token shorter than
+    /// its shape, was no longer redacted.
+    #[test]
+    fn a_summary_is_redacted_before_it_is_cut() {
+        for pad in 150..200 {
+            for secret in [
+                "https://bob:hunter2secret@example.com/x",
+                "ghp_HUNTERHUNTERHUNTERHUNTERHUNTER1234",
+            ] {
+                let line = format!("curl {} {secret}", "x".repeat(pad));
+                let s = summarize(&ToolCall::Command { line }, "Bash");
+                assert!(!s.to_lowercase().contains("hunt"), "{s}");
+            }
+        }
+    }
+
+    #[test]
+    fn tool_output_is_redacted_before_it_is_cut() {
+        let s = shared();
+        for pad in OUTPUT_LEN - 40..OUTPUT_LEN {
+            let text = format!(
+                "{} https://bob:hunter2secret@example.com/x",
+                "x".repeat(pad)
+            );
+            let v = json!({"type":"user","message":{"content":[
+                {"type":"tool_result","tool_use_id":"t1","content":text}
+            ]}});
+            let events = parse(&v, &s);
+            let [RuntimeEvent::ToolFinished { output, .. }] = events.as_slice() else {
+                panic!("{events:?}")
+            };
+            assert!(!output.contains("hunt"), "{pad}: {output}");
+        }
     }
 
     #[test]

@@ -5328,6 +5328,64 @@ first step).
   and starts once the first is accepted) fails against the code before;
   D-079's and D-083's tests on plain directories pass unchanged.
 
+## D-157 — A command to decide on is there whole (2026-10-21)
+
+B06 in the task bench: the coding agent ran a long `python3 - <<'E' … E`
+script that ended in an `rm`, and policy asked the developer, as it does
+for deleting. The decision's `summary` is one line, cut at 200 characters
+(`claude_stream::summarize`), and its `detail` only policy's reason. The
+`rm` policy matched came after the cut, and the command was nowhere else:
+not in the app, not in `otter task show`, not in the conversation's tool
+record (cut the same way). The only safe answer was to deny.
+
+- **`DecisionRequest.command`**: the whole command line, when the summary
+  doesn't show it as it is (cut, or on several lines). Redacted, then
+  bounded at 16 KiB on a character, with a last line saying how many bytes
+  more there were (`… N more bytes, not kept`). Redacted first, so a cut
+  can't leave half a credential that no longer looks like one. It is set
+  where a run's every ask is recorded (`record_ask`), so it holds on both
+  backends: `claude -p` and the SDK worker both send the tool's input
+  whole. The summary stays the short line it was.
+- **A field of its own, not `detail`.** `detail` is policy's reason and is
+  read back as that: deciding rebuilds policy's verdict from it, the
+  Control Agent's prompt quotes it as the policy note, and the app shows it
+  as prose. A command is shown as written, its lines kept. The field is
+  optional and absent when the summary says it all, so older clients
+  ignore it and an older otterd never sends it: no protocol bump.
+- **Where the developer decides:** the app's decision (in the task and in
+  the Inbox, one component) shows it under the reason, as written, and
+  scrolls past 240 px. `otter task show` prints, under each decision
+  waiting on you, its reason (it printed only the summary) and the whole
+  command, indented.
+- Nothing new goes to `events.jsonl` or the task's history:
+  `DecisionRequested` carries no text, and the Blocked reason is still the
+  summary. The e2e test reads both and checks.
+- **Two leaks next to it, closed** (found in review, older than this):
+  - *The summary was cut, then redacted.* A cut inside a URL's password
+    (before its `@`), or one that left a token shorter than its shape, was
+    no longer seen as a credential, and its start went into the summary,
+    the Blocked reason in the task's history, the conversation's permission
+    interaction and Otter's prompts. `summarize` now redacts before it
+    cuts, as the conversation's tool record already did, and so does a
+    run's activity line (`$ …`).
+  - *A grant key kept the command as written.* The key (D-066) is the
+    command line, kept on the decision and, once approved, in the task's
+    grants: `HTTPS_PROXY=http://bob:hunter2@proxy:8080 cargo build >
+    /opt/build.log` matched no word list, so it was grantable with the
+    password in its key. A line with a credential in it
+    (`redact::has_secret`) is now never granted: it is asked every time, as
+    D-066 already asks about credentials. Keys keep their format.
+
+Not done: the conversation's tool record and its permission interaction
+still carry the 200-character line, so the coding agent's feed in the app
+cuts the command as before. Otter's tools (`get_pending_decisions`) and
+the Control Agent's decision prompt still see only the summary and the
+reason. The Control Agent never decides what only the developer may
+(D-066), and policy reads the whole line either way. A tool's output from
+`claude -p` is redacted before otterd cuts it to 2,000 characters too;
+the SDK worker still cuts it first (it has no `redact`), so that cut
+should move to otterd.
+
 ## D-160 — A terminal back on screen gets what it missed, not a snapshot (2026-10-21)
 
 D-119 dropped a stream's output while its terminal was off screen and sent
