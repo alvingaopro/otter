@@ -57,11 +57,11 @@ const DARK = {
 };
 
 const LIGHT = {
-  background: "#FBFAF7",
+  background: "#FFFFFF",
   foreground: "#1D1E21",
   cursor: "#1D1E21",
-  cursorAccent: "#FBFAF7",
-  selectionBackground: "#C9DCF7",
+  cursorAccent: "#FFFFFF",
+  selectionBackground: "#CCE0FF",
   black: "#1D1E21",
   red: "#C4352B",
   green: "#3E7A47",
@@ -79,6 +79,11 @@ const LIGHT = {
   brightCyan: "#1F8E8F",
   brightWhite: "#2E3036",
 };
+
+/** On the light ground, a program's own colours that would wash out (a dark
+ * theme's greys and yellows) are lifted to 4.5:1; dark draws them as they are
+ * (D-176). */
+const contrastFloor = (theme: "light" | "dark") => (theme === "light" ? 4.5 : 1);
 
 /** Lines of history asked for on attach (the terminal's scrollback); the host
  * may send fewer (D-118). */
@@ -195,7 +200,9 @@ export function Terminal({ host, workspace, session, onEnd, generation, label, w
 
   // Switch colors in place; no reattach.
   useEffect(() => {
-    if (termRef.current) termRef.current.options.theme = theme === "light" ? LIGHT : DARK;
+    if (!termRef.current) return;
+    termRef.current.options.theme = theme === "light" ? LIGHT : DARK;
+    termRef.current.options.minimumContrastRatio = contrastFloor(theme);
   }, [theme]);
 
   // Shown again: the keyboard is the terminal's.
@@ -211,6 +218,7 @@ export function Terminal({ host, workspace, session, onEnd, generation, label, w
       cursorBlink: true,
       scrollback: 5000,
       theme: themeRef.current === "light" ? LIGHT : DARK,
+      minimumContrastRatio: contrastFloor(themeRef.current),
       allowProposedApi: false,
       // The wheel scrolls this terminal's history, unless the program asked
       // for the mouse (or an older host draws the screen: the host's then).
