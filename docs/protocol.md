@@ -392,6 +392,13 @@ over, `approve: false` pauses the task. States and the crash matrix:
 [`runtime-states.md`](runtime-states.md). Clients treat an unknown run state
 as ended.
 
+**A decision's whole command** (D-157; an optional field, old peers ignore
+it): a decision on a coding agent's command that its one-line `summary`
+cuts, or that runs over several lines, carries `command?`, the command as
+written — redacted, at most 16 KiB, and when longer a last line `… N more
+bytes, not kept`. Absent when the summary shows it all. `detail` stays the
+reason it is asked.
+
 **Commands are idempotent.** `command_id` is the client's id for one intent
 (a random string). A command the daemon has applied is not applied again: a
 retry returns the task as it is. A command that failed was not applied,

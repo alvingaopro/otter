@@ -452,6 +452,10 @@ pub struct DecisionRequest {
     pub summary: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub detail: Option<String>,
+    /// The whole command it is about, when the one-line summary can't show
+    /// all of it: redacted, and bounded with a line saying so (D-157).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub command: Option<String>,
     /// Choices for a question; empty for approve/deny.
     #[serde(default)]
     pub options: Vec<String>,
@@ -1569,6 +1573,7 @@ mod tests {
             risk: Risk::High,
             summary: "Run `rm -rf build`".into(),
             detail: None,
+            command: None,
             options: vec![],
             status: DecisionStatus::Pending,
             decided_by: None,
@@ -1626,6 +1631,7 @@ mod tests {
             risk: Risk::High,
             summary: summary.into(),
             detail: None,
+            command: None,
             options: vec![],
             status: DecisionStatus::Pending,
             decided_by: None,

@@ -5054,6 +5054,56 @@ async fn a_model_cannot_approve_what_only_the_developer_may() {
     );
 }
 
+/// B06 (D-157): a command too long for a decision's one line is there whole
+/// for the developer who decides it, and its credential in nothing Otter
+/// keeps.
+#[tokio::test]
+async fn a_long_command_is_there_whole_for_the_developer() {
+    use otter_core::task::TaskStatus;
+    let fake = fake_agent_host("ok", "rules").await;
+    let host = &fake.host;
+    let id = started_task(host, "Rename the storage path ASK_LONG").await;
+    let f = wait_task(host, &id, "blocked on the developer", |f| {
+        f.status == TaskStatus::Blocked && f.pending_decisions().next().is_some()
+    })
+    .await;
+    let d = f.pending_decisions().next().unwrap();
+    assert!(d.user_only, "{d:?}");
+    // Its one line stops before the `rm` policy matched…
+    assert!(
+        d.summary.starts_with("Run `python3 - <<'E' import re") && d.summary.ends_with('…'),
+        "{}",
+        d.summary
+    );
+    assert!(!d.summary.contains("rm -rf"), "{}", d.summary);
+    // …so the whole command is there too, as written, without its credential.
+    let command = d.command.as_deref().expect("the whole command");
+    assert!(
+        command.starts_with("python3 - <<'E'\nimport re\np = \"taskbench/cli.py\"\n"),
+        "{command}"
+    );
+    assert!(command.ends_with(" rm -rf /opt/shared"), "{command}");
+    let mut kept = String::new();
+    let mut stack = vec![host.home().to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        for e in std::fs::read_dir(&dir).unwrap().flatten() {
+            let path = e.path();
+            if path.is_dir() {
+                stack.push(path);
+            } else if let Ok(text) = std::fs::read_to_string(&path) {
+                kept.push_str(&text);
+            }
+        }
+    }
+    assert!(
+        kept.contains("rm -rf /opt/shared"),
+        "kept with its decision"
+    );
+    let answered = serde_json::to_string(&f).unwrap();
+    assert!(!answered.contains("LONGLONG"), "{answered}");
+    assert!(!kept.contains("LONGLONG"), "{kept}");
+}
+
 /// Invariant 13 (D-075): a credential printed by what fails — the coding
 /// agent's tool, its own words, its error, a repository URL that can't be
 /// cloned — is in nothing Otter keeps or answers with. (The workspace's

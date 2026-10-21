@@ -104,6 +104,8 @@ export interface DecisionRequest {
   risk: Risk;
   summary: string;
   detail?: string;
+  /** The whole command, when the summary can't show all of it (redacted, bounded; D-157). */
+  command?: string;
   /** Choices for a question; empty for approve/deny. */
   options: string[];
   status: DecisionStatus;

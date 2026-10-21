@@ -5260,3 +5260,43 @@ on the host's page), once per host, so it repeated on every workspace of that
 host and took a row from the terminal. The workspace pane no longer shows it.
 A host too old for a command still says so where the command is used
 (`explain`).
+
+## D-157 — A command to decide on is there whole (2026-10-21)
+
+B06 in the task bench: the coding agent ran a long `python3 - <<'E' … E`
+script that ended in an `rm`, and policy asked the developer, as it does
+for deleting. The decision's `summary` is one line, cut at 200 characters
+(`claude_stream::summarize`), and its `detail` only policy's reason. The
+`rm` policy matched came after the cut, and the command was nowhere else:
+not in the app, not in `otter task show`, not in the conversation's tool
+record (cut the same way). The only safe answer was to deny.
+
+- **`DecisionRequest.command`**: the whole command line, when the summary
+  doesn't show it as it is (cut, or on several lines). Redacted, then
+  bounded at 16 KiB on a character, with a last line saying how many bytes
+  more there were (`… N more bytes, not kept`). Redacted first, so a cut
+  can't leave half a credential that no longer looks like one. It is set
+  where a run's every ask is recorded (`record_ask`), so it holds on both
+  backends: `claude -p` and the SDK worker both send the tool's input
+  whole. The summary stays the short line it was.
+- **A field of its own, not `detail`.** `detail` is policy's reason and is
+  read back as that: deciding rebuilds policy's verdict from it, the
+  Control Agent's prompt quotes it as the policy note, and the app shows it
+  as prose. A command is shown as written, its lines kept. The field is
+  optional and absent when the summary says it all, so older clients
+  ignore it and an older otterd never sends it: no protocol bump.
+- **Where the developer decides:** the app's decision (in the task and in
+  the Inbox, one component) shows it under the reason, as written, and
+  scrolls past 240 px. `otter task show` prints, under each decision
+  waiting on you, its reason (it printed only the summary) and the whole
+  command, indented.
+- Nothing new goes to `events.jsonl` or the task's history:
+  `DecisionRequested` carries no text, and the Blocked reason is still the
+  summary.
+
+Not done: the conversation's tool record and its permission interaction
+still carry the 200-character line, so the coding agent's feed in the app
+cuts the command as before. Otter's tools (`get_pending_decisions`) and
+the Control Agent's decision prompt still see only the summary and the
+reason. The Control Agent never decides what only the developer may
+(D-066), and policy reads the whole line either way.
