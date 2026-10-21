@@ -6,7 +6,7 @@ import { Menu } from "./Menu";
 import { LineChart, Meter, Sparkline } from "./charts";
 import { bytes, percent, rate, uptime } from "./format";
 import { HostWork, type Procs } from "./HostWork";
-import { strays } from "./hostWork";
+import { strays } from "./workRows";
 import { invokeNewer } from "./newer";
 import type { Task, TaskAction } from "./tasks";
 import type { Direction, ForwardView, HostHistory, HostMetrics, HostProcesses, HostView, ListeningPort } from "./types";

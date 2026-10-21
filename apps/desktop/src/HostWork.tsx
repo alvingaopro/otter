@@ -1,7 +1,7 @@
 import { Fragment, useState, type ReactNode } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { bytes } from "./format";
-import { agentRows, FLAG_LABEL, KINDS, processRows, sessionRows, span, strays, usageOf, type Flag, type Kind, type Usage } from "./hostWork";
+import { agentRows, FLAG_LABEL, KINDS, processRows, sessionRows, span, strays, usageOf, type Flag, type Kind, type Usage } from "./workRows";
 import { ago } from "./model";
 import { explain } from "./newer";
 import { STATUS_LABEL, type Task, type TaskAction, type TaskStatus } from "./tasks";

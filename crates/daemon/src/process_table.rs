@@ -212,7 +212,7 @@ impl Daemon {
             .ok()
             .flatten()
             .filter(|t| t.started == p.started)
-            .ok_or_else(&not_ours)?;
+            .ok_or_else(not_ours)?;
         procs.retain(|s| s.pid != p.pid);
         procs.push(target);
         let roots = self.process_roots().await;

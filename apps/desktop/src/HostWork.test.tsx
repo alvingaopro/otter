@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { invoke } from "@tauri-apps/api/core";
 import { HostWork, type Procs } from "./HostWork";
 import { HostPage } from "./HostPage";
-import { processRows, sessionRows, strays, usageOf } from "./hostWork";
+import { processRows, sessionRows, strays, usageOf } from "./workRows";
 import type { HostView, OtterProcess, WorkspaceView } from "./types";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
