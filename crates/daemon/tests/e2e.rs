@@ -5976,6 +5976,8 @@ async fn verification_stops_when_a_fix_changes_nothing() {
     })
     .await;
     assert_eq!(f.runs.len(), 2, "the step, and one fix");
+    // The next verdict's judge would see what ran after this one (D-165).
+    assert_eq!(f.judged_runs, 2);
     // The fix is a turn in the same session (D-064).
     let sid = f.runs[0].provider_session_id.clone().unwrap();
     assert_eq!(f.runs[1].provider_session_id.as_deref(), Some(sid.as_str()));

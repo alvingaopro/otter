@@ -40,8 +40,8 @@ D-066).
 | planning → done | engine | The look at the code came back with no plan: the request was a question, and the agent's words are the answer (D-084). Answer-only, with a plan the developer turned down: the agent's next turn answers in words; if it plans again, the developer isn't asked twice: Otter shows what it said and the plan, not carried out, or says there is no answer without the change (D-158). |
 | planning → failed | engine | The look at the code failed or said nothing: no plan is guessed (D-084). |
 | implementing → verifying | engine | Every step done or skipped. |
-| verifying → implementing | engine | Something unmet, and the work changed since the last verdict: a fix step (D-062). |
-| verifying → review | engine | All criteria met; or unmet with nothing changed after a fix (unverified, D-062). |
+| verifying → implementing | engine | Something unmet, and the work changed since the last verdict, or on the same work fewer unmet than the last verdict left (the fix proved some): a fix step (D-062, D-165). |
+| verifying → review | engine | All criteria met; or, after a fix, the same work with no fewer unmet, whatever the verdict says (unverified, D-062, D-165). |
 | verifying → blocked | engine | The check can't run here (D-062). |
 | review → implementing | engine | CI failed on the code: a fix step, unless it failed the same way after a fix (D-068). |
 | review → done | developer | Accept (every gate passed, or `--anyway`, on record). |
@@ -68,7 +68,7 @@ journal is the agent's. A restarted otterd reads them and goes on.
 | Plan | `requirements`, `acceptance` (typed), `steps`, `verify_command` (+ its decision) | Carries on with the next step. |
 | Each turn | a `Run`: state, `provider_session_id`, `worked_ms`, summary; the turn in the journal | A cut-off turn continues the same session with a notice (D-063); a finished one isn't repeated (recovered from the journal). |
 | Check | `Test` evidence: command, exit, output tail | Re-run on the next verification (cheap, local). |
-| Work state | `Working tree` evidence, `last_verification` (fingerprint + unmet) | The loop stop compares against it. |
+| Work state | `Working tree` evidence, `last_verification` (fingerprint + unmet), `judged_runs` (the runs at the last verdict) | The loop stop compares against the mark; the judge sees the commands of the runs after the count (D-165). |
 | Commit | `Committed <sha>` evidence | A clean tree: nothing to commit again. |
 | Push | `delivery.branch`, `head`, `pushed_at` | Pushes only if HEAD moved or work is uncommitted; a push is idempotent. |
 | Pull request | `delivery.pr_number`, `pr_url`, `PullRequest` evidence | An open PR for the branch is adopted (`gh pr view`), never opened twice. |
@@ -105,8 +105,8 @@ Deterministic, whatever a model thinks:
   and per task (`max_minutes`), waits excluded; out of time is cut off
   and resumed, not failed (D-063). Silent too long: the same (watchdog).
 - Attempts: new work costs one (`max_iterations`, 6); three per step.
-- Loops: the same failed run three times; the same work and verdict after
-  a fix (→ review); the same CI failure after a fix, times, durations
-  and ids aside (→ the developer, D-139).
+- Loops: the same failed run three times; the same work after a fix with
+  nothing more proven (→ review, D-165); the same CI failure after a fix,
+  times, durations and ids aside (→ the developer, D-139).
 - CI that looks like the infrastructure's fault: rerun at most twice per
   pushed commit (D-047).
