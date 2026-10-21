@@ -61,6 +61,15 @@ pub enum Request {
     /// TCP ports listening on the host. Result: `Vec<`[`host::ListeningPort`]`>`.
     #[serde(rename = "host.ports")]
     HostPorts,
+    /// The processes Otter started or must answer for, with their owners
+    /// (D-156). Result: [`host::HostProcesses`].
+    #[serde(rename = "host.processes")]
+    HostProcesses,
+    /// End an otterd of another build, or an orphan, named by the pid and
+    /// start time `host.processes` gave (D-156). `conflict` for anything
+    /// else. Result: `null`.
+    #[serde(rename = "host.processes.stop")]
+    HostProcessStop(host::ProcessStop),
     /// List a directory. Result: [`fs::DirListing`].
     #[serde(rename = "fs.list")]
     FsList(fs::FsPath),
@@ -328,6 +337,8 @@ impl Request {
             Request::HostStatus => "host.status",
             Request::HostMetrics => "host.metrics",
             Request::HostPorts => "host.ports",
+            Request::HostProcesses => "host.processes",
+            Request::HostProcessStop(_) => "host.processes.stop",
             Request::HostHistory(_) => "host.history",
             Request::BrowserOpen(_) => "browser.open",
             Request::BrowserTake(_) => "browser.take",

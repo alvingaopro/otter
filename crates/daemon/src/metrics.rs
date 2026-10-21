@@ -15,7 +15,7 @@ use otter_protocol::host::{
 };
 
 use crate::history::Recorder;
-use sysinfo::{Disks, Networks, ProcessRefreshKind, ProcessesToUpdate, System};
+use sysinfo::{Disks, Networks, ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
 
 pub const INTERVAL: Duration = Duration::from_secs(5);
 /// Ten minutes of samples.
@@ -25,10 +25,34 @@ const TOP: usize = 8;
 #[derive(Clone)]
 pub struct Sampler {
     latest: Arc<Mutex<Option<HostMetrics>>>,
+    processes: Arc<Mutex<Vec<ProcSample>>>,
     recorder: Arc<Mutex<Recorder>>,
 }
 
+/// One process as of the last sample (D-156). Never its command line: only
+/// what the sampler itself reads from it, like whether it is an otterd.
+#[derive(Clone, Debug)]
+pub struct ProcSample {
+    pub pid: u32,
+    pub parent: Option<u32>,
+    pub name: String,
+    pub exe: Option<String>,
+    pub cwd: Option<String>,
+    pub cpu: f32,
+    pub memory: u64,
+    /// Seconds since the epoch.
+    pub started: u64,
+    /// An otterd serving (`otterd serve`).
+    pub otterd: bool,
+    /// Samples in a row at 25% of a CPU or more.
+    pub busy_samples: u32,
+}
+
+/// What counts as busy.
+const BUSY_CPU: f32 = 25.0;
+
 struct Probe {
+    busy: HashMap<(u32, u64), u32>,
     sys: System,
     disks: Disks,
     networks: Networks,
@@ -40,14 +64,17 @@ impl Sampler {
     pub fn start(history_dir: std::path::PathBuf) -> Sampler {
         let sampler = Sampler {
             latest: Arc::default(),
+            processes: Arc::default(),
             recorder: Arc::new(Mutex::new(Recorder::open(history_dir, chrono::Utc::now()))),
         };
         let latest = sampler.latest.clone();
+        let processes = sampler.processes.clone();
         let recorder = sampler.recorder.clone();
         std::thread::Builder::new()
             .name("metrics".into())
             .spawn(move || {
                 let mut probe = Probe {
+                    busy: HashMap::new(),
                     sys: System::new(),
                     disks: Disks::new_with_refreshed_list(),
                     networks: Networks::new_with_refreshed_list(),
@@ -65,6 +92,7 @@ impl Sampler {
                             .record(last, metrics.load[0] as f32);
                     }
                     *latest.lock().unwrap() = Some(metrics);
+                    *processes.lock().unwrap() = probe.processes();
                 }
             })
             .expect("spawning the metrics thread");
@@ -77,6 +105,12 @@ impl Sampler {
             .lock()
             .unwrap()
             .history(range, chrono::Utc::now())
+    }
+
+    /// Every process as of the last sample; empty until the first interval
+    /// has passed.
+    pub fn processes(&self) -> Vec<ProcSample> {
+        self.processes.lock().unwrap().clone()
     }
 
     /// The latest measurement; `None` until the first interval has passed.
@@ -92,10 +126,51 @@ impl Probe {
         self.sys.refresh_processes_specifics(
             ProcessesToUpdate::All,
             true,
-            ProcessRefreshKind::nothing().with_cpu().with_memory(),
+            ProcessRefreshKind::nothing()
+                .with_cpu()
+                .with_memory()
+                .with_exe(UpdateKind::OnlyIfNotSet)
+                .with_cwd(UpdateKind::OnlyIfNotSet)
+                .with_cmd(UpdateKind::OnlyIfNotSet),
         );
         self.disks.refresh(true);
         self.networks.refresh(true);
+    }
+
+    /// The processes now, with how long each has been busy.
+    fn processes(&mut self) -> Vec<ProcSample> {
+        let mut busy = HashMap::new();
+        let out: Vec<ProcSample> = self
+            .sys
+            .processes()
+            .values()
+            .map(|p| {
+                let (pid, started) = (p.pid().as_u32(), p.start_time());
+                let n = match p.cpu_usage() >= BUSY_CPU {
+                    true => self.busy.get(&(pid, started)).copied().unwrap_or(0) + 1,
+                    false => 0,
+                };
+                if n > 0 {
+                    busy.insert((pid, started), n);
+                }
+                let name = p.name().to_string_lossy().into_owned();
+                let otterd = name == "otterd" && p.cmd().iter().any(|a| a == "serve");
+                ProcSample {
+                    pid,
+                    parent: p.parent().map(|p| p.as_u32()),
+                    name,
+                    exe: p.exe().map(|e| e.to_string_lossy().into_owned()),
+                    cwd: p.cwd().map(|c| c.to_string_lossy().into_owned()),
+                    cpu: p.cpu_usage(),
+                    memory: p.memory(),
+                    started,
+                    otterd,
+                    busy_samples: n,
+                }
+            })
+            .collect();
+        self.busy = busy;
+        out
     }
 
     fn sample(&mut self) -> HostMetrics {
@@ -385,6 +460,7 @@ mod tests {
     #[test]
     fn samples_this_host() {
         let mut probe = Probe {
+            busy: HashMap::new(),
             sys: System::new(),
             disks: Disks::new_with_refreshed_list(),
             networks: Networks::new_with_refreshed_list(),
