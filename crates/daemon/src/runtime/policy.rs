@@ -198,27 +198,57 @@ fn worst(a: Verdict, b: Verdict) -> Verdict {
 const SUB: &str = "__sub__";
 const SUB_WORD: &str = " __sub__ ";
 
-/// A command line's pieces: split at `;`, `&&`, `||`, `|`, `&` and
-/// newlines; what `$(…)`, `<(…)`, `>(…)` and backticks run is a piece of
-/// its own too, and [`SUB`] stands where it was.
-/// Lexical: quotes aren't understood.
-fn pieces(line: &str) -> Vec<String> {
-    pieces_in(line).into_iter().map(|(p, _)| p).collect()
+/// A piece of a command line, and the shell it runs in. A line is split
+/// at `;`, `&&`, `||`, `|`, `&` and newlines; what `$(…)`, `<(…)`, `>(…)`,
+/// backticks and a heredoc's body run are pieces too, and [`SUB`] stands
+/// where a substitution was. Lexical: quotes aren't understood, except
+/// where a heredoc starts.
+struct Piece {
+    text: String,
+    /// `None`: the line's own shell. `Some(n)`: a substitution's or a
+    /// heredoc body's, a shell of its own whose `cd`s stay in it (D-164).
+    shell: Option<usize>,
+    /// The shell the piece's own shell was started from.
+    parent: Option<usize>,
 }
 
-/// [`pieces`], each with whether it runs in a substitution's subshell,
-/// where a `cd` doesn't move the line's shell (D-164).
-fn pieces_in(line: &str) -> Vec<(String, bool)> {
-    let mut out = Vec::new();
-    let mut inner = String::new();
+/// A command line's pieces in the order they run, each with its shell
+/// (D-170): a substitution runs before the piece it stands in, a heredoc's
+/// body with its command. A body given to `cat` or `tee` whose output runs
+/// nowhere (no pipe, no substitution such as `>(sh)`) is what they write,
+/// data, not commands, as an `echo`'s words are.
+fn pieces_in(line: &str) -> Vec<Piece> {
+    let mut next = 0;
+    pieces_from(line, None, &mut next)
+}
+
+/// The private-use characters that mark where a heredoc's body belongs.
+const BODY_MARK: u32 = 0xE000;
+
+fn pieces_from(line: &str, shell: Option<usize>, next: &mut usize) -> Vec<Piece> {
+    let (text, bodies) = heredocs(line);
+    pieces_cut(&text, &bodies, shell, false, next)
+}
+
+/// [`pieces_from`] on a text whose heredocs' bodies are cut out already
+/// (`bodies`, by their marks); `captured`: its output is what a
+/// substitution stands for, which the line may run.
+fn pieces_cut(
+    text: &str,
+    bodies: &[Body],
+    shell: Option<usize>,
+    captured: bool,
+    next: &mut usize,
+) -> Vec<Piece> {
+    // Pull out `$(…)`, `<(…)`, `>(…)` and `` `…` ``, each with where it
+    // stood (nested ones are read by recursing on what was pulled out).
+    let mut subs: Vec<(usize, String)> = Vec::new();
     let mut outer = String::new();
-    // Pull out `$(…)` and `` `…` `` first (one level deep; nested ones are
-    // read by recursing on what was pulled out).
-    let chars: Vec<char> = line.chars().collect();
+    let chars: Vec<char> = text.chars().collect();
     let mut i = 0;
     while i < chars.len() {
-        // `<(…)` and `>(…)` run what's inside too.
         if matches!(chars[i], '$' | '<' | '>') && chars.get(i + 1) == Some(&'(') {
+            let mut inner = String::new();
             let mut depth = 1;
             let mut j = i + 2;
             while j < chars.len() && depth > 0 {
@@ -232,18 +262,17 @@ fn pieces_in(line: &str) -> Vec<(String, bool)> {
                 }
                 j += 1;
             }
-            out.extend(pieces(&inner).into_iter().map(|p| (p, true)));
-            inner.clear();
+            subs.push((outer.len(), inner));
             outer.push_str(SUB_WORD);
             i = j;
         } else if chars[i] == '`' {
+            let mut inner = String::new();
             let mut j = i + 1;
             while j < chars.len() && chars[j] != '`' {
                 inner.push(chars[j]);
                 j += 1;
             }
-            out.extend(pieces(&inner).into_iter().map(|p| (p, true)));
-            inner.clear();
+            subs.push((outer.len(), inner));
             outer.push_str(SUB_WORD);
             i = j + 1;
         } else {
@@ -251,13 +280,406 @@ fn pieces_in(line: &str) -> Vec<(String, bool)> {
             i += 1;
         }
     }
-    // `2>&1` and `>&2` are redirections, not `&`.
+    // `2>&1` and `>&2` are redirections, not `&` (one byte for one).
     let outer = outer.replace(">&", ">\u{1}");
-    for piece in outer.split([';', '|', '&', '\n']) {
-        let piece = piece.replace('\u{1}', "&");
+    let mut out = Vec::new();
+    // A substitution keeps this text's heredocs (its marks are in it); a
+    // heredoc's body is a text of its own, with its own.
+    let own = |out: &mut Vec<Piece>, inner: &str, sub: bool, next: &mut usize| {
+        let id = *next;
+        *next += 1;
+        let pieces = if sub {
+            pieces_cut(inner, bodies, Some(id), true, next)
+        } else {
+            pieces_from(inner, Some(id), next)
+        };
+        for p in pieces {
+            let parent = if p.shell == Some(id) { shell } else { p.parent };
+            out.push(Piece { parent, ..p });
+        }
+    };
+    let mut start = 0;
+    let mut before = '\n';
+    let ends: Vec<(usize, char)> = outer
+        .char_indices()
+        .filter(|(_, c)| matches!(c, ';' | '|' | '&' | '\n'))
+        .chain(std::iter::once((outer.len(), '\n')))
+        .collect();
+    // How many commands this shell runs, besides what it pulled out.
+    let commands = outer
+        .split([';', '|', '&', '\n'])
+        .filter(|p| {
+            p.chars().any(|c| {
+                !c.is_whitespace() && !(BODY_MARK..BODY_MARK + 0x100).contains(&(c as u32))
+            })
+        })
+        .count();
+    for (end, after) in ends {
+        let span = &outer[start..end];
+        for (_, inner) in subs.iter().filter(|(at, _)| (start..end).contains(at)) {
+            own(&mut out, inner, true, next);
+        }
+        let marks: Vec<usize> = span
+            .chars()
+            .filter_map(|c| (c as u32).checked_sub(BODY_MARK))
+            .map(|n| n as usize)
+            .filter(|n| *n < bodies.len())
+            .collect();
+        let piece: String = span
+            .chars()
+            .filter(|c| !(BODY_MARK..BODY_MARK + 0x100).contains(&(*c as u32)))
+            .collect::<String>()
+            .replace('\u{1}', "&");
         let piece = piece.trim();
         if !piece.is_empty() {
-            out.push((piece.to_owned(), false));
+            out.push(Piece {
+                text: piece.to_owned(),
+                shell,
+                parent: None,
+            });
+        }
+        // Its output runs nowhere: not captured by a substitution, the
+        // line's only command (nothing else on it may run what it wrote, by
+        // any name), with no pipe, no
+        // `>(…)` (nor any other substitution), and no copy to another
+        // descriptor (`>&3`, which an earlier `exec 3> >(sh)` may run).
+        let piped = before == '|'
+            || after == '|'
+            || captured
+            || commands > 1
+            || piece.contains(SUB)
+            || dups_elsewhere(piece);
+        let writes = matches!(piece.split_whitespace().next(), Some("cat" | "tee"));
+        for n in marks {
+            // Not quoted, the shell expands the body first: a `$(…)` in it
+            // runs.
+            let expanded = !bodies[n].literal && bodies[n].text.contains(['$', '`']);
+            if !(writes && !piped && !expanded) {
+                own(&mut out, &bodies[n].text, false, next);
+            }
+        }
+        before = after;
+        start = end + after.len_utf8();
+    }
+    out
+}
+
+/// Whether a piece copies its output to a descriptor other than 1 or 2
+/// (`>&3`, `1>&$fd`).
+fn dups_elsewhere(piece: &str) -> bool {
+    piece.match_indices(">&").any(|(i, _)| {
+        let to: String = piece[i + 2..]
+            .chars()
+            .take_while(|c| !c.is_whitespace() && !";|&<>".contains(*c))
+            .collect();
+        !matches!(to.as_str(), "1" | "2" | "-")
+    })
+}
+
+/// A heredoc's body, and whether the shell takes it as written (its word
+/// quoted: `<<'EOF'`) rather than expanding what is in it.
+struct Body {
+    text: String,
+    literal: bool,
+}
+
+/// A line without its heredocs' bodies: each body is taken out, and a
+/// [`BODY_MARK`] put right after the word that starts it. Where a heredoc
+/// starts is read outside quotes and comments; `<<<` is a string, and a
+/// word starting with a digit is a shift (`$((1 << 2))`).
+fn heredocs(line: &str) -> (String, Vec<Body>) {
+    let lines: Vec<&str> = line.split('\n').collect();
+    let mut text = String::new();
+    let mut bodies = Vec::new();
+    let mut lexer = Lexer::default();
+    let mut i = 0;
+    while i < lines.len() {
+        let l = lines[i];
+        let found = heredoc_words(l, &mut lexer);
+        let mut with_marks: Vec<char> = l.chars().collect();
+        for (k, (_, _, at, _)) in found.iter().enumerate().rev() {
+            if let Some(mark) = char::from_u32(BODY_MARK + (bodies.len() + k) as u32)
+                && bodies.len() + k < 0x100
+            {
+                with_marks.insert(*at, mark);
+            }
+        }
+        text.extend(with_marks);
+        for (word, tabs, _, literal) in found {
+            let mut body = Vec::new();
+            i += 1;
+            while i < lines.len() {
+                let candidate = if tabs {
+                    lines[i].trim_start_matches('\t')
+                } else {
+                    lines[i]
+                };
+                if candidate.trim_end() == word {
+                    break;
+                }
+                body.push(lines[i]);
+                i += 1;
+            }
+            bodies.push(Body {
+                text: body.join("\n"),
+                literal,
+            });
+        }
+        i += 1;
+        if i < lines.len() {
+            text.push('\n');
+        }
+    }
+    (text, bodies)
+}
+
+/// Where a character of a command line stands, as the shell reads it.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Quoted {
+    /// The shell's own text.
+    No,
+    /// Inside quotes (`'…'`, `"…"`, `$'…'`), a quote itself, or a
+    /// character a backslash escapes.
+    Yes,
+    /// A comment, to the end of the line.
+    Comment,
+}
+
+/// The shell's quoting, read a character at a time; what is open carries
+/// on to the next line, except a comment. Also counts `((…))`, where `<<`
+/// is a shift.
+#[derive(Default)]
+struct Lexer {
+    single: bool,
+    double: bool,
+    /// `$'…'`, where a backslash escapes the quote.
+    ansi: bool,
+    escaped: bool,
+    comment: bool,
+    arith: usize,
+}
+
+impl Lexer {
+    fn read(&mut self, c: char, prev: Option<char>, next: Option<char>) -> Quoted {
+        if c == '\n' {
+            self.comment = false;
+            self.escaped = false;
+            return if self.single || self.double || self.ansi {
+                Quoted::Yes
+            } else {
+                Quoted::No
+            };
+        }
+        if self.comment {
+            return Quoted::Comment;
+        }
+        if self.escaped {
+            self.escaped = false;
+            return Quoted::Yes;
+        }
+        if self.single {
+            self.single = c != '\'';
+            return Quoted::Yes;
+        }
+        if self.ansi {
+            match c {
+                '\\' => self.escaped = true,
+                '\'' => self.ansi = false,
+                _ => {}
+            }
+            return Quoted::Yes;
+        }
+        if self.double {
+            match c {
+                '\\' => self.escaped = true,
+                '"' => self.double = false,
+                _ => {}
+            }
+            return Quoted::Yes;
+        }
+        match c {
+            '\\' => {
+                self.escaped = true;
+                Quoted::Yes
+            }
+            '\'' if prev == Some('$') => {
+                self.ansi = true;
+                Quoted::Yes
+            }
+            '\'' => {
+                self.single = true;
+                Quoted::Yes
+            }
+            '"' => {
+                self.double = true;
+                Quoted::Yes
+            }
+            '#' if prev.is_none_or(|p| p.is_whitespace() || ";&|(".contains(p)) => {
+                self.comment = true;
+                Quoted::Comment
+            }
+            '(' if next == Some('(') => {
+                self.arith += 1;
+                Quoted::No
+            }
+            ')' if next == Some(')') && self.arith > 0 => {
+                self.arith -= 1;
+                Quoted::No
+            }
+            _ => Quoted::No,
+        }
+    }
+}
+
+/// The heredocs one line starts: each one's word, whether its body may
+/// indent the end with tabs (`<<-`), where the word ends (in chars), and
+/// whether the word is quoted (the body is then taken as written).
+/// A `<<` the shell reads as its own: not quoted, not in a comment, not a
+/// `<<<` string, not a shift (`((x << y))`, a word starting with a digit).
+fn heredoc_words(l: &str, lexer: &mut Lexer) -> Vec<(String, bool, usize, bool)> {
+    let chars: Vec<char> = l.chars().collect();
+    let at = |i: usize| chars.get(i).copied();
+    let mut found = Vec::new();
+    let mut i = 0;
+    while i < chars.len() {
+        let prev = i.checked_sub(1).and_then(at);
+        let quoted = lexer.read(chars[i], prev, at(i + 1));
+        if quoted == Quoted::No
+            && chars[i] == '<'
+            && at(i + 1) == Some('<')
+            && at(i + 2) != Some('<')
+            && prev != Some('<')
+            && lexer.arith == 0
+        {
+            let mut j = i + 2;
+            let tabs = at(j) == Some('-');
+            if tabs {
+                j += 1;
+            }
+            while at(j).is_some_and(|c| c == ' ' || c == '\t') {
+                j += 1;
+            }
+            let mut word = String::new();
+            // Any quoting in the word keeps the shell from expanding the body.
+            let mut literal = false;
+            match at(j) {
+                Some(q @ ('\'' | '"')) => {
+                    literal = true;
+                    j += 1;
+                    while j < chars.len() && chars[j] != q {
+                        word.push(chars[j]);
+                        j += 1;
+                    }
+                    j += 1;
+                }
+                _ => {
+                    while j < chars.len()
+                        && !chars[j].is_whitespace()
+                        && !";|&<>()".contains(chars[j])
+                    {
+                        if matches!(chars[j], '\\' | '\'' | '"') {
+                            literal = true;
+                        } else {
+                            word.push(chars[j]);
+                        }
+                        j += 1;
+                    }
+                }
+            }
+            if word.chars().next().is_some_and(|c| !c.is_ascii_digit()) {
+                found.push((word, tabs, j.min(chars.len()), literal));
+            }
+            i = j;
+            continue;
+        }
+        i += 1;
+    }
+    // The line's end ends a comment.
+    lexer.read('\n', None, None);
+    found
+}
+
+/// A line's text the shell reads as its own: outside quotes and comments.
+fn outside_quotes(text: &str) -> String {
+    let chars: Vec<char> = text.chars().collect();
+    let mut lexer = Lexer::default();
+    (0..chars.len())
+        .filter(|&i| {
+            let prev = i.checked_sub(1).map(|p| chars[p]);
+            lexer.read(chars[i], prev, chars.get(i + 1).copied()) == Quoted::No
+        })
+        .map(|i| chars[i])
+        .collect()
+}
+
+/// Whether the shell expands something in this text: a `$` or a backtick
+/// in its own text or in double quotes.
+fn expands(text: &str) -> bool {
+    let chars: Vec<char> = text.chars().collect();
+    let mut lexer = Lexer::default();
+    (0..chars.len()).any(|i| {
+        let prev = i.checked_sub(1).map(|p| chars[p]);
+        let double = lexer.double;
+        let quoted = lexer.read(chars[i], prev, chars.get(i + 1).copied());
+        matches!(chars[i], '$' | '`') && (quoted == Quoted::No || double)
+    })
+}
+
+/// A line that only prints (D-170): one `echo` or `printf` on one line,
+/// what it prints in plain words or in quotes the shell doesn't expand,
+/// with no other command, comment, pipe, substitution, variable, group or
+/// heredoc. Its words run nothing, so it does what its redirection does.
+fn prints_only(line: &str) -> bool {
+    matches!(line.split_whitespace().next(), Some("echo" | "printf"))
+        && !line.contains('\n')
+        && !outside_quotes(line).contains([';', '&', '|', '$', '`', '(', ')', '{', '}', '<'])
+        && !has_comment(line)
+        && !expands(line)
+}
+
+/// Whether a line has a comment.
+fn has_comment(line: &str) -> bool {
+    let chars: Vec<char> = line.chars().collect();
+    let mut lexer = Lexer::default();
+    (0..chars.len()).any(|i| {
+        let prev = i.checked_sub(1).map(|p| chars[p]);
+        lexer.read(chars[i], prev, chars.get(i + 1).copied()) == Quoted::Comment
+    })
+}
+
+/// A piece of a line where it runs (D-164): the line's shell moves with its
+/// `cd`s; a substitution's or a heredoc body's starts where the shell it
+/// came from is and keeps its `cd`s to itself.
+struct Step {
+    piece: String,
+    shell: Option<usize>,
+    cwd: std::path::PathBuf,
+    known: bool,
+    /// It moves its shell (a `cd`).
+    moves: bool,
+}
+
+fn walk(line: &str, root: &Path) -> Vec<Step> {
+    let start = (root.to_path_buf(), true);
+    let mut shells: std::collections::HashMap<Option<usize>, (std::path::PathBuf, bool)> =
+        std::collections::HashMap::from([(None, start)]);
+    let mut out = Vec::new();
+    for p in pieces_in(line) {
+        let from = shells.get(&p.parent).or(shells.get(&None)).cloned();
+        let here = shells
+            .entry(p.shell)
+            .or_insert_with(|| from.unwrap_or((root.to_path_buf(), true)))
+            .clone();
+        let to = cd(&p.text, line, &here.0, here.1);
+        out.push(Step {
+            piece: p.text,
+            shell: p.shell,
+            cwd: here.0,
+            known: here.1,
+            moves: to.is_some(),
+        });
+        if let Some(to) = to {
+            shells.insert(p.shell, to);
         }
     }
     out
@@ -325,8 +747,9 @@ fn scratch(path: &Path) -> bool {
 /// the workspace itself, not Git's internals, no glob at its top (D-066).
 /// `git rm` too: it takes the files out of the tree and the index, and
 /// they're still in the history (D-163) — unless the `line` it's in moves
-/// where Git works.
-fn deletes_inside(piece: &str, line: &str, cwd: &Path, root: &Path) -> bool {
+/// where Git works, or it runs in a shell of its own (`elsewhere`: a
+/// substitution, a heredoc's body), whose Git the line doesn't show.
+fn deletes_inside(piece: &str, line: &str, cwd: &Path, root: &Path, elsewhere: bool) -> bool {
     let words: Vec<&str> = piece.split_whitespace().collect();
     let args: Vec<&str> = words
         .iter()
@@ -336,7 +759,7 @@ fn deletes_inside(piece: &str, line: &str, cwd: &Path, root: &Path) -> bool {
     let git = args.first() == Some(&"git");
     let rest = match args.split_first() {
         Some((&("rm" | "rmdir" | "unlink"), rest)) => rest,
-        Some((&"git", [sub, rest @ ..])) if *sub == "rm" && !moves_git(line) => rest,
+        Some((&"git", [sub, rest @ ..])) if *sub == "rm" && !elsewhere && !moves_git(line) => rest,
         _ => return false,
     };
     // Quoted or escaped, an option is still an option (`'-r'`).
@@ -383,7 +806,10 @@ fn deletes_inside(piece: &str, line: &str, cwd: &Path, root: &Path) -> bool {
 /// do `core.worktree` (in any case: Git's keys don't have one) and a
 /// `gitdir:` pointer; a function or alias may make `git` another command.
 fn moves_git(line: &str) -> bool {
-    let lower = unquoted(line).to_lowercase();
+    // A heredoc's body is another program's input, or a shell of its own
+    // (D-170): what feeds one to this shell (`source`, `.`, `eval`) is on
+    // the line.
+    let lower = unquoted(&heredocs(line).0).to_lowercase();
     [
         "git_",
         "worktree",
@@ -396,18 +822,23 @@ fn moves_git(line: &str) -> bool {
     ]
     .iter()
     .any(|w| lower.contains(w))
-        || pieces(line).iter().any(|piece| {
-            let words: Vec<&str> = piece.split_whitespace().collect();
-            match words.as_slice() {
-                [first, ..] if first.contains('=') && !first.starts_with('-') => true,
-                [".", ..] | ["source" | "eval" | "export" | "declare" | "typeset", ..] => true,
-                ["set", options @ ..] => options.iter().any(|o| {
-                    *o == "allexport"
-                        || (o.starts_with('-') && !o.starts_with("--") && o.contains('a'))
-                }),
-                _ => false,
-            }
-        })
+        || pieces_in(line)
+            .iter()
+            .filter(|p| p.shell.is_none())
+            .any(|p| {
+                let words: Vec<&str> = p.text.split_whitespace().collect();
+                match words.as_slice() {
+                    [first, ..] if first.contains('=') && !first.starts_with('-') => true,
+                    // A command a substitution or a variable names can be any.
+                    [first, ..] if first.contains(SUB) || first.starts_with('$') => true,
+                    [".", ..] | ["source" | "eval" | "export" | "declare" | "typeset", ..] => true,
+                    ["set", options @ ..] => options.iter().any(|o| {
+                        *o == "allexport"
+                            || (o.starts_with('-') && !o.starts_with("--") && o.contains('a'))
+                    }),
+                    _ => false,
+                }
+            })
 }
 
 /// Commands that only read or search what they're given.
@@ -546,6 +977,8 @@ fn cd(piece: &str, line: &str, cwd: &Path, known: bool) -> Option<(std::path::Pa
     let cdpath = unquoted(line).to_lowercase().contains("cdpath");
     let to = match words.as_slice() {
         ["eval" | "popd", ..] => None,
+        // A command a substitution or a variable names may be a `cd`.
+        [first, ..] if first.contains(SUB) || first.starts_with('$') => None,
         ["cd" | "pushd", ..] if subshell => None,
         ["cd"] => target(cwd, "~"),
         // `pushd +1` turns the stack, like `cd -`.
@@ -649,27 +1082,28 @@ fn classify_command(line: &str, root: &Path) -> Verdict {
     if severity(&verdict) == 3 {
         return verdict;
     }
-    let (mut cwd, mut known) = (root.to_path_buf(), true);
-    for (piece, in_sub) in pieces_in(line) {
+    if prints_only(line) {
+        return worst(verdict, prints(line, root));
+    }
+    for step in walk(line, root) {
+        let piece = &step.piece;
         // Deleting the work's own files is routine (D-066), where it can
         // tell they are (D-164).
-        let routine_delete = known && deletes_inside(&piece, line, &cwd, root);
+        let routine_delete =
+            step.known && deletes_inside(piece, line, &step.cwd, root, step.shell.is_some());
         verdict = worst(
             verdict,
-            classify_words(&both_ways(&doing(&piece, &cwd, root)), routine_delete),
+            classify_words(&both_ways(&doing(piece, &step.cwd, root)), routine_delete),
         );
-        if let Some(f) = names_secrets_file(&piece)
-            .or_else(|| mentions_any(&both_ways(&piece).to_lowercase(), CREDENTIAL_FILES))
+        if let Some(f) = names_secrets_file(piece)
+            .or_else(|| mentions_any(&both_ways(piece).to_lowercase(), CREDENTIAL_FILES))
         {
             verdict = worst(verdict, ask_user(format!("touches credentials (`{f}`)")));
         }
-        if let Some((to, k)) = cd(&piece, line, &cwd, known) {
-            if !in_sub {
-                (cwd, known) = (to, k);
-            }
+        if step.moves {
             continue;
         }
-        if let Some(t) = writes_outside(&piece, &cwd, root) {
+        if let Some(t) = writes_outside(piece, &step.cwd, root) {
             verdict = worst(
                 verdict,
                 ask_user(format!("writes outside the workspace ({t})")),
@@ -677,6 +1111,17 @@ fn classify_command(line: &str, root: &Path) -> Verdict {
         }
     }
     verdict
+}
+
+/// What a line that only prints does: what its redirection writes.
+fn prints(line: &str, root: &Path) -> Verdict {
+    if let Some(f) = names_secrets_file(line) {
+        return ask_user(format!("touches credentials (`{f}`)"));
+    }
+    match writes_outside(line, root, root) {
+        Some(t) => ask_user(format!("writes outside the workspace ({t})")),
+        None => Verdict::Allow,
+    }
 }
 
 /// What no one may allow, anywhere in a line.
@@ -875,21 +1320,17 @@ pub fn grant(call: &ToolCall, root: &Path) -> Option<String> {
             if otter_core::redact::has_secret(line) {
                 return None;
             }
-            let (mut cwd, mut known) = (root.to_path_buf(), true);
-            for (piece, in_sub) in pieces_in(line) {
+            for step in walk(line, root) {
+                let piece = &step.piece;
                 if classify_words(
-                    &both_ways(&doing(&piece, &cwd, root)),
-                    known && deletes_inside(&piece, line, &cwd, root),
+                    &both_ways(&doing(piece, &step.cwd, root)),
+                    step.known
+                        && deletes_inside(piece, line, &step.cwd, root, step.shell.is_some()),
                 ) != Verdict::Allow
-                    || names_secrets_file(&piece).is_some()
-                    || mentions_any(&both_ways(&piece).to_lowercase(), CREDENTIAL_FILES).is_some()
+                    || names_secrets_file(piece).is_some()
+                    || mentions_any(&both_ways(piece).to_lowercase(), CREDENTIAL_FILES).is_some()
                 {
                     return None;
-                }
-                if let Some((to, k)) = cd(&piece, line, &cwd, known)
-                    && !in_sub
-                {
-                    (cwd, known) = (to, k);
                 }
             }
             (never(line) == Verdict::Allow).then(|| {
@@ -1142,7 +1583,6 @@ mod tests {
             // Looking for what no one may do is the developer's to allow,
             // not never (D-138).
             "grep -rn \"rm -rf /\" docs",
-            "echo 'rm -rf /' > notes.txt",
             "rmdir /opt/old",
             "rm -rf .",
             "rm -rf *",
@@ -1324,6 +1764,89 @@ mod tests {
             "pushd src && rm -rf gen",
         ] {
             assert_eq!(cmd(line), Verdict::Allow, "{line}");
+        }
+    }
+
+    /// D-170 (the task bench's B12, B13): what only prints, or what a
+    /// heredoc gives another program, isn't what the line does; a
+    /// substitution and a heredoc's body run in shells of their own, in
+    /// the order they run.
+    #[test]
+    fn what_a_line_only_prints_or_hands_over_is_not_what_it_does() {
+        for line in [
+            // B12: the plan handed over by `echo`.
+            "echo '{\"summary\": \"Remove the demo\", \"detail\": \"git rm data/sample.csv; delete the token test\"}' >/dev/null",
+            "printf 'rm -rf build\\n' > notes.txt",
+            "echo 'costs $5, sudo not needed' > notes.txt",
+            "echo 'rm -rf /' > notes.txt",
+            // A file written from a heredoc is data.
+            "cat > tests/test_tokens.py <<'EOF'\nimport unittest\nclass T(unittest.TestCase):\n    def test_delete_token(self):\n        self.assertTrue(delete_token('password'))\nEOF",
+            "tee docs/notes.md <<EOF >/dev/null\nrm -rf build is how you clean\nEOF",
+            "cat <<'EOF' > notes.md 2>&1\nrm -rf build is how you clean\nEOF",
+            // Quoted, it is written as it is.
+            "cat <<'E' > f.txt\n$(git push --force)\nE",
+            "cat <<\"E\" > f.txt\n$(git push --force)\nE",
+            "cat <<\\E > f.txt\n$(git push --force)\nE",
+            "cat <<E > f.txt\nplain text\nE",
+            // B13: `git rm` after a heredoc that only feeds Python.
+            "python3 - <<'E'\np='taskbench/cli.py'; s=open(p).read()\ns=s.replace('demo', '')\nopen(p,'w').write(s)\nE\ngit rm -q data/sample.csv; git diff taskbench; make test 2>&1 | tail -5",
+            // A `cd` in a substitution stays there.
+            "echo $(cd src && ls) && rm -rf build",
+            "cd src && echo $(ls) && rm -rf gen",
+        ] {
+            assert_eq!(cmd(line), Verdict::Allow, "{line}");
+        }
+        for line in [
+            // Printing what the shell expands, or piping it on.
+            "echo $GITHUB_TOKEN",
+            "echo \"$API_KEY\" > k.txt",
+            "echo 'rm -rf ~/x' | xargs -I{} sh -c {}",
+            "printf 'git rm x' | bash -s",
+            // The output of a substitution can run.
+            "$(echo rm -rf ~/x)",
+            "x=$(echo rm -rf ~/x); $x",
+            // A heredoc's body run by a shell is commands.
+            "bash <<'E'\nrm -rf ~/x\nE",
+            "bash <<'E'\ncd /srv\nrm -rf x\nE",
+            "bash <<'E'\ngit() { command git -C /srv/o \"$@\"; }\ngit rm -rf src\nE",
+            "cat <<'E' | sh\nrm -rf x\nE",
+            // …nor one handed to a process substitution that runs it.
+            "tee >(bash) <<E\nrm -rf /home/u/secret\nE",
+            "tee >(sh) <<E\nkubectl delete ns prod\nE",
+            "cat <<E > >(bash)\nrm -rf /home/u/secret\nE",
+            "exec 3> >(bash); cat <<E >&3\nrm -rf /home/u/secret\nE",
+            // …nor one written to a file the line then runs.
+            "cat <<'E' > run.sh; bash run.sh\nrm -rf /home/u/secret\nE",
+            "cat > run.sh <<'E' && sh ./run.sh\nrm -rf /home/u/secret\nE",
+            "cat <<'E' > ./run.sh; bash run.sh\nrm -rf /home/u/secret\nE",
+            "tee run.sh <<'E' >/dev/null\nrm -rf /home/u/secret\nE\nbash run.sh",
+            "cat <<'E' > run.sh; bash r*.sh\nrm -rf /home/u/secret\nE",
+            "cat <<'E' > run.sh; bash $(echo run.sh)\nrm -rf /home/u/secret\nE",
+            // A heredoc inside a substitution: its body is read there, and
+            // what a substitution captures may run.
+            "echo $(bash <<E\ngit push --force\nE)",
+            "x=$(bash <<E\ngit push --force\nE); echo $x",
+            "echo `bash <<E\ngit push --force\nE`",
+            "$(cat <<E\nrm -rf /home/u/secret\nE)",
+            // An unquoted heredoc's body is expanded: what it substitutes runs.
+            "cat <<E > f.txt\n$(git push --force)\nE",
+            "cat <<E > f.txt\n`git push --force`\nE",
+            "tee f.txt <<E\nx $(git push --force) y\nE",
+            "bash <(cat <<E\nrm -rf /home/u/secret\nE)",
+            // A `cd` in a substitution moves that shell, and it runs where
+            // the line's shell is by then.
+            "echo $(cd src) && rm -rf ../x",
+            "echo $(cd /srv && rm -rf x)",
+            "echo $(cd /srv && touch x)",
+            "cd /srv && echo $(rm -rf x)",
+            // A command a substitution or a variable names may be a `cd`.
+            "$(echo cd) /srv; rm -rf x",
+            "X=cd; $X /srv; rm -rf x",
+            // Where a heredoc starts is read outside quotes and comments.
+            "echo '<<X'\ncd /srv\nX\nrm -rf x",
+            "true # <<X\ncd /srv\nX\nrm -rf x",
+        ] {
+            assert!(severity(&cmd(line)) >= 2, "{line}: {:?}", cmd(line));
         }
     }
 
