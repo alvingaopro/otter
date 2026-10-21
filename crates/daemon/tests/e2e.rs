@@ -3146,6 +3146,69 @@ async fn a_second_task_waits_for_the_workspace() {
     assert!(!f.rationale.is_empty());
 }
 
+/// A task in review keeps its Git workspace (D-156): its verified work
+/// isn't committed until it's published, so another task started there
+/// waits — else publishing the first would commit the second's edits
+/// under its title (the live bench's B03). Accepted, the first lets go.
+#[tokio::test]
+async fn a_task_waiting_to_publish_keeps_its_workspace() {
+    use otter_core::task::{TaskAction, TaskStatus};
+    let fake = fake_agent_host("ok", "rules").await;
+    let host = &fake.host;
+    let (first, _) = git_task(&fake).await;
+    wait_task(host, &first, "asked to publish", |f| {
+        f.status == TaskStatus::Review
+            && f.pending_decisions()
+                .any(|d| d.summary.contains("git push"))
+    })
+    .await;
+    let mut conn = host.conn().await;
+    let second = conn
+        .task_create(otter_protocol::task::TaskCreate {
+            command_id: "create-second".into(),
+            title: "Second".into(),
+            request: "Add a README".into(),
+            workspace: Some("csv".into()),
+            answer_only: false,
+        })
+        .await
+        .unwrap()
+        .id
+        .to_string();
+    conn.task_act("start-second", &second, TaskAction::Start)
+        .await
+        .unwrap();
+    wait_task(host, &second, "waiting for the first", |f| {
+        f.status_reason.as_deref()
+            == Some(&*format!(
+                "Waiting for csv: “CSV export”{}",
+                otter_core::task::HELD
+            ))
+    })
+    .await;
+    // Published: still the first one's until it's accepted.
+    allow_publish(host, &first).await;
+    wait_task(host, &first, "published", |f| {
+        f.delivery.as_ref().is_some_and(|d| d.pr_url.is_some())
+    })
+    .await;
+    tokio::time::sleep(Duration::from_millis(1000)).await;
+    assert!(conn.task_get(&second).await.unwrap().runs.is_empty());
+    conn.task_act(
+        "accept-first",
+        &first,
+        TaskAction::Accept {
+            override_gates: true,
+        },
+    )
+    .await
+    .unwrap();
+    let f = wait_task(host, &second, "the second at work", |f| !f.runs.is_empty()).await;
+    let a = conn.task_get(&first).await.unwrap();
+    assert_eq!(a.status, TaskStatus::Done);
+    assert!(f.runs[0].started_at >= a.delivery.unwrap().pushed_at.unwrap());
+}
+
 /// A task waiting for a Git workspace gets one of its own (D-080): a
 /// worktree of the same repository on a branch for it, and both tasks'
 /// agents work at once, each in its own directory.
