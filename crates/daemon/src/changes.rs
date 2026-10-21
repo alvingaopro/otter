@@ -109,6 +109,12 @@ pub(crate) async fn changes(root: &Path, env: &EnvMap, base: Option<&str>) -> Wo
             out.ahead = n.next().unwrap_or(0);
         }
     }
+    // Work no remote has, whatever the base: after a push (the branch's
+    // remote-tracking ref moves) it is gone, a new branch's included.
+    out.unpushed = g
+        .out(&["rev-list", "--count", "HEAD", "--not", "--remotes"])
+        .await
+        .and_then(|n| n.parse().ok());
     // Since the starting point, committed or not; with no commits yet, what
     // is staged.
     let (numstat, status, uncommitted) = match &from {

@@ -29,6 +29,10 @@ pub struct WorkspaceChanges {
     /// Commits on the base that HEAD doesn't have.
     #[serde(default)]
     pub behind: u32,
+    /// Commits on HEAD that no remote has: work not pushed anywhere (D-152).
+    /// Absent from an older otterd, and when there are no commits yet.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unpushed: Option<u32>,
     /// Changed since the base, committed or not, new files included; paths
     /// relative to the workspace root. At most [`MAX_CHANGED_FILES`].
     #[serde(default)]

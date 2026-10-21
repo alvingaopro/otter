@@ -105,10 +105,15 @@ export function ChangesList({
               {c.base ? ` · since ${c.base}` : " · not committed"}
             </span>
             {(c.ahead > 0 || c.behind > 0) && (
-              <span className="mono" title={`${c.ahead} commits ahead, ${c.behind} behind`}>
+              <span className="mono" title={`${c.ahead} commits ahead of ${c.base ?? "its base"}, ${c.behind} behind`}>
                 ↑{c.ahead} ↓{c.behind}
               </span>
             )}
+            {c.unpushed ? (
+              <span className="mono" title="Commits that no remote has: pushing them keeps them safe">
+                {c.unpushed} not pushed
+              </span>
+            ) : null}
           </div>
           <ul className="files-list">
             {c.files.map((f) => (

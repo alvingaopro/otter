@@ -3422,10 +3422,22 @@ async fn a_workspace_shows_its_changes() {
     assert!(c.git);
     assert_eq!(c.branch.as_deref(), Some("feature/x"));
     assert_eq!((c.ahead, c.behind, c.files.len()), (0, 0, 0));
+    assert_eq!(c.unpushed, Some(0));
 
     let root = Path::new(&ws.root);
     std::fs::write(root.join("a.txt"), "one\n2\nthree\n").unwrap();
     git(root, &["commit", "-qam", "edit a"]);
+    // Work no remote has (D-152): until it is pushed, whatever the base.
+    assert_eq!(
+        conn.workspace_changes("work").await.unwrap().unpushed,
+        Some(1)
+    );
+    git(
+        root,
+        &["push", "-q", "-u", "origin", "HEAD:refs/heads/feature/x"],
+    );
+    let c = conn.workspace_changes("work").await.unwrap();
+    assert_eq!((c.ahead, c.unpushed), (1, Some(0)));
     std::fs::write(root.join("b.txt"), "keep\nmore\n").unwrap();
     std::fs::write(root.join("new.md"), "# new\nline\n").unwrap();
     let c = conn.workspace_changes("work").await.unwrap();
@@ -3481,6 +3493,34 @@ async fn a_workspace_shows_its_changes() {
 
     create(&host, "plain", Some(vec![])).await;
     assert!(!conn.workspace_changes("plain").await.unwrap().git);
+}
+
+/// How far behind its base a workspace is, is as of the last fetch: preparing
+/// it again fetches (D-152).
+#[tokio::test]
+async fn preparing_a_workspace_again_brings_its_repository_up_to_date() {
+    let host = TestHost::new();
+    let repo = make_repo(&host, "origin", &[("a.txt", "one\n")]);
+    let mut conn = host.conn().await;
+    conn.workspace_create(git_ws("work", &repo, Some("feature/y"), vec![]))
+        .await
+        .unwrap();
+    wait_prepared(&host, "work").await;
+    assert_eq!(conn.workspace_changes("work").await.unwrap().behind, 0);
+
+    std::fs::write(repo.join("b.txt"), "two\n").unwrap();
+    git(&repo, &["add", "b.txt"]);
+    git(&repo, &["commit", "-qm", "more upstream"]);
+    // Not fetched yet: the workspace can't know.
+    assert_eq!(conn.workspace_changes("work").await.unwrap().behind, 0);
+
+    conn.workspace_prepare("work").await.unwrap();
+    eventually("fetched", || async {
+        let ws = host.conn().await.workspace_get("work").await.unwrap();
+        let c = host.conn().await.workspace_changes("work").await.unwrap();
+        (ws.state == WorkspaceState::Ready && c.behind == 1).then_some(())
+    })
+    .await;
 }
 
 /// Files are removed and renamed inside the workspace only (D-103): never

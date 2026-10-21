@@ -184,6 +184,8 @@ export interface WorkspaceChanges {
   base?: string;
   ahead: number;
   behind: number;
+  /** Commits no remote has (D-152); absent from an older otterd. */
+  unpushed?: number;
   files: ChangedFile[];
   more: number;
   insertions: number;

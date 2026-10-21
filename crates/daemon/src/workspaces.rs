@@ -688,6 +688,19 @@ impl Daemon {
                 authorize_env = true;
                 if needs_worktree(&ws) {
                     self.make_worktree(&ws, git, &root).await?;
+                } else {
+                    // Preparing a worktree already there again (a retry, an
+                    // unarchive) brings the repository up to date, so its
+                    // "behind" is as of now (D-152). It failing, say offline,
+                    // doesn't fail the workspace.
+                    self.set_progress(id, "fetching").await;
+                    if let Err(e) = self.git.sync_repo(&git.repository, &git.repo_id).await {
+                        tracing::warn!(
+                            workspace = %ws.name,
+                            "fetching: {}",
+                            otter_core::redact::redact(&format!("{e:#}"))
+                        );
+                    }
                 }
             }
         }

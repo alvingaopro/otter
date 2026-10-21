@@ -71,6 +71,9 @@ describe("changes", () => {
       "2 files · +12 −4 · ↑2",
     );
     expect(changesLine(c({ behind: 3 }))).toBe("↓3");
+    // Work no remote has, apart from how far ahead of the base it is.
+    expect(changesLine(c({ ahead: 2, unpushed: 2 }))).toBe("↑2 · 2 not pushed");
+    expect(changesLine(c({ ahead: 2, unpushed: 0 }))).toBe("↑2");
   });
 
 });
