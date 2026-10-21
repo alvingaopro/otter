@@ -3678,7 +3678,7 @@ async fn only_an_orphan_can_be_stopped_by_pid_and_start_time() {
         .unwrap_err();
     assert!(err.to_string().contains("no such process"), "{err}");
     let err = conn.host_process_stop(stop(1, 0)).await.unwrap_err();
-    assert!(err.to_string().contains("this otterd"), "{err}");
+    assert!(err.to_string().contains("no such process"), "{err}");
     assert!(orphan.try_wait().unwrap().is_none());
 
     // The orphan itself, by both: ended.
@@ -3690,6 +3690,68 @@ async fn only_an_orphan_can_be_stopped_by_pid_and_start_time() {
         assert!(
             std::time::Instant::now() < deadline,
             "the orphan did not end"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
+/// An orphan that leads a group of its own is ended with its group (D-156),
+/// and nothing outside it: not this test's own group.
+#[tokio::test]
+async fn stopping_an_orphan_ends_its_group_only() {
+    use otter_protocol::host::{ProcessOwner, ProcessStop};
+    use std::io::BufRead;
+    use std::os::unix::process::CommandExt;
+    let host = TestHost::new();
+    let gone = host.home().join("workspaces/ws_gone");
+    std::fs::create_dir_all(&gone).unwrap();
+    // A leader in its own group, with a child that prints its pid.
+    let mut leader = std::process::Command::new("sh")
+        .args(["-c", "sleep 300 & echo $!; wait"])
+        .current_dir(&gone)
+        .stdout(std::process::Stdio::piped())
+        .process_group(0)
+        .spawn()
+        .unwrap();
+    let mut line = String::new();
+    std::io::BufReader::new(leader.stdout.take().unwrap())
+        .read_line(&mut line)
+        .unwrap();
+    let child: u32 = line.trim().parse().unwrap();
+    let pid = leader.id();
+    let all = eventually("the leader is listed", || async {
+        let all = host.conn().await.host_processes().await.ok()?;
+        all.processes
+            .iter()
+            .any(|p| p.pid == pid && matches!(p.owner, ProcessOwner::Orphan { .. }))
+            .then_some(all)
+    })
+    .await;
+    let started = all.processes.iter().find(|p| p.pid == pid).unwrap().started;
+    host.conn()
+        .await
+        .host_process_stop(ProcessStop {
+            pid,
+            started,
+            force: false,
+        })
+        .await
+        .unwrap();
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while leader.try_wait().unwrap().is_none() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the leader did not end"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    // Its child went with the group (a zombie until reaped is gone for us:
+    // signal 0 fails once it has been reaped by init).
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while unsafe { libc::kill(child as libc::pid_t, 0) } == 0 {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the child did not end"
         );
         tokio::time::sleep(Duration::from_millis(100)).await;
     }

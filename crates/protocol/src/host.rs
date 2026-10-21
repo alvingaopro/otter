@@ -407,7 +407,7 @@ pub enum ProcessOwner {
     Orphan { why: String },
 }
 
-/// `host.processes.stop`: end an otterd of another build, or an orphan, by
+/// `host.processes.stop`: end another otterd, or an orphan, by
 /// the pid and start time `host.processes` gave. Anything else is refused.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ProcessStop {

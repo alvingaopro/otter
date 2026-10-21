@@ -48,6 +48,53 @@ pub struct ProcSample {
     pub busy_samples: u32,
 }
 
+/// An otterd serving: its executable (or what it was started as) is
+/// `otterd` and it was asked to `serve`. Not one of its own sessions on the
+/// way to exec (`otterd internal-exec … -- argv`), whose argv can say `serve`.
+fn is_otterd_serving(p: &sysinfo::Process) -> bool {
+    let named = |s: &std::ffi::OsStr| {
+        std::path::Path::new(s)
+            .file_name()
+            .is_some_and(|f| f == "otterd")
+    };
+    let cmd = p.cmd();
+    (p.exe().is_some_and(|e| named(e.as_os_str())) || cmd.first().is_some_and(|c| named(c)))
+        && cmd.iter().any(|a| a == "serve")
+        && !cmd.iter().any(|a| a == "internal-exec")
+}
+
+fn sample_of(p: &sysinfo::Process, busy_samples: u32) -> ProcSample {
+    ProcSample {
+        pid: p.pid().as_u32(),
+        parent: p.parent().map(|p| p.as_u32()),
+        name: p.name().to_string_lossy().into_owned(),
+        exe: p.exe().map(|e| e.to_string_lossy().into_owned()),
+        cwd: p.cwd().map(|c| c.to_string_lossy().into_owned()),
+        cpu: p.cpu_usage(),
+        memory: p.memory(),
+        started: p.start_time(),
+        otterd: is_otterd_serving(p),
+        busy_samples,
+    }
+}
+
+/// One process, read now: what a stop is decided on, not the last sample.
+pub fn fresh(pid: u32) -> Option<ProcSample> {
+    let mut sys = System::new();
+    let target = sysinfo::Pid::from_u32(pid);
+    sys.refresh_processes_specifics(
+        ProcessesToUpdate::Some(&[target]),
+        true,
+        ProcessRefreshKind::nothing()
+            .with_cpu()
+            .with_memory()
+            .with_exe(UpdateKind::Always)
+            .with_cwd(UpdateKind::Always)
+            .with_cmd(UpdateKind::Always),
+    );
+    sys.process(target).map(|p| sample_of(p, 0))
+}
+
 /// What counts as busy.
 const BUSY_CPU: f32 = 25.0;
 
@@ -129,9 +176,11 @@ impl Probe {
             ProcessRefreshKind::nothing()
                 .with_cpu()
                 .with_memory()
-                .with_exe(UpdateKind::OnlyIfNotSet)
-                .with_cwd(UpdateKind::OnlyIfNotSet)
-                .with_cmd(UpdateKind::OnlyIfNotSet),
+                // Read again each time: a process execs and changes its
+                // directory, and a name read once is the name it had then.
+                .with_exe(UpdateKind::Always)
+                .with_cwd(UpdateKind::Always)
+                .with_cmd(UpdateKind::Always),
         );
         self.disks.refresh(true);
         self.networks.refresh(true);
@@ -153,20 +202,7 @@ impl Probe {
                 if n > 0 {
                     busy.insert((pid, started), n);
                 }
-                let name = p.name().to_string_lossy().into_owned();
-                let otterd = name == "otterd" && p.cmd().iter().any(|a| a == "serve");
-                ProcSample {
-                    pid,
-                    parent: p.parent().map(|p| p.as_u32()),
-                    name,
-                    exe: p.exe().map(|e| e.to_string_lossy().into_owned()),
-                    cwd: p.cwd().map(|c| c.to_string_lossy().into_owned()),
-                    cpu: p.cpu_usage(),
-                    memory: p.memory(),
-                    started,
-                    otterd,
-                    busy_samples: n,
-                }
+                sample_of(p, n)
             })
             .collect();
         self.busy = busy;

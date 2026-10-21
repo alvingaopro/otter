@@ -5279,7 +5279,12 @@ two tabs: **Overview** (what it was: problems, usage, ports) and **Work**.
 - **Strays** are decided conservatively and on the daemon: an `otterd serving`
   that isn't this process, or a process whose working directory is in this
   host's `workspaces/` folder under an id that no workspace has (or whose
-  workspace is archived), with no session's or run's process above it. A
+  workspace is archived), with no session's or run's process above it. What
+  holds owned work up (the parents of a session's or a run's process) and
+  what this otterd started (its tmux server, which keeps the directory the
+  otterd was started in) are never strays. A shell of the developer's own that
+  merely sits in such a folder is called a stray too, by the directory it is
+  in now; stopping it asks first and says what it is. A
   session of an archived workspace that still runs is not a stray (it is a
   session): the row says so ("Archived, still running").
 - **`host.processes.stop {pid, started, force?}`** is the one new thing that
@@ -5288,7 +5293,13 @@ two tabs: **Overview** (what it was: problems, usage, ports) and **Work**.
   and refuses this otterd, a session's or a run's process (stop those where
   they are shown, through `session.stop` and `task.act`), a start time that
   isn't the process's (a reused id), and anything not listed. SIGTERM, or
-  SIGKILL when forced, to its process group if it leads one. The sample's
+  SIGKILL when forced, to its process group if it leads one; a signal that
+  can't be sent (the process ended, or isn't this user's) is an error, not
+  a success. The target is **read again at that moment** (executable,
+  arguments, directory), not taken from the 5 s sample: a session starts as
+  `otterd internal-exec … -- argv` and execs in place, so a sample taken then
+  would call its shell "another otterd". The sampler reads those fields anew
+  each time, and an `internal-exec` is never an otterd serving. The sample's
   command lines never leave the daemon (invariant 13); an otterd is told from
   other processes by its name and `serve` argument, read in the sampler.
 - **Another otterd can be stopped** from here with SIGTERM or SIGKILL. That

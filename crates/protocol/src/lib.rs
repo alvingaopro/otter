@@ -65,7 +65,7 @@ pub enum Request {
     /// (D-156). Result: [`host::HostProcesses`].
     #[serde(rename = "host.processes")]
     HostProcesses,
-    /// End an otterd of another build, or an orphan, named by the pid and
+    /// End another otterd, or an orphan, named by the pid and
     /// start time `host.processes` gave (D-156). `conflict` for anything
     /// else. Result: `null`.
     #[serde(rename = "host.processes.stop")]

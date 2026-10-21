@@ -71,15 +71,41 @@ pub(crate) fn classify(procs: &[ProcSample], roots: &Roots) -> Vec<OtterProcess>
         }
         None
     };
+    // What a stop must never reach: what holds owned work up (the parents of
+    // a session's or a run's process: a tmux server whose directory happens to
+    // be a deleted workspace's), and whatever this otterd itself started.
+    let mut protected: HashSet<u32> = HashSet::new();
+    for root in roots.executions.keys().chain(roots.runs.keys()) {
+        let mut at = *root;
+        for _ in 0..DEPTH {
+            match parents.get(&at).copied().flatten() {
+                Some(up) if up > 1 && protected.insert(up) => at = up,
+                _ => break,
+            }
+        }
+    }
+    let ours = |pid: u32| {
+        let mut at = pid;
+        for _ in 0..DEPTH {
+            match parents.get(&at).copied().flatten() {
+                Some(up) if up == roots.own_pid => return true,
+                Some(up) if up > 1 => at = up,
+                _ => return false,
+            }
+        }
+        false
+    };
     let mut out: Vec<OtterProcess> = procs
         .iter()
         .filter_map(|p| {
             let (owner, stoppable) = if p.pid == roots.own_pid {
                 (ProcessOwner::Daemon { this: true }, false)
-            } else if p.otterd {
-                (ProcessOwner::Daemon { this: false }, true)
             } else if let Some(o) = owned(p.pid) {
                 (o, false)
+            } else if protected.contains(&p.pid) || ours(p.pid) {
+                return None;
+            } else if p.otterd {
+                (ProcessOwner::Daemon { this: false }, true)
             } else {
                 let id = workspace_of(p.cwd.as_deref()?, &roots.workspaces_dir)?;
                 if roots.live.contains(&id) {
@@ -108,8 +134,11 @@ pub(crate) fn classify(procs: &[ProcSample], roots: &Roots) -> Vec<OtterProcess>
             })
         })
         .collect();
+    // Strays are never cut: the rows of what is owned are.
+    out.sort_by_key(|p| (!p.stoppable, p.pid));
+    let strays = out.iter().take_while(|p| p.stoppable).count();
+    out.truncate(strays.max(MAX_ROWS));
     out.sort_by_key(|p| p.pid);
-    out.truncate(MAX_ROWS);
     out
 }
 
@@ -166,32 +195,41 @@ impl Daemon {
     }
 
     /// `host.processes.stop`: only what `host.processes` lists as
-    /// stoppable, by pid and start time, found again now; never this daemon.
+    /// stoppable, by pid and start time, read again now (not as last
+    /// sampled) and classified again; never this daemon.
     pub(crate) async fn host_process_stop(&self, p: ProcessStop) -> RpcResult<()> {
-        if p.pid == std::process::id() || p.pid <= 1 {
+        if p.pid == std::process::id() {
             return Err(RpcError::conflict("that is this otterd"));
         }
-        let procs = self.metrics.processes();
+        let not_ours = || {
+            RpcError::conflict("no such process of Otter's (it ended, or is not Otter's to stop)")
+        };
+        if p.pid <= 1 {
+            return Err(not_ours());
+        }
+        // The sample for how the others sit in the tree; the target as it is
+        // now: what it is running and where, not what it was then.
+        let mut procs = self.metrics.processes();
+        let target = tokio::task::spawn_blocking(move || crate::metrics::fresh(p.pid))
+            .await
+            .ok()
+            .flatten()
+            .filter(|t| t.started == p.started)
+            .ok_or_else(&not_ours)?;
+        procs.retain(|s| s.pid != p.pid);
+        procs.push(target);
         let roots = self.process_roots().await;
-        let found = classify(&procs, &roots)
+        match classify(&procs, &roots)
             .into_iter()
-            .find(|r| r.pid == p.pid && r.started == p.started);
-        match found {
+            .find(|r| r.pid == p.pid)
+        {
             Some(r) if r.stoppable => {}
             Some(_) => {
                 return Err(RpcError::conflict(
                     "that process belongs to a session or a run: stop it there",
                 ));
             }
-            None => {
-                return Err(RpcError::conflict(
-                    "no such process of Otter's (it ended, or is not Otter's to stop)",
-                ));
-            }
-        }
-        // The same process still, by its start time (read again, not the sample's).
-        if crate::runtime::process_started(p.pid) != Some(p.started) {
-            return Err(RpcError::conflict("that process has ended"));
+            None => return Err(not_ours()),
         }
         let signal = if p.force {
             libc::SIGKILL
@@ -204,15 +242,25 @@ impl Daemon {
             "stopping a process by request"
         );
         let pid = p.pid as libc::pid_t;
-        // SAFETY: plain signals to a process this daemon just identified by
-        // pid and start time as an otterd of another build or an orphan of
-        // its own workspaces. Its group is signalled only when it leads one.
-        unsafe {
+        // SAFETY: plain signals to a process this daemon just read again and
+        // identified by pid and start time as an otterd of another process
+        // tree or an orphan of its own workspaces. Its group is signalled only
+        // when it leads one other than this daemon's.
+        let result = unsafe {
             if libc::getpgid(pid) == pid && pid != libc::getpgid(0) {
-                libc::killpg(pid, signal);
+                libc::killpg(pid, signal)
             } else {
-                libc::kill(pid, signal);
+                libc::kill(pid, signal)
             }
+        };
+        if result != 0 {
+            return Err(match std::io::Error::last_os_error().raw_os_error() {
+                Some(libc::ESRCH) => RpcError::conflict("that process has ended"),
+                Some(libc::EPERM) => {
+                    RpcError::conflict("that process is not this user's: otterd may not end it")
+                }
+                _ => RpcError::internal("the signal could not be sent"),
+            });
         }
         Ok(())
     }
@@ -296,5 +344,45 @@ mod tests {
         assert!(matches!(by(40).unwrap().owner, ProcessOwner::Orphan { .. }));
         assert!(by(40).unwrap().stoppable);
         assert!(by(41).is_none() && by(50).is_none());
+    }
+
+    #[test]
+    fn what_holds_owned_work_up_and_what_this_otterd_started_are_never_strays() {
+        let procs = vec![
+            proc(10, Some(1), None, true),
+            // A tmux server this otterd started, working in a deleted
+            // workspace's folder (an otterd started from inside one).
+            proc(11, Some(10), Some("/h/workspaces/ws_gone"), false),
+            // The parent of a session's process: not this otterd's child, in a
+            // gone folder, but it holds the session up.
+            proc(6, Some(1), Some("/h/workspaces/ws_gone"), false),
+            proc(20, Some(6), Some("/h/workspaces/ws_live"), false),
+            // Left over, owned by nothing.
+            proc(40, Some(1), Some("/h/workspaces/ws_gone"), false),
+        ];
+        let rows = classify(&procs, &roots());
+        let listed: Vec<u32> = rows.iter().map(|r| r.pid).collect();
+        assert_eq!(listed, [10, 20, 40], "{rows:?}");
+        assert!(rows.iter().find(|r| r.pid == 40).unwrap().stoppable);
+    }
+
+    #[test]
+    fn strays_are_not_cut_with_the_rows_of_what_is_owned() {
+        let mut roots = roots();
+        let mut procs = vec![proc(900_000, Some(1), Some("/h/workspaces/ws_gone"), false)];
+        for i in 0..(MAX_ROWS as u32 + 50) {
+            roots.executions.insert(
+                1000 + i,
+                (
+                    WorkspaceId::generate(),
+                    SessionId::generate(),
+                    ExecutionId::generate(),
+                ),
+            );
+            procs.push(proc(1000 + i, Some(5), None, false));
+        }
+        let rows = classify(&procs, &roots);
+        assert!(rows.iter().any(|r| r.pid == 900_000 && r.stoppable));
+        assert!(rows.len() <= MAX_ROWS + 1);
     }
 }
