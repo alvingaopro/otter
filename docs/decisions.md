@@ -6495,8 +6495,11 @@ sidebar's title sat a row lower, under an empty strip.
   it, and the bar's edge starts below it. The sidebar's title is in the
   band, right of the lights: Otter's mark and name, the two counts and New
   workspace (in Chat, its name and New task). The row the name had is gone,
-  so the list starts higher. Below 230px of sidebar the name is left out;
-  the counts and the button keep their size.
+  so the list starts higher. When the row runs out of room (a sidebar
+  under about 235px on a Mac) the name is left out; the counts and the
+  button keep their size. The row is the size container for that, not the
+  sidebar: a size container could hold the sidebar's menus where older
+  WebKit draws them.
 
 The design, before and after: https://claude.ai/artifact/L59aBAQWnDfHi828oii62k.
 Checked with the app's tests and a production build, not in the macOS app
