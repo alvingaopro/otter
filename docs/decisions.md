@@ -6384,6 +6384,49 @@ Tests: `what_is_only_a_word_or_comes_back_is_judged` and
 `a_model_denial_is_not_final_a_repeat_goes_to_the_developer` (new test brains
 `no` and `sleepy`; the fake agent's `ASK_REBASE` and `ASK_REBASE_TWICE`).
 
+## D-175 — A task's conversation is told apart by colour, close together; its details are as wide as you drag them (2026-10-21)
+
+Dogfooding: every message had a line above it (who, and when), Otter's
+bubbles took 720 px for one line, a decision taken was a card of two lines,
+and the details beside the conversation stayed 380 px. The developer asked
+for it closer together, like a chat app, with their words and Otter's and the
+coding agent's told apart by colour; for the details to be resizable; and for
+a taller message box.
+
+- **Who said it is the bubble's colour:** yours blue (`--you-bg`), on the
+  right; Otter's grey (`--raised`); the coding agent's violet (`--agent-bg`),
+  which keeps its name above, a third voice. No line above yours or Otter's:
+  the time shows beside the bubble on hover, the full date in its tooltip.
+  Yours and Otter's are `article`s named for who spoke, for a screen reader
+  (the agent's head names it). Otter's mark (D-176) no longer shows in the
+  thread, only in the sidebar. On light, the bubbles sit on D-176's white:
+  text, the agent's name and its time read at 4.7:1 or better on each.
+  Your words break inside a long word or link, as Otter's Markdown does,
+  instead of running out of the bubble.
+- **Close together:** a bubble is as wide as what it says (up to 720 px), 6 px
+  from the next, a little more where the speaker changes; the thread, the
+  decision waiting and the message box sit in one column of reading width
+  (820 px) in the middle. A decision taken is one line: the verdict, what it
+  was on (cut, whole on hover), its risk, kind and time.
+- **The details panel** (Overview, Activity) has a handle on its left edge,
+  as the Files panel has (D-097, which left this split out): 380 px at first,
+  260 px or more, and the conversation keeps 360 px; remembered on this Mac.
+  In a window too narrow for both (under 1000 px) they stack and the handle
+  goes.
+- **The message box** is 120 px at first and at least 84 px (was 96 and 56).
+  Since D-171 it hadn't been the height it was given at all: a `flex: 1` from
+  before the box had pictures above it sized it by its rows, about 57 px, and
+  dragging its edge did nothing. A height remembered below the new least
+  opens at the least.
+- The conversation's scroll to its end no longer returns what scrolling
+  returns: in Chromium 153, where these checks ran, `scrollIntoView` returns
+  a promise, which React took for the effect's cleanup and failed on,
+  emptying the view. The macOS app's WebKit evidently doesn't (the view
+  shows there); it would have broken the day it did.
+
+Checked in Chromium with sample data, dark and light, wide, narrow and
+stacked, with the handle dragged; not in the macOS app itself.
+
 ## D-176 — The light theme is white and neutral; Otter's mark is one colour (2026-10-21)
 
 The light theme's grounds were warm greige (`#f2f1ed`, `#ebeae5`, `#fbfaf7`:

@@ -20,6 +20,8 @@ export const SIDEBAR: Panel = { key: "otter.sidebar-width", initial: 280, min: 1
 export const SIDE_PANEL: Panel = { key: "otter.side-panel-width", initial: 300, min: 220, rest: 320, edge: "left" };
 /** The session on the right of a split (D-110); the left keeps 240 px. */
 export const SPLIT: Panel = { key: "otter.split-width", initial: 560, min: 240, rest: 240, edge: "left" };
+/** A task's Overview/Activity beside its conversation (D-175); the conversation keeps 360 px. */
+export const TASK_DETAIL: Panel = { key: "otter.task-detail-width", initial: 380, min: 260, rest: 360, edge: "left" };
 const STEP = 16;
 
 /** At least the panel's least, and leaving `rest` of `room` (0: not known yet). */

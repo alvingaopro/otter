@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState, type CSSProperties, type FormEvent, type ReactNode } from "react";
 import { ChangesList, type Changes } from "./ChangesPanel";
 import { changesLine } from "./changes";
 import { Dialog } from "./Dialog";
@@ -8,6 +8,7 @@ import { Markdown } from "./Markdown";
 import { MemoryDialog } from "./MemoryDialog";
 import { Menu } from "./Menu";
 import { ago } from "./model";
+import { PanelGrip, TASK_DETAIL, usePanelWidth } from "./panelResize";
 import type { CodingConversation, Interaction, RuntimeCapabilities } from "./conversation";
 import type { TaskSource } from "./taskSource";
 import { QuestionForm, Turn, WorkHead } from "./Work";
@@ -228,6 +229,7 @@ function TaskPane({
   const [deleting, setDeleting] = useState(false);
   const [remembering, setRemembering] = useState(false);
   const [tab, setTab] = useState<Tab>("overview");
+  const [detailWidth, setDetailWidth] = usePanelWidth(TASK_DETAIL);
   const [error, setError] = useState<string | null>(null);
   // The coding agent's side (D-055…D-059), and what its runtime can do.
   const [conversations, setConversations] = useState<CodingConversation[]>([]);
@@ -362,8 +364,9 @@ function TaskPane({
         </div>
       )}
       {error && <p className="notice error-text">{error}</p>}
-      <div className="task-body">
+      <div className="task-body" style={{ "--detail-width": `${detailWidth}px` } as CSSProperties}>
         <Conversation placed={placed} source={source} now={now} caps={caps} act={act} interactions={interactions} onError={setError} />
+        <PanelGrip panel={TASK_DETAIL} width={detailWidth} onResize={setDetailWidth} label="Details width" />
         <section className="task-detail" aria-label="Details">
           <div className="detail-tabs" role="tablist" aria-label="Task details">
             {(["overview", "activity"] as const).map((t) => (
@@ -584,15 +587,13 @@ function StatusBanner({
 
 const ROLE: Record<string, string> = { user: "You", controller: "Otter", agent: "Coding agent", system: "System" };
 
-/** Who said it; Otter with its face. */
+/** Who said it, by name. */
 export function Speaker({ role }: { role: string }) {
-  return (
-    <span className="message-role">
-      {role === "controller" && <span className="otter-mark message-avatar" aria-hidden="true" />}
-      {ROLE[role] ?? role}
-    </span>
-  );
+  return <span className="message-role">{ROLE[role] ?? role}</span>;
 }
+
+/** A bubble's name for a screen reader, where no head says it (D-175). */
+const named = (role: string) => (role === "agent" ? undefined : (ROLE[role] ?? role));
 
 /** What was said: the developer's words as typed; Otter's and the coding
  * agent's as the Markdown they write (D-086). */
@@ -607,6 +608,26 @@ export function MessageText({ role, text, children }: { role: string; text: stri
       {children}
     </div>
   );
+}
+
+/**
+ * Who said it and when (D-175): you and Otter by the bubble's colour, the
+ * time beside it on hover; the coding agent, a third voice, by name too.
+ */
+function Said({ role, at, when }: { role: string; at: string; when?: string }) {
+  const title = when ? new Date(when).toLocaleString() : undefined;
+  return role === "agent" ? (
+    <div className="message-head">
+      <Speaker role={role} />
+      <span className="message-at" title={title}>
+        {at}
+      </span>
+    </div>
+  ) : at ? (
+    <span className="message-at aside" title={title}>
+      {at}
+    </span>
+  ) : null;
 }
 
 /** A coding agent's report this long folds, so the conversation around it stays in view. */
@@ -680,10 +701,11 @@ function Conversation({
   const replying = drafts.some((d) => d.role === "controller");
   const awaitingReply =
     !replying && last?.role === "user" && messages.length > 1 && !ENDED.includes(placed.task.status);
-  useEffect(
-    () => end.current?.scrollIntoView?.({ block: "end" }),
-    [messages.length, activity.length, awaitingReply, draftText.length],
-  );
+  // Not returned: where scrolling returns a promise, React would take it
+  // for the effect's cleanup and fail on it (Chromium does now).
+  useEffect(() => {
+    end.current?.scrollIntoView?.({ block: "end" });
+  }, [messages.length, activity.length, awaitingReply, draftText.length]);
 
   const composition = useComposition();
 
@@ -727,11 +749,8 @@ function Conversation({
         {messages.length === 0 && <p className="muted small">No messages yet. Describe what you want, or refine the request.</p>}
         {said.map(({ key, message: m, decision }) =>
           m ? (
-            <div key={key} className={`message ${m.role}`}>
-              <div className="message-head">
-                <Speaker role={m.role} />
-                <span className="message-at">{ago(m.at, now)}</span>
-              </div>
+            <div key={key} className={`message ${m.role}`} role="article" aria-label={named(m.role)}>
+              <Said role={m.role} at={ago(m.at, now)} when={m.at} />
               {m.text && !(m.attachments?.length && m.text === PICTURES_ONLY) && (
                 <Folded long={m.role === "agent" && m.text.length > FOLD_CHARS}>
                   <MessageText role={m.role} text={m.text} />
@@ -750,11 +769,9 @@ function Conversation({
           ),
         )}
         {drafts.map((d) => (
-          <div key={d.stream_id} className={`message ${d.role} streaming`}>
-            <div className="message-head">
-              <Speaker role={d.role} />
-              <span className="message-at">{d.done ? "now" : "writing…"}</span>
-            </div>
+          <div key={d.stream_id} className={`message ${d.role} streaming`} role="article" aria-label={named(d.role)}>
+            {/* Otter's cursor says it is writing; the agent's head says so in words. */}
+            <Said role={d.role} at={d.done ? "now" : d.role === "agent" ? "writing…" : ""} />
             <MessageText role={d.role} text={d.text}>
               {!d.done && <span className="cursor" aria-hidden="true" />}
             </MessageText>
@@ -881,23 +898,26 @@ function decider(d: DecisionRequest): string | undefined {
   return d.decided_by;
 }
 
-/** A decision already taken, where it was asked in the conversation. */
+/**
+ * A decision already taken, where it was asked in the conversation: one line
+ * (D-175), the whole of what was decided on when hovered.
+ */
 function DecidedNote({ d, now }: { d: DecisionRequest; now: number }) {
   const by = decider(d);
   return (
     <div className="decided">
-      <div className="decided-head">
-        <Glyph kind={d.status === "denied" ? "failed" : d.status === "cancelled" ? "idle" : "done"} />
-        <span className="decided-verdict">
-          {VERDICT[d.status] ?? d.status}
-          {by && ` by ${by}`}
-        </span>
-        <span className="muted small">
-          {d.risk} risk · {d.kind.replace("_", " ")} · {ago(d.decided_at ?? d.created_at, now)}
-        </span>
-      </div>
-      <div className="decided-summary">{d.summary}</div>
-      {d.answer && <div className="muted small">{d.answer}</div>}
+      <Glyph kind={d.status === "denied" ? "failed" : d.status === "cancelled" ? "idle" : "done"} />
+      <span className="decided-verdict">
+        {VERDICT[d.status] ?? d.status}
+        {by && ` by ${by}`}
+      </span>
+      <span className="decided-summary" title={d.summary}>
+        {d.summary}
+      </span>
+      <span className="decided-meta">
+        {d.risk} risk · {d.kind.replace("_", " ")} · {ago(d.decided_at ?? d.created_at, now)}
+      </span>
+      {d.answer && <div className="decided-answer muted small">{d.answer}</div>}
     </div>
   );
 }

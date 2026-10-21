@@ -2,8 +2,9 @@ import { useState, type KeyboardEvent, type PointerEvent } from "react";
 
 /** The message box's height, remembered on this Mac. */
 const KEY = "otter.composer-height";
-export const DEFAULT_HEIGHT = 96;
-const MIN_HEIGHT = 56;
+export const DEFAULT_HEIGHT = 120;
+/** About three lines (D-175): two left too little of what you write in view. */
+const MIN_HEIGHT = 84;
 /** Never more than this share of the window: the conversation stays visible. */
 const MAX_SHARE = 0.6;
 const STEP = 16;

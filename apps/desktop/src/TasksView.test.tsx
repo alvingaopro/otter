@@ -157,6 +157,7 @@ describe("Tasks view", () => {
   afterEach(() => {
     act(() => root.unmount());
     host.remove();
+    localStorage.removeItem("otter.task-detail-width");
   });
 
   const open = async (title: string) => act(async () => byText('[role="listitem"]', title)!.click());
@@ -255,6 +256,32 @@ describe("Tasks view", () => {
     await act(async () => byText("button", "Start")!.click());
     expect(q(".status-pill")?.textContent).toBe("Working");
     expect(byText("button", "Take over")).toBeUndefined();
+  });
+
+  it("tells you and Otter apart by the bubble, the coding agent by name too (D-175)", async () => {
+    await render(mockSource("mac"));
+    await open("Export workspace timeline as CSV");
+    const bubble = (role: string) => q(`.message.${role}:not(.working)`)!;
+    // No line above your words or Otter's: the time is beside the bubble.
+    expect(bubble("user").querySelector(".message-head")).toBeNull();
+    expect(bubble("controller").querySelector(".message-head")).toBeNull();
+    expect(bubble("controller").getAttribute("aria-label")).toBe("Otter");
+    expect(bubble("controller").querySelector(".message-at.aside")?.textContent).toMatch(/^\d+[smhd]$/);
+    expect(bubble("agent").querySelector(".message-role")?.textContent).toBe("Coding agent");
+    // Named once: by its head, not again for a screen reader.
+    expect(bubble("agent").getAttribute("aria-label")).toBeNull();
+  });
+
+  it("makes the details beside the conversation as wide as you drag them (D-175)", async () => {
+    localStorage.removeItem("otter.task-detail-width");
+    await render(mockSource("mac"));
+    const body = q(".task-body")!;
+    expect(body.style.getPropertyValue("--detail-width")).toBe("380px");
+    // Its handle is on its left edge: ← widens it, and it is remembered.
+    const grip = q('[role="separator"][aria-label="Details width"]')!;
+    await act(async () => grip.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowLeft", bubbles: true })));
+    expect(body.style.getPropertyValue("--detail-width")).toBe("396px");
+    expect(localStorage.getItem("otter.task-detail-width")).toBe("396");
   });
 
   it("sends on Enter, but not the Enter that confirms an input method's candidate", async () => {
