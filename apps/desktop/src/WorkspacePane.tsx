@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { Glyph } from "./Glyph";
-import { Dialog } from "./Dialog";
+import { ArchiveWorkspaceDialog, DeleteSessionDialog, DeleteWorkspaceDialog } from "./WorkspaceDialogs";
 import { Menu, type MenuItem } from "./Menu";
 import { NewSessionDialog } from "./NewSessionDialog";
 import { FilesPanel } from "./FilesPanel";
@@ -80,7 +80,6 @@ export function WorkspacePane({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [open, setOpen] = useState<Open>(null);
-  const [force, setForce] = useState(false);
   const [closing, setClosing] = useState<string | null>(null);
   // The side panel: files, the timeline or the changes; the one last open
   // opens with the next workspace too.
@@ -317,7 +316,7 @@ export function WorkspacePane({
       await invoke(command, args);
       return true;
     } catch (e) {
-      setError(String(e));
+      setError(explain(host.name, e));
       return false;
     } finally {
       setBusy(false);
@@ -405,15 +404,7 @@ export function WorkspacePane({
             { label: "Unarchive workspace", hidden: !archived, onSelect: () => void unarchive() },
             ...pinItems,
             { label: brief.text || brief.more > 0 ? "Edit brief…" : "Add a brief…", onSelect: () => setOpen("brief") },
-            {
-              label: "Delete workspace…",
-              danger: true,
-              // Never ticked from before: a kept pane stays mounted (D-100).
-              onSelect: () => {
-                setForce(false);
-                setOpen("delete-workspace");
-              },
-            },
+            { label: "Delete workspace…", danger: true, onSelect: () => setOpen("delete-workspace") },
           ]}
         />
       </div>
@@ -734,102 +725,12 @@ export function WorkspacePane({
           }}
         />
       )}
-      {open === "archive-workspace" &&
-        (() => {
-          const running = ws.sessions.filter((s) => s.status === "running").length;
-          return (
-            <Dialog title={`Archive ${ws.name}?`} onClose={() => setOpen(null)}>
-              <p className="muted">
-                {running > 0 ? `Stops its ${running} running session${running === 1 ? "" : "s"} and moves` : "Moves"} it to
-                Archived. Nothing is deleted:{" "}
-                {ws.sourceKind === "git" ? "the worktree, its branch and uncommitted changes" : "its files"} stay on{" "}
-                {host.name}. Unarchive it to continue; restarted agents resume their conversations.
-              </p>
-              {error && <div className="notice error">{error}</div>}
-              <div className="form-actions">
-                <span className="spacer" />
-                <button className="btn outline" onClick={() => setOpen(null)}>
-                  Cancel
-                </button>
-                <button
-                  className="btn primary"
-                  disabled={busy}
-                  onClick={() =>
-                    void act("workspace_archive", { host: host.name, workspace: ws.id }).then((ok) => ok && setOpen(null))
-                  }
-                >
-                  Archive workspace
-                </button>
-              </div>
-            </Dialog>
-          );
-        })()}
-      {open === "delete-workspace" && (
-        <Dialog title={`Delete ${ws.name}?`} onClose={() => setOpen(null)}>
-          <p className="muted">
-            Stops its {ws.sessions.length} session{ws.sessions.length === 1 ? "" : "s"} and removes the workspace from{" "}
-            {host.name}.{" "}
-            {ws.sourceKind === "directory"
-              ? "The folder itself is kept."
-              : ws.sourceKind === "git"
-                ? `Its worktree and its branch ${ws.source} are removed, and the repository's copy on ${host.name} once no workspace uses it.`
-                : "Its files are deleted."}
-          </p>
-          {ws.sourceKind === "git" && (
-            <label className="check">
-              <input type="checkbox" checked={force} onChange={(e) => setForce(e.target.checked)} />
-              Discard uncommitted changes and commits not pushed anywhere
-            </label>
-          )}
-          {error && <div className="notice error">{error}</div>}
-          <div className="form-actions">
-            <span className="spacer" />
-            <button className="btn outline" onClick={() => setOpen(null)}>
-              Cancel
-            </button>
-            <button
-              className="btn danger"
-              disabled={busy}
-              onClick={() =>
-                void act("workspace_delete", { host: host.name, workspace: ws.id, force }).then((ok) => ok && setOpen(null))
-              }
-            >
-              Delete workspace
-            </button>
-          </div>
-        </Dialog>
-      )}
+      {open === "archive-workspace" && <ArchiveWorkspaceDialog host={host.name} ws={ws} onClose={() => setOpen(null)} />}
+      {open === "delete-workspace" && <DeleteWorkspaceDialog host={host.name} ws={ws} onClose={() => setOpen(null)} />}
       {open === "delete-session" &&
         (() => {
           const target = ws.sessions.find((s) => s.id === closing) ?? current;
-          if (!target) return null;
-          const running = target.status === "running";
-          return (
-            <Dialog title={`${running ? "Stop and delete" : "Delete"} ${target.name}?`} onClose={() => setOpen(null)}>
-              <p className="muted">
-                {running ? "It is still running; it will be stopped. " : ""}It is removed from {ws.name}; the workspace’s
-                files stay.
-              </p>
-              {error && <div className="notice error">{error}</div>}
-              <div className="form-actions">
-                <span className="spacer" />
-                <button className="btn outline" onClick={() => setOpen(null)}>
-                  Cancel
-                </button>
-                <button
-                  className="btn danger"
-                  disabled={busy}
-                  onClick={() =>
-                    void act("session_delete", { host: host.name, workspace: ws.id, session: target.id }).then(
-                      (ok) => ok && setOpen(null),
-                    )
-                  }
-                >
-                  {running ? "Stop and delete" : "Delete"}
-                </button>
-              </div>
-            </Dialog>
-          );
+          return target && <DeleteSessionDialog host={host.name} ws={ws} session={target} onClose={() => setOpen(null)} />;
         })()}
     </main>
   );
