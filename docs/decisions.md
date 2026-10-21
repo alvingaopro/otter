@@ -6483,7 +6483,8 @@ sidebar's title sat a row lower, under an empty strip.
   (the Inbox's rule and the menu bar item's; Workspaces' dot used to leave
   failed ones out). A task's notification is held while Chat is in front, as
   it was while the Inbox was. Pause all tasks (D-081) is under Chat's ACTIVE
-  label and holds every task at work, whether the search shows it or not.
+  label and holds every task at work, whether the search shows it or not;
+  a search that hides every active task hides the button with them.
   Deciding, accepting and retrying from the list are gone: they are on the
   task's page.
 - **The bar:** 22px icons with a 2px line (the gear too), 40px round buttons
@@ -6494,7 +6495,8 @@ sidebar's title sat a row lower, under an empty strip.
   it, and the bar's edge starts below it. The sidebar's title is in the
   band, right of the lights: Otter's mark and name, the two counts and New
   workspace (in Chat, its name and New task). The row the name had is gone,
-  so the list starts higher. On a narrow sidebar the name gives way first.
+  so the list starts higher. Below 230px of sidebar the name is left out;
+  the counts and the button keep their size.
 
 The design, before and after: https://claude.ai/artifact/L59aBAQWnDfHi828oii62k.
 Checked with the app's tests and a production build, not in the macOS app
