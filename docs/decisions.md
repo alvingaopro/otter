@@ -6226,17 +6226,28 @@ What changed (`crates/daemon/src/runtime/policy.rs`):
   one piece that isn't a reader, so the word lists read all of it and `rm`
   asks. It was allowed before: the quoted `;` cut off `rm -rf etc'`, which
   read as a delete inside the workspace, while the shell ran `rm -rf /etc`
-  (the same for `bash -c "cd /etc && rm passwd"`). Substitutions
-  (`$(…)`, backticks) are still pulled out wherever they stand, even in single
-  quotes, so a quoted `$(git push origin main)` is still read as a command.
-- **Home-directory credential places.** `~/.aws`, `~/.kube`, `~/.config/gcloud`,
-  `~/.docker/config.json`, `~/.netrc`, `~/.npmrc` and `~/.pypirc` are
-  credentials for a read and an edit alike, by their path from a home
-  directory (`~/`, `$HOME/`, the user's `$HOME`, `/home/<user>/`,
+  (the same for `bash -c "cd /etc && rm passwd"`).
+- **Substitutions and comments follow the shell.** `$(…)`, `<(…)`, `>(…)`
+  and backticks are read as commands outside quotes and in double quotes. In
+  single quotes, in `$'…'` or behind a backslash they are only characters:
+  pulled out as if they ran, the text after one would be read as a command of
+  its own and hide what the line really runs (`echo '$(cat x' ; git push origin
+  main ; echo x')'` pushes). A `#` starts a comment only at the start of a
+  word: not after an escaped space or `;`, nor right after a substitution
+  (`cat a\ #b;git push origin main` pushes). Both came out of the review of
+  this change and have tests.
+- **Home-directory credential places.** `~/.aws`, `~/.azure`, `~/.oci`,
+  `~/.kube`, `~/.gnupg`, `~/.config/gcloud`, `~/.config/gh`, `~/.config/doctl`,
+  `~/.docker/config.json`, `~/.netrc`, `~/.npmrc`, `~/.pypirc`, `~/.pgpass`,
+  `~/.git-credentials` and `~/.vault-token` are credentials for a **command**
+  that names them and for an edit, by their path from a home directory (`~/`,
+  `$HOME/`, `${HOME}/`, `~user/`, the user's `$HOME`, `/home/<user>/`,
   `/Users/<user>/`, `/root/`), also when the line has `cd`ed there and names
-  them relative to it. They are never granted for the rest of the task
-  (D-066). A project's own `.npmrc`, a hostname such as `s3.aws.amazon.com`
-  and `~/.dockerignore` are not them.
+  them relative to it, and in a bind mount (`-v ~/.aws:/root/.aws`). A doubled
+  slash and another case (`.AWS`; a Mac's disk is not case-sensitive) are the
+  same place. They are never granted for the rest of the task (D-066). A
+  project's own `.npmrc`, a hostname such as `s3.aws.amazon.com` and
+  `~/.dockerignore` are not them.
 
 What this does not change: no model is asked anything; the word lists, the
 reader and test exemptions (D-138), the routine delete (D-164) and what a
@@ -6249,7 +6260,9 @@ Tests (`crates/daemon/src/runtime/policy.rs`, next to
 (the quoted-pipe searches are `Allow`; a command behind quotes, an open or
 escaped quote, and a separator outside quotes still ask or are refused) and
 `a_home_directorys_logins_are_credentials_by_where_they_are` (both ways, edits
-and grants too). Not done: reading `$VAR`-built paths, what a script does
-inside, and a word such as `token` in a search that reaches outside the
-workspace (`grep -rn token ../other-repo` still asks); those are for the
-judged-by-the-agent step.
+and grants too). Not done: the agent's own Read, Grep and Glob tools carry no
+path in `ToolCall::Read`, so a login read through them is not asked about
+(only a command or an edit is); paths built through a variable other than
+`$HOME`; what a script does inside; and a word such as `token` in a search
+that reaches outside the workspace (`grep -rn token ../other-repo` still
+asks). Those are for the next steps.

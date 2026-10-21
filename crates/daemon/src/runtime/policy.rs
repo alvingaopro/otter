@@ -206,9 +206,11 @@ const SUB_WORD: &str = " __sub__ ";
 /// at the `;`, `&&`, `||`, `|`, `&` and newlines outside quotes
 /// ([`separators`]); what `$(…)`, `<(…)`, `>(…)`, backticks and a heredoc's
 /// body run are pieces too, and [`SUB`] stands where a substitution was.
-/// Lexical: quotes are read for where a line is cut and where a heredoc
-/// starts, and nothing else in them is understood; a substitution is read
-/// as a command wherever it stands, even in single quotes.
+/// Lexical: quotes are read for where a line is cut, where a heredoc starts
+/// and where a substitution runs, and nothing else in them is understood. A
+/// substitution is read as a command outside quotes and in double quotes;
+/// in single quotes, in `$'…'` or behind a backslash `$(` and a backtick are
+/// only characters.
 struct Piece {
     text: String,
     /// `None`: the line's own shell. `Some(n)`: a substitution's or a
