@@ -56,6 +56,6 @@ Layout:
   `terminalFont.ts` for ⌘=/⌘- and the font in Settings › Appearance, D-116; `SettingsDialog`, tabs by kind, D-127; `PerfOverlay` + `perf.ts`, Settings › Developer's readout, D-128), `newer.ts` (requests older hosts don't
   know), `panelResize` (the
   list's and the Files/Timeline panel's widths, D-097, and a task's details,
-  D-175; `composerResize` is the message box's height), `model.ts`
+  D-175; `composerGrow` is the message box growing as it is written in, D-177), `model.ts`
   (grouping and wording only), `TimelinePanel` + `timeline.ts` (a workspace's
   events as one line each).
