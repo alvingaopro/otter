@@ -61,16 +61,17 @@
 }
 
 /* Light theme: the same roles on a neutral white ground (D-176); every text
-   colour reads at 4.5:1 or better on the ground it sits on. */
+   colour reads at 4.5:1 or better on the grounds it sits on, hovered and
+   selected rows and diff tints included. */
 :root[data-theme="light"] {
-  --hl-keyword: #8a3fb8;
-  --hl-string: #3e7a47;
-  --hl-number: #a25a12;
-  --hl-comment: #6e7178;
-  --hl-title: #2160c4;
-  --hl-type: #18797a;
-  --hl-attr: #9a6a00;
-  --hl-meta: #6e7178;
+  --hl-keyword: #863db2;
+  --hl-string: #376b3e;
+  --hl-number: #905010;
+  --hl-comment: #5e6066;
+  --hl-title: #205cbc;
+  --hl-type: #156a6b;
+  --hl-attr: #805800;
+  --hl-meta: #5e6066;
   --diff-add: rgba(46, 160, 67, 0.14);
   --diff-del: rgba(207, 34, 46, 0.11);
   --diff-none: rgba(127, 127, 127, 0.07);
@@ -84,13 +85,13 @@
   --selected: #e4e4e9;
   --text: #1d1d1f;
   --muted: #55565c;
-  --faint: #65666c;
-  --needs: #d96a00;
+  --faint: #616268;
+  --needs: #cc6100;
   --needs-text: #a84800;
   --working: #007aff;
-  --working-text: #0062cc;
-  --done: #2f7a3e;
-  --failed: #d1242f;
+  --working-text: #005ec4;
+  --done: #2b7239;
+  --failed: #c41d28;
   --idle: #818187;
   --hover: #ececf0;
   --card: #ffffff;

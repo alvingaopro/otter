@@ -6392,19 +6392,22 @@ fell under 4.5:1 on the ground they sit on (`--faint` 3.72 on a selected row,
 `--hl-comment` 3.18, `--failed` 4.36 on its banner, `--done` 4.11 on the
 sidebar). The grounds are now neutral, as macOS draws them: the sidebar, bars
 and fields `#f5f5f7`, the terminal, panels and cards `#ffffff`, lines
-`#e5e5ea`/`#d1d1d6`. Every text colour reads at 4.5:1 or better on its own
-ground; `--working` (`#007aff`), `--needs` and `--idle` are fills and glyphs
-only (3:1), and the three places that wrote text in `--working` use
-`--working-text`. Dark is unchanged. The proposal, with each ratio:
+`#e5e5ea`/`#d1d1d6`. Every text colour reads at 4.5:1 or better on each
+ground it sits on — hovered (`#ececf0`) and selected (`#e4e4e9`) rows, button
+hover (`#e2e2e7`), and the code colours on a diff's added and removed tints,
+over white and over a task's changes box; `--working` (`#007aff`), `--needs`
+and `--idle` are fills and glyphs only (3:1), and the three places that wrote
+text in `--working` use `--working-text`. Dark is unchanged. The proposal, with each ratio:
 https://claude.ai/artifact/Qh1BhCMK284Ccf1RwVqiwc.
 
 The terminal follows: `LIGHT`'s background is `#FFFFFF` (with `--term`, which
 `.xterm-viewport` is forced to), and on light only xterm's
 `minimumContrastRatio` is 4.5, so a program's own colours meant for a dark
 ground (Claude Code's dark theme: its greys, its yellow at 1.3:1) are lifted
-until they read. It changes foregrounds only: the dark bar behind a submitted
-prompt and the dark green of an added line are Claude Code's theme, chosen in
-Claude Code (`/theme`).
+until they read. xterm lifts faint (SGR 2) text only to half that, and leaves
+box-drawing lines as they are. It changes foregrounds only: the dark bar behind
+a submitted prompt and the dark green of an added line are Claude Code's theme,
+chosen in Claude Code (`/theme`).
 
 Not done here: making Claude Code's *auto* theme follow the app. Auto asks
 the terminal its background (OSC 11); in Otter the session's tmux answers
