@@ -5716,3 +5716,35 @@ relative `rm -rf x` after it was routine.
   the subshell's `cd`); reading what a substitution names (`grep -n delete
   $(git ls-files)`), `{ cd src; rm -rf gen; }` and `pushd src && rm -rf
   gen` still run.
+
+## D-168 — Resuming goes back to where the pause found the task (2026-10-21)
+
+`docs/task-states.md` says a resume goes back to the state the task was
+paused in, but the code worked it out from the steps alone. The live task
+bench (B10, P01r) paused a task blocked on "Go ahead with the coding
+agent's plan?" with `pause --all`, and `resume --all` put it in
+`planning`, with no reason, while the developer-only decision was still
+pending. No run started, so it sat there until the plan was approved. A
+task paused in review fared worse on resume: with every step done, it went
+back to verifying, and the check and the judge ran again on work already
+reviewed.
+
+- **A pause remembers where it found the task:** `Task.paused_from`, its
+  status and reason (optional, so older documents load, and old peers
+  ignore it). It is set by every pause (the developer's, Otter's, the wait
+  limit's) and cleared when the task leaves paused.
+- **A resume goes back there.** Review stays review, with its reason.
+  While a decision only the developer may make is pending, the task is
+  blocked on it again, with the reason it had, or "Needs your approval: …"
+  for a document paused before this. Otherwise it picks up where its work
+  stands, as before. So a decision answered or cancelled during the pause,
+  such as the one the wait limit cancels, doesn't block it. `paused →
+  blocked` joins the transitions for this. Both the developer's Resume and
+  "go on" in Otter's conversation take this path.
+- **`pause --all` stays "every task at work"** (D-081): blocked or at work,
+  not review, where no agent is at work. Pausing one task in review is
+  still `otter task pause`.
+- **Verified:** `resuming_goes_back_to_where_the_pause_found_it` (blocked →
+  paused → blocked with its reason; review → paused → review with a publish
+  ask pending; an old document with no `paused_from`) fails with the
+  resume worked out from the steps alone, as before.

@@ -49,7 +49,7 @@ D-066).
 | any active → blocked | engine | A decision only the developer may make (policy `user_only`). |
 | blocked → previous | engine | Nothing pending any more (`resume_status`). |
 | active, blocked, review → paused | developer | Pause. |
-| paused → previous | developer | Resume. |
+| paused → previous | developer | Resume: the state the pause found (`paused_from`); blocked again while a decision only the developer may make is pending; review stays review (D-168). |
 | active, blocked, review → failed | engine | A budget used up, a loop, or an error Otter can't go past. |
 | failed → previous | developer | Retry (fresh attempt budget). |
 | any → planning | developer | The goal changed (request changes, a revising message). |

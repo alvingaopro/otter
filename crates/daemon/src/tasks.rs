@@ -437,6 +437,29 @@ pub fn resume_status(f: &Task) -> TaskStatus {
     }
 }
 
+/// Where resuming a paused task takes it: back to where the pause found
+/// it (D-168). In review it stays in review; while a decision only the
+/// developer may make is still pending it is blocked on it, as before; else
+/// it picks up where its work stands ([`resume_status`]). The reason, if
+/// it's the one from before the pause.
+pub fn resume_to(f: &Task) -> (TaskStatus, Option<String>) {
+    let before = f.paused_from.as_ref();
+    if let Some(p) = before
+        && p.status == TaskStatus::Review
+        && !f.replan
+    {
+        return (TaskStatus::Review, p.reason.clone());
+    }
+    if let Some(d) = f.pending_decisions().find(|d| d.user_only) {
+        let reason = before
+            .filter(|p| p.status == TaskStatus::Blocked)
+            .and_then(|p| p.reason.clone())
+            .unwrap_or_else(|| format!("Needs your approval: {}", d.summary));
+        return (TaskStatus::Blocked, Some(reason));
+    }
+    (resume_status(f), None)
+}
+
 pub fn message(role: MessageRole, text: String, correlation: Option<String>) -> (Message, Change) {
     let m = Message {
         id: MessageId::generate(),
@@ -482,8 +505,8 @@ pub fn apply_action(
             if f.status != TaskStatus::Paused {
                 return Err(RpcError::conflict("only a paused task can be resumed"));
             }
-            let next = resume_status(f);
-            changes.push(to(f, next, None)?);
+            let (next, reason) = resume_to(f);
+            changes.push(to(f, next, reason)?);
         }
         TaskAction::Retry => {
             if f.status != TaskStatus::Failed {
@@ -1588,6 +1611,94 @@ mod tests {
             .unwrap()
             .task;
         assert_eq!(out.status, TaskStatus::Implementing);
+    }
+
+    /// D-168 (the task bench's B10): a resume goes back to where the pause
+    /// found the task — blocked on what only the developer may decide, or
+    /// in review — not planning or verifying again.
+    #[test]
+    fn resuming_goes_back_to_where_the_pause_found_it() {
+        let (_dir, mut s) = store();
+        let act = |s: &mut TaskStore, f: &Task, a: TaskAction, c: &str| {
+            s.apply(&f.id, Some(c), |f, now| apply_action(f, &a, c, now))
+                .unwrap()
+                .task
+        };
+        // Blocked on the developer, paused, resumed: blocked on it again,
+        // for the same reason.
+        let (f, _) = awaiting_recovery(&mut s, "c1");
+        let f = s
+            .apply(&f.id, None, |f, _| {
+                f.status_reason = Some("Start “t” over?".into());
+                Ok(vec![])
+            })
+            .unwrap()
+            .task;
+        let out = act(&mut s, &f, TaskAction::Pause, "c2");
+        assert_eq!(out.status, TaskStatus::Paused);
+        let out = act(&mut s, &f, TaskAction::Resume, "c3");
+        assert_eq!(out.status, TaskStatus::Blocked);
+        assert_eq!(out.status_reason.as_deref(), Some("Start “t” over?"));
+        assert_eq!(out.paused_from, None);
+
+        // In review with the publish asked: back in review, not verifying.
+        let f = new_task(&mut s, "c4");
+        let f = s
+            .apply(&f.id, None, |f, now| {
+                for to in [
+                    TaskStatus::Planning,
+                    TaskStatus::Implementing,
+                    TaskStatus::Verifying,
+                ] {
+                    f.transition(to, None, now).unwrap();
+                }
+                f.transition(
+                    TaskStatus::Review,
+                    Some("Ready for your review".into()),
+                    now,
+                )
+                .unwrap();
+                f.decisions.push(DecisionRequest {
+                    id: DecisionId::generate(),
+                    step_id: None,
+                    run_id: None,
+                    kind: DecisionKind::ToolPermission,
+                    risk: Risk::High,
+                    summary: "Run `git push origin b` and open a pull request".into(),
+                    detail: None,
+                    command: None,
+                    options: vec![],
+                    status: DecisionStatus::Pending,
+                    decided_by: None,
+                    answer: None,
+                    rationale: None,
+                    created_at: now,
+                    decided_at: None,
+                    user_only: true,
+                    grant: None,
+                });
+                Ok(vec![])
+            })
+            .unwrap()
+            .task;
+        act(&mut s, &f, TaskAction::Pause, "c5");
+        let out = act(&mut s, &f, TaskAction::Resume, "c6");
+        assert_eq!(out.status, TaskStatus::Review);
+        assert_eq!(out.status_reason.as_deref(), Some("Ready for your review"));
+
+        // A document paused before D-168 knows nothing of where it was: a
+        // pending decision of the developer's still blocks it.
+        let mut old = out.clone();
+        old.transition(TaskStatus::Paused, None, Utc::now())
+            .unwrap();
+        old.paused_from = None;
+        assert_eq!(
+            resume_to(&old),
+            (
+                TaskStatus::Blocked,
+                Some("Needs your approval: Run `git push origin b` and open a pull request".into())
+            )
+        );
     }
 
     #[test]

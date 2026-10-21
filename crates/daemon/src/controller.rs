@@ -2937,10 +2937,10 @@ pub(crate) fn intent_step(
     let mut stop = false;
     let step = match (intent, f.status) {
         (Intent::Continue, TaskStatus::Draft) => move_to(f, TaskStatus::Planning, "You said go on"),
-        (Intent::Continue, TaskStatus::Paused) => {
-            let next = crate::tasks::resume_status(f);
-            move_to(f, next, "You said go on")
-        }
+        (Intent::Continue, TaskStatus::Paused) => match crate::tasks::resume_to(f) {
+            (next, Some(reason)) => move_to(f, next, &reason),
+            (next, None) => move_to(f, next, "You said go on"),
+        },
         (Intent::Continue, TaskStatus::Blocked) if f.pending_decisions().next().is_none() => {
             let next = crate::tasks::resume_status(f);
             move_to(f, next, "You said go on")
