@@ -505,7 +505,6 @@ export default function App() {
               onSession={(id) => setSessions((m) => ({ ...m, [p.key]: id }))}
               now={now}
               theme={theme}
-              appVersion={version}
               pinItems={pinMenu(p.key)}
               onOpenPort={(port) => void openPort(p.host.name, port).catch(() => {})}
               onOpenTask={(id) => {
