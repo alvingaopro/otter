@@ -37,7 +37,7 @@ D-066).
 | draft → planning | developer | Start. |
 | planning → blocked | engine | No workspace; or no request and no message (asks "What should this task do?", D-067); or the agent's plan, sent back once, still has problems (asks "Go ahead with the coding agent's plan?", D-084). |
 | planning → implementing | engine | The plan is set — the agent's proposal, reviewed by the brain (D-064, D-084). |
-| planning → done | engine | The look at the code came back with no plan: the request was a question, and the agent's words are the answer (D-084). |
+| planning → done | engine | The look at the code came back with no plan: the request was a question, and the agent's words are the answer (D-084). Answer-only, with a plan the developer turned down: the agent's next turn answers in words; if it plans again, Otter says there is no answer without the change, and doesn't ask twice (D-158). |
 | planning → failed | engine | The look at the code failed or said nothing: no plan is guessed (D-084). |
 | implementing → verifying | engine | Every step done or skipped. |
 | verifying → implementing | engine | Something unmet, and the work changed since the last verdict: a fix step (D-062). |
@@ -64,7 +64,7 @@ journal is the agent's. A restarted otterd reads them and goes on.
 | Step | What is kept | On resume |
 |---|---|---|
 | Goal | `request`, or the answered "What should this task do?" decision | Plans from it; asks again only if nothing was said. |
-| Planning turn | the planning step's run, its report (a proposal or an answer); a plan sent back carries the review's points (`Step.detail`); a plan approval names the planning task | Continues the turn if cut off; else reviews the proposal (or reads the developer's word on it), or posts the answer. |
+| Planning turn | the planning step's run, its report (a proposal or an answer); a plan sent back carries the review's points (`Step.detail`), an answer-only plan turned down the ask to answer in words (D-158); a plan approval names the planning task | Continues the turn if cut off; else reviews the proposal (or reads the developer's word on it), or posts the answer. |
 | Plan | `requirements`, `acceptance` (typed), `steps`, `verify_command` (+ its decision) | Carries on with the next step. |
 | Each turn | a `Run`: state, `provider_session_id`, `worked_ms`, summary; the turn in the journal | A cut-off turn continues the same session with a notice (D-063); a finished one isn't repeated (recovered from the journal). |
 | Check | `Test` evidence: command, exit, output tail | Re-run on the next verification (cheap, local). |

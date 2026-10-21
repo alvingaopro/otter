@@ -2881,6 +2881,8 @@ decided here by default, to revisit with the transcripts.
   and the plan is set; turned down, the plan, written out, is the answer
   and the task is done ("Not carried out: this task only answers"). The
   brain doesn't review such a plan: nothing is built unless it's allowed.
+  *Amended 2026-10-21 (D-158):* turned down, the agent answers the
+  question in words in one more turn; a plan again isn't asked about twice.
 - `answer_only` is a new field with a default: no schema bump (D-061).
 
 ## D-093 — Otter on the host: a conversation of its own (2026-10-15)
@@ -5260,3 +5262,37 @@ on the host's page), once per host, so it repeated on every workspace of that
 host and took a row from the terminal. The workspace pane no longer shows it.
 A host too old for a command still says so where the command is used
 (`explain`).
+
+## D-158 — A plan turned down on an answer-only task still gets the question answered (2026-10-21)
+
+Bench (B05): an answer-only task asked what `make test` runs and how many
+tests there are. The coding agent's look at the code came back with a plan
+(confirm the count, write it down), which came to the developer as D-092
+says; they turned it down. The task went done, "Answered", and the answer
+posted was the plan's own steps and criteria with "Not carried out: this
+task only answers." The question was never answered, although the agent
+had read the Makefile and the tests to plan.
+
+- **Turned down, the agent answers in words.** The planning step goes back
+  to the coding agent once more, marked in its `detail` (as a plan sent back
+  is, D-084): its next turn, in the same conversation, is told the developer
+  turned down changing the code and to answer the request from what it
+  found, pointing to the code, changing nothing, with no JSON. It only reads,
+  as every turn of an answer-only task does (D-092), and costs no attempt.
+  Its reply is the answer (`planning → done`, "Answered"), as a look at the
+  code that found a question is.
+- **Not asked twice.** If that turn plans the change again, the developer
+  isn't asked again: Otter says plainly that the agent couldn't answer
+  without changing the code, which they turned down, and what it would do,
+  not carried out; the task is done, "Not answered: it needs the change you
+  turned down". The mark is the guard, kept in the task document, so a
+  restart doesn't ask again either. A turn that fails or says nothing fails
+  the look as before, and Retry asks for the answer again.
+- **A new ask clears it.** Planning again (D-050, "then change it") looks
+  at the code afresh: a plan then is asked about as any is.
+- The question itself now says so: turned down, the agent "answers from
+  what it found, changing nothing".
+- Known limit: a goal changed while that turn runs carries on in it (as a
+  plan sent back does), so a plan from it isn't asked about either. Tested
+  with the fake worker only (both ways: an answer in words, and a plan
+  again); not yet with live Claude.

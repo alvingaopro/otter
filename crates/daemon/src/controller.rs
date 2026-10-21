@@ -105,6 +105,12 @@ const GOAL_QUESTION: &str = "What should this task do?";
 const ANSWERED: &str = "Answered: no change was asked for. Say so if you want one.";
 /// What Otter asks when a revised plan still has problems (D-084).
 const PLAN_QUESTION: &str = "Go ahead with the coding agent's plan?";
+/// The planning step's detail once the developer turned down a plan on an
+/// answer-only task: its next turn answers in words (D-158).
+const DECLINED: &str = "The change was turned down: answer in words, changing nothing.";
+/// Why such a task is done when the agent planned the change again (D-158).
+const NO_ANSWER: &str =
+    "Not answered: it needs the change you turned down. Say so if you want it made.";
 
 /// Why planning stopped when the look at the code failed — the agent's
 /// doing or otterd's, as `why` says (D-134).
@@ -803,7 +809,8 @@ impl Daemon {
 
     /// The agent proposes changes to a task that only wanted an answer
     /// (D-092). Asked first; allowed, the task may change code and the plan
-    /// is set; turned down, the plan is the answer and the task is done.
+    /// is set; turned down, the agent answers in words in one more turn,
+    /// and planning again after that isn't asked about twice (D-158).
     async fn plan_for_an_answer(
         &self,
         f: &Task,
@@ -811,6 +818,31 @@ impl Daemon {
         plan: brain::Plan,
         root: &std::path::Path,
     ) -> RpcResult<()> {
+        // Told the change was turned down, it planned it again: no answer
+        // without it, said plainly.
+        if step.detail.as_deref() == Some(DECLINED) {
+            let text = format!(
+                "The coding agent couldn't answer this without changing the code, which you turned down. What it would do, not carried out:\n{}",
+                plan_text(&plan)
+            );
+            self.controller_apply(&f.id, TaskStatus::Planning, move |f, now| {
+                let (m, c) = message(MessageRole::Controller, text, None);
+                f.messages.push(m);
+                let why = f.reason(
+                    "Asked to answer without changes, the coding agent planned them again: not asked twice.",
+                );
+                Ok(vec![
+                    c,
+                    Change::new(why),
+                    Change::new(
+                        f.transition(TaskStatus::Done, Some(NO_ANSWER.into()), now)
+                            .map_err(RpcError::conflict)?,
+                    ),
+                ])
+            })
+            .await?;
+            return Ok(());
+        }
         match plan_decision(f, &step.id) {
             Some(d) if d.status == DecisionStatus::Pending => Ok(()),
             Some(d)
@@ -828,19 +860,34 @@ impl Daemon {
                 .await?;
                 self.set_plan(f, plan, "approved by you", root).await
             }
+            // The question is still to be answered: the agent's next turn,
+            // from what it found (D-158).
             Some(d) if d.status == DecisionStatus::Denied => {
-                let answer = format!(
-                    "{}\n\nNot carried out: this task only answers.",
-                    plan_text(&plan)
-                );
-                self.answered(f, step, answer).await
+                let id = step.id.clone();
+                self.controller_apply(&f.id, TaskStatus::Planning, move |f, _| {
+                    let why = f.reason(
+                        "You turned the change down: the coding agent answers in words instead.",
+                    );
+                    let t = f.step_mut(&id).expect("found");
+                    t.status = StepStatus::Pending;
+                    t.detail = Some(DECLINED.into());
+                    Ok(vec![
+                        Change::new(why),
+                        Change::new(TaskEvent::StepChanged {
+                            step_id: id.clone(),
+                            status: StepStatus::Pending,
+                        }),
+                    ])
+                })
+                .await?;
+                Ok(())
             }
             _ => {
                 let step_id = step.id.clone();
                 let detail =
                     "This task only answers, and the coding agent proposes changing the code.";
                 let text = format!(
-                    "This task only answers, but the coding agent proposes changes:\n{}\nApprove to let it change the code; turn it down and this plan stands as the answer.",
+                    "This task only answers, but the coding agent proposes changes:\n{}\nApprove to let it change the code; turn it down and it answers from what it found, changing nothing.",
                     plan_text(&plan)
                 );
                 self.controller_apply(&f.id, TaskStatus::Planning, move |f, now| {
@@ -908,12 +955,15 @@ impl Daemon {
             .rev()
             .find(|r| r.step_id == id && r.state == RunState::Completed)
             .map(|r| r.id.to_string());
+        let declined = step.detail.as_deref() == Some(DECLINED);
         self.controller_apply(&f.id, TaskStatus::Planning, move |f, now| {
             let (m, c) = message(MessageRole::Agent, report, run);
             f.messages.push(m);
-            let why = f.reason(
-                "The coding agent answered: the request asks no change, so nothing was planned or built.",
-            );
+            let why = f.reason(if declined {
+                "The coding agent answered without the change you turned down: nothing was planned or built."
+            } else {
+                "The coding agent answered: the request asks no change, so nothing was planned or built."
+            });
             Ok(vec![
                 c,
                 Change::new(why),
@@ -2990,8 +3040,33 @@ const PLAN_FORMAT: &str = "{\"summary\": \"one sentence: the approach\", \
 /// The planning turn (D-064, D-084): read the code, then answer a question,
 /// or propose the plan for a change as JSON, changing nothing yet. In the
 /// task's conversation (`warm`: planning again) the request is already
-/// said; a plan sent back by Otter's review gets its points instead.
+/// said; a plan sent back by Otter's review gets its points instead, and a
+/// plan the developer turned down on an answer-only task asks for the
+/// answer in words (D-158).
 fn planning_prompt(f: &Task, step: &Step, notes: Vec<String>, warm: bool) -> String {
+    let request = if f.request.trim().is_empty() {
+        &f.title
+    } else {
+        &f.request
+    };
+    if step.detail.as_deref() == Some(DECLINED) {
+        let opening = if warm {
+            String::new()
+        } else {
+            format!("Task: {}\n\nRequest:\n{request}\n\n", f.title)
+        };
+        return format!(
+            "{opening}The developer turned down changing the code: this task only answers. \
+             Answer the request in words now, from what you found{read}: say what you found and \
+             point to the code (path:line). Change nothing, and add no JSON.{notes}",
+            read = if warm {
+                ""
+            } else {
+                " (read the code it touches first)"
+            },
+            notes = notes_text(&notes),
+        );
+    }
     if let Some(issues) = &step.detail {
         return format!(
             "Otter reviewed your plan and sees these problems:\n{issues}{notes}\n\
@@ -3028,13 +3103,8 @@ fn planning_prompt(f: &Task, step: &Step, notes: Vec<String>, warm: bool) -> Str
         )
     } else {
         format!(
-            "Task: {}\n\nRequest:\n{}\n{}",
+            "Task: {}\n\nRequest:\n{request}\n{}",
             f.title,
-            if f.request.trim().is_empty() {
-                &f.title
-            } else {
-                &f.request
-            },
             notes_text(&notes),
         )
     };
@@ -3305,6 +3375,21 @@ mod tests {
         assert!(again.starts_with("Otter reviewed your plan"), "{again}");
         assert!(again.contains("too vague"), "{again}");
         assert!(!again.contains("answer it"), "{again}");
+        // Turned down on an answer-only task (D-158): the answer, in words.
+        let mut declined = look.clone();
+        declined.detail = Some(DECLINED.into());
+        let answer = planning_prompt(&f, &declined, vec![], true);
+        assert!(answer.starts_with("The developer turned down"), "{answer}");
+        assert!(answer.contains("Answer the request in words"), "{answer}");
+        assert!(!answer.contains("plan the work"), "{answer}");
+        assert!(!answer.contains("Otter reviewed"), "{answer}");
+        assert!(!answer.contains("Request:"), "{answer}");
+        let cold = planning_prompt(&f, &declined, vec![], false);
+        assert!(
+            cold.contains("Request:\nHow does the backport tag work?"),
+            "{cold}"
+        );
+        assert!(cold.contains("read the code it touches first"), "{cold}");
     }
 
     #[test]

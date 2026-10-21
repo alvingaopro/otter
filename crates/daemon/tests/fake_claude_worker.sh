@@ -19,7 +19,10 @@
 # policy said to each. Modes for the work turn: slow (finishes after 2 s),
 # hang (never finishes). A planning turn ("plan the work") tries to write a
 # file, then answers in prose (NOPLAN) or proposes a two-step plan as JSON,
-# saying what Otter's policy said to the write.
+# saying what Otter's policy said to the write. Told its plan was turned
+# down on an answer-only task ("turned down changing the code", D-158), it
+# tries the write again, then answers in prose — or, in mode replans,
+# proposes the plan again.
 mode="${FAKE_WORKER_MODE:-ok}"
 out() { printf '%s\n' "$1"; }
 profiles='"profiles":["coding","otter"],'
@@ -113,6 +116,12 @@ while IFS= read -r line; do
         *'plan the work'*)
           planning=1
           case "$line" in *NOPLAN*) noplan=1 ;; esac
+          out '{"type":"policy_check","check_id":"chk-p1","tool":"Write","input":{"file_path":"export.sh","content":"x"},"tool_use_id":"tu_p1"}'
+          continue
+          ;;
+        *'turned down changing the code'*)
+          planning=1
+          [ "$mode" = replans ] || noplan=1
           out '{"type":"policy_check","check_id":"chk-p1","tool":"Write","input":{"file_path":"export.sh","content":"x"},"tool_use_id":"tu_p1"}'
           continue
           ;;
