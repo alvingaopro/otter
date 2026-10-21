@@ -1189,6 +1189,36 @@ pub async fn host_ports(
     rpc(&app, &host).await?.host_ports().await.map_err(err)
 }
 
+/// The processes Otter started or must answer for on a host, with their
+/// owners (D-156).
+#[tauri::command]
+pub async fn host_processes(
+    app: AppHandle,
+    host: String,
+) -> Result<otter_protocol::host::HostProcesses, String> {
+    rpc(&app, &host).await?.host_processes().await.map_err(err)
+}
+
+/// End an otterd of another build, or an orphan (D-156).
+#[tauri::command]
+pub async fn host_process_stop(
+    app: AppHandle,
+    host: String,
+    pid: u32,
+    started: u64,
+    force: bool,
+) -> Result<(), String> {
+    rpc(&app, &host)
+        .await?
+        .host_process_stop(otter_protocol::host::ProcessStop {
+            pid,
+            started,
+            force,
+        })
+        .await
+        .map_err(err)
+}
+
 /// Recorded usage of a host over a range (`1h`, `24h`, `7d`, `30d`).
 #[tauri::command]
 pub async fn host_history(

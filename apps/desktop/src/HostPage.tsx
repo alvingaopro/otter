@@ -5,7 +5,21 @@ import { Dialog } from "./Dialog";
 import { Menu } from "./Menu";
 import { LineChart, Meter, Sparkline } from "./charts";
 import { bytes, percent, rate, uptime } from "./format";
-import type { Direction, ForwardView, HostHistory, HostMetrics, HostView, ListeningPort } from "./types";
+import { HostWork, type Procs } from "./HostWork";
+import { strays } from "./hostWork";
+import { invokeNewer } from "./newer";
+import type { Task, TaskAction } from "./tasks";
+import type { Direction, ForwardView, HostHistory, HostMetrics, HostProcesses, HostView, ListeningPort } from "./types";
+
+type Tab = "overview" | "work";
+const tabKey = (host: string) => `otter.hostTab.${host}`;
+function storedTab(host: string): Tab {
+  try {
+    return localStorage.getItem(tabKey(host)) === "work" ? "work" : "overview";
+  } catch {
+    return "overview";
+  }
+}
 
 type Range = "live" | "1h" | "24h" | "7d" | "30d";
 const RANGES: [Range, string][] = [
@@ -35,13 +49,34 @@ export function HostPage({
   host,
   version,
   forwards,
+  tasks,
+  now,
+  onTask,
+  onOpenWorkspace,
   onRemoved,
 }: {
   host: HostView;
   version?: string;
   forwards: ForwardView[];
+  /** This host's tasks (D-156: the Work tab). */
+  tasks: Task[];
+  now: number;
+  onTask: (task: string, action: TaskAction) => Promise<unknown>;
+  onOpenWorkspace?: (workspace: string, session?: string) => void;
   onRemoved: () => void;
 }) {
+  // Overview (how busy it is) or Work (what Otter runs there); the last one
+  // chosen is remembered for this host.
+  const [tab, setTabState] = useState<Tab>(() => storedTab(host.name));
+  const setTab = (next: Tab) => {
+    setTabState(next);
+    try {
+      localStorage.setItem(tabKey(host.name), next);
+    } catch {
+      // Not remembered; fine.
+    }
+  };
+  const [procs, setProcs] = useState<Procs>({ state: "loading" });
   const [metrics, setMetrics] = useState<HostMetrics | null>(null);
   const [metricsError, setMetricsError] = useState<string | null>(null);
   const [ports, setPorts] = useState<ListeningPort[] | null>(null);
@@ -91,6 +126,30 @@ export function HostPage({
       clearInterval(b);
     };
   }, [host.name, connected]);
+
+  // The processes Otter runs here (D-156), while the page is open and the
+  // window has focus: the Work tab's badge needs them on the Overview too.
+  useEffect(() => {
+    if (!connected) return;
+    let live = true;
+    const load = async () => {
+      if (!document.hasFocus()) return;
+      try {
+        const p = await invokeNewer<HostProcesses>(host.name, "host_processes", { host: host.name });
+        if (live) setProcs(p ? { state: "ready", procs: p.processes } : { state: "too_old" });
+      } catch (e) {
+        // Measuring: the first sample isn't in yet.
+        if (live) setProcs(String(e).includes("measuring") ? { state: "loading" } : { state: "error", error: String(e) });
+      }
+    };
+    void load();
+    const t = setInterval(load, 10000);
+    return () => {
+      live = false;
+      clearInterval(t);
+    };
+  }, [host.name, connected]);
+  const stray = procs.state === "ready" ? strays(procs.procs).length : 0;
 
   // Recorded history for the chosen range, refreshed every minute.
   useEffect(() => {
@@ -183,6 +242,21 @@ export function HostPage({
         )}
         {output && <pre className="output">{output}</pre>}
 
+        {connected && (
+          <div className="host-tabs" role="tablist" aria-label="Host sections">
+            <button role="tab" id="host-tab-overview" aria-selected={tab === "overview"} className="host-tab" onClick={() => setTab("overview")}>
+              Overview
+            </button>
+            <button role="tab" id="host-tab-work" aria-selected={tab === "work"} className="host-tab" onClick={() => setTab("work")}>
+              Work
+              {stray > 0 && <span className="host-tab-badge" title="Processes nothing here owns">{stray} to look at</span>}
+            </button>
+          </div>
+        )}
+        {connected && tab === "work" ? (
+          <HostWork host={host} tasks={tasks} procs={procs} now={now} onTask={onTask} onOpenWorkspace={onOpenWorkspace} />
+        ) : (
+          <>
         {connected && (host.problems?.length ?? 0) > 0 && (
           // What's wrong with it, and what to do (D-077) — as `otter doctor` says.
           <section aria-labelledby="problems">
@@ -246,6 +320,8 @@ export function HostPage({
             onMap={(port) => setMapping({ direction: "to_local", port })}
           />
         </section>
+          </>
+        )}
       </div>
 
       {mapping && <MapDialog host={host} initial={mapping} onClose={() => setMapping(null)} />}
