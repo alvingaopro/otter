@@ -439,7 +439,14 @@ pub struct Message {
     /// The command or decision this message belongs to.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub correlation_id: Option<String>,
+    /// Pictures that came with it, by name in the task's artifacts.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attachments: Vec<String>,
 }
+
+/// What a message of pictures alone says, for whoever reads it as words
+/// (Otter's turn, the planner, the agent): never blank.
+pub const PICTURES_ONLY: &str = "(pictures, no words)";
 
 /// Otter's conversation on a host (D-093): the developer and Otter about
 /// any task there, apart from each task's own conversation. Its messages
@@ -1666,6 +1673,7 @@ mod tests {
             text: text.into(),
             at: now,
             correlation_id: None,
+            attachments: vec![],
         };
         let mut f = Task::new("t".into(), String::new(), now);
         f.messages

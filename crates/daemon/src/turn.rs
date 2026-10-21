@@ -847,6 +847,7 @@ mod tests {
                 },
                 at: chrono::Utc::now(),
                 correlation_id: None,
+                attachments: vec![],
             })
             .collect();
         let r = recent(&all);

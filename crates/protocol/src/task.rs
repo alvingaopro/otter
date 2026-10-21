@@ -39,7 +39,27 @@ pub struct TaskCreate {
 pub struct TaskSend {
     pub command_id: String,
     pub task: String,
+    /// What the developer said; may be empty when `images` has something.
     pub text: String,
+    /// Pictures that go with it (pasted screenshots). At most
+    /// [`MAX_IMAGES`], [`MAX_IMAGE_BYTES`] each and [`MAX_IMAGES_TOTAL`] in all.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub images: Vec<TaskImage>,
+}
+
+/// Most pictures on one message.
+pub const MAX_IMAGES: usize = 4;
+/// Largest picture, decoded, in bytes.
+pub const MAX_IMAGE_BYTES: usize = 700 * 1024;
+/// Largest total of one message's pictures, decoded, in bytes.
+pub const MAX_IMAGES_TOTAL: usize = 2 * 1024 * 1024;
+
+/// A picture on a message: its type and content, base64.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TaskImage {
+    /// `image/png`, `image/jpeg` or `image/webp`.
+    pub media_type: String,
+    pub data: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
