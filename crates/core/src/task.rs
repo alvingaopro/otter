@@ -27,6 +27,10 @@ pub const WAITING: &str = "Waiting for ";
 /// works there, or the workspace is put away (D-134).
 pub const YOUR_AGENT: &str = ", an agent you started, is working there";
 pub const ARCHIVED: &str = ": it's archived; unarchive it to go on";
+/// …or another task's work is there, at rest, until it's done or
+/// cancelled (D-156). The app matches it too (`HELD` in `tasks.ts`).
+pub const HELD: &str =
+    " has unfinished work there: finish or cancel it, or give this task a workspace of its own";
 
 /// Version of the persisted [`Task`] document. Bump with a migration in
 /// the daemon's task store.
@@ -751,10 +755,12 @@ impl Task {
                 need(NeedKind::Blocked, reason("Waiting on you"))
             }
             TaskStatus::Failed => need(NeedKind::Failed, reason("Stopped")),
-            // Waiting for a workspace only the developer can free (D-134).
+            // Waiting for a workspace only the developer can free (D-134,
+            // D-156).
             s if s.is_active()
                 && self.status_reason.as_deref().is_some_and(|r| {
-                    r.starts_with(WAITING) && (r.ends_with(YOUR_AGENT) || r.ends_with(ARCHIVED))
+                    r.starts_with(WAITING)
+                        && (r.ends_with(YOUR_AGENT) || r.ends_with(ARCHIVED) || r.ends_with(HELD))
                 }) =>
             {
                 need(NeedKind::Blocked, reason("Waiting on you"))
@@ -1721,6 +1727,7 @@ mod tests {
             (waiting(ARCHIVED), true),
             (waiting(": it's being prepared"), false),
             (waiting(": “Other task” is working there"), false),
+            (waiting(&format!(": “Other task”{HELD}")), true),
         ] {
             f.status_reason = Some(why.clone());
             let n = f.needs();

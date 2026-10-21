@@ -227,6 +227,8 @@ export interface WorkspaceChoice {
 
 /** How a task waiting for an agent the developer started says so (`YOUR_AGENT` in otter-core, D-134). */
 export const YOUR_AGENT = ", an agent you started, is working there";
+/** …or for another task's unfinished work there (`HELD` in otter-core, D-156). */
+export const HELD = " has unfinished work there: finish or cancel it, or give this task a workspace of its own";
 
 /** The session a task waits for in its workspace (D-079), by the reason it gives. */
 export function waitedSession(f: Task, ws: WorkspaceChoice | undefined): { id: string; name: string } | undefined {
