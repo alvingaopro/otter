@@ -5280,9 +5280,10 @@ two tabs: **Overview** (what it was: problems, usage, ports) and **Work**.
   that isn't this process, or a process whose working directory is in this
   host's `workspaces/` folder under an id that no workspace has (or whose
   workspace is archived), with no session's or run's process above it. What
-  holds owned work up (the parents of a session's or a run's process) and
-  what this otterd started (its tmux server, which keeps the directory the
-  otterd was started in) are never strays. A shell of the developer's own that
+  holds owned work up (the parents of a session's or a run's process) and the
+  backend's server (a process named `tmux`, daemonized, which keeps the
+  directory the otterd was started in) are never strays; a worker this otterd
+  started that outlived its run is one. A shell of the developer's own that
   merely sits in such a folder is called a stray too, by the directory it is
   in now; stopping it asks first and says what it is. A
   session of an archived workspace that still runs is not a stray (it is a
@@ -5295,7 +5296,8 @@ two tabs: **Overview** (what it was: problems, usage, ports) and **Work**.
   isn't the process's (a reused id), and anything not listed. SIGTERM, or
   SIGKILL when forced, to its process group if it leads one; a signal that
   can't be sent (the process ended, or isn't this user's) is an error, not
-  a success. The target is **read again at that moment** (executable,
+  a success, and with no sample yet (the first 5 s after a start) it is
+  refused, for the owners can't be found without the tree. The target is **read again at that moment** (executable,
   arguments, directory), not taken from the 5 s sample: a session starts as
   `otterd internal-exec … -- argv` and execs in place, so a sample taken then
   would call its shell "another otterd". The sampler reads those fields anew

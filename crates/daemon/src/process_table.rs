@@ -72,8 +72,7 @@ pub(crate) fn classify(procs: &[ProcSample], roots: &Roots) -> Vec<OtterProcess>
         None
     };
     // What a stop must never reach: what holds owned work up (the parents of
-    // a session's or a run's process: a tmux server whose directory happens to
-    // be a deleted workspace's), and whatever this otterd itself started.
+    // a session's or a run's process), and the backend's server.
     let mut protected: HashSet<u32> = HashSet::new();
     for root in roots.executions.keys().chain(roots.runs.keys()) {
         let mut at = *root;
@@ -84,17 +83,6 @@ pub(crate) fn classify(procs: &[ProcSample], roots: &Roots) -> Vec<OtterProcess>
             }
         }
     }
-    let ours = |pid: u32| {
-        let mut at = pid;
-        for _ in 0..DEPTH {
-            match parents.get(&at).copied().flatten() {
-                Some(up) if up == roots.own_pid => return true,
-                Some(up) if up > 1 => at = up,
-                _ => return false,
-            }
-        }
-        false
-    };
     let mut out: Vec<OtterProcess> = procs
         .iter()
         .filter_map(|p| {
@@ -102,7 +90,9 @@ pub(crate) fn classify(procs: &[ProcSample], roots: &Roots) -> Vec<OtterProcess>
                 (ProcessOwner::Daemon { this: true }, false)
             } else if let Some(o) = owned(p.pid) {
                 (o, false)
-            } else if protected.contains(&p.pid) || ours(p.pid) {
+            } else if protected.contains(&p.pid) || p.name.starts_with("tmux") {
+                // Holds owned work up, or is the backend's own server (kept
+                // by this otterd's sessions, exited ones' panes included).
                 return None;
             } else if p.otterd {
                 (ProcessOwner::Daemon { this: false }, true)
@@ -210,6 +200,13 @@ impl Daemon {
         // The sample for how the others sit in the tree; the target as it is
         // now: what it is running and where, not what it was then.
         let mut procs = self.metrics.processes();
+        if procs.is_empty() {
+            // Without the tree the owners can't be found.
+            return Err(RpcError::new(
+                ErrorCode::Unavailable,
+                "measuring; try again in a few seconds",
+            ));
+        }
         let target = tokio::task::spawn_blocking(move || crate::metrics::fresh(p.pid))
             .await
             .ok()
@@ -347,23 +344,25 @@ mod tests {
     }
 
     #[test]
-    fn what_holds_owned_work_up_and_what_this_otterd_started_are_never_strays() {
+    fn what_holds_owned_work_up_and_the_backends_server_are_never_strays() {
+        let mut tmux = proc(11, Some(1), Some("/h/workspaces/ws_gone"), false);
+        tmux.name = "tmux".into();
         let procs = vec![
             proc(10, Some(1), None, true),
-            // A tmux server this otterd started, working in a deleted
+            // The backend's server: daemonized, a child of init, in a deleted
             // workspace's folder (an otterd started from inside one).
-            proc(11, Some(10), Some("/h/workspaces/ws_gone"), false),
-            // The parent of a session's process: not this otterd's child, in a
-            // gone folder, but it holds the session up.
+            tmux,
+            // The parent of a session's process: in a gone folder, but it
+            // holds the session up.
             proc(6, Some(1), Some("/h/workspaces/ws_gone"), false),
             proc(20, Some(6), Some("/h/workspaces/ws_live"), false),
-            // Left over, owned by nothing.
-            proc(40, Some(1), Some("/h/workspaces/ws_gone"), false),
+            // A worker this otterd started that outlived its run: a stray.
+            proc(30, Some(10), Some("/h/workspaces/ws_gone"), false),
         ];
         let rows = classify(&procs, &roots());
         let listed: Vec<u32> = rows.iter().map(|r| r.pid).collect();
-        assert_eq!(listed, [10, 20, 40], "{rows:?}");
-        assert!(rows.iter().find(|r| r.pid == 40).unwrap().stoppable);
+        assert_eq!(listed, [10, 20, 30], "{rows:?}");
+        assert!(rows.iter().find(|r| r.pid == 30).unwrap().stoppable);
     }
 
     #[test]

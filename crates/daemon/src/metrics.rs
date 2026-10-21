@@ -51,14 +51,9 @@ pub struct ProcSample {
 /// An otterd serving: its executable (or what it was started as) is
 /// `otterd` and it was asked to `serve`. Not one of its own sessions on the
 /// way to exec (`otterd internal-exec … -- argv`), whose argv can say `serve`.
-fn is_otterd_serving(p: &sysinfo::Process) -> bool {
-    let named = |s: &std::ffi::OsStr| {
-        std::path::Path::new(s)
-            .file_name()
-            .is_some_and(|f| f == "otterd")
-    };
-    let cmd = p.cmd();
-    (p.exe().is_some_and(|e| named(e.as_os_str())) || cmd.first().is_some_and(|c| named(c)))
+pub(crate) fn otterd_serving(exe: Option<&std::path::Path>, cmd: &[std::ffi::OsString]) -> bool {
+    let named = |p: &std::path::Path| p.file_name().is_some_and(|f| f == "otterd");
+    (exe.is_some_and(named) || cmd.first().is_some_and(|c| named(std::path::Path::new(c))))
         && cmd.iter().any(|a| a == "serve")
         && !cmd.iter().any(|a| a == "internal-exec")
 }
@@ -67,13 +62,21 @@ fn sample_of(p: &sysinfo::Process, busy_samples: u32) -> ProcSample {
     ProcSample {
         pid: p.pid().as_u32(),
         parent: p.parent().map(|p| p.as_u32()),
-        name: p.name().to_string_lossy().into_owned(),
+        // The executable's name when there is one: sysinfo names a process
+        // once, as it was when first seen (a session's shell began as an
+        // `otterd internal-exec`).
+        name: p
+            .exe()
+            .and_then(|e| e.file_name())
+            .unwrap_or_else(|| p.name())
+            .to_string_lossy()
+            .into_owned(),
         exe: p.exe().map(|e| e.to_string_lossy().into_owned()),
         cwd: p.cwd().map(|c| c.to_string_lossy().into_owned()),
         cpu: p.cpu_usage(),
         memory: p.memory(),
         started: p.start_time(),
-        otterd: is_otterd_serving(p),
+        otterd: otterd_serving(p.exe(), p.cmd()),
         busy_samples,
     }
 }
@@ -491,6 +494,29 @@ mod tests {
             (p[2].address.as_str(), p[2].port, p[2].process.as_deref()),
             ("*", 5432, Some("postgres"))
         );
+    }
+
+    #[test]
+    fn an_otterd_is_told_by_its_executable_and_serve_not_by_a_sessions_argv() {
+        use std::ffi::OsString;
+        use std::path::Path;
+        let cmd = |a: &[&str]| a.iter().map(OsString::from).collect::<Vec<_>>();
+        let otterd = Some(Path::new("/home/u/.otter/bin/otterd"));
+        assert!(otterd_serving(otterd, &cmd(&["otterd", "serve"])));
+        // A session on its way to exec, whose argv says serve.
+        assert!(!otterd_serving(
+            otterd,
+            &cmd(&["otterd", "internal-exec", "/tmp/env", "--", "hugo", "serve"])
+        ));
+        // After the exec: not an otterd at all.
+        assert!(!otterd_serving(
+            Some(Path::new("/usr/bin/hugo")),
+            &cmd(&["hugo", "serve"])
+        ));
+        // An otterd that is not serving (a dial, a doctor).
+        assert!(!otterd_serving(otterd, &cmd(&["otterd", "dial"])));
+        // The executable unreadable: what it was started as.
+        assert!(otterd_serving(None, &cmd(&["/x/otterd", "serve"])));
     }
 
     #[test]
