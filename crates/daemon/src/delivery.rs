@@ -752,8 +752,11 @@ impl Git<'_> {
         let Ok(out) = self.output(&["worktree", "list", "--porcelain"]).await else {
             return vec![];
         };
-        out.lines()
-            .filter_map(|l| l.strip_prefix("worktree "))
+        // One block per worktree; the bare repository Otter's workspaces
+        // share is listed first, and is not a work tree (D-174).
+        out.split("\n\n")
+            .filter(|b| !b.lines().any(|l| l == "bare"))
+            .filter_map(|b| b.lines().find_map(|l| l.strip_prefix("worktree ")))
             .map(std::path::PathBuf::from)
             .filter(|p| p != self.root)
             .collect()
@@ -1064,6 +1067,53 @@ impl<'a> GitHub<'a> {
 mod tests {
     use super::*;
     use otter_core::task::{Criterion, Delivery, Evidence};
+
+    /// A workspace is a worktree of a bare backing repository, which `git
+    /// worktree list` shows first: it is not the task's to edit (D-174).
+    #[tokio::test]
+    async fn the_backing_repository_is_not_one_of_the_worktrees() {
+        let dir = tempfile::tempdir().unwrap();
+        let git = |cwd: &Path, args: &[&str]| {
+            let ok = std::process::Command::new("git")
+                .current_dir(cwd)
+                .args(args)
+                .env("GIT_AUTHOR_NAME", "t")
+                .env("GIT_AUTHOR_EMAIL", "t@t")
+                .env("GIT_COMMITTER_NAME", "t")
+                .env("GIT_COMMITTER_EMAIL", "t@t")
+                .status()
+                .unwrap()
+                .success();
+            assert!(ok, "git {args:?}");
+        };
+        let (src, base) = (dir.path().join("src"), dir.path().join("base"));
+        let (a, b) = (dir.path().join("a"), dir.path().join("b"));
+        std::fs::create_dir(&src).unwrap();
+        git(&src, &["init", "-q", "-b", "main"]);
+        git(&src, &["commit", "-q", "--allow-empty", "-m", "x"]);
+        git(dir.path(), &["clone", "-q", "--bare", "src", "base"]);
+        git(
+            &base,
+            &["worktree", "add", "-q", "-b", "wa", a.to_str().unwrap()],
+        );
+        git(
+            &base,
+            &["worktree", "add", "-q", "-b", "wb", b.to_str().unwrap()],
+        );
+        let env: EnvMap = std::env::vars().collect();
+        let trees = Git {
+            root: &a,
+            env: &env,
+        }
+        .worktrees()
+        .await;
+        let real = |p: &Path| p.canonicalize().unwrap();
+        assert_eq!(
+            trees.iter().map(|t| real(t)).collect::<Vec<_>>(),
+            [real(&b)],
+            "the sibling, not the backing repository and not itself"
+        );
+    }
 
     fn task() -> Task {
         let mut f = Task::new("CSV".into(), "Export".into(), chrono::Utc::now());

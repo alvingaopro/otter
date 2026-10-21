@@ -789,11 +789,12 @@ impl Daemon {
         }
         let env = std::env::vars().collect();
         let trees = crate::delivery::Git { root, env: &env }.worktrees().await;
-        // Not the other workspaces Otter made from the same repository: they
-        // are other tasks' work.
+        // Not what Otter keeps in its home: the other workspaces made from
+        // the same repository are other tasks' work, and its backing
+        // repository is shared by all.
         let trees: Vec<_> = trees
             .into_iter()
-            .filter(|t| !t.starts_with(&self.paths.workspaces_dir))
+            .filter(|t| !t.starts_with(&self.paths.home))
             .collect();
         if trees.is_empty() {
             return (verdict, scope);
@@ -1102,8 +1103,9 @@ impl Daemon {
             user_only: d.user_only,
             why: d.detail.clone().unwrap_or_default(),
         };
-        // Final when the developer or policy denied it; Otter's model's
-        // denial is not (D-174): a repeat of the call goes to the developer.
+        // Final when the developer or policy denied it. Otter's model's
+        // denial isn't (D-174), though a decision once made can't be made
+        // again below: it is a repeat of the call that goes to the developer.
         let previously_denied =
             d.status == DecisionStatus::Denied && d.decided_by != Some(Decider::Controller);
         policy::resolve(&verdict, previously_denied, &Proposal { by, allow })

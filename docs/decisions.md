@@ -6298,9 +6298,12 @@ What changed:
   routine delete (D-164) no longer hides other destructive words in its piece.
 - **The task's own worktrees are inside** (`policy::Scope`): the other
   worktrees of the workspace's repository, from `git worktree list` run in
-  the workspace, only for an ask that would otherwise be the developer's, and
-  **not** Otter's own workspaces under `workspaces/` (they are other tasks'
-  work). Edits, reads and writes there are routine; deleting is still judged
+  the workspace, only for an ask that would otherwise be the developer's.
+  Not counted: the bare backing repository (`git worktree list` shows it
+  first, and every workspace off the repository shares it), and anything under
+  Otter's home (the other workspaces are other tasks' work). Git is run with
+  otterd's own environment, so a host whose `PATH` lacks `git` finds no
+  worktrees and asks the developer, as before. Edits, reads and writes there are routine; deleting is still judged
   against the root alone. Git's internals and credentials stay asked about.
 - **The model's decision.** A judged ask goes to `Brain::decide` with a
   prompt of its own (`brain::judged_prompt`): the whole command (redacted),
