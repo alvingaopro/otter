@@ -3780,6 +3780,50 @@ async fn only_an_orphan_can_be_stopped_by_pid_and_start_time() {
     }
 }
 
+/// Threads are not processes (D-161): on Linux an otterd's threads are listed
+/// by the system like processes, with its own executable and arguments, and
+/// a signal to a thread's id reaches the whole process: this daemon. None is
+/// listed, and none can be stopped.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn an_otterds_threads_are_not_processes_to_stop() {
+    use otter_protocol::host::ProcessStop;
+    let host = TestHost::new();
+    let me = host.conn().await.host_status().await.unwrap().pid;
+    let threads: Vec<u32> = std::fs::read_dir(format!("/proc/{me}/task"))
+        .unwrap()
+        .filter_map(|e| e.ok()?.file_name().to_str()?.parse().ok())
+        .filter(|t| *t != me)
+        .collect();
+    assert!(!threads.is_empty(), "otterd has threads");
+    let all = eventually("processes are listed", || async {
+        host.conn().await.host_processes().await.ok()
+    })
+    .await;
+    // (Other otterds, of tests running at the same time, are listed: they are
+    // processes. Their threads and this one's are not.)
+    assert!(
+        all.processes.iter().all(|p| !threads.contains(&p.pid)),
+        "{:?}",
+        all.processes
+    );
+    let started = all.processes.iter().find(|p| p.pid == me).unwrap().started;
+    let mut conn = host.conn().await;
+    for t in threads.iter().take(5) {
+        let err = conn
+            .host_process_stop(ProcessStop {
+                pid: *t,
+                started,
+                force: false,
+            })
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("no such process"), "{err}");
+    }
+    // Still there.
+    conn.host_status().await.unwrap();
+}
+
 /// An orphan that leads a group of its own is ended with its group (D-161),
 /// and nothing outside it: not this test's own group.
 #[tokio::test]
