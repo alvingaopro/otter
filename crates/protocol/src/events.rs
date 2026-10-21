@@ -42,6 +42,11 @@ pub enum Event {
         workspace_id: WorkspaceId,
         message: String,
     },
+    /// Preparation started again, or moved on a step. What it is doing isn't
+    /// here: read the workspace.
+    WorkspacePreparing {
+        workspace_id: WorkspaceId,
+    },
     /// Sessions stopped and attention resolved; files kept.
     WorkspaceArchived {
         workspace_id: WorkspaceId,
@@ -235,6 +240,7 @@ impl Event {
             Event::WorkspaceDeleted { .. } => "WorkspaceDeleted",
             Event::WorkspaceReady { .. } => "WorkspaceReady",
             Event::WorkspaceFailed { .. } => "WorkspaceFailed",
+            Event::WorkspacePreparing { .. } => "WorkspacePreparing",
             Event::WorkspaceArchived { .. } => "WorkspaceArchived",
             Event::WorkspaceUnarchived { .. } => "WorkspaceUnarchived",
             Event::WorkspaceBriefChanged { .. } => "WorkspaceBriefChanged",
@@ -282,6 +288,7 @@ impl Event {
             | Event::WorkspaceDeleted { workspace_id, .. }
             | Event::WorkspaceReady { workspace_id }
             | Event::WorkspaceFailed { workspace_id, .. }
+            | Event::WorkspacePreparing { workspace_id }
             | Event::WorkspaceArchived { workspace_id, .. }
             | Event::WorkspaceUnarchived { workspace_id }
             | Event::WorkspaceBriefChanged { workspace_id }

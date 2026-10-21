@@ -1895,12 +1895,30 @@ async fn git_workspace_on_existing_branch_and_failures() {
         ws.state_message
     );
     assert_eq!(ws.sessions[0].status(), SessionStatus::Pending);
+    // A retry is announced, so a client drops the old failure at once.
+    let mut stream = host.conn().await.subscribe(None).await.unwrap();
     let ws = conn.workspace_prepare("broken").await.unwrap();
     let ws = match ws.state {
         WorkspaceState::Preparing => wait_prepared(&host, "broken").await,
         _ => ws,
     };
     assert_eq!(ws.state, WorkspaceState::Failed);
+    let mut kinds = Vec::new();
+    tokio::time::timeout(Duration::from_secs(15), async {
+        while let Some(rec) = stream.next().await.unwrap() {
+            kinds.push(rec.event.kind());
+            if rec.event.kind() == "WorkspaceFailed" {
+                break;
+            }
+        }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("events so far: {kinds:?}"));
+    assert_eq!(
+        kinds.first().copied(),
+        Some("WorkspacePreparing"),
+        "{kinds:?}"
+    );
     conn.workspace_delete("broken", false).await.unwrap();
 }
 
