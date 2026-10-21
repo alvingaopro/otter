@@ -248,7 +248,7 @@ describe("Tasks view", () => {
 
     const composer = q<HTMLTextAreaElement>('textarea[aria-label="Message to Otter"]')!;
     type(composer, "Also include the session name");
-    await act(async () => byText("button", "Send")!.click());
+    await act(async () => q<HTMLButtonElement>('button[aria-label="Send"]')!.click());
     const messages = [...host.querySelectorAll(".message")].map((m) => m.textContent);
     expect(messages.some((m) => m?.includes("Also include the session name"))).toBe(true);
     expect(host.querySelector(".message.system")?.textContent).toContain("nothing is connected");
@@ -277,11 +277,13 @@ describe("Tasks view", () => {
     await render(mockSource("mac"));
     const body = q(".task-body")!;
     expect(body.style.getPropertyValue("--detail-width")).toBe("380px");
-    // Its handle is on its left edge: ← widens it, and it is remembered.
+    // Open (D-177), its handle is on its left edge: ← widens it, and it is remembered.
+    await act(async () => q<HTMLButtonElement>(".otter-chip")!.click());
     const grip = q('[role="separator"][aria-label="Details width"]')!;
     await act(async () => grip.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowLeft", bubbles: true })));
     expect(body.style.getPropertyValue("--detail-width")).toBe("396px");
     expect(localStorage.getItem("otter.task-detail-width")).toBe("396");
+    localStorage.removeItem("otter.task-details");
   });
 
   it("sends on Enter, but not the Enter that confirms an input method's candidate", async () => {
@@ -330,6 +332,56 @@ describe("Tasks view", () => {
     expect(sent).toEqual(["还没写完"]);
   });
 
+  it("keeps the details closed until Otter at the top is clicked, and remembers it (D-177)", async () => {
+    localStorage.removeItem("otter.task-details");
+    await render(mockSource("mac"));
+    await open("Export workspace timeline as CSV");
+    const otter = q<HTMLButtonElement>(".otter-chip")!;
+    const details = q("#task-details")!;
+    expect(otter.getAttribute("aria-expanded")).toBe("false");
+    expect(details.hidden).toBe(true);
+    // Being worked on: Otter says so (and moves).
+    expect(otter.classList.contains("working")).toBe(true);
+    expect(q(".otter-chip-state")?.textContent).toBe("working");
+
+    await act(async () => otter.click());
+    expect(otter.getAttribute("aria-expanded")).toBe("true");
+    expect(details.hidden).toBe(false);
+    expect(localStorage.getItem("otter.task-details")).toBe("open");
+
+    await act(async () => q<HTMLButtonElement>('[aria-label="Hide details"]')!.click());
+    expect(details.hidden).toBe(true);
+    expect(localStorage.getItem("otter.task-details")).toBe("closed");
+    localStorage.removeItem("otter.task-details");
+  });
+
+  it("adds pictures from the + as from a paste (D-177)", async () => {
+    const base = mockSource("mac");
+    const sent: unknown[] = [];
+    const s: TaskSource = {
+      ...base,
+      send: async (key, text, images) => {
+        sent.push(images);
+        return base.send(key, text, images);
+      },
+      artifact: async () => "data:image/png;base64,AAAA",
+    };
+    await render(s);
+    await act(async () => q('[aria-label="New task"]')!.click());
+    const dialog = document.querySelector('[role="dialog"]')!;
+    type(dialog.querySelector("input")!, "From a file");
+    await act(async () => byText("button", "Create draft")!.click());
+    const picker = q<HTMLInputElement>('.composer input[type="file"]')!;
+    const opened = vi.spyOn(picker, "click").mockImplementation(() => {});
+    await act(async () => q<HTMLButtonElement>('[aria-label="Add pictures"]')!.click());
+    expect(opened).toHaveBeenCalled();
+    Object.defineProperty(picker, "files", { configurable: true, value: [new File(["x"], "s.png", { type: "image/png" })] });
+    await act(async () => picker.dispatchEvent(new Event("change", { bubbles: true })));
+    expect(host.querySelectorAll('[aria-label="Pictures to send"] img')).toHaveLength(1);
+    await act(async () => q<HTMLButtonElement>('button[aria-label="Send"]')!.click());
+    expect(sent).toEqual([[{ media_type: "image/png", data: "AAAA" }]]);
+  });
+
   it("takes a pasted picture into the message, shows it, and sends it with or without words", async () => {
     const base = mockSource("mac");
     const sent: { text: string; images: unknown }[] = [];
@@ -355,7 +407,7 @@ describe("Tasks view", () => {
     };
     const picture = () => ({ kind: "file", type: "image/png", getAsFile: () => new File(["x"], "s.png", { type: "image/png" }) });
     const thumbs = () => host.querySelectorAll('[aria-label="Pictures to send"] img');
-    const send = () => byText("button", "Send") as HTMLButtonElement;
+    const send = () => q<HTMLButtonElement>('button[aria-label="Send"]')!;
 
     // Text on the clipboard (alone, or with a picture, as a copied table has) pastes as text.
     expect((await paste([{ kind: "string", type: "text/plain" }])).defaultPrevented).toBe(false);
@@ -413,7 +465,7 @@ describe("Tasks view", () => {
     await act(async () => composer.dispatchEvent(e));
     await act(async () => type(composer, "see this"));
     // Still being made: neither the button nor Enter sends the words alone.
-    const send = byText("button", "Send") as HTMLButtonElement;
+    const send = q<HTMLButtonElement>('button[aria-label="Send"]')!;
     expect(send.disabled).toBe(true);
     await act(async () => composer.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true })));
     expect(sent).toEqual([]);

@@ -6464,3 +6464,29 @@ is it on a white tile on the macOS grid; in the menu bar it is a template
 image (macOS colours it for its bar) when nothing needs you and orange when
 something does; in the app it is `assets/otter-mark.svg` used as a mask, so
 it takes the colour of the text around it in either theme.
+
+## D-177 — A task's conversation is a chat: Otter at the top, the message box floating at the bottom (2026-10-21)
+
+A task's conversation (D-175) now reads like a messaging app, as the
+developer asked, after Muse and iMessage:
+
+- The message box is one line in a pill, with **+** (pictures, as a paste
+  takes them, D-171) on its left and a round send on its right; it grows with
+  what is written, up to 60% of the window, then scrolls. This replaces
+  D-175's taller box and its drag handle (`composerResize`): the developer
+  chose the growing box over a fixed height.
+- The box, and a decision waiting above it, float at the bottom of the
+  conversation, which scrolls under them (a sticky block, last in the
+  scroll); scrolled to its end, the last message sits just above them.
+- Otter sits at the top, floating the same way: its mark, its name, and what
+  it is doing — working (a ring turns and Otter bobs; still if the Mac asks
+  for less motion), needs you (an orange ring), replying, or the task's
+  status. Otter writing its answer is three moving dots in its bubble.
+- Clicking Otter opens the details (Overview, Activity) on the right; × or
+  Otter again closes them. They are closed until asked for, then as last left
+  on this Mac (`otter.task-details`). Closed, they stay mounted, so a tab and
+  its place are kept.
+
+Tests: `keeps the details closed until Otter at the top is clicked, and
+remembers it (D-177)`, `adds pictures from the + as from a paste (D-177)`, and
+`composerGrow.test.ts`.
