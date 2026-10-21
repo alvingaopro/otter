@@ -5137,3 +5137,34 @@ A review of the workspace view found three things that were wrong in use.
 Not done: the rest of the review's list (push and pull request for a
 workspace driven by hand, ahead/behind on a new branch, the partial failure
 of archive and delete, splitting `WorkspacePane.tsx`).
+
+## D-152 — A workspace keeps the sessions shown last attached (2026-10-21)
+
+Every switch between a workspace's sessions unmounted the terminal and
+attached again: `session.attach` with `history: 5000`, a snapshot of up to
+1 MiB (D-118), and the scrollback the reader had made by asking for earlier
+history (D-119) was gone. Over SSH that is a wait on every tab. D-100 did
+this between workspaces; this is the same between sessions.
+
+- **A pane keeps the terminals of the sessions shown last**, hidden, with
+  their attach. One shown again is just shown. The kept ones are per
+  workspace (so at most 5 workspaces × the setting), in the order they were
+  first kept: the terminals' elements aren't moved, and the left or right
+  place is CSS `order`, so a swap of the two sides doesn't re-parent a
+  terminal either.
+- **Hidden means idle,** as in D-100: a hidden terminal never fits, tells
+  the host it isn't on screen and gets nothing until it is (D-119, D-137),
+  and takes no keys.
+- **Two local settings,** on this Mac, in Settings › Developer, applied at
+  once (`keepSessions.ts`, `otter.kept-sessions`, `otter.kept-idle-minutes`):
+  - *Sessions kept attached*, 5 by default, 1–20, the ones shown included.
+    1 is the behaviour before this. The one hidden longest goes first.
+  - *Let go of an idle session after*, 10 minutes by default, 0 for no limit
+    (then only the capacity lets one go), up to a day. Looked at every 15 s;
+    a session shown again and hidden again starts over. Only sessions not
+    shown in their pane count: a hidden workspace's pane is D-100's.
+- A session that is deleted is let go; one that ended keeps its last screen
+  (dimmed), as when shown.
+- Not done: *scrollback loaded with "earlier"* still costs up to 4 MiB on
+  its own and is lost when a session is let go. Not measured on a slow link
+  either, only the attaches counted (`App.test.tsx`).

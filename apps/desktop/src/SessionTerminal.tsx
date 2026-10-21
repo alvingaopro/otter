@@ -5,7 +5,7 @@ import type { HostView, SessionView } from "./types";
 /**
  * One session's terminal, and what is said under it when the session isn't
  * running or its attach ended. A workspace shows one, or two side by side
- * (D-110).
+ * (D-110), and keeps the ones shown before attached, hidden (D-152).
  */
 export function SessionTerminal({
   host,
@@ -14,6 +14,8 @@ export function SessionTerminal({
   session,
   theme,
   active,
+  shown = true,
+  right = false,
   busy,
   onRestart,
   onDelete,
@@ -27,6 +29,10 @@ export function SessionTerminal({
   theme: "light" | "dark";
   /** It has the keyboard. */
   active: boolean;
+  /** In front. Not shown, it stays attached and idle (D-152). */
+  shown?: boolean;
+  /** The right one of two. */
+  right?: boolean;
   busy: boolean;
   onRestart: () => void;
   onDelete: () => void;
@@ -69,7 +75,13 @@ export function SessionTerminal({
             : null;
 
   return (
-    <div className="session-col" onMouseDown={onFocus}>
+    <div
+      className={right ? "session-col beside" : "session-col"}
+      // Where it goes among the others without moving its element.
+      style={{ order: right ? 2 : 0 }}
+      hidden={!shown}
+      onMouseDown={onFocus}
+    >
       <Terminal
         key={`${wsKey}/${session.id}`}
         host={host.name}
