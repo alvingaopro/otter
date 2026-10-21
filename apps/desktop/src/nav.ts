@@ -2,7 +2,7 @@
 // Switching views only changes what is in front: nothing here may stop,
 // detach or restart anything.
 
-export type View = "inbox" | "tasks" | "workspaces";
+export type View = "tasks" | "workspaces";
 
 export interface ViewEntry {
   id: View;
@@ -11,28 +11,27 @@ export interface ViewEntry {
   digit: string;
 }
 
-/** Top to bottom: the Inbox is the primary entry (design §26, D-072). */
+/** Top to bottom: Chat (the tasks) first, then the workspaces (D-177). */
 export const VIEWS: ViewEntry[] = [
-  { id: "inbox", label: "Inbox", digit: "1" },
-  { id: "tasks", label: "Tasks", digit: "2" },
-  { id: "workspaces", label: "Workspaces", digit: "3" },
+  { id: "tasks", label: "Chat", digit: "1" },
+  { id: "workspaces", label: "Workspaces", digit: "2" },
 ];
 
 const KEY = "otter.view";
 
 export function parseView(v: string | null | undefined): View | undefined {
-  // Remembered before D-107, when tasks were features.
-  if (v === "features") return "tasks";
-  // Otter's view on a host (D-093) left the app (D-115): back to the Inbox.
+  // Remembered before D-107, when tasks were features; the Inbox left the app (D-177).
+  if (v === "features" || v === "inbox") return "tasks";
+  // Otter's view on a host (D-093) left the app (D-115).
   return VIEWS.some((e) => e.id === v) ? (v as View) : undefined;
 }
 
-/** The view remembered on this Mac; the Inbox the first time. */
+/** The view remembered on this Mac; Chat the first time. */
 export function storedView(): View {
   try {
-    return parseView(localStorage.getItem(KEY)) ?? "inbox";
+    return parseView(localStorage.getItem(KEY)) ?? "tasks";
   } catch {
-    return "inbox";
+    return "tasks";
   }
 }
 

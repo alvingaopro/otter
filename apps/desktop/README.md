@@ -45,7 +45,7 @@ Layout:
 - `src-tauri/src/updates.rs` — the app's own updates, from the latest release (D-125).
 - `src-tauri/src/perf.rs` — the app process's memory and CPU, for the performance overlay (D-128).
 - `src-tauri/src/tasks.rs` — task commands, passed through to each host's otterd (D-043).
-- `src/` — React: `ActivityBar` + `nav.ts` (the Inbox / Tasks / Workspaces views, D-041, D-088, D-107; Otter's view on a host left the app, D-115),
+- `src/` — React: `ActivityBar` + `nav.ts` (the Chat and Workspaces views, D-041, D-088, D-107; Otter's view on a host left the app, D-115; the Inbox, D-177),
   `TasksView` (a grouped list; a task's Overview and Activity, D-114) + `tasks.ts` (the contract) + `taskSource.ts` (where
   tasks come from: the hosts, or sample data in tests; D-042),
   `Sidebar` (with the filter, and updating every host behind the app at once, D-131), `QuickOpen` (⌘K), `WorkspacePane` (kept

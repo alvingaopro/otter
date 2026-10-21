@@ -65,6 +65,21 @@ afterEach(() => {
   el.remove();
 });
 
+describe("the title bar (D-177)", () => {
+  it("holds Otter's name, the counts and New workspace in one row", async () => {
+    await render([host("code", "0.7.20")]);
+    const top = el.querySelector(".sidebar-top")!;
+    expect(top.querySelector(".brand-name")?.textContent).toBe("Otter");
+    expect([...top.querySelectorAll("button")].map((b) => b.getAttribute("aria-label"))).toEqual([
+      "0 need you",
+      "0 working",
+      "New workspace",
+    ]);
+    // No second row for the name below it.
+    expect(el.querySelectorAll(".brand-name")).toHaveLength(1);
+  });
+});
+
 describe("updating every host at once (D-131)", () => {
   it("compares releases by number", () => {
     expect(older("0.7.19", "0.7.20")).toBe(true);

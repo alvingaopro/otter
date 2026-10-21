@@ -130,16 +130,16 @@ describe("Activity Bar navigation", () => {
     host.remove();
   });
 
-  it("is an accessible tab list with the Inbox first and selected", () => {
+  it("is an accessible tab list with Chat first and selected (D-177)", () => {
     const tabs = [...host.querySelectorAll('.activity-bar [role="tab"]')];
     // Labels carry a "N need you" count when there is one.
-    expect(tabs.map((t) => t.getAttribute("aria-label")?.split(",")[0])).toEqual(["Inbox", "Tasks", "Workspaces"]);
-    expect(tab("inbox").getAttribute("aria-selected")).toBe("true");
-    expect(tab("inbox").tabIndex).toBe(0);
-    expect(tab("tasks").tabIndex).toBe(-1);
-    expect(panel("inbox").hidden).toBe(false);
-    expect(panel("tasks").hidden).toBe(true);
+    expect(tabs.map((t) => t.getAttribute("aria-label")?.split(",")[0])).toEqual(["Chat", "Workspaces"]);
+    expect(tab("tasks").getAttribute("aria-selected")).toBe("true");
+    expect(tab("tasks").tabIndex).toBe(0);
+    expect(tab("workspaces").tabIndex).toBe(-1);
+    expect(panel("tasks").hidden).toBe(false);
     expect(panel("workspaces").hidden).toBe(true);
+    expect(host.querySelector("#view-inbox")).toBeNull();
     expect(panel("workspaces").getAttribute("aria-labelledby")).toBe("view-tab-workspaces");
     expect(host.querySelector('[aria-label="Settings"]')).not.toBeNull();
   });
@@ -467,21 +467,21 @@ describe("Activity Bar navigation", () => {
     expect(host.querySelector(".ws-pane:not([hidden]) h1")?.textContent).toBe("other");
   });
 
-  it("supports the keyboard: arrows in the bar and ⌘1/⌘2/⌘3 anywhere", async () => {
+  it("supports the keyboard: arrows in the bar and ⌘1/⌘2 anywhere", async () => {
     await act(async () => {
-      tab("inbox").dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
-    });
-    expect(tab("tasks").getAttribute("aria-selected")).toBe("true");
-    expect(document.activeElement).toBe(tab("tasks"));
-
-    await act(async () => {
-      window.dispatchEvent(new KeyboardEvent("keydown", { key: "3", metaKey: true, bubbles: true }));
+      tab("tasks").dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
     });
     expect(tab("workspaces").getAttribute("aria-selected")).toBe("true");
+    expect(document.activeElement).toBe(tab("workspaces"));
+
     await act(async () => {
       window.dispatchEvent(new KeyboardEvent("keydown", { key: "1", metaKey: true, bubbles: true }));
     });
-    expect(tab("inbox").getAttribute("aria-selected")).toBe("true");
+    expect(tab("tasks").getAttribute("aria-selected")).toBe("true");
+    await act(async () => {
+      window.dispatchEvent(new KeyboardEvent("keydown", { key: "2", metaKey: true, bubbles: true }));
+    });
+    expect(tab("workspaces").getAttribute("aria-selected")).toBe("true");
     expect(terminal.unmounts).toBe(0);
   });
 });

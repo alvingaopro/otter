@@ -8,8 +8,7 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 import { Sidebar } from "./Sidebar";
 import { ActivityBar } from "./ActivityBar";
 import { TasksView } from "./TasksView";
-import { Inbox } from "./Inbox";
-import { newNeeds, trayTasks } from "./inboxModel";
+import { newNeeds, trayTasks } from "./taskNeeds";
 import type { PlacedTask } from "./tasks";
 import { daemonSource } from "./taskSource";
 import { needsYou as taskNeedsYou, tasksIn } from "./tasks";
@@ -97,7 +96,7 @@ export default function App() {
   const [tasks, setTasks] = useState<PlacedTask[]>(() => taskSource.list());
   useEffect(() => taskSource.subscribe(setTasks), [taskSource]);
   const taskNeeds = tasks.filter((p) => taskNeedsYou(p.task)).length;
-  /** A task to show in the Tasks view, opened from the Inbox. */
+  /** A task to show in the Tasks view, opened from a notification or the menu bar. */
   const [taskFocus, setTaskFocus] = useState<{ key: string; at: number } | undefined>();
   /** What each task needed when last looked at (D-073). */
   const taskSeen = useRef(new Map<string, string | null>());
@@ -287,11 +286,11 @@ export default function App() {
     }
   }, [payload]);
 
-  // A task newly needing you notifies once (D-073), unless the Inbox is
-  // in front of you.
+  // A task newly needing you notifies once (D-073), unless the tasks are
+  // in front of you (D-177).
   useEffect(() => {
     for (const n of newNeeds(taskSeen.current, tasks)) {
-      if (focused.current && viewRef.current === "inbox") continue;
+      if (focused.current && viewRef.current === "tasks") continue;
       jump.current = { key: n.key, at: Date.now(), task: true };
       sendNotification({
         title: n.need.kind === "failed" ? `${n.title} stopped` : `${n.title} needs you`,
@@ -362,10 +361,10 @@ export default function App() {
         <ActivityBar
           view={view}
           onView={setView}
+          // What waits on you, as the menu bar item counts it (D-177).
           badges={{
-            inbox: taskNeeds + placed.filter((p) => p.ws.activity === "needs_you" || p.ws.activity === "failed").length,
             tasks: taskNeeds,
-            workspaces: placed.filter((p) => p.ws.activity === "needs_you").length,
+            workspaces: placed.filter((p) => p.ws.activity === "needs_you" || p.ws.activity === "failed").length,
           }}
           settings={[
             { label: "Settings… (⌘,)", onSelect: () => setOpen({ kind: "settings" }) },
@@ -378,23 +377,6 @@ export default function App() {
             { label: "Check for updates…", onSelect: () => void invoke("update_check") },
           ]}
         />
-        <div className="view" id="view-inbox" role="tabpanel" aria-labelledby="view-tab-inbox" hidden={view !== "inbox"}>
-          <Inbox
-            source={taskSource}
-            workspaces={placed.filter((p) => p.host.status === "connected")}
-            now={now}
-            onOpenTask={(key) => {
-              setTaskFocus({ key, at: Date.now() });
-              setView("tasks");
-            }}
-            onOpenWorkspace={(key) => {
-              wanted.current = key;
-              setSelected(key);
-              setHostPage(null);
-              setView("workspaces");
-            }}
-          />
-        </div>
         <div className="view" id="view-tasks" role="tabpanel" aria-labelledby="view-tab-tasks" hidden={view !== "tasks"}>
           <TasksView
             source={taskSource}

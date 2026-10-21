@@ -29,6 +29,7 @@ import {
   pendingDecisions,
   sortTasks,
   statusDetail,
+  taskActivity,
   waitedSession,
   type DecisionRequest,
   type Evidence,
@@ -46,7 +47,7 @@ interface Props {
   /** Workspaces per host, to work in. */
   workspaces: Record<string, WorkspaceChoice[]>;
   now: number;
-  /** A task to show, asked for from elsewhere (the Inbox); `at` makes asking again count. */
+  /** A task to show, asked for from elsewhere (a notification, the menu bar); `at` makes asking again count. */
   focus?: { key: string; at: number };
   /** Show a workspace (and session) in the Workspaces view. */
   onOpenWorkspace: (host: string, workspaceId: string, sessionId?: string) => void;
@@ -56,13 +57,13 @@ interface Props {
   grip?: ReactNode;
 }
 
-/** The Tasks view (D-041, D-042): product work, independent of the Workspace view. */
+/** The tasks, under Chat in the Activity Bar (D-041, D-042, D-177): product work, independent of the Workspace view. */
 export function TasksView({ source, hosts, workspaces, now, focus, onOpenWorkspace, onOpenPreview, grip }: Props) {
   const [list, setList] = useState<PlacedTask[]>(() => source.list());
   const [find, setFind] = useState("");
   const [selected, setSelected] = useState<string | undefined>();
   const [creating, setCreating] = useState(false);
-  // Opened from elsewhere (the Inbox): show that one.
+  // Opened from elsewhere: show that one.
   useEffect(() => {
     if (!focus) return;
     setSelected(focus.key);
@@ -81,13 +82,17 @@ export function TasksView({ source, hosts, workspaces, now, focus, onOpenWorkspa
   }, [list, find]);
   const first = groups[0]?.items[0];
   const current = list.find((p) => p.key === selected) ?? first;
+  // What Pause all holds: every task at work, found or not (D-081).
+  const atWork = list.filter((p) => ["working", "preparing"].includes(taskActivity(p.task)));
 
   return (
     <>
-      <nav className="sidebar" aria-label="Tasks">
+      <nav className="sidebar" aria-label="Chat">
         <div className="sidebar-top" data-tauri-drag-region>
-          <span className="brand-name">Tasks</span>
-          <span className="spacer" />
+          <span className="brand-name" data-tauri-drag-region>
+            Chat
+          </span>
+          <span className="spacer" data-tauri-drag-region />
           <button className="icon-btn" aria-label="New task" title="New task" onClick={() => setCreating(true)}>
             <svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true">
               <path d="M7 2v10M2 7h10" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
@@ -125,6 +130,7 @@ export function TasksView({ source, hosts, workspaces, now, focus, onOpenWorkspa
                 <span>{g.label.toUpperCase()}</span>
                 <span className="count">{g.items.length}</span>
               </h2>
+              {g.id === "active" && atWork.length > 0 && <PauseAll source={source} tasks={atWork} />}
               <div role="list">
                 {g.items.map((p) => (
                   <button
@@ -191,6 +197,34 @@ export function TasksView({ source, hosts, workspaces, now, focus, onOpenWorkspa
         />
       )}
     </>
+  );
+}
+
+/** Hold every task at work at once (D-081): one control for all the agents. */
+function PauseAll({ source, tasks }: { source: TaskSource; tasks: PlacedTask[] }) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const pause = async () => {
+    setBusy(true);
+    setError(null);
+    const failed: string[] = [];
+    for (const p of tasks) {
+      await source.act(p.key, { action: "pause" }).catch((e) => failed.push(`${p.task.title}: ${String(e)}`));
+    }
+    if (failed.length > 0) setError(failed.join("; "));
+    setBusy(false);
+  };
+  return (
+    <div className="group-actions">
+      <button className="btn outline small-btn" disabled={busy} onClick={() => void pause()} title="Hold every task at work: what runs is interrupted, nothing new starts">
+        Pause all tasks
+      </button>
+      {error && (
+        <span className="error-text small" role="alert">
+          {error}
+        </span>
+      )}
+    </div>
   );
 }
 

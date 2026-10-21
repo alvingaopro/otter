@@ -6464,3 +6464,39 @@ is it on a white tile on the macOS grid; in the menu bar it is a template
 image (macOS colours it for its bar) when nothing needs you and orange when
 something does; in the app it is `assets/otter-mark.svg` used as a mask, so
 it takes the colour of the text around it in either theme.
+
+## D-177 — Chat and Workspaces; one title bar (2026-10-21)
+
+The Inbox (D-072) repeated what the other views already showed: a task that
+waits on you is first in the task list, under NEEDS YOU; a workspace is first
+in the sidebar; the menu bar item and the notifications say both. The
+Activity Bar had three entries for two kinds of work. Its top 52px held only
+the macOS buttons: the bar's edge ran through the yellow one, and the
+sidebar's title sat a row lower, under an empty strip.
+
+- **The Inbox leaves the app.** The Activity Bar has Chat (⌘1, a speech
+  bubble: the tasks, D-107) and Workspaces (⌘2). The app opens on Chat the
+  first time; a view remembered as the Inbox opens Chat. What Chat lists are
+  still tasks: New task, Find a task.
+- **What the Inbox did goes to the other two.** Its dot becomes two: Chat's
+  for tasks that need you, Workspaces' for workspaces that need you or failed
+  (the Inbox's rule and the menu bar item's; Workspaces' dot used to leave
+  failed ones out). A task's notification is held while Chat is in front, as
+  it was while the Inbox was. Pause all tasks (D-081) is under Chat's ACTIVE
+  label and holds every task at work, whether the search shows it or not.
+  Deciding, accepting and retrying from the list are gone: they are on the
+  task's page.
+- **The bar:** 22px icons with a 2px line (the gear too), 40px round buttons
+  in a 52px bar. The selected one sits on a filled circle, without the mark
+  at its edge; the dot is 8px, ringed in the bar's colour.
+- **One title bar.** On macOS the top 52px is one band over the bar, the
+  sidebar and the pane, with one line under it. The traffic lights sit in
+  it, and the bar's edge starts below it. The sidebar's title is in the
+  band, right of the lights: Otter's mark and name, the two counts and New
+  workspace (in Chat, its name and New task). The row the name had is gone,
+  so the list starts higher. On a narrow sidebar the name gives way first.
+
+The design, before and after: https://claude.ai/artifact/L59aBAQWnDfHi828oii62k.
+Checked with the app's tests and a production build, not in the macOS app
+itself. Supersedes D-072, and the Inbox's part in D-073 and D-081; D-041's
+views are now two.
