@@ -156,6 +156,8 @@ Both are additions (no protocol bump); daemons before them answer
   `ready`/`failed`): emits `WorkspaceUnarchived {workspace_id}`, then the usual
   `WorkspaceReady` / `WorkspaceFailed`. Stopped sessions stay stopped until
   `session.restart`. `conflict` unless archived.
+- `workspace.prepare` and each step of preparation emit
+  `WorkspacePreparing {workspace_id}` (what it is doing is in the workspace).
 - While archived, `session.create`, `session.restart` and `workspace.prepare`
   fail with `conflict`; `workspace.delete` works as usual.
 - `workspace.list` and `state.snapshot` still return archived workspaces;

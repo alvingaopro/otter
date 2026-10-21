@@ -171,6 +171,9 @@ impl Daemon {
             (id, quick)
         };
         self.workspace_env.lock().unwrap().remove(&id);
+        self.events.emit(Event::WorkspacePreparing {
+            workspace_id: id.clone(),
+        });
         let prep = self.spawn_preparation(id.clone());
         wait_if_quick(quick, prep).await;
         self.workspace_get(id.as_str()).await
@@ -855,11 +858,18 @@ impl Daemon {
     /// It waits for the store's lock, which is held only briefly and never
     /// across Git (D-135): none of the messages is dropped.
     async fn set_progress(&self, id: &WorkspaceId, message: &str) {
-        let mut store = self.store.lock().await;
-        if let Some(ws) = store.workspace_mut(id.as_str()) {
+        {
+            let mut store = self.store.lock().await;
+            let Some(ws) = store.workspace_mut(id.as_str()) else {
+                return;
+            };
             ws.state_message = Some(message.to_owned());
             let _ = store.save();
         }
+        // So a client shows the step (the lock is not held to emit).
+        self.events.emit(Event::WorkspacePreparing {
+            workspace_id: id.clone(),
+        });
     }
 }
 

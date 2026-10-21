@@ -19,8 +19,13 @@ use crate::delivery::run;
 use crate::env::{EnvMap, which};
 use crate::work_state::merge_base;
 
-/// New files whose lines are counted, up to this size each.
+/// New files whose lines are counted, up to this size each, this many of
+/// them and this much in all; past that they are listed without counts, as
+/// a binary file is (an un-ignored `node_modules` is not read through on
+/// every look).
 const COUNTED_BYTES: u64 = 1 << 20;
+const COUNTED_FILES: usize = 2000;
+const COUNTED_TOTAL: u64 = 64 << 20;
 /// Most context `workspace.diff` gives: more than any file it can return.
 const MAX_CONTEXT: u32 = 1_000_000;
 
@@ -205,10 +210,22 @@ pub(crate) async fn changes(root: &Path, env: &EnvMap, base: Option<&str>) -> Wo
             ".",
         ])
         .await;
-    for path in untracked.split('\0').filter(|p| !p.is_empty()) {
-        let lines = count_lines(&root.join(path));
+    let paths: Vec<String> = untracked
+        .split('\0')
+        .filter(|p| !p.is_empty())
+        .map(str::to_owned)
+        .collect();
+    // Reading files blocks: off the runtime's threads.
+    let dir = root.to_path_buf();
+    let counted = tokio::task::spawn_blocking({
+        let paths = paths.clone();
+        move || count_new_files(&dir, &paths)
+    })
+    .await
+    .unwrap_or_else(|_| vec![None; paths.len()]);
+    for (path, lines) in paths.into_iter().zip(counted) {
         files.push(ChangedFile {
-            path: path.to_owned(),
+            path,
             change: ChangeKind::Untracked,
             insertions: lines,
             deletions: lines.map(|_| 0),
@@ -374,13 +391,30 @@ impl Daemon {
     }
 }
 
-/// A new file's lines, if it's text and not too big to read.
-fn count_lines(path: &Path) -> Option<u64> {
+/// The lines of each new file, within what may be read in all.
+fn count_new_files(root: &Path, paths: &[String]) -> Vec<Option<u64>> {
+    let mut read = 0u64;
+    paths
+        .iter()
+        .enumerate()
+        .map(|(i, path)| {
+            if i >= COUNTED_FILES || read >= COUNTED_TOTAL {
+                return None;
+            }
+            count_lines(&root.join(path), &mut read)
+        })
+        .collect()
+}
+
+/// A new file's lines, if it's text and not too big to read; `read` adds
+/// what was read.
+fn count_lines(path: &Path, read: &mut u64) -> Option<u64> {
     let meta = std::fs::metadata(path).ok()?;
     if !meta.is_file() || meta.len() > COUNTED_BYTES {
         return None;
     }
     let bytes = std::fs::read(path).ok()?;
+    *read += bytes.len() as u64;
     if bytes.contains(&0) {
         return None;
     }
@@ -445,6 +479,22 @@ fn parse_name_status(out: &str) -> Vec<(ChangeKind, &str)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn new_files_are_counted_within_what_may_be_read() {
+        let dir = tempfile::tempdir().unwrap();
+        let big = vec![b'x'; COUNTED_BYTES as usize];
+        let names: Vec<String> = (0..70).map(|i| format!("f{i}")).collect();
+        for n in &names {
+            std::fs::write(dir.path().join(n), &big).unwrap();
+        }
+        std::fs::write(dir.path().join("small"), "a\nb\n").unwrap();
+        let counts = count_new_files(dir.path(), &names);
+        // 64 MiB in all: the first 64 files are read, the rest are not.
+        assert_eq!(counts.iter().filter(|c| c.is_some()).count(), 64);
+        assert!(counts[64..].iter().all(Option::is_none));
+        assert_eq!(count_new_files(dir.path(), &["small".into()]), [Some(2)]);
+    }
 
     #[test]
     fn reads_numstat_with_renames_and_binaries() {

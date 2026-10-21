@@ -399,7 +399,15 @@ export function WorkspacePane({
             { label: "Unarchive workspace", hidden: !archived, onSelect: () => void unarchive() },
             ...pinItems,
             { label: brief.text || brief.more > 0 ? "Edit brief…" : "Add a brief…", onSelect: () => setOpen("brief") },
-            { label: "Delete workspace…", danger: true, onSelect: () => setOpen("delete-workspace") },
+            {
+              label: "Delete workspace…",
+              danger: true,
+              // Never ticked from before: a kept pane stays mounted (D-100).
+              onSelect: () => {
+                setForce(false);
+                setOpen("delete-workspace");
+              },
+            },
           ]}
         />
       </div>

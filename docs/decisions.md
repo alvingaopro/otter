@@ -5113,3 +5113,27 @@ A workspace's tabs came in the order the sessions were made, and so did
   it. The timeline shows no line for it.
 - Not done: a command in the CLI (`otter session mv` is rename).
 
+## D-151 — A retry shows at once; a look at the changes reads a bounded amount (2026-10-21)
+
+A review of the workspace view found three things that were wrong in use.
+
+- **A retried preparation looked like nothing.** `workspace.prepare` set the
+  workspace to `preparing`, and the steps after it (`fetching`, `creating
+  worktree`, …) were saved, without an event; the app takes a new snapshot
+  only when one arrives, so the pane kept showing the old failure, and its
+  Retry, until preparation ended. New event **`WorkspacePreparing
+  {workspace_id}`**, on a retry and on each step; what it is doing is in the
+  workspace, as with `WorkspaceBriefChanged`. A compatible addition (older
+  clients take it as `Unknown`). The timeline shows no row for it: the steps
+  are not history.
+- **`workspace.changes` read every new file.** An un-ignored `node_modules`
+  meant gigabytes read, on the async runtime, on each state change and every
+  30 s with the panel open. Counting lines is now off the runtime and bounded
+  like `work_state`'s hashing: 2000 files, 64 MiB in all; past that a new
+  file is listed without counts, as a binary one is.
+- **The delete dialog's "Discard" box stayed ticked** after Cancel, on a pane
+  kept mounted (D-100); it is cleared when the dialog opens.
+
+Not done: the rest of the review's list (push and pull request for a
+workspace driven by hand, ahead/behind on a new branch, the partial failure
+of archive and delete, splitting `WorkspacePane.tsx`).
