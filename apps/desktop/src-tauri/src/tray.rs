@@ -104,7 +104,7 @@ pub fn show(app: &AppHandle) {
 /// Bring the main window forward once it exists, and again a moment later:
 /// an app started by another process isn't active yet at the first try, and
 /// a window raised before the app has finished starting is left behind
-/// (D-171).
+/// (D-172).
 pub fn show_when_ready(app: &AppHandle) {
     let app = app.clone();
     tauri::async_runtime::spawn(async move {

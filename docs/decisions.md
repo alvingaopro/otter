@@ -6116,7 +6116,7 @@ the pieces that run first (`cd /srv && echo $(rm -rf x)`).
   the guard reading bodies, one `cd` for every shell (with the D-164 test),
   and a heredoc's start read inside quotes.
 
-## D-171 — The app comes to the front after it updates itself (2026-10-21)
+## D-172 — The app comes to the front after it updates itself (2026-10-21)
 
 After "Update", the app was replaced and started again, but its window didn't
 come forward: Otter was running (its menu bar item showed) with no window in
