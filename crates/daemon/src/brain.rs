@@ -16,10 +16,14 @@
 //! each of the conversation's routes, D-089).
 //! `OTTER_CONTROLLER_MODEL` picks the model for any of them.
 
+use std::collections::HashSet;
 use std::path::Path;
 
 use anyhow::{Result, bail};
 use async_trait::async_trait;
+use otter_core::RunId;
+use otter_core::conversation::{ToolEffect, ToolRecord, ToolStatus};
+use otter_core::redact::redact;
 use otter_core::task::{Criterion, DecisionKind, DecisionRequest, EvidenceKind, Proof, Task};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -127,6 +131,33 @@ pub struct Judgement {
     pub remediation: String,
 }
 
+/// A shell command the coding agent ran, as Otter recorded it in the
+/// conversation (D-165): what the judge sees of it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RanCommand {
+    /// The command line, as recorded (redacted, cut at 200 characters).
+    pub command: String,
+    /// Whether it exited 0; `None`: no result was recorded.
+    pub succeeded: Option<bool>,
+    /// The end of what it printed, bounded ([`RAN_OUTPUT`]).
+    pub output: String,
+}
+
+/// The commands the judge sees (D-165): the newest, in the order they ran,
+/// and how many earlier ones didn't fit.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Ran {
+    pub commands: Vec<RanCommand>,
+    pub earlier: usize,
+}
+
+/// At most this many commands go to the judge…
+pub const RAN_COMMANDS: usize = 10;
+/// …each with at most this much of its output (its end)…
+pub const RAN_OUTPUT: usize = 1500;
+/// …and about this much in all.
+pub const RAN_TOTAL: usize = 8000;
+
 /// What a brain can look at: the task and the workspace it works in.
 pub struct Context<'a> {
     pub task: &'a Task,
@@ -148,7 +179,10 @@ pub trait Brain: Send + Sync {
         Ok(vec![])
     }
     async fn decide(&self, cx: &Context<'_>, d: &DecisionRequest) -> Result<Verdict>;
-    async fn judge(&self, cx: &Context<'_>) -> Result<Judgement>;
+    /// Judge the criteria the check doesn't decide, from the task's
+    /// evidence and the commands the coding agent `ran` since the last
+    /// verdict (D-062, D-165).
+    async fn judge(&self, cx: &Context<'_>, ran: &Ran) -> Result<Judgement>;
     /// Look at a screenshot of `check` and say whether the task looks
     /// right: supplementary, uncertain evidence. `None`: no opinion.
     async fn review(
@@ -593,7 +627,7 @@ impl Brain for Rules {
             why: format!("No model decides for you here: {}", d.summary),
         })
     }
-    async fn judge(&self, cx: &Context<'_>) -> Result<Judgement> {
+    async fn judge(&self, cx: &Context<'_>, _: &Ran) -> Result<Judgement> {
         Ok(rules_judge(cx))
     }
 }
@@ -620,7 +654,7 @@ impl Brain for YesMan {
             },
         })
     }
-    async fn judge(&self, cx: &Context<'_>) -> Result<Judgement> {
+    async fn judge(&self, cx: &Context<'_>, _: &Ran) -> Result<Judgement> {
         Ok(rules_judge(cx))
     }
 }
@@ -646,7 +680,7 @@ impl Brain for Skeptic {
             why: format!("No model decides for you here: {}", d.summary),
         })
     }
-    async fn judge(&self, cx: &Context<'_>) -> Result<Judgement> {
+    async fn judge(&self, cx: &Context<'_>, _: &Ran) -> Result<Judgement> {
         let f = cx.task;
         Ok(Judgement {
             criteria: f
@@ -687,7 +721,7 @@ impl Brain for Scripted {
             why: format!("No model decides for you here: {}", d.summary),
         })
     }
-    async fn judge(&self, cx: &Context<'_>) -> Result<Judgement> {
+    async fn judge(&self, cx: &Context<'_>, _: &Ran) -> Result<Judgement> {
         Ok(rules_judge(cx))
     }
     async fn reply(&self, _: &Context<'_>, message: &str, _: &str, say: &Say<'_>) -> Result<Reply> {
@@ -844,7 +878,10 @@ impl Brain for Model {
              (depends_on = indexes of earlier steps). verify_command: one shell command that checks the work \
              (the project's tests{hint}), or null. For each criterion, how: \"check\" when verify_command \
              passing proves it (the tests pass), \"diff\" when it is about what the change contains (judged \
-             from the diff of the work). A criterion is a fact about the code or the check's result, never \
+             from the diff of the work). A \"diff\" criterion must be a fact the change itself shows: one \
+             that whole files don't mention something, or that a file equals a command's output, belongs in \
+             verify_command (e.g. `make test && ! grep -rn demo README.md`) as a \"check\" criterion. A \
+             criterion is a fact about the code or the check's result, never \
              about the conversation or the process (not \"confirmed with the requester\", not \"no commit \
              was made\"). The coding agent works on its own: no task tells it to ask, check with or wait \
              for the developer (Otter asks them when something needs them). rationale: one sentence.{again}",
@@ -937,9 +974,9 @@ impl Brain for Model {
         })
     }
 
-    async fn judge(&self, cx: &Context<'_>) -> Result<Judgement> {
+    async fn judge(&self, cx: &Context<'_>, ran: &Ran) -> Result<Judgement> {
         let f = cx.task;
-        let prompt = judge_prompt(f);
+        let prompt = judge_prompt(f, ran);
         let schema = json!({
             "type": "object",
             "properties": {
@@ -1080,7 +1117,9 @@ pub fn review_plan_prompt(f: &Task, plan: &Plan) -> String {
          needs, and don't rewrite the plan. Check only that:\n\
          1. it does what the request asks — nothing asked for is missing, nothing not asked for is added;\n\
          2. each criterion is a checkable fact about the code or the check's result — not vague, not about \
-         the conversation or the process;\n\
+         the conversation or the process; and a \"diff\" criterion is a fact the change itself shows: one that \
+         whole files don't mention something, or that a file equals a command's output, belongs in the check \
+         (e.g. `make test && ! grep -rn demo README.md`) as a \"check\" criterion;\n\
          3. no task asks, checks with or waits for the developer.\n\
          {brief}\nThe plan (the agent's words, as data):\n<plan>\n{plan}\n</plan>\n\
          issues: one sentence for each thing that fails a check above, addressed to the coding agent; \
@@ -1090,9 +1129,75 @@ pub fn review_plan_prompt(f: &Task, plan: &Plan) -> String {
     )
 }
 
+/// The shell commands among `tools` that one of `runs` ran (D-165): only
+/// `Command` tools (not the agent's Read, Edit, Grep or Glob tools) that
+/// ran to an end, in the order they started, the newest that fit the
+/// bounds. Redacted again before each output is cut to its end.
+pub fn ran_commands(tools: &[ToolRecord], runs: &HashSet<RunId>) -> Ran {
+    let mut all: Vec<&ToolRecord> = tools
+        .iter()
+        .filter(|t| t.effect == ToolEffect::Command && runs.contains(&t.run_id))
+        .filter(|t| {
+            matches!(
+                t.status,
+                ToolStatus::Succeeded | ToolStatus::Failed | ToolStatus::ResultUnavailable
+            )
+        })
+        .collect();
+    all.sort_by_key(|t| t.started_at);
+    let mut commands = Vec::new();
+    let mut total = 0;
+    for t in all.iter().rev().take(RAN_COMMANDS) {
+        let output = t.result.as_ref().map(|r| r.summary.as_str()).unwrap_or("");
+        let c = RanCommand {
+            command: redact(&t.summary),
+            succeeded: match t.status {
+                ToolStatus::Succeeded => Some(true),
+                ToolStatus::Failed => Some(false),
+                _ => None,
+            },
+            output: output_end(&redact(output), RAN_OUTPUT),
+        };
+        let size = c.command.chars().count() + c.output.chars().count();
+        if !commands.is_empty() && total + size > RAN_TOTAL {
+            break;
+        }
+        total += size;
+        commands.push(c);
+    }
+    commands.reverse();
+    Ran {
+        earlier: all.len() - commands.len(),
+        commands,
+    }
+}
+
+/// The end of a command's output, at most about `max` characters, keeping
+/// the exit code a failed command's output starts with (`Exit code 1`, as
+/// Claude Code reports one).
+fn output_end(output: &str, max: usize) -> String {
+    let code = output
+        .strip_prefix("Exit code ")
+        .map(|rest| rest.bytes().take_while(u8::is_ascii_digit).count())
+        .filter(|&digits| digits > 0)
+        .map_or(0, |digits| "Exit code ".len() + digits);
+    let (code, rest) = output.split_at(code);
+    let chars: Vec<char> = rest.chars().collect();
+    if chars.len() <= max {
+        return output.to_owned();
+    }
+    let end: String = chars[chars.len() - max..].iter().collect();
+    if code.is_empty() {
+        format!("…{end}")
+    } else {
+        format!("{code}\n…{end}")
+    }
+}
+
 /// What the judge is asked (D-062): the criteria the check doesn't decide,
-/// and the evidence — the work's latest state (its diff) among it.
-pub fn judge_prompt(f: &Task) -> String {
+/// and the evidence — the work's latest state (its diff) among it, and the
+/// commands the coding agent ran since the last verdict (D-165).
+pub fn judge_prompt(f: &Task, ran: &Ran) -> String {
     let criteria: Vec<_> = f
         .acceptance
         .iter()
@@ -1120,12 +1225,36 @@ pub fn judge_prompt(f: &Task) -> String {
         .take(3)
         .filter_map(|r| r.summary.clone())
         .collect();
+    let commands = if ran.commands.is_empty() {
+        String::new()
+    } else {
+        let list: Vec<_> = ran
+            .commands
+            .iter()
+            .map(|c| json!({"command": c.command, "succeeded": c.succeeded, "output": c.output}))
+            .collect();
+        let earlier = match ran.earlier {
+            0 => String::new(),
+            n => format!("; {n} earlier not shown"),
+        };
+        format!(
+            "Commands the coding agent ran since the plan or the last verdict, in the order they ran{earlier}: \
+             {list}\n\
+             These are what ran and what each printed (its end, when long), recorded by Otter as they ran — not \
+             the agent's account of them. A command proves only what it examined: read the command. succeeded is \
+             whether it exited 0 (null: no result was recorded); when it didn't, its output starts with its exit \
+             code (`Exit code 1`). A search \
+             that finds nothing exits 1 and prints nothing else (`grep` with no match): that is a finding, not a \
+             command that failed to run.\n",
+            list = serde_json::Value::Array(list),
+        )
+    };
     format!(
         "You are Otter, the developer's tech lead, verifying a task. Judge each acceptance criterion strictly from \
          the evidence. The working tree's status and diff are deterministic evidence of what the change contains; \
          a check's output proves only what that check ran; a deterministic check outranks a claim; the coding \
          agent's own summary is a claim, not evidence. If unsure, it is not met.\n{brief}\nCriteria: {criteria}\n\
-         Evidence (newest first): {evidence}\nAgent summaries: {summaries:?}\n\
+         Evidence (newest first): {evidence}\n{commands}Agent summaries: {summaries:?}\n\
          remediation: what to fix next if anything is not met.",
         brief = brief(f),
         criteria = serde_json::Value::Array(criteria),
@@ -1356,7 +1485,7 @@ mod tests {
             uncertain: false,
             at: chrono::Utc::now(),
         });
-        let p = judge_prompt(&f);
+        let p = judge_prompt(&f, &Ran::default());
         assert!(p.contains("+    return 'a,b'"), "{p}");
         assert!(p.contains("?? test_export.py"), "{p}");
         assert!(p.contains("deterministic evidence"), "{p}");
@@ -1367,7 +1496,222 @@ mod tests {
         );
         // Without a check that runs, the model judges it too.
         f.verify_approved = false;
-        assert!(judge_prompt(&f).contains("`pytest` passes"));
+        assert!(judge_prompt(&f, &Ran::default()).contains("`pytest` passes"));
+        // No commands recorded: no section for them.
+        assert!(!p.contains("Commands the coding agent ran"), "{p}");
+    }
+
+    /// One tool call as a conversation records it, the `n`th to start.
+    fn tool(
+        run: &RunId,
+        name: &str,
+        effect: ToolEffect,
+        summary: &str,
+        status: ToolStatus,
+        output: Option<&str>,
+        n: i64,
+    ) -> ToolRecord {
+        let at = chrono::DateTime::from_timestamp(1_800_000_000 + n, 0).unwrap();
+        ToolRecord {
+            id: otter_core::ToolCallId::generate(),
+            turn_id: otter_core::TurnId::generate(),
+            run_id: run.clone(),
+            name: name.into(),
+            effect,
+            summary: summary.into(),
+            parent: None,
+            status,
+            started_at: at,
+            finished_at: status.is_over().then_some(at),
+            result: output.map(|o| otter_core::conversation::ToolResult {
+                summary: o.into(),
+                artifact: None,
+                truncated: false,
+            }),
+        }
+    }
+
+    /// B08 (D-165): the judge sees the shell commands Otter recorded the
+    /// coding agent running — a grep that found nothing among them, with
+    /// its exit — and not its other tools, a command still running, or
+    /// another run's; credentials an old record kept are taken out again.
+    #[test]
+    fn the_judge_sees_the_commands_otter_recorded() {
+        use ToolEffect::*;
+        use ToolStatus::*;
+        let (run, other) = (RunId::generate(), RunId::generate());
+        let tools = vec![
+            tool(
+                &run,
+                "Edit",
+                Edit,
+                "edited-file.md",
+                Succeeded,
+                Some("ok"),
+                0,
+            ),
+            tool(
+                &run,
+                "Bash",
+                Command,
+                "grep -n demo docs/API.md",
+                Failed,
+                Some("Exit code 1"),
+                1,
+            ),
+            tool(
+                &run,
+                "Grep",
+                Read,
+                "grep-tool-pattern",
+                Succeeded,
+                Some("grep-tool-output"),
+                2,
+            ),
+            tool(
+                &run,
+                "Bash",
+                Command,
+                "git push https://bot:hunter2secret@github.com/o/r.git",
+                Succeeded,
+                Some("sent with Authorization: Bearer abc.def.ghi"),
+                3,
+            ),
+            tool(&run, "Bash", Command, "still-running", Running, None, 4),
+            tool(
+                &other,
+                "Bash",
+                Command,
+                "other-run-command",
+                Succeeded,
+                Some("x"),
+                5,
+            ),
+            tool(
+                &run,
+                "Bash",
+                Command,
+                "tb demo | cmp - docs/demo.txt",
+                Succeeded,
+                Some(""),
+                6,
+            ),
+        ];
+        let ran = ran_commands(&tools, &HashSet::from([run.clone()]));
+        assert_eq!(ran.earlier, 0);
+        let lines: Vec<&str> = ran.commands.iter().map(|c| c.command.as_str()).collect();
+        assert_eq!(lines.len(), 3, "{lines:?}");
+        assert_eq!(
+            lines[0], "grep -n demo docs/API.md",
+            "in the order they ran"
+        );
+        assert_eq!(lines[2], "tb demo | cmp - docs/demo.txt");
+        assert_eq!(
+            ran.commands[0],
+            RanCommand {
+                command: "grep -n demo docs/API.md".into(),
+                succeeded: Some(false),
+                output: "Exit code 1".into(),
+            }
+        );
+
+        let mut f = task();
+        f.acceptance = vec![Criterion {
+            id: "ac_1".into(),
+            text: "docs/API.md does not mention `demo`".into(),
+            met: None,
+            evidence: vec![],
+            how: Proof::Diff,
+        }];
+        let p = judge_prompt(&f, &ran);
+        assert!(p.contains("grep -n demo docs/API.md"), "{p}");
+        assert!(p.contains("\"output\":\"Exit code 1\""), "{p}");
+        assert!(p.contains("\"succeeded\":false"), "{p}");
+        assert!(p.contains("tb demo | cmp - docs/demo.txt"), "{p}");
+        assert!(p.contains("recorded by Otter"), "{p}");
+        assert!(p.contains("A command proves only what it examined"), "{p}");
+        assert!(p.contains("that is a finding"), "{p}");
+        for gone in [
+            "edited-file.md",
+            "grep-tool-pattern",
+            "grep-tool-output",
+            "still-running",
+            "other-run-command",
+            "hunter2secret",
+            "abc.def.ghi",
+        ] {
+            assert!(!p.contains(gone), "{gone}: {p}");
+        }
+    }
+
+    /// The commands the judge sees are bounded (D-165): the newest ten at
+    /// most, each output's end, about 8,000 characters in all — and a
+    /// failed command keeps its exit code however its output is cut.
+    #[test]
+    fn the_commands_the_judge_sees_are_bounded() {
+        let run = RunId::generate();
+        let runs = HashSet::from([run.clone()]);
+        let long = |i: usize| format!("Exit code 1\nSTART-{i:02}{}END-{i:02}", "x".repeat(1950));
+        let outputs: Vec<String> = (0..15).map(long).collect();
+        let tools: Vec<ToolRecord> = (0..15)
+            .map(|i| {
+                tool(
+                    &run,
+                    "Bash",
+                    ToolEffect::Command,
+                    &format!("cmd-{i:02}"),
+                    ToolStatus::Failed,
+                    Some(&outputs[i]),
+                    i as i64,
+                )
+            })
+            .collect();
+        let ran = ran_commands(&tools, &runs);
+        let total: usize = ran
+            .commands
+            .iter()
+            .map(|c| c.command.chars().count() + c.output.chars().count())
+            .sum();
+        assert!(total <= RAN_TOTAL, "{total}");
+        let n = ran.commands.len();
+        assert!((1..RAN_COMMANDS).contains(&n), "the total bounds them: {n}");
+        assert_eq!(ran.earlier, 15 - n);
+        for (c, i) in ran.commands.iter().zip(15 - n..) {
+            assert_eq!(c.command, format!("cmd-{i:02}"), "the newest, in order");
+            assert!(c.output.starts_with("Exit code 1\n…"), "{}", c.output);
+            assert!(c.output.ends_with(&format!("END-{i:02}")));
+            assert!(!c.output.contains("START-"));
+            assert!(c.output.chars().count() <= RAN_OUTPUT + "Exit code 1\n…".len());
+        }
+        let p = judge_prompt(&task(), &ran);
+        assert!(p.contains(&format!("{} earlier not shown", 15 - n)), "{p}");
+        assert!(!p.contains("cmd-00"));
+
+        // Short outputs: the count bounds them.
+        let tools: Vec<ToolRecord> = (0..15)
+            .map(|i| {
+                tool(
+                    &run,
+                    "Bash",
+                    ToolEffect::Command,
+                    &format!("cmd-{i:02}"),
+                    ToolStatus::Succeeded,
+                    Some("ok"),
+                    i as i64,
+                )
+            })
+            .collect();
+        let ran = ran_commands(&tools, &runs);
+        assert_eq!((ran.commands.len(), ran.earlier), (RAN_COMMANDS, 5));
+        assert_eq!(ran.commands[0].command, "cmd-05");
+
+        // The exit code is kept from a flattened record too, and only a
+        // real one.
+        let flat = format!("Exit code 2 {}", "y".repeat(3000));
+        assert!(output_end(&flat, 10).starts_with("Exit code 2\n…yyyy"));
+        let words = format!("Exit codes differ {}", "y".repeat(3000));
+        assert_eq!(output_end(&words, 10), format!("…{}", "y".repeat(10)));
+        assert_eq!(output_end("Exit code 1", 10), "Exit code 1");
     }
 
     #[test]

@@ -1984,7 +1984,10 @@ and 4 ("stop on evidence, not on attempt counts") of the plan, in part:
   "Requirements met" gate shows what isn't proven, and Done still needs
   the developer's acceptance (or their override, on record). Planning
   again clears the mark. The attempt and time budgets and
-  `repeating_failure` stay, as backstops.
+  `repeating_failure` stay, as backstops. *(Revised by D-165: the same
+  work after a fix with no fewer unmet criteria stops, whatever the
+  verdict says; only a verdict that proves more on the same work gets
+  another round.)*
 - **Developer-only stays developer-only** (plan principle 6, pulled ahead
   of step 5 because the question above relies on it): the brain isn't
   asked about a `user_only` decision at all, so a model can neither
@@ -5748,3 +5751,97 @@ reviewed.
   paused → blocked with its reason; review → paused → review with a publish
   ask pending; an old document with no `paused_from`) fails with the
   resume worked out from the steps alone, as before.
+
+## D-165 — Verification stops on the work; the judge sees what the agent ran (2026-10-21)
+
+The task bench, B08 (task H02): the plan's `diff` criteria were facts about
+whole files ("README.md and the Makefile no longer mention demo or
+sample.csv", "docs/API.md does not mention `demo`"), and the work was right.
+The first verdict found API.md unproven and asked for "a check you can rerun",
+its output attached as evidence. The fix step ran the grep (no output, exit
+1), changed nothing and said so. The second verdict, on the same tree, found
+README and the Makefile unproven too: they "rest only on the agent's own grep,
+with no captured output". That was another unmet set, so D-062's loop stop
+(the same fingerprint *and* the same unmet) bought a second fix step, which
+did the same; the third verdict matched the second and went to review
+unverified. Two of six attempts went on a tree that never changed, and correct
+work ended unverified. Task E01 showed the other half: the agent's
+`tb demo | cmp - docs/demo.txt` passed, the judge never saw it, and the agent
+added a test file only to give the diff something to show.
+
+- **Stop on the work, not on the verdict's wording.** After a fix, the same
+  fingerprint with no fewer unmet criteria goes to review, "Not verified:
+  nothing changed after a fix", as D-062's same-mark case did: the same set,
+  or another set that isn't a strict subset of the last. On the same work
+  only a verdict that proves more (its unmet a strict subset of the last's:
+  the fix's evidence proved something) gets another fix step, so each such
+  round leaves fewer unmet and they end. Work that changed still gets its
+  fix, whatever the verdict. A check that failed with nothing unmet, twice on
+  the same work, still stops; one that leaves nothing unmet where something
+  was gets one more round. This revises D-062's rule, under which a verdict
+  that reworded or widened itself on an unchanged tree bought another round.
+  Every verdict that leaves something unmet is kept as the mark
+  (`last_verification`), the one that stops too, so the next compares
+  against the newest (`another_round`).
+- **The judge sees the commands Otter recorded.** A diff can't show that a
+  word is absent from the rest of a file, or that a file equals a command's
+  output; the coding agent's commands can, and Otter already journals them
+  (D-058): each tool call with its run, its effect, its command line
+  (redacted, cut at 200 characters, D-157) and its output (cut at 2,000
+  characters and redacted). At judging time the controller reads the task's conversations
+  (`Conversations::get` for each run's `conversation_id`) and takes the
+  `Command` tools (Bash, and Monitor watching a command; not the agent's
+  Read, Edit, Grep or Glob tools) that ran to an end, in the runs since the
+  last mark (`VerificationMark.runs`: the task's run count when it was kept),
+  or for the first verdict the runs since the plan, never the look at the
+  code's. The newest ten at most, each output's last 1,500 characters (a
+  failed one's leading `Exit code N` kept), about 8,000 characters in all,
+  redacted again, in the order they ran, with how many earlier ones didn't
+  fit (`brain::ran_commands`), "since the plan or the last verdict". The
+  judge is told they are what ran and what
+  it printed, recorded by Otter, not the agent's account; that a command
+  proves only what it examined, so it reads the command; and that a command
+  that didn't exit 0 shows `succeeded: false` with its exit code first in its
+  output (as Claude Code reports a failed Bash call), which for a search
+  that found nothing is a finding, not a command that failed to run.
+- **Read from the journal, not copied into the task.** The commands are in
+  the conversation's record already. Copied into `task.evidence`, they would
+  grow `task.json` every round with a second copy of the output. Nothing new
+  is written; the prompt is built from what is there.
+- **A `diff` criterion is a fact the change shows.** The planning turn's
+  format (`PLAN_FORMAT`, D-064), the brain's own plan prompt and the plan
+  review's second check say so: "nothing in X mentions Y", or "X equals a
+  command's output", belongs in the check command
+  (`make test && ! grep -rn demo README.md`) as a `check` criterion,
+  decided in code.
+- **Not done:**
+  - The command line is the conversation record's: cut at 200 characters,
+    and its whitespace flattened (D-157's "Not done"), so a long heredoc
+    reaches the judge cut short.
+  - The record keeps the first 2,000 characters of an output, so a long
+    output's last 1,500 are the record's end, not the command's.
+  - Commands from before the last mark aren't shown, even on the same tree:
+    an earlier round's grep that a later verdict could use isn't there. Output
+    from before an edit may no longer hold; the newest round's commands are
+    what the fix did.
+  - A subagent's command (subagents are off) is shown as the agent's own.
+  - A command run in the background shows only that it started: its later
+    output comes through `BashOutput`, a read, which isn't shown.
+- **Verified:** controller unit tests `the_same_work_with_more_unmet_after_a_fix_stops`
+  (H02's sequence: unmet {A}, a fix that changes nothing, unmet {A, B} on the
+  same fingerprint → review) and `the_same_work_with_fewer_unmet_gets_another_round`
+  ({A, B} then {B} on the same tree → one more fix step, then {B} again stops);
+  `the_judge_reads_the_runs_since_the_last_verdict`; brain unit tests
+  `the_judge_sees_the_commands_otter_recorded` (a grep that found nothing,
+  with its exit; not the Edit or Grep tools, a command still running or
+  another run's; a credential an old record kept taken out) and
+  `the_commands_the_judge_sees_are_bounded`. Each fails with its part
+  reverted: the whole mark compared again fails the first; no subset rule
+  (the same work always stops) the second; the judge's prompt without the
+  commands, no filter on the tool's effect, no bounds, or no redaction on
+  the way out each fail a brain test; every run's commands fail the window
+  test. The end-to-end `verification_stops_when_a_fix_changes_nothing`
+  (the same verdict on the same work) passes unchanged. The glue between
+  the tested halves (`commands_ran`: a run's `conversation_id`, the
+  conversation, its tools) has no test of its own: the end-to-end brains
+  don't read the commands. Not tried with a live model judging.

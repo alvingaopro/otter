@@ -33,7 +33,7 @@ use otter_core::task::{
     EvidenceKind, HELD, MessageRole, Risk, RunState, Step, StepStatus, Task, TaskEvent, TaskStatus,
     VerificationMark, WAITING, YOUR_AGENT,
 };
-use otter_core::{DecisionId, EvidenceId, StepId, TaskId};
+use otter_core::{DecisionId, EvidenceId, RunId, StepId, TaskId};
 use otter_protocol::RpcError;
 
 use crate::brain::{self, Context, Verdict as BrainVerdict};
@@ -1870,12 +1870,17 @@ impl Daemon {
             .collect();
         let judgement = if by_check.len() < f.acceptance.len() {
             let brain = brain::select(&env, &self.brain_choice());
+            // What the coding agent ran, as Otter recorded it (D-165).
+            let ran = self.commands_ran(&f);
             brain
-                .judge(&Context {
-                    task: &f,
-                    root: &root,
-                    env: &env,
-                })
+                .judge(
+                    &Context {
+                        task: &f,
+                        root: &root,
+                        env: &env,
+                    },
+                    &ran,
+                )
                 .await
                 .map_err(|e| RpcError::internal(format!("judging failed: {e:#}")))?
         } else {
@@ -1922,7 +1927,11 @@ impl Daemon {
                 .map(|c| format!("{} {}", if c.met == Some(true) { "✓" } else { "✗" }, c.text))
                 .collect::<Vec<_>>()
                 .join("\n");
-            let mark = VerificationMark { fingerprint, unmet };
+            let mark = VerificationMark {
+                fingerprint,
+                unmet,
+                runs: f.runs.len(),
+            };
             if all_met {
                 f.last_verification = None;
                 changes.push(Change::new(f.reason("Verified: every criterion is met.")));
@@ -1941,14 +1950,16 @@ impl Daemon {
                     )
                     .map_err(RpcError::conflict)?,
                 ));
-            } else if f.last_verification.as_ref() == Some(&mark) {
-                // The same work and the same verdict after a fix: another
-                // round won't change it. The developer decides (D-062).
+            } else if !another_round(f.last_verification.as_ref(), &mark) {
+                // The same work after a fix, and nothing more proven: another
+                // round won't change it, whatever the verdict's wording. The
+                // developer decides (D-062, D-165).
                 let unproven = if mark.unmet.is_empty() {
                     "a check failed".to_owned()
                 } else {
                     mark.unmet.join("; ")
                 };
+                f.last_verification = Some(mark);
                 changes.push(Change::new(f.reason(format!(
                     "Not verified: {unproven}; nothing changed after a fix"
                 ))));
@@ -2016,6 +2027,27 @@ impl Daemon {
         })
         .await?;
         Ok(())
+    }
+
+    /// The shell commands the coding agent ran since the last verdict, from
+    /// the task's conversations as Otter journaled them (D-165): read at
+    /// judging time, never copied into the task.
+    fn commands_ran(&self, f: &Task) -> brain::Ran {
+        let runs = runs_since_verdict(f);
+        let mut conversations: Vec<&otter_core::ConversationId> = Vec::new();
+        for r in f.runs.iter().filter(|r| runs.contains(&r.id)) {
+            if let Some(c) = &r.conversation_id
+                && !conversations.contains(&c)
+            {
+                conversations.push(c);
+            }
+        }
+        let tools: Vec<_> = conversations
+            .into_iter()
+            .filter_map(|c| self.conversations.get(c.as_str()))
+            .flat_map(|c| c.tools)
+            .collect();
+        brain::ran_commands(&tools, &runs)
     }
 
     /// The check couldn't run at all (a missing command or script): record
@@ -2778,6 +2810,51 @@ fn browser_evidence(
     }
 }
 
+/// Whether a verdict that left something unmet earns another fix step
+/// (D-062, D-165): the first one does, and so does one on work that changed
+/// since the `last`. On the same work only a verdict that proved more — its
+/// unmet criteria a strict subset of the last's, new evidence from the fix
+/// — does, so each such round leaves fewer unmet and they end. The same
+/// work with as much unmet, or with other criteria unmet, is the verdict's
+/// wording, not the work: another round won't change it.
+fn another_round(last: Option<&VerificationMark>, now: &VerificationMark) -> bool {
+    let Some(last) = last else {
+        return true;
+    };
+    if last.fingerprint != now.fingerprint {
+        return true;
+    }
+    let was: HashSet<&str> = last.unmet.iter().map(String::as_str).collect();
+    let is: HashSet<&str> = now.unmet.iter().map(String::as_str).collect();
+    is.len() < was.len() && is.is_subset(&was)
+}
+
+/// The runs whose commands the judge sees (D-165): those since the last
+/// verdict that left something unmet; for the first, those since the plan
+/// (the look at the code, which planned it, changed nothing).
+fn runs_since_verdict(f: &Task) -> HashSet<RunId> {
+    let planning: HashSet<&StepId> = f
+        .steps
+        .iter()
+        .filter(|t| t.planning)
+        .map(|t| &t.id)
+        .collect();
+    let start = match &f.last_verification {
+        Some(mark) => mark.runs,
+        None => f
+            .runs
+            .iter()
+            .rposition(|r| planning.contains(&r.step_id))
+            .map_or(0, |i| i + 1),
+    };
+    f.runs
+        .iter()
+        .skip(start)
+        .filter(|r| !planning.contains(&r.step_id))
+        .map(|r| r.id.clone())
+        .collect()
+}
+
 /// The last runs of one step all failed the same way, since the work last
 /// (re)started — a retry starts counting afresh.
 fn repeating_failure(f: &Task) -> Option<String> {
@@ -3109,7 +3186,10 @@ const PLAN_FORMAT: &str = "{\"summary\": \"one sentence: the approach\", \
      do on your own: none asks, checks with or waits for the developer.\n\
      - criteria: facts about the code or the check's result, never about the conversation \
      or the process. how: \"check\" when the check passing proves it, \"diff\" when it is \
-     about what the change contains.\n\
+     about what the change contains. A \"diff\" criterion must be a fact the change itself \
+     shows: one that whole files don't mention something, or that a file equals a command's \
+     output, belongs in the check (e.g. `make test && ! grep -rn demo README.md`) as a \
+     \"check\" criterion.\n\
      - check: one shell command that runs here (look at how the project runs its tests).\n";
 
 /// The planning turn (D-064, D-084): read the code, then answer a question,
@@ -3551,6 +3631,103 @@ mod tests {
         assert!(!prompt("handed back", RunState::HandedOff).contains("cut off"));
         assert_eq!(span(Duration::from_millis(1500)), "1 s");
         assert_eq!(span(Duration::from_secs(1800)), "30 min");
+    }
+
+    fn mark(fingerprint: &str, unmet: &[&str]) -> VerificationMark {
+        VerificationMark {
+            fingerprint: fingerprint.into(),
+            unmet: unmet.iter().map(|s| (*s).into()).collect(),
+            runs: 0,
+        }
+    }
+
+    /// A verdict as `verify_step` takes one that left something unmet:
+    /// compared with the last, then kept as the last. `true`: a fix step.
+    fn verdict(last: &mut Option<VerificationMark>, now: VerificationMark) -> bool {
+        let fix = another_round(last.as_ref(), &now);
+        *last = Some(now);
+        fix
+    }
+
+    /// B08's H02 (D-165): a fix that changed nothing, then a verdict on the
+    /// same tree that finds more unmet than the one before, goes to review
+    /// unverified — not a second fix step. A verdict's wording changing
+    /// isn't the work changing.
+    #[test]
+    fn the_same_work_with_more_unmet_after_a_fix_stops() {
+        let (api, readme) = (
+            "docs/API.md does not mention `demo`",
+            "README.md and the Makefile no longer mention demo or sample.csv",
+        );
+        let mut last = None;
+        assert!(verdict(&mut last, mark("t1:✓", &[api])), "the first: a fix");
+        // The fix ran its grep, changed nothing: the same tree.
+        assert!(
+            !verdict(&mut last, mark("t1:✓", &[readme, api])),
+            "the same work, nothing more proven: review"
+        );
+        // The same set again, in any order, is today's stop (D-062)…
+        let mut last = Some(mark("t1:✓", &[api, readme]));
+        assert!(!verdict(&mut last, mark("t1:✓", &[readme, api])));
+        // …and so is another set that isn't fewer.
+        let mut last = Some(mark("t1:✓", &[api]));
+        assert!(!verdict(&mut last, mark("t1:✓", &[readme])));
+        // A check that failed with nothing unmet, twice on the same work.
+        let mut last = Some(mark("t1:✗", &[]));
+        assert!(!verdict(&mut last, mark("t1:✗", &[])));
+        // Work that changed gets its fix, whatever the verdict.
+        let mut last = Some(mark("t1:✓", &[api]));
+        assert!(verdict(&mut last, mark("t2:✓", &[api, readme])));
+    }
+
+    /// The other side (D-165): on the same tree, a verdict that proves
+    /// more — fewer unmet, a strict subset — earns one more fix step; then
+    /// the same again stops. Each such round leaves fewer, so they end.
+    #[test]
+    fn the_same_work_with_fewer_unmet_gets_another_round() {
+        let mut last = None;
+        assert!(verdict(&mut last, mark("t1:✓", &["A", "B"])));
+        assert!(
+            verdict(&mut last, mark("t1:✓", &["B"])),
+            "new evidence proved A: one more round"
+        );
+        assert!(!verdict(&mut last, mark("t1:✓", &["B"])), "then it stops");
+        // Down to nothing unmet with a check still failing: once more, then
+        // the same again stops.
+        let mut last = Some(mark("t1:✗", &["A"]));
+        assert!(verdict(&mut last, mark("t1:✗", &[])));
+        assert!(!verdict(&mut last, mark("t1:✗", &[])));
+    }
+
+    /// The judge sees the commands of the runs since the last verdict that
+    /// left something unmet; for the first, those since the plan, never the
+    /// look at the code's (D-165).
+    #[test]
+    fn the_judge_reads_the_runs_since_the_last_verdict() {
+        let mut f = task_with_runs(&[
+            ("look", RunState::Completed),
+            ("work", RunState::Completed),
+            ("fix", RunState::Completed),
+        ]);
+        let plan = step("Look at the code", StepStatus::Done, true);
+        let work = step("Do it", StepStatus::Done, false);
+        f.runs[0].step_id = plan.id.clone();
+        f.runs[1].step_id = work.id.clone();
+        f.runs[2].step_id = work.id.clone();
+        f.steps = vec![plan, work];
+        let ids = |f: &Task, i: &[usize]| -> HashSet<RunId> {
+            i.iter().map(|&i| f.runs[i].id.clone()).collect()
+        };
+        assert_eq!(runs_since_verdict(&f), ids(&f, &[1, 2]));
+        f.last_verification = Some(VerificationMark {
+            runs: 2,
+            ..mark("t", &["A"])
+        });
+        assert_eq!(runs_since_verdict(&f), ids(&f, &[2]));
+        // A mark from before D-165 (no count): every run since the start
+        // but the look at the code's.
+        f.last_verification = Some(mark("t", &["A"]));
+        assert_eq!(runs_since_verdict(&f), ids(&f, &[1, 2]));
     }
 
     #[test]

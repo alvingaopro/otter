@@ -288,13 +288,17 @@ pub enum Proof {
 }
 
 /// What the last verification saw (D-062): the state of the work and the
-/// criteria it left unmet. The same again after a fix means the fix
-/// changed nothing.
+/// criteria it left unmet. The same work after a fix, with no fewer unmet,
+/// means another round won't change it (D-165).
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct VerificationMark {
     pub fingerprint: String,
     /// The unmet criteria, by text.
     pub unmet: Vec<String>,
+    /// How many runs the task had then: the next verdict's judge sees the
+    /// commands of the runs after them (D-165). 0 in marks from before.
+    #[serde(default)]
+    pub runs: usize,
 }
 
 /// Where a pause found a task (D-168).
