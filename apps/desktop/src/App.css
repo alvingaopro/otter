@@ -579,7 +579,8 @@ body.resizing-col { cursor: col-resize; user-select: none; }
 .message.user { align-self: flex-end; background: var(--you-bg); }
 .message.agent { background: var(--agent-bg); }
 .message.system { background: none; border: 1px dashed var(--line-strong); color: var(--muted); }
-.messages > .message.user + :not(.message.user), .messages > :not(.message.user) + .message.user { margin-top: 8px; }
+.messages > .message.user + :not(.message.user), .messages > :not(.message.user) + .message.user,
+.messages > .message.controller + .message.agent, .messages > .message.agent + .message.controller { margin-top: 8px; }
 .message-head { display: flex; gap: 8px; align-items: center; margin-bottom: 2px; }
 .message-role { font-size: 12px; font-weight: 600; color: var(--muted); }
 .message.agent .message-role { color: var(--agent-text); }
@@ -587,7 +588,7 @@ body.resizing-col { cursor: col-resize; user-select: none; }
 .message-at.aside { position: absolute; bottom: 7px; left: calc(100% + 8px); white-space: nowrap; opacity: 0; transition: opacity 0.15s; }
 .message.user > .message-at.aside { left: auto; right: calc(100% + 8px); }
 .message:hover > .message-at.aside { opacity: 1; }
-.message-text { white-space: pre-wrap; line-height: 1.45; user-select: text; }
+.message-text { white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.45; user-select: text; }
 .markdown { user-select: text; line-height: 1.5; overflow-wrap: anywhere; }
 .markdown.message-text, .markdown.report { white-space: normal; }
 .markdown > :first-child { margin-top: 0; }
@@ -616,7 +617,8 @@ body.resizing-col { cursor: col-resize; user-select: none; }
   position: absolute; top: -6px; right: -6px; width: 18px; height: 18px; padding: 0; border-radius: 50%;
   border: 1px solid var(--line-strong); background: var(--bg); color: var(--text); font-size: 12px; line-height: 1; cursor: pointer;
 }
-.message-pictures { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+.message-pictures { display: flex; flex-wrap: wrap; gap: 6px; }
+.message-text + .message-pictures { margin-top: 6px; }
 .message-picture { max-width: 240px; max-height: 160px; border-radius: 6px; border: 1px solid var(--line); }
 /* No `flex` here: in the box's column a flex basis sizes the textarea by
    its rows, not the height it is given (D-175). */
@@ -727,8 +729,6 @@ body.resizing-row { cursor: row-resize; user-select: none; }
 .combo-name { font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .combo-id { font-size: 11.5px; font-family: var(--mono); color: var(--faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .combo-list li.combo-more { cursor: default; color: var(--faint); font-size: 12px; }
-.message-role { display: inline-flex; align-items: center; gap: 6px; }
-.message-avatar { border-radius: 50%; display: block; flex: none; }
 /* The coding agent's work (Work tab, D-055…D-059). */
 .work { display: flex; flex-direction: column; gap: 14px; }
 .work-head { display: flex; align-items: baseline; gap: 8px; margin-bottom: 6px; }

@@ -6202,7 +6202,10 @@ a taller message box.
   right; Otter's grey (`--raised`); the coding agent's violet (`--agent-bg`),
   which keeps its name above, a third voice. No line above yours or Otter's:
   the time shows beside the bubble on hover, the full date in its tooltip.
-  Each bubble is an `article` named for who spoke, for a screen reader.
+  Yours and Otter's are `article`s named for who spoke, for a screen reader
+  (the agent's head names it). Otter's face no longer shows in the thread.
+  Your words break inside a long word or link, as Otter's Markdown does,
+  instead of running out of the bubble.
 - **Close together:** a bubble is as wide as what it says (up to 720 px), 6 px
   from the next, a little more where the speaker changes; the thread, the
   decision waiting and the message box sit in one column of reading width
@@ -6219,9 +6222,10 @@ a taller message box.
   dragging its edge did nothing. A height remembered below the new least
   opens at the least.
 - The conversation's scroll to its end no longer returns what scrolling
-  returns: Chromium's `scrollIntoView` now returns a promise, which React took
-  for the effect's cleanup and failed on, emptying the view. WebKit doesn't
-  yet; the app would have broken the day it did.
+  returns: in Chromium 153, where these checks ran, `scrollIntoView` returns
+  a promise, which React took for the effect's cleanup and failed on,
+  emptying the view. The macOS app's WebKit evidently doesn't (the view
+  shows there); it would have broken the day it did.
 
 Checked in Chromium with sample data, dark and light, wide, narrow and
 stacked, with the handle dragged; not in the macOS app itself.

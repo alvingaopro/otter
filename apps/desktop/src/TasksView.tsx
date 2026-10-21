@@ -9,7 +9,6 @@ import { MemoryDialog } from "./MemoryDialog";
 import { Menu } from "./Menu";
 import { ago } from "./model";
 import { PanelGrip, TASK_DETAIL, usePanelWidth } from "./panelResize";
-import otterIcon from "./assets/otter.png";
 import type { CodingConversation, Interaction, RuntimeCapabilities } from "./conversation";
 import type { TaskSource } from "./taskSource";
 import { QuestionForm, Turn, WorkHead } from "./Work";
@@ -588,15 +587,13 @@ function StatusBanner({
 
 const ROLE: Record<string, string> = { user: "You", controller: "Otter", agent: "Coding agent", system: "System" };
 
-/** Who said it; Otter with its face. */
+/** Who said it, by name. */
 export function Speaker({ role }: { role: string }) {
-  return (
-    <span className="message-role">
-      {role === "controller" && <img src={otterIcon} width={16} height={16} alt="" className="message-avatar" />}
-      {ROLE[role] ?? role}
-    </span>
-  );
+  return <span className="message-role">{ROLE[role] ?? role}</span>;
 }
+
+/** A bubble's name for a screen reader, where no head says it (D-175). */
+const named = (role: string) => (role === "agent" ? undefined : (ROLE[role] ?? role));
 
 /** What was said: the developer's words as typed; Otter's and the coding
  * agent's as the Markdown they write (D-086). */
@@ -752,7 +749,7 @@ function Conversation({
         {messages.length === 0 && <p className="muted small">No messages yet. Describe what you want, or refine the request.</p>}
         {said.map(({ key, message: m, decision }) =>
           m ? (
-            <div key={key} className={`message ${m.role}`} role="article" aria-label={ROLE[m.role] ?? m.role}>
+            <div key={key} className={`message ${m.role}`} role="article" aria-label={named(m.role)}>
               <Said role={m.role} at={ago(m.at, now)} when={m.at} />
               {m.text && !(m.attachments?.length && m.text === PICTURES_ONLY) && (
                 <Folded long={m.role === "agent" && m.text.length > FOLD_CHARS}>
@@ -772,7 +769,7 @@ function Conversation({
           ),
         )}
         {drafts.map((d) => (
-          <div key={d.stream_id} className={`message ${d.role} streaming`} role="article" aria-label={ROLE[d.role] ?? d.role}>
+          <div key={d.stream_id} className={`message ${d.role} streaming`} role="article" aria-label={named(d.role)}>
             {/* Otter's cursor says it is writing; the agent's head says so in words. */}
             <Said role={d.role} at={d.done ? "now" : d.role === "agent" ? "writing…" : ""} />
             <MessageText role={d.role} text={d.text}>

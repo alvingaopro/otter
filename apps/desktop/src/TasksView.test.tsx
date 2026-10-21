@@ -157,9 +157,10 @@ describe("Tasks view", () => {
   afterEach(() => {
     act(() => root.unmount());
     host.remove();
+    localStorage.removeItem("otter.task-detail-width");
   });
 
-  const open = async (title: string) => act(async () => byText('[role="listitem"]', title)!.click());
+  const open =async (title: string) => act(async () => byText('[role="listitem"]', title)!.click());
   const menu = async () => {
     await act(async () => q('[aria-label="More actions"]')!.click());
     return [...document.querySelectorAll('[role="menuitem"]')].map((m) => m.textContent);
@@ -267,6 +268,8 @@ describe("Tasks view", () => {
     expect(bubble("controller").getAttribute("aria-label")).toBe("Otter");
     expect(bubble("controller").querySelector(".message-at.aside")?.textContent).toMatch(/^\d+[smhd]$/);
     expect(bubble("agent").querySelector(".message-role")?.textContent).toBe("Coding agent");
+    // Named once: by its head, not again for a screen reader.
+    expect(bubble("agent").getAttribute("aria-label")).toBeNull();
   });
 
   it("makes the details beside the conversation as wide as you drag them (D-175)", async () => {
@@ -279,7 +282,6 @@ describe("Tasks view", () => {
     await act(async () => grip.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowLeft", bubbles: true })));
     expect(body.style.getPropertyValue("--detail-width")).toBe("396px");
     expect(localStorage.getItem("otter.task-detail-width")).toBe("396");
-    localStorage.removeItem("otter.task-detail-width");
   });
 
   it("sends on Enter, but not the Enter that confirms an input method's candidate", async () => {
