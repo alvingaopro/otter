@@ -5642,3 +5642,77 @@ and let go of it a pass later (self-correcting, a little noisy). Taking the
 identity from the hooks' `transcript_path` would settle both. Also not done:
 whether an answer-only task (D-092), which only reads, needs to wait for the
 developer's agent at all.
+
+## D-163 — `git rm` of the work's own files is routine, as `rm` is (2026-10-21)
+
+D-066 made deleting the work's own files routine, but only for `rm`,
+`rmdir` and `unlink`: the word `rm` inside `git rm` still asked the
+developer as "deletes or destroys something". The live task bench (B07,
+H02: "remove the demo command and the sample data") asked for
+`git rm -q data/sample.csv && … make test` — an ask the developer can only
+approve, about a file the task was told to delete.
+
+- **`git rm` with every path inside the workspace runs without asking,**
+  under D-066's limits: not the workspace itself, not `.git`, not a glob at
+  its top. It is no harsher than `rm`, which was already routine: Git
+  refuses a file with changes not committed unless forced, and a committed
+  file is still in the history.
+- **Unless Git may work elsewhere.** Git's environment moves its
+  repository, work tree and index (`GIT_DIR`, `GIT_WORK_TREE`,
+  `GIT_INDEX_FILE`), and then a path the policy reads as the workspace's is
+  another directory's to Git (the Fable review deleted a file in another
+  repository that way, with real Git). So `git rm` still asks on a line
+  that sets any environment (`X=… git rm`, `export`, `declare`, `set -a`)
+  or may (`source`, `.`, `eval`), or names `GIT_`, `core.worktree`,
+  `--work-tree`, `--git-dir` or a `gitdir:` pointer, in any case (Git's
+  keys have none), or mentions a function or alias anywhere (`git()
+  {…}; git rm x` can be any command). `git -C <dir> rm` and `git -c … rm` ask too.
+- **Not in scratch:** `rm` there is routine (D-066), but a repository in
+  the temp directory is another's, and its work tree may be anywhere.
+- **What Git reads itself still asks:** a pathspec's magic (`:/x`,
+  `:(top)x`) points from the repository's top, which can be above the
+  workspace, and `--pathspec-from-file` names its paths elsewhere. An
+  option quoted (`'-r'`) is still an option, not a path.
+- **Not done:** what an earlier command left behind isn't on the line:
+  `git config core.worktree <dir>` run on its own (allowed, as before), a
+  `gitdir:` written over `.git`, a function or alias named `git` defined
+  in an earlier command, or an environment in a file the shell reads at
+  start redirects later Git commands, a deleting `git rm` among them. A
+  command's write into `.git` isn't asked, while an edit there is. The
+  policy is a lexical reading, not a sandbox (D-059).
+- Verified: the policy's unit test replays B07's command and the cases that
+  still ask; both halves fail with the change, or the guard, taken out.
+
+## D-164 — A delete is routine only where the policy can tell what it deletes (2026-10-21)
+
+The review of D-163 found D-066's routine delete reading two things it
+can't read as the workspace's. A substitution is a piece of its own
+(D-059), and what stood in its place, a placeholder word, resolved to a
+file inside the workspace, so `rm -rf $(echo /)` ran without asking (and
+`never` didn't see `rm -rf /` either). And a `cd` the policy couldn't
+follow (`cd "$X"`, `cd $(…)`, `cd -`, with an option, `pushd`, a `cd`
+inside a substitution) left it wrong about where the shell was, so a
+relative `rm -rf x` after it was routine.
+
+- **What a substitution prints isn't a path inside:** a delete operand
+  with a substitution in it asks.
+- **After a move of the shell it can't follow, a delete isn't routine**
+  until a `cd` to an absolute path it can read. It follows `cd` and
+  `pushd` to a path it can read, also as `builtin cd`, `command cd` or
+  `{ cd`; it can't follow one to a variable or a substitution, `cd -`,
+  `popd`, a `cd` with an option, a relative one on a line that names
+  `CDPATH`, a subshell's `(cd`, or `eval`. `cd` alone goes home. A `cd`
+  inside a substitution runs in its subshell and doesn't move the line's
+  shell. Writes and reads after such a move are judged as before: making
+  `cd "$(git rev-parse --show-toplevel)" && make test` ask would be the
+  noise D-066 removed.
+- **Not done:** a write whose target is a variable or a substitution (`cp
+  x "$DEST"`) still isn't read as outside; a `cd` in a sourced file, a
+  function, or an earlier command isn't seen, nor is `cd x 2>/dev/null`
+  followed (it asks: three words); `pushd +N`/`-N` turns the stack and is
+  unknown, `pushd -n` isn't read. D-059's limit, unchanged.
+- Verified: `a_path_the_policy_cannot_read_is_not_the_workspaces` fails
+  with each check taken out (the substitution operand, the unknown `cd`,
+  the subshell's `cd`); reading what a substitution names (`grep -n delete
+  $(git ls-files)`), `{ cd src; rm -rf gen; }` and `pushd src && rm -rf
+  gen` still run.
