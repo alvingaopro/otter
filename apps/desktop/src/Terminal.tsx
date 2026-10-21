@@ -242,13 +242,6 @@ export function Terminal({ host, workspace, session, onEnd, generation, label, w
     });
     term.open(el.current!);
     termRef.current = term;
-    try {
-      const webgl = new WebglAddon();
-      webgl.onContextLoss(() => webgl.dispose());
-      term.loadAddon(webgl);
-    } catch {
-      // DOM renderer fallback.
-    }
     if (realSize(fit.proposeDimensions())) fit.fit();
     term.focus();
     setSize(`${term.cols}×${term.rows}`);
@@ -268,6 +261,32 @@ export function Terminal({ host, workspace, session, onEnd, generation, label, w
     let fromBottom: number | null = null;
 
     const onScreen = () => !!el.current && el.current.offsetWidth > 0 && el.current.offsetHeight > 0;
+    // WebGL only while on screen (D-153): WebKit has about sixteen contexts
+    // and takes the oldest when there are more, and kept terminals (D-100,
+    // D-152) would hold them hidden. Hidden, xterm draws nothing anyway.
+    let webgl: WebglAddon | null = null;
+    let noWebgl = false;
+    const renderer = () => {
+      if (onScreen() && !webgl && !noWebgl) {
+        try {
+          const addon = new WebglAddon();
+          // Lost: the DOM renderer, and a new context when next shown.
+          addon.onContextLoss(() => {
+            addon.dispose();
+            if (webgl === addon) webgl = null;
+          });
+          term.loadAddon(addon);
+          webgl = addon;
+        } catch {
+          // DOM renderer fallback.
+          noWebgl = true;
+        }
+      } else if (!onScreen() && webgl) {
+        webgl.dispose();
+        webgl = null;
+      }
+    };
+    renderer();
     // Fit to the element; while another client sizes the window, stay at its
     // size, and tell the host what this one would be.
     const fitNow = () => {
@@ -403,6 +422,7 @@ export function Terminal({ host, workspace, session, onEnd, generation, label, w
     // A hidden terminal (another view in front, D-041) has no size: fitting
     // it then would shrink the session for everyone attached.
     const observer = new ResizeObserver(() => {
+      renderer();
       fitNow();
       start();
       tellView();

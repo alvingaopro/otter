@@ -85,14 +85,14 @@ vi.mock("@tauri-apps/plugin-notification", () => ({
 vi.mock("./Terminal", async () => {
   const { useEffect } = await import("react");
   return {
-    Terminal: () => {
+    Terminal: ({ session, active }: { session: string; active?: boolean }) => {
       useEffect(() => {
         terminal.mounts++;
         return () => {
           terminal.unmounts++;
         };
       }, []);
-      return <div data-testid="terminal" />;
+      return <div data-testid="terminal" data-session={session} data-active={String(active ?? true)} />;
     },
   };
 });
@@ -213,9 +213,14 @@ describe("Activity Bar navigation", () => {
     expect(pane().querySelector(".tab.beside")?.textContent).toContain("logs");
     // The tab on the right, clicked: the two trade places.
     const tabNamed = (n: string) => [...pane().querySelectorAll<HTMLButtonElement>(".tab-main")].find((b) => b.textContent?.includes(n))!;
+    const mountsBeforeSwap = terminal.mounts;
     await act(async () => tabNamed("logs").click());
     expect(pane().querySelector(".tab.selected")?.textContent).toContain("logs");
     expect(pane().querySelector(".tab.beside")?.textContent).toContain("shell");
+    // The two traded sides without attaching again (D-152).
+    expect(terminal.mounts).toBe(mountsBeforeSwap);
+    expect(pane().querySelector(".session-col.beside [data-testid=\"terminal\"]")?.getAttribute("data-session")).toBe("ses_2");
+    expect(pane().querySelector(".session-col:not(.beside) [data-testid=\"terminal\"]")?.getAttribute("data-session")).toBe("ses_3");
     const unmounts = terminal.unmounts;
     await act(async () => split().click());
     // The one on the right is hidden, still attached (D-152).
@@ -243,6 +248,10 @@ describe("Activity Bar navigation", () => {
     expect(terminal.unmounts).toBe(unmounts);
     expect(shownTerminals()).toBe(1);
     expect(pane().querySelectorAll(".session-col[hidden]").length).toBe(1);
+    // Only the one shown has the keyboard; the hidden one never does.
+    const hidden = pane().querySelector('.session-col[hidden] [data-testid="terminal"]')!;
+    expect([hidden.getAttribute("data-session"), hidden.getAttribute("data-active")]).toEqual(["ses_3", "false"]);
+    expect([...pane().querySelectorAll('[data-testid="terminal"][data-active="true"]')].map((t) => t.getAttribute("data-session"))).toEqual(["ses_2"]);
   });
 
   it("detaches the sessions beyond the kept ones, as set in Developer (D-152)", async () => {
