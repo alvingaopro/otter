@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { Glyph } from "./Glyph";
-import { ArchiveWorkspaceDialog, DeleteSessionDialog, DeleteWorkspaceDialog } from "./WorkspaceDialogs";
+import { ArchiveWorkspaceDialog, DeleteSessionDialog, DeleteWorkspaceDialog, PublishDialog } from "./WorkspaceDialogs";
 import { Menu, type MenuItem } from "./Menu";
 import { NewSessionDialog } from "./NewSessionDialog";
 import { FilesPanel } from "./FilesPanel";
@@ -59,7 +59,7 @@ interface Props {
   tasks: PlacedTask[];
 }
 
-type Open = "brief" | "new-session" | "archive-workspace" | "delete-workspace" | "delete-session" | "rename-session" | null;
+type Open = "brief" | "new-session" | "archive-workspace" | "publish" | "delete-workspace" | "delete-session" | "rename-session" | null;
 
 export function WorkspacePane({
   placed,
@@ -406,6 +406,12 @@ export function WorkspacePane({
             { label: "Unarchive workspace", hidden: !archived, onSelect: () => void unarchive() },
             ...pinItems,
             { label: brief.text || brief.more > 0 ? "Edit brief…" : "Add a brief…", onSelect: () => setOpen("brief") },
+            {
+              // Its branch goes to origin, and its pull request is opened (D-152).
+              label: "Push branch…",
+              hidden: archived || ws.state !== "ready" || changes.state !== "ready" || !changes.changes.branch,
+              onSelect: () => setOpen("publish"),
+            },
             { label: "Delete workspace…", danger: true, onSelect: () => setOpen("delete-workspace") },
           ]}
         />
@@ -728,6 +734,14 @@ export function WorkspacePane({
         />
       )}
       {open === "archive-workspace" && <ArchiveWorkspaceDialog host={host.name} ws={ws} onClose={() => setOpen(null)} />}
+      {open === "publish" && (
+        <PublishDialog
+          host={host.name}
+          ws={ws}
+          changes={changes.state === "ready" ? changes.changes : null}
+          onClose={() => setOpen(null)}
+        />
+      )}
       {open === "delete-workspace" && <DeleteWorkspaceDialog host={host.name} ws={ws} onClose={() => setOpen(null)} />}
       {open === "delete-session" &&
         (() => {

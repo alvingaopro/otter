@@ -203,3 +203,11 @@ export interface SessionPort {
   address: string;
   process?: string;
 }
+
+/** What `workspace_publish` did (D-152). */
+export interface Published {
+  branch: string;
+  uncommitted: boolean;
+  pullRequest?: { number: number; url: string; opened: boolean };
+  note?: string;
+}

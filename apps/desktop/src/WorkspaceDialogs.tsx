@@ -1,8 +1,9 @@
 import { useState, type ReactNode } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import { Dialog } from "./Dialog";
 import { explain } from "./newer";
-import type { SessionView, WorkspaceView } from "./types";
+import type { Published, SessionView, WorkspaceChanges, WorkspaceView } from "./types";
 
 /**
  * A confirmation that runs one command: it owns its busy flag, its error and
@@ -135,5 +136,107 @@ export function DeleteSessionDialog({
         {running ? "It is still running; it will be stopped. " : ""}It is removed from {ws.name}; the workspace’s files stay.
       </p>
     </Confirm>
+  );
+}
+
+/**
+ * Push the workspace's branch, and open its pull request (D-152): the
+ * developer's own action, so this dialog is the allowance. Nothing is
+ * committed for them.
+ */
+export function PublishDialog({
+  host,
+  ws,
+  changes,
+  onClose,
+}: {
+  host: string;
+  ws: WorkspaceView;
+  changes: WorkspaceChanges | null;
+  onClose: () => void;
+}) {
+  const [pullRequest, setPullRequest] = useState(true);
+  const [title, setTitle] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [done, setDone] = useState<Published | null>(null);
+  const branch = changes?.branch ?? ws.source;
+  const unpushed = changes?.unpushed;
+  async function publish() {
+    setBusy(true);
+    setError(null);
+    try {
+      setDone(
+        await invoke<Published>("workspace_publish", {
+          host,
+          workspace: ws.id,
+          pullRequest,
+          title: title.trim() || null,
+          body: null,
+        }),
+      );
+    } catch (e) {
+      setError(explain(host, e));
+    } finally {
+      setBusy(false);
+    }
+  }
+  if (done) {
+    const pr = done.pullRequest;
+    return (
+      <Dialog title={`Pushed ${done.branch}`} onClose={onClose}>
+        {pr && (
+          <p>
+            {pr.opened ? "Opened" : "Already open:"}{" "}
+            <button type="button" className="link-btn" onClick={() => void openUrl(pr.url).catch(() => {})}>
+              pull request #{pr.number}
+            </button>
+            {pr.opened ? "." : "; its description is as it was."}
+          </p>
+        )}
+        {done.note && <div className="notice">{done.note}</div>}
+        {done.uncommitted && <p className="muted">Changes not committed yet were left out.</p>}
+        <div className="form-actions">
+          <span className="spacer" />
+          <button className="btn primary" onClick={onClose}>
+            Done
+          </button>
+        </div>
+      </Dialog>
+    );
+  }
+  return (
+    <Dialog title={`Push ${branch}?`} onClose={onClose}>
+      <p className="muted">
+        Pushes {branch} to origin from {host}
+        {unpushed ? `: ${unpushed} commit${unpushed === 1 ? "" : "s"} no remote has` : ""}. What isn't committed isn't
+        taken{changes && changes.files.some((f) => f.uncommitted) ? " (there are changes not committed)" : ""}.
+      </p>
+      <label className="check">
+        <input type="checkbox" checked={pullRequest} onChange={(e) => setPullRequest(e.target.checked)} />
+        Open a pull request (if the branch has none)
+      </label>
+      {pullRequest && (
+        <label className="field">
+          <span>Title</span>
+          <input
+            className="prose"
+            value={title}
+            onChange={(e) => setTitle(e.target.value)}
+            placeholder="The last commit's subject"
+          />
+        </label>
+      )}
+      {error && <div className="notice error">{error}</div>}
+      <div className="form-actions">
+        <span className="spacer" />
+        <button className="btn outline" onClick={onClose}>
+          Cancel
+        </button>
+        <button className="btn primary" disabled={busy} onClick={() => void publish()}>
+          {pullRequest ? "Push and open pull request" : "Push"}
+        </button>
+      </div>
+    </Dialog>
   );
 }
