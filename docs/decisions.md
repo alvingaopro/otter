@@ -3672,7 +3672,8 @@ Follows D-118, with what dogfooding it left open.
   client turns a pane off, tmux stops reading it and the program blocks.
   Tested: the program runs on while the client gets nothing.
   *Amended 2026-10-21 (D-160):* the output is kept for the terminal, up to
-  1 MiB, and sent when it's back; a snapshot only past that.
+  1 MiB, and sent when it's back; a snapshot past that, or when it comes
+  back at another size.
 - **SSH is compressed.** Snapshots are escape-heavy text. Real Claude Code
   ones went from 203 KiB to 29 KiB with zlib, which is what SSH uses.
   Otter's ssh passes `Compression=yes` after the host's `ssh_args`, so an
