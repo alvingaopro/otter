@@ -7,9 +7,11 @@
 //! All durable state lives in one [`Store`] behind an async mutex. Operations
 //! that touch the execution backend hold the lock while they do so; backend
 //! calls are short (spawning a tmux command), and holding the lock keeps the
-//! store and the backend consistent with each other — in particular, the
-//! reconciler never observes an execution that exists in one but not yet the
-//! other. Slow work (git, direnv) never runs under the lock.
+//! store and the backend consistent with each other. The reconciler, which
+//! only looks, twice a second, asks the backend without the lock about the
+//! executions it read under it, and applies the answer only to those still
+//! running as they were (D-159). Slow work (git, direnv) never runs under
+//! the lock.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -43,6 +45,8 @@ pub struct Daemon {
     /// The first reconciliation is done: what died while otterd was down has
     /// long settled.
     pub(crate) reconciled_once: std::sync::atomic::AtomicBool,
+    /// Held for a reconciliation pass: one at a time (reconcile.rs).
+    pub(crate) reconciling: Mutex<()>,
     /// Problems otterd met and keeps until they're gone (D-077), by kind.
     pub(crate) problems:
         std::sync::Mutex<std::collections::BTreeMap<&'static str, otter_core::Problem>>,
@@ -171,6 +175,7 @@ impl Daemon {
             starting: Default::default(),
             dying: Default::default(),
             reconciled_once: Default::default(),
+            reconciling: Mutex::new(()),
             problems: std::sync::Mutex::new(problems),
             git: GitManager::new(paths.home.join("repos"), &env.vars, git_account.clone()),
             git_account,
