@@ -30,7 +30,7 @@ use std::time::Duration;
 use chrono::Utc;
 use otter_core::task::{
     ARCHIVED, Criterion, Decider, DecisionKind, DecisionRequest, DecisionStatus, Evidence,
-    EvidenceKind, MessageRole, Risk, RunState, Step, StepStatus, Task, TaskEvent, TaskStatus,
+    EvidenceKind, HELD, MessageRole, Risk, RunState, Step, StepStatus, Task, TaskEvent, TaskStatus,
     VerificationMark, WAITING, YOUR_AGENT,
 };
 use otter_core::{DecisionId, EvidenceId, StepId, TaskId};
@@ -1498,11 +1498,12 @@ impl Daemon {
     }
 
     /// Why the task's workspace can't be worked in now, if it can't
-    /// (D-079): another task's run is there, or an agent the developer
-    /// started is at work there.
+    /// (D-079): another task's run is there, another task's work is there
+    /// and not done (D-156), or an agent the developer started is at work
+    /// there.
     async fn workspace_taken(self: &Arc<Self>, f: &Task) -> Option<String> {
         let ws_id = f.workspace_id.as_ref()?;
-        let (name, busy_session) = {
+        let (name, busy_session, git) = {
             let store = self.store.lock().await;
             let ws = store.workspace(ws_id.as_str())?;
             // Put away when it ended (D-105): its own comes back; another
@@ -1546,7 +1547,12 @@ impl Daemon {
                     })
                 })
                 .map(|s| s.name.clone());
-            (ws.name.clone(), busy)
+            // Where delivery would commit: in a repository, at its root or
+            // below it.
+            let git = std::path::Path::new(&ws.root)
+                .ancestors()
+                .any(|p| p.join(".git").exists());
+            (ws.name.clone(), busy, git)
         };
         if let Some(other) = self.workspace_holder(ws_id).filter(|o| o != &f.id) {
             let title = self
@@ -1555,6 +1561,27 @@ impl Daemon {
                 .map(|o| o.title)
                 .unwrap_or_else(|_| other.to_string());
             return Some(format!("{WAITING}{name}: “{title}” is working there"));
+        }
+        // In a Git repository, another task's work there, not done, holds
+        // it between its runs too, or publishing it would take this one's
+        // edits (D-156). At work, it lets go by itself; at rest — in
+        // review, paused, blocked or failed — only the developer can free
+        // it. Not when this one has worked there already: neither would go
+        // on.
+        if git
+            && f.runs.is_empty()
+            && let Some(other) = self.tasks.lock().await.list().into_iter().find(|o| {
+                o.id != f.id
+                    && o.workspace_id.as_ref() == Some(ws_id)
+                    && !o.runs.is_empty()
+                    && !matches!(o.status, TaskStatus::Done | TaskStatus::Cancelled)
+            })
+        {
+            return Some(if other.status.is_active() {
+                format!("{WAITING}{name}: “{}” is working there", other.title)
+            } else {
+                format!("{WAITING}{name}: “{}”{HELD}", other.title)
+            });
         }
         busy_session.map(|s| format!("{WAITING}{name}: {s}{YOUR_AGENT}"))
     }
