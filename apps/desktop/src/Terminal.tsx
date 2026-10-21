@@ -242,13 +242,6 @@ export function Terminal({ host, workspace, session, onEnd, generation, label, w
     });
     term.open(el.current!);
     termRef.current = term;
-    try {
-      const webgl = new WebglAddon();
-      webgl.onContextLoss(() => webgl.dispose());
-      term.loadAddon(webgl);
-    } catch {
-      // DOM renderer fallback.
-    }
     if (realSize(fit.proposeDimensions())) fit.fit();
     term.focus();
     setSize(`${term.cols}×${term.rows}`);
@@ -268,6 +261,64 @@ export function Terminal({ host, workspace, session, onEnd, generation, label, w
     let fromBottom: number | null = null;
 
     const onScreen = () => !!el.current && el.current.offsetWidth > 0 && el.current.offsetHeight > 0;
+    // WebGL only while on screen (D-153): WebKit has about sixteen contexts
+    // and takes the oldest when there are more, and kept terminals (D-100,
+    // D-152) would hold them hidden. Hidden, xterm draws nothing anyway.
+    let webgl: { addon: WebglAddon; gl: WebGL2RenderingContext | null } | null = null;
+    let noWebgl = false;
+    // xterm's dispose takes the canvas away but leaves its context to the
+    // garbage collector, still counted: give it up now.
+    const release = () => {
+      if (!webgl) return;
+      const { addon, gl } = webgl;
+      webgl = null;
+      addon.dispose();
+      gl?.getExtension("WEBGL_lose_context")?.loseContext();
+    };
+    const renderer = () => {
+      if (!onScreen()) {
+        release();
+        return;
+      }
+      if (webgl || noWebgl) return;
+      let addon: WebglAddon;
+      try {
+        addon = new WebglAddon();
+      } catch {
+        // No WebGL here: the DOM renderer.
+        noWebgl = true;
+        return;
+      }
+      const screen = term.element?.querySelector(".xterm-screen");
+      const canvases = () => [...(screen?.querySelectorAll("canvas") ?? [])];
+      const before = new Set(canvases());
+      try {
+        term.loadAddon(addon);
+      } catch {
+        // No context now: the DOM renderer, and another try when next shown.
+        try {
+          addon.dispose();
+        } catch {
+          // Never activated.
+        }
+        return;
+      }
+      // Its context: on the canvas it added that has one (the others are 2D).
+      const gl =
+        canvases()
+          .filter((c) => !before.has(c))
+          .map((c) => c.getContext("webgl2"))
+          .find((g) => g !== null) ?? null;
+      const mine = { addon, gl };
+      webgl = mine;
+      addon.onContextLoss(() => {
+        if (webgl !== mine) return;
+        release();
+        // Lost while shown: a new one at once, once per loss.
+        renderer();
+      });
+    };
+    renderer();
     // Fit to the element; while another client sizes the window, stay at its
     // size, and tell the host what this one would be.
     const fitNow = () => {
@@ -403,6 +454,7 @@ export function Terminal({ host, workspace, session, onEnd, generation, label, w
     // A hidden terminal (another view in front, D-041) has no size: fitting
     // it then would shrink the session for everyone attached.
     const observer = new ResizeObserver(() => {
+      renderer();
       fitNow();
       start();
       tellView();
@@ -496,6 +548,8 @@ export function Terminal({ host, workspace, session, onEnd, generation, label, w
       setEarlier("none");
       if (id !== null) void invoke("attach_close", { id });
       termRef.current = null;
+      // Unmounted while shown (a restart, a reconnect): its context too.
+      release();
       term.dispose();
     };
   }, [host, workspace, session, generation, epoch]);

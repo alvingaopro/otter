@@ -889,12 +889,13 @@ function Developer() {
     <Group title="Sessions">
       <Row
         label="Sessions kept attached"
-        hint="Per workspace, the ones shown included: going back to one is instant and keeps its scrolled history, instead of reading the history again. Each takes a connection and a terminal's memory. 1 keeps only what's shown."
+        hint="Per workspace, the ones shown included, in each of the last five workspaces. Going back to one that printed nothing meanwhile is instant and keeps its history; one that did is caught up from the host. Each takes a connection and a terminal's memory. 1 keeps only what's shown."
       >
         <div className="stepper">
           <button
             type="button"
             aria-label="Keep fewer sessions"
+            disabled={keep.capacity <= 1}
             onClick={() => setKeepSettings({ capacity: keep.capacity - 1 })}
           >
             −
@@ -910,6 +911,7 @@ function Developer() {
           <button
             type="button"
             aria-label="Keep more sessions"
+            disabled={keep.capacity >= MAX_KEPT}
             onClick={() => setKeepSettings({ capacity: keep.capacity + 1 })}
           >
             +
@@ -924,6 +926,7 @@ function Developer() {
           <button
             type="button"
             aria-label="Shorter"
+            disabled={keep.idleMinutes <= 0}
             onClick={() => setKeepSettings({ idleMinutes: keep.idleMinutes - 1 })}
           >
             −
@@ -939,6 +942,7 @@ function Developer() {
           <button
             type="button"
             aria-label="Longer"
+            disabled={keep.idleMinutes >= MAX_IDLE_MINUTES}
             onClick={() => setKeepSettings({ idleMinutes: keep.idleMinutes + 1 })}
           >
             +

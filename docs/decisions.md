@@ -5152,6 +5152,9 @@ this between workspaces; this is the same between sessions.
   first kept: the terminals' elements aren't moved, and the left or right
   place is CSS `order`, so a swap of the two sides doesn't re-parent a
   terminal either.
+  *Amended 2026-10-21 (D-153):* "just shown" holds only for a session that
+  printed nothing while hidden. One that did gets a full snapshot when
+  shown (D-119), as an attach would, and loses earlier lines it had loaded.
 - **Hidden means idle,** as in D-100: a hidden terminal never fits, tells
   the host it isn't on screen and gets nothing until it is (D-119, D-137),
   and takes no keys.
@@ -5168,3 +5171,38 @@ this between workspaces; this is the same between sessions.
 - Not done: *scrollback loaded with "earlier"* still costs up to 4 MiB on
   its own and is lost when a session is let go. Not measured on a slow link
   either, only the attaches counted (`App.test.tsx`).
+
+## D-153 — A hidden terminal gives up its WebGL context (2026-10-21)
+
+A review of D-152 after it merged found what it had missed, and D-119 had
+written down: WebKit has about sixteen WebGL contexts, and each terminal
+took one when it was made, hidden or not. D-100 already kept up to ten
+terminals; D-152 allowed 25 by default. Past the limit WebKit loses the
+oldest context, and that terminal, often the one in front, drew with the
+DOM renderer from then on.
+
+- **WebGL while on screen only.** A terminal loads the WebGL renderer when
+  it is on screen at a size, and disposes it when it is hidden (its pane, its
+  view or its session not shown), the same `ResizeObserver` that already
+  stops it fitting. Hidden, xterm draws nothing anyway. xterm's dispose
+  only removes the canvas, and WebKit counts its context until it is
+  collected, so the terminal gives it up itself (`WEBGL_lose_context`), on
+  the canvas the addon added. A context lost while shown is replaced at
+  once; one that couldn't be made is tried again when next shown (only no
+  WebGL at all stops trying). So the app holds a context per terminal on
+  screen: one or two.
+- **What D-152 saves, said as it is:** a session that printed nothing while
+  hidden is shown at once, with its history. One that printed anything is
+  caught up by a snapshot (about 150 KiB over compressed SSH for 5,000
+  lines), as an attach would be, without mounting again. The Developer hint
+  says so too.
+- Also: an older host without control frames (D-119) is never told a
+  terminal is hidden, so a kept one there keeps getting its output.
+- Not done:
+  - Catching up a session that printed a little while hidden without a
+    snapshot (the daemon keeping that output, to a budget, instead of
+    dropping it). That is D-119's off-screen rule and the next step.
+  - Each attach is a session on one SSH connection per host, and sshd allows
+    ten by default (`MaxSessions`). Not measured past that.
+  - Checked in tests only: the renderer switch isn't exercised there (the
+    terminal is mocked), and not yet in WebKit.
