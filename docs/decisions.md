@@ -5184,9 +5184,13 @@ DOM renderer from then on.
 - **WebGL while on screen only.** A terminal loads the WebGL renderer when
   it is on screen at a size, and disposes it when it is hidden (its pane, its
   view or its session not shown), the same `ResizeObserver` that already
-  stops it fitting. Hidden, xterm draws nothing anyway. A lost context falls
-  back to the DOM renderer and gets a new one the next time the terminal is
-  shown. So the app holds a context per terminal on screen: one or two.
+  stops it fitting. Hidden, xterm draws nothing anyway. xterm's dispose
+  only removes the canvas, and WebKit counts its context until it is
+  collected, so the terminal gives it up itself (`WEBGL_lose_context`), on
+  the canvas the addon added. A context lost while shown is replaced at
+  once; one that couldn't be made is tried again when next shown (only no
+  WebGL at all stops trying). So the app holds a context per terminal on
+  screen: one or two.
 - **What D-152 saves, said as it is:** a session that printed nothing while
   hidden is shown at once, with its history. One that printed anything is
   caught up by a snapshot (about 150 KiB over compressed SSH for 5,000

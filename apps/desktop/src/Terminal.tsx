@@ -264,27 +264,59 @@ export function Terminal({ host, workspace, session, onEnd, generation, label, w
     // WebGL only while on screen (D-153): WebKit has about sixteen contexts
     // and takes the oldest when there are more, and kept terminals (D-100,
     // D-152) would hold them hidden. Hidden, xterm draws nothing anyway.
-    let webgl: WebglAddon | null = null;
+    let webgl: { addon: WebglAddon; gl: WebGL2RenderingContext | null } | null = null;
     let noWebgl = false;
+    // xterm's dispose takes the canvas away but leaves its context to the
+    // garbage collector, still counted: give it up now.
+    const release = () => {
+      if (!webgl) return;
+      const { addon, gl } = webgl;
+      webgl = null;
+      addon.dispose();
+      gl?.getExtension("WEBGL_lose_context")?.loseContext();
+    };
     const renderer = () => {
-      if (onScreen() && !webgl && !noWebgl) {
-        try {
-          const addon = new WebglAddon();
-          // Lost: the DOM renderer, and a new context when next shown.
-          addon.onContextLoss(() => {
-            addon.dispose();
-            if (webgl === addon) webgl = null;
-          });
-          term.loadAddon(addon);
-          webgl = addon;
-        } catch {
-          // DOM renderer fallback.
-          noWebgl = true;
-        }
-      } else if (!onScreen() && webgl) {
-        webgl.dispose();
-        webgl = null;
+      if (!onScreen()) {
+        release();
+        return;
       }
+      if (webgl || noWebgl) return;
+      let addon: WebglAddon;
+      try {
+        addon = new WebglAddon();
+      } catch {
+        // No WebGL here: the DOM renderer.
+        noWebgl = true;
+        return;
+      }
+      const screen = term.element?.querySelector(".xterm-screen");
+      const canvases = () => [...(screen?.querySelectorAll("canvas") ?? [])];
+      const before = new Set(canvases());
+      try {
+        term.loadAddon(addon);
+      } catch {
+        // No context now: the DOM renderer, and another try when next shown.
+        try {
+          addon.dispose();
+        } catch {
+          // Never activated.
+        }
+        return;
+      }
+      // Its context: on the canvas it added that has one (the others are 2D).
+      const gl =
+        canvases()
+          .filter((c) => !before.has(c))
+          .map((c) => c.getContext("webgl2"))
+          .find((g) => g !== null) ?? null;
+      const mine = { addon, gl };
+      webgl = mine;
+      addon.onContextLoss(() => {
+        if (webgl !== mine) return;
+        release();
+        // Lost while shown: a new one at once, once per loss.
+        renderer();
+      });
     };
     renderer();
     // Fit to the element; while another client sizes the window, stay at its
