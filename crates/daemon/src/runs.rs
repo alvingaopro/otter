@@ -1656,10 +1656,10 @@ fn whole_command(call: &crate::runtime::ToolCall) -> Option<String> {
     let crate::runtime::ToolCall::Command { line } = call else {
         return None;
     };
+    let line = otter_core::redact::redact(line);
     if crate::agents::claude_stream::summarize(call, "") == format!("Run `{line}`") {
         return None;
     }
-    let line = otter_core::redact::redact(line);
     if line.len() <= COMMAND_MAX {
         return Some(line);
     }
@@ -1710,7 +1710,8 @@ fn activity_line(tool: &str, call: &crate::runtime::ToolCall) -> String {
         ToolCall::Delegate { description } => format!("subagent: {description}"),
         ToolCall::Read | ToolCall::Outside { .. } | ToolCall::Other { .. } => tool.to_owned(),
     };
-    crate::agents::excerpt(&line, 200)
+    // Redacted before the cut, as a decision's summary is (D-157).
+    crate::agents::excerpt(&otter_core::redact::redact(&line), 200)
 }
 
 /// A message being written, sent at most every [`Draft::EVERY`].
@@ -1933,6 +1934,19 @@ mod tests {
             tail,
             format!("… {} more bytes, not kept", long.len() - head.len())
         );
+    }
+
+    #[test]
+    fn an_activity_line_is_redacted_before_it_is_cut() {
+        use crate::runtime::ToolCall;
+        for pad in 170..200 {
+            let line = format!(
+                "curl {} https://bob:hunter2secret@example.com",
+                "x".repeat(pad)
+            );
+            let shown = activity_line("Bash", &ToolCall::Command { line });
+            assert!(!shown.contains("hunt"), "{shown}");
+        }
     }
 
     #[test]

@@ -5292,11 +5292,28 @@ record (cut the same way). The only safe answer was to deny.
   command, indented.
 - Nothing new goes to `events.jsonl` or the task's history:
   `DecisionRequested` carries no text, and the Blocked reason is still the
-  summary.
+  summary. The e2e test reads both and checks.
+- **Two leaks next to it, closed** (found in review, older than this):
+  - *The summary was cut, then redacted.* A cut inside a URL's password
+    (before its `@`), or one that left a token shorter than its shape, was
+    no longer seen as a credential, and its start went into the summary,
+    the Blocked reason in the task's history, the conversation's permission
+    interaction and Otter's prompts. `summarize` now redacts before it
+    cuts, as the conversation's tool record already did, and so does a
+    run's activity line (`$ …`).
+  - *A grant key kept the command as written.* The key (D-066) is the
+    command line, kept on the decision and, once approved, in the task's
+    grants: `HTTPS_PROXY=http://bob:hunter2@proxy:8080 cargo build >
+    /opt/build.log` matched no word list, so it was grantable with the
+    password in its key. A line with a credential in it
+    (`redact::has_secret`) is now never granted: it is asked every time, as
+    D-066 already asks about credentials. Keys keep their format.
 
 Not done: the conversation's tool record and its permission interaction
 still carry the 200-character line, so the coding agent's feed in the app
 cuts the command as before. Otter's tools (`get_pending_decisions`) and
 the Control Agent's decision prompt still see only the summary and the
 reason. The Control Agent never decides what only the developer may
-(D-066), and policy reads the whole line either way.
+(D-066), and policy reads the whole line either way. A tool's output is
+still cut at 2,000 characters before it is redacted: by otterd for
+`claude -p`, by the worker for the SDK (which has no `redact`).

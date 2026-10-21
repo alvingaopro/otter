@@ -5083,6 +5083,25 @@ async fn a_long_command_is_there_whole_for_the_developer() {
         "{command}"
     );
     assert!(command.ends_with(" rm -rf /opt/shared"), "{command}");
+    // Kept with its decision, and only there: what comes past the cut goes
+    // neither to the host's event log nor to the task's history.
+    let state = host.home().join("state");
+    let read = |p: std::path::PathBuf| {
+        std::fs::read_to_string(&p).unwrap_or_else(|e| panic!("{}: {e}", p.display()))
+    };
+    let task_dir = state.join("tasks").join(&id);
+    let doc = read(task_dir.join("task.json"));
+    assert!(doc.contains(" rm -rf /opt/shared"), "{doc}");
+    let history = read(task_dir.join("history.jsonl"));
+    assert!(
+        history.contains("Run `python3 - <<'E' import re"),
+        "{history}"
+    );
+    let events = read(state.join("events.jsonl"));
+    assert!(events.contains(&id), "{events}");
+    for log in [&history, &events] {
+        assert!(!log.contains("rm -rf"), "{log}");
+    }
     let mut kept = String::new();
     let mut stack = vec![host.home().to_path_buf()];
     while let Some(dir) = stack.pop() {
@@ -5095,10 +5114,6 @@ async fn a_long_command_is_there_whole_for_the_developer() {
             }
         }
     }
-    assert!(
-        kept.contains("rm -rf /opt/shared"),
-        "kept with its decision"
-    );
     let answered = serde_json::to_string(&f).unwrap();
     assert!(!answered.contains("LONGLONG"), "{answered}");
     assert!(!kept.contains("LONGLONG"), "{kept}");
