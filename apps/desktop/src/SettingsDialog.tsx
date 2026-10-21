@@ -7,6 +7,7 @@ import { GitSettings } from "./GitSettings";
 import { SignInSites } from "./SignIn";
 import { FONT_SUGGESTIONS, fontChoice, fontFamily, fontSize, onFontSize, setFontFamily, setFontSize } from "./terminalFont";
 import { onPerfOverlay, perfOverlay, setPerfOverlay } from "./perf";
+import { MAX_IDLE_MINUTES, MAX_KEPT, setKeepSettings, useKeepSettings } from "./keepSessions";
 import type { ThemeChoice } from "./theme";
 
 /** Mirrors `otter_protocol::host::ControllerInfo` (D-052). */
@@ -882,7 +883,69 @@ function Segmented({
 function Developer() {
   const [overlay, setOverlay] = useState(perfOverlay);
   useEffect(() => onPerfOverlay(setOverlay), []);
+  const keep = useKeepSettings();
   return (
+    <>
+    <Group title="Sessions">
+      <Row
+        label="Sessions kept attached"
+        hint="Per workspace, the ones shown included: going back to one is instant and keeps its scrolled history, instead of reading the history again. Each takes a connection and a terminal's memory. 1 keeps only what's shown."
+      >
+        <div className="stepper">
+          <button
+            type="button"
+            aria-label="Keep fewer sessions"
+            onClick={() => setKeepSettings({ capacity: keep.capacity - 1 })}
+          >
+            −
+          </button>
+          <input
+            type="number"
+            aria-label="Sessions kept attached"
+            min={1}
+            max={MAX_KEPT}
+            value={keep.capacity}
+            onChange={(e) => e.target.value && setKeepSettings({ capacity: Number(e.target.value) })}
+          />
+          <button
+            type="button"
+            aria-label="Keep more sessions"
+            onClick={() => setKeepSettings({ capacity: keep.capacity + 1 })}
+          >
+            +
+          </button>
+        </div>
+      </Row>
+      <Row
+        label="Let go of an idle session after (minutes)"
+        hint="A session that isn't shown is detached after this long. 0 keeps it until another needs its place."
+      >
+        <div className="stepper">
+          <button
+            type="button"
+            aria-label="Shorter"
+            onClick={() => setKeepSettings({ idleMinutes: keep.idleMinutes - 1 })}
+          >
+            −
+          </button>
+          <input
+            type="number"
+            aria-label="Minutes before an idle session is detached"
+            min={0}
+            max={MAX_IDLE_MINUTES}
+            value={keep.idleMinutes}
+            onChange={(e) => e.target.value && setKeepSettings({ idleMinutes: Number(e.target.value) })}
+          />
+          <button
+            type="button"
+            aria-label="Longer"
+            onClick={() => setKeepSettings({ idleMinutes: keep.idleMinutes + 1 })}
+          >
+            +
+          </button>
+        </div>
+      </Row>
+    </Group>
     <Group title="Performance">
       <Row
         label="Performance overlay"
@@ -898,6 +961,7 @@ function Developer() {
         />
       </Row>
     </Group>
+    </>
   );
 }
 

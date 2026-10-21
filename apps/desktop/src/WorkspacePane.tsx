@@ -15,6 +15,7 @@ import { ago, dropPlace, kindLabel, moveTo, sessionGlyph } from "./model";
 import { explain, invokeNewer } from "./newer";
 import { RenameDialog } from "./RenameDialog";
 import { SessionTerminal } from "./SessionTerminal";
+import { useKeptSessions } from "./keepSessions";
 import { STATUS_LABEL, statusDetail, taskGlyph, type PlacedTask } from "./tasks";
 import type { AttentionView, Placed, SessionPort, SessionView, WorkspaceChanges } from "./types";
 
@@ -192,6 +193,11 @@ export function WorkspacePane({
   }
   /** The session the keyboard goes to (⌘F finds in it). */
   const keyed = beside && right ? beside : current;
+  // The terminals of sessions shown before stay attached, hidden (D-152).
+  const keptIds = useKeptSessions(
+    current ? [current.id, ...(beside ? [beside.id] : [])] : [],
+    ws.sessions.map((s) => s.id),
+  );
 
   const attention: AttentionView | undefined =
     current?.attention ?? ws.attention.find((a) => !a.sessionId);
@@ -635,42 +641,34 @@ export function WorkspacePane({
             />
           )}
           <div className="session-row" style={{ "--split-width": `${splitWidth}px` } as CSSProperties}>
-            <SessionTerminal
-              key={current.id}
-              host={host}
-              workspace={ws.id}
-              wsKey={placed.key}
-              session={current}
-              theme={theme}
-              active={active && !finding && !(beside && right)}
-              busy={busy}
-              onRestart={() => void act("session_restart", { host: host.name, workspace: ws.id, session: current.id })}
-              onDelete={() => {
-                setClosing(current.id);
-                setOpen("delete-session");
-              }}
-              onFocus={() => setRight(false)}
-            />
-            {beside && (
-              <>
-                <PanelGrip panel={SPLIT} width={splitWidth} onResize={setSplitWidth} label="Right session width" />
+            {keptIds.flatMap((id) => {
+              const s = ws.sessions.find((x) => x.id === id);
+              if (!s) return [];
+              const isRight = s.id === beside?.id;
+              const inFront = isRight || s.id === current.id;
+              return (
                 <SessionTerminal
-                  key={beside.id}
+                  key={s.id}
                   host={host}
                   workspace={ws.id}
                   wsKey={placed.key}
-                  session={beside}
+                  session={s}
                   theme={theme}
-                  active={active && !finding && right}
+                  active={inFront && active && !finding && (isRight ? right : !(beside && right))}
+                  shown={inFront}
+                  right={isRight}
                   busy={busy}
-                  onRestart={() => void act("session_restart", { host: host.name, workspace: ws.id, session: beside.id })}
+                  onRestart={() => void act("session_restart", { host: host.name, workspace: ws.id, session: s.id })}
                   onDelete={() => {
-                    setClosing(beside.id);
+                    setClosing(s.id);
                     setOpen("delete-session");
                   }}
-                  onFocus={() => setRight(true)}
+                  onFocus={() => setRight(isRight)}
                 />
-              </>
+              );
+            })}
+            {beside && (
+              <PanelGrip panel={SPLIT} width={splitWidth} onResize={setSplitWidth} label="Right session width" />
             )}
           </div>
         </>

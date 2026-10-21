@@ -218,8 +218,51 @@ describe("Activity Bar navigation", () => {
     expect(pane().querySelector(".tab.beside")?.textContent).toContain("shell");
     const unmounts = terminal.unmounts;
     await act(async () => split().click());
-    expect(pane().querySelectorAll('[data-testid="terminal"]').length).toBe(1);
-    expect(terminal.unmounts).toBe(unmounts + 1);
+    // The one on the right is hidden, still attached (D-152).
+    expect(pane().querySelectorAll(".session-col:not([hidden]) [data-testid=\"terminal\"]").length).toBe(1);
+    expect(terminal.unmounts).toBe(unmounts);
+  });
+
+  it("keeps a session attached, hidden, while another is shown (D-152)", async () => {
+    const row = (name: string) =>
+      [...host.querySelectorAll<HTMLButtonElement>(".ws-row")].find((b) => b.textContent?.includes(name))!;
+    await act(async () => tab("workspaces").click());
+    await act(async () => row("other").click());
+    await flush();
+    const pane = () => host.querySelector<HTMLElement>(".ws-pane:not([hidden])")!;
+    const tabNamed = (n: string) => [...pane().querySelectorAll<HTMLButtonElement>(".tab-main")].find((b) => b.textContent?.includes(n))!;
+    const shownTerminals = () => pane().querySelectorAll(".session-col:not([hidden]) [data-testid=\"terminal\"]").length;
+    const mounts = terminal.mounts;
+    const unmounts = terminal.unmounts;
+    await act(async () => tabNamed("logs").click());
+    expect(terminal.mounts).toBe(mounts + 1);
+    expect(shownTerminals()).toBe(1);
+    // Back: shown without attaching again, and the other one is hidden.
+    await act(async () => tabNamed("shell").click());
+    expect(terminal.mounts).toBe(mounts + 1);
+    expect(terminal.unmounts).toBe(unmounts);
+    expect(shownTerminals()).toBe(1);
+    expect(pane().querySelectorAll(".session-col[hidden]").length).toBe(1);
+  });
+
+  it("detaches the sessions beyond the kept ones, as set in Developer (D-152)", async () => {
+    const { setKeepSettings } = await import("./keepSessions");
+    const row = (name: string) =>
+      [...host.querySelectorAll<HTMLButtonElement>(".ws-row")].find((b) => b.textContent?.includes(name))!;
+    await act(async () => tab("workspaces").click());
+    await act(async () => row("other").click());
+    await flush();
+    const pane = () => host.querySelector<HTMLElement>(".ws-pane:not([hidden])")!;
+    const tabNamed = (n: string) => [...pane().querySelectorAll<HTMLButtonElement>(".tab-main")].find((b) => b.textContent?.includes(n))!;
+    try {
+      await act(async () => setKeepSettings({ capacity: 1 }));
+      await act(async () => tabNamed("logs").click());
+      // Only what is shown stays: shell was let go.
+      expect(pane().querySelectorAll(".session-col").length).toBe(1);
+      expect(terminal.unmounts).toBe(1);
+    } finally {
+      setKeepSettings({ capacity: 5 });
+    }
   });
 
   it("switches sessions with ⌥1…⌥9, before the terminal sees the keys (D-122)", async () => {

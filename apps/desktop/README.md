@@ -49,7 +49,7 @@ Layout:
   `TasksView` (a grouped list; a task's Overview and Activity, D-114) + `tasks.ts` (the contract) + `taskSource.ts` (where
   tasks come from: the hosts, or sample data in tests; D-042),
   `Sidebar` (with the filter, and updating every host behind the app at once, D-131), `QuickOpen` (⌘K), `WorkspacePane` (kept
-  mounted while hidden, D-100), `ChangesPanel` + `changes.ts` (D-102),
+  mounted while hidden, D-100; its sessions' terminals too, `keepSessions.ts`, D-152), `ChangesPanel` + `changes.ts` (D-102),
   `FindPanel` (⌘F), `SessionTerminal` (a session's terminal and its end
   banners; two side by side, D-110), `DiffView` + `diff.ts` + `highlight.ts`
   (diffs side by side, folded, highlighted, D-111), `Terminal` (xterm.js, which keeps the session's history, D-118; `imeCommit.ts` for Pinyin's punctuation, D-126; `pixelScroll.ts` for scrolling by the pixel, D-130; `links.ts` for ⌘-click,

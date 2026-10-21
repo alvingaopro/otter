@@ -221,6 +221,28 @@ describe("Settings", () => {
     expect(dialog().textContent).not.toContain("Unsaved changes");
   });
 
+  it("sets how many sessions stay attached, and for how long, under Developer (D-152)", async () => {
+    const { setKeepSettings, keepSettings } = await import("./keepSessions");
+    try {
+      await tab("Developer");
+      const kept = dialog().querySelector<HTMLInputElement>('input[aria-label="Sessions kept attached"]')!;
+      const idle = dialog().querySelector<HTMLInputElement>('input[aria-label="Minutes before an idle session is detached"]')!;
+      expect([kept.value, idle.value]).toEqual(["5", "10"]);
+      await act(async () => type(kept, "8"));
+      expect(localStorage.getItem("otter.kept-sessions")).toBe("8");
+      await act(async () => dialog().querySelector<HTMLButtonElement>('button[aria-label="Keep fewer sessions"]')!.click());
+      expect(kept.value).toBe("7");
+      await act(async () => type(idle, "0"));
+      expect(localStorage.getItem("otter.kept-idle-minutes")).toBe("0");
+      // Out of range goes to the nearest.
+      await act(async () => type(kept, "99"));
+      expect(keepSettings().capacity).toBe(20);
+      expect(calls.map((c) => c.cmd)).toEqual(["settings_get"]);
+    } finally {
+      setKeepSettings({ capacity: 5, idleMinutes: 10 });
+    }
+  });
+
   it("sets this Mac's theme, terminal font and size, at once and without a host", async () => {
     await act(async () => radio("Theme", "Dark").click());
     expect(themes).toEqual(["dark"]);
