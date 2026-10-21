@@ -14,6 +14,7 @@ import type { TaskSource } from "./taskSource";
 import { QuestionForm, Turn, WorkHead } from "./Work";
 import {
   GROUPS,
+  HELD,
   STATUS_LABEL,
   budgetBinds,
   collapseReasons,
@@ -562,7 +563,7 @@ function StatusBanner({
           <Glyph kind={yours ? "needs" : "working"} />
           <span className="banner-summary">{f.status_reason}</span>
         </span>
-        {(f.status_reason.endsWith("is working there") || f.status_reason.endsWith("a workspace of its own")) && f.runs.length === 0 && (
+        {(f.status_reason.endsWith("is working there") || f.status_reason.endsWith(HELD)) && f.runs.length === 0 && (
           <span className="banner-actions">
             {waited && (
               <button className="btn outline" title="Let it finish, or stop it, and the task starts" onClick={() => onOpenSession(waited.id)}>

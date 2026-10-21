@@ -5280,9 +5280,9 @@ first step).
   cancelled, or moves to a workspace of its own (D-080, the app's button),
   since it hasn't worked yet. While the other is at work the wait reads as
   D-079's ("… is working there") and ends by itself; while it's at rest
-  only the developer can end it, so it says so ("… has work there you
-  haven't accepted: accept or cancel it, or give this task a workspace of
-  its own") and needs them ("Waiting on you").
+  only the developer can end it, so it says so ("… has unfinished work
+  there: finish or cancel it, or give this task a workspace of its own")
+  and needs them ("Waiting on you").
 - **Pausing doesn't hand a Git workspace over:** paused, a task's work is
   still in the tree. Cancelling does. A cancelled task's files stay
   (D-068), and the next task's delivery then takes them as the
@@ -5297,6 +5297,21 @@ first step).
 - **No deadlock:** the hold applies only to a task that hasn't run in the
   workspace yet. Two that both have (from before this, or another way
   in) fall back to D-079's one run at a time.
+- **Not done** (from the review, 2026-10-21):
+  - The hold is about when tasks start, not what is committed: publishing
+    still commits whatever is in the tree. A task accepted or cancelled
+    without publishing leaves its edits there, and the next task's
+    delivery takes them under its own title. A check before committing that
+    the tree is the one verified would catch more, but not this case (the
+    next task verified with those edits in the tree).
+  - A trigger on a Git workspace makes one task and then waits behind it
+    until it's accepted; the trigger's wait limit doesn't apply to that
+    wait, so an unattended trigger needs the developer each time.
+  - Done isn't final (the goal can change after it, D-050): a task
+    re-planned after another started in the workspace has runs, so both
+    fall back to D-079.
+  - A task that has run counts wherever its runs were; a task moved to
+    this workspace after running elsewhere isn't held.
 - **Not done:** a task accepted but whose pull request isn't merged yet
   leaves its branch with that PR open; a next task in the same workspace
   pushes to that branch and finds that PR. Waiting for the merge would

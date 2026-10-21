@@ -27,9 +27,10 @@ pub const WAITING: &str = "Waiting for ";
 /// works there, or the workspace is put away (D-134).
 pub const YOUR_AGENT: &str = ", an agent you started, is working there";
 pub const ARCHIVED: &str = ": it's archived; unarchive it to go on";
-/// …or another task's work is there, at rest, until it's accepted or
-/// cancelled (D-156).
-pub const HELD: &str = " has work there you haven't accepted: accept or cancel it, or give this task a workspace of its own";
+/// …or another task's work is there, at rest, until it's done or
+/// cancelled (D-156). The app matches it too (`HELD` in `tasks.ts`).
+pub const HELD: &str =
+    " has unfinished work there: finish or cancel it, or give this task a workspace of its own";
 
 /// Version of the persisted [`Task`] document. Bump with a migration in
 /// the daemon's task store.
