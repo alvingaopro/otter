@@ -102,3 +102,44 @@ pub struct SessionPort {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub process: Option<String>,
 }
+
+/// `workspace.publish`: push the workspace's branch, and with
+/// `pull_request` open (or find) its pull request (D-152). The developer's own
+/// action, asked for by a client; Otter's tools cannot (D-047).
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct WorkspacePublish {
+    pub workspace: String,
+    #[serde(default)]
+    pub pull_request: bool,
+    /// The pull request's title; the last commit's subject if absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    /// The pull request's description; empty if absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub body: Option<String>,
+}
+
+/// What `workspace.publish` did.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct Published {
+    /// The branch pushed to `origin`.
+    pub branch: String,
+    /// Changes not committed, which a push doesn't take.
+    #[serde(default)]
+    pub uncommitted: bool,
+    /// The pull request, if one was asked for and could be had.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pull_request: Option<PullRequest>,
+    /// Why there is no pull request, when one was asked for.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PullRequest {
+    pub number: u64,
+    pub url: String,
+    /// Opened by this call; false when the branch already had one, whose
+    /// description is left as it is.
+    pub opened: bool,
+}

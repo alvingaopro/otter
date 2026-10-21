@@ -10,14 +10,15 @@ use std::path::{Path, PathBuf};
 
 use otter_core::{Workspace, WorkspaceSource};
 use otter_protocol::work::{
-    ChangeKind, ChangedFile, FileDiff, MAX_CHANGED_FILES, MAX_DIFF_BYTES, SessionPort,
-    WorkspaceChanges,
+    ChangeKind, ChangedFile, FileDiff, MAX_CHANGED_FILES, MAX_DIFF_BYTES, Published, PullRequest,
+    SessionPort, WorkspaceChanges, WorkspacePublish,
 };
 
 use crate::daemon::{Daemon, RpcResult};
 use crate::delivery::run;
 use crate::env::{EnvMap, which};
 use crate::work_state::merge_base;
+use otter_protocol::RpcError;
 
 /// New files whose lines are counted, up to this size each, this many of
 /// them and this much in all; past that they are listed without counts, as
@@ -341,6 +342,90 @@ impl Daemon {
         let ws = self.workspace_get(r).await?;
         let env = self.environments.base().clone();
         Ok(changes(Path::new(&ws.root), &env, base_of(&ws).as_deref()).await)
+    }
+
+    /// Push the workspace's branch, and open its pull request if asked
+    /// (D-152). The developer asked for it, in a client: that is the
+    /// allowance a task asks for (D-047). Nothing is committed for them, and
+    /// a pull request that exists keeps its description.
+    pub(crate) async fn workspace_publish(&self, p: WorkspacePublish) -> RpcResult<Published> {
+        use crate::delivery::{Git, GitHub};
+        let ws = self.workspace_get(&p.workspace).await?;
+        self.not_being_deleted(&ws)?;
+        if ws.state != otter_core::WorkspaceState::Ready {
+            return Err(RpcError::conflict(format!(
+                "workspace `{}` is not ready",
+                ws.name
+            )));
+        }
+        if !matches!(ws.source, WorkspaceSource::Git(_)) {
+            return Err(RpcError::conflict(format!(
+                "workspace `{}` is not a Git workspace",
+                ws.name
+            )));
+        }
+        let root = PathBuf::from(&ws.root);
+        let env = self.env_for_launch(&ws).await?;
+        let git = Git {
+            root: &root,
+            env: &env,
+        };
+        let Some(branch) = git.publishable_branch().await else {
+            return Err(RpcError::conflict(
+                "there is no branch to push, or no `origin` to push it to",
+            ));
+        };
+        git.push(&branch)
+            .await
+            .map_err(|e| RpcError::internal(format!("pushing {branch}: {e:#}")))?;
+        let mut out = Published {
+            branch: branch.clone(),
+            uncommitted: git.committable().await,
+            pull_request: None,
+            note: None,
+        };
+        if !p.pull_request {
+            return Ok(out);
+        }
+        // Otter's own GitHub sign-in when it has one (D-133), else the host's.
+        let gh_env = self.git_account.gh_env(&env);
+        let Some(gh) = GitHub::find(&root, &gh_env) else {
+            out.note = Some(
+                "`gh` is not installed on this host: the branch is pushed, no pull request opened"
+                    .into(),
+            );
+            return Ok(out);
+        };
+        if let Some((number, url)) = gh.find_pr(&branch).await {
+            out.pull_request = Some(PullRequest {
+                number,
+                url,
+                opened: false,
+            });
+            return Ok(out);
+        }
+        // A workspace on an existing branch has that branch for its base:
+        // the pull request goes to the repository's default.
+        let base = base_of(&ws).filter(|b| *b != branch);
+        let title = match p.title.as_deref().map(str::trim).filter(|t| !t.is_empty()) {
+            Some(t) => t.to_owned(),
+            None => git.subject().await.unwrap_or_else(|| branch.clone()),
+        };
+        let (number, url) = gh
+            .publish(
+                &branch,
+                base.as_deref(),
+                &title,
+                p.body.as_deref().unwrap_or(""),
+            )
+            .await
+            .map_err(|e| RpcError::internal(format!("opening the pull request: {e:#}")))?;
+        out.pull_request = Some(PullRequest {
+            number,
+            url,
+            opened: true,
+        });
+        Ok(out)
     }
 
     pub(crate) async fn workspace_diff(

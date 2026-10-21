@@ -682,6 +682,14 @@ impl Git<'_> {
         self.git(&["rev-parse", "HEAD"]).await
     }
 
+    /// The last commit's subject.
+    pub async fn subject(&self) -> Option<String> {
+        self.git(&["log", "-1", "--format=%s"])
+            .await
+            .ok()
+            .filter(|s| !s.is_empty())
+    }
+
     /// What the branch changes against its base, by file.
     pub async fn diffstat(&self, base: Option<&str>) -> Option<String> {
         let base = base.unwrap_or("origin/HEAD");

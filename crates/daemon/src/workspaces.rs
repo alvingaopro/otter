@@ -558,7 +558,7 @@ impl Daemon {
     }
 
     /// A workspace being deleted takes nothing else (D-135).
-    fn not_being_deleted(&self, ws: &Workspace) -> RpcResult<()> {
+    pub(crate) fn not_being_deleted(&self, ws: &Workspace) -> RpcResult<()> {
         if self.deleting.lock().unwrap().contains(&ws.id) {
             return Err(being_deleted(ws));
         }

@@ -287,6 +287,7 @@ impl Daemon {
                     .await?,
             ),
             Request::WorkspacePorts(r) => json(self.workspace_ports(&r.workspace).await?),
+            Request::WorkspacePublish(p) => json(self.workspace_publish(p).await?),
             Request::SessionCreate(p) => json(self.session_create(p).await?),
             Request::SessionStop(r) => json(self.session_stop(&r).await?),
             Request::SessionRestart(r) => json(self.session_restart(&r).await?),
