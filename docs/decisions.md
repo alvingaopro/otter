@@ -5473,3 +5473,60 @@ history, earlier lines asked for (D-119) and where the reader was.
   away. The kept-output tests fail with output dropped as before.
 - Not done: an older host still sends a snapshot; the app doesn't need to
   know which it got.
+
+## D-161 — A host's Work tab shows what Otter runs there, strays included (2026-10-21)
+
+During an otterd update, otterds of other builds (one from a bench's home, one
+a debug build) were found running for more than ten hours, using CPU, with no
+client and no sessions; nothing in the app showed them. A host's page now has
+two tabs: **Overview** (what it was: problems, usage, ports) and **Work**.
+
+- **Work** lists by kind: Tasks, Workspaces, Sessions, Agents (a task's coding
+  agent, an agent in a session) and Processes (this otterd, other ones,
+  orphans). The first three come from what the app already has; their
+  processes, owners, CPU and memory come from the new **`host.processes`**. A
+  row opens into who owns it and its process tree. The actions are the
+  commands that exist (`task.act`, `workspace.*`, `session.*`), asked again
+  in the row before they end anything. The tab is remembered per host. A
+  badge on the tab counts the strays, so one is seen from the Overview.
+- **Strays** are decided conservatively and on the daemon: an `otterd serving`
+  that isn't this process, or a process whose working directory is in this
+  host's `workspaces/` folder under an id that no workspace has (or whose
+  workspace is archived), with no session's or run's process above it. What
+  holds owned work up (the parents of a session's or a run's process) and the
+  backend's server (a process named `tmux`, daemonized, which keeps the
+  directory the otterd was started in) are never strays; a worker this otterd
+  started that outlived its run is one. A shell of the developer's own that
+  merely sits in such a folder is called a stray too, by the directory it is
+  in now; stopping it asks first and says what it is. A
+  session of an archived workspace that still runs is not a stray (it is a
+  session): the row says so ("Archived, still running").
+- **`host.processes.stop {pid, started, force?}`** is the one new thing that
+  can end a process, so it is narrow: it takes the pid *and start time*
+  `host.processes` gave, finds the process again now and classifies it again,
+  and refuses this otterd, a session's or a run's process (stop those where
+  they are shown, through `session.stop` and `task.act`), a start time that
+  isn't the process's (a reused id), and anything not listed. SIGTERM, or
+  SIGKILL when forced, to its process group if it leads one; a signal that
+  can't be sent (the process ended, or isn't this user's) is an error, not
+  a success, and with no sample yet (the first 5 s after a start) it is
+  refused, for the owners can't be found without the tree. The target is **read again at that moment** (executable,
+  arguments, directory), not taken from the 5 s sample: a session starts as
+  `otterd internal-exec … -- argv` and execs in place, so a sample taken then
+  would call its shell "another otterd". The sampler reads those fields anew
+  each time, and an `internal-exec` is never an otterd serving. The sample's
+  command lines never leave the daemon (invariant 13); an otterd is told from
+  other processes by its name and `serve` argument, read in the sampler.
+- **Another otterd can be stopped** from here with SIGTERM or SIGKILL. That
+  loses no work: `daemon.shutdown` is already "managed processes keep
+  running", and the page says its sessions keep running. The version of
+  another otterd isn't shown: it would need running its binary; its path and
+  start are.
+- **Busy** (25% of a CPU or more for ten minutes) is shown on any row, never
+  made a stray by itself: a build can be busy for that long. Output isn't
+  known to the sampler, so "no output" is not claimed.
+
+Not done: a Problems line for other otterds (D-077); stale tmux sessions
+(needs the backend to list its sessions); disk size per workspace; stopping a
+session's or run's process other than through its own commands; a task
+agent's "Interrupt" shows only for runs that are live.

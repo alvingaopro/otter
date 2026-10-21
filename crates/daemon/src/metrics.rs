@@ -15,7 +15,7 @@ use otter_protocol::host::{
 };
 
 use crate::history::Recorder;
-use sysinfo::{Disks, Networks, ProcessRefreshKind, ProcessesToUpdate, System};
+use sysinfo::{Disks, Networks, ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
 
 pub const INTERVAL: Duration = Duration::from_secs(5);
 /// Ten minutes of samples.
@@ -25,10 +25,84 @@ const TOP: usize = 8;
 #[derive(Clone)]
 pub struct Sampler {
     latest: Arc<Mutex<Option<HostMetrics>>>,
+    processes: Arc<Mutex<Vec<ProcSample>>>,
     recorder: Arc<Mutex<Recorder>>,
 }
 
+/// One process as of the last sample (D-161). Never its command line: only
+/// what the sampler itself reads from it, like whether it is an otterd.
+#[derive(Clone, Debug)]
+pub struct ProcSample {
+    pub pid: u32,
+    pub parent: Option<u32>,
+    pub name: String,
+    pub exe: Option<String>,
+    pub cwd: Option<String>,
+    pub cpu: f32,
+    pub memory: u64,
+    /// Seconds since the epoch.
+    pub started: u64,
+    /// An otterd serving (`otterd serve`).
+    pub otterd: bool,
+    /// Samples in a row at 25% of a CPU or more.
+    pub busy_samples: u32,
+}
+
+/// An otterd serving: its executable (or what it was started as) is
+/// `otterd` and it was asked to `serve`. Not one of its own sessions on the
+/// way to exec (`otterd internal-exec … -- argv`), whose argv can say `serve`.
+pub(crate) fn otterd_serving(exe: Option<&std::path::Path>, cmd: &[std::ffi::OsString]) -> bool {
+    let named = |p: &std::path::Path| p.file_name().is_some_and(|f| f == "otterd");
+    (exe.is_some_and(named) || cmd.first().is_some_and(|c| named(std::path::Path::new(c))))
+        && cmd.iter().any(|a| a == "serve")
+        && !cmd.iter().any(|a| a == "internal-exec")
+}
+
+fn sample_of(p: &sysinfo::Process, busy_samples: u32) -> ProcSample {
+    ProcSample {
+        pid: p.pid().as_u32(),
+        parent: p.parent().map(|p| p.as_u32()),
+        // The executable's name when there is one: sysinfo names a process
+        // once, as it was when first seen (a session's shell began as an
+        // `otterd internal-exec`).
+        name: p
+            .exe()
+            .and_then(|e| e.file_name())
+            .unwrap_or_else(|| p.name())
+            .to_string_lossy()
+            .into_owned(),
+        exe: p.exe().map(|e| e.to_string_lossy().into_owned()),
+        cwd: p.cwd().map(|c| c.to_string_lossy().into_owned()),
+        cpu: p.cpu_usage(),
+        memory: p.memory(),
+        started: p.start_time(),
+        otterd: otterd_serving(p.exe(), p.cmd()),
+        busy_samples,
+    }
+}
+
+/// One process, read now: what a stop is decided on, not the last sample.
+pub fn fresh(pid: u32) -> Option<ProcSample> {
+    let mut sys = System::new();
+    let target = sysinfo::Pid::from_u32(pid);
+    sys.refresh_processes_specifics(
+        ProcessesToUpdate::Some(&[target]),
+        true,
+        ProcessRefreshKind::nothing()
+            .with_cpu()
+            .with_memory()
+            .with_exe(UpdateKind::Always)
+            .with_cwd(UpdateKind::Always)
+            .with_cmd(UpdateKind::Always),
+    );
+    sys.process(target).map(|p| sample_of(p, 0))
+}
+
+/// What counts as busy.
+const BUSY_CPU: f32 = 25.0;
+
 struct Probe {
+    busy: HashMap<(u32, u64), u32>,
     sys: System,
     disks: Disks,
     networks: Networks,
@@ -40,14 +114,17 @@ impl Sampler {
     pub fn start(history_dir: std::path::PathBuf) -> Sampler {
         let sampler = Sampler {
             latest: Arc::default(),
+            processes: Arc::default(),
             recorder: Arc::new(Mutex::new(Recorder::open(history_dir, chrono::Utc::now()))),
         };
         let latest = sampler.latest.clone();
+        let processes = sampler.processes.clone();
         let recorder = sampler.recorder.clone();
         std::thread::Builder::new()
             .name("metrics".into())
             .spawn(move || {
                 let mut probe = Probe {
+                    busy: HashMap::new(),
                     sys: System::new(),
                     disks: Disks::new_with_refreshed_list(),
                     networks: Networks::new_with_refreshed_list(),
@@ -65,6 +142,7 @@ impl Sampler {
                             .record(last, metrics.load[0] as f32);
                     }
                     *latest.lock().unwrap() = Some(metrics);
+                    *processes.lock().unwrap() = probe.processes();
                 }
             })
             .expect("spawning the metrics thread");
@@ -77,6 +155,12 @@ impl Sampler {
             .lock()
             .unwrap()
             .history(range, chrono::Utc::now())
+    }
+
+    /// Every process as of the last sample; empty until the first interval
+    /// has passed.
+    pub fn processes(&self) -> Vec<ProcSample> {
+        self.processes.lock().unwrap().clone()
     }
 
     /// The latest measurement; `None` until the first interval has passed.
@@ -92,10 +176,40 @@ impl Probe {
         self.sys.refresh_processes_specifics(
             ProcessesToUpdate::All,
             true,
-            ProcessRefreshKind::nothing().with_cpu().with_memory(),
+            ProcessRefreshKind::nothing()
+                .with_cpu()
+                .with_memory()
+                // Read again each time: a process execs and changes its
+                // directory, and a name read once is the name it had then.
+                .with_exe(UpdateKind::Always)
+                .with_cwd(UpdateKind::Always)
+                .with_cmd(UpdateKind::Always),
         );
         self.disks.refresh(true);
         self.networks.refresh(true);
+    }
+
+    /// The processes now, with how long each has been busy.
+    fn processes(&mut self) -> Vec<ProcSample> {
+        let mut busy = HashMap::new();
+        let out: Vec<ProcSample> = self
+            .sys
+            .processes()
+            .values()
+            .map(|p| {
+                let (pid, started) = (p.pid().as_u32(), p.start_time());
+                let n = match p.cpu_usage() >= BUSY_CPU {
+                    true => self.busy.get(&(pid, started)).copied().unwrap_or(0) + 1,
+                    false => 0,
+                };
+                if n > 0 {
+                    busy.insert((pid, started), n);
+                }
+                sample_of(p, n)
+            })
+            .collect();
+        self.busy = busy;
+        out
     }
 
     fn sample(&mut self) -> HostMetrics {
@@ -383,8 +497,32 @@ mod tests {
     }
 
     #[test]
+    fn an_otterd_is_told_by_its_executable_and_serve_not_by_a_sessions_argv() {
+        use std::ffi::OsString;
+        use std::path::Path;
+        let cmd = |a: &[&str]| a.iter().map(OsString::from).collect::<Vec<_>>();
+        let otterd = Some(Path::new("/home/u/.otter/bin/otterd"));
+        assert!(otterd_serving(otterd, &cmd(&["otterd", "serve"])));
+        // A session on its way to exec, whose argv says serve.
+        assert!(!otterd_serving(
+            otterd,
+            &cmd(&["otterd", "internal-exec", "/tmp/env", "--", "hugo", "serve"])
+        ));
+        // After the exec: not an otterd at all.
+        assert!(!otterd_serving(
+            Some(Path::new("/usr/bin/hugo")),
+            &cmd(&["hugo", "serve"])
+        ));
+        // An otterd that is not serving (a dial, a doctor).
+        assert!(!otterd_serving(otterd, &cmd(&["otterd", "dial"])));
+        // The executable unreadable: what it was started as.
+        assert!(otterd_serving(None, &cmd(&["/x/otterd", "serve"])));
+    }
+
+    #[test]
     fn samples_this_host() {
         let mut probe = Probe {
+            busy: HashMap::new(),
             sys: System::new(),
             disks: Disks::new_with_refreshed_list(),
             networks: Networks::new_with_refreshed_list(),

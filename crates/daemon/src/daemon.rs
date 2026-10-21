@@ -91,7 +91,7 @@ pub struct Daemon {
     /// Terminals a client shows on screen (`attention::OnScreen`, D-137).
     pub(crate) on_screen: std::sync::Mutex<crate::attention::Screens>,
     /// Resource usage, sampled in the background for the host page.
-    metrics: crate::metrics::Sampler,
+    pub(crate) metrics: crate::metrics::Sampler,
     /// Browser login requests waiting for an app, and how many apps listen.
     pub(crate) logins: crate::login::Pending,
     pub(crate) browser_subscribers: std::sync::atomic::AtomicUsize,
@@ -231,6 +231,8 @@ impl Daemon {
                 )),
             },
             Request::HostPorts => json(crate::metrics::listening_ports().await),
+            Request::HostProcesses => json(self.host_processes().await?),
+            Request::HostProcessStop(p) => json(self.host_process_stop(p).await?),
             Request::FsList(p) => json(self.fs_list(&p).await?),
             Request::FsRemove(p) => json(self.fs_remove(&p).await?),
             Request::FsRename(p) => json(self.fs_rename(&p).await?),

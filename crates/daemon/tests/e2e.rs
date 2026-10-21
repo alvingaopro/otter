@@ -3670,6 +3670,178 @@ async fn a_workspace_is_pushed_and_its_pull_request_opened() {
     assert!(err.to_string().contains("not a Git workspace"), "{err}");
 }
 
+/// The host lists what Otter runs and who owns it (D-161): a session's
+/// process, and what it started, belong to the session.
+#[tokio::test]
+async fn the_host_lists_its_processes_with_their_owners() {
+    use otter_protocol::host::ProcessOwner;
+    let host = TestHost::new();
+    let ws = create(
+        &host,
+        "owned",
+        Some(vec![spec(SessionKind::Command, "sleeper", "sleep 300")]),
+    )
+    .await;
+    wait_status(&host, "owned", "sleeper", SessionStatus::Running).await;
+    let own = host.conn().await.host_status().await.unwrap().pid;
+    let found = eventually("the session's process is listed", || async {
+        let all = host.conn().await.host_processes().await.ok()?;
+        let session = all.processes.iter().find(|p| {
+            matches!(&p.owner, ProcessOwner::Execution { workspace_id, .. } if *workspace_id == ws.id)
+        })?;
+        let daemon = all.processes.iter().find(|p| p.pid == own)?;
+        Some((session.clone(), daemon.clone()))
+    })
+    .await;
+    let (session, daemon) = found;
+    assert!(!session.stoppable, "a session is stopped as a session");
+    assert!(matches!(daemon.owner, ProcessOwner::Daemon { this: true }));
+    assert!(!daemon.stoppable);
+}
+
+/// Stopping a process by hand reaches only what nothing owns, named by pid
+/// and start time (D-161): never this otterd, a session's process, a pid
+/// with another start time, or anything unlisted.
+#[tokio::test]
+async fn only_an_orphan_can_be_stopped_by_pid_and_start_time() {
+    use otter_protocol::host::{ProcessOwner, ProcessStop};
+    let host = TestHost::new();
+    let ws = create(
+        &host,
+        "owned",
+        Some(vec![spec(SessionKind::Command, "sleeper", "sleep 300")]),
+    )
+    .await;
+    wait_status(&host, "owned", "sleeper", SessionStatus::Running).await;
+    // Something started in a workspace directory that no workspace has.
+    let gone = host.home().join("workspaces/ws_gone");
+    std::fs::create_dir_all(&gone).unwrap();
+    let mut orphan = std::process::Command::new("sleep")
+        .arg("300")
+        .current_dir(&gone)
+        .spawn()
+        .unwrap();
+    let pid = orphan.id();
+    let all = eventually("the orphan is listed", || async {
+        let all = host.conn().await.host_processes().await.ok()?;
+        all.processes
+            .iter()
+            .any(|p| p.pid == pid && matches!(p.owner, ProcessOwner::Orphan { .. }))
+            .then_some(all)
+    })
+    .await;
+    let me = host.conn().await.host_status().await.unwrap().pid;
+    let row = |pid: u32| all.processes.iter().find(|p| p.pid == pid).unwrap().clone();
+    let stop = |pid: u32, started: u64| ProcessStop {
+        pid,
+        started,
+        force: false,
+    };
+    let mut conn = host.conn().await;
+
+    // This otterd, and a session's process: refused.
+    let err = conn
+        .host_process_stop(stop(me, row(me).started))
+        .await
+        .unwrap_err();
+    assert!(err.to_string().contains("this otterd"), "{err}");
+    let session = all
+        .processes
+        .iter()
+        .find(|p| matches!(&p.owner, ProcessOwner::Execution { workspace_id, .. } if *workspace_id == ws.id))
+        .unwrap();
+    let err = conn
+        .host_process_stop(stop(session.pid, session.started))
+        .await
+        .unwrap_err();
+    assert!(err.to_string().contains("session or a run"), "{err}");
+    // The orphan's pid with another start time (a reused id), or a pid
+    // nobody listed: refused, and the orphan still runs.
+    let err = conn
+        .host_process_stop(stop(pid, row(pid).started + 1))
+        .await
+        .unwrap_err();
+    assert!(err.to_string().contains("no such process"), "{err}");
+    let err = conn.host_process_stop(stop(1, 0)).await.unwrap_err();
+    assert!(err.to_string().contains("no such process"), "{err}");
+    assert!(orphan.try_wait().unwrap().is_none());
+
+    // The orphan itself, by both: ended.
+    conn.host_process_stop(stop(pid, row(pid).started))
+        .await
+        .unwrap();
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while orphan.try_wait().unwrap().is_none() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the orphan did not end"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
+/// An orphan that leads a group of its own is ended with its group (D-161),
+/// and nothing outside it: not this test's own group.
+#[tokio::test]
+async fn stopping_an_orphan_ends_its_group_only() {
+    use otter_protocol::host::{ProcessOwner, ProcessStop};
+    use std::io::BufRead;
+    use std::os::unix::process::CommandExt;
+    let host = TestHost::new();
+    let gone = host.home().join("workspaces/ws_gone");
+    std::fs::create_dir_all(&gone).unwrap();
+    // A leader in its own group, with a child that prints its pid.
+    let mut leader = std::process::Command::new("sh")
+        .args(["-c", "sleep 300 & echo $!; wait"])
+        .current_dir(&gone)
+        .stdout(std::process::Stdio::piped())
+        .process_group(0)
+        .spawn()
+        .unwrap();
+    let mut line = String::new();
+    std::io::BufReader::new(leader.stdout.take().unwrap())
+        .read_line(&mut line)
+        .unwrap();
+    let child: u32 = line.trim().parse().unwrap();
+    let pid = leader.id();
+    let all = eventually("the leader is listed", || async {
+        let all = host.conn().await.host_processes().await.ok()?;
+        all.processes
+            .iter()
+            .any(|p| p.pid == pid && matches!(p.owner, ProcessOwner::Orphan { .. }))
+            .then_some(all)
+    })
+    .await;
+    let started = all.processes.iter().find(|p| p.pid == pid).unwrap().started;
+    host.conn()
+        .await
+        .host_process_stop(ProcessStop {
+            pid,
+            started,
+            force: false,
+        })
+        .await
+        .unwrap();
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while leader.try_wait().unwrap().is_none() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the leader did not end"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    // Its child went with the group (a zombie until reaped is gone for us:
+    // signal 0 fails once it has been reaped by init).
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while unsafe { libc::kill(child as libc::pid_t, 0) } == 0 {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the child did not end"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
 /// Files are removed and renamed inside the workspace only (D-103): never
 /// its root or anything outside it, a link rather than what it points to,
 /// and never over another file.

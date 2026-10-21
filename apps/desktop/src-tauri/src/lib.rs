@@ -126,6 +126,8 @@ pub fn run() {
             perf::process_stats,
             hosts::host_metrics,
             hosts::host_ports,
+            hosts::host_processes,
+            hosts::host_process_stop,
             hosts::host_history,
             forwards::forwards_get,
             forwards::forward_add,
