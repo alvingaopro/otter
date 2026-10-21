@@ -548,6 +548,8 @@ export function Terminal({ host, workspace, session, onEnd, generation, label, w
       setEarlier("none");
       if (id !== null) void invoke("attach_close", { id });
       termRef.current = null;
+      // Unmounted while shown (a restart, a reconnect): its context too.
+      release();
       term.dispose();
     };
   }, [host, workspace, session, generation, epoch]);
