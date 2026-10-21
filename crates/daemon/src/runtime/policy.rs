@@ -1114,6 +1114,9 @@ fn reads(piece: &str, cwd: &Path, root: &Scope) -> Reads {
         if w.contains(['<', '(', ')', '$', '`']) || (*cmd == "find" && FIND_ACTS.contains(&w)) {
             return None;
         }
+        // Reading a directory that holds a login, or the workspace's
+        // surroundings, is not a search for a word.
+        let broad = |x: &str| target(cwd, x).is_some_and(|p| broad_read(&p, root));
         let stayed = match (w.starts_with('-'), w.split_once('=')) {
             (true, Some((name, value))) => (!acting(name)).then(|| stays(value))?,
             (true, None) => (!acting(w) && !w.contains(['/', '~'])).then_some(true)?,
@@ -1121,21 +1124,70 @@ fn reads(piece: &str, cwd: &Path, root: &Scope) -> Reads {
             (false, Some((name, value))) => stays(name) && stays(value),
             (false, None) => stays(w),
         };
+        if !stayed && (broad(w) || w.split_once('=').is_some_and(|(n, v)| broad(n) || broad(v))) {
+            return None;
+        }
         Some((stayed, (*op).to_owned()))
     };
     let Some(seen) = operands.iter().map(operand).collect::<Option<Vec<_>>>() else {
         return Reads::Not;
     };
+    // What reaches outside, and every option: an option's value may name
+    // the file read (`--include=password.txt`).
     let outside: Vec<&str> = seen
         .iter()
-        .filter(|(s, _)| !s)
+        .filter(|(s, w)| !s || unquoted(w).starts_with('-'))
         .map(|(_, w)| w.as_str())
         .collect();
-    if outside.is_empty() {
+    if seen.iter().all(|(s, _)| *s) {
         Reads::Inside(command)
+    } else if spaced_word(piece) {
+        // Split on blanks, a path with a space in it is read as two.
+        Reads::Not
     } else {
         Reads::Beyond(outside.join(" "))
     }
+}
+
+/// Whether a piece has a blank inside quotes or behind a backslash.
+fn spaced_word(piece: &str) -> bool {
+    let (mut quote, mut escaped) = (None, false);
+    for c in piece.chars() {
+        match (escaped, quote, c) {
+            (true, _, c) if c.is_whitespace() => return true,
+            (true, _, _) => escaped = false,
+            (false, None, '\\') => escaped = true,
+            (false, Some('"'), '\\') => escaped = true,
+            (false, None, '\'' | '"') => quote = Some(c),
+            (false, Some(q), c) if c == q => quote = None,
+            (false, Some(_), c) if c.is_whitespace() => return true,
+            _ => {}
+        }
+    }
+    false
+}
+
+/// A path that is, or holds, the workspace or the home directory or a
+/// login in it: reading it all is not looking for a word.
+fn broad_read(path: &Path, root: &Scope) -> bool {
+    let p = real_path(path);
+    if real_path(root).starts_with(&p) {
+        return true;
+    }
+    let Ok(home) = std::env::var("HOME") else {
+        return false;
+    };
+    if home.is_empty() {
+        return false;
+    }
+    let home = real_path(Path::new(&home));
+    home.starts_with(&p)
+        || CREDENTIAL_PLACES.iter().any(|place| {
+            place
+                .iter()
+                .fold(home.clone(), |h, c| h.join(c))
+                .starts_with(&p)
+        })
 }
 
 /// A word as the shell passes it, roughly: its quotes and backslashes go
@@ -1269,6 +1321,16 @@ fn writes_outside(piece: &str, cwd: &Path, root: &Scope) -> Option<String> {
             // The first operand is the mode or owner.
             "chmod" | "chown" | "chgrp" => {
                 targets.extend(operands.iter().skip(1).map(|t| (*t).to_owned()))
+            }
+            // Where it makes (or moves) a worktree: files appear there.
+            "git" => {
+                if let ["worktree", "add" | "move", more @ ..] = rest {
+                    targets.extend(
+                        more.iter()
+                            .filter(|w| !w.starts_with('-'))
+                            .map(|t| (*t).to_owned()),
+                    );
+                }
             }
             "dd" => targets.extend(
                 rest.iter()
@@ -1539,7 +1601,10 @@ impl Scope {
     pub fn with_trees(root: &Path, trees: Vec<std::path::PathBuf>) -> Scope {
         Scope {
             root: root.to_path_buf(),
-            trees: trees.into_iter().filter(|t| t != root).collect(),
+            trees: trees
+                .into_iter()
+                .filter(|t| real_path(t) != real_path(root))
+                .collect(),
         }
     }
 
@@ -1548,6 +1613,11 @@ impl Scope {
     pub fn trees(&self) -> &[std::path::PathBuf] {
         &self.trees
     }
+}
+
+/// Whether `path` is `base` or below it, where each really is.
+pub fn under(path: &Path, base: &Path) -> bool {
+    real_path(path).starts_with(real_path(base))
 }
 
 impl std::ops::Deref for Scope {
@@ -1595,7 +1665,11 @@ pub fn classify_in(call: &ToolCall, root: &Scope) -> Verdict {
             } else if secrets_file(path) || lower.contains(".ssh") || lower.contains("credentials")
             {
                 ask_user(format!("edits a credentials file ({path})"))
-            } else if lower.contains("/.git/") || lower.starts_with(".git/") {
+            } else if lower.contains("/.git/")
+                || lower.starts_with(".git/")
+                || lower.ends_with("/.git")
+                || lower == ".git"
+            {
                 ask_user("edits Git's internals".into())
             } else {
                 Verdict::Allow
@@ -2585,6 +2659,18 @@ mod tests {
             "cat /etc/app/password.txt",
             "grep -rn token ../other-repo/.env",
             "grep $API_TOKEN src",
+            // A directory that holds logins, or the workspace's surroundings.
+            "grep -r token ~",
+            "grep -r token ~/.config",
+            "grep -rn token /",
+            "grep -rn token ..",
+            // A path with a blank in it is not read as two words.
+            "cat \"/etc/my app/password.txt\"",
+            "cat /etc/my\\ app/password.txt",
+            "grep -r token --include=password.txt /etc/app",
+            // A worktree made elsewhere puts files there.
+            "git worktree add /home/u/Library/LaunchAgents -b x",
+            "git worktree add ../wt/x",
             "echo $DB_PASSWORD",
             "export API_TOKEN=x",
             "curl -H 'X-Token: a' https://prod.example.com/deploy",
@@ -2626,6 +2712,11 @@ mod tests {
         // Another repository, or without the worktree known, is outside.
         assert!(is_user_only(&classify_in(&edit(other), &scope)));
         assert!(is_user_only(&classify(&edit(&tree), &root)));
+        // The workspace's own `.git` file says which repository it is of.
+        let gitfile = ToolCall::Edit {
+            path: root.join(".git").to_string_lossy().into_owned(),
+        };
+        assert!(is_user_only(&classify_in(&gitfile, &scope)));
         // Git's internals and credentials stay asked about there too.
         let git = ToolCall::Edit {
             path: tree.join(".git/config").to_string_lossy().into_owned(),

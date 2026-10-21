@@ -781,7 +781,8 @@ impl Daemon {
         if !matches!(
             verdict,
             Verdict::Ask {
-                user_only: true,
+                kind: DecisionKind::ToolPermission,
+                risk: Risk::High,
                 ..
             }
         ) {
@@ -794,7 +795,7 @@ impl Daemon {
         // repository is shared by all.
         let trees: Vec<_> = trees
             .into_iter()
-            .filter(|t| !t.starts_with(&self.paths.home))
+            .filter(|t| !policy::under(t, &self.paths.home))
             .collect();
         if trees.is_empty() {
             return (verdict, scope);

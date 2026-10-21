@@ -6350,6 +6350,28 @@ Deliberate narrowings of the plan:
   so a command run in a sibling worktree reads as "outside" to the model.
 - The quote-cut `|` class is D-173's, not judged here.
 
+Hardening from the review (each has a case in the tests):
+
+- Worktrees count only when Git, run in the workspace, lists the workspace
+  itself as one: an empty workspace inside a checkout, or a `.git` file the
+  agent pointed elsewhere, finds none. Editing the workspace's `.git` is
+  Git's internals (the developer's). Paths are compared where they really
+  are (symlinks).
+- `git worktree add|move` to a place outside the workspace is a write
+  outside, so the developer's: a directory made that way would become inside.
+- A read of a directory that is, or holds, the workspace, the home directory
+  or a login (`grep -r token ~`, `..`, `/`) is not a search for a word: it
+  keeps the floor. So does a piece with a blank inside quotes or behind a
+  backslash (split on blanks, a path is read as two), and a credential word
+  in any option (`--include=password.txt`).
+- An `answer` from the model on a judged call escalates; only allow and deny
+  stand.
+- A judged read in a sibling worktree is widened like the rest.
+
+Known and left: `git -c x=y rebase main` isn't read as a rebase (the old
+`git rebase` entry matched the same way); a repeat is "the same call" by
+whitespace only, so `git rebase main #` is a new sample for the model.
+
 Not measured: how often the model allows, denies and escalates the judged
 classes (the plan wanted the bench's recorded calls run through it first). If
 it escalates nearly everything the problem is not removed; that is the number

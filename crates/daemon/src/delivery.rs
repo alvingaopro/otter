@@ -754,11 +754,21 @@ impl Git<'_> {
         };
         // One block per worktree; the bare repository Otter's workspaces
         // share is listed first, and is not a work tree (D-174).
-        out.split("\n\n")
+        let all: Vec<std::path::PathBuf> = out
+            .split("\n\n")
             .filter(|b| !b.lines().any(|l| l == "bare"))
             .filter_map(|b| b.lines().find_map(|l| l.strip_prefix("worktree ")))
             .map(std::path::PathBuf::from)
-            .filter(|p| p != self.root)
+            .collect();
+        // Only when the repository knows this directory as a worktree: Git
+        // run in a folder that is none (an empty workspace in a checkout), or
+        // whose `.git` file the agent pointed elsewhere, lists someone else's.
+        let real = |p: &Path| p.canonicalize().unwrap_or_else(|_| p.to_path_buf());
+        if !all.iter().any(|p| real(p) == real(self.root)) {
+            return vec![];
+        }
+        all.into_iter()
+            .filter(|p| real(p) != real(self.root))
             .collect()
     }
 
@@ -1112,6 +1122,37 @@ mod tests {
             trees.iter().map(|t| real(t)).collect::<Vec<_>>(),
             [real(&b)],
             "the sibling, not the backing repository and not itself"
+        );
+        // A folder that is no worktree, in one: Git lists the checkout around
+        // it, which is not the task's.
+        let inner = a.join("sub");
+        std::fs::create_dir(&inner).unwrap();
+        assert_eq!(
+            Git {
+                root: &inner,
+                env: &env
+            }
+            .worktrees()
+            .await
+            .len(),
+            0
+        );
+        let other = dir.path().join("elsewhere");
+        std::fs::create_dir(&other).unwrap();
+        std::fs::write(
+            other.join(".git"),
+            format!("gitdir: {}\n", src.join(".git").display()),
+        )
+        .unwrap();
+        assert_eq!(
+            Git {
+                root: &other,
+                env: &env
+            }
+            .worktrees()
+            .await
+            .len(),
+            0
         );
     }
 

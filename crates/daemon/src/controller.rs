@@ -1402,6 +1402,13 @@ impl Daemon {
             .unwrap_or_else(|e| BrainVerdict::Escalate {
                 why: format!("couldn't decide: {e:#}"),
             });
+            // A judged call is allowed, denied or escalated; nothing else.
+            let verdict = match verdict {
+                BrainVerdict::Answer { rationale, .. } if brain::is_judged(&d) => {
+                    BrainVerdict::Escalate { why: rationale }
+                }
+                v => v,
+            };
             let (allow, answer, rationale) = match verdict {
                 BrainVerdict::Allow { rationale } => (true, None, redact(&rationale)),
                 BrainVerdict::Deny { rationale } => (false, None, redact(&rationale)),
