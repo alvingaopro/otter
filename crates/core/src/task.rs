@@ -114,7 +114,8 @@ impl TaskStatus {
             // Accepted in review; or planning found a question, not a
             // change, and the coding agent answered it (D-084).
             Done => matches!(self, Review | Planning),
-            Blocked => self.is_active() || self == Review,
+            // From paused: resumed while the developer still has to decide.
+            Blocked => self.is_active() || self == Review || self == Paused,
             Paused => self.is_active() || self == Blocked || self == Review,
             Failed => self.is_active() || self == Blocked || self == Review,
             Cancelled => true,
@@ -294,6 +295,14 @@ pub struct VerificationMark {
     pub fingerprint: String,
     /// The unmet criteria, by text.
     pub unmet: Vec<String>,
+}
+
+/// Where a pause found a task (D-168).
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct PausedFrom {
+    pub status: TaskStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -544,6 +553,10 @@ pub struct Task {
     /// When it took its status (absent in documents from before D-071).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub status_since: Option<Timestamp>,
+    /// While paused: the status the pause found and its reason, where a
+    /// resume goes back to (D-168).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub paused_from: Option<PausedFrom>,
     /// The trigger that started it, unattended (D-083).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub started_by: Option<crate::trigger::Started>,
@@ -634,6 +647,7 @@ impl Task {
             answer_only: false,
             status: TaskStatus::Draft,
             status_since: Some(now),
+            paused_from: None,
             started_by: None,
             status_reason: None,
             requirements: Vec::new(),
@@ -833,6 +847,14 @@ impl Task {
                 from.as_str(),
                 to.as_str()
             ));
+        }
+        if to == TaskStatus::Paused {
+            self.paused_from = Some(PausedFrom {
+                status: from,
+                reason: self.status_reason.clone(),
+            });
+        } else if from == TaskStatus::Paused {
+            self.paused_from = None;
         }
         self.status = to;
         self.status_reason = reason.clone();
