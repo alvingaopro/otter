@@ -95,7 +95,24 @@ pub fn fresh(pid: u32) -> Option<ProcSample> {
             .with_cwd(UpdateKind::Always)
             .with_cmd(UpdateKind::Always),
     );
-    sys.process(target).map(|p| sample_of(p, 0))
+    sys.process(target)
+        .filter(|p| p.thread_kind().is_none() && !is_thread(pid))
+        .map(|p| sample_of(p, 0))
+}
+
+/// Whether `pid` is a thread of another process (Linux: its thread group
+/// isn't itself). A signal to a thread's id reaches its whole process, which
+/// may be this daemon.
+pub fn is_thread(pid: u32) -> bool {
+    std::fs::read_to_string(format!("/proc/{pid}/status"))
+        .ok()
+        .and_then(|s| {
+            s.lines().find_map(|l| {
+                l.strip_prefix("Tgid:")
+                    .and_then(|t| t.trim().parse::<u32>().ok())
+            })
+        })
+        .is_some_and(|tgid| tgid != pid)
 }
 
 /// What counts as busy.
@@ -196,6 +213,10 @@ impl Probe {
             .sys
             .processes()
             .values()
+            // On Linux sysinfo lists every thread as a process of its own,
+            // with the same executable and arguments: an otterd's threads
+            // would each be "another otterd". Only processes.
+            .filter(|p| p.thread_kind().is_none())
             .map(|p| {
                 let (pid, started) = (p.pid().as_u32(), p.start_time());
                 let n = match p.cpu_usage() >= BUSY_CPU {

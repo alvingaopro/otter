@@ -5593,6 +5593,15 @@ two tabs: **Overview** (what it was: problems, usage, ports) and **Work**.
   made a stray by itself: a build can be busy for that long. Output isn't
   known to the sampler, so "no output" is not claimed.
 
+- **Threads are not processes.** On Linux the system lists every thread as a
+  process of its own, with its process's executable and arguments, so an
+  otterd's threads each showed as "another otterd" (17 on one host, with a
+  Stop each) — and a signal to a thread's id reaches its whole process, which
+  can be this daemon. The sampler skips threads, and a stop refuses a pid
+  whose thread group isn't itself (`/proc/<pid>/status`). Found by looking at
+  a real host, not by the tests, which had no otterd with threads to look
+  at; one does now.
+
 Not done: a Problems line for other otterds (D-077); stale tmux sessions
 (needs the backend to list its sessions); disk size per workspace; stopping a
 session's or run's process other than through its own commands; a task
