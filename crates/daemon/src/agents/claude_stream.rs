@@ -887,7 +887,12 @@ fn parse(v: &Value, shared: &Mutex<Shared>) -> Vec<RuntimeEvent> {
                 out.push(RuntimeEvent::ToolFinished {
                     call: call.to_owned(),
                     ok: block["is_error"] != true,
-                    output: super::excerpt(&result_text(&block["content"]), OUTPUT_LEN),
+                    // Redacted before it's cut, so a cut can't leave half
+                    // a credential (D-157).
+                    output: super::excerpt(
+                        &otter_core::redact::redact(&result_text(&block["content"])),
+                        OUTPUT_LEN,
+                    ),
                 });
             }
         }
@@ -997,6 +1002,25 @@ mod tests {
                 let s = summarize(&ToolCall::Command { line }, "Bash");
                 assert!(!s.to_lowercase().contains("hunt"), "{s}");
             }
+        }
+    }
+
+    #[test]
+    fn tool_output_is_redacted_before_it_is_cut() {
+        let s = shared();
+        for pad in OUTPUT_LEN - 40..OUTPUT_LEN {
+            let text = format!(
+                "{} https://bob:hunter2secret@example.com/x",
+                "x".repeat(pad)
+            );
+            let v = json!({"type":"user","message":{"content":[
+                {"type":"tool_result","tool_use_id":"t1","content":text}
+            ]}});
+            let events = parse(&v, &s);
+            let [RuntimeEvent::ToolFinished { output, .. }] = events.as_slice() else {
+                panic!("{events:?}")
+            };
+            assert!(!output.contains("hunt"), "{pad}: {output}");
         }
     }
 

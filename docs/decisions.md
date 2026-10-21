@@ -5381,9 +5381,10 @@ still carry the 200-character line, so the coding agent's feed in the app
 cuts the command as before. Otter's tools (`get_pending_decisions`) and
 the Control Agent's decision prompt still see only the summary and the
 reason. The Control Agent never decides what only the developer may
-(D-066), and policy reads the whole line either way. A tool's output is
-still cut at 2,000 characters before it is redacted: by otterd for
-`claude -p`, by the worker for the SDK (which has no `redact`).
+(D-066), and policy reads the whole line either way. A tool's output from
+`claude -p` is redacted before otterd cuts it to 2,000 characters too;
+the SDK worker still cuts it first (it has no `redact`), so that cut
+should move to otterd.
 
 ## D-160 — A terminal back on screen gets what it missed, not a snapshot (2026-10-21)
 
