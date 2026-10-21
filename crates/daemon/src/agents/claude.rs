@@ -258,6 +258,9 @@ impl AgentProvider for ClaudeCode {
             state_changed = true;
         }
 
+        if misbound {
+            obs.unbind = true;
+        }
         let mut next = if misbound {
             AgentState::Idle
         } else {
@@ -1347,6 +1350,13 @@ mod tests {
             Some(transcripts.join("own.jsonl").as_path())
         );
 
+        // Its own transcript not written yet: nothing to bind, and the run's
+        // conversation is let go of, not kept to be resumed by a restart.
+        std::fs::remove_file(transcripts.join("own.jsonl")).unwrap();
+        let obs = ClaudeCode.observe(&ctx, &agent);
+        assert!(obs.unbind && obs.provider_session_id.is_none(), "{obs:?}");
+        assert_eq!(obs.state, Some(AgentState::Idle));
+
         // Not bound to a run's: left as it is.
         let none = HashSet::new();
         let ctx = ObserveContext {
@@ -1354,8 +1364,10 @@ mod tests {
             claimed: &none,
             ..ctx
         };
+        std::fs::write(transcripts.join("own.jsonl"), "{\"type\":\"system\"}\n").unwrap();
         let obs = ClaudeCode.observe(&ctx, &agent);
         assert_eq!(obs.state, None, "{obs:?}");
+        assert!(!obs.unbind);
     }
 
     #[test]

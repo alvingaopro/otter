@@ -5626,10 +5626,19 @@ to end it. It would also have resumed the task's conversation if restarted.
 - **A session already bound to one lets go and binds its own** (`managed` in
   the observe context): what its terminal is doing is not known until its own
   transcript says, so it is *idle* until then. A hook said it started and
-  nothing since, so the quiet-turn fallback stays off, as before.
+  nothing since, so the quiet-turn fallback stays off, as before. The
+  session id it held is **forgotten** (`Observation::unbind`) unless its own
+  is found in the same look, so a restart doesn't resume the run's
+  conversation.
 - Tested at the observer (a transcript of a run, one of the terminal's own,
   hooks that said only that it started) and on the conversations' list.
   Not tested end to end: a real run and a real terminal in one directory.
 
-Not done: whether an answer-only task (D-092), which only reads, needs to
-wait for the developer's agent at all.
+Known and left: a terminal that deliberately continues a task's conversation
+(Claude Code's `/resume` picker lists the run's transcripts too) never binds
+to it now, for the id is claimed for good; and a run's transcript can exist
+a moment before the conversation records its id, so a session may take it
+and let go of it a pass later (self-correcting, a little noisy). Taking the
+identity from the hooks' `transcript_path` would settle both. Also not done:
+whether an answer-only task (D-092), which only reads, needs to wait for the
+developer's agent at all.

@@ -150,6 +150,10 @@ impl Screen {
 pub struct Observation {
     pub state: Option<AgentState>,
     pub provider_session_id: Option<String>,
+    /// The session id it holds is not this agent's (D-162): forget it, so a
+    /// restart doesn't resume someone else's conversation. A
+    /// `provider_session_id` found in the same look replaces it.
+    pub unbind: bool,
     pub provider_state: Option<serde_json::Value>,
     /// Excerpt of the agent's latest message.
     pub last_message: Option<String>,
