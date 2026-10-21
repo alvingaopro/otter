@@ -187,6 +187,7 @@ impl Daemon {
             .workspace(r)
             .cloned()
             .ok_or_else(|| workspace_not_found(r))?;
+        self.not_being_deleted(&ws)?;
         match ws.state {
             WorkspaceState::Ready | WorkspaceState::Failed => {}
             // Preparation would mark it ready and start its sessions when it
@@ -205,13 +206,16 @@ impl Daemon {
             }
         }
 
+        // Every session is tried: those stopped are saved and announced even
+        // when another can't be, and then it stays as it was.
         let mut events = Vec::new();
+        let mut failed = None;
         for session in &ws.sessions {
             if let Some(exec) = session.current_execution().filter(|e| e.is_running()) {
-                self.backend
-                    .terminate(&exec.backend_ref)
-                    .await
-                    .map_err(internal)?;
+                if let Err(e) = self.backend.terminate(&exec.backend_ref).await {
+                    failed.get_or_insert(internal(e));
+                    continue;
+                }
                 mark_ended(
                     &mut store,
                     &ws.id,
@@ -226,6 +230,11 @@ impl Daemon {
             }
             // Exited processes keep their retained output (D-027), as after
             // `session.stop`: their last screen stays readable.
+        }
+        if let Some(e) = failed {
+            save(&store)?;
+            self.emit_all(events);
+            return Err(e);
         }
 
         let w = store.workspace_mut(ws.id.as_str()).expect("exists");
@@ -414,8 +423,12 @@ impl Daemon {
                 .cloned()
                 .ok_or_else(|| workspace_not_found(&p.workspace))?;
             let mut events = Vec::new();
+            let mut failed = None;
             for session in &ws.sessions {
-                self.terminate_all(session).await?;
+                if let Err(e) = self.terminate_all(session).await {
+                    failed.get_or_insert(e);
+                    continue;
+                }
                 if let Some(exec) = session.current_execution().filter(|e| e.is_running()) {
                     mark_ended(
                         &mut store,
@@ -432,6 +445,11 @@ impl Daemon {
             }
             save(&store)?;
             self.emit_all(events);
+            // Those stopped are saved and announced even when another can't
+            // be; then the delete stops.
+            if let Some(e) = failed {
+                return Err(e);
+            }
             ws
         };
 
