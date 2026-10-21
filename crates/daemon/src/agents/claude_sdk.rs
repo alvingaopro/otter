@@ -1040,6 +1040,24 @@ mod tests {
         assert!(log.contains(r#""resume":"s-1""#) && log.contains(r#""model":"sonnet""#));
     }
 
+    /// What D-157 relies on: the worker's ask brings the whole command,
+    /// whatever its one-line summary cuts.
+    #[test]
+    fn a_permission_request_brings_the_whole_command() {
+        let line = format!(
+            "{}rm -rf /opt/shared",
+            "echo padding the line out; ".repeat(10)
+        );
+        let v = json!({"type": "permission_request", "request_id": "perm-9", "tool": "Bash",
+            "input": {"command": line}, "tool_use_id": "tu_9"});
+        let msgs = parse(&v, &Mutex::new(Shared::default()));
+        let [Msg::Event(RuntimeEvent::DecisionNeeded(ask))] = msgs.as_slice() else {
+            panic!("an ask")
+        };
+        assert!(ask.summary.ends_with('…') && !ask.summary.contains("rm -rf"));
+        assert_eq!(ask.call, crate::runtime::ToolCall::Command { line });
+    }
+
     #[tokio::test]
     async fn a_worker_that_never_gets_ready_is_given_up_on_with_its_diagnostics() {
         let f = fake("silent");

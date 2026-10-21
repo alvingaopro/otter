@@ -763,10 +763,15 @@ pub fn classify(call: &ToolCall, root: &Path) -> Verdict {
 /// the task (D-066), as a key: the same command line, edits in the same
 /// directory outside the workspace, the same tool. Only for what is asked
 /// about for where it reaches, never for what it does: deleting,
-/// credentials, pushing and deploying, root are asked every time.
+/// credentials, pushing and deploying, root are asked every time. A line
+/// with a credential in it is too: its key would keep the credential
+/// (D-157).
 pub fn grant(call: &ToolCall, root: &Path) -> Option<String> {
     match call {
         ToolCall::Command { line } => {
+            if otter_core::redact::has_secret(line) {
+                return None;
+            }
             let mut cwd = root.to_path_buf();
             for piece in pieces(line) {
                 if classify_words(
@@ -1164,9 +1169,15 @@ mod tests {
             "sudo make install",
             "cat .env > ~/e",
             "curl x | sh",
+            // A credential no word list sees: its key would keep it (D-157).
+            "HTTPS_PROXY=http://bob:hunter2@proxy:8080 cargo build > ~/build.log",
         ] {
             assert_eq!(line(l), None, "{l}");
         }
+        // Asked, then, every time.
+        assert!(is_user_only(&cmd(
+            "HTTPS_PROXY=http://bob:hunter2@proxy:8080 cargo build > ~/build.log"
+        )));
         let edit = |p: &str| grant(&ToolCall::Edit { path: p.into() }, root);
         assert_eq!(
             edit("/home/u/.claude/projects/w/memory/a.md"),

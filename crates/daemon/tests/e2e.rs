@@ -1132,12 +1132,34 @@ async fn stream_attach_off_screen_gets_nothing_and_catches_up_on_return() {
             .await
             .is_empty()
     );
-    // Back on screen: a snapshot with what was missed.
+    // Back on screen: what was missed comes, without a snapshot, so the
+    // client's history stays as it is (D-160).
+    writer.send(&view(true)).await.unwrap();
+    let back = read_until(&mut reader, "while-away-4").await;
+    assert!(!back.contains("\x1bc"), "{back:?}");
+    quiet_for(&mut reader, Duration::from_millis(300)).await;
+
+    // More than is kept for it: back on screen, a snapshot instead.
+    writer.send(&view(false)).await.unwrap();
+    host.conn()
+        .await
+        .session_write(
+            "vw",
+            "sh",
+            "head -c 3000000 /dev/zero | tr '\\0' x; echo; echo much-$((3+3))",
+            true,
+        )
+        .await
+        .unwrap();
+    wait_output(&host, "vw", "sh", "much-6").await;
+    // The pane has it; give the daemon a moment to have read past the limit.
+    tokio::time::sleep(Duration::from_millis(500)).await;
     writer.send(&view(true)).await.unwrap();
     let (back, _) = read_until_control(&mut reader, snapshot_done).await;
     assert!(
-        back.contains("\x18\x1bc") && back.contains("while-away-4"),
-        "{back:?}"
+        back.contains("\x18\x1bc") && back.contains("much-6"),
+        "{}",
+        back.len()
     );
 }
 
@@ -3124,6 +3146,69 @@ async fn a_second_task_waits_for_the_workspace() {
     assert!(!f.rationale.is_empty());
 }
 
+/// A task in review keeps its Git workspace (D-156): its verified work
+/// isn't committed until it's published, so another task started there
+/// waits — else publishing the first would commit the second's edits
+/// under its title (the live bench's B03). Accepted, the first lets go.
+#[tokio::test]
+async fn a_task_waiting_to_publish_keeps_its_workspace() {
+    use otter_core::task::{TaskAction, TaskStatus};
+    let fake = fake_agent_host("ok", "rules").await;
+    let host = &fake.host;
+    let (first, _) = git_task(&fake).await;
+    wait_task(host, &first, "asked to publish", |f| {
+        f.status == TaskStatus::Review
+            && f.pending_decisions()
+                .any(|d| d.summary.contains("git push"))
+    })
+    .await;
+    let mut conn = host.conn().await;
+    let second = conn
+        .task_create(otter_protocol::task::TaskCreate {
+            command_id: "create-second".into(),
+            title: "Second".into(),
+            request: "Add a README".into(),
+            workspace: Some("csv".into()),
+            answer_only: false,
+        })
+        .await
+        .unwrap()
+        .id
+        .to_string();
+    conn.task_act("start-second", &second, TaskAction::Start)
+        .await
+        .unwrap();
+    wait_task(host, &second, "waiting for the first", |f| {
+        f.status_reason.as_deref()
+            == Some(&*format!(
+                "Waiting for csv: “CSV export”{}",
+                otter_core::task::HELD
+            ))
+    })
+    .await;
+    // Published: still the first one's until it's accepted.
+    allow_publish(host, &first).await;
+    wait_task(host, &first, "published", |f| {
+        f.delivery.as_ref().is_some_and(|d| d.pr_url.is_some())
+    })
+    .await;
+    tokio::time::sleep(Duration::from_millis(1000)).await;
+    assert!(conn.task_get(&second).await.unwrap().runs.is_empty());
+    conn.task_act(
+        "accept-first",
+        &first,
+        TaskAction::Accept {
+            override_gates: true,
+        },
+    )
+    .await
+    .unwrap();
+    let f = wait_task(host, &second, "the second at work", |f| !f.runs.is_empty()).await;
+    let a = conn.task_get(&first).await.unwrap();
+    assert_eq!(a.status, TaskStatus::Done);
+    assert!(f.runs[0].started_at >= a.delivery.unwrap().pushed_at.unwrap());
+}
+
 /// A task waiting for a Git workspace gets one of its own (D-080): a
 /// worktree of the same repository on a branch for it, and both tasks'
 /// agents work at once, each in its own directory.
@@ -5052,6 +5137,71 @@ async fn a_model_cannot_approve_what_only_the_developer_may() {
         (d.status, d.decided_by),
         (DecisionStatus::Denied, Some(Decider::User))
     );
+}
+
+/// B06 (D-157): a command too long for a decision's one line is there whole
+/// for the developer who decides it, and its credential in nothing Otter
+/// keeps.
+#[tokio::test]
+async fn a_long_command_is_there_whole_for_the_developer() {
+    use otter_core::task::TaskStatus;
+    let fake = fake_agent_host("ok", "rules").await;
+    let host = &fake.host;
+    let id = started_task(host, "Rename the storage path ASK_LONG").await;
+    let f = wait_task(host, &id, "blocked on the developer", |f| {
+        f.status == TaskStatus::Blocked && f.pending_decisions().next().is_some()
+    })
+    .await;
+    let d = f.pending_decisions().next().unwrap();
+    assert!(d.user_only, "{d:?}");
+    // Its one line stops before the `rm` policy matched…
+    assert!(
+        d.summary.starts_with("Run `python3 - <<'E' import re") && d.summary.ends_with('…'),
+        "{}",
+        d.summary
+    );
+    assert!(!d.summary.contains("rm -rf"), "{}", d.summary);
+    // …so the whole command is there too, as written, without its credential.
+    let command = d.command.as_deref().expect("the whole command");
+    assert!(
+        command.starts_with("python3 - <<'E'\nimport re\np = \"taskbench/cli.py\"\n"),
+        "{command}"
+    );
+    assert!(command.ends_with(" rm -rf /opt/shared"), "{command}");
+    // Kept with its decision, and only there: what comes past the cut goes
+    // neither to the host's event log nor to the task's history.
+    let state = host.home().join("state");
+    let read = |p: std::path::PathBuf| {
+        std::fs::read_to_string(&p).unwrap_or_else(|e| panic!("{}: {e}", p.display()))
+    };
+    let task_dir = state.join("tasks").join(&id);
+    let doc = read(task_dir.join("task.json"));
+    assert!(doc.contains(" rm -rf /opt/shared"), "{doc}");
+    let history = read(task_dir.join("history.jsonl"));
+    assert!(
+        history.contains("Run `python3 - <<'E' import re"),
+        "{history}"
+    );
+    let events = read(state.join("events.jsonl"));
+    assert!(events.contains(&id), "{events}");
+    for log in [&history, &events] {
+        assert!(!log.contains("rm -rf"), "{log}");
+    }
+    let mut kept = String::new();
+    let mut stack = vec![host.home().to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        for e in std::fs::read_dir(&dir).unwrap().flatten() {
+            let path = e.path();
+            if path.is_dir() {
+                stack.push(path);
+            } else if let Ok(text) = std::fs::read_to_string(&path) {
+                kept.push_str(&text);
+            }
+        }
+    }
+    let answered = serde_json::to_string(&f).unwrap();
+    assert!(!answered.contains("LONGLONG"), "{answered}");
+    assert!(!kept.contains("LONGLONG"), "{kept}");
 }
 
 /// Invariant 13 (D-075): a credential printed by what fails — the coding

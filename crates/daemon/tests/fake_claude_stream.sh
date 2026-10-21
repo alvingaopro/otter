@@ -1,7 +1,8 @@
 #!/bin/sh
 # A fake `claude -p` speaking stream-json the way Claude Code 2.1.295 does
 # (see crates/daemon/src/agents/claude_stream.rs). Words in a prompt choose
-# what happens: ASK_RM (a command only the developer may allow), ASK_TWICE
+# what happens: ASK_RM (a command only the developer may allow), ASK_LONG
+# (one whose `rm` comes past what a one-line summary shows), ASK_TWICE
 # (a write outside the workspace, asked again once allowed), ASK_INSTALL
 # (one the Control Agent may decide), ASK_EDIT (a routine edit), ASK_QUESTION,
 # FAIL, HANG (works until interrupted), SLOW (works until interrupted, then
@@ -85,6 +86,7 @@ while read -r line; do
           result error_during_execution true "401 with Authorization: Bearer leakyleakybearer0000" ;;
         *ASK_TWICE*) ask r5 Bash '{"command":"cargo build > /opt/build.log"}' ;;
         *ASK_RM*) ask r1 Bash '{"command":"rm -rf /opt/shared"}' ;;
+        *ASK_LONG*) ask r7 Bash '{"command":"python3 - <<'"'"'E'"'"'\nimport re\np = \"taskbench/cli.py\"\ns = open(p).read()\ns = s.replace(\"SAVE_PATH\", \"STORE_PATH\")\ns = re.sub(r\"\\bold_name\\b\", \"new_name\", s)\nopen(p, \"w\").write(s)\nprint(\"rewrote\", p, \"for the new storage path, keeping the old one readable\")\nE\nGITHUB_TOKEN=ghp_LONGLONGLONGLONGLONGLONGLONG1234 rm -rf /opt/shared"}' ;;
         *ASK_INSTALL*) ask r2 Bash '{"command":"npm install left-pad"}' ;;
         *ASK_EDIT*) ask r4 Write '{"file_path":"src/a.rs","content":"x"}' ;;
         *ASK_QUESTION*) ask r3 AskUserQuestion '{"questions":[{"question":"Pick one","options":[{"label":"red"},{"label":"blue"}]}]}' ;;

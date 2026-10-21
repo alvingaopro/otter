@@ -808,6 +808,7 @@ impl Daemon {
                 risk,
                 summary: otter_core::redact::redact(&ask.summary),
                 detail: Some(why.clone()),
+                command: whole_command(&ask.call),
                 options,
                 status,
                 decided_by: (status != DecisionStatus::Pending).then_some(Decider::Policy),
@@ -1584,6 +1585,7 @@ fn require_recovery(
             detail: Some(format!(
                 "{why}. Look at the workspace first: what the cut-off run did may already be there."
             )),
+            command: None,
             options: vec![],
             status: DecisionStatus::Pending,
             decided_by: None,
@@ -1643,6 +1645,32 @@ fn same_words(a: &str, b: &str) -> bool {
     a.split_whitespace().eq(b.split_whitespace())
 }
 
+/// The most of a command a decision keeps (D-157).
+const COMMAND_MAX: usize = 16 * 1024;
+
+/// The whole command line a decision is about, to read before deciding
+/// (D-157): only when its one-line summary doesn't show it as it is — cut,
+/// or on several lines. Redacted before it is bounded, so a cut can't leave
+/// half a credential that no longer looks like one.
+fn whole_command(call: &crate::runtime::ToolCall) -> Option<String> {
+    let crate::runtime::ToolCall::Command { line } = call else {
+        return None;
+    };
+    let line = otter_core::redact::redact(line);
+    if crate::agents::claude_stream::summarize(call, "") == format!("Run `{line}`") {
+        return None;
+    }
+    if line.len() <= COMMAND_MAX {
+        return Some(line);
+    }
+    let cut = line.floor_char_boundary(COMMAND_MAX);
+    Some(format!(
+        "{}\n… {} more bytes, not kept",
+        &line[..cut],
+        line.len() - cut
+    ))
+}
+
 /// What a decision tells the agent: allowed, the answer, or who said no
 /// and why, when they said (D-066).
 pub(crate) fn decision_reply(
@@ -1682,7 +1710,8 @@ fn activity_line(tool: &str, call: &crate::runtime::ToolCall) -> String {
         ToolCall::Delegate { description } => format!("subagent: {description}"),
         ToolCall::Read | ToolCall::Outside { .. } | ToolCall::Other { .. } => tool.to_owned(),
     };
-    crate::agents::excerpt(&line, 200)
+    // Redacted before the cut, as a decision's summary is (D-157).
+    crate::agents::excerpt(&otter_core::redact::redact(&line), 200)
 }
 
 /// A message being written, sent at most every [`Draft::EVERY`].
@@ -1870,6 +1899,54 @@ mod tests {
                 text: "blue".into()
             }
         );
+    }
+
+    #[test]
+    fn a_decision_keeps_the_whole_command_its_summary_cuts() {
+        use crate::runtime::ToolCall;
+        let cmd = |line: &str| ToolCall::Command { line: line.into() };
+        // The summary shows it all already: nothing more.
+        assert_eq!(whole_command(&cmd("rm -rf /opt/shared")), None);
+        let path = "x".repeat(300);
+        assert_eq!(whole_command(&ToolCall::Edit { path }), None);
+        // Past the summary's cut, on several lines, a credential in it (B06).
+        let line = format!(
+            "python3 - <<'E'\n{}E\nGITHUB_TOKEN=ghp_WHOLEWHOLEWHOLEWHOLEWHOLE1234 rm -rf /opt/shared",
+            "print('padding the line out')\n".repeat(10)
+        );
+        let summary = crate::agents::claude_stream::summarize(&cmd(&line), "Bash");
+        assert!(!summary.contains("rm -rf"), "{summary}");
+        let whole = whole_command(&cmd(&line)).expect("cut in the summary");
+        assert!(whole.starts_with("python3 - <<'E'\nprint("), "{whole}");
+        assert!(whole.ends_with(" rm -rf /opt/shared"), "{whole}");
+        assert!(!whole.contains("WHOLEWHOLE"), "{whole}");
+        // A short one on several lines is shown as it is, too.
+        assert_eq!(
+            whole_command(&cmd("cd a &&\nrm b")).as_deref(),
+            Some("cd a &&\nrm b")
+        );
+        // Bounded, at a character, saying so.
+        let long = format!("echo {}", "é".repeat(COMMAND_MAX));
+        let kept = whole_command(&cmd(&long)).unwrap();
+        let (head, tail) = kept.rsplit_once('\n').unwrap();
+        assert!(head.len() <= COMMAND_MAX && long.starts_with(head));
+        assert_eq!(
+            tail,
+            format!("… {} more bytes, not kept", long.len() - head.len())
+        );
+    }
+
+    #[test]
+    fn an_activity_line_is_redacted_before_it_is_cut() {
+        use crate::runtime::ToolCall;
+        for pad in 170..200 {
+            let line = format!(
+                "curl {} https://bob:hunter2secret@example.com",
+                "x".repeat(pad)
+            );
+            let shown = activity_line("Bash", &ToolCall::Command { line });
+            assert!(!shown.contains("hunt"), "{shown}");
+        }
     }
 
     #[test]

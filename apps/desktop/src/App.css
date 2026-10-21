@@ -613,6 +613,7 @@ body.resizing-row { cursor: row-resize; user-select: none; }
 .decision.pending { border-color: var(--needs-border); background: var(--needs-bg); }
 .decision-head { display: flex; gap: 8px; align-items: center; }
 .decision-summary { font-family: var(--mono); font-size: 12.5px; user-select: text; word-break: break-word; }
+.decision-command { margin: 0; padding: 8px 10px; max-height: 240px; overflow: auto; border-radius: 6px; background: var(--bg); border: 1px solid var(--line); font-family: var(--mono); font-size: 12px; white-space: pre-wrap; overflow-wrap: anywhere; user-select: text; }
 .decision-actions { display: flex; gap: 8px; flex-wrap: wrap; }
 .decision-answer { display: flex; gap: 8px; flex: 1; }
 .decision-answer input { flex: 1; height: 30px; padding: 0 8px; border-radius: 7px; border: 1px solid var(--line-strong); background: var(--bg); color: var(--text); font: inherit; }
