@@ -94,6 +94,7 @@ pub fn run() {
             forwards::start(app.handle());
             updates::start(app.handle());
             tray::setup(app.handle())?;
+            updates::after_update(app.handle());
             Ok(())
         })
         // Closing the window keeps Otter in the menu bar (status and
