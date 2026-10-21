@@ -295,10 +295,6 @@ pub struct VerificationMark {
     pub fingerprint: String,
     /// The unmet criteria, by text.
     pub unmet: Vec<String>,
-    /// How many runs the task had then: the next verdict's judge sees the
-    /// commands of the runs after them (D-165). 0 in marks from before.
-    #[serde(default)]
-    pub runs: usize,
 }
 
 /// Where a pause found a task (D-168).
@@ -383,6 +379,10 @@ fn is_zero(n: &u64) -> bool {
 }
 
 fn is_zero_u32(n: &u32) -> bool {
+    *n == 0
+}
+
+fn is_zero_usize(n: &usize) -> bool {
     *n == 0
 }
 
@@ -604,6 +604,10 @@ pub struct Task {
     /// The last verification that found something unmet (D-062).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_verification: Option<VerificationMark>,
+    /// How many runs the task had at its last verdict, met or not: the next
+    /// verdict's judge sees the commands of the runs after them (D-165).
+    #[serde(default, skip_serializing_if = "is_zero_usize")]
+    pub judged_runs: usize,
     /// What the developer allowed once and isn't asked about again in this
     /// task (D-066): `DecisionRequest::grant`s they approved.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -669,6 +673,7 @@ impl Task {
             verify_approved: false,
             verify_decision: None,
             last_verification: None,
+            judged_runs: 0,
             grants: vec![],
             rationale: Vec::new(),
             allowed_commands: Vec::new(),

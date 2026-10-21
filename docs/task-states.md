@@ -68,7 +68,7 @@ journal is the agent's. A restarted otterd reads them and goes on.
 | Plan | `requirements`, `acceptance` (typed), `steps`, `verify_command` (+ its decision) | Carries on with the next step. |
 | Each turn | a `Run`: state, `provider_session_id`, `worked_ms`, summary; the turn in the journal | A cut-off turn continues the same session with a notice (D-063); a finished one isn't repeated (recovered from the journal). |
 | Check | `Test` evidence: command, exit, output tail | Re-run on the next verification (cheap, local). |
-| Work state | `Working tree` evidence, `last_verification` (fingerprint + unmet + the runs then) | The loop stop compares against it; the judge sees the commands of the runs after it (D-165). |
+| Work state | `Working tree` evidence, `last_verification` (fingerprint + unmet), `judged_runs` (the runs at the last verdict) | The loop stop compares against the mark; the judge sees the commands of the runs after the count (D-165). |
 | Commit | `Committed <sha>` evidence | A clean tree: nothing to commit again. |
 | Push | `delivery.branch`, `head`, `pushed_at` | Pushes only if HEAD moved or work is uncommitted; a push is idempotent. |
 | Pull request | `delivery.pr_number`, `pr_url`, `PullRequest` evidence | An open PR for the branch is adopted (`gh pr view`), never opened twice. |

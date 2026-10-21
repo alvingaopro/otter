@@ -22,7 +22,7 @@
 //! up where the last one stopped. One task, one run at a time (MVP). No
 //! lock is held across a model call, a run or a check.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -1927,11 +1927,9 @@ impl Daemon {
                 .map(|c| format!("{} {}", if c.met == Some(true) { "✓" } else { "✗" }, c.text))
                 .collect::<Vec<_>>()
                 .join("\n");
-            let mark = VerificationMark {
-                fingerprint,
-                unmet,
-                runs: f.runs.len(),
-            };
+            let mark = VerificationMark { fingerprint, unmet };
+            // The next verdict's judge sees the commands run after this one.
+            f.judged_runs = f.runs.len();
             if all_met {
                 f.last_verification = None;
                 changes.push(Change::new(f.reason("Verified: every criterion is met.")));
@@ -2816,7 +2814,8 @@ fn browser_evidence(
 /// unmet criteria a strict subset of the last's, new evidence from the fix
 /// — does, so each such round leaves fewer unmet and they end. The same
 /// work with as much unmet, or with other criteria unmet, is the verdict's
-/// wording, not the work: another round won't change it.
+/// wording, not the work: another round won't change it. Criteria are told
+/// apart by their text, counted: of two with one text, one met is progress.
 fn another_round(last: Option<&VerificationMark>, now: &VerificationMark) -> bool {
     let Some(last) = last else {
         return true;
@@ -2824,14 +2823,20 @@ fn another_round(last: Option<&VerificationMark>, now: &VerificationMark) -> boo
     if last.fingerprint != now.fingerprint {
         return true;
     }
-    let was: HashSet<&str> = last.unmet.iter().map(String::as_str).collect();
-    let is: HashSet<&str> = now.unmet.iter().map(String::as_str).collect();
-    is.len() < was.len() && is.is_subset(&was)
+    fn count(unmet: &[String]) -> HashMap<&str, usize> {
+        let mut n = HashMap::new();
+        for c in unmet {
+            *n.entry(c.as_str()).or_default() += 1;
+        }
+        n
+    }
+    let (was, is) = (count(&last.unmet), count(&now.unmet));
+    now.unmet.len() < last.unmet.len() && is.iter().all(|(c, n)| was.get(c).is_some_and(|w| n <= w))
 }
 
 /// The runs whose commands the judge sees (D-165): those since the last
-/// verdict that left something unmet; for the first, those since the plan
-/// (the look at the code, which planned it, changed nothing).
+/// verdict, met or not, and since the plan (the look at the code, which
+/// planned it, changed nothing).
 fn runs_since_verdict(f: &Task) -> HashSet<RunId> {
     let planning: HashSet<&StepId> = f
         .steps
@@ -2839,14 +2844,12 @@ fn runs_since_verdict(f: &Task) -> HashSet<RunId> {
         .filter(|t| t.planning)
         .map(|t| &t.id)
         .collect();
-    let start = match &f.last_verification {
-        Some(mark) => mark.runs,
-        None => f
-            .runs
-            .iter()
-            .rposition(|r| planning.contains(&r.step_id))
-            .map_or(0, |i| i + 1),
-    };
+    let planned = f
+        .runs
+        .iter()
+        .rposition(|r| planning.contains(&r.step_id))
+        .map_or(0, |i| i + 1);
+    let start = f.judged_runs.max(planned);
     f.runs
         .iter()
         .skip(start)
@@ -3637,7 +3640,6 @@ mod tests {
         VerificationMark {
             fingerprint: fingerprint.into(),
             unmet: unmet.iter().map(|s| (*s).into()).collect(),
-            runs: 0,
         }
     }
 
@@ -3692,6 +3694,10 @@ mod tests {
             "new evidence proved A: one more round"
         );
         assert!(!verdict(&mut last, mark("t1:✓", &["B"])), "then it stops");
+        // Two criteria with one text: one of them met is progress too.
+        let mut last = Some(mark("t1:✓", &["A", "A"]));
+        assert!(verdict(&mut last, mark("t1:✓", &["A"])));
+        assert!(!verdict(&mut last, mark("t1:✓", &["A"])));
         // Down to nothing unmet with a check still failing: once more, then
         // the same again stops.
         let mut last = Some(mark("t1:✗", &["A"]));
@@ -3719,15 +3725,23 @@ mod tests {
             i.iter().map(|&i| f.runs[i].id.clone()).collect()
         };
         assert_eq!(runs_since_verdict(&f), ids(&f, &[1, 2]));
-        f.last_verification = Some(VerificationMark {
-            runs: 2,
-            ..mark("t", &["A"])
-        });
-        assert_eq!(runs_since_verdict(&f), ids(&f, &[2]));
-        // A mark from before D-165 (no count): every run since the start
-        // but the look at the code's.
+        // A verdict after the work left something unmet; the fix ran.
         f.last_verification = Some(mark("t", &["A"]));
-        assert_eq!(runs_since_verdict(&f), ids(&f, &[1, 2]));
+        f.judged_runs = 2;
+        assert_eq!(runs_since_verdict(&f), ids(&f, &[2]));
+        // Then every criterion met (no mark kept), review, CI failed and a
+        // fix ran: only that fix's commands, not back to the plan.
+        f.last_verification = None;
+        f.judged_runs = 3;
+        f.runs.push(f.runs[2].clone());
+        f.runs[3].id = RunId::generate();
+        assert_eq!(runs_since_verdict(&f), ids(&f, &[3]));
+        // Planned again since: only what ran after the new look at the code.
+        f.runs.push(f.runs[0].clone());
+        f.runs[4].id = RunId::generate();
+        f.runs.push(f.runs[3].clone());
+        f.runs[5].id = RunId::generate();
+        assert_eq!(runs_since_verdict(&f), ids(&f, &[5]));
     }
 
     #[test]
