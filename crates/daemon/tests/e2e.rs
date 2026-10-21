@@ -5767,6 +5767,118 @@ async fn a_model_cannot_approve_what_only_the_developer_may() {
     );
 }
 
+/// D-174: what the policy flags only by a word, and the reflog brings back,
+/// is Otter's model's to judge, not the developer's.
+#[tokio::test]
+async fn otters_model_judges_what_comes_back_from_the_reflog() {
+    use otter_core::task::{Decider, DecisionStatus, Risk, TaskStatus};
+    let fake = fake_agent_host("ok", "yes").await;
+    let id = started_task(&fake.host, "Rebase onto main ASK_REBASE").await;
+    let f = wait_task(&fake.host, &id, "review", |f| {
+        f.status == TaskStatus::Review
+    })
+    .await;
+    let d = &f.decisions[0];
+    assert_eq!(d.summary, "Run `git rebase main`");
+    assert!(!d.user_only);
+    assert_eq!(d.risk, Risk::High);
+    assert_eq!(
+        (d.status, d.decided_by),
+        (DecisionStatus::Approved, Some(Decider::Controller))
+    );
+    assert_eq!(d.rationale.as_deref(), Some("yes"));
+    assert_eq!(f.runs[0].summary.as_deref(), Some("allowed and done"));
+}
+
+/// A host with no model, and a model that does not answer in time, leave a
+/// judged call to the developer, as before (D-174).
+#[tokio::test]
+async fn without_a_model_or_in_time_a_judged_call_is_the_developers() {
+    use otter_core::task::{DecisionStatus, TaskStatus};
+    let fake = fake_agent_host("ok", "rules").await;
+    let id = started_task(&fake.host, "Rebase onto main ASK_REBASE").await;
+    let f = wait_task(&fake.host, &id, "blocked on the developer", |f| {
+        f.status == TaskStatus::Blocked && f.pending_decisions().next().is_some()
+    })
+    .await;
+    let d = f.pending_decisions().next().unwrap();
+    assert!(!d.user_only);
+
+    let late = fake_agent_host_with("ok", "sleepy", |_| {
+        vec![("OTTER_JUDGED_DEADLINE_MS", "300".into())]
+    })
+    .await;
+    let id = started_task(&late.host, "Rebase onto main ASK_REBASE").await;
+    let f = wait_task(&late.host, &id, "blocked after the deadline", |f| {
+        f.status == TaskStatus::Blocked
+            && f.rationale.iter().any(|r| r.contains("no answer in time"))
+    })
+    .await;
+    assert_eq!(
+        f.decisions[0].status,
+        DecisionStatus::Pending,
+        "{:?}",
+        f.decisions
+    );
+}
+
+/// A model's denial refuses the call once; asked again, it is the
+/// developer's, who may allow it (D-174).
+#[tokio::test]
+async fn a_model_denial_is_not_final_a_repeat_goes_to_the_developer() {
+    use otter_core::task::{Decider, DecisionStatus, TaskAction, TaskStatus};
+    let fake = fake_agent_host("ok", "no").await;
+    let id = started_task(&fake.host, "Rebase onto main ASK_REBASE_TWICE").await;
+    let f = wait_task(&fake.host, &id, "the repeat waits for the developer", |f| {
+        f.status == TaskStatus::Blocked && f.pending_decisions().next().is_some()
+    })
+    .await;
+    let first = f
+        .decisions
+        .iter()
+        .find(|d| d.status == DecisionStatus::Denied)
+        .expect("the model's denial");
+    assert_eq!(first.decided_by, Some(Decider::Controller));
+    assert_eq!(first.rationale.as_deref(), Some("not part of this task"));
+    let again = f.pending_decisions().next().unwrap().clone();
+    assert!(again.user_only, "{again:?}");
+    assert!(
+        again
+            .detail
+            .as_deref()
+            .unwrap()
+            .contains("declined this once")
+    );
+    fake.host
+        .conn()
+        .await
+        .task_act(
+            "approve",
+            &id,
+            TaskAction::Decide {
+                decision_id: again.id.clone(),
+                approve: true,
+                answer: None,
+                answers: None,
+            },
+        )
+        .await
+        .unwrap();
+    let f = wait_task(
+        &fake.host,
+        &id,
+        "review after the developer allowed it",
+        |f| f.status == TaskStatus::Review,
+    )
+    .await;
+    assert_eq!(f.runs[0].summary.as_deref(), Some("allowed and done"));
+    let again = f.decisions.iter().find(|d| d.id == again.id).unwrap();
+    assert_eq!(
+        (again.status, again.decided_by),
+        (DecisionStatus::Approved, Some(Decider::User))
+    );
+}
+
 /// B06 (D-157): a command too long for a decision's one line is there whole
 /// for the developer who decides it, and its credential in nothing Otter
 /// keeps.

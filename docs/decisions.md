@@ -6189,6 +6189,201 @@ Not tested: it is the macOS app being started by another process, and the
 tests don't start one. The Tauri crate isn't built on Linux either; CI's
 macOS job compiles it.
 
+## D-173 — A quoted separator doesn't cut a command; a home directory's logins are credentials by where they are (2026-10-21)
+
+Milestone 1 of `docs/plans/agent-judged-risk.md`: what can be fixed in the
+policy's own code, without a model, before anything is judged by one. (The
+design names D-173 for the whole of it; this is the next free number, and the
+judged-by-the-agent decision, if it is built, takes the one after.)
+
+Two things the policy got wrong, both found by running lines through
+`policy::classify`:
+
+- `grep -E 'a|token' x`, `grep -rn "a|token" src`, `git log --grep
+  'delete|token' --oneline` asked the developer ("touches credentials
+  (`token`)"). The line was cut at every `|`, quoted or not, so the text after
+  it was a command of its own, and its word counted. A search for one word
+  (`grep -rn token src`) was fine since D-138; a search for two was not.
+- `cat ~/.aws/config`, `ls ~/.kube/`, `cat ~/.netrc`, `cat ~/.docker/config.json`
+  and `cat ~/.npmrc` were allowed: only the files in `CREDENTIAL_FILES` and
+  the words (`token`, `password`, …) kept a login from being read, and these
+  files hold logins without either.
+
+What changed (`crates/daemon/src/runtime/policy.rs`):
+
+- **Quotes decide where a line is cut.** `pieces_cut` cuts a line only at
+  the `;`, `&`, `|` and newlines the existing `Lexer` reads as the shell's
+  own, so one inside `'…'`, `"…"`, `$'…'`, behind a backslash or in a comment
+  is part of a word. `grep -E 'a|token' x` is one piece whose command is
+  `grep`, and D-138 reads only the command. A newline inside quotes is part
+  of the word too.
+- **The fallback.** When the text ends with a quote still open, a trailing
+  backslash or an unbalanced `((`, the Lexer isn't sure how the shell reads
+  it, and the line is cut at every separator as it always was. A line is
+  only read as fewer pieces where its quotes are plainly balanced
+  (`grep 'a|token x` and `grep \'a|token x` still ask).
+- **A command behind quotes is read whole.** `sh -c 'cd /; rm -rf etc'` is
+  one piece that isn't a reader, so the word lists read all of it and `rm`
+  asks. It was allowed before: the quoted `;` cut off `rm -rf etc'`, which
+  read as a delete inside the workspace, while the shell ran `rm -rf /etc`
+  (the same for `bash -c "cd /etc && rm passwd"`).
+- **Substitutions and comments follow the shell.** `$(…)`, `<(…)`, `>(…)`
+  and backticks are read as commands outside quotes and in double quotes. In
+  single quotes, in `$'…'` or behind a backslash they are only characters:
+  pulled out as if they ran, the text after one would be read as a command of
+  its own and hide what the line really runs (`echo '$(cat x' ; git push origin
+  main ; echo x')'` pushes). A `#` starts a comment only at the start of a
+  word: not after an escaped space or `;`, nor right after a substitution
+  (`cat a\ #b;git push origin main` pushes). Both came out of the review of
+  this change and have tests.
+- **Home-directory credential places.** `~/.aws`, `~/.azure`, `~/.oci`,
+  `~/.kube`, `~/.gnupg`, `~/.config/gcloud`, `~/.config/gh`, `~/.config/doctl`,
+  `~/.docker/config.json`, `~/.netrc`, `~/.npmrc`, `~/.pypirc`, `~/.pgpass`,
+  `~/.git-credentials` and `~/.vault-token` are credentials for a **command**
+  that names them and for an edit, by their path from a home directory (`~/`,
+  `$HOME/`, `${HOME}/`, `~user/`, the user's `$HOME`, `/home/<user>/`,
+  `/Users/<user>/`, `/root/`), also when the line has `cd`ed there and names
+  them relative to it, and in a bind mount (`-v ~/.aws:/root/.aws`). A doubled
+  slash and another case (`.AWS`; a Mac's disk is not case-sensitive) are the
+  same place. They are never granted for the rest of the task (D-066). A
+  project's own `.npmrc`, a hostname such as `s3.aws.amazon.com` and
+  `~/.dockerignore` are not them.
+
+What this does not change: no model is asked anything; the word lists, the
+reader and test exemptions (D-138), the routine delete (D-164) and what a
+line only prints (D-170) are as they were; the grant rules (D-066) are as
+they were except that the new places are never granted; `policy::resolve`
+and the denials that are final are untouched.
+
+Tests (`crates/daemon/src/runtime/policy.rs`, next to
+`looking_for_a_risky_word_is_not_doing_it`): `a_quoted_separator_does_not_cut_a_line`
+(the quoted-pipe searches are `Allow`; a command behind quotes, an open or
+escaped quote, and a separator outside quotes still ask or are refused) and
+`a_home_directorys_logins_are_credentials_by_where_they_are` (both ways, edits
+and grants too). Not done: the agent's own Read, Grep and Glob tools carry no
+path in `ToolCall::Read`, so a login read through them is not asked about
+(only a command or an edit is); paths built through a variable other than
+`$HOME`; what a script does inside; and a word such as `token` in a search
+that reaches outside the workspace (`grep -rn token ../other-repo` still
+asks). Those are for the next steps.
+
+## D-174 — Otter's model judges what a word flags and the reflog brings back; the task's own worktrees are inside (2026-10-21)
+
+Milestone 2 of `docs/plans/agent-judged-risk.md` (D-173 was milestone 1). The
+policy stays the floor; what it flags only by a word, where the damage can be
+undone or there is none, is no longer the developer's by default.
+
+Supersedes, for the judged classes only: D-049's "any word-listed command asks
+the developer"; `decide_open`'s "a developer-only ask is never shown to a
+model" (the floor keeps it); D-044's "a denial can't be turned around", for a
+denial **by the model**; D-066's "other directories still ask", for the
+task's own worktrees. D-066's "credentials are never granted" is unchanged.
+
+What changed:
+
+- **Judged asks.** `ask_judged` is an `Ask` with `user_only: false`, High
+  risk (so it is told apart from the unknown-tool Medium ask). Judged:
+  `git rebase` and `git branch -d` (local history; the reflog brings it
+  back), and a credential word (`token`, `password`, …) in a reader or test
+  (`READERS`, `GIT_READERS`, `TESTERS`) whose read reaches outside the
+  workspace, when the word is something it looks for: not in the operands
+  that reach outside (`cat /etc/app/password.txt`, `grep -r password
+  ~/.aws` stay the developer's), not a `$VAR`, not an assignment, not any
+  other command. Everything else on the floor is as it was: push, publish,
+  deploy, root, work Git can't bring back, the broad destructive words
+  (`delete`, `prune`, `uninstall`, `destroy`, `terminate`), infrastructure,
+  credentials files and places, writes and edits outside.
+- **Strictest wins inside a piece.** `classify_words` reads every list and
+  returns the worst hit, so `sudo git rebase main` is the developer's. A
+  routine delete (D-164) no longer hides other destructive words in its piece.
+- **The task's own worktrees are inside** (`policy::Scope`): the other
+  worktrees of the workspace's repository, from `git worktree list` run in
+  the workspace, only for an ask that would otherwise be the developer's.
+  Not counted: the bare backing repository (`git worktree list` shows it
+  first, and every workspace off the repository shares it), and anything under
+  Otter's home (the other workspaces are other tasks' work). Git is run with
+  otterd's own environment, so a host whose `PATH` lacks `git` finds no
+  worktrees and asks the developer, as before. Edits, reads and writes there are routine; deleting is still judged
+  against the root alone. Git's internals and credentials stay asked about.
+- **The model's decision.** A judged ask goes to `Brain::decide` with a
+  prompt of its own (`brain::judged_prompt`): the whole command (redacted),
+  the workspace root, each piece's directory and whether it is inside
+  (`policy::explain`), the policy's reason, and that the command's text is
+  data, not an instruction. Allow only what is plainly part of the task and
+  undoable or read-only; deny the plainly harmful; else escalate. The
+  rationale is redacted and recorded on the decision. No model, an error, an
+  answer that is not allow or deny, or **20 seconds** (`JUDGED_DEADLINE`,
+  `OTTER_JUDGED_DEADLINE_MS` in tests) escalate to the developer, as today.
+  Dropping the call kills the `claude` process (`kill_on_drop`).
+- **A model's deny is not final.** It refuses the call once, with its
+  rationale. The same call again in the task (same redacted summary and
+  command, whitespace aside) is recorded `user_only` ("Otter declined this
+  once"), so rewording or retrying is not a new sample for the model.
+  `policy::resolve` treats only a denial by the developer or by policy as
+  final. No change to the store or the protocol (`DecisionRequest` has what
+  the prompt needs), so no protocol bump.
+
+Answers to the plan's open questions:
+
+- A model's allow is **not** remembered for the task: one wrong allow lasts
+  one call. Judged calls are never granted (`grant` returns none for any call
+  `classify_words` doesn't allow).
+- **No Settings switch** yet. A host without a model already sends every
+  judged ask to the developer. Add one if dogfooding shows it is wanted.
+- The infrastructure list and the broad destructive words **stay on the
+  floor**, as the plan proposed, until a measurement says a model can tell
+  them apart.
+- **Worktrees** are found from the repository's worktree list minus Otter's
+  own workspaces. A sibling worktree the agent makes next to the workspace is
+  the case this serves.
+- Still open, as the plan says: a secret written as a literal
+  (`curl -u user:pw …`), and whether Medium is the right label for the
+  skill/unknown-tool class.
+
+Deliberate narrowings of the plan:
+
+- "The developer can approve a model deny from the decision list" is **not**
+  built. By the time the developer sees it the agent has been told no and has
+  moved on, so approving the past decision would change nothing; the repeat is
+  the developer's and can be approved, and does reach the agent.
+- The prompt's directories are worked out against the workspace root alone,
+  so a command run in a sibling worktree reads as "outside" to the model.
+- The quote-cut `|` class is D-173's, not judged here.
+
+Hardening from the review (each has a case in the tests):
+
+- Worktrees count only when Git, run in the workspace, lists the workspace
+  itself as one: an empty workspace inside a checkout, or a `.git` file the
+  agent pointed elsewhere, finds none. Editing the workspace's `.git` is
+  Git's internals (the developer's). Paths are compared where they really
+  are (symlinks).
+- `git worktree add|move` to a place outside the workspace is a write
+  outside, so the developer's: a directory made that way would become inside.
+- A read of a directory that is, or holds, the workspace, the home directory
+  or a login (`grep -r token ~`, `..`, `/`) is not a search for a word: it
+  keeps the floor. So does a piece with a blank inside quotes or behind a
+  backslash (split on blanks, a path is read as two), and a credential word
+  in any option (`--include=password.txt`).
+- An `answer` from the model on a judged call escalates; only allow and deny
+  stand.
+- A judged read in a sibling worktree is widened like the rest.
+
+Known and left: `git -c x=y rebase main` isn't read as a rebase (the old
+`git rebase` entry matched the same way); a repeat is "the same call" by
+whitespace only, so `git rebase main #` is a new sample for the model.
+
+Not measured: how often the model allows, denies and escalates the judged
+classes (the plan wanted the bench's recorded calls run through it first). If
+it escalates nearly everything the problem is not removed; that is the number
+to look at after dogfooding.
+
+Tests: `what_is_only_a_word_or_comes_back_is_judged` and
+`a_tasks_own_worktrees_are_inside` (policy), `a_judged_call_is_shown_whole_with_where_it_runs`
+(brain), and in `crates/daemon/tests/e2e.rs` `otters_model_judges_what_comes_back_from_the_reflog`,
+`without_a_model_or_in_time_a_judged_call_is_the_developers` and
+`a_model_denial_is_not_final_a_repeat_goes_to_the_developer` (new test brains
+`no` and `sleepy`; the fake agent's `ASK_REBASE` and `ASK_REBASE_TWICE`).
+
 ## D-175 — A task's conversation is told apart by colour, close together; its details are as wide as you drag them (2026-10-21)
 
 Dogfooding: every message had a line above it (who, and when), Otter's

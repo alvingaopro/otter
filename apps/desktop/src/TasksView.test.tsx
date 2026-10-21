@@ -160,7 +160,7 @@ describe("Tasks view", () => {
     localStorage.removeItem("otter.task-detail-width");
   });
 
-  const open =async (title: string) => act(async () => byText('[role="listitem"]', title)!.click());
+  const open = async (title: string) => act(async () => byText('[role="listitem"]', title)!.click());
   const menu = async () => {
     await act(async () => q('[aria-label="More actions"]')!.click());
     return [...document.querySelectorAll('[role="menuitem"]')].map((m) => m.textContent);

@@ -4,7 +4,8 @@
 # what happens: ASK_RM (a command only the developer may allow), ASK_LONG
 # (one whose `rm` comes past what a one-line summary shows), ASK_TWICE
 # (a write outside the workspace, asked again once allowed), ASK_INSTALL
-# (one the Control Agent may decide), ASK_EDIT (a routine edit), ASK_QUESTION,
+# (one the Control Agent may decide), ASK_REBASE (one it judges; ASK_REBASE_TWICE
+# asks again, the same, if denied), ASK_EDIT (a routine edit), ASK_QUESTION,
 # FAIL, HANG (works until interrupted), SLOW (works until interrupted, then
 # finishes once resumed), BGWAIT (waits for background work, then takes it
 # up by itself, as Claude Code does), DIE_MIDTOOL (the process dies mid-tool; a
@@ -48,6 +49,8 @@ while read -r line; do
     *'"behavior":"allow"'*'"answers"'*) text "Going with that."; result success false "answered" ;;
     *'"request_id":"r5"'*'"behavior":"allow"'*) ask r6 Bash '{"command":"cargo build > /opt/build.log"}' ;;
     *'"behavior":"allow"'*) text "Ran it."; result success false "allowed and done" ;;
+    # ASK_REBASE_TWICE: asks again, the same, once it is denied.
+    *'"request_id":"r8"'*'"behavior":"deny"'*) ask r9 Bash '{"command":"git rebase main"}' ;;
     *'"behavior":"deny"'*)
       why=$(printf '%s' "$line" | sed -n 's/.*"message":"\([^"]*\)".*/\1/p')
       result success false "denied ($why), so I stopped" ;;
@@ -92,6 +95,8 @@ while read -r line; do
           text "The token ghp_LEAKLEAKLEAKLEAKLEAKLEAKLEAK1234 was rejected."
           result error_during_execution true "401 with Authorization: Bearer leakyleakybearer0000" ;;
         *ASK_TWICE*) ask r5 Bash '{"command":"cargo build > /opt/build.log"}' ;;
+        *ASK_REBASE_TWICE*) ask r8 Bash '{"command":"git rebase main"}' ;;
+        *ASK_REBASE*) ask r10 Bash '{"command":"git rebase main"}' ;;
         *ASK_RM*) ask r1 Bash '{"command":"rm -rf /opt/shared"}' ;;
         *ASK_LONG*) ask r7 Bash '{"command":"python3 - <<'"'"'E'"'"'\nimport re\np = \"taskbench/cli.py\"\ns = open(p).read()\ns = s.replace(\"SAVE_PATH\", \"STORE_PATH\")\ns = re.sub(r\"\\bold_name\\b\", \"new_name\", s)\nopen(p, \"w\").write(s)\nprint(\"rewrote\", p, \"for the new storage path, keeping the old one readable\")\nE\nGITHUB_TOKEN=ghp_LONGLONGLONGLONGLONGLONGLONG1234 rm -rf /opt/shared"}' ;;
         *ASK_INSTALL*) ask r2 Bash '{"command":"npm install left-pad"}' ;;

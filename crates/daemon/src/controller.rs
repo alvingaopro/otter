@@ -42,6 +42,7 @@ use crate::env::EnvMap;
 use crate::runtime::ToolCall;
 use crate::runtime::policy::{self, Verdict};
 use crate::tasks::{Change, message};
+use otter_core::redact::redact;
 
 /// Attempts at one step before the task fails.
 const MAX_TASK_ATTEMPTS: u32 = 3;
@@ -88,6 +89,17 @@ fn idle_timeout() -> Duration {
 /// Wall time that passes beyond the monotonic clock by more than this, the
 /// host was asleep: not work (D-063).
 const SLEEP_GAP: Duration = Duration::from_secs(30);
+/// How long Otter's model has to judge one call the policy flagged only by
+/// a word (D-174), while the run waits.
+const JUDGED_DEADLINE: Duration = Duration::from_secs(20);
+
+/// [`JUDGED_DEADLINE`], or `OTTER_JUDGED_DEADLINE_MS` (for tests).
+fn judged_deadline() -> Duration {
+    std::env::var("OTTER_JUDGED_DEADLINE_MS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .map_or(JUDGED_DEADLINE, Duration::from_millis)
+}
 
 /// How a run cut off by a limit is summarized (and recognized on resume).
 const OUT_OF_TIME: &str = "Out of time";
@@ -1372,23 +1384,35 @@ impl Daemon {
                 self.escalate(&f.id, &d, why).await;
                 continue;
             }
-            let verdict = brain
-                .decide(
-                    &Context {
-                        task: f,
-                        root: &root,
-                        env: &env,
-                    },
-                    &d,
-                )
-                .await
-                .unwrap_or_else(|e| BrainVerdict::Escalate {
-                    why: format!("couldn't decide: {e:#}"),
-                });
+            // A judged ask holds the run while the model thinks: past the
+            // deadline it is the developer's (D-174).
+            let cx = Context {
+                task: f,
+                root: &root,
+                env: &env,
+            };
+            let judging = brain.decide(&cx, &d);
+            let verdict = if brain::is_judged(&d) {
+                tokio::time::timeout(judged_deadline(), judging)
+                    .await
+                    .unwrap_or_else(|_| Err(anyhow::anyhow!("no answer in time")))
+            } else {
+                judging.await
+            }
+            .unwrap_or_else(|e| BrainVerdict::Escalate {
+                why: format!("couldn't decide: {e:#}"),
+            });
+            // A judged call is allowed, denied or escalated; nothing else.
+            let verdict = match verdict {
+                BrainVerdict::Answer { rationale, .. } if brain::is_judged(&d) => {
+                    BrainVerdict::Escalate { why: rationale }
+                }
+                v => v,
+            };
             let (allow, answer, rationale) = match verdict {
-                BrainVerdict::Allow { rationale } => (true, None, rationale),
-                BrainVerdict::Deny { rationale } => (false, None, rationale),
-                BrainVerdict::Answer { text, rationale } => (true, Some(text), rationale),
+                BrainVerdict::Allow { rationale } => (true, None, redact(&rationale)),
+                BrainVerdict::Deny { rationale } => (false, None, redact(&rationale)),
+                BrainVerdict::Answer { text, rationale } => (true, Some(text), redact(&rationale)),
                 BrainVerdict::Escalate { why } => {
                     self.escalate(&f.id, &d, &why).await;
                     continue;
