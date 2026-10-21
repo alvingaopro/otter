@@ -4,8 +4,24 @@
 // anything reaches the SDK.
 
 export const PROTOCOL_VERSION = 1;
-/** The largest frame either side accepts, in bytes. */
-export const MAX_FRAME = 1024 * 1024;
+/**
+ * The largest frame either side accepts, in bytes: a turn with its pictures
+ * (up to MAX_IMAGES_TOTAL, base64) has to fit in one.
+ */
+export const MAX_FRAME = 4 * 1024 * 1024;
+
+/** What a turn may carry in pictures (the same limits as a task message's). */
+export const MAX_IMAGES = 4;
+export const MAX_IMAGE_BYTES = 700 * 1024;
+export const MAX_IMAGES_TOTAL = 2 * 1024 * 1024;
+export const IMAGE_TYPES = ["image/png", "image/jpeg", "image/webp"] as const;
+export type ImageType = (typeof IMAGE_TYPES)[number];
+
+/** A picture in a turn: its type, and its bytes in base64. */
+export interface TurnImage {
+  media_type: ImageType;
+  data: string;
+}
 
 /** A command from otterd. */
 export interface Envelope<T extends string = string, P = unknown> {
@@ -55,6 +71,8 @@ export interface InitializePayload {
 export interface SendTurnPayload {
   turn_id: string;
   text: string;
+  /** Pictures that go with the text. */
+  images?: TurnImage[];
 }
 
 export interface InterruptPayload {
@@ -200,9 +218,14 @@ export function parseCommand(line: string): { ok: true; command: Command } | { o
       }
       break;
     }
-    case "send_turn":
+    case "send_turn": {
       if (!str(p.turn_id) || !str(p.text) || p.text.length === 0) return bad("turn_id and text are required");
+      if (p.images !== undefined) {
+        const why = badImages(p.images);
+        if (why) return bad(why);
+      }
       break;
+    }
     case "interrupt":
       if (!str(p.turn_id)) return bad("turn_id is required");
       break;
@@ -228,6 +251,26 @@ export function parseCommand(line: string): { ok: true; command: Command } | { o
       return { ok: false, error: `unknown command ${v.type}` };
   }
   return { ok: true, command: v as unknown as Command };
+}
+
+/** Why a turn's pictures are refused, if they are. */
+export function badImages(images: unknown): string | undefined {
+  if (!Array.isArray(images)) return "images must be a list";
+  if (images.length > MAX_IMAGES) return `at most ${MAX_IMAGES} images`;
+  let total = 0;
+  for (const i of images) {
+    if (!isObject(i) || !IMAGE_TYPES.includes(i.media_type as ImageType) || !str(i.data)) {
+      return "each image needs a media_type (png, jpeg or webp) and base64 data";
+    }
+    if (i.data.length === 0 || !/^[A-Za-z0-9+/]*={0,2}$/.test(i.data) || i.data.length % 4 !== 0) {
+      return "an image isn't valid base64";
+    }
+    const bytes = (i.data.length / 4) * 3 - (i.data.endsWith("==") ? 2 : i.data.endsWith("=") ? 1 : 0);
+    if (bytes > MAX_IMAGE_BYTES) return `an image is over ${MAX_IMAGE_BYTES} bytes`;
+    total += bytes;
+  }
+  if (total > MAX_IMAGES_TOTAL) return `the images are over ${MAX_IMAGES_TOTAL} bytes together`;
+  return undefined;
 }
 
 /** Write one event as a frame (cut to fit, never dropped silently). */

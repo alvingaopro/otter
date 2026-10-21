@@ -13,6 +13,16 @@ otterd ──stdin: initialize, send_turn, interrupt, policy_reply,
                 permission_request, tool_call, background, turn_finished, fatal──
 ```
 
+## Pictures in a turn
+
+`send_turn {turn_id, text, images?}`: `images` is up to 4 of `{media_type,
+data}` (`image/png`, `image/jpeg`, `image/webp`; base64), at most 700 KB each
+and 2 MB in all, decoded (D-171). The worker checks them with the command —
+anything else is refused whole (`nack`) before it reaches the SDK — and the
+SDK gets the user message as image blocks first, then the text. A frame, in
+either direction, is at most 4 MiB (`MAX_FRAME`) so a turn with its pictures
+fits one.
+
 ## Two profiles
 
 `initialize` says what the run is for (`profile`; absent: `coding`):

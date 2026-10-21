@@ -4857,6 +4857,166 @@ async fn brief_is_set_at_creation_and_edited_later() {
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
+async fn a_message_keeps_its_pictures_with_the_task() {
+    use base64::Engine;
+    use otter_core::task::MessageRole;
+    use otter_protocol::task::{TaskCreate, TaskImage};
+
+    let host = TestHost::with_env(&[("OTTER_CONTROLLER", "off".into())]).await;
+    create(&host, "pic", Some(vec![])).await;
+    let mut conn = host.conn().await;
+    let f = conn
+        .task_create(TaskCreate {
+            command_id: "pic-create".into(),
+            title: "Match the mock".into(),
+            request: "Make the page look like the mock".into(),
+            workspace: Some("pic".into()),
+            answer_only: false,
+        })
+        .await
+        .unwrap();
+    let id = f.id.as_str();
+    let b64 = |b: &[u8]| base64::engine::general_purpose::STANDARD.encode(b);
+    let mut png = b"\x89PNG\r\n\x1a\n".to_vec();
+    png.extend_from_slice(b"pixels");
+    let image = |bytes: &[u8]| TaskImage {
+        media_type: "image/png".into(),
+        data: b64(bytes),
+    };
+
+    // Pictures alone are a message; they are kept, and named on it.
+    let sent = conn
+        .task_send_with_images("pic-1", id, "", vec![image(&png)])
+        .await
+        .unwrap();
+    let message = sent
+        .messages
+        .iter()
+        .rfind(|m| m.role == MessageRole::User)
+        .unwrap();
+    assert_eq!(message.text, otter_core::task::PICTURES_ONLY);
+    assert_eq!(message.attachments.len(), 1);
+    let kept = conn
+        .task_artifact(id, &message.attachments[0])
+        .await
+        .unwrap();
+    assert_eq!(
+        base64::engine::general_purpose::STANDARD
+            .decode(kept.data)
+            .unwrap(),
+        png
+    );
+    // The file is named for the message, and the history says which message.
+    assert!(
+        message.attachments[0].contains(message.id.as_str()),
+        "{:?}",
+        message.attachments
+    );
+    let history = serde_json::to_string(&conn.task_events(id, None).await.unwrap()).unwrap();
+    assert!(history.contains(message.id.as_str()), "{history}");
+
+    // Sent again (a lost reply): still one message, one picture.
+    let again = conn
+        .task_send_with_images("pic-1", id, "", vec![image(&png)])
+        .await
+        .unwrap();
+    assert_eq!(again.messages.len(), sent.messages.len());
+    let dir = host.home().join("state/tasks").join(id).join("artifacts");
+    assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1);
+    // Sent again with other pictures under the same command: still the first
+    // message, and its picture is as it was.
+    let mut other = png.clone();
+    other.extend_from_slice(b" and more");
+    conn.task_send_with_images("pic-1", id, "", vec![image(&other)])
+        .await
+        .unwrap();
+    let kept = conn
+        .task_artifact(id, &message.attachments[0])
+        .await
+        .unwrap();
+    assert_eq!(
+        base64::engine::general_purpose::STANDARD
+            .decode(kept.data)
+            .unwrap(),
+        png
+    );
+    assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1);
+
+    // What can't be a picture, or is too much, is refused whole.
+    let refused = |what: &str, r: Result<otter_core::task::Task, _>| {
+        assert!(r.is_err(), "{what} should be refused");
+    };
+    refused(
+        "a gif",
+        conn.task_send_with_images(
+            "pic-gif",
+            id,
+            "x",
+            vec![TaskImage {
+                media_type: "image/gif".into(),
+                data: b64(&png),
+            }],
+        )
+        .await,
+    );
+    refused(
+        "base64 that isn't",
+        conn.task_send_with_images(
+            "pic-b64",
+            id,
+            "x",
+            vec![TaskImage {
+                media_type: "image/png".into(),
+                data: "not base64!".into(),
+            }],
+        )
+        .await,
+    );
+    refused(
+        "a jpeg that is a png",
+        conn.task_send_with_images(
+            "pic-type",
+            id,
+            "x",
+            vec![TaskImage {
+                media_type: "image/jpeg".into(),
+                data: b64(&png),
+            }],
+        )
+        .await,
+    );
+    refused(
+        "five pictures",
+        conn.task_send_with_images("pic-five", id, "x", vec![image(&png); 5])
+            .await,
+    );
+    let mut big = png.clone();
+    big.resize(700 * 1024 + 1, 0);
+    refused(
+        "a picture over 700 KB",
+        conn.task_send_with_images("pic-big", id, "x", vec![image(&big)])
+            .await,
+    );
+    let mut large = png.clone();
+    large.resize(600 * 1024, 0);
+    refused(
+        "pictures over 2 MB together",
+        conn.task_send_with_images("pic-all", id, "x", vec![image(&large); 4])
+            .await,
+    );
+    refused(
+        "nothing at all",
+        conn.task_send_with_images("pic-none", id, "", vec![]).await,
+    );
+    assert_eq!(
+        conn.task_get(id).await.unwrap().messages.len(),
+        sent.messages.len()
+    );
+    // And a refused message leaves nothing behind.
+    assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1);
+}
+
+#[tokio::test]
 async fn tasks_persist_dedupe_commands_and_replay_after_a_restart() {
     use otter_core::task::{MessageRole, TaskAction, TaskStatus};
     use otter_protocol::task::TaskCreate;
@@ -8167,6 +8327,11 @@ async fn a_run_takes_the_developers_message_as_a_turn_of_its_own() {
 /// A host whose coding agent runs through the SDK worker (D-057) — a fake
 /// one, speaking the worker protocol (`tests/fake_claude_worker.sh`).
 async fn fake_sdk_host() -> (FakeCodex, std::path::PathBuf) {
+    fake_sdk_host_in("ok").await
+}
+
+/// [`fake_sdk_host`], its worker in a mode (`FAKE_WORKER_MODE`).
+async fn fake_sdk_host_in(mode: &'static str) -> (FakeCodex, std::path::PathBuf) {
     let log = std::sync::Arc::new(std::sync::Mutex::new(std::path::PathBuf::new()));
     let keep = log.clone();
     let fake = fake_agent_host_with("ok", "rules", move |scratch| {
@@ -8179,11 +8344,104 @@ async fn fake_sdk_host() -> (FakeCodex, std::path::PathBuf) {
             ("OTTER_NODE", "/bin/sh".into()),
             ("OTTER_CLAUDE_WORKER", worker.to_string_lossy().into_owned()),
             ("FAKE_WORKER_LOG", worker_log.to_string_lossy().into_owned()),
+            ("FAKE_WORKER_MODE", mode.into()),
         ]
     })
     .await;
     let log = log.lock().unwrap().clone();
     (fake, log)
+}
+
+/// A coding agent that can't see pictures isn't given them, and the
+/// developer is told, once, on the task.
+#[tokio::test]
+async fn a_picture_for_an_agent_that_cannot_see_is_said_not_dropped() {
+    use base64::Engine;
+    use otter_core::task::MessageRole;
+    use otter_protocol::task::TaskImage;
+    let fake = fake_agent_host("ok", "rules").await;
+    let id = started_task(&fake.host, "Keep building BUSY").await;
+    wait_task(&fake.host, &id, "a run", |f| f.live_run().is_some()).await;
+    let mut png = b"\x89PNG\r\n\x1a\n".to_vec();
+    png.extend_from_slice(b"pixels");
+    let send = || async {
+        fake.host
+            .conn()
+            .await
+            .task_send_with_images(
+                "pic-blind",
+                &id,
+                "make it look like this",
+                vec![TaskImage {
+                    media_type: "image/png".into(),
+                    data: base64::engine::general_purpose::STANDARD.encode(&png),
+                }],
+            )
+            .await
+            .unwrap()
+    };
+    send().await;
+    let f = wait_task(&fake.host, &id, "the notice", |f| {
+        f.messages
+            .iter()
+            .any(|m| m.role == MessageRole::System && m.text.contains("can't see pictures"))
+    })
+    .await;
+    // The words still went on their way, and a repeat says nothing more.
+    send().await;
+    let f2 = fake.host.conn().await.task_get(&id).await.unwrap();
+    let notices = |f: &otter_core::task::Task| {
+        f.messages
+            .iter()
+            .filter(|m| m.text.contains("can't see pictures"))
+            .count()
+    };
+    assert_eq!(notices(&f), 1);
+    assert_eq!(notices(&f2), 1);
+}
+
+/// A picture sent while the coding agent works reaches it, as a turn of its
+/// own, with the words; the task keeps the file.
+#[tokio::test]
+async fn a_picture_sent_while_the_agent_works_reaches_its_next_turn() {
+    use base64::Engine;
+    use otter_protocol::task::TaskImage;
+    let (fake, worker_log) = fake_sdk_host_in("slow").await;
+    let id = started_task(&fake.host, "Do the work").await;
+    wait_task(&fake.host, &id, "a run", |f| f.live_run().is_some()).await;
+    let mut png = b"\x89PNG\r\n\x1a\n".to_vec();
+    png.extend_from_slice(b"pixels");
+    let sent = fake
+        .host
+        .conn()
+        .await
+        .task_send_with_images(
+            "pic-live",
+            &id,
+            "make it look like this",
+            vec![TaskImage {
+                media_type: "image/png".into(),
+                data: base64::engine::general_purpose::STANDARD.encode(&png),
+            }],
+        )
+        .await
+        .unwrap();
+    assert_eq!(sent.messages.last().unwrap().attachments.len(), 1);
+    eventually("the picture reached the worker", || async {
+        let log = std::fs::read_to_string(&worker_log).unwrap();
+        log.lines()
+            .any(|l| {
+                l.contains(r#""type":"send_turn""#)
+                    && l.contains("make it look like this")
+                    && l.contains(r#""images":[{"data":""#)
+                    && l.contains(r#""media_type":"image/png""#)
+            })
+            .then_some(())
+    })
+    .await;
+    // The path on the host is nowhere in what the agent was told.
+    let log = std::fs::read_to_string(&worker_log).unwrap();
+    assert!(!log.contains("/artifacts/"), "{log}");
 }
 
 /// Claude Code's sign-in from Settings (D-142): a token from `claude

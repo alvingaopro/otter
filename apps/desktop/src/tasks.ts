@@ -94,6 +94,8 @@ export interface Message {
   at: string;
   /** The command or decision this message belongs to. */
   correlation_id?: string;
+  /** Pictures that came with it, by name in the task's artifacts. */
+  attachments?: string[];
 }
 
 export interface DecisionRequest {

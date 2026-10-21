@@ -9,6 +9,7 @@ import { daemonMemory, mockMemory, type MemorySource } from "./memory";
 import { WHOLE_FILE } from "./changes";
 import { invokeNewer } from "./newer";
 import type { FileDiff, WorkspaceChanges } from "./types";
+import { PICTURES_ONLY, type PastedImage } from "./pastedImage";
 import type { Draft, Task, TaskAction, TaskEventRecord, MessageRole, PlacedTask, Run } from "./tasks";
 
 export interface TaskSource {
@@ -20,8 +21,8 @@ export interface TaskSource {
   /** Called with the new list whenever anything changes. Returns an unsubscribe. */
   subscribe(listener: (list: PlacedTask[]) => void): () => void;
   create(host: string, title: string, request: string, workspace?: string, answerOnly?: boolean): Promise<PlacedTask>;
-  /** A message from the developer to Otter, about the task. */
-  send(key: string, text: string): Promise<void>;
+  /** A message from the developer to Otter, about the task, with pictures if any. */
+  send(key: string, text: string, images?: PastedImage[]): Promise<void>;
   act(key: string, action: TaskAction): Promise<void>;
   /** The task's own history, oldest first. */
   history(key: string): Promise<TaskEventRecord[]>;
@@ -271,13 +272,20 @@ export function mockSource(host = "preview", now = Date.now()): TaskSource {
       listeners.forEach((l) => l(list));
       return placed;
     },
-    async send(key, text) {
+    async send(key, text, images = []) {
       const msg = id("msg");
       update(key, (f) => ({
         ...f,
         messages: [
           ...f.messages,
-          { id: msg, role: "user", text, at: stamp() },
+          {
+            id: msg,
+            role: "user",
+            // As otterd stores a message of pictures alone.
+            text: text || (images.length ? PICTURES_ONLY : ""),
+            at: stamp(),
+            ...(images.length ? { attachments: images.map((_, i) => `attachment-${msg}-${i}`) } : {}),
+          },
           {
             id: id("msg"),
             role: "system",
@@ -525,9 +533,9 @@ export function daemonSource(): TaskSource {
       put(host, task);
       return { host, task, key: `${host}/${task.id}` };
     },
-    async send(key, text) {
+    async send(key, text, images) {
       const { host, task } = splitKey(key);
-      put(host, await invoke<Task>("task_send", { host, commandId: commandId(), task, text }));
+      put(host, await invoke<Task>("task_send", { host, commandId: commandId(), task, text, images: images ?? null }));
     },
     async act(key, action) {
       const { host, task } = splitKey(key);
@@ -547,7 +555,8 @@ export function daemonSource(): TaskSource {
     async artifact(key, name) {
       const { host, task } = splitKey(key);
       const data = await invoke<string>("task_artifact", { host, task, name });
-      return `data:image/png;base64,${data}`;
+      const type = /\.jpe?g$/.test(name) ? "jpeg" : name.endsWith(".webp") ? "webp" : "png";
+      return `data:image/${type};base64,${data}`;
     },
     changes(host, workspace) {
       return invokeNewer<WorkspaceChanges>(host, "workspace_changes", { host, workspace });

@@ -1117,7 +1117,9 @@ impl Gateway {
         let carried = d.carried(f);
         let mut asked = 0;
         for m in messages.iter().filter(|m| !carried.contains(m.id.as_str())) {
-            asked += d.ask_runs(&f.id, m.id.as_str(), &m.text).await;
+            asked += d
+                .ask_runs(&f.id, m.id.as_str(), &m.text, d.pictures_of(&f.id, m))
+                .await;
         }
         if !applied.duplicate {
             self.inner
@@ -1501,6 +1503,7 @@ mod tests {
             text: text.into(),
             at: chrono::Utc::now(),
             correlation_id: None,
+            attachments: vec![],
         }
     }
 
@@ -1594,6 +1597,7 @@ mod tests {
             text: "ship it".into(),
             at: chrono::Utc::now(),
             correlation_id: None,
+            attachments: vec![],
         };
         let dev = Origin::Developer { messages: vec![m] };
         assert_eq!(dev.command("accept_task"), "msg_1:accept_task");

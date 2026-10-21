@@ -582,6 +582,17 @@ body.resizing-col { cursor: col-resize; user-select: none; }
 .markdown th, .markdown td { border: 1px solid var(--line); padding: 3px 8px; text-align: left; }
 .markdown hr { border: 0; border-top: 1px solid var(--line); margin: 10px 0; }
 .composer { position: relative; display: flex; gap: 8px; align-items: flex-end; padding: 10px 16px 14px; border-top: 1px solid var(--line); }
+.composer-box { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 6px; }
+.composer-box textarea { flex: none; width: 100%; box-sizing: border-box; }
+.pasted-images { display: flex; flex-wrap: wrap; gap: 6px; margin: 0; padding: 0; }
+.pasted-image { position: relative; }
+.pasted-image img { display: block; height: 56px; max-width: 120px; object-fit: cover; border-radius: 6px; border: 1px solid var(--line-strong); }
+.pasted-image-remove {
+  position: absolute; top: -6px; right: -6px; width: 18px; height: 18px; padding: 0; border-radius: 50%;
+  border: 1px solid var(--line-strong); background: var(--bg); color: var(--text); font-size: 12px; line-height: 1; cursor: pointer;
+}
+.message-pictures { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+.message-picture { max-width: 240px; max-height: 160px; border-radius: 6px; border: 1px solid var(--line); }
 .composer textarea {
   flex: 1; resize: none; padding: 8px 10px; border-radius: 8px; border: 1px solid var(--line-strong);
   background: var(--bg); color: var(--text); font: inherit; font-size: 13.5px; line-height: 1.45;

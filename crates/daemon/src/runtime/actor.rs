@@ -18,9 +18,9 @@ use std::sync::Arc;
 
 use chrono::Utc;
 use otter_core::conversation::{
-    Answer, Applied, Command, ErrorCategory, Interaction, InteractionKind, InteractionResponse,
-    InteractionStatus, NativeBinding, Op, Rejection, ToolRecord, ToolResult, ToolStatus,
-    TurnOutcome,
+    Answer, Applied, Command, ErrorCategory, InputBlock, Interaction, InteractionKind,
+    InteractionResponse, InteractionStatus, NativeBinding, Op, Rejection, ToolRecord, ToolResult,
+    ToolStatus, TurnOutcome,
 };
 use otter_core::task::Decider;
 use otter_core::{BlockId, ConversationId, DecisionId, MessageId, RunId, ToolCallId, TurnId};
@@ -28,7 +28,8 @@ use tokio::sync::{mpsc, oneshot};
 
 use super::conversations::Conversations;
 use super::{
-    CheckDecision, DecisionAsk, DecisionReply, RunHandle, RuntimeEvent, ToolCall, TurnSpec,
+    CheckDecision, DecisionAsk, DecisionReply, RunHandle, RuntimeEvent, ToolCall, TurnImage,
+    TurnSpec,
 };
 
 /// What the actor is asked to do.
@@ -54,6 +55,8 @@ pub enum ActorCmd {
         command_id: String,
         initiator: otter_core::conversation::Initiator,
         text: String,
+        /// Pictures that go with it: files on the host.
+        pictures: Vec<String>,
     },
     /// Pause (a barrier: nothing more is delivered) or cancel (nothing more
     /// at all): what runs is interrupted, then the run ends.
@@ -67,6 +70,56 @@ pub enum ActorCmd {
         outcome: TurnOutcome,
         done: oneshot::Sender<()>,
     },
+}
+
+/// A turn's input: its text, then a block for each picture.
+pub fn input_blocks(text: String, pictures: Vec<String>) -> Vec<InputBlock> {
+    std::iter::once(InputBlock::Text { text })
+        .chain(
+            pictures
+                .into_iter()
+                .map(|artifact| InputBlock::Attachment { artifact }),
+        )
+        .collect()
+}
+
+/// A turn's input as the runtime takes it: the text, and the pictures read
+/// from the files the turn names. One that can't be read is said in the
+/// text, never left out without a word.
+async fn turn_input(input: &[InputBlock]) -> (String, Vec<TurnImage>) {
+    use base64::Engine;
+    let mut parts = vec![];
+    let mut images = vec![];
+    for block in input {
+        match block {
+            InputBlock::Text { text } => parts.push(text.clone()),
+            InputBlock::Attachment { artifact } => {
+                let media_type = match std::path::Path::new(artifact)
+                    .extension()
+                    .and_then(|e| e.to_str())
+                {
+                    Some("png") => "image/png",
+                    Some("jpg") => "image/jpeg",
+                    Some("webp") => "image/webp",
+                    _ => {
+                        parts.push("[an attachment that isn't a picture was left out]".into());
+                        continue;
+                    }
+                };
+                match tokio::fs::read(artifact).await {
+                    Ok(bytes) => images.push(TurnImage {
+                        media_type: media_type.into(),
+                        data: base64::engine::general_purpose::STANDARD.encode(bytes),
+                    }),
+                    Err(e) => {
+                        tracing::warn!("reading a picture for a turn: {e}");
+                        parts.push("[a picture couldn't be read and was left out]".into());
+                    }
+                }
+            }
+        }
+    }
+    (parts.join("\n"), images)
 }
 
 /// How long an interrupt may take to settle before the run is stopped
@@ -447,9 +500,11 @@ impl Actor {
         if !matches!(sending, Some(Ok(_))) {
             return Flow::Go;
         }
+        let (text, images) = turn_input(&next.input).await;
         let turn = TurnSpec {
             turn_id: next.id.clone(),
-            text: next.text(),
+            text,
+            images,
         };
         self.current = Some(turn.turn_id.clone());
         if let Err(e) = self.handle.send_turn(&turn).await {
@@ -908,13 +963,15 @@ impl Actor {
                 command_id,
                 initiator,
                 text,
+                pictures,
             } => {
+                let fingerprint = format!("{text}{}", pictures.join("\n"));
                 let accepted = self.apply(Op::Accept {
                     command_id,
-                    fingerprint: text.clone(),
+                    fingerprint,
                     command: Command::Redirect {
                         initiator,
-                        input: vec![otter_core::conversation::InputBlock::Text { text }],
+                        input: input_blocks(text, pictures),
                     },
                     turn_id: Some(TurnId::generate()),
                     at: now,
@@ -1135,6 +1192,35 @@ mod tests {
         Conversation, Delivery, Initiator, InputBlock, MessageLifecycle, TurnState,
     };
     use std::sync::Mutex;
+
+    #[tokio::test]
+    async fn a_turns_pictures_are_read_from_their_files_and_what_cant_be_is_said() {
+        let dir = tempfile::tempdir().unwrap();
+        let png = dir.path().join("shot.png");
+        std::fs::write(&png, b"png bytes").unwrap();
+        let txt = dir.path().join("notes.txt");
+        std::fs::write(&txt, b"words").unwrap();
+        let gone = dir.path().join("gone.jpg");
+        let at = |p: &std::path::Path| InputBlock::Attachment {
+            artifact: p.to_string_lossy().into_owned(),
+        };
+        let (text, images) = turn_input(&[
+            InputBlock::Text {
+                text: "match this".into(),
+            },
+            at(&png),
+            at(&txt),
+            at(&gone),
+        ])
+        .await;
+        assert_eq!(images.len(), 1);
+        assert_eq!(images[0].media_type, "image/png");
+        assert_eq!(images[0].data, "cG5nIGJ5dGVz");
+        assert!(text.starts_with("match this\n"), "{text}");
+        assert!(text.contains("isn't a picture was left out"), "{text}");
+        assert!(text.contains("couldn't be read and was left out"), "{text}");
+        assert!(!text.contains(&*dir.path().to_string_lossy()), "no paths");
+    }
 
     type Sent = Arc<Mutex<Vec<String>>>;
     type Decided = Arc<Mutex<Vec<(String, DecisionReply)>>>;
@@ -1655,6 +1741,7 @@ mod tests {
             command_id: "redirect-1".into(),
             initiator: otter_core::conversation::Initiator::User,
             text: "go this way".into(),
+            pictures: vec![],
         };
         tx.send(redirect()).await.unwrap();
         // Sent twice (a retry): applied once.

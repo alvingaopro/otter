@@ -54,7 +54,7 @@ pub const PROTOCOL_VERSION: u64 = 1;
 pub const SDK_VERSION: &str = "0.3.285";
 pub const BUNDLED_CLAUDE_CODE: &str = "2.1.285";
 /// The largest frame either side accepts.
-pub const MAX_FRAME: usize = 1024 * 1024;
+pub const MAX_FRAME: usize = 4 * 1024 * 1024;
 /// How much of the worker's stderr is kept for diagnostics.
 const STDERR_KEEP: usize = 8 * 1024;
 
@@ -294,7 +294,7 @@ impl AgentRuntime for ClaudeSdkRuntime {
                 questions: true,
                 tool_results: true,
                 streaming: true,
-                attachments: false,
+                attachments: true,
                 usage: true,
                 pause: true,
                 redirect: true,
@@ -623,11 +623,15 @@ impl RunHandle for SdkRun {
             s.info.turns += 1;
             s.turn = Some(turn.turn_id.to_string());
         }
-        self.command(
-            "send_turn",
-            json!({"turn_id": turn.turn_id, "text": turn.text}),
-        )
-        .await?;
+        let mut payload = json!({"turn_id": turn.turn_id, "text": turn.text});
+        if !turn.images.is_empty() {
+            payload["images"] = turn
+                .images
+                .iter()
+                .map(|i| json!({"media_type": i.media_type, "data": i.data}))
+                .collect();
+        }
+        self.command("send_turn", payload).await?;
         Ok(())
     }
 
@@ -965,6 +969,10 @@ mod tests {
         h.send_turn(&TurnSpec {
             turn_id: "turn_1".into(),
             text: "export it".into(),
+            images: vec![crate::runtime::TurnImage {
+                media_type: "image/png".into(),
+                data: "AAAA".into(),
+            }],
         })
         .await
         .unwrap();
@@ -1032,6 +1040,11 @@ mod tests {
                 "shutdown"
             ]
         );
+        // The picture went with the turn, and only that turn's command has it.
+        assert!(
+            log.contains(r#""images":[{"data":"AAAA","media_type":"image/png"}]"#),
+            "{log}"
+        );
         assert!(
             log.contains(r#""answers":{"Which columns?":"name, time","Which format?":"CSV"}"#),
             "{log}"
@@ -1095,6 +1108,7 @@ mod tests {
         h.send_turn(&TurnSpec {
             turn_id: "turn_1".into(),
             text: "go".into(),
+            images: vec![],
         })
         .await
         .unwrap();
@@ -1155,6 +1169,7 @@ mod tests {
         h.send_turn(&TurnSpec {
             turn_id: "turn_1".into(),
             text: "Run the shell command: echo otter-ok".into(),
+            images: vec![],
         })
         .await
         .unwrap();

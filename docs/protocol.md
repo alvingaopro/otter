@@ -342,7 +342,10 @@ turns, messages, tool calls and interactions. See
   tested_version?, structured_ready, tasks: {send_turn, resume,
   interrupt_turn, permission_requests, questions, tool_results, streaming,
   attachments, usage, pause, redirect}}`: what the host's managed runtime
-  can do. Missing tasks are reported, never simulated. For `sdk`,
+  can do. Missing tasks are reported, never simulated. `attachments` is
+  whether a turn can carry pictures (D-171): true for `sdk`; for a runtime
+  where it is false the pictures of a message are not sent, and the task gets
+  one system message saying so. For `sdk`,
   `available` needs Node, the installed worker and its `--check` (D-060);
   `notes` say which is missing. `worker_missing?` says the worker this
   otterd looks for isn't installed, which installing it would fix (D-129).
@@ -378,8 +381,16 @@ Product work owned by the daemon (D-043); see `otter_core::task`.
 - `task.list` → every task, newest first; `task.get {task}` → one.
 - `task.create {command_id, title, request?, workspace?}` → a `draft`
   task; the request becomes the first message.
-- `task.send {command_id, task, text}` → the task, with the
-  developer's message added.
+- `task.send {command_id, task, text, images?}` → the task, with the
+  developer's message added. `images`: up to 4 pictures, each a `TaskImage`
+  `{media_type, data}` (`image/png`, `image/jpeg` or `image/webp`; `data`
+  base64, at most 700 KB decoded, 2 MB in all); `text` may then be empty. The
+  daemon keeps each in the task's artifacts (`task.artifact`) and lists the
+  names on the message's `attachments` (D-171). The pictures reach the coding
+  agent's turn as the worker's `send_turn {turn_id, text, images?}`, where
+  `images` is the same list of `{media_type, data}` (the worker checks the
+  same limits); worker frames, both ways, are at most 4 MiB (`MAX_FRAME`,
+  was 1 MiB) so a turn with its pictures fits one.
 - `task.act {command_id, task, action, …}` → the task. `action`:
   `start`, `pause`, `resume`, `cancel`, `retry`, `accept {override_gates?}`,
   `request_changes {note?}` (the goal changed: plan again from where the
