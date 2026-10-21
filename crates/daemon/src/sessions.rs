@@ -10,8 +10,8 @@ use otter_core::{
     validate_name,
 };
 use otter_protocol::{
-    AttachReady, ErrorCode, Event, RpcError, SessionCreate, SessionOutput, SessionRead, SessionRef,
-    SessionRename, SessionWrite,
+    AttachReady, ErrorCode, Event, RpcError, SessionCreate, SessionMove, SessionOutput,
+    SessionRead, SessionRef, SessionRename, SessionWrite,
 };
 
 use crate::agents;
@@ -150,6 +150,34 @@ impl Daemon {
             name,
         });
         Ok(session_snapshot(&store, &ws_id, &session.id))
+    }
+
+    /// Another place among the workspace's sessions (D-150), the order its
+    /// tabs and ⌥1…⌥9 follow. A view of the workspace, not activity in it:
+    /// `updated_at` stays.
+    pub(crate) async fn session_move(&self, p: &SessionMove) -> RpcResult<Workspace> {
+        let mut store = self.store.lock().await;
+        let (ws_id, session) = find_session(&store, &p.session)?;
+        let ws = store.workspace_mut(ws_id.as_str()).expect("exists");
+        let from = ws
+            .sessions
+            .iter()
+            .position(|s| s.id == session.id)
+            .expect("exists");
+        let to = p.to.min(ws.sessions.len() - 1);
+        if to == from {
+            return Ok(ws.clone());
+        }
+        let moved = ws.sessions.remove(from);
+        ws.sessions.insert(to, moved);
+        let ws = ws.clone();
+        save(&store)?;
+        self.events.emit(Event::SessionMoved {
+            workspace_id: ws_id,
+            session_id: session.id,
+            to,
+        });
+        Ok(ws)
     }
 
     pub(crate) async fn session_delete(&self, r: &SessionRef) -> RpcResult<()> {

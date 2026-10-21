@@ -5087,3 +5087,29 @@ A terminal now attaches only once it is on screen at a real size (D-148's
 20×4), measured with its own font (loaded, or given up on): the first size
 the session gets is the one it is shown at. A kept pane mounted hidden
 (D-100) attaches when it is first shown.
+
+## D-150 — Sessions are put in order by dragging their tabs (2026-10-21)
+
+A workspace's tabs came in the order the sessions were made, and so did
+⌥1…⌥9 (D-122), ⌘⇧[ / ⌘⇧] and the session a split shows beside.
+
+- **Drag a tab, or Move left / Move right** in the session's ⋯ menu. As the
+  sidebar's pins (D-040): pointer events, not HTML5 drag-and-drop (the
+  file drop has it), the others measured when the drag starts, and the
+  tabs shown in their would-be order meanwhile. Tabs wrap onto more rows,
+  so the place is by reading order: a row above the pointer, or its row
+  and left of it; above or below the tabs counts as the first or last row.
+- **The host keeps the order**, not the app as it does pins: the order is
+  one workspace's, on one host, and the same in every client — another
+  Mac, `otter ls`, ⌥ numbers. It is the order of the workspace's sessions
+  in `state.json`; `session.move {workspace, session, to}` changes it and
+  emits `SessionMoved`. A new method and event, so no protocol bump: an
+  older otterd answers `invalid_request`, and the app says to update it.
+- **Shown at once.** A dropped order shows until the host's order changes
+  (to it, normally, with the snapshot `SessionMoved` brings), and goes
+  back if the move fails.
+- **Not activity.** A move leaves the workspace's `updated_at`, so it
+  doesn't come up as recently active in the sidebar; rename does change
+  it. The timeline shows no line for it.
+- Not done: a command in the CLI (`otter session mv` is rename).
+

@@ -201,7 +201,7 @@ An addition (no protocol bump): daemons before it answer `invalid_request`.
   (D-135). A delete that fails after stopping the workspace's preparation
   leaves it `failed` (`WorkspaceFailed`), saying so.
 
-## Names
+## Names and order
 
 - `workspace.rename {workspace, name}` → the workspace; `session.rename
   {workspace, session, name}` → the session (D-101). Names follow the same
@@ -211,6 +211,13 @@ An addition (no protocol bump): daemons before it answer `invalid_request`.
   attach or a reference by id carries on.
 - They emit `WorkspaceRenamed {workspace_id, name}` and `SessionRenamed
   {workspace_id, session_id, name}`.
+- `session.move {workspace, session, to}` → the workspace (D-150): the
+  session goes to place `to` (from 0) among the workspace's sessions, past
+  the end to the last; the others keep their order. That order is the one
+  `workspace.get` and the snapshot list them in, and new sessions go last.
+  It emits `SessionMoved {workspace_id, session_id, to}`, and nothing when
+  the session was there already. The workspace's `updated_at` stays: the
+  order is how it is shown, not work in it.
 
 ## A workspace's work
 

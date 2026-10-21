@@ -7,6 +7,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { HostsPayload } from "./types";
 
 const terminal = vi.hoisted(() => ({ mounts: 0, unmounts: 0 }));
+// A host whose otterd is too old to move a session (D-150).
+const oldHost = vi.hoisted(() => ({ on: false }));
 
 const payload: HostsPayload = {
   configDir: "/tmp/otter",
@@ -66,6 +68,7 @@ vi.mock("@tauri-apps/api/core", () => ({
     if (cmd === "hosts_get") return payload;
     if (cmd === "cli_status") return { version: "0.5.0" };
     if (cmd === "update_get") return "0.6.2";
+    if (cmd === "session_move" && oldHost.on) throw "invalid request: unknown variant `session.move`";
     return [];
   }),
 }));
@@ -112,6 +115,7 @@ describe("Activity Bar navigation", () => {
   beforeEach(async () => {
     (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
     localStorage.clear();
+    oldHost.on = false;
     terminal.mounts = 0;
     terminal.unmounts = 0;
     host = document.createElement("div");
@@ -256,6 +260,87 @@ describe("Activity Bar navigation", () => {
     // Each tab says its key.
     const logsTab = [...pane().querySelectorAll(".tab")].find((t) => t.textContent?.includes("logs"))!;
     expect(logsTab.getAttribute("title")).toContain("⌥2");
+  });
+
+  it("puts a session in another place by dragging its tab or from its menu (D-150)", async () => {
+    const { invoke } = await import("@tauri-apps/api/core");
+    const calls = vi.mocked(invoke);
+    const row = (name: string) =>
+      [...host.querySelectorAll<HTMLButtonElement>(".ws-row")].find((b) => b.textContent?.includes(name))!;
+    await act(async () => tab("workspaces").click());
+    await act(async () => row("other").click());
+    await flush();
+    const pane = () => host.querySelector<HTMLElement>(".ws-pane:not([hidden])")!;
+    const names = () => [...pane().querySelectorAll(".tab-name")].map((n) => n.textContent);
+    const selected = () => pane().querySelector(".tab.selected")?.textContent;
+    const tabNamed = (n: string) => [...pane().querySelectorAll<HTMLButtonElement>(".tab-main")].find((b) => b.textContent?.includes(n))!;
+    const moves = () => calls.mock.calls.filter(([cmd]) => cmd === "session_move").map(([, args]) => args);
+    // jsdom lays nothing out: tabs 80 wide, side by side, as they come.
+    const rect = vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+      const x = [...(this.parentElement?.children ?? [])].indexOf(this) * 82;
+      return { left: x, right: x + 80, x, top: 0, bottom: 32, y: 0, width: 80, height: 32, toJSON: () => ({}) } as DOMRect;
+    });
+    const pointer = (type: string, on: EventTarget, x: number) =>
+      on.dispatchEvent(new MouseEvent(type, { bubbles: true, button: 0, clientX: x, clientY: 16 }));
+    const drag = async (name: string, from: number, to: number) => {
+      await act(async () => {
+        pointer("pointerdown", tabNamed(name), from);
+        pointer("pointermove", window, to);
+      });
+    };
+    try {
+      expect(names()).toEqual(["shell", "logs"]);
+      // An otterd too old for it: the tabs go back, and it says to update.
+      oldHost.on = true;
+      await drag("logs", 120, 20);
+      await act(async () => pointer("pointerup", window, 20));
+      await flush();
+      expect(names()).toEqual(["shell", "logs"]);
+      expect(pane().querySelector(".notice.error")?.textContent).toContain("too old for this");
+      oldHost.on = false;
+      await flush();
+
+      calls.mockClear();
+      await drag("logs", 120, 20);
+      // Shown in its would-be place while it's dragged.
+      expect(names()).toEqual(["logs", "shell"]);
+      expect(pane().querySelector(".tab.dragging")?.textContent).toContain("logs");
+      await act(async () => {
+        pointer("pointerup", window, 20);
+        // The click that ends a drag doesn't choose.
+        tabNamed("logs").click();
+      });
+      expect(moves()).toEqual([{ host: "mac", workspace: "ws_2", session: "ses_3", to: 0 }]);
+      expect(selected()).toContain("shell");
+      expect(pane().querySelector(".tab.dragging")).toBeNull();
+      expect(pane().querySelector(".notice.error")).toBeNull();
+      // Shown so until the host's order comes back.
+      expect(names()).toEqual(["logs", "shell"]);
+      expect(pane().querySelector(".tab")?.getAttribute("title")).toContain("⌥1");
+
+      // A press that doesn't go anywhere is a click.
+      await flush();
+      calls.mockClear();
+      await act(async () => {
+        pointer("pointerdown", tabNamed("logs"), 40);
+        pointer("pointermove", window, 42);
+        pointer("pointerup", window, 42);
+        tabNamed("logs").click();
+      });
+      expect(moves()).toEqual([]);
+      expect(selected()).toContain("logs");
+
+      // From the menu: the first can only go right.
+      const menu = () => pane().querySelector<HTMLButtonElement>('button[aria-label="logs actions"]')!;
+      const item = (label: string) => [...document.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')].find((b) => b.textContent === label);
+      await act(async () => menu().click());
+      expect(item("Move left")).toBeUndefined();
+      await act(async () => item("Move right")!.click());
+      expect(moves()).toEqual([{ host: "mac", workspace: "ws_2", session: "ses_3", to: 1 }]);
+      expect(names()).toEqual(["shell", "logs"]);
+    } finally {
+      rect.mockRestore();
+    }
   });
 
   it("offers the app's update at the foot of the sidebar, not the command-line tools (D-125)", async () => {

@@ -3326,6 +3326,54 @@ async fn workspaces_and_sessions_are_renamed() {
     assert!(log.contains("WorkspaceRenamed") && log.contains("SessionRenamed"));
 }
 
+/// A session takes another place among its workspace's (D-150): the
+/// sessions and their processes stay, the order is kept across a restart,
+/// and the workspace doesn't count as active for it.
+#[tokio::test]
+async fn sessions_are_put_in_another_order() {
+    let host = TestHost::new();
+    let sh = |name| spec(SessionKind::Terminal, name, "sh");
+    let before = create(&host, "order", Some(vec![sh("a"), sh("b"), sh("c")])).await;
+    let names = |ws: &Workspace| {
+        ws.sessions
+            .iter()
+            .map(|s| s.name.clone())
+            .collect::<Vec<_>>()
+    };
+    let mut conn = host.conn().await;
+
+    let ws = conn.session_move("order", "c", 0).await.unwrap();
+    assert_eq!(names(&ws), ["c", "a", "b"]);
+    assert_eq!(ws.updated_at, before.updated_at);
+    // Past the end is the last place.
+    let ws = conn.session_move("order", "a", 99).await.unwrap();
+    assert_eq!(names(&ws), ["c", "b", "a"]);
+    // Its own place: nothing changes, nothing is said.
+    let ws = conn.session_move("order", "b", 1).await.unwrap();
+    assert_eq!(names(&ws), ["c", "b", "a"]);
+    let err = conn.session_move("order", "d", 0).await.unwrap_err();
+    assert!(format!("{err:#}").contains("no session `d`"), "{err:#}");
+
+    let ws = conn.workspace_get("order").await.unwrap();
+    assert_eq!(names(&ws), ["c", "b", "a"]);
+    let mut ids: Vec<_> = ws.sessions.iter().map(|s| s.id.clone()).collect();
+    let mut was: Vec<_> = before.sessions.iter().map(|s| s.id.clone()).collect();
+    ids.sort();
+    was.sort();
+    assert_eq!(ids, was);
+    assert!(
+        ws.sessions
+            .iter()
+            .all(|s| s.status() == SessionStatus::Running)
+    );
+    let log = std::fs::read_to_string(host.home().join("state/events.jsonl")).unwrap();
+    assert_eq!(log.matches("SessionMoved").count(), 2, "{log}");
+
+    host.stop_daemon().await;
+    let ws = host.conn().await.workspace_get("order").await.unwrap();
+    assert_eq!(names(&ws), ["c", "b", "a"]);
+}
+
 /// A workspace's Git work for the developer (D-102): its branch, commits
 /// ahead of its base, every changed file — committed or not, new ones too —
 /// with its lines, and one file's diff.

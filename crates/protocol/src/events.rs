@@ -88,6 +88,11 @@ pub enum Event {
         session_id: SessionId,
         name: String,
     },
+    SessionMoved {
+        workspace_id: WorkspaceId,
+        session_id: SessionId,
+        to: usize,
+    },
     ExecutionStarted {
         workspace_id: WorkspaceId,
         session_id: SessionId,
@@ -241,6 +246,7 @@ impl Event {
             Event::SessionStopped { .. } => "SessionStopped",
             Event::SessionDeleted { .. } => "SessionDeleted",
             Event::SessionRenamed { .. } => "SessionRenamed",
+            Event::SessionMoved { .. } => "SessionMoved",
             Event::ExecutionStarted { .. } => "ExecutionStarted",
             Event::ExecutionExited { .. } => "ExecutionExited",
             Event::ExecutionLost { .. } => "ExecutionLost",
@@ -286,6 +292,7 @@ impl Event {
             | Event::SessionCreated { workspace_id, .. }
             | Event::SessionStopped { workspace_id, .. }
             | Event::SessionRenamed { workspace_id, .. }
+            | Event::SessionMoved { workspace_id, .. }
             | Event::SessionDeleted { workspace_id, .. }
             | Event::ExecutionStarted { workspace_id, .. }
             | Event::ExecutionExited { workspace_id, .. }

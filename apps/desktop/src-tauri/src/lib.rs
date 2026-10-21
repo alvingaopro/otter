@@ -163,6 +163,7 @@ pub fn run() {
             hosts::session_stop,
             hosts::session_delete,
             hosts::session_rename,
+            hosts::session_move,
             hosts::session_history,
             hosts::attention_resolve,
             hosts::session_restart,
