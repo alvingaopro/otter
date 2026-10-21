@@ -368,6 +368,9 @@ pub struct OtterProcess {
     pub exe: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cwd: Option<String>,
+    /// An otterd's `--home`: which one it is (a directory, never a secret).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub home: Option<String>,
     /// Percent of one CPU, as of the last sample.
     pub cpu_percent: f32,
     pub memory: u64,

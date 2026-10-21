@@ -6035,3 +6035,23 @@ this one's.
   second's evidence reads "Working tree: 1 file changed, 1 insertion(+)",
   the first's file, B09's error; with no start recorded, the second is
   also asked to publish the first's commit.
+
+## D-169 — Another otterd is a stray only once it has stayed, and says which it is (2026-10-21)
+
+The Work tab (D-161) counted every other otterd as something to look at.
+A task's own tests start one per test, from the task's worktree, for a few
+seconds each, so the badge jumped by four or five each time a task ran
+`cargo test`, and then emptied. Nothing was left behind.
+
+- **Another otterd younger than two minutes isn't a stray yet**: it is listed
+  under Processes, without the flag, and doesn't count towards the tab's
+  badge or the strip above the tabs. The rule is the app's (the daemon's
+  `stoppable` is unchanged); an orphan is one at once.
+- **An otterd's `--home`** is read from its arguments (a directory, never a
+  secret; the rest of the command line still never leaves the daemon) and
+  shown, so the one under a bench, a test or a build tells itself from a
+  leftover: `OtterProcess.home`, an addition.
+
+Not done: a rule by the home's place (a temporary directory is a test); a
+test daemon that outlives its test for more than two minutes is still shown
+as one to look at, which is the case worth a look.

@@ -183,10 +183,10 @@ export function HostWork({
       owner: [["Agent", r.name], ["Owner", r.owner]],
       procs: [],
     })),
-    processes: processRows(list).map(({ proc: p, flags }) => ({
+    processes: processRows(list, now).map(({ proc: p, flags }) => ({
       id: String(p.pid),
       cells: [
-        cell(p.name, p.exe ?? p.cwd),
+        cell(p.name, p.home ? `home ${p.home}` : (p.exe ?? p.cwd)),
         <Pill key="r" tone={p.owner.kind === "orphan" ? "bad" : p.owner.kind === "daemon" && p.owner.this ? "ok" : "warn"}>{p.owner.kind === "orphan" ? "No owner" : p.owner.kind === "daemon" && p.owner.this ? "This otterd" : "Another otterd"}</Pill>,
         <span className="mono" key="p">{p.pid}</span>,
         <span className="mono" key="c">{pct(p.cpu_percent)}</span>,
@@ -195,12 +195,12 @@ export function HostWork({
       ],
       flags,
       acts: p.stoppable ? [stop(p, false), stop(p, true)] : [],
-      owner: [["Process", `${p.name} · pid ${p.pid}`], ["Where", p.cwd ?? p.exe ?? "unknown"], ["Why", p.owner.kind === "orphan" ? p.owner.why : p.owner.kind === "daemon" && !p.owner.this ? "An otterd that isn't the one this app talks to. Stopping it leaves its sessions running." : "This otterd"]],
+      owner: [["Process", `${p.name} · pid ${p.pid}`], ["Where", p.home ?? p.cwd ?? p.exe ?? "unknown"], ["Why", p.owner.kind === "orphan" ? p.owner.why : p.owner.kind === "daemon" && !p.owner.this ? "An otterd that isn't the one this app talks to. Stopping it leaves its sessions running." : "This otterd"]],
       procs: [p],
     })),
   };
 
-  const stray = strays(list);
+  const stray = strays(list, now);
   const shown = rows[kind].filter((r) => (!onlyFlagged || r.flags.length > 0) && (!query || JSON.stringify(r.owner).toLowerCase().includes(query.toLowerCase())));
   const flagged = (k: Kind) => rows[k].filter((r) => r.flags.length > 0).length;
 
@@ -260,7 +260,7 @@ export function HostWork({
                   <div>
                     <span className="work-name">{p.name}</span> <span className="mono muted">pid {p.pid}</span>
                     <div className="work-sub">
-                      {p.exe ?? p.cwd ?? ""} · up {span(Math.max(0, now / 1000 - p.started))} · {pct(p.cpu_percent)}
+                      {p.home ? `home ${p.home}` : (p.exe ?? p.cwd ?? "")} · up {span(Math.max(0, now / 1000 - p.started))} · {pct(p.cpu_percent)}
                       {p.busy_secs >= 60 ? ` · busy ${span(p.busy_secs)}` : ""}
                     </div>
                   </div>
