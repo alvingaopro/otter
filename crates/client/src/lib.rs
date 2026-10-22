@@ -8,6 +8,7 @@ pub mod config;
 pub mod forward;
 pub mod install;
 pub mod login;
+pub mod route;
 
 use std::path::PathBuf;
 use std::process::Stdio;

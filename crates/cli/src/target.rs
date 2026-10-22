@@ -158,6 +158,85 @@ pub async fn find(config: &Config, target: &Target) -> Result<Found> {
     }
 }
 
+/// How long a host gets to say which workspaces it has when a message is
+/// being routed: a host that is down must not hold the others up.
+const ROUTE_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// The host a message goes to (D-179): the one asked for with `--host`; the
+/// only one there is; else the one that has the workspace or repository the
+/// message names (every host asked at once); else the default host. Said on
+/// stderr when it was the message that chose.
+pub async fn pick_host(config: &Config, explicit: Option<String>, text: &str) -> Result<HostEntry> {
+    if let Some(h) = explicit {
+        return Ok(config.host(&h)?.clone());
+    }
+    match config.hosts.as_slice() {
+        [] => bail!("no hosts registered; add one with `otter host add <name>`"),
+        [only] => return Ok(only.clone()),
+        _ => {}
+    }
+    let default = config
+        .default_host
+        .as_deref()
+        .map(|d| config.host(d).cloned())
+        .transpose()?;
+    if text.trim().is_empty() {
+        return default.ok_or_else(|| anyhow::anyhow!("several hosts; choose one with --host"));
+    }
+    let mut jobs = JoinSet::new();
+    for host in config.hosts.clone() {
+        let mut transport = config.transport(&host);
+        // Asking is not worth a prompt: a host whose key or passphrase
+        // needs one is left out, not waited for.
+        if let otter_client::Transport::Ssh { ssh_args, .. } = &mut transport {
+            ssh_args.extend(["-o".to_owned(), "BatchMode=yes".to_owned()]);
+        }
+        jobs.spawn(async move {
+            let list = tokio::time::timeout(ROUTE_WAIT, async {
+                let mut conn = Connection::connect(&transport).await.ok()?;
+                conn.workspace_list().await.ok()
+            })
+            .await
+            .ok()
+            .flatten();
+            (host.name, list)
+        });
+    }
+    let mut asked: Vec<(String, Vec<Workspace>)> = Vec::new();
+    let mut unreached: Vec<String> = Vec::new();
+    for (host, list) in jobs.join_all().await {
+        match list {
+            // Put away (D-105) is not where a message is about.
+            Some(mut list) => {
+                list.retain(|w| w.state != otter_core::WorkspaceState::Archived);
+                asked.push((host, list));
+            }
+            None => unreached.push(host),
+        }
+    }
+    asked.sort_by(|a, b| a.0.cmp(&b.0));
+    unreached.sort();
+    if !unreached.is_empty() {
+        eprintln!("(not asked, unreachable: {})", unreached.join(", "));
+    }
+    match otter_client::route::route(text, &asked) {
+        otter_client::route::Route::One(m) => {
+            eprintln!("→ {} ({})", m.host, m.why);
+            Ok(config.host(&m.host)?.clone())
+        }
+        otter_client::route::Route::Several(m) => default.ok_or_else(|| {
+            let names: Vec<String> = m.iter().map(|m| m.host.clone()).collect();
+            anyhow::anyhow!(
+                "this is about workspaces on {}; choose one with --host",
+                names.join(" and ")
+            )
+        }),
+        otter_client::route::Route::Nowhere => {
+            default.ok_or_else(|| anyhow::anyhow!("several hosts; choose one with --host"))
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -893,6 +893,61 @@ fn otter_chat_talks_to_otter_on_a_host() {
     assert!(out.contains("Otter: list_tasks:"), "{out}");
 }
 
+/// With several hosts and no `--host`, a message that names a workspace
+/// goes to the host that has it (D-179); one that names nothing needs the
+/// default or `--host`.
+#[test]
+fn a_message_goes_to_the_host_that_has_the_workspace_it_names() {
+    let (a, b) = (Home::new(), Home::new());
+    let mut cli = Cli::new();
+    cli.env = vec![
+        ("OTTER_CONTROLLER".into(), "scripted".into()),
+        ("OTTER_BRAIN_V2".into(), "1".into()),
+        ("OTTER_CONTROLLER_TICK_MS".into(), "200".into()),
+    ];
+    cli.add_local_host("a", &a);
+    cli.add_local_host("b", &b);
+    cli.ok(&["new", "billing", "--host", "a", "--no-agent"]);
+    cli.ok(&["new", "trainer", "--host", "b", "--no-agent"]);
+
+    let out = cli.run(&["chat", "Speed up trainer.\nCALL: list_workspaces {}"]);
+    assert!(out.status.success(), "{out:?}");
+    let (said, err) = (
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr),
+    );
+    assert!(err.contains("→ b (workspace `trainer`)"), "{err}");
+    assert!(said.contains("\"name\":\"trainer\""), "{said}");
+    // It is b's conversation, not a's.
+    assert!(cli.ok(&["chat", "--host", "a"]).contains("No conversation"));
+
+    let out = cli.ok(&[
+        "task",
+        "new",
+        "Retries",
+        "--request",
+        "In billing: add retries",
+    ]);
+    assert!(out.contains("on a"), "{out}");
+    let out = cli.ok(&["task", "new", "Fix", "--workspace", "trainer"]);
+    assert!(out.contains("on b"), "{out}");
+
+    let err = cli.fails(&["chat", "Write a CSV converter."]);
+    assert!(
+        err.contains("several hosts; choose one with --host"),
+        "{err}"
+    );
+
+    // Both have `billing` now: a tie is not a guess. Put away on a, it is b's.
+    cli.ok(&["new", "billing", "--host", "b", "--no-agent"]);
+    let err = cli.fails(&["chat", "Retry billing."]);
+    assert!(err.contains("workspaces on a and b"), "{err}");
+    cli.ok(&["ws", "archive", "a:billing"]);
+    let out = cli.run(&["chat", "Retry billing."]);
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("→ b (workspace `billing`)"), "{err}");
+}
+
 /// `otter attach --scrollback` in a terminal (a PTY): the session's history
 /// lands in it, typing goes through, Ctrl-] detaches and undoes the
 /// program's modes (D-119).

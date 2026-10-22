@@ -387,7 +387,7 @@ export default function App() {
                 h.name,
                 h.workspaces
                   .filter((w) => w.state !== "archived")
-                  .map((w) => ({ id: w.id, name: w.name, sessions: w.sessions.map((s) => ({ id: s.id, name: s.name })) })),
+                  .map((w) => ({ id: w.id, name: w.name, repository: w.repository, sessions: w.sessions.map((s) => ({ id: s.id, name: s.name })) })),
               ]),
             )}
             now={now}

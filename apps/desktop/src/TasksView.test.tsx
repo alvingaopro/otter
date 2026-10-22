@@ -826,6 +826,95 @@ describe("Tasks view", () => {
     expect(byText(".banner button", "Work in its own workspace")).toBeDefined();
   });
 
+  /** A new task on a source that notes where it was made (D-179). */
+  async function newTaskOn(hosts: string[], workspaces: Record<string, { id: string; name: string; repository?: string }[]>) {
+    const created: unknown[][] = [];
+    const base = mockSource(hosts[0]);
+    const s: TaskSource = {
+      ...base,
+      create: async (...args) => {
+        created.push(args);
+        return base.create(...args);
+      },
+    };
+    await act(async () =>
+      root.render(
+        <TasksView source={s} hosts={hosts} workspaces={workspaces} now={Date.now()} onOpenWorkspace={onOpenWorkspace} onOpenPreview={async () => {}} />,
+      ),
+    );
+    await act(async () => q('[aria-label="New task"]')!.click());
+    return { created, dialog: document.querySelector('[role="dialog"]')! };
+  }
+  const choose = (el: Element, value: string) => {
+    Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value")!.set!.call(el, value);
+    el.dispatchEvent(new Event("change", { bubbles: true }));
+  };
+
+  it("sends a new task to the host that has the workspace it names, and says so (D-179)", async () => {
+    localStorage.removeItem("otter.new-task-host");
+    const { created, dialog } = await newTaskOn(["mac", "gpu"], {
+      mac: [{ id: "ws_a", name: "billing", repository: "git@github.com:acme/billing.git" }],
+      gpu: [{ id: "ws_b", name: "trainer", repository: "git@github.com:acme/trainer.git" }],
+    });
+    expect(dialog.querySelector("#new-task-host-hint")?.textContent).toContain("Nothing written names a host; using mac");
+    type(dialog.querySelector("input")!, "Speed up trainer");
+    await act(async () => {});
+    expect(dialog.querySelector("#new-task-host-hint")?.textContent).toBe("Goes to gpu: it has workspace trainer.");
+    await act(async () => byText("button", "Create draft")!.click());
+    expect(created).toEqual([["gpu", "Speed up trainer", "", undefined, false]]);
+    // The next task starts from where this one went.
+    await act(async () => q('[aria-label="New task"]')!.click());
+    expect(document.querySelector('[role="dialog"] #new-task-host-hint')?.textContent).toContain("using gpu");
+    localStorage.removeItem("otter.new-task-host");
+  });
+
+  it("does not carry a workspace to another host when the text moves the task there", async () => {
+    localStorage.removeItem("otter.new-task-host");
+    const { created, dialog } = await newTaskOn(["mac", "gpu"], {
+      mac: [{ id: "ws_a", name: "billing" }],
+      gpu: [{ id: "ws_b", name: "trainer" }],
+    });
+    choose(dialog.querySelectorAll("select")[1], "ws_a");
+    await act(async () => {});
+    type(dialog.querySelector("input")!, "Speed up trainer");
+    await act(async () => {});
+    await act(async () => byText("button", "Create draft")!.click());
+    expect(created).toEqual([["gpu", "Speed up trainer", "", undefined, false]]);
+    localStorage.removeItem("otter.new-task-host");
+  });
+
+  it("lets a host chosen by hand win over what is written", async () => {
+    const { created, dialog } = await newTaskOn(["mac", "gpu"], { mac: [], gpu: [{ id: "ws_b", name: "trainer" }] });
+    type(dialog.querySelector("input")!, "Speed up trainer");
+    choose(dialog.querySelectorAll("select")[0], "mac");
+    await act(async () => {});
+    expect(dialog.querySelector("#new-task-host-hint")).toBeNull();
+    await act(async () => byText("button", "Create draft")!.click());
+    expect(created[0][0]).toBe("mac");
+    localStorage.removeItem("otter.new-task-host");
+  });
+
+  it("makes the task a workspace from a repository, or an empty directory (D-179)", async () => {
+    const { created, dialog } = await newTaskOn(["mac"], { mac: [{ id: "ws_a", name: "billing" }] });
+    type(dialog.querySelector("input")!, "Retries");
+    const select = dialog.querySelector("select")!;
+    choose(select, "@repository");
+    await act(async () => {});
+    expect(byText("button", "Create draft")!.hasAttribute("disabled")).toBe(true);
+    type(dialog.querySelector('input[aria-label="Repository"]') as HTMLInputElement, "git@github.com:acme/billing.git");
+    await act(async () => {});
+    await act(async () => byText("button", "Create draft")!.click());
+    expect(created[0]).toEqual(["mac", "Retries", "", { new: { repository: "git@github.com:acme/billing.git" } }, false]);
+
+    await act(async () => q('[aria-label="New task"]')!.click());
+    const again = document.querySelector('[role="dialog"]')!;
+    type(again.querySelector("input")!, "CSV");
+    choose(again.querySelector("select")!, "@empty");
+    await act(async () => {});
+    await act(async () => byText("button", "Create draft")!.click());
+    expect(created[1]).toEqual(["mac", "CSV", "", { scratch: {} }, false]);
+  });
+
   it("links a task to its workspace and session", async () => {
     await render(mockSource("mac"));
     await open("Export workspace timeline");

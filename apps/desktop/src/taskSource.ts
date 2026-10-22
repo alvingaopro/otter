@@ -12,6 +12,9 @@ import type { FileDiff, WorkspaceChanges } from "./types";
 import { PICTURES_ONLY, type PastedImage } from "./pastedImage";
 import type { Draft, Task, TaskAction, TaskEventRecord, MessageRole, PlacedTask, Run } from "./tasks";
 
+/** Where a new task works besides a workspace that exists (D-179): one made for it. */
+export type WorkspaceRequest = { new: { repository: string; base?: string } } | { scratch: Record<string, never> };
+
 export interface TaskSource {
   /** True for the stand-in: the UI says so. */
   readonly preview: boolean;
@@ -20,7 +23,7 @@ export interface TaskSource {
   list(): PlacedTask[];
   /** Called with the new list whenever anything changes. Returns an unsubscribe. */
   subscribe(listener: (list: PlacedTask[]) => void): () => void;
-  create(host: string, title: string, request: string, workspace?: string, answerOnly?: boolean): Promise<PlacedTask>;
+  create(host: string, title: string, request: string, workspace?: string | WorkspaceRequest, answerOnly?: boolean): Promise<PlacedTask>;
   /** A message from the developer to Otter, about the task, with pictures if any. */
   send(key: string, text: string, images?: PastedImage[]): Promise<void>;
   act(key: string, action: TaskAction): Promise<void>;
@@ -262,7 +265,7 @@ export function mockSource(host = "preview", now = Date.now()): TaskSource {
         request,
         ...(answerOnly ? { answer_only: true } : {}),
         messages: request ? [{ id: id("msg"), role: "user", text: request, at: stamp() }] : [],
-        workspace_id: workspace,
+        workspace_id: typeof workspace === "string" ? workspace : undefined,
         created_at: stamp(),
         updated_at: stamp(),
       };

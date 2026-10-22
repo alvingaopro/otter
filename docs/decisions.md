@@ -6658,3 +6658,53 @@ Tests: `a_turn_says_whose_the_pictures_are`,
 worker's `a turn's pictures are checked`, and end to end
 `otters_turn_is_shown_the_developers_pictures` and
 `a_runs_first_turn_carries_the_pictures_that_fit`.
+
+## D-182 — A message goes to the host that has the workspace it names (2026-10-22)
+
+Plan `docs/plans/chat-bootstrap.md` P2. otterd knows one host, and Otter's
+conversation stays one per host (D-093), so choosing the host is the client's
+(D-179). A developer with several hosts had to say `--host` every time, or
+pick one in a list, before saying what they wanted.
+
+- **The rule** (`crates/client/src/route.rs`; the app has the same in
+  `route.ts`, with the same cases tested in each): from the workspaces each
+  host has, a message that names one — a workspace by name, or its
+  repository as `owner/name` or an address — belongs to that host. The bare
+  name of a repository (four letters or more) counts less than a workspace's
+  name or `owner/name`; a name inside a longer one (`billing-engine`) is not
+  a match; a credential in a stored address is not a name. The host with the
+  best match wins; equals, or none, are not a match. Names are ASCII, so any
+  other character ends one: "在billing里加上重试" names `billing`. A workspace
+  name needs four characters to count on its own (`api`, `web` and `add` are
+  in every sentence). Workspaces put away (D-105) are left out. No model is
+  asked, but a message does go to the host it picked: a wrong guess costs a
+  switch of host, not a task.
+- **`otter chat <message>` and `otter task new`** with no `--host` ask every
+  host for its workspaces at once (`workspace.list`, five seconds each; a
+  host that is down is left out) and use the one the message names, saying so
+  on stderr ("→ gpu (workspace `trainer`)"). Otherwise the default host; with
+  none, "several hosts; choose one with --host", naming the hosts that tied
+  (the CLI doesn't ask which). Asking is not worth a prompt: the connections
+  are made with `BatchMode=yes`, and a host that doesn't answer in five
+  seconds is left out and named on stderr ("not asked, unreachable").
+  This is a change: with a default host, a message used to go there without
+  dialling the others.
+  `otter chat` with no message still needs a default or `--host`.
+- **The app's New task** has "From what I write" as its host, when there are
+  several: what is typed in the title, the request and the repository
+  chooses, a line under the box says which host and why, and a host chosen by
+  hand wins. With nothing named it starts from the host the last task went
+  to (`otter.new-task-host`). Its workspace box gains "A new one, from a
+  repository…" and "A new one, an empty directory" (D-179).
+
+**Not done.** The app has no conversation with Otter on a host today (its
+chat is the tasks, D-178), so "New chat" there is New task:
+the developer still writes the title and request. Otter choosing the
+workspace inside a *task's* conversation (tools in a task's turn) is the next
+step. A choice among hosts that tie is not offered as a card.
+
+Tests: `route::tests` (Rust), `route.test.ts`, three in `TasksView.test.tsx`
+(routing and its hint, a host chosen by hand, a workspace made from a
+repository or empty), `a_message_goes_to_the_host_that_has_the_workspace_it_names`
+(CLI e2e, two real hosts). The Tauri crate isn't built on Linux: the only
+change there is `workspace` taking the new type.
