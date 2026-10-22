@@ -321,11 +321,16 @@ async fn otter_sees_what_holds_a_workspace_and_a_refused_request_makes_nothing()
     let fake =
         fake_agent_host_with("ok", "scripted", |_| vec![("OTTER_BRAIN_V2", "1".into())]).await;
     let host = &fake.host;
-    let first = started_task(host, "Add CSV export HANG").await;
-    wait_task(host, &first, "at work", |f| {
-        f.status == TaskStatus::Implementing
-    })
+    // In a Git workspace, so the hold between runs (D-156) counts too.
+    let first = started_with(
+        host,
+        "proj",
+        "Add CSV export HANG",
+        "test:\n\t@echo ok\n",
+        true,
+    )
     .await;
+    wait_task(host, &first, "at work", |f| f.live_run().is_some()).await;
     let (_, _, answers) = say(
         host,
         "h-1",
@@ -335,6 +340,24 @@ async fn otter_sees_what_holds_a_workspace_and_a_refused_request_makes_nothing()
     let found = answers[0]["data"]["workspaces"].as_array().unwrap();
     assert_eq!(found.len(), 1, "{answers:?}");
     assert_eq!(found[0]["held_by_task"], first.as_str(), "{answers:?}");
+    // Paused, it holds the workspace still: its work is there, not done.
+    host.conn()
+        .await
+        .task_act("pause-1", &first, TaskAction::Pause)
+        .await
+        .unwrap();
+    wait_task(host, &first, "paused", |f| f.status == TaskStatus::Paused).await;
+    let (_, _, answers) = say(
+        host,
+        "h-1b",
+        "And now?\nCALL: list_workspaces {\"query\": \"proj\"}",
+    )
+    .await;
+    assert_eq!(
+        answers[0]["data"]["workspaces"][0]["held_by_task"],
+        first.as_str(),
+        "{answers:?}"
+    );
 
     let tasks = host.conn().await.task_list().await.unwrap().len();
     let workspaces = host.conn().await.workspace_list().await.unwrap().len();
