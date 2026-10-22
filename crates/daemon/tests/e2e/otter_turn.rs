@@ -750,7 +750,7 @@ async fn otters_reply_streams_as_it_is_written() {
     })
     .await
     .expect("the stream finishes");
-    // Otter at it before its first word (D-195); then sent at most every
+    // Otter at it before its first word (D-196); then sent at most every
     // 100 ms: the first piece goes at once, the rest with the reply (the
     // fake writes them all inside that).
     assert_eq!(

@@ -74,7 +74,7 @@ describe("daemonSource", () => {
     expect(s.drafts!("mac/ft_a")).toEqual([]);
   });
 
-  it("drops a draft begun and ended with no words, and what was streaming when the host comes back (D-195)", async () => {
+  it("drops a draft begun and ended with no words, and what was streaming when the host comes back (D-196)", async () => {
     const s = daemonSource();
     s.setHosts!(["mac"]);
     await flush();

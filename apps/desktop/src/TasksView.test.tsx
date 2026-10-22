@@ -179,7 +179,7 @@ describe("Tasks view", () => {
     return acts;
   };
 
-  it("shows Otter typing once it has begun, and while your message waits, in a finished task too (D-195)", async () => {
+  it("shows Otter typing once it has begun, and while your message waits, in a finished task too (D-196)", async () => {
     const done = sampleTasks(Date.now())[3];
     const at = new Date().toISOString();
     const showing = async (messages: Task["messages"], drafts: Draft[]) => {

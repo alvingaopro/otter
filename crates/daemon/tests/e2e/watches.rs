@@ -637,7 +637,7 @@ async fn a_ci_watch_says_when_no_check_starts() {
 }
 
 /// While a watch's turn looks at what it found, the app is told Otter is at
-/// it; once the report is written, that it stopped (D-195).
+/// it; once the report is written, that it stopped (D-196).
 #[tokio::test]
 async fn otter_is_shown_at_it_while_a_watch_is_reported() {
     use otter_protocol::Event;

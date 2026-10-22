@@ -486,7 +486,7 @@ impl Daemon {
             .collect::<Vec<_>>()
             .join("\n");
         let stream_id = format!("reply-{}", last.id);
-        // The app shows Otter at it from now, not from its first word (D-195).
+        // The app shows Otter at it from now, not from its first word (D-196).
         let writing = self.writing(&f.id, &stream_id);
         let reply = match self.task_workspace(f).await {
             Ok((root, env)) => {

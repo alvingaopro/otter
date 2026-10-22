@@ -809,7 +809,7 @@ function Said({ role, at, when }: { role: string; at: string; when?: string }) {
   ) : null;
 }
 
-/** Otter writing, before its first word: three dots in its bubble, as iMessage shows it (D-177, D-195). */
+/** Otter writing, before its first word: three dots in its bubble, as iMessage shows it (D-177, D-196). */
 function Typing() {
   return (
     <div className="message controller typing" role="status">
@@ -904,7 +904,7 @@ function Conversation({
   const activityAt = live?.activity_at?.length === activity.length ? live.activity_at : undefined;
   // The developer spoke last: Otter's answer is on its way — in a finished
   // task too, which Otter still answers; only a cancelled one takes no
-  // message. Otter itself says when it has begun (D-195): a draft with no
+  // message. Otter itself says when it has begun (D-196): a draft with no
   // words yet, the request's look for a workspace or a watch's report too.
   const last = messages[messages.length - 1];
   const replying = drafts.some((d) => d.role === "controller");

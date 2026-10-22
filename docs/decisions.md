@@ -7443,7 +7443,58 @@ of a sub-task works (it is a task) but nothing limits the depth beyond the
 three-at-once per task; merging the sub-tasks' pull requests is the
 developer's.
 
-## D-195 — Otter is shown typing as soon as it starts (2026-10-22)
+## D-195 — A Claude Code session follows the transcript its hooks name (2026-10-22)
+
+Two `claude` sessions in one workspace both showed *idle* while one of them
+was plainly working. On the host: `claude-2` was resumed (`--resume
+4ac82f0b`); Claude Code wrote the resumed conversation to a new file and only
+touched the old one, and the guess (D-137: the newest transcript written
+since the execution started, not taken by another session) took the old one.
+`claude` started next, a minute before its first message created its own
+file, and the guess took `claude-2`'s live transcript. A file written during
+the execution was never looked past, so neither was put right, and a `/clear`
+(a new session id, a new file) went unseen the same way. With hooks live the
+quiet-turn fallback is off, so nothing else corrected the state.
+
+- **Every hook record names the transcript** the process writes now:
+  `transcript_path` from Claude Code's hook input, kept when absolute, a
+  `.jsonl` and not under `subagents/`, and not for a subagent's call
+  (`agent_id`; its input names the main conversation anyway, per Claude
+  Code's docs, but its own file is `agent_transcript_path`).
+- **The last record that names one binds it** (`hooks_bound`, per
+  execution), read from the start, and the guess is not made again. Not
+  `Stop`: hooks run asynchronously and append when they finish, with the
+  time they arrived, so the old conversation's last `Stop` may land after
+  `/clear`'s `SessionStart` and no time on the record can order them. A
+  wrong binding otherwise lasts only until the live conversation's next hook.
+- **Moving to another conversation makes the session *idle*** until its file
+  says otherwise: nothing is known of it yet.
+- **The session id is the bound file's, once the file exists** — a hook names
+  a new conversation's file before its first message writes it, and a
+  restart must not `--resume` a conversation that doesn't exist. Before
+  this, only the guess set the id, and only for files that existed.
+- **A transcript the hooks named is the terminal's even if a managed run's
+  conversation claims it** (D-162's "known and left"): the hooks are
+  evidence, the guess was not. The guess still never takes a claimed one.
+- Sessions bound wrongly before this put themselves right at their next hook
+  once otterd is upgraded in place: the hook command is the otterd path at
+  launch. An idle one does so when the developer next uses it.
+
+Tested at the observer: a shared directory where the guess takes the other
+session's file, `/clear` to a file not yet written with the old
+conversation's `Stop` arriving after it, and a session already bound to
+another's transcript (as on the host) put right by its next hook; the test
+fails with the hooks' names ignored. Not tested against a real Claude Code:
+which file `SessionStart` names on `--resume` (the later tool hooks name the
+file written, whichever it is).
+
+Reviewed against the code (Fable) before it was written. The review caught a
+session id given out for a file not yet written (a restart would resume
+nothing), a guard on the records' times that would have admitted exactly the
+late record it meant to reject, and the D-162 rule undoing a binding the
+hooks made.
+
+## D-196 — Otter is shown typing as soon as it starts (2026-10-22)
 
 The developer: after a message, nothing seemed to happen until Otter's
 answer came. D-177 has three moving dots in Otter's bubble, but only while
@@ -7482,9 +7533,9 @@ Tests: `otters_reply_streams_as_it_is_written` (the empty start before
 the first words), `otter_is_shown_at_it_while_a_watch_is_reported` (begun,
 then ended with nothing once the report is written; it times out with the
 guard's `Drop` saying nothing), app `shows Otter typing once it has begun,
-and while your message waits, in a finished task too (D-195)` (fails with
+and while your message waits, in a finished task too (D-196)` (fails with
 the old rule for a done task) and `drops a draft begun and ended with no
-words, and what was streaming when the host comes back (D-195)` (fails
+words, and what was streaming when the host comes back (D-196)` (fails
 without dropping a draft whose message has loaded). Not checked in the
 macOS app itself.
 

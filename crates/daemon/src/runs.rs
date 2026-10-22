@@ -1217,7 +1217,7 @@ impl Daemon {
         }
     }
 
-    /// Otter has begun a message in `task`'s conversation (D-195): said to
+    /// Otter has begun a message in `task`'s conversation (D-196): said to
     /// the app at once, before its first word, so the app shows Otter at it.
     /// Ended without [`Writing::done`] (nothing came of it, an error, a
     /// panic), it says so, and the app takes the sign away.
@@ -2118,7 +2118,7 @@ pub(crate) fn left_out(n: usize) -> String {
     )
 }
 
-/// Otter writing a message (D-195), from [`Daemon::writing`].
+/// Otter writing a message (D-196), from [`Daemon::writing`].
 pub(crate) struct Writing<'a> {
     daemon: &'a Daemon,
     task: TaskId,
