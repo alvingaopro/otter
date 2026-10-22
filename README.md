@@ -31,9 +31,10 @@ yours.
   Otter still has doubts about — waits for you. In **Settings** choose what
   Otter thinks with: a model provider's key, Claude Code's own sign-in on the
   host, or no model at all.
-- **The Inbox.** Everything that needs you — tasks and workspaces, on
-  every host — longest-waiting first, then what's working and what's done.
-  Approve, answer, accept or retry right from the list.
+- **What needs you, first.** Chat lists your tasks on every host, the
+  ones waiting on you first, longest-waiting first; the sidebar does the
+  same for workspaces, and a dot on each in the Activity Bar says something
+  waits. Approve, answer, accept or retry on the task's page.
 - **Agents side by side.** When another task's agent is busy in a
   workspace, a task can get a worktree of its own. **Pause all tasks**
   holds everything at once.
@@ -133,7 +134,7 @@ usual). Restarting an agent session resumes its conversation.
    task's conversation and the task is done — say "then change it" to
    have it built. Otherwise Otter posts the plan and the agent gets to work.
 3. Say what you like in the conversation along the way. What's yours to
-   decide shows up in the **Inbox** (⌘1) and as a notification.
+   decide shows up first in **Chat** (⌘1) and as a notification.
 4. Once the work checks out, Otter asks to push the branch and open the pull
    request, and follows CI (the host's `gh` does the GitHub part). Look it
    over and **Accept**.
