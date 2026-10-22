@@ -489,10 +489,17 @@ export function daemonSource(): TaskSource {
     } catch {
       byHost.delete(host);
     }
-    // Written drafts give way to the messages just loaded.
+    // Written drafts give way to the messages just loaded; so does Otter's
+    // whose message is here, its end missed (a stream that fell behind drops
+    // transient events): `reply-<message>` and `watch-<key>` are named for
+    // what Otter's message answers (D-191).
     for (const [key, ds] of drafts) {
       if (!key.startsWith(`${host}/`)) continue;
-      for (const [id, d] of ds) if (d.done) ds.delete(id);
+      const task = byHost.get(host)?.find((f) => `${host}/${f.id}` === key);
+      const said = (d: Draft) =>
+        d.role === "controller" &&
+        !!task?.messages?.some((m) => m.role === "controller" && m.correlation_id === d.stream_id.replace(/^(reply|watch)-/, ""));
+      for (const [id, d] of ds) if (d.done || said(d)) ds.delete(id);
       if (ds.size === 0) drafts.delete(key);
     }
     if (hosts.includes(host)) rebuild();

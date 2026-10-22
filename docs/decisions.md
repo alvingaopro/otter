@@ -7194,14 +7194,21 @@ workspace (D-186) — the empty Chat page's first wait.
   `Drop`).
 - **The app shows Otter typing** for a draft of Otter's with no words, in
   place of an empty bubble with a cursor; its first words take the dots'
-  place. A draft that ends with no words is dropped. After a reconnect
+  place. A draft that ends with no words is dropped. Transient events can
+  be lost (a stream that falls behind drops them), so a draft of Otter's
+  also goes once its message has loaded: `reply-<message>` and
+  `watch-<key>` are named for what that message answers. After a reconnect
   (`host-resync`) the host's drafts are forgotten: one begun before may
   never end.
 - **The app's own guess** stays for an otterd before this, and for the wait
   before Otter's turn starts: the developer spoke last, and the task isn't
   cancelled (a done task is answered too).
 - Compatible: an older app shows the empty draft as an empty bubble with
-  the writing cursor until the reply comes.
+  the writing cursor until the reply comes; for a watch's report, an empty
+  bubble that stays until the task next changes.
+- Known: with the controller off (Settings) nothing answers, and the
+  app's guess keeps the dots under the developer's last message, as it
+  did before for any task not done.
 
 Tests: `otters_reply_streams_as_it_is_written` (the empty start before
 the first words), `otter_is_shown_at_it_while_a_watch_is_reported` (begun,
@@ -7209,5 +7216,9 @@ then ended with nothing once the report is written; it times out with the
 guard's `Drop` saying nothing), app `shows Otter typing once it has begun,
 and while your message waits, in a finished task too (D-191)` (fails with
 the old rule for a done task) and `drops a draft begun and ended with no
-words, and what was streaming when the host comes back (D-191)`. Not
-checked in the macOS app itself.
+words, and what was streaming when the host comes back (D-191)` (fails
+without dropping a draft whose message has loaded). Not checked in the
+macOS app itself.
+
+Reviewed against the code (Fable) before merging. The review found that a
+lost `done` would have left the dots up for good; fixed above.
