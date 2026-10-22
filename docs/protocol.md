@@ -244,7 +244,7 @@ An addition (no protocol bump): daemons before it answer `invalid_request`.
 - They emit `WorkspaceRenamed {workspace_id, name}` and `SessionRenamed
   {workspace_id, session_id, name}`.
 - An agent session the developer hasn't named takes the agent's own name
-  for its conversation (D-196: Claude Code's title, `/` and `:` as `／` and
+  for its conversation (D-197: Claude Code's title, `/` and `:` as `／` and
   `：`, unique with `-2`…), with the same `SessionRenamed`. A session's
   `name_from` says where its name came from: `default`, `agent` or
   `developer` (given at creation, or `session.rename`); absent on a

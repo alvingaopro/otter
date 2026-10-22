@@ -69,7 +69,7 @@ describe("putting things in order", () => {
 });
 
 describe("a session's tab", () => {
-  it("cuts a long name (an agent's title, D-196) at 40 characters", () => {
+  it("cuts a long name (an agent's title, D-197) at 40 characters", () => {
     expect(tabName("claude")).toBe("claude");
     const title = "Chat 聊天框 ／ 命令自动补全，再加上一个很长很长的说明文字，一直写到超过四十个字符为止";
     const cut = tabName(title);

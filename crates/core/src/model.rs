@@ -360,12 +360,12 @@ pub struct Session {
     /// Execution history, oldest first. The last entry is the current one.
     #[serde(default)]
     pub executions: Vec<Execution>,
-    /// Where its name came from (D-196). Absent: a session from before.
+    /// Where its name came from (D-197). Absent: a session from before.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name_from: Option<NameFrom>,
 }
 
-/// Where a session's name came from (D-196).
+/// Where a session's name came from (D-197).
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum NameFrom {
@@ -379,7 +379,7 @@ pub enum NameFrom {
 
 impl Session {
     /// Whether the agent's own name for its conversation may name this
-    /// session (D-196): not once the developer has named it. A session from
+    /// session (D-197): not once the developer has named it. A session from
     /// before `name_from` was kept: only while its name is of the default
     /// form (`claude`, `claude-2`), anything else being taken as theirs.
     pub fn follows_agent_name(&self) -> bool {
@@ -798,7 +798,7 @@ mod tests {
     }
 
     /// What the agent calls its conversation names a session only while the
-    /// developer hasn't named it (D-196); before `name_from`, by its form.
+    /// developer hasn't named it (D-197); before `name_from`, by its form.
     #[test]
     fn a_session_follows_its_agents_name_until_named() {
         let session = |name: &str, from: Option<NameFrom>, agent: bool| Session {

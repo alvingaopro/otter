@@ -2285,7 +2285,7 @@ hook SessionStart ',"source":"startup"'
 echo "claude ready"
 hook UserPromptSubmit ',"prompt":"go"'
 rec '{"type":"user","timestamp":"'$(now)'","sessionId":"'$id'","message":{"role":"user","content":"go"}}'
-# Its name for the conversation (D-196), written again on every start.
+# Its name for the conversation (D-197), written again on every start.
 [ -n "$FAKE_CLAUDE_TITLE" ] && rec '{"type":"ai-title","aiTitle":"'"$FAKE_CLAUDE_TITLE"'","sessionId":"'$id'"}'
 case "$FAKE_CODEX_MODE" in
   question)
@@ -2344,7 +2344,7 @@ exec sleep 600
 "#;
 
 /// A Claude Code session takes the name Claude Code gives its conversation
-/// while the developer hasn't named it (D-196): `/` and `:` as their
+/// while the developer hasn't named it (D-197): `/` and `:` as their
 /// full-width look-alikes, a second one the same `-2`. Named at creation
 /// or renamed, it keeps its name.
 #[tokio::test]
@@ -2409,6 +2409,16 @@ async fn a_claude_session_takes_its_conversations_name_until_you_name_it() {
     let names: Vec<&str> = ws.sessions.iter().map(|s| s.name.as_str()).collect();
     assert_eq!(names, ["flaky", &format!("{title}-2"), "mine"]);
     assert_eq!(ws.sessions[0].name_from, Some(NameFrom::Developer));
+    // Renamed to the name it has: kept, the developer's now.
+    let kept = host
+        .conn()
+        .await
+        .session_rename("cc", ids[1].as_str(), &format!("{title}-2"))
+        .await
+        .unwrap();
+    assert_eq!(kept.name, format!("{title}-2"));
+    let ws = host.conn().await.workspace_get("cc").await.unwrap();
+    assert_eq!(ws.sessions[1].name_from, Some(NameFrom::Developer));
 }
 
 async fn fake_codex_host(mode: &str) -> FakeCodex {

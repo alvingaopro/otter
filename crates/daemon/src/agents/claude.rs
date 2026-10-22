@@ -9,8 +9,11 @@
 //!   `$CLAUDE_CONFIG_DIR/projects/<cwd>/<session-id>.jsonl` (default config
 //!   dir `~/.claude`; `<cwd>` with every non-alphanumeric character replaced
 //!   by `-`). The file name is the session id (= `provider_session_id`).
-//!   Found after launch as the newest transcript for the workspace written
-//!   since the execution started and not bound to another session.
+//!   Named by the hooks: every call carries the transcript the process
+//!   writes now, which `/clear` and a resume change (D-195). Until a hook
+//!   has named one (or without hooks), guessed as the newest transcript for
+//!   the workspace written since the execution started and not bound to
+//!   another session.
 //! - **State:** from the turn records — a prompt or tool result means the
 //!   agent is working; an assistant message ending its turn (`end_turn`)
 //!   means it is waiting for input, and its text is the last message; an
@@ -119,11 +122,15 @@ struct ClaudeState {
     /// the quiet-turn heuristic is off.
     #[serde(default)]
     hooks_live: bool,
+    /// The transcript is the one this execution's hooks named (D-195), so
+    /// it isn't guessed at.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    hooks_bound: bool,
     /// A prompt Claude Code is showing the developer, not yet answered.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pending: Option<Pending>,
     /// The conversation's title Claude Code made (`ai-title`), and the one
-    /// given with `/rename` (`custom-title`), as last written (D-196).
+    /// given with `/rename` (`custom-title`), as last written (D-197).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     ai_title: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -236,38 +243,67 @@ impl AgentProvider for ClaudeCode {
         let mut state_changed = false;
         let earliest: Timestamp = ctx.started_at - Duration::seconds(CLOCK_SLACK);
 
+        let execution = ctx.started_at.timestamp_millis();
+        if state.hooks_execution != Some(execution) {
+            state.hooks_execution = Some(execution);
+            state.hooks_offset = 0;
+            state.hooks_live = false;
+            state.hooks_bound = false;
+            state.pending = None;
+            state_changed = true;
+        }
+
         // Bound to a managed run's conversation (D-162): it was taken for this
         // session's own while the run wrote it in the same directory. Its
         // turns are not this terminal's, and it would resume that
         // conversation. Let go of it, and look again; what the terminal is
-        // doing is not known until its own transcript says.
-        let misbound = state
-            .transcript
-            .as_deref()
-            .and_then(|p| p.file_stem()?.to_str())
-            .is_some_and(|id| ctx.managed.contains(id));
+        // doing is not known until its own transcript says. One the hooks
+        // named is this terminal's, whoever else writes it.
+        let misbound = !state.hooks_bound
+            && state
+                .transcript
+                .as_deref()
+                .and_then(|p| p.file_stem()?.to_str())
+                .is_some_and(|id| ctx.managed.contains(id));
         if misbound {
             tracing::warn!("claude session was bound to a managed run's transcript; binding again");
             state.follow(None);
             state_changed = true;
         }
 
-        // Follow the transcript this execution writes. A resumed session may
-        // continue its old file or start a new one, so until the current file
-        // is written during this execution, look for a newer one.
+        // What the hooks said since the last look. First: they name the
+        // transcript this process writes now (D-195).
+        let bound_before = state.transcript.clone();
+        let before = (
+            state.hooks_offset,
+            state.hooks_live,
+            state.hooks_bound,
+            state.pending.clone(),
+        );
+        read_hooks(&ctx.dir.join(HOOKS_FILE), &mut state, execution);
+        // Another conversation than the one followed (`/clear`, a resume, or
+        // a wrong guess): nothing is known of it until its file says.
+        let rebound = bound_before.is_some() && state.transcript != bound_before;
+        if state.transcript != bound_before {
+            tracing::info!(transcript = ?state.transcript, "claude session bound by its hooks");
+            state_changed = true;
+        }
+
+        // Without a name from the hooks, guess: follow the transcript this
+        // execution writes. A resumed session may continue its old file or
+        // start a new one, so until the current file is written during this
+        // execution, look for a newer one.
         let current_fresh = state
             .transcript
             .as_deref()
             .and_then(mtime)
             .is_some_and(|m| m >= earliest);
-        if !current_fresh
+        if !state.hooks_bound
+            && !current_fresh
             && let Some((id, path)) = newest_transcript(ctx, earliest)
             && state.transcript.as_ref() != Some(&path)
         {
             tracing::info!(session = %id, transcript = %path.display(), "claude session bound");
-            if info.provider_session_id.as_ref() != Some(&id) {
-                obs.provider_session_id = Some(id);
-            }
             state.follow(Some(path));
             state_changed = true;
         }
@@ -275,7 +311,7 @@ impl AgentProvider for ClaudeCode {
         if misbound {
             obs.unbind = true;
         }
-        let mut next = if misbound {
+        let mut next = if misbound || rebound {
             AgentState::Idle
         } else {
             info.state
@@ -293,7 +329,7 @@ impl AgentProvider for ClaudeCode {
                     }
                     obs.last_message = update.last_message;
                     last_user_at = update.last_user_at;
-                    // Its name for the conversation (D-196); a `/rename`
+                    // Its name for the conversation (D-197); a `/rename`
                     // to nothing gives the made-up title back.
                     if let Some(t) = update
                         .ai_title
@@ -314,19 +350,17 @@ impl AgentProvider for ClaudeCode {
                 Err(e) => tracing::debug!("reading claude transcript: {e:#}"),
             }
             transcript_mtime = mtime(path);
+            // The conversation is this session's once its file exists: a
+            // restart resumes it. Not before — a hook names the file before
+            // the first message writes it.
+            if transcript_mtime.is_some()
+                && let Some(id) = path.file_stem().and_then(|s| s.to_str())
+                && info.provider_session_id.as_deref() != Some(id)
+            {
+                obs.provider_session_id = Some(id.to_owned());
+            }
         }
 
-        // What the hooks said since the last look.
-        let execution = ctx.started_at.timestamp_millis();
-        if state.hooks_execution != Some(execution) {
-            state.hooks_execution = Some(execution);
-            state.hooks_offset = 0;
-            state.hooks_live = false;
-            state.pending = None;
-            state_changed = true;
-        }
-        let before = (state.hooks_offset, state.hooks_live, state.pending.clone());
-        read_hooks(&ctx.dir.join(HOOKS_FILE), &mut state, execution);
         // Answered in the terminal: a denial is written to the transcript
         // as an interruption.
         if state
@@ -348,7 +382,13 @@ impl AgentProvider for ClaudeCode {
         {
             p.answered = true;
         }
-        state_changed |= before != (state.hooks_offset, state.hooks_live, state.pending.clone());
+        state_changed |= before
+            != (
+                state.hooks_offset,
+                state.hooks_live,
+                state.hooks_bound,
+                state.pending.clone(),
+            );
 
         if let Some(p) = &state.pending {
             if p.answered {
@@ -403,6 +443,12 @@ impl AgentProvider for ClaudeCode {
         // Set when a subagent made the call.
         if let Some(agent) = input["agent_id"].as_str() {
             record["agent"] = agent.into();
+        } else if let Some(path) = input["transcript_path"]
+            .as_str()
+            .filter(|p| main_transcript(Path::new(p)))
+        {
+            // The conversation the process writes now (D-195).
+            record["transcript"] = path.into();
         }
         let detail = match event {
             "PermissionRequest" | "PreToolUse" => tool_detail(tool, &input["tool_input"]),
@@ -414,6 +460,14 @@ impl AgentProvider for ClaudeCode {
         }
         Some(record)
     }
+}
+
+/// Whether a hook's `transcript_path` is a main conversation's: absolute, a
+/// `.jsonl`, not a subagent's own (under `subagents/`).
+fn main_transcript(path: &Path) -> bool {
+    path.is_absolute()
+        && path.extension().and_then(|e| e.to_str()) == Some("jsonl")
+        && !path.components().any(|c| c.as_os_str() == "subagents")
 }
 
 /// What a prompt is about: the question asked, or the tool and Claude
@@ -492,6 +546,19 @@ fn read_hooks(path: &Path, state: &mut ClaudeState, execution: i64) -> Option<()
             continue;
         }
         state.hooks_live = true;
+        // The transcript this process writes now (D-195); the last named
+        // wins. Not from `Stop`: hooks run on their own and append as they
+        // finish, so the old conversation's last one may land after `/clear`.
+        if let Some(path) = record["transcript"].as_str()
+            && record["event"] != "Stop"
+        {
+            let path = PathBuf::from(path);
+            if state.transcript.as_ref() != Some(&path) {
+                // Another conversation, with a name of its own (D-197).
+                state.follow(Some(path));
+            }
+            state.hooks_bound = true;
+        }
         let detail = record["detail"].as_str().map(str::to_owned);
         let agent = record["agent"].as_str().map(str::to_owned);
         let tool = record["tool"].as_str();
@@ -689,7 +756,7 @@ struct TranscriptUpdate {
     /// When the developer's side last wrote (a prompt, a tool result, an
     /// interruption), unix ms.
     last_user_at: Option<i64>,
-    /// The last `ai-title` and `custom-title` read (D-196).
+    /// The last `ai-title` and `custom-title` read (D-197).
     ai_title: Option<String>,
     custom_title: Option<String>,
 }
@@ -820,7 +887,7 @@ mod tests {
         update
     }
 
-    /// Claude Code's names for the conversation (D-196): each written again
+    /// Claude Code's names for the conversation (D-197): each written again
     /// and again, the last one says; a sidechain's isn't the conversation's.
     #[test]
     fn the_conversations_titles_are_read_last_wins() {
@@ -1021,6 +1088,7 @@ mod tests {
 
     #[test]
     fn hook_records_keep_only_what_observation_needs() {
+        let transcript = "/home/u/.claude/projects/-w/825558a1-4390-4aab-bf7e-ec5e78809858.jsonl";
         let r = ClaudeCode
             .hook_record(&hook(
                 "PermissionRequest",
@@ -1029,7 +1097,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             r,
-            serde_json::json!({"event": "PermissionRequest", "tool": "Bash", "detail": "Bash: Create empty file z"})
+            serde_json::json!({"event": "PermissionRequest", "tool": "Bash", "detail": "Bash: Create empty file z", "transcript": transcript})
         );
         let r = ClaudeCode
             .hook_record(&hook(
@@ -1046,9 +1114,10 @@ mod tests {
             .unwrap();
         assert_eq!(
             r,
-            serde_json::json!({"event": "Notification", "kind": "permission_prompt"})
+            serde_json::json!({"event": "Notification", "kind": "permission_prompt", "transcript": transcript})
         );
-        // Tool output never makes it into the record.
+        // Tool output never makes it into the record, and a subagent's call
+        // doesn't name the conversation.
         let r = ClaudeCode
             .hook_record(&hook(
                 "PostToolUse",
@@ -1059,6 +1128,24 @@ mod tests {
             r,
             serde_json::json!({"event": "PostToolUse", "tool": "Bash", "agent": "a1"})
         );
+        // Only a main conversation's transcript is kept.
+        for path in [
+            "/home/u/.claude/projects/-w/825558a1/subagents/agent-a1.jsonl",
+            "relative/x.jsonl",
+            "/home/u/.claude/projects/-w/x.json",
+        ] {
+            let r = ClaudeCode
+                .hook_record(&hook(
+                    "UserPromptSubmit",
+                    serde_json::json!({"transcript_path": path}),
+                ))
+                .unwrap();
+            assert_eq!(
+                r,
+                serde_json::json!({"event": "UserPromptSubmit"}),
+                "{path}"
+            );
+        }
         assert!(
             ClaudeCode
                 .hook_record(&hook("SubagentStop", serde_json::json!({})))
@@ -1436,6 +1523,161 @@ mod tests {
         let obs = ClaudeCode.observe(&ctx, &agent);
         assert_eq!(obs.state, None, "{obs:?}");
         assert!(!obs.unbind);
+    }
+
+    /// Two sessions in one workspace (D-195): one started while the other
+    /// was writing, before its own first message made its file, so the
+    /// guess took the other's — and kept it, as it was being written. A
+    /// `/clear` moved on to a new file the same way unseen. Its hooks name
+    /// its own transcript, whatever the directory holds.
+    #[test]
+    fn the_hooks_name_the_transcript_a_shared_directory_or_clear_cannot_hide() {
+        let dir = tempfile::tempdir().unwrap();
+        let env: EnvMap = [(
+            "CLAUDE_CONFIG_DIR".to_owned(),
+            dir.path().join("config").display().to_string(),
+        )]
+        .into();
+        let cwd = dir.path().join("w");
+        std::fs::create_dir_all(&cwd).unwrap();
+        let cwd = cwd.to_string_lossy().into_owned();
+        let transcripts = transcript_dirs(&env, &cwd).remove(0);
+        std::fs::create_dir_all(&transcripts).unwrap();
+        let started = Utc::now() - Duration::seconds(60);
+        let at = |secs: i64| started + Duration::seconds(secs);
+        let append = |path: &Path, line: String| {
+            let mut f = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(path)
+                .unwrap();
+            writeln!(f, "{line}").unwrap();
+        };
+        let prompt = |secs: i64| {
+            format!(
+                r#"{{"type":"user","timestamp":"{}","message":{{"role":"user","content":"go"}}}}"#,
+                at(secs).to_rfc3339()
+            )
+        };
+        let done = |text: &str| {
+            format!(
+                r#"{{"type":"assistant","message":{{"role":"assistant","stop_reason":"end_turn","content":[{{"type":"text","text":"{text}"}}]}}}}"#
+            )
+        };
+        // The other session's, written since this one started.
+        let other = transcripts.join("other.jsonl");
+        append(&other, prompt(1));
+        append(&other, done("theirs"));
+        let mine = transcripts.join("mine.jsonl");
+        let cleared = transcripts.join("cleared.jsonl");
+        let log = dir.path().join(HOOKS_FILE);
+        let hook = |event: &str, transcript: &Path, secs: i64| {
+            let record = serde_json::json!({
+                "event": event,
+                "transcript": transcript,
+                "t": at(secs).timestamp_millis(),
+            });
+            append(&log, record.to_string());
+        };
+
+        let none = HashSet::new();
+        let mut agent = AgentInfo {
+            provider: "claude".into(),
+            provider_session_id: None,
+            provider_state: Value::Null,
+            state: AgentState::Starting,
+            state_since: started,
+            last_message: None,
+            prompt: None,
+            blocker: None,
+        };
+        let observe = |agent: &mut AgentInfo| {
+            let ctx = ObserveContext {
+                cwd: &cwd,
+                dir: dir.path(),
+                started_at: started,
+                pid: None,
+                screen: None,
+                now: Utc::now(),
+                env: &env,
+                claimed: &none,
+                managed: &none,
+            };
+            let obs = ClaudeCode.observe(&ctx, agent);
+            if let Some(s) = obs.state {
+                agent.state = s;
+            }
+            if let Some(p) = obs.provider_state.clone() {
+                agent.provider_state = p;
+            }
+            if let Some(id) = obs.provider_session_id.clone() {
+                agent.provider_session_id = Some(id);
+            }
+            obs
+        };
+        let bound = |agent: &AgentInfo| {
+            serde_json::from_value::<ClaudeState>(agent.provider_state.clone())
+                .unwrap()
+                .transcript
+        };
+
+        // Started: its hook names a file not written yet. Not the other's,
+        // and no conversation to resume yet.
+        hook("SessionStart", &mine, 2);
+        let obs = observe(&mut agent);
+        assert_eq!(bound(&agent).as_deref(), Some(mine.as_path()));
+        assert_eq!(agent.provider_session_id, None);
+        assert_eq!(agent.state, AgentState::Starting);
+        assert!(obs.last_message.is_none());
+        // Its first message: its own turn, its own conversation.
+        hook("UserPromptSubmit", &mine, 3);
+        append(&mine, prompt(3));
+        observe(&mut agent);
+        assert_eq!(agent.state, AgentState::Working);
+        assert_eq!(agent.provider_session_id.as_deref(), Some("mine"));
+
+        // `/clear`: a new conversation, its file not written yet, while the
+        // old one was written during this execution. What was followed is
+        // no longer known.
+        append(&mine, done("old turn"));
+        observe(&mut agent);
+        assert_eq!(agent.state, AgentState::WaitingForInput);
+        hook("SessionStart", &cleared, 10);
+        // The old conversation's last `Stop`, landing late, doesn't take it back.
+        hook("Stop", &mine, 11);
+        observe(&mut agent);
+        assert_eq!(bound(&agent).as_deref(), Some(cleared.as_path()));
+        assert_eq!(agent.state, AgentState::Idle);
+        assert_eq!(agent.provider_session_id.as_deref(), Some("mine"));
+        // Working in the new one: followed, and it is what a restart resumes.
+        append(&cleared, prompt(12));
+        observe(&mut agent);
+        assert_eq!(agent.state, AgentState::Working);
+        assert_eq!(agent.provider_session_id.as_deref(), Some("cleared"));
+
+        // Already bound to the other's by a guess (as it was on a host):
+        // the next hook puts it right, read from the start.
+        let state = ClaudeState {
+            transcript: Some(other.clone()),
+            offset: std::fs::metadata(&other).unwrap().len(),
+            hooks_execution: Some(started.timestamp_millis()),
+            hooks_offset: std::fs::metadata(&log).unwrap().len(),
+            hooks_live: true,
+            ..ClaudeState::default()
+        };
+        let mut agent = AgentInfo {
+            provider_session_id: Some("other".into()),
+            provider_state: serde_json::to_value(&state).unwrap(),
+            state: AgentState::WaitingForInput,
+            ..agent
+        };
+        observe(&mut agent);
+        assert_eq!(bound(&agent).as_deref(), Some(other.as_path()));
+        hook("PostToolUse", &cleared, 20);
+        observe(&mut agent);
+        assert_eq!(bound(&agent).as_deref(), Some(cleared.as_path()));
+        assert_eq!(agent.state, AgentState::Working);
+        assert_eq!(agent.provider_session_id.as_deref(), Some("cleared"));
     }
 
     #[test]

@@ -413,7 +413,7 @@ fn observe_agent(ws: &mut Workspace, i: usize, seen: &Seen<'_>, events: &mut Vec
     changed | take_agent_name(ws, i, title.as_deref(), events)
 }
 
-/// Name session `i` for its agent's conversation (D-196), while the
+/// Name session `i` for its agent's conversation (D-197), while the
 /// developer hasn't named it: the agent's title, made a session name.
 fn take_agent_name(
     ws: &mut Workspace,

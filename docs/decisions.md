@@ -7443,7 +7443,58 @@ of a sub-task works (it is a task) but nothing limits the depth beyond the
 three-at-once per task; merging the sub-tasks' pull requests is the
 developer's.
 
-## D-196 — A Claude Code session takes its conversation's name, until you name it (2026-10-22)
+## D-195 — A Claude Code session follows the transcript its hooks name (2026-10-22)
+
+Two `claude` sessions in one workspace both showed *idle* while one of them
+was plainly working. On the host: `claude-2` was resumed (`--resume
+4ac82f0b`); Claude Code wrote the resumed conversation to a new file and only
+touched the old one, and the guess (D-137: the newest transcript written
+since the execution started, not taken by another session) took the old one.
+`claude` started next, a minute before its first message created its own
+file, and the guess took `claude-2`'s live transcript. A file written during
+the execution was never looked past, so neither was put right, and a `/clear`
+(a new session id, a new file) went unseen the same way. With hooks live the
+quiet-turn fallback is off, so nothing else corrected the state.
+
+- **Every hook record names the transcript** the process writes now:
+  `transcript_path` from Claude Code's hook input, kept when absolute, a
+  `.jsonl` and not under `subagents/`, and not for a subagent's call
+  (`agent_id`; its input names the main conversation anyway, per Claude
+  Code's docs, but its own file is `agent_transcript_path`).
+- **The last record that names one binds it** (`hooks_bound`, per
+  execution), read from the start, and the guess is not made again. Not
+  `Stop`: hooks run asynchronously and append when they finish, with the
+  time they arrived, so the old conversation's last `Stop` may land after
+  `/clear`'s `SessionStart` and no time on the record can order them. A
+  wrong binding otherwise lasts only until the live conversation's next hook.
+- **Moving to another conversation makes the session *idle*** until its file
+  says otherwise: nothing is known of it yet.
+- **The session id is the bound file's, once the file exists** — a hook names
+  a new conversation's file before its first message writes it, and a
+  restart must not `--resume` a conversation that doesn't exist. Before
+  this, only the guess set the id, and only for files that existed.
+- **A transcript the hooks named is the terminal's even if a managed run's
+  conversation claims it** (D-162's "known and left"): the hooks are
+  evidence, the guess was not. The guess still never takes a claimed one.
+- Sessions bound wrongly before this put themselves right at their next hook
+  once otterd is upgraded in place: the hook command is the otterd path at
+  launch. An idle one does so when the developer next uses it.
+
+Tested at the observer: a shared directory where the guess takes the other
+session's file, `/clear` to a file not yet written with the old
+conversation's `Stop` arriving after it, and a session already bound to
+another's transcript (as on the host) put right by its next hook; the test
+fails with the hooks' names ignored. Not tested against a real Claude Code:
+which file `SessionStart` names on `--resume` (the later tool hooks name the
+file written, whichever it is).
+
+Reviewed against the code (Fable) before it was written. The review caught a
+session id given out for a file not yet written (a restart would resume
+nothing), a guard on the records' times that would have admitted exactly the
+late record it meant to reject, and the D-162 rule undoing a binding the
+hooks made.
+
+## D-197 — A Claude Code session takes its conversation's name, until you name it (2026-10-22)
 
 The developer asked for a Claude Code session in Otter to be named as
 Claude Code names its conversation, while the session still has its
@@ -7464,15 +7515,16 @@ default name, and never once they had named it themselves.
 - **Whose name it is.** `Session::name_from` says where a name came from:
   `default` (from the command or agent), `agent`, or `developer` — given at
   creation, or any `session.rename` (the app's double-click on a tab, the
-  CLI). Only `default` and `agent` names follow the agent; a developer's
+  CLI), even to the name it has: that keeps an agent's name as it is. Only `default` and `agent` names follow the agent; a developer's
   never does again. A session from before (no `name_from`) follows only
   while its name has the default form (`claude`, `claude-2`); any other
   name is taken as the developer's.
 - **Made a name.** `/` and `:` can't be in a name (they address sessions,
   `[host:]workspace[/session]`), so they become their full-width
   look-alikes `／` and `：`, which read the same; control characters and runs
-  of whitespace become one space; at most 128 bytes, cut between
-  characters; secrets redacted, since names go to `events.jsonl`. Unique
+  of whitespace become one space; at most 124 bytes, cut between
+  characters, so a `-2` still fits a name's 128; secrets redacted, since
+  names go to `events.jsonl`. Unique
   in the workspace with `-2`…, and a session already named so stays so
   when the other is renamed: a tab doesn't change because another did.
 - **Applied** in the reconcile loop, as a `SessionRenamed` like the
@@ -7489,5 +7541,11 @@ through a restart whose transcript says the title again, and the other
 keeps its `-2`. Watched failing with a rename not marking the name the
 developer's), `the_conversations_titles_are_read_last_wins`,
 `titles_become_session_names`, `a_session_follows_its_agents_name_until_named`
-and the app's `cuts a long name (an agent's title, D-196) at 40
+and the app's `cuts a long name (an agent's title, D-197) at 40
 characters`. Not checked with a real Claude Code, nor in the macOS app.
+
+Reviewed against the code (Fable) before merging. The review found a name
+kept by renaming it to itself still following the agent, and a `-2` taking
+a 128-byte title past a name's limit; both are fixed above. Merged with
+D-195, a transcript the hooks name is another conversation too: its titles
+start again.
