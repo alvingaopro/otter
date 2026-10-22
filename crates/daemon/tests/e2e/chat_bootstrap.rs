@@ -662,10 +662,11 @@ async fn the_turn_on_a_request_may_only_look_and_place() {
     );
 }
 
-/// A task with a workspace made from one repository isn't told it is placed
-/// when asked for another source; the same again is done, once.
+/// A task that hasn't worked moves where it is told (D-191): to an empty
+/// directory, to a workspace that exists, and back to the one made for it
+/// from the same repository — which isn't made twice.
 #[tokio::test]
-async fn set_workspace_says_when_the_workspace_it_has_is_not_what_was_asked() {
+async fn set_workspace_moves_a_task_that_hasnt_worked_and_makes_nothing_twice() {
     let (fake, _) = host_with_billing().await;
     let host = &fake.host;
     let ledger = make_repo(host, "ledger-src", &[("Makefile", "test:\n\t@true\n")]);
@@ -675,32 +676,39 @@ async fn set_workspace_says_when_the_workspace_it_has_is_not_what_was_asked() {
         "In the ledger.\nCALL: set_workspace {{\"new_workspace\": {{\"repository\": \"{}\"}}}}",
         ledger.display()
     );
-    let (_, answers) = run(host, &id, "d-1", &new).await;
+    let (f, answers) = run(host, &id, "d-1", &new).await;
     assert_eq!(code(&answers[0]), "ok", "{answers:?}");
+    let ledger_ws = f.workspace_id.clone().unwrap();
     let made = host.conn().await.workspace_list().await.unwrap().len();
 
-    let (_, answers) = run(
+    let (f, answers) = run(
         host,
         &id,
         "d-2",
         "Empty.\nCALL: set_workspace {\"scratch\": true}",
     )
     .await;
-    assert_eq!(code(&answers[0]), "conflict", "{answers:?}");
-    let (_, answers) = run(
+    assert_eq!(code(&answers[0]), "ok", "{answers:?}");
+    assert!(answers[0]["data"]["moved_from"].is_string(), "{answers:?}");
+    assert_ne!(f.workspace_id.as_ref(), Some(&ledger_ws));
+    let (f, answers) = run(
         host,
         &id,
         "d-3",
         "Billing.\nCALL: set_workspace {\"workspace\": \"billing\"}",
     )
     .await;
-    assert_eq!(code(&answers[0]), "conflict", "{answers:?}");
-    // The same again: done, and nothing more is made.
-    let new = new.replace("In the ledger.", "Again, the ledger.");
-    let (_, answers) = run(host, &id, "d-4", &new).await;
     assert_eq!(code(&answers[0]), "ok", "{answers:?}");
+    let billing = host.conn().await.workspace_get("billing").await.unwrap();
+    assert_eq!(f.workspace_id.as_ref(), Some(&billing.id));
+    // The ledger again: the one made for it, nothing more made.
+    let new = new.replace("In the ledger.", "Again, the ledger.");
+    let (f, answers) = run(host, &id, "d-4", &new).await;
+    assert_eq!(code(&answers[0]), "ok", "{answers:?}");
+    assert_eq!(f.workspace_id.as_ref(), Some(&ledger_ws));
     assert_eq!(
         host.conn().await.workspace_list().await.unwrap().len(),
-        made
+        made + 1,
+        "the ledger's and the empty one's, once each"
     );
 }

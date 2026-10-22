@@ -285,6 +285,20 @@ impl Daemon {
         open: Vec<otter_core::task::Message>,
         placing: bool,
     ) -> RpcResult<()> {
+        self.otter_turn_note(f, backend, open, placing, None).await
+    }
+
+    /// As [`Self::otter_turn_on`], with `note` after the context: what
+    /// the controller tells Otter of the moment (D-191: the workspace is
+    /// taken).
+    pub(crate) async fn otter_turn_note(
+        self: &Arc<Self>,
+        f: &Task,
+        backend: Box<dyn TurnBackend>,
+        open: Vec<otter_core::task::Message>,
+        placing: bool,
+        note: Option<String>,
+    ) -> RpcResult<()> {
         let Some(last) = open.last().cloned() else {
             return Ok(());
         };
@@ -357,7 +371,10 @@ impl Daemon {
             event: None,
             messages: &open,
             pictures,
-            context: context(f, &self.memories(Some(&f.id))),
+            context: match &note {
+                Some(n) => format!("{}{n}", context(f, &self.memories(Some(&f.id)))),
+                None => context(f, &self.memories(Some(&f.id))),
+            },
             tools: available,
             builtins,
             limits: &limits,

@@ -252,7 +252,7 @@ pub fn tools() -> Vec<ToolSpec> {
         t(
             "set_workspace",
             DeveloperWord,
-            "Say where this task works, when it has no workspace yet: exactly one of workspace (name or id of one that exists), new_workspace (a repository the developer named or list_repositories gave: a workspace of its own is made from it, and is prepared before the work goes on), or scratch (an empty directory). A task that is blocked for want of a workspace goes on by itself; a draft still needs start_task.",
+            "Say where this task works, or move it, before the coding agent has worked in it: exactly one of workspace (name or id of one that exists), new_workspace (a repository the developer named, one in a link they gave, or one list_repositories gave: a workspace of its own is made from it, and is prepared before the work goes on), or scratch (an empty directory). A task that waits for a workspace goes on by itself; a draft still needs start_task.",
             json!({
                 "type": "object",
                 "properties": {
@@ -1566,9 +1566,9 @@ impl Gateway {
             ));
         };
         let d = &self.inner.daemon;
-        // D-080: not once it has worked, and not over a workspace it has
-        // (the developer changes that in the app) — but the same choice
-        // again, or the workspace made for it, is already done.
+        // D-080: not once it has worked (its work is where it is); before
+        // that, over the workspace it has too, as the app may (D-191). The
+        // same choice again, or the workspace made for it, is done already.
         if !f.runs.is_empty() {
             return Err(fail(
                 "not_ready",
@@ -1576,6 +1576,7 @@ impl Gateway {
             ));
         }
         let placement = d.placement(&choice).await?;
+        let mut from = None;
         if let Some(cur) = &f.workspace_id {
             let (same, name, state) = {
                 let store = d.store.lock().await;
@@ -1605,17 +1606,16 @@ impl Gateway {
                     ws.map(|w| format!("{:?}", w.state).to_lowercase()),
                 )
             };
-            if !same {
-                return Err(fail("conflict", "this task has a workspace already")
-                    .next("the developer can give it another in the app"));
+            if same {
+                // Done already: nothing to do, nothing to record twice.
+                return Ok(json!({
+                    "done": "workspace set",
+                    "workspace": name,
+                    "workspace_state": state,
+                    "status": f.status.as_str(),
+                }));
             }
-            // Done already: nothing to do, nothing to record twice.
-            return Ok(json!({
-                "done": "workspace set",
-                "workspace": name,
-                "workspace_state": state,
-                "status": f.status.as_str(),
-            }));
+            from = name;
         }
         let origin = &self.inner.origin;
         let command = origin.command("set_workspace");
@@ -1651,12 +1651,16 @@ impl Gateway {
             "set_workspace: {}",
             name.as_deref().unwrap_or("none")
         ));
-        Ok(json!({
+        let mut out = json!({
             "done": "workspace set",
             "workspace": name,
             "workspace_state": state,
             "status": placed.status.as_str(),
-        }))
+        });
+        if let Some(from) = from {
+            out["moved_from"] = json!(from);
+        }
+        Ok(out)
     }
 
     async fn set_answer_only(&self, f: &Task, args: &Value) -> Result<Value, ToolError> {

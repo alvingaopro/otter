@@ -214,6 +214,9 @@ pub(crate) struct ControllerState {
     pub(crate) watches: crate::watches::Probing,
     /// A turn in Otter's conversation on the host is running (D-093).
     host_turn: bool,
+    /// A task moved to a workspace of its own is moved once from each
+    /// (D-191): what couldn't be made isn't tried on every wake.
+    pub(crate) moves_tried: HashSet<(TaskId, otter_core::WorkspaceId)>,
 }
 
 impl Daemon {
@@ -580,19 +583,9 @@ impl Daemon {
         if f.started_by.is_some() {
             return Ok(None);
         }
-        let Some(request) = f.request_message().cloned() else {
+        let Some(message) = self.unread_request(f) else {
             return Ok(None);
         };
-        let looked = f.messages.iter().any(|m| {
-            m.role == MessageRole::Controller
-                && m.correlation_id.as_deref() == Some(request.as_str())
-        });
-        let Some(message) = f.messages.iter().find(|m| m.id == request).cloned() else {
-            return Ok(None);
-        };
-        if looked {
-            return Ok(None);
-        }
         let Some(backend) = self.turn_backend() else {
             return Ok(None);
         };
@@ -1680,8 +1673,20 @@ impl Daemon {
     /// (D-079): another task's run is there, another task's work is there
     /// and not done (D-156), or an agent the developer started is at work
     /// there.
-    async fn workspace_taken(self: &Arc<Self>, f: &Task) -> Option<String> {
+    async fn workspace_taken(self: &Arc<Self>, f: &Task) -> Option<Taken> {
         let ws_id = f.workspace_id.as_ref()?;
+        let state = |why: String| {
+            Some(Taken {
+                why,
+                by_others: false,
+            })
+        };
+        let others = |why: String| {
+            Some(Taken {
+                why,
+                by_others: true,
+            })
+        };
         let (name, busy_session, git) = {
             let store = self.store.lock().await;
             let ws = store.workspace(ws_id.as_str())?;
@@ -1689,27 +1694,32 @@ impl Daemon {
             // is the developer's to bring back.
             if ws.state == otter_core::WorkspaceState::Archived {
                 if ws.task_id.as_ref() != Some(&f.id) {
-                    return Some(format!("{WAITING}{}{ARCHIVED}", ws.name));
+                    return state(format!("{WAITING}{}{ARCHIVED}", ws.name));
                 }
                 let name = ws.name.clone();
                 drop(store);
                 if let Err(e) = self.workspace_unarchive(ws_id.as_str()).await {
-                    return Some(format!("{WAITING}{name}: {}", e.message));
+                    return state(format!("{WAITING}{name}: {}", e.message));
                 }
-                return Some(format!("{WAITING}{name}: it's being prepared"));
+                return state(format!("{WAITING}{name}: it's being prepared"));
             }
             // A workspace still being made (one of its own, D-080).
             if ws.state == otter_core::WorkspaceState::Preparing {
-                return Some(format!("{WAITING}{}: it's being prepared", ws.name));
+                return state(format!("{WAITING}{}: it's being prepared", ws.name));
             }
             // Its preparation failed: the developer's to fix (D-135).
             if ws.state == otter_core::WorkspaceState::Failed {
                 let why = ws.state_message.as_deref().unwrap_or("no reason given");
-                return Some(format!(
+                return state(format!(
                     "{WAITING}{}: preparing it failed ({}); prepare it again to go on",
                     ws.name,
                     why.lines().next().unwrap_or(why)
                 ));
+            }
+            // It only reads (D-191): whatever else works there, it reads
+            // alongside.
+            if self.reads_alongside(f) {
+                return None;
             }
             let busy = ws
                 .sessions
@@ -1739,7 +1749,7 @@ impl Daemon {
                 .await
                 .map(|o| o.title)
                 .unwrap_or_else(|_| other.to_string());
-            return Some(format!("{WAITING}{name}: “{title}” is working there"));
+            return others(format!("{WAITING}{name}: “{title}” is working there"));
         }
         // In a Git repository, another task's work there, not done, holds
         // it between its runs too, or publishing it would take this one's
@@ -1751,13 +1761,127 @@ impl Daemon {
             && f.runs.is_empty()
             && let Some(other) = self.work_holding(ws_id, Some(&f.id)).await
         {
-            return Some(if other.status.is_active() {
+            return others(if other.status.is_active() {
                 format!("{WAITING}{name}: “{}” is working there", other.title)
             } else {
                 format!("{WAITING}{name}: “{}”{HELD}", other.title)
             });
         }
-        busy_session.map(|s| format!("{WAITING}{name}: {s}{YOUR_AGENT}"))
+        others(format!("{WAITING}{name}: {}{YOUR_AGENT}", busy_session?))
+    }
+
+    /// What a task whose workspace others hold does instead of waiting
+    /// (D-191), once it has done nothing there yet: Otter reads its request
+    /// first, once — it may answer it without a workspace, have it only
+    /// read, or say where it goes; then, where moving is automatic, it gets
+    /// a workspace of its own from the same repository. Whether it did
+    /// either (the step goes on from the change).
+    async fn instead_of_waiting(self: &Arc<Self>, f: &Task, taken: &Taken) -> RpcResult<bool> {
+        if !f.runs.is_empty() || f.started_by.is_some() {
+            return Ok(false);
+        }
+        if let Some(message) = self.unread_request(f) {
+            let Some(backend) = self.turn_backend() else {
+                return Ok(false);
+            };
+            let note = format!(
+                "\nThis task's workspace is taken: {}. Before it waits, read the request: if it only needs what you can read yourself (a GitHub run or pull request, the web), answer it and finish_with_answer; if it only asks about the code, set_answer_only on (it reads alongside what works there); to choose where it works, set_workspace. Otherwise just say so in a line: it gets a workspace of its own from the same repository, or waits.\n",
+                taken.why.trim_start_matches(otter_core::task::WAITING)
+            );
+            self.otter_turn_note(f, backend, vec![message], true, Some(note))
+                .await?;
+            return Ok(true);
+        }
+        if !self.auto(f, "set_workspace") {
+            return Ok(false);
+        }
+        let Some(ws_id) = f.workspace_id.clone() else {
+            return Ok(false);
+        };
+        // Tried once for this workspace: what couldn't be made isn't tried
+        // on every wake.
+        if !self
+            .controller
+            .lock()
+            .unwrap()
+            .moves_tried
+            .insert((f.id.clone(), ws_id.clone()))
+        {
+            return Ok(false);
+        }
+        let from = {
+            let store = self.store.lock().await;
+            match store.workspace(ws_id.as_str()) {
+                // Its own already (D-080): it moves no further.
+                Some(w) if w.task_id.as_ref() == Some(&f.id) => return Ok(false),
+                Some(w) => w.name.clone(),
+                None => return Ok(false),
+            }
+        };
+        let command = format!("auto-move:{}:{ws_id}", f.id);
+        let called = |error: Option<String>, detail: Option<String>| {
+            let mut v = vec![Change::new(TaskEvent::ToolCalled {
+                tool: "set_workspace".into(),
+                origin: "auto".into(),
+                authority: None,
+                detail,
+            })];
+            v.push(Change::new(TaskEvent::ToolDone {
+                tool: "set_workspace".into(),
+                error,
+            }));
+            v
+        };
+        let ws = match self.own_workspace(&f.id).await {
+            Ok(ws) => ws,
+            Err(e) => {
+                tracing::info!(task = %f.id, "no workspace of its own: {}", e.message);
+                let why = e.message.clone();
+                self.controller_apply(&f.id, f.status, move |_, _| {
+                    Ok(called(Some("not_ready".into()), Some(why)))
+                })
+                .await?;
+                return Ok(false);
+            }
+        };
+        self.clone()
+            .task_act(otter_protocol::task::TaskAct {
+                command_id: command,
+                task: f.id.to_string(),
+                action: otter_core::task::TaskAction::SetWorkspace {
+                    workspace: ws.id.to_string(),
+                },
+            })
+            .await?;
+        let said = format!(
+            "{from} is taken ({}). I gave this task a workspace of its own from the same repository, {}; it's being prepared, then the work starts there.",
+            taken.why.split(": ").skip(1).collect::<Vec<_>>().join(": "),
+            ws.name
+        );
+        let detail = format!("{from} → {}", ws.name);
+        self.controller_apply(&f.id, f.status, move |f, _| {
+            let (m, c) = message(MessageRole::Controller, said, None);
+            f.messages.push(m);
+            let mut v = called(None, Some(detail));
+            v.push(c);
+            Ok(v)
+        })
+        .await?;
+        Ok(true)
+    }
+
+    /// The task's request, if Otter hasn't read it yet (D-186): the reply
+    /// to it is the mark that it did.
+    pub(crate) fn unread_request(&self, f: &Task) -> Option<otter_core::task::Message> {
+        let request = f.request_message()?;
+        let looked = f.messages.iter().any(|m| {
+            m.role == MessageRole::Controller
+                && m.correlation_id.as_deref() == Some(request.as_str())
+        });
+        if looked {
+            return None;
+        }
+        f.messages.iter().find(|m| &m.id == request).cloned()
     }
 
     /// Another task whose work in the workspace, not done, holds it (D-156).
@@ -1792,8 +1916,13 @@ impl Daemon {
     /// Give `step` to the coding agent: a turn in the task's conversation.
     async fn start_turn(self: &Arc<Self>, f: &Task, step: &Step) -> RpcResult<()> {
         let step = step.clone();
-        if let Some(why) = self.workspace_taken(f).await {
-            return self.wait_for_workspace(f, why).await;
+        if let Some(taken) = self.workspace_taken(f).await {
+            // Before it waits on others: Otter may answer it or move it
+            // (D-191), else it waits.
+            if taken.by_others && self.instead_of_waiting(f, &taken).await? {
+                return Ok(());
+            }
+            return self.wait_for_workspace(f, taken.why).await;
         }
         // One conversation per task (D-064): the next step, a fix and a
         // retry are turns in the session the work began in. A turn of this
@@ -1866,8 +1995,8 @@ impl Daemon {
         {
             // Taken in the meantime: wait, as above.
             Err(e) if e.message.starts_with(crate::runs::BUSY) => {
-                if let Some(why) = self.workspace_taken(f).await {
-                    self.wait_for_workspace(f, why).await?;
+                if let Some(taken) = self.workspace_taken(f).await {
+                    self.wait_for_workspace(f, taken.why).await?;
                 }
             }
             Err(e) => {
@@ -3442,6 +3571,14 @@ pub(crate) fn intent_step(
 /// The reason a task Otter accepted is done (D-192).
 pub(crate) const ACCEPTED_BY_OTTER: &str =
     "Accepted by Otter: every gate passed (accepting is automatic in Settings)";
+
+/// Why a task's workspace can't be worked in now (D-079): the reason it
+/// says, and whether others hold it — another task's run or work, an agent
+/// the developer started — rather than its own state.
+pub(crate) struct Taken {
+    pub why: String,
+    pub by_others: bool,
+}
 
 /// What a developer's message turns into for the coding agent.
 #[derive(Debug, PartialEq, Eq)]

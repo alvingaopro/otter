@@ -20,6 +20,8 @@ use otter_protocol::{
 mod chat_bootstrap;
 #[path = "e2e/converse.rs"]
 mod converse;
+#[path = "e2e/coordination.rs"]
+mod coordination;
 #[path = "e2e/git_account.rs"]
 mod git_account;
 #[path = "e2e/host_chat.rs"]

@@ -45,6 +45,10 @@ pub(crate) struct LiveRun {
     pub task: TaskId,
     /// The workspace it works in: one driver at a time (D-079).
     pub workspace: otter_core::WorkspaceId,
+    /// It only reads (an answer-only task's, on the SDK runtime, D-191):
+    /// it neither holds the workspace nor waits for it, and stays reading
+    /// until it ends.
+    pub shared: bool,
     pub conversation: ConversationId,
     /// The run's actor.
     tx: mpsc::Sender<ActorCmd>,
@@ -114,23 +118,27 @@ impl Daemon {
             .cloned()
             .ok_or_else(|| workspace_not_found(ws_id.as_str()))?;
         // One driver per workspace (D-079): claimed now, held while the run
-        // lives.
-        let _claim = {
+        // lives. A run that only reads takes no claim and waits for none
+        // (D-191): it changes nothing there.
+        let shared = self.reads_alongside(&task);
+        let _claim = if shared {
+            None
+        } else {
             let runs = self.runs.lock().unwrap();
             let mut starting = self.starting.lock().unwrap();
             let holder = runs
                 .values()
-                .find(|r| r.workspace == ws.id && &r.task != task_id)
+                .find(|r| r.workspace == ws.id && &r.task != task_id && !r.shared)
                 .map(|r| r.task.clone())
                 .or_else(|| starting.get(&ws.id).filter(|f| *f != task_id).cloned());
             if let Some(other) = holder {
                 return Err(RpcError::conflict(format!("{BUSY}{other}")));
             }
             starting.insert(ws.id.clone(), task_id.clone());
-            Claim {
+            Some(Claim {
                 daemon: self.as_ref(),
                 workspace: ws.id.clone(),
-            }
+            })
         };
         // Never two drivers for one conversation: not while a developer has
         // it. The task's steps share one (D-064).
@@ -410,6 +418,7 @@ impl Daemon {
             LiveRun {
                 task: task_id.clone(),
                 workspace: ws.id.clone(),
+                shared,
                 conversation: conversation_id.clone(),
                 tx: tx.clone(),
                 stopping: stopping.clone(),
@@ -464,7 +473,7 @@ impl Daemon {
     pub(crate) fn workspace_holder(&self, workspace: &otter_core::WorkspaceId) -> Option<TaskId> {
         let runs = self.runs.lock().unwrap();
         runs.values()
-            .find(|r| &r.workspace == workspace)
+            .find(|r| &r.workspace == workspace && !r.shared)
             .map(|r| r.task.clone())
             .or_else(|| self.starting.lock().unwrap().get(workspace).cloned())
     }
@@ -521,12 +530,13 @@ impl Daemon {
         let mut ending: Option<(RunState, Option<String>, bool)> = None;
         // Its conversation: a question's turn there only reads (D-089 M2.5),
         // and how the work's last turn ended stays the run's result.
-        let conversation = self
+        let (conversation, shared) = self
             .runs
             .lock()
             .unwrap()
             .get(&run)
-            .map(|r| r.conversation.clone());
+            .map(|r| (Some(r.conversation.clone()), r.shared))
+            .unwrap_or((None, false));
         let mut work_ending: Option<(RunState, Option<String>, bool)> = None;
         while let Some(ev) = events.recv().await {
             match ev {
@@ -562,7 +572,8 @@ impl Daemon {
                         .await;
                 }
                 ActorEvent::Ask { interaction, ask } => {
-                    let only_reads = self.reads_only(conversation.as_ref(), None)
+                    let only_reads = shared
+                        || self.reads_only(conversation.as_ref(), None)
                         || self.answer_only(&task).await;
                     let (verdict, scope) = self.verdict_of(&ask.call, &root, only_reads).await;
                     let grant = policy::grant_in(&ask.call, &scope);
@@ -595,7 +606,8 @@ impl Daemon {
                     call,
                     ..
                 } => {
-                    let only_reads = self.reads_only(conversation.as_ref(), None)
+                    let only_reads = shared
+                        || self.reads_only(conversation.as_ref(), None)
                         || self.answer_only(&task).await;
                     let (verdict, scope) = self.verdict_of(&call, &root, only_reads).await;
                     let decision = match &verdict {
@@ -1369,6 +1381,13 @@ impl Daemon {
     }
 
     /// Whether the task only wants an answer (D-092): all its turns read.
+    /// Whether `task`'s run would only read, alongside whatever else works
+    /// in its workspace (D-191): an answer-only task, where the SDK
+    /// runtime's hook keeps the agent to reading.
+    pub(crate) fn reads_alongside(&self, task: &Task) -> bool {
+        task.answer_only && self.can_answer_only().is_ok()
+    }
+
     async fn answer_only(&self, task: &TaskId) -> bool {
         self.tasks
             .lock()

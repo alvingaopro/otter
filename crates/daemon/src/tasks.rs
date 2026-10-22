@@ -1221,7 +1221,7 @@ impl Daemon {
 
     /// A worktree of the task's Git workspace's repository, on a branch
     /// of the task's own, from the same base (D-080).
-    async fn own_workspace(
+    pub(crate) async fn own_workspace(
         self: &std::sync::Arc<Self>,
         id: &TaskId,
     ) -> RpcResult<otter_core::Workspace> {
@@ -1236,17 +1236,40 @@ impl Daemon {
             .workspace_id
             .clone()
             .ok_or_else(|| RpcError::conflict("the task has no workspace yet"))?;
-        let (name, repository, base) = {
+        let (name, source) = {
             let store = self.store.lock().await;
             let ws = store
                 .workspace(ws_id.as_str())
                 .ok_or_else(|| workspace_not_found(ws_id.as_str()))?;
-            let otter_core::WorkspaceSource::Git(g) = &ws.source else {
-                return Err(RpcError::conflict(
-                    "only a Git workspace can be given to a task of its own (a worktree of its repository)",
-                ));
-            };
-            (ws.name.clone(), g.repository.clone(), g.base.clone())
+            (ws.name.clone(), ws.source.clone())
+        };
+        let (repository, base) = match source {
+            otter_core::WorkspaceSource::Git(g) => (g.repository, g.base),
+            // A directory in a repository (D-191): a workspace of its own
+            // from where that repository comes from, on the branch it has
+            // checked out when the remote has it. The directory itself is
+            // the developer's, and isn't touched.
+            otter_core::WorkspaceSource::Directory { path } => {
+                let env = self.environments.base().clone();
+                let git = crate::delivery::Git {
+                    root: std::path::Path::new(&path),
+                    env: &env,
+                };
+                let Some((url, branch)) = git.origin_and_branch().await else {
+                    return Err(RpcError::conflict(format!(
+                        "{name} isn't in a repository with a remote to make a workspace of its own from"
+                    )));
+                };
+                (
+                    self.stored_repository(&url).await,
+                    branch.map(|b| format!("origin/{b}")),
+                )
+            }
+            otter_core::WorkspaceSource::Empty => {
+                return Err(RpcError::conflict(format!(
+                    "{name} comes from no repository, so there's nothing to make a workspace of its own from"
+                )));
+            }
         };
         self.make_workspace_for(
             &f,
@@ -1269,13 +1292,20 @@ impl Daemon {
         source: SourceSpec,
     ) -> RpcResult<otter_core::Workspace> {
         {
+            // The one made for it from this source: a repeat makes no
+            // second; another source, asked for now, is another (D-191).
             let store = self.store.lock().await;
-            if let Some(w) = store
-                .state
-                .workspaces
-                .iter()
-                .find(|w| w.task_id.as_ref() == Some(&f.id))
-            {
+            if let Some(w) = store.state.workspaces.iter().find(|w| {
+                w.task_id.as_ref() == Some(&f.id)
+                    && match (&w.source, &source) {
+                        (
+                            otter_core::WorkspaceSource::Git(g),
+                            SourceSpec::Git { repository, .. },
+                        ) => &g.repository == repository,
+                        (otter_core::WorkspaceSource::Empty, SourceSpec::Empty) => true,
+                        _ => false,
+                    }
+            }) {
                 return Ok(w.clone());
             }
         }

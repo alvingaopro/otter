@@ -758,6 +758,34 @@ impl Git<'_> {
         Ok(self.output(args).await?.trim().to_owned())
     }
 
+    /// Where this repository comes from (`origin`), and the branch checked
+    /// out when `origin` has it too (D-191): what a workspace of its own is
+    /// made from. `None` without a remote.
+    pub async fn origin_and_branch(&self) -> Option<(String, Option<String>)> {
+        let url = self.git(&["remote", "get-url", "origin"]).await.ok()?;
+        if url.is_empty() {
+            return None;
+        }
+        let branch = self
+            .git(&["rev-parse", "--abbrev-ref", "HEAD"])
+            .await
+            .ok()
+            .filter(|b| !b.is_empty() && b != "HEAD");
+        let tracked = match &branch {
+            Some(b) => self
+                .git(&[
+                    "rev-parse",
+                    "--verify",
+                    "--quiet",
+                    &format!("refs/remotes/origin/{b}"),
+                ])
+                .await
+                .is_ok(),
+            None => false,
+        };
+        Some((url, branch.filter(|_| tracked)))
+    }
+
     /// What Git printed, as it printed it (a status line starts with a
     /// space).
     async fn output(&self, args: &[&str]) -> Result<String> {
