@@ -490,6 +490,8 @@ impl Daemon {
             .collect::<Vec<_>>()
             .join("\n");
         let stream_id = format!("reply-{}", last.id);
+        // The app shows Otter at it from now, not from its first word (D-196).
+        let writing = self.writing(&f.id, &stream_id);
         let reply = match self.task_workspace(f).await {
             Ok((root, env)) => {
                 let brain = brain::select(&env, &self.brain_choice());
@@ -552,6 +554,7 @@ impl Daemon {
             reply_text.clone(),
             true,
         );
+        writing.done();
         self.after_intent(f, intent, &open, &text, stop, plan_asked)
             .await
     }

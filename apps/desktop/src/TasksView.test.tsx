@@ -21,6 +21,7 @@ import {
   needsYou,
   sortTasks,
   statusDetail,
+  type Draft,
   type Task,
   type TaskEventRecord,
   type PlacedTask,
@@ -188,6 +189,34 @@ describe("Tasks view", () => {
     await render(s);
     return acts;
   };
+
+  it("shows Otter typing once it has begun, and while your message waits, in a finished task too (D-196)", async () => {
+    const done = sampleTasks(Date.now())[3];
+    const at = new Date().toISOString();
+    const showing = async (messages: Task["messages"], drafts: Draft[]) => {
+      const task: Task = { ...done, messages };
+      const base = mockSource("mac");
+      await render({ ...base, list: () => [{ host: "mac", task, key: `mac/${task.id}` }], subscribe: () => () => {}, drafts: () => drafts });
+    };
+    const answered = [
+      { id: "m1", role: "user" as const, text: "Show uptime", at },
+      { id: "m2", role: "controller" as const, text: "Done: it shows “up 3 days”.", at },
+    ];
+    // Otter begun on something of its own (a watch's report), no words yet: dots, not an empty bubble.
+    await showing(answered, [{ stream_id: "watch-w1", role: "controller", text: "", done: false }]);
+    expect(host.querySelectorAll(".message.typing")).toHaveLength(1);
+    expect(q(".message.controller.streaming")).toBeNull();
+    // Its first words take the dots' place.
+    await showing(answered, [{ stream_id: "watch-w1", role: "controller", text: "CI passed", done: false }]);
+    expect(q(".message.typing")).toBeNull();
+    expect(q(".message.controller.streaming")?.textContent).toContain("CI passed");
+    // Nothing begun, Otter spoke last: nothing.
+    await showing(answered, []);
+    expect(q(".message.typing")).toBeNull();
+    // You spoke last in a finished task: Otter still answers, so its dots show.
+    await showing([...answered, { id: "m3", role: "user", text: "And the load average?", at }], []);
+    expect(q(".message.typing")).not.toBeNull();
+  });
 
   it("shows an empty state with a create action", async () => {
     const empty = mockSource("mac");

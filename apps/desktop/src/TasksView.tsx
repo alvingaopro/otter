@@ -799,6 +799,18 @@ function Said({ role, at, when }: { role: string; at: string; when?: string }) {
   ) : null;
 }
 
+/** Otter writing, before its first word: three dots in its bubble, as iMessage shows it (D-177, D-196). */
+function Typing() {
+  return (
+    <div className="message controller typing" role="status">
+      <span className="visually-hidden">Otter is replying…</span>
+      <i aria-hidden="true" />
+      <i aria-hidden="true" />
+      <i aria-hidden="true" />
+    </div>
+  );
+}
+
 /** A coding agent's report this long folds, so the conversation around it stays in view. */
 const FOLD_CHARS = 1200;
 
@@ -880,11 +892,13 @@ function Conversation({
   const activity = live?.activity ?? [];
   // Each line's time, when the daemon kept them (D-141).
   const activityAt = live?.activity_at?.length === activity.length ? live.activity_at : undefined;
-  // The developer spoke last: Otter's answer is on its way.
+  // The developer spoke last: Otter's answer is on its way — in a finished
+  // task too, which Otter still answers; only a cancelled one takes no
+  // message. Otter itself says when it has begun (D-196): a draft with no
+  // words yet, the request's look for a workspace or a watch's report too.
   const last = messages[messages.length - 1];
   const replying = drafts.some((d) => d.role === "controller");
-  const awaitingReply =
-    !replying && last?.role === "user" && messages.length > 1 && !ENDED.includes(placed.task.status);
+  const awaitingReply = !replying && last?.role === "user" && messages.length > 1 && placed.task.status !== "cancelled";
   // Otter at the top says what it is doing, and moves while it does (D-177).
   const status = placed.task.status;
   const mood =
@@ -901,7 +915,7 @@ function Conversation({
   useEffect(() => {
     const t = thread.current;
     if (t) t.scrollTop = t.scrollHeight;
-  }, [messages.length, activity.length, awaitingReply, draftText.length]);
+  }, [messages.length, activity.length, awaitingReply, drafts.length, draftText.length]);
 
   useEffect(() => {
     const t = thread.current;
@@ -1059,7 +1073,11 @@ function Conversation({
               <DecidedNote key={key} d={decision!} now={now} />
             ),
           )}
-          {drafts.map((d) => (
+          {drafts.map((d) =>
+            // Begun, no words yet: Otter is typing.
+            d.role === "controller" && !d.text && !d.done ? (
+              <Typing key={d.stream_id} />
+            ) : (
             <div key={d.stream_id} className={`message ${d.role} streaming`} role="article" aria-label={named(d.role)}>
               {/* Otter's cursor says it is writing; the agent's head says so in words. */}
               <Said role={d.role} at={d.done ? "now" : d.role === "agent" ? "writing…" : ""} />
@@ -1067,7 +1085,8 @@ function Conversation({
                 {!d.done && <span className="cursor" aria-hidden="true" />}
               </MessageText>
             </div>
-          ))}
+            ),
+          )}
           {live && (
             <div className="message agent working" aria-live="polite">
               <div className="message-head">
@@ -1089,14 +1108,7 @@ function Conversation({
               )}
             </div>
           )}
-          {awaitingReply && (
-            <div className="message controller typing" role="status">
-              <span className="visually-hidden">Otter is replying…</span>
-              <i aria-hidden="true" />
-              <i aria-hidden="true" />
-              <i aria-hidden="true" />
-            </div>
-          )}
+          {awaitingReply && <Typing />}
         </div>
         <div className="composer-dock" ref={dock}>
           {pending.length > 0 && (

@@ -11,7 +11,7 @@ import { BriefDialog, briefSummary } from "./BriefDialog";
 import { ChangesPanel, type Changes } from "./ChangesPanel";
 import { changesLine } from "./changes";
 import { FindPanel } from "./FindPanel";
-import { ago, dropPlace, kindLabel, moveTo, sessionGlyph } from "./model";
+import { ago, dropPlace, kindLabel, moveTo, sessionGlyph, tabName } from "./model";
 import { explain, invokeNewer } from "./newer";
 import { RenameDialog } from "./RenameDialog";
 import { SessionTerminal } from "./SessionTerminal";
@@ -451,10 +451,10 @@ export function WorkspacePane({
                 setRenaming(s);
                 setOpen("rename-session");
               }}
-              title="Drag to move; double-click to rename"
+              title={[tabName(s.name) !== s.name && s.name, "Drag to move; double-click to rename"].filter(Boolean).join("\n")}
             >
               <Glyph kind={sessionGlyph(s)} size={10} />
-              <span className="tab-name">{s.name}</span>
+              <span className="tab-name">{tabName(s.name)}</span>
               {s.agent && <span className="tab-kind">{kindLabel(s)}</span>}
             </button>
             <button
