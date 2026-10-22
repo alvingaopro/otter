@@ -2701,7 +2701,7 @@ impl Daemon {
                     );
                     if !f.rationale.iter().any(|r| r == &marker) {
                         notes.push(format!(
-                            "The pull request conflicts with {base}, so GitHub won't run CI on it. Bring the branch up to date — say so and the coding agent will — or resolve it yourself."
+                            "The pull request conflicts with {base}, so GitHub runs no CI on it until the branch is brought up to date. Say so and the coding agent will bring it up to date, or resolve it yourself."
                         ));
                         rationale.push(marker);
                     }
