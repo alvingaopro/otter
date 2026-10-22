@@ -839,7 +839,7 @@ describe("Tasks view", () => {
     };
     await act(async () =>
       root.render(
-        <TasksView source={s} hosts={hosts} workspaces={workspaces} now={Date.now()} onOpenWorkspace={onOpenWorkspace} onOpenPreview={async () => {}} />,
+        <TasksView source={s} hosts={hosts} workspaces={workspaces} now={Date.now()} onOpenWorkspace={onOpenWorkspace} />,
       ),
     );
     await act(async () => q('[aria-label="New task"]')!.click());
