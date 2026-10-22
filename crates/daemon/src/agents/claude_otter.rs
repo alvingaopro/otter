@@ -57,7 +57,7 @@ pub struct OtterRun<'a> {
     pub images: Vec<crate::runtime::TurnImage>,
     /// Otter's tools: `{name, description, input_schema}` each.
     pub tools: Vec<Value>,
-    /// Claude Code's own tools it may use (D-191); each call is put to
+    /// Claude Code's own tools it may use (D-192); each call is put to
     /// `call` as `@<name>` first. A worker before them ignores this.
     pub builtins: Vec<&'a str>,
     /// Model round trips at most.

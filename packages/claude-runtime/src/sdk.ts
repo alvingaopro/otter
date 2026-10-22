@@ -64,7 +64,7 @@ export class InputQueue implements AsyncIterable<SDKUserMessage> {
   }
 }
 
-/** How long the SDK waits for otterd's answer on a built-in (D-192). */
+/** How long the SDK waits for otterd's answer on a built-in (D-193). */
 export const OTTER_HOOK_SECS = 120;
 
 /** Tools held back for now (subagents). */
@@ -169,7 +169,7 @@ export class Session {
   /**
    * Otter's own turn (D-089): no settings, no MCP servers but Otter's; each
    * of Otter's tool calls goes to otterd, which checks and answers it. Of
-   * Claude Code's own tools, only the `builtins` otterd names (D-191), and
+   * Claude Code's own tools, only the `builtins` otterd names (D-192), and
    * each call of one is put to otterd first (`otterPreToolUse`). Anything
    * else the model asks for is denied.
    */
@@ -191,7 +191,7 @@ export class Session {
       strictMcpConfig: true,
       // The built-ins aren't allowed here: only the hook's yes runs one, and
       // a call it didn't answer (cancelled, timed out) falls to
-      // `canUseTool`, which denies (D-192).
+      // `canUseTool`, which denies (D-193).
       allowedTools: tools.map((t) => otterToolName(t.name)),
       disallowedTools: DISALLOWED_TOOLS,
       ...(builtins.length > 0
@@ -211,7 +211,7 @@ export class Session {
   }
 
   /**
-   * Before one of Claude Code's own tools runs in Otter's turn (D-191):
+   * Before one of Claude Code's own tools runs in Otter's turn (D-192):
    * otterd says allow or deny (`@<tool>`, answered like one of Otter's
    * tools). Otter's own tools aren't asked about here: otterd checks them
    * when it answers them. No answer is a denial.

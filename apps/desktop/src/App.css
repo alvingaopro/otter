@@ -583,7 +583,7 @@ body.resizing-col { cursor: col-resize; user-select: none; }
 .task-actions { display: flex; gap: 8px; flex: none; }
 .task-where { flex: none; font-family: var(--mono); font-size: 12px; color: var(--faint); white-space: nowrap; }
 .task-where .link-btn { font-family: var(--mono); font-size: 12px; }
-/* A sub-task's header says what it's part of (D-193); a long title is cut off. */
+/* A sub-task's header says what it's part of (D-194); a long title is cut off. */
 .task-parent { flex: 0 1 auto; min-width: 0; font-size: 12.5px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .subtask-link { align-self: flex-start; max-width: 100%; text-align: left; font-size: 13.5px; font-weight: 500; overflow-wrap: anywhere; }
 
@@ -700,6 +700,42 @@ body.resizing-col { cursor: col-resize; user-select: none; }
 .composer-send:hover:not(:disabled) { background: var(--you-bg-hover); }
 .composer-send:disabled { background: var(--raised); color: var(--faint); opacity: 1; }
 .composer-btn { flex: none; height: 34px; border-radius: 17px; }
+/* Slash commands (D-190): the menu floats over what is above the box. */
+.composer { position: relative; }
+.composer-cmd { background: var(--you-bg); color: var(--text); border-color: transparent; }
+.composer-cmd:hover:not(:disabled) { background: var(--you-bg-hover); }
+.slash-menu {
+  position: absolute; left: 0; right: 0; bottom: calc(100% + 8px); z-index: 3; display: flex; flex-direction: column;
+  max-height: min(360px, 50vh); padding: 5px; border-radius: 12px; text-align: left;
+  background: var(--card); border: 1px solid var(--line-strong); box-shadow: 0 10px 30px var(--shadow); font-size: 13px;
+}
+.slash-menu.below { bottom: auto; top: calc(100% + 8px); }
+.slash-list { list-style: none; margin: 0; padding: 0; overflow-y: auto; min-height: 0; }
+.slash-group { padding: 6px 9px 3px; font-size: 10.5px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: var(--faint); }
+.slash-row {
+  display: grid; grid-template-columns: max-content minmax(0, 1fr) max-content; gap: 10px; align-items: baseline;
+  padding: 5px 9px; border-radius: 7px; cursor: pointer; line-height: 1.4;
+}
+.slash-row.on { background: var(--selected); }
+.slash-row.off { cursor: default; }
+.slash-row.off .slash-cmd, .slash-row.off .slash-what { color: var(--faint); }
+.slash-cmd { font-family: var(--mono); font-size: 12.5px; font-weight: 500; white-space: nowrap; color: var(--text); }
+.slash-arg { color: var(--faint); font-weight: 400; }
+.slash-what { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.slash-why { font-size: 11.5px; color: var(--faint); white-space: nowrap; }
+.slash-none { margin: 0; padding: 7px 9px; color: var(--muted); }
+.slash-foot { display: flex; flex-wrap: wrap; gap: 4px 12px; padding: 6px 9px 2px; margin-top: 4px; border-top: 1px solid var(--line); font-size: 11px; color: var(--faint); }
+.slash-foot kbd {
+  font-family: var(--mono); font-size: 10.5px; padding: 0 4px; border-radius: 4px; color: var(--muted);
+  border: 1px solid var(--line-strong); border-bottom-width: 2px; background: var(--panel);
+}
+.slash-hint { display: flex; gap: 8px; align-items: center; margin: 0; padding: 4px 10px 0; font-size: 12px; color: var(--muted); }
+.slash-hint.warn { color: var(--needs-text); }
+.slash-chip, .message-command {
+  font-family: var(--mono); font-size: 11.5px; font-weight: 500; border-radius: 6px; padding: 0 6px; white-space: nowrap;
+  background: var(--you-bg); color: var(--text);
+}
+.message-command { margin-right: 2px; background: var(--you-bg-hover); }
 .pasted-images { display: flex; flex-wrap: wrap; gap: 6px; margin: 0; padding: 6px 8px 0; }
 .pasted-image { position: relative; }
 .pasted-image img { display: block; height: 56px; max-width: 120px; object-fit: cover; border-radius: 6px; border: 1px solid var(--line-strong); }
@@ -1235,7 +1271,7 @@ td.work-acts { text-align: right; white-space: nowrap; }
 .automation-readings li { display: grid; grid-template-columns: 7.5em minmax(0, 1fr); gap: 10px; align-items: baseline; }
 .automation-at { font-family: var(--mono); font-size: 12px; color: var(--faint); font-variant-numeric: tabular-nums; white-space: nowrap; }
 .automation-note { margin: 6px 0 0; }
-/* What Otter did (D-192): when, what and on which task, who started it, and Undo. */
+/* What Otter did (D-193): when, what and on which task, who started it, and Undo. */
 .ledger li { grid-template-columns: 7.5em minmax(0, 1fr) auto; }
 .ledger-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .ledger-line { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px; }
@@ -1267,5 +1303,12 @@ td.work-acts { text-align: right; white-space: nowrap; }
   padding: 10px 12px; border: 1px solid var(--line); border-radius: 16px; background: var(--panel);
 }
 .hello-box:focus-within { border-color: var(--working); }
+.hello-box { position: relative; }
+.hello-options { display: flex; flex-wrap: wrap; gap: 6px; margin: 0; padding: 0; list-style: none; }
+.hello-option {
+  display: inline-flex; align-items: center; gap: 4px; padding: 1px 4px 1px 8px; border-radius: 999px; font-size: 12px;
+  background: var(--you-bg); color: var(--text);
+}
+.hello-option button { border: 0; background: none; color: var(--muted); cursor: pointer; font-size: 13px; line-height: 1; padding: 0 3px; }
 .hello-box textarea { resize: none; border: 0; outline: 0; background: transparent; color: var(--text); font: inherit; line-height: 1.5; }
 .hello-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; }

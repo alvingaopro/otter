@@ -698,7 +698,7 @@ fn a_task_goes_from_the_terminal_to_an_accepted_pull_request() {
         ("FAKE_GH_DIR".into(), p(&gh)),
         ("OTTER_CONTROLLER".into(), "rules".into()),
         // The developer moves, publishes and accepts here, as these tests
-        // were written (D-190).
+        // were written (D-191).
         ("OTTER_TOOL_LEVELS".into(), "set_workspace=developer,publish=developer,approve_plan=developer,accept_task=developer".into()),
         ("OTTER_CONTROLLER_TICK_MS".into(), "200".into()),
         ("OTTER_PLAN_TURN".into(), "0".into()),
@@ -898,7 +898,7 @@ fn otter_chat_talks_to_otter_on_a_host() {
     cli.env = vec![
         ("OTTER_CONTROLLER".into(), "scripted".into()),
         // The developer moves, publishes and accepts here, as these tests
-        // were written (D-190).
+        // were written (D-191).
         ("OTTER_TOOL_LEVELS".into(), "set_workspace=developer,publish=developer,approve_plan=developer,accept_task=developer".into()),
         ("OTTER_BRAIN_V2".into(), "1".into()),
         ("OTTER_CONTROLLER_TICK_MS".into(), "200".into()),
@@ -922,7 +922,7 @@ fn a_message_goes_to_the_host_that_has_the_workspace_it_names() {
     cli.env = vec![
         ("OTTER_CONTROLLER".into(), "scripted".into()),
         // The developer moves, publishes and accepts here, as these tests
-        // were written (D-190).
+        // were written (D-191).
         ("OTTER_TOOL_LEVELS".into(), "set_workspace=developer,publish=developer,approve_plan=developer,accept_task=developer".into()),
         ("OTTER_BRAIN_V2".into(), "1".into()),
         ("OTTER_CONTROLLER_TICK_MS".into(), "200".into()),

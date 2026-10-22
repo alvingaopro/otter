@@ -93,7 +93,7 @@ async fn at_work(host: &TestHost, request: &str) -> String {
 
 #[tokio::test]
 async fn a_turn_an_event_started_cant_act_on_the_developers_word() {
-    // What is the developer's word here (D-190): the levels say so.
+    // What is the developer's word here (D-191): the levels say so.
     let fake = host_with(vec![(
         "OTTER_TOOL_LEVELS",
         format!(
@@ -120,7 +120,7 @@ async fn a_turn_an_event_started_cant_act_on_the_developers_word() {
 }
 
 /// What is automatic, an event's turn does on its own, as Otter's doing on
-/// record (D-190, D-192): here it plans again from review.
+/// record (D-191, D-193): here it plans again from review.
 #[tokio::test]
 async fn a_turn_an_event_started_acts_with_what_is_automatic() {
     // Accepting stays the developer's, so the task stays in review.
@@ -1449,7 +1449,7 @@ async fn answer_only_needs_the_sdk_runtime() {
 }
 
 /// Otter turns it on on the developer's word, not on an event's, where
-/// that is its level (D-092, D-190); automatic, an event's turn may too.
+/// that is its level (D-092, D-191); automatic, an event's turn may too.
 #[tokio::test]
 async fn otter_sets_answer_only_on_the_developers_word() {
     let fake = sdk_host("hang").await;

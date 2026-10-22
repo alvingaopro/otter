@@ -58,7 +58,7 @@ pub fn otter_tools_from_env() -> Option<String> {
 }
 
 /// `OTTER_TOOL_LEVELS` in otterd's environment: `name=level` pairs,
-/// comma-separated, over the settings (D-190). Read once.
+/// comma-separated, over the settings (D-191). Read once.
 pub fn tool_levels_from_env() -> &'static BTreeMap<String, otter_core::tools::ToolLevel> {
     static LEVELS: std::sync::OnceLock<BTreeMap<String, otter_core::tools::ToolLevel>> =
         std::sync::OnceLock::new();
@@ -123,7 +123,7 @@ struct Stored {
     /// A task's own workspace goes once its pull request is merged (D-189).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     delete_merged_workspaces: Option<bool>,
-    /// Levels of Otter's tools set here (D-190): only those not at their
+    /// Levels of Otter's tools set here (D-191): only those not at their
     /// default.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     tool_levels: BTreeMap<String, otter_core::tools::ToolLevel>,
@@ -219,7 +219,7 @@ impl HostSettings {
         self.stored.delete_merged_workspaces.unwrap_or(true)
     }
 
-    /// A tool's level on this host (D-190): `OTTER_TOOL_LEVELS` in
+    /// A tool's level on this host (D-191): `OTTER_TOOL_LEVELS` in
     /// otterd's environment (`name=level,…`; operators, tests), else set
     /// here, else its default.
     pub fn tool_level(&self, name: &str) -> otter_core::tools::ToolLevel {

@@ -387,7 +387,10 @@ impl Daemon {
                     .ok_or_else(|| {
                         RpcError::unsupported(format!("no managed agent runtime for `{backend}`"))
                     })?;
-                json(rt.capabilities(self.environments.base()))
+                let mut caps = rt.capabilities(self.environments.base());
+                // otterd's, whatever the runtime (D-190).
+                caps.message_commands = true;
+                json(caps)
             }
             Request::RuntimeTest(p) => json(self.runtime_test(p).await?),
             Request::ConversationList(q) => json(

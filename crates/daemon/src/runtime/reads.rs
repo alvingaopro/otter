@@ -1,4 +1,4 @@
-//! What Otter's own `Bash` may run (D-192): reading GitHub and the web,
+//! What Otter's own `Bash` may run (D-193): reading GitHub and the web,
 //! and shaping what came back — nothing else. An allow-list down to each
 //! command's options, where the coding agent has a deny-list
 //! ([`super::policy`]): Otter's turn runs with its model's sign-in and

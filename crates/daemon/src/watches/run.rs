@@ -1,4 +1,4 @@
-//! `run`: a GitHub Actions run, by its link, until it finishes (D-192) —
+//! `run`: a GitHub Actions run, by its link, until it finishes (D-193) —
 //! one the task didn't start: a run the developer pasted, a deploy, a
 //! nightly. Read with `gh --repo` from Otter's own directory.
 

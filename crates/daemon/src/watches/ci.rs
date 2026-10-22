@@ -26,7 +26,7 @@ impl WatchKind for Ci {
     }
 
     fn target(&self, f: &Task, args: &Value, _what: &str) -> Result<Target, String> {
-        // Any pull request's, by its link (D-192).
+        // Any pull request's, by its link (D-193).
         if let Some(url) = args["url"].as_str().filter(|u| !u.trim().is_empty()) {
             let Some(crate::delivery::GithubLink::PullRequest { repo, number }) =
                 crate::delivery::GithubLink::parse(url)

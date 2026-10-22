@@ -22,10 +22,10 @@ export interface ControllerInfo {
   default_model?: string;
 }
 
-/** How far one of Otter's tools may go (D-190): on its own, on your word, or not at all. */
+/** How far one of Otter's tools may go (D-191): on its own, on your word, or not at all. */
 export type ToolLevel = "auto" | "developer" | "off";
 
-/** Mirrors `otter_protocol::host::ToolInfo` (D-190). */
+/** Mirrors `otter_protocol::host::ToolInfo` (D-191). */
 export interface ToolInfo {
   name: string;
   /** What it's for, in a line. */
@@ -58,7 +58,7 @@ export interface HostSettings {
   otter_answers?: string;
   /** A task's own workspace is deleted once its pull request is merged (D-189); absent from older daemons. */
   delete_merged_workspaces?: boolean;
-  /** Otter's tools and how far each may go on the host (D-190); absent from older daemons. */
+  /** Otter's tools and how far each may go on the host (D-191); absent from older daemons. */
   tools?: ToolInfo[];
 }
 
@@ -157,7 +157,7 @@ export function SettingsDialog({
   // Otter answers with its tools (D-089): tried out per host.
   const [otterTools, setOtterTools] = useState(false);
   const [deleteMerged, setDeleteMerged] = useState(false);
-  // A tool's level as just chosen, until the host's answer has it (D-190).
+  // A tool's level as just chosen, until the host's answer has it (D-191).
   const [levels, setLevels] = useState<Record<string, ToolLevel>>({});
 
   function go(t: SettingsTab) {
@@ -324,7 +324,7 @@ export function SettingsDialog({
     });
   }
 
-  /** One tool's level, saved at once: only that tool is sent, and its default as none (D-190). */
+  /** One tool's level, saved at once: only that tool is sent, and its default as none (D-191). */
   function setLevel(t: ToolInfo, level: ToolLevel) {
     if (busy || level === t.level) return;
     setLevels((l) => ({ ...l, [t.name]: level }));
@@ -886,7 +886,7 @@ const TOOL_GROUPS: Record<string, string> = {
 };
 
 /**
- * Otter's tools on the host and how far each may go (D-190), grouped as the
+ * Otter's tools on the host and how far each may go (D-191), grouped as the
  * host lists them; a choice is saved at once. What no level allows is said
  * first.
  */

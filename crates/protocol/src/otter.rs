@@ -60,7 +60,7 @@ pub struct OtterMemory {
     pub max_chars: u32,
 }
 
-/// What Otter did on its tools across the host's tasks (D-192), newest
+/// What Otter did on its tools across the host's tasks (D-193), newest
 /// first: `otter.actions`.
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct OtterActions {

@@ -428,7 +428,7 @@ async fn watches_are_bounded_and_end_with_their_task() {
     assert!(reports(&f)[0].starts_with("Watch:"), "{:?}", reports(&f));
 
     // No message started it: no watch where watching is the developer's
-    // word (D-190).
+    // word (D-191).
     set_levels(
         host,
         &[("watch", "developer"), ("cancel_watch", "developer")],
@@ -494,7 +494,7 @@ async fn watches_are_bounded_and_end_with_their_task() {
 
 /// The developer stops and deletes a watch through the task's actions.
 /// When a watch comes to something, its turn does what is automatic on
-/// its own (D-192) — here it resumes the task the developer paused — but
+/// its own (D-193) — here it resumes the task the developer paused — but
 /// sets no other watch (D-183).
 #[tokio::test]
 async fn a_watchs_turn_acts_on_its_own_and_sets_no_other_watch() {

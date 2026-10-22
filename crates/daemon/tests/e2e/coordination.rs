@@ -1,4 +1,4 @@
-//! Otter coordinates the work itself (D-190–D-193): where a task works can
+//! Otter coordinates the work itself (D-191–D-194): where a task works can
 //! change, Otter reads what it needs, acts on its own where that is
 //! automatic, and makes sub-tasks.
 
@@ -7,7 +7,7 @@ use otter_core::task::{MessageRole, RunState, Task, TaskEvent, TaskStatus};
 use serde_json::Value;
 
 /// A host with Otter's tools (the scripted brain); `levels` replaces the
-/// harness's (D-190).
+/// harness's (D-191).
 async fn coord_host(levels: &str, more: Vec<(&'static str, String)>) -> FakeCodex {
     let levels = levels.to_owned();
     fake_agent_host_with("ok", "scripted", move |_| {
@@ -101,7 +101,7 @@ fn code(answer: &Value) -> &str {
 /// A directory the developer keeps, a clone of a repository: the task
 /// whose agent can't start there because another works there gets a
 /// workspace of its own from that repository, on the branch the directory
-/// has (D-191). The directory itself is left as it was.
+/// has (D-192). The directory itself is left as it was.
 #[tokio::test]
 async fn a_task_whose_directory_is_taken_gets_a_workspace_of_its_own() {
     let fake = coord_host(
@@ -186,7 +186,7 @@ async fn a_task_whose_directory_is_taken_gets_a_workspace_of_its_own() {
     assert_eq!(String::from_utf8_lossy(&trees.stdout).lines().count(), 1);
 }
 
-/// Where moving is the developer's word (D-190), the task waits, as before.
+/// Where moving is the developer's word (D-191), the task waits, as before.
 #[tokio::test]
 async fn where_moving_is_the_developers_word_the_task_waits() {
     let fake = coord_host("set_workspace=developer", vec![]).await;
@@ -217,7 +217,7 @@ async fn where_moving_is_the_developers_word_the_task_waits() {
     assert!(f.runs.is_empty());
 }
 
-/// An answer-only task reads alongside the work in its workspace (D-191):
+/// An answer-only task reads alongside the work in its workspace (D-192):
 /// its run starts though another task's runs there, and the other's run
 /// isn't held up either.
 #[tokio::test]
@@ -307,7 +307,7 @@ fn reply_to_request(f: &Task) -> Option<String> {
         .map(|m| m.text.clone())
 }
 
-/// Eyes On CICD (D-192): two run links and no workspace. Otter reads both
+/// Eyes On CICD (D-193): two run links and no workspace. Otter reads both
 /// runs itself, answers, and the task ends — no workspace, no coding agent.
 #[tokio::test]
 async fn otter_reads_the_runs_itself_and_answers_without_a_workspace() {
@@ -368,7 +368,7 @@ async fn otter_reads_the_runs_itself_and_answers_without_a_workspace() {
 
 /// The same request, its workspace taken by another task's agent (the
 /// screenshot's case): Otter reads the runs before the task waits, and the
-/// task is done without ever waiting (D-191, D-192).
+/// task is done without ever waiting (D-192, D-193).
 #[tokio::test]
 async fn a_task_whose_workspace_is_taken_is_answered_before_it_waits() {
     let fake = coord_host("set_workspace=developer", vec![]).await;
@@ -413,7 +413,7 @@ async fn a_task_whose_workspace_is_taken_is_answered_before_it_waits() {
 
 /// A run still going: Otter watches it (kind run, by its link); the task
 /// waits on that, not on the developer; when the run ends, the watch's own
-/// turn answers and ends the task (D-192).
+/// turn answers and ends the task (D-193).
 #[tokio::test]
 async fn a_run_still_going_is_watched_and_the_watch_finishes_the_task() {
     let fake = coord_host(
@@ -496,7 +496,7 @@ async fn a_run_still_going_is_watched_and_the_watch_finishes_the_task() {
 }
 
 /// `read_github` reads a pull request too; a link that isn't GitHub's is
-/// refused (D-192).
+/// refused (D-193).
 #[tokio::test]
 async fn read_github_reads_a_pull_request_and_refuses_other_links() {
     let fake = coord_host("", vec![]).await;
@@ -527,7 +527,7 @@ async fn read_github_reads_a_pull_request_and_refuses_other_links() {
     assert_eq!(code(&answers[1]), "invalid", "{answers:?}");
 }
 
-/// Otter tells the coding agent what to do in its own words (D-192): said
+/// Otter tells the coding agent what to do in its own words (D-193): said
 /// in the conversation as Otter's, and to the run as Otter's — never as the
 /// developer's — from a turn no message started too.
 #[tokio::test]
@@ -579,7 +579,7 @@ async fn otter_tells_the_agent_in_its_own_words() {
     assert!(!turn.text().contains("From the developer"));
 }
 
-/// Publishing and accepting are automatic by default (D-192): the task
+/// Publishing and accepting are automatic by default (D-193): the task
 /// publishes without asking, Otter accepts it once CI passed, says so, and
 /// the ledger has both with what undoes the acceptance — which works.
 #[tokio::test]
@@ -638,7 +638,7 @@ async fn otter_publishes_and_accepts_on_its_own_and_it_can_be_undone() {
     assert_ne!(f.status, TaskStatus::Done);
 }
 
-/// Approving plans is automatic by default (D-192): the plan the review
+/// Approving plans is automatic by default (D-193): the plan the review
 /// had points on goes back to the agent once, then Otter approves it —
 /// the developer isn't asked.
 #[tokio::test]
@@ -676,7 +676,7 @@ async fn otter_approves_the_plan_after_one_send_back() {
     );
 }
 
-/// A task Otter splits into sub-tasks (D-193): each works on its own, the
+/// A task Otter splits into sub-tasks (D-194): each works on its own, the
 /// request said as Otter's; at most three unfinished; the task waits on
 /// them, not on the developer; each one's change is heard once in the
 /// task's conversation, whose turn may act on it (here: finish the task);

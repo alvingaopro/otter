@@ -46,7 +46,7 @@ interface Props {
   workspaceName?: (host: string, id: string) => string | undefined;
   /** Show a task in Chat. */
   onOpenTask: (key: string) => void;
-  /** Open Settings at what Otter may do on a host (D-190). */
+  /** Open Settings at what Otter may do on a host (D-191). */
   onSettings?: (host: string) => void;
   /** In front: what Otter did is read only then, as it reads every task's history. */
   active?: boolean;
@@ -68,7 +68,7 @@ type Said = { key: string; error: string } | { key: string; firing: Firing };
  * What Otter does without a message from you (D-185), under Automations in
  * the Activity Bar: the watches it keeps for you and the hosts' triggers —
  * where they stand, what they did, and stopping or deleting them — and what
- * Otter did on its tools, with Undo where something undoes it (D-192).
+ * Otter did on its tools, with Undo where something undoes it (D-193).
  */
 export function AutomationsView({ tasks, source, triggers, now, workspaceName, onOpenTask, onSettings, active = true, grip }: Props) {
   const [triggerList, setTriggerList] = useState<PlacedTrigger[]>(() => triggers.list());
@@ -337,7 +337,7 @@ export function AutomationsView({ tasks, source, triggers, now, workspaceName, o
 const LEDGER_SETTLE_MS = 300;
 
 /**
- * What Otter did on each host (D-192), read while the view is in front and
+ * What Otter did on each host (D-193), read while the view is in front and
  * again when a task's history grows (that's where it's kept). A host whose
  * otterd can't say isn't in it; one that fails to answer once keeps what it
  * said last.
@@ -625,7 +625,7 @@ function asked(task: PlacedTask | undefined, id: string | undefined): string | u
 }
 
 /**
- * What Otter did on a host's tasks (D-192), newest first: each thing in a
+ * What Otter did on a host's tasks (D-193), newest first: each thing in a
  * few words, on which task, who started it, and Undo where something undoes
  * it.
  */

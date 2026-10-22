@@ -7089,7 +7089,93 @@ that any delete, merged or not, made a new workspace from main that said
 the work was merged. Both are fixed above.
 
 
-## D-190 — Otter's tools have levels: automatic, on the developer's word, or off (2026-10-22)
+## D-190 — The chat boxes list what Otter can do: slash commands (2026-10-22)
+
+Plan `docs/plans/chat-commands.md`. The developer asked for commands that
+start with `/` in the chat box, completed as they are typed, so that what
+Otter can do is found by typing rather than by knowing which button or menu
+has it.
+
+- **Every command is listed** when the box starts with `/`, under three
+  headings: *Task* (acts at once, as the buttons do: `/start` `/resume`
+  `/retry` `/accept` `/pause` `/stop <what next>` `/workspace <name>`
+  `/own-workspace` `/unwatch` `/cancel`), *Tell* (a message otterd does:
+  `/ask` `/tell` `/revise` `/remember` `/watch ci` `/remind <30m>`
+  `/answer-only on|off`) and *Show* (opens something in the app: `/details`
+  `/activity` `/changes` `/open` `/memory` `/delete`). One that can't be
+  used now is dimmed, with why ("Not paused", "Pause first: the agent is
+  working"), not hidden: the point is to find them. The rules are
+  `chatCommands.ts`, and the buttons beside the box and in the header (Start,
+  Resume, Retry, Accept, Pause, Stop & send, Work in its own workspace) read
+  the same ones.
+- **The box says what Enter will do** once it names a command, and the send
+  button takes that command's name. `/cancel`, and `/accept` with a gate
+  not passed, ask for Enter twice. What isn't a command (`/usr is full`, a
+  path) goes as a message. Only a `/` at the very start counts; Pinyin's
+  `、` and `／` there are `/`. An input method's Enter never runs one: the
+  menu's keys go through `useComposition().enterSubmits`, as sending does.
+  No Chinese aliases: the developer chose English names only.
+- **A Tell command is done by otterd, not read by a model.**
+  `task.send` takes `command` (protocol.md). The message keeps the line as
+  written and `Message.command`; otterd does it with the tool Otter's turn
+  would have called, through the same gateway (`Gateway::restricted`, one
+  call, the message as the developer's word), so the checks, the history
+  and doing it once are the tools' own. What reaches the planner and the
+  coding agent is the words, never the command: `Message::for_the_work` is
+  a message's text, or the words of `/revise` and `/tell`; the other
+  commands are about the conversation, and no prompt, plan or goal takes
+  them (`developer_notes`, the brief, the plan made without a model, a
+  task's goal from its first message). Otter's line says what came of it,
+  in words for the developer (a refusal says why and what to do), under
+  `command:<message id>`: not the message's own id, which would count as
+  answering every message before it. `unanswered` leaves out a command, so
+  Otter's turn doesn't answer it. A crash between the change and the line
+  writes the line once after the restart and makes the change once. A
+  task's commands are done first in its step, before Otter's turn answers
+  what was said before them: a `/pause` doesn't wait on a model.
+- **Commands run with the controller off.** Off leaves tasks where they are
+  until the developer acts; a command is the developer acting.
+- **Compatible, no version bump**: an optional request field. An otterd
+  before it would ignore `command` and take the words as a plain message,
+  so the app offers the Tell commands only where `runtime.capabilities`
+  says `message_commands`; elsewhere they are dimmed, "Update otterd on this
+  host to use this" (or, until the host has said, that it hasn't).
+- **The empty Chat page's box** takes `/in <workspace>` (any host's;
+  `name@host` where a name is on several), `/repo <repository>`, `/scratch`,
+  `/host <name>`, `/answer-only` and `/draft` as conditions on the new task,
+  shown as chips above it; where it works is one of in, repo or scratch, the
+  latest. Nothing new on the wire: they are `task.create`'s.
+- **Not done:** Claude Code's own slash commands (`/compact`), deciding by
+  command (the decision's buttons are above the box), and `otter chat` in
+  the CLI. A plain message that starts with `/` is passed on as before.
+
+Design page: https://claude.ai/artifact/3sDw9Z11fYXJdmGwK6Scbd.
+
+Tests: `commands::tests` (the line as written and read back, the
+developer's words for a refusal, what a CI watch read, what is pending),
+`the_agent_gets_a_commands_words_or_nothing`, and e2e `commands::*`
+(`/tell` passes the words on and no turn answers it; a message before a
+command is still answered; `/remember` once and `/revise` replanning from
+its words alone; a refused `/ask` and a `/remind` watch; words missing; the
+controller off; a crash after the change). App: `chatCommands.test.ts`
+(parsing, each command's availability and why, effects, the menu's order,
+the new task's conditions) and `slashCommands.test.tsx` (the menu, Enter
+and an input method's Enter, Pinyin's `、`, the hint and the button,
+`/cancel` twice, a Tell command and its bubble, one command for two Enters,
+a non-command sent as a message, `/workspace` and Show, the empty page's
+chips). Watched failing: with `unanswered` counting commands, Otter's turn
+answers `/tell`; with the menu's Enter not asking the input method, an IME
+Enter runs `/pause`; with the plan made without a model reading the
+message's text, the replanned step says "/remember …" and "/revise …";
+without the app's guard, two Enters send `/tell` twice. Checked with the
+app's tests and a production build, not in the macOS app itself.
+
+Reviewed against the code (Fable) before merging. The review found the
+commands' lines reaching the planner and the coding agent through every
+reader of the developer's messages but the two tools, and a command done
+twice by a second Enter while the first was away. Both are fixed above.
+
+## D-191 — Otter's tools have levels: automatic, on the developer's word, or off (2026-10-22)
 
 Plan `docs/plans/agent-coordination.md`. A task, "Eyes On CICD" — two
 GitHub Actions run links, a read-only question — stopped at four gates in a
@@ -7106,7 +7192,7 @@ allowed tools to be configurable, and later for `approve_plan` and
   event's too, as Otter's own doing on record), `developer` (only a turn the
   developer's message started: what `DeveloperWord` was), `off` (Otter isn't
   offered it). The catalog (`levels.rs`) lists every gateway tool, the
-  SDK's `WebSearch`, `WebFetch` and `Bash` (D-191), and `publish` (D-192).
+  SDK's `WebSearch`, `WebFetch` and `Bash` (D-192), and `publish` (D-193).
   **Everything is `auto` by default** but `remember` / `edit_memory`
   (`developer`: memory comes from talking with the developer, never from a
   CI log). This reverses D-089's "a turn an event started only looks and
@@ -7146,10 +7232,10 @@ the levels themselves.
 
 **Not done.** Per-origin levels (one level per tool, as the design says);
 what Otter does in the host's conversation (D-093) isn't in the ledger
-(D-192), which reads tasks; a level for the hard floor (there is none, on
+(D-193), which reads tasks; a level for the hard floor (there is none, on
 purpose).
 
-## D-191 — Where a task works can change; reading doesn't take a workspace (2026-10-22)
+## D-192 — Where a task works can change; reading doesn't take a workspace (2026-10-22)
 
 Plan `docs/plans/agent-coordination.md` M1.
 
@@ -7158,7 +7244,7 @@ Plan `docs/plans/agent-coordination.md` M1.
   gone. A task that has worked keeps its workspace: its work is there. The
   workspace made for a task is found by its source, so asking for another
   repository makes another, and asking for the first again finds it. The
-  answer says `moved_from`; what undoes it is moving back (D-192).
+  answer says `moved_from`; what undoes it is moving back (D-193).
 - **A directory workspace in a repository can be split** (D-080 was Git
   workspaces only): `own_workspace` reads its `origin` and the branch it
   has checked out, and makes a workspace of its own from that repository (a
@@ -7167,7 +7253,7 @@ Plan `docs/plans/agent-coordination.md` M1.
   can't, and says so without the word "worktree".
 - **Before a task waits on others, Otter reads its request** — once, as
   D-186 does for a task with no workspace: it may answer it
-  (`finish_with_answer`, D-192), have it only read, or move it. This
+  (`finish_with_answer`, D-193), have it only read, or move it. This
   widens D-067/D-186 only to that moment (a task about to wait behind
   another task's work or the developer's agent); a task whose workspace is
   free goes on as before.
@@ -7199,7 +7285,7 @@ of its own (base `origin/main`, the request read first, the directory left
 as it was); where moving is the developer's word it waits; an answer-only
 task reads alongside a writer; `chat_bootstrap`'s moving test.
 
-## D-192 — Otter reads, answers, publishes and accepts on its own, on record (2026-10-22)
+## D-193 — Otter reads, answers, publishes and accepts on its own, on record (2026-10-22)
 
 Plan `docs/plans/agent-coordination.md` M2–M3.
 
@@ -7305,7 +7391,7 @@ bounded only by three open watches and three unfinished sub-tasks per task,
 not by a budget. When Otter has no GitHub sign-in of its own, its reads use
 the host's gh, as review does.
 
-## D-193 — Otter splits a task into sub-tasks and hears from them (2026-10-22)
+## D-194 — Otter splits a task into sub-tasks and hears from them (2026-10-22)
 
 Plan `docs/plans/agent-coordination.md` M4. The design recommended waiting
 for dogfooding; the developer asked for every milestone in one change.
@@ -7316,7 +7402,7 @@ D-064 (one conversation per task) stands: a sub-task is a task.
   the developer), for the task “…”:") — D-067's "the request is the
   developer's word" doesn't hold for it, on purpose. It works where it is
   told (`workspace`, `new_workspace`, `scratch`), else in the task's
-  workspace moved at once to one of its own (D-080, D-191); it starts at
+  workspace moved at once to one of its own (D-080, D-192); it starts at
   once; at most 3 unfinished per task. What undoes it is cancelling it.
 - **`list_tasks`** lists the sub-tasks; **`get_task {task_id}`** reads
   one (only one's own).

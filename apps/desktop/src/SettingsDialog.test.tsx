@@ -20,7 +20,7 @@ const state = vi.hoisted(() => ({
   noRelease: false,
   // Claude Code's sign-in (D-142): `undefined` from an otterd before it.
   token: undefined as boolean | undefined,
-  // Otter's tools and their levels (D-190): `undefined` from an otterd before them.
+  // Otter's tools and their levels (D-191): `undefined` from an otterd before them.
   tools: undefined as { name: string; description: string; group: string; level: string; default_level: string }[] | undefined,
 }));
 // Holds back the host's answers to a save or a test until let go.
@@ -139,7 +139,7 @@ vi.mock("@tauri-apps/api/core", () => ({
 
 const { SettingsDialog } = await import("./SettingsDialog");
 
-/** Some of Otter's tools as a host lists them (D-190): publishing on your word only, not by default. */
+/** Some of Otter's tools as a host lists them (D-191): publishing on your word only, not by default. */
 const TOOLS = () => [
   { name: "get_task", description: "Read where a task stands", group: "look", level: "auto", default_level: "auto" },
   { name: "Bash", description: "Run commands in Otter's own empty directory", group: "look", level: "auto", default_level: "auto" },
@@ -194,7 +194,7 @@ describe("Settings", () => {
     state.deleteMerged = name.includes("merged") ? true : undefined;
     state.oldTest = name.includes("older otterd");
     state.token = name.includes("sign-in") ? false : undefined;
-    state.tools = name.includes("D-190") ? TOOLS() : undefined;
+    state.tools = name.includes("D-191") ? TOOLS() : undefined;
     localStorage.removeItem("otter.settings-tab");
     host = document.createElement("div");
     document.body.appendChild(host);
@@ -550,7 +550,7 @@ describe("Settings", () => {
     expect(set.args.update).not.toHaveProperty("coding");
   });
 
-  it("sets each tool's level for Otter, one at a time and at once (D-190)", async () => {
+  it("sets each tool's level for Otter, one at a time and at once (D-191)", async () => {
     expect(tabs().map((b) => b.textContent)).toEqual(["Appearance", "Sign-in pages", "Developer", "Git & GitHub", "Otter", "Otter's tools", "API keys0 set"]);
     await tab("Otter's tools");
     expect(dialog().querySelector("h2")?.textContent).toBe("Otter's tools");
@@ -587,7 +587,7 @@ describe("Settings", () => {
     expect(dialog().textContent).not.toContain("Unsaved changes");
   });
 
-  it("opens on Otter's tools when asked to from elsewhere (D-190)", async () => {
+  it("opens on Otter's tools when asked to from elsewhere (D-191)", async () => {
     act(() => root.unmount());
     root = createRoot(host);
     await act(async () =>

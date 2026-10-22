@@ -24,8 +24,8 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 use chrono::Utc;
 use otter_core::task::{
-    Decider, DecisionKind, DecisionStatus, Message, MessageRole, StepStatus, TASK_EVENT_SCHEMA,
-    TASK_SCHEMA, Task, TaskAction, TaskEvent, TaskEventRecord, TaskStatus,
+    Decider, DecisionKind, DecisionStatus, Message, MessageCommand, MessageRole, StepStatus,
+    TASK_EVENT_SCHEMA, TASK_SCHEMA, Task, TaskAction, TaskEvent, TaskEventRecord, TaskStatus,
 };
 use otter_core::{MessageId, TaskId, Timestamp, WorkspaceId};
 use otter_protocol::task::{
@@ -333,7 +333,7 @@ impl TaskStore {
     }
 
     /// Where the tasks are kept: their histories can be read from here
-    /// without the store (D-192's ledger).
+    /// without the store (D-193's ledger).
     pub fn dir(&self) -> &Path {
         &self.dir
     }
@@ -605,6 +605,7 @@ pub fn message_with_id(
         at: Utc::now(),
         correlation_id: correlation.clone(),
         attachments: vec![],
+        command: None,
     };
     let change = Change {
         event: TaskEvent::MessageAdded {
@@ -816,7 +817,7 @@ pub fn apply_action(
         TaskAction::CancelWatch { watch_id } => {
             changes.extend(crate::watches::cancel(f, watch_id, command_id, now)?);
         }
-        // A task tightens what Otter may do in it (D-190); the host's level
+        // A task tightens what Otter may do in it (D-191); the host's level
         // still applies where it is stricter.
         TaskAction::SetToolLevel { tool, level } => {
             if crate::levels::entry(tool).is_none() {
@@ -1164,9 +1165,35 @@ impl Daemon {
     pub(crate) async fn task_send(&self, p: TaskSend) -> RpcResult<Task> {
         check_command_id(&p.command_id)?;
         let text = p.text.trim().to_owned();
-        if text.is_empty() && p.images.is_empty() {
-            return Err(RpcError::invalid("the message is empty"));
+        match &p.command {
+            None if text.is_empty() && p.images.is_empty() => {
+                return Err(RpcError::invalid("the message is empty"));
+            }
+            // A note is words; the others may be pictures alone.
+            Some(c)
+                if c.needs_words()
+                    && text.is_empty()
+                    && (p.images.is_empty() || *c == MessageCommand::Remember) =>
+            {
+                return Err(RpcError::invalid(format!(
+                    "{} needs words after it",
+                    c.prefix()
+                )));
+            }
+            Some(MessageCommand::Remind { in_minutes })
+                if !(1..=otter_core::watch::MAX_MINUTES).contains(in_minutes) =>
+            {
+                return Err(RpcError::invalid(
+                    "a reminder is between a minute and a week away",
+                ));
+            }
+            _ => {}
         }
+        // The message is the line as written: the command, then its words.
+        let text = match &p.command {
+            Some(c) => c.line(&text),
+            None => text,
+        };
         check_text("message", &text, MAX_TEXT)?;
         let pictures = check_images(&p.images)?;
         let cmd = p.command_id.clone();
@@ -1220,6 +1247,7 @@ impl Daemon {
                 Some(cmd.clone()),
             );
             m.attachments = names.clone();
+            m.command = p.command.clone();
             f.messages.push(m);
             added = true;
             Ok(vec![c])
@@ -1235,7 +1263,7 @@ impl Daemon {
         };
         self.task_changed(&applied);
         // Otter reads it first and decides what reaches the coding agent
-        // (controller.rs, D-059).
+        // (controller.rs, D-059); a command, otterd does (D-190).
         Ok(applied.task)
     }
 
@@ -1265,7 +1293,7 @@ impl Daemon {
         };
         let (repository, base) = match source {
             otter_core::WorkspaceSource::Git(g) => (g.repository, g.base),
-            // A directory in a repository (D-191): a workspace of its own
+            // A directory in a repository (D-192): a workspace of its own
             // from where that repository comes from, on the branch it has
             // checked out when the remote has it. The directory itself is
             // the developer's, and isn't touched.
@@ -1292,7 +1320,7 @@ impl Daemon {
             }
         };
         // One of its own from there already (asked twice, or moved away and
-        // back): that one, not a second (D-191).
+        // back): that one, not a second (D-192).
         {
             let store = self.store.lock().await;
             if let Some(w) = store.state.workspaces.iter().find(|w| {
@@ -1329,7 +1357,7 @@ impl Daemon {
     ) -> RpcResult<otter_core::Workspace> {
         {
             // The one made for it from this source: a repeat makes no
-            // second; another source, asked for now, is another (D-191).
+            // second; another source, asked for now, is another (D-192).
             let store = self.store.lock().await;
             if let Some(w) = store.state.workspaces.iter().find(|w| {
                 w.task_id.as_ref() == Some(&f.id)
@@ -1558,7 +1586,7 @@ impl Daemon {
         if f.pending_decisions().next().is_some() {
             return;
         }
-        // Those made for it that it left before working there (D-191): put
+        // Those made for it that it left before working there (D-192): put
         // away with it, quietly — nothing of its work is in them — unless
         // another task works there now.
         let elsewhere: Vec<otter_core::WorkspaceId> = self

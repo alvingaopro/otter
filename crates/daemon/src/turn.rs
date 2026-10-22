@@ -51,7 +51,7 @@ impl Limits {
         }
     }
 
-    /// A turn that coordinates (D-190): an event's, a request's, a
+    /// A turn that coordinates (D-191): an event's, a request's, a
     /// sub-task's report. It reads and acts more than a reply does: 180 s,
     /// 24 tool calls, 12 round trips (`OTTER_TURN_COORD_DEADLINE_MS`,
     /// `OTTER_TURN_COORD_MAX_CALLS`, `OTTER_TURN_COORD_ROUND_TRIPS`).
@@ -94,7 +94,7 @@ pub struct Turn<'a> {
     /// the recent conversation. Details come through the tools.
     pub context: String,
     pub tools: Vec<ToolSpec>,
-    /// The SDK's own tools the turn may use (D-191), for a backend that has
+    /// The SDK's own tools the turn may use (D-192), for a backend that has
     /// them; each call is checked by the gateway as `@<name>`.
     pub builtins: Vec<&'static str>,
     pub limits: &'a Limits,
@@ -190,7 +190,7 @@ pub fn context(f: &Task, memories: &str) -> String {
 }
 
 /// The tools of a turn on a task's request (D-186): to look, to say where
-/// the task works — and (D-192) to answer it without a workspace, have it
+/// the task works — and (D-193) to answer it without a workspace, have it
 /// only read, watch, or split it into sub-tasks. Not pausing, not passing
 /// itself on: the request is the developer's word for what is wanted.
 fn placing_tools() -> Vec<crate::gateway::ToolSpec> {
@@ -232,7 +232,7 @@ impl Daemon {
         // ("Choose a workspace") gets its answer too.
         let dir = self.otter_dir();
         // Its gh is Otter's own sign-in when it has one (D-133), as
-        // read_github's is (D-192), never a token from the environment.
+        // read_github's is (D-193), never a token from the environment.
         let env = self.git_account.gh_env(self.environments.base());
         crate::brain::select(&env, &choice).turn(&env, &dir)
     }
@@ -301,7 +301,7 @@ impl Daemon {
     }
 
     /// As [`Self::otter_turn_on`], with `note` after the context: what
-    /// the controller tells Otter of the moment (D-191: the workspace is
+    /// the controller tells Otter of the moment (D-192: the workspace is
     /// taken).
     pub(crate) async fn otter_turn_note(
         self: &Arc<Self>,
@@ -319,7 +319,7 @@ impl Daemon {
                 event_id: format!("test-{}", last.id),
             }
         } else if placing && f.parent.is_some() {
-            // A sub-task's request is Otter's words (D-193), not the
+            // A sub-task's request is Otter's words (D-194), not the
             // developer's: only what is automatic.
             Origin::Event {
                 event_id: format!("request:{}", last.id),
@@ -1145,6 +1145,7 @@ mod tests {
                 at: chrono::Utc::now(),
                 correlation_id: None,
                 attachments: vec![],
+                command: None,
             })
             .collect();
         let r = recent(&all);
@@ -1176,6 +1177,7 @@ mod tests {
             attachments: (0..pictures)
                 .map(|n| format!("attachment-{id}-{n}.png"))
                 .collect(),
+            command: None,
         };
         let messages = [
             message("msg_a", "Like this", 2),

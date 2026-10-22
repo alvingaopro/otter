@@ -8,6 +8,7 @@ mod brain;
 mod browser;
 mod changes;
 mod chat;
+mod commands;
 mod controller;
 mod daemon;
 mod delivery;

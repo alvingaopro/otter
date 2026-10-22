@@ -48,7 +48,7 @@ export interface OtterTool {
  */
 export const PROFILES = ["coding", "otter"] as const;
 
-/** Claude Code's own tools an `otter` run may be given (D-191). */
+/** Claude Code's own tools an `otter` run may be given (D-192). */
 export const OTTER_BUILTINS = ["WebSearch", "WebFetch", "Bash"] as const;
 export type Profile = (typeof PROFILES)[number];
 
@@ -59,7 +59,7 @@ export interface InitializePayload {
   otter_tools?: OtterTool[];
   /**
    * Claude Code's own tools an `otter` run may use ([`OTTER_BUILTINS`]),
-   * each call checked by otterd first (D-191). Absent: none.
+   * each call checked by otterd first (D-192). Absent: none.
    */
   otter_builtins?: string[];
   conversation_id: string;

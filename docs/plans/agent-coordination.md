@@ -155,7 +155,7 @@ event turn that resumes; levels `developer` and `off` refusing; auto publish,
 plan approval and acceptance; the ledger; a sub-task created, capped, and
 reported to its parent. The worker's hook and options in its own tests.
 
-## 8. As built (D-190–D-193)
+## 8. As built (D-191–D-194)
 
 Where the build differs from the plan above:
 

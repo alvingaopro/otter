@@ -1,4 +1,4 @@
-//! How far each of Otter's tools may go on this host (D-190): the catalog
+//! How far each of Otter's tools may go on this host (D-191): the catalog
 //! Settings shows, the host's levels, and a task's tightening of them.
 //!
 //! Every tool is `auto` unless set otherwise, but noting things in Otter's
@@ -204,7 +204,7 @@ pub fn entry(name: &str) -> Option<&'static Entry> {
     CATALOG.iter().find(|e| e.name == name)
 }
 
-/// The SDK's own tools Otter's turn may be given (D-191).
+/// The SDK's own tools Otter's turn may be given (D-192).
 pub const BUILTINS: &[&str] = &["WebSearch", "WebFetch", "Bash"];
 
 impl Daemon {
@@ -236,7 +236,7 @@ impl Daemon {
     }
 
     /// Whether the controller may do what `name` does on its own for
-    /// `task` (D-192): its level is `auto`.
+    /// `task` (D-193): its level is `auto`.
     pub(crate) fn auto(&self, task: &Task, name: &str) -> bool {
         self.tool_level(Some(task), name) == ToolLevel::Auto
     }
@@ -257,7 +257,7 @@ pub fn view(level: impl Fn(&str) -> ToolLevel) -> Vec<ToolInfo> {
 }
 
 impl Daemon {
-    /// What Otter did across the host's tasks (D-192), newest first: each
+    /// What Otter did across the host's tasks (D-193), newest first: each
     /// change it set off (`ToolCalled`), with what came of it and what
     /// undoes it, from the tasks' histories. The tasks touched last first;
     /// at most `limit`.

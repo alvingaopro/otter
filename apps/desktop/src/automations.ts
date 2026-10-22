@@ -1,6 +1,6 @@
 // Automations (D-185): what Otter does without a message from you — the
 // watches it keeps for you (D-183) and the host's triggers (D-083) — and
-// what it did on its tools (D-192). Pure: grouping and wording, no runtime
+// what it did on its tools (D-193). Pure: grouping and wording, no runtime
 // state.
 
 import type { PlacedTask, TaskAction, Watch, WatchOutcome } from "./tasks";
@@ -243,7 +243,7 @@ export function findItem(groups: AutomationGroups, key: string | undefined): Ite
 }
 
 /**
- * One thing Otter did on its tools (D-192), from its task's history:
+ * One thing Otter did on its tools (D-193), from its task's history:
  * mirrors `otter_protocol::otter::OtterAction`.
  */
 export interface OtterAction {

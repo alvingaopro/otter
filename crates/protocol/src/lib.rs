@@ -251,7 +251,7 @@ pub enum Request {
     /// `Vec<`[`otter_core::task::TaskEventRecord`]`>`.
     #[serde(rename = "otter.events")]
     OtterEvents(otter::OtterEvents),
-    /// What Otter did on its tools across the host's tasks (D-192), newest
+    /// What Otter did on its tools across the host's tasks (D-193), newest
     /// first. Result: `Vec<`[`otter::OtterAction`]`>`.
     #[serde(rename = "otter.actions")]
     OtterActions(otter::OtterActions),

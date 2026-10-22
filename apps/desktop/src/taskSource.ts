@@ -11,7 +11,7 @@ import { WHOLE_FILE } from "./changes";
 import { invokeNewer } from "./newer";
 import type { FileDiff, WorkspaceChanges } from "./types";
 import { PICTURES_ONLY, type PastedImage } from "./pastedImage";
-import type { Draft, Task, TaskAction, TaskEventRecord, MessageRole, PlacedTask, Run } from "./tasks";
+import { commandPrefix, type Draft, type MessageCommand, type Task, type TaskAction, type TaskEventRecord, type MessageRole, type PlacedTask, type Run } from "./tasks";
 
 /** Where a new task works besides a workspace that exists (D-179): one made for it. */
 export type WorkspaceRequest = { new: { repository: string; base?: string } } | { scratch: Record<string, never> };
@@ -25,8 +25,9 @@ export interface TaskSource {
   /** Called with the new list whenever anything changes. Returns an unsubscribe. */
   subscribe(listener: (list: PlacedTask[]) => void): () => void;
   create(host: string, title: string, request: string, workspace?: string | WorkspaceRequest, answerOnly?: boolean): Promise<PlacedTask>;
-  /** A message from the developer to Otter, about the task, with pictures if any. */
-  send(key: string, text: string, images?: PastedImage[]): Promise<void>;
+  /** A message from the developer to Otter, about the task, with pictures if any.
+   * With a slash `command` (D-190), `text` is the words after it, and otterd does it. */
+  send(key: string, text: string, images?: PastedImage[], command?: MessageCommand): Promise<void>;
   act(key: string, action: TaskAction): Promise<void>;
   /** The task's own history, oldest first. */
   history(key: string): Promise<TaskEventRecord[]>;
@@ -48,7 +49,7 @@ export interface TaskSource {
   changes?(host: string, workspace: string): Promise<WorkspaceChanges | undefined>;
   /** One changed file's diff there. */
   diff?(host: string, workspace: string, path: string): Promise<FileDiff>;
-  /** What Otter did on its tools across the host's tasks (D-192), newest first; `undefined`: its otterd can't say. */
+  /** What Otter did on its tools across the host's tasks (D-193), newest first; `undefined`: its otterd can't say. */
   actions?(host: string): Promise<OtterAction[] | undefined>;
 }
 
@@ -320,7 +321,7 @@ export function mockSource(host = "preview", now = Date.now()): TaskSource {
       listeners.forEach((l) => l(list));
       return placed;
     },
-    async send(key, text, images = []) {
+    async send(key, text, images = [], command) {
       const msg = id("msg");
       update(key, (f) => ({
         ...f,
@@ -329,10 +330,11 @@ export function mockSource(host = "preview", now = Date.now()): TaskSource {
           {
             id: msg,
             role: "user",
-            // As otterd stores a message of pictures alone.
-            text: text || (images.length ? PICTURES_ONLY : ""),
+            // As otterd stores a message of pictures alone, and a command: the line as written.
+            text: command ? `${commandPrefix(command)}${text.trim() ? ` ${text.trim()}` : ""}` : text || (images.length ? PICTURES_ONLY : ""),
             at: stamp(),
             ...(images.length ? { attachments: images.map((_, i) => `attachment-${msg}-${i}`) } : {}),
+            ...(command ? { command } : {}),
           },
           {
             id: id("msg"),
@@ -372,6 +374,7 @@ export function mockSource(host = "preview", now = Date.now()): TaskSource {
           pause: true,
           redirect: true,
         },
+        message_commands: true,
       };
     },
     async act(key, action) {
@@ -461,7 +464,7 @@ const splitKey = (key: string) => {
   return { host: key.slice(0, i), task: key.slice(i + 1) };
 };
 
-/** How many of Otter's actions a host is asked for (D-192). */
+/** How many of Otter's actions a host is asked for (D-193). */
 const ACTIONS_SHOWN = 100;
 
 /** How often a host with a live run is read again (D-141). */
@@ -596,9 +599,9 @@ export function daemonSource(): TaskSource {
       put(host, task);
       return { host, task, key: `${host}/${task.id}` };
     },
-    async send(key, text, images) {
+    async send(key, text, images, command) {
       const { host, task } = splitKey(key);
-      put(host, await invoke<Task>("task_send", { host, commandId: commandId(), task, text, images: images ?? null }));
+      put(host, await invoke<Task>("task_send", { host, commandId: commandId(), task, text, images: images ?? null, command: command ?? null }));
     },
     async act(key, action) {
       const { host, task } = splitKey(key);

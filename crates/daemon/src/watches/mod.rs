@@ -350,7 +350,7 @@ fn event_text(w: &Watch, finding: &Finding) -> String {
     } else if w.what.ends_with("when the task was accepted") {
         "Otter set itself, when the developer accepted the task before CI finished,"
     } else {
-        // Set on Otter's own (D-192).
+        // Set on Otter's own (D-193).
         "You chose"
     };
     format!(

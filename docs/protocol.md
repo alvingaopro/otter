@@ -336,7 +336,7 @@ The Control Agent's model and API keys on this host (D-048).
   - `git.github_logout` → the view.
   An older daemon answers `invalid_request`.
 - The view also has `tools?: [{name, description, group, level,
-  default_level}]` (D-190): each of Otter's tools — its own, the Claude
+  default_level}]` (D-191): each of Otter's tools — its own, the Claude
   Agent SDK's `WebSearch`, `WebFetch` and `Bash` it may use, and what the
   controller does on its own (`publish`, `approve_plan`, `accept_task`) —
   and how far it may go on this host: `auto` (Otter uses it on its own, in
@@ -371,6 +371,8 @@ turns, messages, tool calls and interactions. See
   `available` needs Node, the installed worker and its `--check` (D-060);
   `notes` say which is missing. `worker_missing?` says the worker this
   otterd looks for isn't installed, which installing it would fix (D-129).
+  `message_commands?` says `task.send` takes a slash `command` (D-190); an
+  otterd before it leaves it out.
 - `runtime.test {backend?, model?}` → `{backend, ready, steps: [{name,
   state: passed|failed|skipped, detail}], worker_missing?}` (D-124, D-129): the coding agent
   started for one short reply, in a scratch directory under the host's
@@ -420,6 +422,19 @@ Product work owned by the daemon (D-043); see `otter_core::task`.
   `images` is the same list of `{media_type, data}` (the worker checks the
   same limits); worker frames, both ways, are at most 4 MiB (`MAX_FRAME`,
   was 1 MiB) so a turn with its pictures fits one.
+  `command?` is a slash command (D-190): `{"name": "ask" | "tell" |
+  "revise" | "remember" | "watch_ci"}`, `{"name": "remind", "in_minutes"}`
+  (1 to a week) or `{"name": "answer_only", "on"}`, and `text` is then only
+  the words after it (`ask`, `tell`, `revise` and `remember` need some;
+  pictures will do but for `remember`). The message is stored with
+  `command` and the line as written (`/remind 1h30m check the deploy`).
+  otterd does it with the tool Otter's turn would have called (`ask_agent`,
+  `forward_to_agent`, `revise_task`, `remember`, `watch`, `set_answer_only`),
+  passing on the words without the command, and adds Otter's message about
+  what came of it, correlated `command:<message id>`. Otter's turn doesn't
+  answer it. An otterd before it ignores the field and takes the words as a
+  plain message; clients send it only where `runtime.capabilities` says
+  `message_commands`.
 - `task.act {command_id, task, action, …}` → the task. `action`:
   `start`, `pause`, `resume`, `cancel`, `retry`, `accept {override_gates?}`,
   `request_changes {note?}` (the goal changed: plan again from where the
@@ -432,9 +447,9 @@ Product work owned by the daemon (D-043); see `otter_core::task`.
   `conflict`), `delete_watch {watch_id}` (remove one; a waiting one is
   stopped first) (D-183; an older otterd answers these two
   `invalid_request`), `set_tool_level {tool, level?}` (this task's level
-  for one of Otter's tools, D-190: it only tightens the host's; no `level`
+  for one of Otter's tools, D-191: it only tightens the host's; no `level`
   takes the host's again; an unknown tool is `invalid_request`). `set_workspace` and
-  `own_workspace` move a task that hasn't worked (D-191); `own_workspace`
+  `own_workspace` move a task that hasn't worked (D-192); `own_workspace`
   splits a directory workspace in a repository too: a workspace of its own
   from its `origin`, on the branch it has checked out. An
   action the lifecycle doesn't allow fails with `conflict`, and so does
@@ -489,12 +504,12 @@ conversation; their changes come as `TaskChanged`. History: `WatchSet`,
 `WatchFiring`, `WatchReported`, `WatchCancelled`, `WatchDeleted`, each with
 `watch_id` and `label`.
 
-**Watch kinds** (D-192): `ci` takes any pull request by its `url`
+**Watch kinds** (D-193): `ci` takes any pull request by its `url`
 (`target {pr, repo}` as before), and `run` watches a GitHub Actions run
 until it finishes (`target {repo, run}`): `passed`, `failed` or `gone`
 (cancelled).
 
-**Otter's own doing** (D-190–D-193; optional fields, old peers ignore
+**Otter's own doing** (D-191–D-194; optional fields, old peers ignore
 them): a task has `tool_levels?` (its own levels, above), `parent?` (the
 task whose Otter made it, a sub-task) and `children_seen?` (each sub-task's
 change its Otter has heard). History: `ToolCalled` carries `detail?` (the
@@ -573,7 +588,7 @@ turn them on.
   `correlation_id` is the developer's message's id.
 - `otter.events {after?, limit?}` → `TaskEventRecord[]`: the history of
   Otter's tool calls there (`ToolCalled`, `ToolDone`).
-- `otter.actions {limit?}` → `OtterAction[]` (D-192): what Otter did across
+- `otter.actions {limit?}` → `OtterAction[]` (D-193): what Otter did across
   the host's tasks, newest first (default 100, at most 500): `{task_id,
   task_title, seq, at, tool, origin, authority?, detail?, error?, undo?:
   {task_id, action}}` — each `ToolCalled` in the tasks' histories, with

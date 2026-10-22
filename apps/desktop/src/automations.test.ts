@@ -198,7 +198,7 @@ describe("automations", () => {
     expect(nextText(trigger({ enabled: false }).trigger, NOW)).toBe("paused");
   });
 
-  it("says what Otter did in plain words, and who started it (D-192)", () => {
+  it("says what Otter did in plain words, and who started it (D-193)", () => {
     expect(["set_workspace", "watch", "publish", "accept_task", "approve_plan", "create_task", "tell_agent", "finish_with_answer"].map(actionText)).toEqual([
       "Moved the task",
       "Set a watch",

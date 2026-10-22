@@ -61,15 +61,17 @@ Inside the daemon (`crates/daemon/src`):
   through the worker's `otter` profile (no Claude Code tools, only Otter's);
   `chat.rs` is Otter's conversation on the host (D-093), with the host's
   tools, `otter chat` in the CLI; `memory.rs` is Otter's memory (D-113),
-  each conversation's and the host's, given to every turn
+  each conversation's and the host's, given to every turn; `commands.rs`
+  does the developer's slash commands in a task's conversation with the
+  same tools, no model (D-190)
 - `watches/` — watches (D-183): what Otter looks at again later on the
   developer's word. One engine (`mod.rs`: probing with no model, only
   changes written, firing before the turn, the turn in the task's step);
   each kind of thing watched behind `WatchKind` (`time.rs`, `ci.rs`).
   `triggers.rs` — recurring work that starts tasks (D-083)
-- `levels.rs` — how far each of Otter's tools may go (D-190): the catalog,
+- `levels.rs` — how far each of Otter's tools may go (D-191): the catalog,
   the host's and a task's levels, and `otter.actions` (what Otter did,
-  D-192)
+  D-193)
 - `runs.rs` + `runtime/` — managed agent runs (D-044): the runtime contract,
   the approval `policy`, the conversation `actor` and registry (D-055/D-056),
   and the bridge from a run to its task; `agents/claude_stream.rs` is

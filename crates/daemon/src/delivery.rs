@@ -770,7 +770,7 @@ impl Git<'_> {
     }
 
     /// Where this repository comes from (`origin`), and the branch checked
-    /// out when `origin` has it too (D-191): what a workspace of its own is
+    /// out when `origin` has it too (D-192): what a workspace of its own is
     /// made from. `None` without a remote.
     pub async fn origin_and_branch(&self) -> Option<(String, Option<String>)> {
         let url = self.git(&["remote", "get-url", "origin"]).await.ok()?;
@@ -992,7 +992,7 @@ pub struct GitHub<'a> {
     pub repo: Option<String>,
 }
 
-/// An Actions run as GitHub says it (D-192).
+/// An Actions run as GitHub says it (D-193).
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct RunView {
     pub name: String,
@@ -1019,7 +1019,7 @@ pub struct JobView {
     pub failed_steps: Vec<String>,
 }
 
-/// What a GitHub link points at (D-192).
+/// What a GitHub link points at (D-193).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum GithubLink {
     /// An Actions run (or one of its jobs).
@@ -1259,7 +1259,7 @@ impl<'a> GitHub<'a> {
             .collect())
     }
 
-    /// An Actions run as GitHub says it now (D-192): its state, and its
+    /// An Actions run as GitHub says it now (D-193): its state, and its
     /// jobs with the steps that failed.
     pub async fn run_view(&self, id: &str) -> Result<RunView> {
         let out = self
@@ -1326,7 +1326,7 @@ impl<'a> GitHub<'a> {
         Some(ci_log(&out)).filter(|l| !l.trim().is_empty())
     }
 
-    /// A pull request as GitHub says it now (D-192): title, state,
+    /// A pull request as GitHub says it now (D-193): title, state,
     /// mergeability, branches, link.
     pub async fn pr_view(&self, pr: u64) -> Result<Value> {
         let n = pr.to_string();

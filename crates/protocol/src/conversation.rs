@@ -33,6 +33,10 @@ pub struct RuntimeCapabilities {
     /// yet: the SDK worker and a durable journal come first.
     pub structured_ready: bool,
     pub features: RuntimeFeatures,
+    /// `task.send` takes a slash `command` (D-190). Absent from older
+    /// daemons, which would take the words after it as a plain message.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub message_commands: bool,
 }
 
 /// What a runtime supports. A missing task is reported, never simulated

@@ -215,7 +215,7 @@ pub(crate) struct ControllerState {
     /// A turn in Otter's conversation on the host is running (D-093).
     host_turn: bool,
     /// A task moved to a workspace of its own is moved once from each
-    /// (D-191): what couldn't be made isn't tried on every wake.
+    /// (D-192): what couldn't be made isn't tried on every wake.
     pub(crate) moves_tried: HashSet<(TaskId, otter_core::WorkspaceId)>,
 }
 
@@ -246,13 +246,12 @@ impl Daemon {
                 let daemon = self.clone();
                 tokio::spawn(async move { daemon.put_away_workspace(&id).await });
             }
-            // Off: tasks stay where they are until the developer acts.
-            if self.brain_choice().controller.as_deref() == Some("off") {
-                continue;
-            }
+            // Off: tasks stay where they are until the developer acts — and
+            // a command is the developer acting (D-190).
+            let off = self.brain_choice().controller.as_deref() == Some("off");
             let all = self.tasks.lock().await.list();
             // Parents whose sub-task came to something they haven't heard
-            // (D-193).
+            // (D-194).
             let told: HashSet<TaskId> = all
                 .iter()
                 .filter_map(|c| {
@@ -266,7 +265,9 @@ impl Daemon {
             let ids: Vec<TaskId> = all
                 .into_iter()
                 .filter(|f| {
-                    !unanswered(f).is_empty()
+                    !crate::commands::pending(f).is_empty()
+                        || (!off
+                            && (!unanswered(f).is_empty()
                         || told.contains(&f.id)
                         // A watch found something: Otter says so (D-183),
                         // whatever the task's status.
@@ -275,7 +276,7 @@ impl Daemon {
                         || f.status == TaskStatus::Review
                         // Blocked: on a decision the brain hasn't seen yet,
                         // or on nothing any more (see `unblock`).
-                        || (f.status == TaskStatus::Blocked && f.workspace_id.is_some())
+                        || (f.status == TaskStatus::Blocked && f.workspace_id.is_some())))
                 })
                 .map(|f| f.id)
                 .collect();
@@ -287,7 +288,18 @@ impl Daemon {
                 tokio::spawn(async move {
                     let stepped = {
                         let (daemon, id) = (daemon.clone(), id.clone());
-                        contained(async move { daemon.step(&id).await }).await
+                        contained(async move {
+                            if !off {
+                                return daemon.step(&id).await;
+                            }
+                            // As in a step: a command that can't be done
+                            // never stops the task.
+                            if let Err(e) = daemon.run_commands(&id).await {
+                                tracing::warn!(task = %id, "a command: {}", redact(&e.message));
+                            }
+                            Ok(())
+                        })
+                        .await
                     };
                     if let Some(Err(e)) = stepped {
                         tracing::warn!(task = %id, "controller: {}", otter_core::redact::redact(&e.message));
@@ -360,6 +372,12 @@ impl Daemon {
     }
 
     async fn step(self: &Arc<Self>, id: &TaskId) -> RpcResult<()> {
+        // What the developer said to do, done first (D-190): it may pause,
+        // revise or go on. A command that can't be done says so; it never
+        // stops the task.
+        if let Err(e) = self.run_commands(id).await {
+            tracing::warn!(task = %id, "a command: {}", redact(&e.message));
+        }
         let mut f = self.task_get(id.as_str()).await?;
         // The developer said something: answer first (it may pause or go on)
         // — with Otter's tools where it has them (D-089).
@@ -375,7 +393,7 @@ impl Daemon {
             self.watch_turn(&f, &w).await;
             f = self.task_get(id.as_str()).await?;
         }
-        // Then a sub-task that came to something (D-193): Otter hears it
+        // Then a sub-task that came to something (D-194): Otter hears it
         // here — not in a task that was cancelled.
         if f.status != TaskStatus::Cancelled
             && let Some((child, key)) = self.child_change(&f).await
@@ -761,7 +779,7 @@ impl Daemon {
             f
         };
         if f.workspace_id.is_none() {
-            // Otter watches something for it (D-192): it waits on that, not
+            // Otter watches something for it (D-193): it waits on that, not
             // on the developer; when the watch comes to something, Otter's
             // turn answers it or says where it works.
             let unfinished = self
@@ -780,7 +798,7 @@ impl Daemon {
                 .count();
             let waits_on = match f.open_watches().next() {
                 Some(w) => Some(format!("Waiting for what Otter watches: {}", w.label)),
-                // Its work is in its sub-tasks (D-193): it waits on them.
+                // Its work is in its sub-tasks (D-194): it waits on them.
                 None if unfinished > 0 => {
                     Some(format!("Waiting for its sub-tasks: {unfinished} not done"))
                 }
@@ -953,7 +971,7 @@ impl Daemon {
         if step.detail.is_none() || plan_declined(step) {
             self.send_plan_back(f, step, issues).await
         } else if self.auto(f, "approve_plan") {
-            // Approving plans is automatic (D-192): sent back once, the
+            // Approving plans is automatic (D-193): sent back once, the
             // agent's plan stands — it is the one that saw the code — with
             // the review's points on record.
             let points = issues.clone();
@@ -1408,8 +1426,8 @@ impl Daemon {
         let said = f
             .messages
             .iter()
-            .find(|m| m.role == MessageRole::User)
-            .map(|m| m.text.clone());
+            .filter(|m| m.role == MessageRole::User)
+            .find_map(|m| m.for_the_work().map(str::to_owned));
         let answered = f
             .decisions
             .iter()
@@ -1482,12 +1500,13 @@ impl Daemon {
     async fn decide_open(self: &Arc<Self>, f: &Task) -> RpcResult<()> {
         // Asked what the task should do: a message is an answer too.
         if let Some(d) = f.pending_decisions().find(|d| d.summary == GOAL_QUESTION)
-            && let Some(m) = f
+            && let Some(text) = f
                 .messages
                 .iter()
-                .find(|m| m.role == MessageRole::User && m.at > d.created_at)
+                .filter(|m| m.role == MessageRole::User && m.at > d.created_at)
+                .find_map(|m| m.for_the_work().map(str::to_owned))
         {
-            let (did, text) = (d.id.clone(), m.text.clone());
+            let did = d.id.clone();
             self.decide(&f.id, &did, true, Some(text), Decider::User, None)
                 .await?;
             return Ok(());
@@ -1795,7 +1814,7 @@ impl Daemon {
                     why.lines().next().unwrap_or(why)
                 ));
             }
-            // It only reads (D-191): whatever else works there, it reads
+            // It only reads (D-192): whatever else works there, it reads
             // alongside.
             if self.reads_alongside(f) {
                 return None;
@@ -1850,7 +1869,7 @@ impl Daemon {
     }
 
     /// What a task whose workspace others hold does instead of waiting
-    /// (D-191), once it has done nothing there yet: Otter reads its request
+    /// (D-192), once it has done nothing there yet: Otter reads its request
     /// first, once — it may answer it without a workspace, have it only
     /// read, or say where it goes; then, where moving is automatic, it gets
     /// a workspace of its own from the same repository. Whether it did
@@ -1946,7 +1965,7 @@ impl Daemon {
             let (m, c) = message(MessageRole::Controller, said, None);
             f.messages.push(m);
             let mut v = called(None, Some(detail));
-            // Back where it was, while it hasn't worked (D-192).
+            // Back where it was, while it hasn't worked (D-193).
             v.push(Change::new(TaskEvent::ToolUndo {
                 tool: "set_workspace".into(),
                 task_id: f.id.clone(),
@@ -1960,7 +1979,7 @@ impl Daemon {
     }
 
     /// A sub-task of `f` that came to something its Otter hasn't heard
-    /// (D-193): done, failed, in review, or waiting on the developer — and
+    /// (D-194): done, failed, in review, or waiting on the developer — and
     /// that change's key.
     async fn child_change(&self, f: &Task) -> Option<(Task, String)> {
         self.tasks
@@ -1975,7 +1994,7 @@ impl Daemon {
             })
     }
 
-    /// Otter's turn on a sub-task's change (D-193), in the parent's
+    /// Otter's turn on a sub-task's change (D-194), in the parent's
     /// conversation: no message started it, so it may do what is
     /// automatic. Said once, with the change it is about, in one write.
     async fn child_turn(self: &Arc<Self>, f: &Task, c: &Task, key: &str) {
@@ -2090,7 +2109,7 @@ impl Daemon {
         let step = step.clone();
         if let Some(taken) = self.workspace_taken(f).await {
             // Before it waits on others: Otter may answer it or move it
-            // (D-191), else it waits.
+            // (D-192), else it waits.
             if taken.by_others && self.instead_of_waiting(f, &taken).await? {
                 return Ok(());
             }
@@ -2813,7 +2832,7 @@ impl Daemon {
                         .map(|d| d.id.clone()),
                 );
             } else if !published || d.as_ref().and_then(|d| d.head.clone()) != head || unpublished {
-                // Publishing is automatic (D-192): allowed on Otter's own,
+                // Publishing is automatic (D-193): allowed on Otter's own,
                 // on record, as a trigger's policy allows it (D-083); a
                 // question about it already put to the developer goes.
                 let auto_allowed;
@@ -3196,7 +3215,7 @@ impl Daemon {
                     .and_then(|e| e.detail.clone())
             });
         let write_report = ready && f.report.is_none();
-        // Accepting is automatic (D-192): once every gate passed and the
+        // Accepting is automatic (D-193): once every gate passed and the
         // report is written, Otter accepts; merging stays the developer's.
         let accept = ready && self.auto(f, "accept_task");
         if d == f.delivery
@@ -3302,7 +3321,7 @@ impl Daemon {
         Ok(())
     }
 
-    /// Whether review may publish `branch` on Otter's own (D-192): only
+    /// Whether review may publish `branch` on Otter's own (D-193): only
     /// from a workspace Otter manages for the work (a Git one, not a
     /// directory the developer keeps, whose tree may hold their own
     /// uncommitted work), and never a default branch. Otherwise the
@@ -3342,7 +3361,7 @@ impl Daemon {
         }
     }
 
-    /// Otter accepts a task whose gates all passed (D-192), on record, as
+    /// Otter accepts a task whose gates all passed (D-193), on record, as
     /// its own doing; what undoes it is changing the goal again.
     async fn accept_on_own(self: &Arc<Self>, id: &TaskId) -> RpcResult<()> {
         let applied = self.tasks.lock().await.apply(id, None, |f, now| {
@@ -3525,7 +3544,7 @@ fn pr_body(f: &Task) -> String {
 }
 
 /// The developer's messages since the Control Agent last answered one
-/// (the request that created the task isn't one).
+/// (the request that created the task isn't one, nor is a command).
 pub(crate) fn unanswered(f: &Task) -> Vec<otter_core::task::Message> {
     // The request isn't a message to answer (D-067).
     let request = f.request_message();
@@ -3541,7 +3560,10 @@ pub(crate) fn unanswered(f: &Task) -> Vec<otter_core::task::Message> {
         .iter()
         .enumerate()
         .skip(answered.map_or(0, |i| i + 1))
-        .filter(|(_, m)| m.role == MessageRole::User && Some(&m.id) != request)
+        // A command is done by otterd, not answered (D-190).
+        .filter(|(_, m)| {
+            m.role == MessageRole::User && Some(&m.id) != request && m.command.is_none()
+        })
         .map(|(_, m)| m.clone())
         .collect()
 }
@@ -3797,7 +3819,7 @@ pub(crate) fn intent_step(
             .ok()
             .map(Change::new)
     };
-    // Who said it, as the task's reasons say it (D-192): Otter acts on its
+    // Who said it, as the task's reasons say it (D-193): Otter acts on its
     // own too, and the record says so.
     let said = |you: &'static str, otter: &'static str| if by_otter { otter } else { you };
     let mut changes = Vec::new();
@@ -3891,7 +3913,7 @@ pub(crate) fn intent_step(
     (changes, stop)
 }
 
-/// The reason a task Otter accepted is done (D-192).
+/// The reason a task Otter accepted is done (D-193).
 pub(crate) const ACCEPTED_BY_OTTER: &str =
     "Accepted by Otter: every gate passed (accepting is automatic in Settings)";
 
@@ -3930,18 +3952,18 @@ fn developer_notes(
 ) -> Vec<String> {
     developer_messages(f, since, carried)
         .into_iter()
-        .map(|m| match m.text.strip_prefix(TO_THE_AGENT) {
-            // Otter's own instructions (D-192): said as Otter's.
+        .filter_map(|m| match m.text.strip_prefix(TO_THE_AGENT) {
+            // Otter's own instructions (D-193): said as Otter's.
             Some(t) if m.role == MessageRole::Controller => {
-                format!("{}: {}", crate::runs::OTTER_SAYS, t.trim())
+                Some(format!("{}: {}", crate::runs::OTTER_SAYS, t.trim()))
             }
-            _ => m.text.clone(),
+            _ => m.for_the_work().map(str::to_owned),
         })
         .collect()
 }
 
 /// How a message of Otter's to the coding agent starts in the task's
-/// conversation (D-192); its correlation is `tell:<command>`.
+/// conversation (D-193); its correlation is `tell:<command>`.
 pub(crate) const TO_THE_AGENT: &str = "To the coding agent: ";
 
 /// The messages `developer_notes` says, themselves.
@@ -3963,6 +3985,8 @@ fn developer_messages<'a>(
                 && since.is_none_or(|s| m.at > s)
         })
         .filter(|m| !carried.contains(m.id.as_str()))
+        // A command's words go with it, or not at all (D-190).
+        .filter(|m| m.for_the_work().is_some())
         .collect()
 }
 
@@ -3976,7 +4000,7 @@ fn notes_text(notes: &[String]) -> String {
         let lines: Vec<String> = developer.iter().map(|n| format!("- {n}")).collect();
         text.push_str(&format!("\nFrom the developer:\n{}\n", lines.join("\n")));
     }
-    // Otter's own instructions (D-192), apart: never as the developer's.
+    // Otter's own instructions (D-193), apart: never as the developer's.
     if !otter.is_empty() {
         let lines: Vec<String> = otter
             .iter()
@@ -4726,5 +4750,45 @@ mod tests {
             warm.contains("has a header") && warm.contains("1 of 1"),
             "{warm}"
         );
+    }
+
+    /// The coding agent is told what the developer said for the work: a
+    /// message, or the words of `/revise` and `/tell`; never a command's
+    /// line, nor a command about the conversation (D-190).
+    #[test]
+    fn the_agent_gets_a_commands_words_or_nothing() {
+        use otter_core::task::{Message, MessageCommand};
+        let now = Utc::now();
+        let mut f = Task::new("t".into(), "Export it".into(), now);
+        let said = |text: &str, command: Option<MessageCommand>| Message {
+            id: otter_core::MessageId::generate(),
+            role: MessageRole::User,
+            text: text.into(),
+            at: now,
+            correlation_id: None,
+            attachments: vec![],
+            command,
+        };
+        f.messages = vec![
+            said("Use tabs", None),
+            said("/remember Tabs, not commas", Some(MessageCommand::Remember)),
+            said("/ask Where is it?", Some(MessageCommand::Ask)),
+            said("/watch ci", Some(MessageCommand::WatchCi)),
+            said("/tell Keep the header", Some(MessageCommand::Tell)),
+            said("/revise Also export JSON", Some(MessageCommand::Revise)),
+            said("/tell", Some(MessageCommand::Tell)),
+        ];
+        assert_eq!(
+            developer_notes(&f, None, &HashSet::new()),
+            [
+                "Use tabs",
+                "Keep the header",
+                "Also export JSON",
+                otter_core::task::PICTURES_ONLY
+            ]
+        );
+        let brief = brain::brief(&f);
+        assert!(!brief.contains('/'), "{brief}");
+        assert!(brief.contains("- Also export JSON"), "{brief}");
     }
 }

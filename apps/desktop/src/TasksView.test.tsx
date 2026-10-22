@@ -701,7 +701,7 @@ describe("Tasks view", () => {
     expect(q(".reasons")).toBeNull();
   });
 
-  it("links a sub-task to the task it's part of, and a task to its sub-tasks (D-193)", async () => {
+  it("links a sub-task to the task it's part of, and a task to its sub-tasks (D-194)", async () => {
     const base = mockSource("mac");
     const [active, , , done, draft] = sampleTasks();
     const tasks: Task[] = [
@@ -729,7 +729,7 @@ describe("Tasks view", () => {
     expect(q(".task-parent button")).toBeNull();
   });
 
-  it("shows what Otter did and what undoes it in Activity (D-192)", async () => {
+  it("shows what Otter did and what undoes it in Activity (D-193)", async () => {
     const [done] = sampleTasks().filter((f) => f.status === "done");
     const base = mockSource("mac");
     const ev = (seq: number, type: string, text: string, extra: object = {}): TaskEventRecord =>

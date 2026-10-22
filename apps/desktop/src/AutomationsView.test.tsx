@@ -54,7 +54,7 @@ async function render(source: TaskSource, triggers: TriggerSource, tasks: Placed
 /** What Otter did is read a moment after the tasks change. */
 const settle = () => act(async () => new Promise((r) => setTimeout(r, 350)));
 
-/** What Otter did on the sample tasks (D-192): moved one on your word, failed to publish one, made a sub-task of one gone. */
+/** What Otter did on the sample tasks (D-193): moved one on your word, failed to publish one, made a sub-task of one gone. */
 function sampleActions(source: TaskSource): OtterAction[] {
   const of = (title: string) => source.list().find((p) => p.task.title === title)!.task;
   const csv = of("Export workspace timeline as CSV");
@@ -312,7 +312,7 @@ describe("Automations view", () => {
   });
 });
 
-describe("What Otter did (D-192)", () => {
+describe("What Otter did (D-193)", () => {
   beforeEach(() => {
     (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
     host = document.createElement("div");

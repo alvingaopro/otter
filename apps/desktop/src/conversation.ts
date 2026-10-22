@@ -139,6 +139,8 @@ export interface RuntimeCapabilities {
     pause?: boolean;
     redirect?: boolean;
   };
+  /** `task.send` takes a slash command (D-190); absent from older otterds. */
+  message_commands?: boolean;
 }
 
 export const turnText = (t: CodingTurn) => t.input.map((b) => b.text).join("\n");

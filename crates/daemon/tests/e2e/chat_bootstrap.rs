@@ -622,7 +622,7 @@ async fn a_message_sent_while_otter_reads_the_request_is_answered() {
 }
 
 /// The turn on a request may look, say where the task works, answer it,
-/// have it only read or watch (D-192); it may not pause the task or pass
+/// have it only read or watch (D-193); it may not pause the task or pass
 /// the request on.
 #[tokio::test]
 async fn the_turn_on_a_request_may_only_look_and_place() {
@@ -663,7 +663,7 @@ async fn the_turn_on_a_request_may_only_look_and_place() {
     );
 }
 
-/// A task that hasn't worked moves where it is told (D-191): to an empty
+/// A task that hasn't worked moves where it is told (D-192): to an empty
 /// directory, to a workspace that exists, and back to the one made for it
 /// from the same repository — which isn't made twice.
 #[tokio::test]

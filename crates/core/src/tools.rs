@@ -1,4 +1,4 @@
-//! How far each of Otter's tools may go (D-190): one level per tool, set
+//! How far each of Otter's tools may go (D-191): one level per tool, set
 //! for the host and tightened for a task, never loosened.
 //!
 //! The levels say who may start what a tool does: `Auto` — Otter, in any

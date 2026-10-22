@@ -526,7 +526,7 @@ fn rules_plan(cx: &Context<'_>) -> Plan {
             .messages
             .iter()
             .filter(|m| m.role == otter_core::task::MessageRole::User && Some(&m.id) != request)
-            .map(|m| m.text.clone())
+            .filter_map(|m| m.for_the_work().map(str::to_owned))
             .collect();
         return Plan {
             requirements: f.requirements.clone(),
@@ -872,7 +872,7 @@ pub(crate) fn brief(f: &Task) -> String {
         .messages
         .iter()
         .filter(|m| m.role == otter_core::task::MessageRole::User && Some(&m.id) != request)
-        .map(|m| m.text.as_str())
+        .filter_map(|m| m.for_the_work())
         .collect();
     if !user.is_empty() {
         s.push_str("\nOther messages from the developer:\n");

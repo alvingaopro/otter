@@ -34,7 +34,7 @@ fits one.
 - **`otter`** — Otter's own turn (D-089): `otter_tools` (each a name, a
   description and a JSON schema) served from an in-process MCP server, and
   of Claude Code's own tools only the `otter_builtins` otterd names (some of
-  `WebSearch`, `WebFetch`, `Bash`, D-191; absent: none) — no settings, no
+  `WebSearch`, `WebFetch`, `Bash`, D-192; absent: none) — no settings, no
   other MCP servers; anything else the model asks for is denied. Each call
   of Otter's tools goes to otterd as `tool_call {call_id, tool, input}`, and
   its answer comes back as `tool_result {call_id, output}`; otterd's gateway

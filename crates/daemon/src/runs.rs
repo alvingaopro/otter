@@ -45,7 +45,7 @@ pub(crate) struct LiveRun {
     pub task: TaskId,
     /// The workspace it works in: one driver at a time (D-079).
     pub workspace: otter_core::WorkspaceId,
-    /// It only reads (an answer-only task's, on the SDK runtime, D-191):
+    /// It only reads (an answer-only task's, on the SDK runtime, D-192):
     /// it neither holds the workspace nor waits for it, and stays reading
     /// until it ends.
     pub shared: bool,
@@ -67,7 +67,7 @@ const ACTIVITY_LINES: usize = 30;
 /// Live runs by id.
 pub(crate) type Runs = std::sync::Mutex<HashMap<RunId, LiveRun>>;
 
-/// How the coding agent is told what Otter itself says (D-192).
+/// How the coding agent is told what Otter itself says (D-193).
 pub(crate) const OTTER_SAYS: &str = "From Otter, your tech lead (not the developer)";
 
 /// What a run that can't start because its workspace is taken says first:
@@ -122,7 +122,7 @@ impl Daemon {
             .ok_or_else(|| workspace_not_found(ws_id.as_str()))?;
         // One driver per workspace (D-079): claimed now, held while the run
         // lives. A run that only reads takes no claim and waits for none
-        // (D-191): it changes nothing there.
+        // (D-192): it changes nothing there.
         // The backend that will run it: the conversation's own when it
         // continues one (D-057), else the host's — only the SDK's hook keeps
         // an agent to reading.
@@ -1355,7 +1355,7 @@ impl Daemon {
     }
 
     /// [`Self::queue_turn`], said by `initiator` (Otter's own instructions
-    /// are the controller's, D-192).
+    /// are the controller's, D-193).
     async fn queue_turn_from(
         &self,
         task_id: &TaskId,
@@ -1421,7 +1421,7 @@ impl Daemon {
     }
 
     /// Whether `task`'s run would only read, alongside whatever else works
-    /// in its workspace (D-191): an answer-only task, where the SDK
+    /// in its workspace (D-192): an answer-only task, where the SDK
     /// runtime's hook keeps the agent to reading.
     pub(crate) fn reads_alongside(&self, task: &Task) -> bool {
         task.answer_only && self.can_answer_only().is_ok()
@@ -1569,7 +1569,7 @@ impl Daemon {
         }
     }
 
-    /// Otter's own instructions for the run in progress (D-192), said as
+    /// Otter's own instructions for the run in progress (D-193), said as
     /// Otter's — never as the developer's (D-089): after its current turn,
     /// or (`now`) stopping it first. How many runs they reached.
     pub(crate) async fn otter_tells_runs(
