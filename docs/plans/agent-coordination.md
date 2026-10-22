@@ -154,3 +154,23 @@ task has; the controller splitting a taken workspace; `read_github` and a
 event turn that resumes; levels `developer` and `off` refusing; auto publish,
 plan approval and acceptance; the ledger; a sub-task created, capped, and
 reported to its parent. The worker's hook and options in its own tests.
+
+## 8. As built (D-190–D-193)
+
+Where the build differs from the plan above:
+
+- **The request turn before a task waits** (§2.3) runs only when a placed
+  task is about to wait on others, not on every started task: the case the
+  screenshot showed, without a reply to every request.
+- **A watch's own turn sets no other watch**: the one part of D-183's
+  rule kept, so a watch can't look again for ever.
+- **A trigger's preset** keeps `set_workspace` at `developer` too: an
+  occurrence stays where its trigger puts it (D-156).
+- **The built-ins need no capability flag**: a worker before them ignores
+  `otter_builtins`, and the turn has none.
+- **Undo** is its own history event, `ToolUndo {tool, task_id, action}`;
+  the ledger lists what was done, not what was refused, and only tasks'
+  histories (not the host conversation's).
+- **A task with no workspace waits** on what Otter watches for it, or on
+  its sub-tasks, instead of asking the developer for a workspace.
+- `finish_with_answer` on a task already done does nothing.

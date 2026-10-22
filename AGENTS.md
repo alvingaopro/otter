@@ -67,6 +67,9 @@ Inside the daemon (`crates/daemon/src`):
   changes written, firing before the turn, the turn in the task's step);
   each kind of thing watched behind `WatchKind` (`time.rs`, `ci.rs`).
   `triggers.rs` — recurring work that starts tasks (D-083)
+- `levels.rs` — how far each of Otter's tools may go (D-190): the catalog,
+  the host's and a task's levels, and `otter.actions` (what Otter did,
+  D-192)
 - `runs.rs` + `runtime/` — managed agent runs (D-044): the runtime contract,
   the approval `policy`, the conversation `actor` and registry (D-055/D-056),
   and the bridge from a run to its task; `agents/claude_stream.rs` is
