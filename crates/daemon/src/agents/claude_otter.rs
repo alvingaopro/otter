@@ -52,6 +52,9 @@ pub struct OtterRun<'a> {
     pub instructions: &'a str,
     /// What the turn starts with: the context and the developer's messages.
     pub prompt: &'a str,
+    /// The pictures that go with it (D-181): the worker puts them before
+    /// the text.
+    pub images: Vec<crate::runtime::TurnImage>,
     /// Otter's tools: `{name, description, input_schema}` each.
     pub tools: Vec<Value>,
     /// Model round trips at most.
@@ -178,7 +181,15 @@ where
             bail!("the Claude worker has no Otter profile; reinstall with `otter host install`");
         }
 
-        send("send_turn", json!({"turn_id": "t1", "text": r.prompt})).await?;
+        let mut turn = json!({"turn_id": "t1", "text": r.prompt});
+        if !r.images.is_empty() {
+            turn["images"] = r
+                .images
+                .iter()
+                .map(|i| json!({"media_type": i.media_type, "data": i.data}))
+                .collect();
+        }
+        send("send_turn", turn).await?;
         let mut said = String::new();
         // The message being streamed: a new one starts a new paragraph.
         let mut streaming: Option<String> = None;
@@ -224,6 +235,14 @@ where
                 }
                 Some("fatal") => {
                     break Err(anyhow!("the Claude worker: {}", text(&ev, &["message"])));
+                }
+                // A command it refused (the turn's pictures over its limits,
+                // say): the answer won't come, and why is said, not waited out.
+                Some("nack") => {
+                    break Err(anyhow!(
+                        "the Claude worker refused a command: {}",
+                        text(&ev, &["error", "message"])
+                    ));
                 }
                 _ => {}
             }
@@ -314,6 +333,7 @@ mod tests {
                 model: None,
                 instructions: "You are Otter.",
                 prompt,
+                images: vec![],
                 tools: vec![json!({"name": "get_task", "description": "d", "input_schema": {"type": "object"}})],
                 max_turns: 6,
                 say: &say,
@@ -367,6 +387,61 @@ mod tests {
         assert_eq!(written, "Let me look.\n\nThe task is blocked.");
     }
 
+    /// The developer's pictures go to the worker with the turn's text
+    /// (D-181); a turn without them sends none.
+    #[tokio::test]
+    async fn the_pictures_go_with_the_turn() {
+        let (dir, mut env) = fake("ok");
+        let log = dir.path().join("worker.log");
+        env.insert("FAKE_WORKER_LOG".into(), log.display().to_string());
+        let images = vec![crate::runtime::TurnImage {
+            media_type: "image/png".into(),
+            data: "AAAA".into(),
+        }];
+        for images in [images, vec![]] {
+            let reply = run(
+                OtterRun {
+                    env: &env,
+                    cwd: dir.path(),
+                    model: None,
+                    instructions: "You are Otter.",
+                    prompt: "[msg_p] Like this [picture 1]",
+                    images,
+                    tools: vec![json!({"name": "get_task", "description": "d", "input_schema": {"type": "object"}})],
+                    max_turns: 6,
+                    say: &|_: &str| {},
+                },
+                |_, _| async { r#"{"ok":true,"data":{"status":"blocked"}}"#.to_owned() },
+            )
+            .await;
+            assert_eq!(reply.unwrap(), "The task is blocked.");
+        }
+        let log = std::fs::read_to_string(&log).unwrap();
+        let turns: Vec<&str> = log
+            .lines()
+            .filter(|l| l.contains(r#""type":"send_turn""#))
+            .collect();
+        assert_eq!(turns.len(), 2, "{log}");
+        assert!(
+            turns[0].contains(r#""images":[{"data":"AAAA","media_type":"image/png"}]"#),
+            "{log}"
+        );
+        assert!(!turns[1].contains("images"), "{log}");
+    }
+
+    /// A turn the worker refuses ends with why, not at the deadline.
+    #[tokio::test]
+    async fn a_turn_the_worker_refuses_says_why() {
+        let (dir, env) = fake("refuses");
+        let (reply, calls) = turn(&env, dir.path(), "[msg_x] hi").await;
+        let e = reply.unwrap_err().to_string();
+        assert!(
+            e.contains("the Claude worker refused a command: at most 4 images"),
+            "{e}"
+        );
+        assert!(calls.is_empty());
+    }
+
     #[tokio::test]
     async fn a_worker_without_otters_profile_is_never_used_for_it() {
         let (dir, env) = fake("coding-only");
@@ -402,6 +477,7 @@ mod tests {
                 model: Some("haiku"),
                 instructions: crate::turn::INSTRUCTIONS,
                 prompt,
+                images: vec![],
                 tools,
                 max_turns: 6,
                 say: &|_: &str| {},
