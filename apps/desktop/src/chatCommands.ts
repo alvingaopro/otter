@@ -84,8 +84,10 @@ export function find<C, E>(commands: Command<C, E>[], name: string): Command<C, 
 export function matches<C, E>(commands: Command<C, E>[], query: string, ctx: C): { command: Command<C, E>; why?: string }[] {
   const q = query.toLowerCase();
   const groups = [...new Set(commands.map((c) => c.group))];
-  const score = (c: Command<C, E>) =>
-    !q ? 1 : c.name.startsWith(q) ? 3 : c.name.includes(q) ? 2 : `${c.arg ?? ""} ${c.what}`.toLowerCase().includes(q) ? 1 : 0;
+  // A word of what it does finds it too, once there is enough of the word.
+  const said = (c: Command<C, E>) =>
+    q.length >= 3 && `${c.arg ?? ""} ${c.what}`.toLowerCase().split(/[^a-z0-9-]+/).some((w) => w.startsWith(q));
+  const score = (c: Command<C, E>) => (!q ? 1 : c.name.startsWith(q) ? 3 : c.name.includes(q) ? 2 : said(c) ? 1 : 0);
   return commands
     .map((command, i) => {
       const ok = command.available(ctx);
