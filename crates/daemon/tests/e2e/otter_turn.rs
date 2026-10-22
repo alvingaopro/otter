@@ -120,32 +120,19 @@ async fn a_turn_an_event_started_cant_act_on_the_developers_word() {
 }
 
 /// What is automatic, an event's turn does on its own, as Otter's doing on
-/// record (D-190, D-192): it plans again and accepts what passed its gates.
+/// record (D-190, D-192): here it plans again from review.
 #[tokio::test]
 async fn a_turn_an_event_started_acts_with_what_is_automatic() {
-    let fake = host_with(vec![(
-        "OTTER_TOOL_LEVELS",
-        "set_workspace=developer,publish=developer,approve_plan=developer".into(),
-    )])
-    .await;
+    // Accepting stays the developer's, so the task stays in review.
+    let fake = host_with(vec![]).await;
     let host = &fake.host;
     let id = in_review(host).await;
-    let (f, answers) = run(host, &id, "ev-1", "AS: event\nCALL: accept_task {}").await;
+    let (_, answers) = run(host, &id, "ev-1", "AS: event\nCALL: revise_task {}").await;
     assert_eq!(code(&answers[0]), "ok", "{answers:#?}");
-    assert_eq!(f.status, TaskStatus::Done);
-    assert_eq!(
-        f.status_reason.as_deref(),
-        Some("Accepted by Otter: every gate passed (accepting is automatic in Settings)")
-    );
     let recs = records(host, &id).await;
     assert!(recs.iter().any(|r| matches!(&r.event,
         TaskEvent::ToolCalled { tool, origin, authority, .. }
-            if tool == "accept_task" && origin == "event" && authority.is_none())));
-    // Done isn't final: the goal moved, Otter plans again, as its own doing.
-    let (f, answers) = run(host, &id, "ev-2", "AS: event\nCALL: revise_task {}").await;
-    assert_eq!(code(&answers[0]), "ok", "{answers:#?}");
-    assert_ne!(f.status, TaskStatus::Done);
-    let recs = records(host, &id).await;
+            if tool == "revise_task" && origin == "event" && authority.is_none())));
     assert!(
         recs.iter()
             .any(|r| r.text.contains("Otter is planning again")),
