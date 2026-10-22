@@ -143,7 +143,7 @@ impl Daemon {
             .expect("exists");
         s.name = name.clone();
         // Theirs from now: the agent's name for its conversation no longer
-        // names it (D-192).
+        // names it (D-196).
         s.name_from = Some(NameFrom::Developer);
         ws.updated_at = Utc::now();
         save(&store)?;
@@ -621,7 +621,7 @@ fn default_session_name(command: Option<&str>) -> String {
         .to_owned()
 }
 
-/// A session name from an agent's name for its conversation (D-192): what
+/// A session name from an agent's name for its conversation (D-196): what
 /// names can't hold (`/`, `:`, control characters) made the full-width
 /// look-alikes or spaces, whitespace run together, at most
 /// [`MAX_NAME_BYTES`], secrets out. `None` if nothing is left.
@@ -677,7 +677,7 @@ fn unique_session_name(ws: &Workspace, base: &str) -> String {
 mod tests {
     use super::*;
 
-    /// An agent's title made a session name (D-192).
+    /// An agent's title made a session name (D-196).
     #[test]
     fn titles_become_session_names() {
         assert_eq!(

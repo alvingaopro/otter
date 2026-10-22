@@ -195,6 +195,22 @@ pub async fn runtime_test(
         .map_err(|e| e.to_string())
 }
 
+/// What Otter did on its tools across the host's tasks (D-193), newest
+/// first. An `otterd` before it answers with an error, which the UI treats
+/// as "nothing to show here".
+#[tauri::command]
+pub async fn otter_actions(
+    app: AppHandle,
+    host: String,
+    limit: Option<u32>,
+) -> Result<Vec<otter_protocol::otter::OtterAction>, String> {
+    rpc(&app, &host)
+        .await?
+        .otter_actions(limit)
+        .await
+        .map_err(|e| e.to_string())
+}
+
 /// Otter's memories (D-113): the host's, and the task's conversation's (or,
 /// without a task, Otter's conversation's on the host).
 #[tauri::command]

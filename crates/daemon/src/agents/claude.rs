@@ -123,7 +123,7 @@ struct ClaudeState {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pending: Option<Pending>,
     /// The conversation's title Claude Code made (`ai-title`), and the one
-    /// given with `/rename` (`custom-title`), as last written (D-192).
+    /// given with `/rename` (`custom-title`), as last written (D-196).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     ai_title: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -293,7 +293,7 @@ impl AgentProvider for ClaudeCode {
                     }
                     obs.last_message = update.last_message;
                     last_user_at = update.last_user_at;
-                    // Its name for the conversation (D-192); a `/rename`
+                    // Its name for the conversation (D-196); a `/rename`
                     // to nothing gives the made-up title back.
                     if let Some(t) = update
                         .ai_title
@@ -689,7 +689,7 @@ struct TranscriptUpdate {
     /// When the developer's side last wrote (a prompt, a tool result, an
     /// interruption), unix ms.
     last_user_at: Option<i64>,
-    /// The last `ai-title` and `custom-title` read (D-192).
+    /// The last `ai-title` and `custom-title` read (D-196).
     ai_title: Option<String>,
     custom_title: Option<String>,
 }
@@ -820,7 +820,7 @@ mod tests {
         update
     }
 
-    /// Claude Code's names for the conversation (D-192): each written again
+    /// Claude Code's names for the conversation (D-196): each written again
     /// and again, the last one says; a sidechain's isn't the conversation's.
     #[test]
     fn the_conversations_titles_are_read_last_wins() {

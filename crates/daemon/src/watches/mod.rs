@@ -26,6 +26,7 @@
 //!   marked reported in the same write; cancelled meanwhile, nothing is said.
 
 mod ci;
+mod run;
 mod time;
 
 use std::collections::{HashMap, HashSet};
@@ -109,10 +110,11 @@ pub(crate) trait WatchKind: Send + Sync {
 
 static TIME: time::Time = time::Time;
 static CI: ci::Ci = ci::Ci;
+static RUN: run::Run = run::Run;
 
 /// The kinds this build knows.
-pub(crate) fn kinds() -> [&'static dyn WatchKind; 2] {
-    [&TIME, &CI]
+pub(crate) fn kinds() -> [&'static dyn WatchKind; 3] {
+    [&TIME, &CI, &RUN]
 }
 
 pub(crate) fn kind(name: &str) -> Option<&'static dyn WatchKind> {
@@ -345,8 +347,11 @@ fn capital(s: &str) -> String {
 fn event_text(w: &Watch, finding: &Finding) -> String {
     let asked = if w.asked_in.is_some() {
         "The developer asked you"
-    } else {
+    } else if w.what.ends_with("when the task was accepted") {
         "Otter set itself, when the developer accepted the task before CI finished,"
+    } else {
+        // Set on Otter's own (D-193).
+        "You chose"
     };
     format!(
         "{asked} to watch {} (“{}”). It came to: {} — {}, read at {} UTC",

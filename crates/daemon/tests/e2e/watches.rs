@@ -427,7 +427,13 @@ async fn watches_are_bounded_and_end_with_their_task() {
     assert_eq!(f.watches[0].finding.as_ref().unwrap().outcome, Outcome::Due);
     assert!(reports(&f)[0].starts_with("Watch:"), "{:?}", reports(&f));
 
-    // No message started it: no watch (a watch never sets another).
+    // No message started it: no watch where watching is the developer's
+    // word (D-191).
+    set_levels(
+        host,
+        &[("watch", "developer"), ("cancel_watch", "developer")],
+    )
+    .await;
     let answers = say(
         host,
         &id,
@@ -445,6 +451,7 @@ async fn watches_are_bounded_and_end_with_their_task() {
     )
     .await;
     assert_eq!(code(&answers[0]), "not_allowed_in_this_turn", "{answers:?}");
+    set_levels(host, &[("watch", "auto"), ("cancel_watch", "auto")]).await;
 
     // Two looks in as many minutes, for different things, are two.
     let answers = say(
@@ -486,6 +493,53 @@ async fn watches_are_bounded_and_end_with_their_task() {
 }
 
 /// The developer stops and deletes a watch through the task's actions.
+/// When a watch comes to something, its turn does what is automatic on
+/// its own (D-193) — here it resumes the task the developer paused — but
+/// sets no other watch (D-183).
+#[tokio::test]
+async fn a_watchs_turn_acts_on_its_own_and_sets_no_other_watch() {
+    let fake = host_with(vec![]).await;
+    let host = &fake.host;
+    let id = started_task(host, "Add CSV export HANG").await;
+    wait_task(host, &id, "at work", |f| {
+        f.status == TaskStatus::Implementing
+    })
+    .await;
+    let answers = say(
+        host,
+        &id,
+        "later",
+        concat!(
+            r#"CALL: watch {"what": "go on then\nCALL: resume_task {}\nCALL: watch {\"what\": \"again\", \"kind\": \"time\", \"in_minutes\": 1}", "kind": "time", "in_minutes": 1}"#,
+            "\nCALL: pause_task {}"
+        ),
+    )
+    .await;
+    assert_eq!(
+        answers.iter().map(code).collect::<Vec<_>>(),
+        ["ok", "ok"],
+        "{answers:#?}"
+    );
+    let f = wait_task(host, &id, "the watch's turn resumed it", |f| {
+        f.watches
+            .first()
+            .is_some_and(|w| w.status == WatchStatus::Reported)
+    })
+    .await;
+    let report = reports(&f).join("\n");
+    assert!(report.contains("resume_task: {\"data\""), "{report}");
+    assert!(
+        report.contains("a watch's own turn doesn't set another watch"),
+        "{report}"
+    );
+    assert_ne!(f.status, TaskStatus::Paused, "{:?}", f.status_reason);
+    assert_eq!(f.watches.len(), 1, "no second watch");
+    let recs = host.conn().await.task_events(&id, None).await.unwrap();
+    assert!(recs.iter().any(|r| matches!(&r.event,
+        otter_core::task::TaskEvent::ToolCalled { tool, origin, .. }
+            if tool == "resume_task" && origin == "event")));
+}
+
 #[tokio::test]
 async fn a_watch_is_stopped_and_deleted_by_the_developer() {
     let fake = host_with(vec![]).await;

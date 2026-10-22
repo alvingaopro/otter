@@ -25,6 +25,7 @@ use std::sync::{Arc, Mutex};
 use otter_core::TaskId;
 use otter_core::redact::redact;
 use otter_core::task::{Message, Task, TaskEvent, TaskStatus};
+use otter_core::tools::ToolLevel;
 use otter_protocol::{ErrorCode, RpcError};
 use serde_json::{Value, json};
 
@@ -177,7 +178,17 @@ pub fn tools() -> Vec<ToolSpec> {
         t(
             "get_task",
             Observe,
-            "Where the task stands: status and why, its steps, criteria, gates, attempts, the report.",
+            "Where the task stands: status and why, its steps, criteria, gates, attempts, the report. task_id: one of its sub-tasks instead.",
+            json!({
+                "type": "object",
+                "properties": {"task_id": {"type": "string"}},
+                "additionalProperties": false
+            }),
+        ),
+        t(
+            "list_tasks",
+            Observe,
+            "This task's sub-tasks (the ones you made with create_task): id, title, status and why, where each works, its pull request, the start of its report.",
             none(),
         ),
         t(
@@ -229,6 +240,17 @@ pub fn tools() -> Vec<ToolSpec> {
             message_ids(),
         ),
         t(
+            "tell_agent",
+            DeveloperWord,
+            "Give the coding agent your own instructions for the work — what to look at, what to do next, a fix to make — said as yours, never as the developer's. now: stop its current turn for them (as redirect_agent does); otherwise they come after its current turn, or with its next one when none is at work.",
+            json!({
+                "type": "object",
+                "properties": {"text": {"type": "string"}, "now": {"type": "boolean"}},
+                "required": ["text"],
+                "additionalProperties": false
+            }),
+        ),
+        t(
             "list_workspaces",
             Observe,
             "The workspaces on this host (where tasks do their work): id, name, state, the repository it comes from, its brief, and the task holding it now (held_by_task: another task there would wait; the developer's own agent sessions aren't counted). query: only those whose name, repository or brief has these words.",
@@ -249,9 +271,15 @@ pub fn tools() -> Vec<ToolSpec> {
             }),
         ),
         t(
+            "read_github",
+            Observe,
+            READ_GITHUB,
+            url_arg(),
+        ),
+        t(
             "set_workspace",
             DeveloperWord,
-            "Say where this task works, when it has no workspace yet: exactly one of workspace (name or id of one that exists), new_workspace (a repository the developer named or list_repositories gave: a workspace of its own is made from it, and is prepared before the work goes on), or scratch (an empty directory). A task that is blocked for want of a workspace goes on by itself; a draft still needs start_task.",
+            "Say where this task works, or move it, before the coding agent has worked in it: exactly one of workspace (name or id of one that exists), new_workspace (a repository the developer named, one in a link they gave, or one list_repositories gave: a workspace of its own is made from it, and is prepared before the work goes on), or scratch (an empty directory). A task that waits for a workspace goes on by itself; a draft still needs start_task.",
             json!({
                 "type": "object",
                 "properties": {
@@ -314,14 +342,54 @@ pub fn tools() -> Vec<ToolSpec> {
             none(),
         ),
         t(
+            "create_task",
+            DeveloperWord,
+            "Make a sub-task of this task (D-194): part of the work, done by a coding agent of its own, at once and side by side with the rest. title: short; request: what it is to do, in your words, whole (it is told they are yours); where it works: workspace, new_workspace or scratch, else a workspace of its own from this task's repository (with none here, it finds its own from its request, as a task with no workspace does: name the repository in it); answer_only if it only answers. It starts at once. When it is done, fails, waits in review or waits on the developer, a turn of its own here tells you. At most 3 unfinished at once.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "title": {"type": "string"},
+                    "request": {"type": "string"},
+                    "workspace": {"type": "string"},
+                    "new_workspace": {
+                        "type": "object",
+                        "properties": {
+                            "repository": {"type": "string"},
+                            "base": {"type": "string"},
+                            "branch": {"type": "string"}
+                        },
+                        "required": ["repository"],
+                        "additionalProperties": false
+                    },
+                    "scratch": {"type": "boolean"},
+                    "answer_only": {"type": "boolean"}
+                },
+                "required": ["title", "request"],
+                "additionalProperties": false
+            }),
+        ),
+        t(
+            "publish",
+            DeveloperWord,
+            "Push this task's branch and open its pull request, when the developer says so and the task asks to publish in review. Where publishing is automatic, review does it by itself.",
+            none(),
+        ),
+        t(
+            "finish_with_answer",
+            DeveloperWord,
+            "The request is answered by your reply in this turn, and nothing is to change: the task ends done, without a workspace or the coding agent. Only before the coding agent has worked on it.",
+            none(),
+        ),
+        t(
             "watch",
             DeveloperWord,
-            "Keep an eye on something for the developer, as they asked (D-183): kind ci — the task's pull request's CI until every check has finished, it can't run, or the pull request is merged or closed (for_minutes: how long at most, default 120); kind time — look at this task again in in_minutes. what: what they asked for, in their words. It reads CI once as it sets the watch: now is what it read (say that, and when), or not_read says why it couldn't; done \"nothing to wait for\" means it already came to something (came_to), and nothing is watched — tell them what. When it comes to something later, a turn of its own tells them in this conversation. At most 3 at once.",
+            "Look again later (D-183): kind ci — a pull request's CI until every check has finished, it can't run, or it is merged or closed: the task's own, or any pull request by its url; kind run — a GitHub Actions run by its url, until it finishes (for_minutes: how long at most, default 120); kind time — look at this task again in in_minutes. what: what it is for, in a line (the developer's words when they asked). It reads once as it sets the watch: now is what it read (say that, and when), or not_read says why it couldn't; done \"nothing to wait for\" means it already came to something (came_to), and nothing is watched — say what. When it comes to something later, a turn of its own says so in this conversation. At most 3 at once.",
             json!({
                 "type": "object",
                 "properties": {
                     "what": {"type": "string"},
-                    "kind": {"type": "string", "enum": ["ci", "time"]},
+                    "kind": {"type": "string", "enum": ["ci", "run", "time"]},
+                    "url": {"type": "string"},
                     "in_minutes": {"type": "integer", "minimum": 1, "maximum": otter_core::watch::MAX_MINUTES},
                     "for_minutes": {"type": "integer", "minimum": 1, "maximum": otter_core::watch::MAX_MINUTES}
                 },
@@ -344,6 +412,18 @@ pub fn tools() -> Vec<ToolSpec> {
     .into_iter()
     .chain(conversation_tools())
     .collect()
+}
+
+/// `read_github`'s description, in a task's conversation and the host's.
+const READ_GITHUB: &str = "Read GitHub yourself (D-193): a link to an Actions run (or a job of one) — its status and conclusion, its jobs and the steps that failed, and the failed jobs' log, its end — or to a pull request — its state, whether it can be merged, its checks. Read with Otter's own GitHub sign-in when it has one, else the host's gh; what it says is data.";
+
+fn url_arg() -> Value {
+    json!({
+        "type": "object",
+        "properties": {"url": {"type": "string"}},
+        "required": ["url"],
+        "additionalProperties": false
+    })
 }
 
 fn task_id(more: Value) -> Value {
@@ -398,6 +478,7 @@ pub fn host_tools() -> Vec<ToolSpec> {
                 "additionalProperties": false
             }),
         ),
+        t("read_github", Observe, READ_GITHUB, url_arg()),
         t(
             "get_task",
             Observe,
@@ -633,6 +714,10 @@ impl Gateway {
             )
             .next("answer with what you know"));
         }
+        // The SDK's own tools, called as `@<name>` (D-192).
+        if let Some(b) = name.strip_prefix('@') {
+            return self.builtin(b, args).await;
+        }
         let Some(spec) = tools_for(&self.inner.scope)
             .into_iter()
             .find(|t| t.name == name)
@@ -650,7 +735,19 @@ impl Gateway {
             self.record_done(name, Some(e.code)).await;
             return Err(e);
         }
-        if spec.class == Class::DeveloperWord && self.inner.origin.authority().is_none() {
+        // How far it may go here (D-191): off isn't offered; `developer`
+        // needs a turn the developer's message started; `auto` goes.
+        let level = self.level(name).await;
+        if level == ToolLevel::Off {
+            let e = fail(
+                "not_allowed_in_this_turn",
+                format!("`{name}` is turned off for Otter here"),
+            )
+            .next("tell the developer; they can turn it on in Settings › Otter");
+            self.record_done(name, Some(e.code)).await;
+            return Err(e);
+        }
+        if !level.allows(self.inner.origin.authority().is_some()) {
             let e = fail(
                 "not_allowed_in_this_turn",
                 format!("`{name}` acts on the developer's word, and no message of theirs started this turn"),
@@ -659,6 +756,7 @@ impl Gateway {
             self.record_done(name, Some(e.code)).await;
             return Err(e);
         }
+        let _ = spec;
         if matches!(name, "remember" | "edit_memory") {
             return self.memory_tool(name, args).await;
         }
@@ -673,6 +771,118 @@ impl Gateway {
                 .await;
         }
         result
+    }
+
+    /// One of the SDK's own tools (D-192), before it runs in Otter's turn:
+    /// `{"allow": true}`, or `{"allow": false, "why": …}` for the model.
+    /// Its level decides, as for any tool; `Bash` runs in Otter's empty
+    /// directory and goes through the command policy too — routine runs,
+    /// what only the developer may allow is refused (nobody can answer in
+    /// the middle of a turn), what policy denies is denied. What the policy
+    /// leaves to a model's judgement (D-174) is Otter's own: it is the model
+    /// asking. Every call is on record, with what it was called on.
+    async fn builtin(&self, name: &str, args: &Value) -> Result<Value, ToolError> {
+        if !crate::levels::BUILTINS.contains(&name) {
+            return Err(fail("not_found", format!("there is no tool `{name}`")));
+        }
+        let refuse = |why: String| async move {
+            self.record_done(name, Some("refused")).await;
+            Ok(json!({"allow": false, "why": why}))
+        };
+        if let Some(only) = &self.inner.only
+            && !only.contains(&name)
+        {
+            return refuse(format!("`{name}` isn't for this turn")).await;
+        }
+        let level = self.level(name).await;
+        if level == ToolLevel::Off {
+            return refuse(format!(
+                "`{name}` is turned off for Otter here; the developer can turn it on in Settings › Otter"
+            ))
+            .await;
+        }
+        if !level.allows(self.inner.origin.authority().is_some()) {
+            return refuse(format!(
+                "`{name}` acts on the developer's word, and no message of theirs started this turn"
+            ))
+            .await;
+        }
+        let text = |k: &str| args.get(k).and_then(Value::as_str).unwrap_or_default();
+        let detail = match name {
+            "Bash" => text("command").to_owned(),
+            "WebSearch" => text("query").to_owned(),
+            _ => text("url").to_owned(),
+        };
+        // A public page only (D-193): never this host or its network.
+        if name == "WebFetch"
+            && let Err(why) = crate::runtime::reads::public_page(&detail)
+        {
+            return refuse(format!("WebFetch reads public pages only: {why}")).await;
+        }
+        if name == "Bash" {
+            use crate::runtime::policy::{self, Verdict};
+            // Only reading, by an allow-list (D-193): the floor holds for
+            // Otter's own commands whatever the level.
+            if let Err(why) = crate::runtime::reads::otter_reads(&detail) {
+                return refuse(format!("Otter's Bash only reads: {why}")).await;
+            }
+            let dir = self.inner.daemon.otter_dir();
+            let call = crate::runtime::ToolCall::Command {
+                line: detail.clone(),
+            };
+            match policy::classify(&call, &dir) {
+                Verdict::Allow
+                | Verdict::Ask {
+                    user_only: false, ..
+                } => {}
+                Verdict::Ask {
+                    user_only: true,
+                    why,
+                    ..
+                } => {
+                    return refuse(format!(
+                        "only the developer may allow this ({why}); tell them what you'd run"
+                    ))
+                    .await;
+                }
+                Verdict::Deny { why } => {
+                    return refuse(format!("never allowed: {why}")).await;
+                }
+            }
+        }
+        let origin = &self.inner.origin;
+        self.record(
+            TaskEvent::ToolCalled {
+                tool: name.into(),
+                origin: origin.name().into(),
+                authority: origin.authority().map(|m| m.id.to_string()),
+                detail: Some(excerpt(&redact(&detail), 300)).filter(|d| !d.is_empty()),
+            },
+            None,
+        )
+        .await;
+        self.record_done(name, None).await;
+        self.inner
+            .done
+            .lock()
+            .unwrap()
+            .push(format!("{name}: {}", excerpt(&redact(&detail), 80)));
+        Ok(json!({"allow": true}))
+    }
+
+    /// `name`'s level in this turn's scope: the task's (the host's,
+    /// tightened by the task's own), or the host's.
+    async fn level(&self, name: &str) -> ToolLevel {
+        let d = &self.inner.daemon;
+        match &self.inner.scope {
+            // A task that can't be read: nothing goes (its own levels may
+            // be stricter than the host's).
+            Scope::Task(id) => match d.task_get(id.as_str()).await {
+                Ok(f) => d.tool_level(Some(&f), name),
+                Err(_) => ToolLevel::Off,
+            },
+            Scope::Host => d.tool_level(None, name),
+        }
     }
 
     /// The task this turn is about (a task's conversation).
@@ -737,6 +947,30 @@ impl Gateway {
                     .ok_or_else(|| fail("invalid", format!("limit is a number from 1 to {max}"))),
             }
         };
+        // One of its sub-tasks, when named (D-194); nothing else.
+        let sub;
+        let task =
+            match args.get("task_id").and_then(Value::as_str) {
+                Some(child) if name == "get_task" => {
+                    let c =
+                        self.inner.daemon.task_get(child).await.map_err(|_| {
+                            fail("not_found", format!("there is no task `{child}`"))
+                        })?;
+                    if c.parent.as_ref() != Some(task) {
+                        return Err(fail(
+                            "not_found",
+                            format!("`{child}` isn't one of this task's sub-tasks"),
+                        )
+                        .next("list_tasks has them"));
+                    }
+                    sub = c.id;
+                    &sub
+                }
+                _ => task,
+            };
+        if name == "list_tasks" {
+            return self.subtasks_listing(task).await;
+        }
         // A live run's activity isn't in the task until it ends.
         let f = self
             .inner
@@ -747,6 +981,7 @@ impl Gateway {
         match name {
             "list_workspaces" => self.workspaces_listing(args).await,
             "list_repositories" => self.repositories_listing(args).await,
+            "read_github" => self.read_github(args).await,
             "get_task" => Ok(json!({
                 "id": f.id.as_str(),
                 "workspace": self.workspace_name(&f).await,
@@ -893,6 +1128,7 @@ impl Gateway {
                 tool: name.into(),
                 origin: origin.name().into(),
                 authority: origin.authority().map(|m| m.id.to_string()),
+                detail: None,
             },
             None,
         )
@@ -1056,6 +1292,139 @@ impl Gateway {
         Ok(json!({"workspaces": ws}))
     }
 
+    /// `read_github` (D-193): a run or a pull request, read now with
+    /// Otter's GitHub sign-in from its own directory, redacted and bounded.
+    async fn read_github(&self, args: &Value) -> Result<Value, ToolError> {
+        use crate::delivery::{GitHub, GithubLink};
+        let url = args.get("url").and_then(Value::as_str).unwrap_or_default();
+        let Some(link) = GithubLink::parse(url) else {
+            return Err(fail(
+                "invalid",
+                "that isn't a link to a GitHub Actions run or pull request",
+            )
+            .next(
+                "a link like https://github.com/<owner>/<repo>/actions/runs/<id> or …/pull/<n>",
+            ));
+        };
+        let d = &self.inner.daemon;
+        let dir = d.otter_dir();
+        let env = d.environments.base().clone();
+        let gh_env = d.git_account.gh_env(&env);
+        let Some(mut gh) = GitHub::find(&dir, &gh_env) else {
+            return Err(fail("not_ready", "gh isn't installed on this host"));
+        };
+        gh.repo = Some(link.repo().to_owned());
+        let read_at = chrono::Utc::now();
+        let unreadable = |e: anyhow::Error| {
+            fail(
+                "retryable",
+                format!("GitHub said: {}", excerpt(&redact(&format!("{e:#}")), 400)),
+            )
+        };
+        let r = |s: &str| redact(s);
+        match &link {
+            GithubLink::Run { repo, id, job } => {
+                let run = gh.run_view(id).await.map_err(unreadable)?;
+                let failed = run.conclusion == "failure"
+                    || run.jobs.iter().any(|j| j.conclusion == "failure");
+                let log = if failed {
+                    gh.run_failed_log(id).await.map(|l| {
+                        // The end says why; the rest is in the link.
+                        let keep = 6_000;
+                        let start = l.len().saturating_sub(keep);
+                        let start = (start..l.len())
+                            .find(|i| l.is_char_boundary(*i))
+                            .unwrap_or(0);
+                        redact(&l[start..])
+                    })
+                } else {
+                    None
+                };
+                Ok(json!({
+                    "kind": "run",
+                    "repo": repo,
+                    "id": id,
+                    "job": job,
+                    "name": r(&run.name),
+                    "title": r(&run.title),
+                    "event": run.event,
+                    "branch": r(&run.branch),
+                    "commit": run.commit,
+                    "status": run.status,
+                    "conclusion": run.conclusion,
+                    "created_at": run.created_at,
+                    "updated_at": run.updated_at,
+                    "url": run.url,
+                    "jobs": run.jobs.iter().take(30).map(|j| json!({
+                        "name": r(&j.name),
+                        "status": j.status,
+                        "conclusion": j.conclusion,
+                        "failed_steps": j.failed_steps.iter().map(|s| r(s)).collect::<Vec<_>>(),
+                    })).collect::<Vec<_>>(),
+                    "failed_log_end": log,
+                    "read_at": read_at,
+                }))
+            }
+            GithubLink::PullRequest { repo, number } => {
+                let pr = gh.pr_view(*number).await.map_err(unreadable)?;
+                let (checks, checks_unreadable) = match gh.checks(*number).await {
+                    Ok(c) => (c, None),
+                    Err(e) => (vec![], Some(excerpt(&redact(&format!("{e:#}")), 300))),
+                };
+                Ok(json!({
+                    "kind": "pull_request",
+                    "repo": repo,
+                    "number": number,
+                    "title": r(pr["title"].as_str().unwrap_or_default()),
+                    "state": pr["state"],
+                    "draft": pr["isDraft"],
+                    "mergeable": pr["mergeable"],
+                    "base": pr["baseRefName"],
+                    "head": pr["headRefName"],
+                    "url": pr["url"],
+                    "checks_unreadable": checks_unreadable,
+                    "checks": checks.iter().take(50).map(|c| json!({
+                        "name": r(&c.name),
+                        "state": c.state,
+                        "link": c.url,
+                    })).collect::<Vec<_>>(),
+                    "read_at": read_at,
+                }))
+            }
+        }
+    }
+
+    /// A task's sub-tasks (D-194), oldest first.
+    async fn subtasks_listing(&self, parent: &TaskId) -> Result<Value, ToolError> {
+        let d = &self.inner.daemon;
+        let mut children: Vec<Task> = d
+            .tasks
+            .lock()
+            .await
+            .list()
+            .into_iter()
+            .filter(|c| c.parent.as_ref() == Some(parent))
+            .collect();
+        children.sort_by_key(|c| c.created_at);
+        let store = d.store.lock().await;
+        let listed: Vec<Value> = children
+            .iter()
+            .map(|c| {
+                json!({
+                    "id": c.id.as_str(),
+                    "title": redact(&c.title),
+                    "status": c.status.as_str(),
+                    "status_reason": c.status_reason.as_deref().map(redact),
+                    "waits_on_developer": c.needs().map(|n| redact(&n.summary)),
+                    "workspace": c.workspace_id.as_ref().and_then(|w| store.workspace(w.as_str())).map(|w| w.name.clone()),
+                    "pull_request": c.delivery.as_ref().and_then(|d| d.pr_url.clone()),
+                    "report": c.report.as_deref().map(|r| excerpt(&redact(r), 600)),
+                })
+            })
+            .collect();
+        Ok(json!({"sub_tasks": listed}))
+    }
+
     /// `list_repositories`, in a task's conversation and the host's alike.
     async fn repositories_listing(&self, args: &Value) -> Result<Value, ToolError> {
         let d = &self.inner.daemon;
@@ -1120,6 +1489,7 @@ impl Gateway {
             }
             "list_workspaces" => self.workspaces_listing(args).await,
             "list_repositories" => self.repositories_listing(args).await,
+            "read_github" => self.read_github(args).await,
             _ => {
                 let task = Self::named_task(args)?;
                 let mut rest = args.clone();
@@ -1150,6 +1520,7 @@ impl Gateway {
                 tool: name.into(),
                 origin: origin.name().into(),
                 authority: authority.clone(),
+                detail: None,
             };
             (event, command)
         };
@@ -1401,6 +1772,7 @@ impl Gateway {
                 tool: "ask_agent".into(),
                 origin: origin.name().into(),
                 authority: origin.authority().map(|m| m.id.to_string()),
+                detail: None,
             },
             Some(&command),
         )
@@ -1434,6 +1806,450 @@ impl Gateway {
         Ok(json!({"done": "asked", "turns": asked, "status": f.status.as_str()}))
     }
 
+    /// Otter's own instructions to the coding agent (D-193): a message in
+    /// the task's conversation, said as Otter's, and to the run at work —
+    /// or with the next one. Each text once per turn.
+    async fn tell_agent(&self, f: &Task, args: &Value) -> Result<Value, ToolError> {
+        let text = args
+            .get("text")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|t| !t.is_empty() && t.len() <= 4_000)
+            .ok_or_else(|| {
+                fail(
+                    "invalid",
+                    "text is what to tell it, at most 4000 characters",
+                )
+            })?
+            .to_owned();
+        let now = args.get("now").and_then(Value::as_bool).unwrap_or(false);
+        let origin = &self.inner.origin;
+        let hash = text.bytes().fold(0xcbf2_9ce4_8422_2325_u64, |h, b| {
+            (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3)
+        });
+        let command = format!("{}:{:08x}", origin.command("tell_agent"), hash as u32);
+        self.record(
+            TaskEvent::ToolCalled {
+                tool: "tell_agent".into(),
+                origin: origin.name().into(),
+                authority: origin.authority().map(|m| m.id.to_string()),
+                detail: Some(excerpt(&redact(&text), 200)),
+            },
+            Some(&command),
+        )
+        .await;
+        let d = &self.inner.daemon;
+        let said = text.clone();
+        let applied = d.tasks.lock().await.apply(&f.id, Some(&command), |f, _| {
+            let (m, c) = crate::tasks::message(
+                otter_core::task::MessageRole::Controller,
+                format!("{}{said}", crate::controller::TO_THE_AGENT),
+                Some(format!("tell:{command}")),
+            );
+            f.messages.push(m);
+            Ok(vec![
+                c,
+                Change::new(TaskEvent::ToolDone {
+                    tool: "tell_agent".into(),
+                    error: None,
+                })
+                .because(&command),
+            ])
+        })?;
+        d.task_changed(&applied);
+        let Some(m) = applied
+            .task
+            .messages
+            .iter()
+            .rev()
+            .find(|m| m.correlation_id.as_deref() == Some(format!("tell:{command}").as_str()))
+        else {
+            return Err(fail("retryable", "the message wasn't kept"));
+        };
+        let runs = d.otter_tells_runs(&f.id, m.id.as_str(), &text, now).await;
+        if !applied.duplicate {
+            self.inner
+                .done
+                .lock()
+                .unwrap()
+                .push(format!("tell_agent: {}", excerpt(&text, 60)));
+        }
+        Ok(json!({
+            "done": if runs > 0 { "told" } else { "with its next turn" },
+            "runs": runs,
+            "status": applied.task.status.as_str(),
+        }))
+    }
+
+    /// Publishing allowed on the developer's word (D-193): the task's ask
+    /// to push its branch and open its pull request, answered yes. Where
+    /// publishing is automatic, review publishes by itself; a question
+    /// already put to the developer is theirs.
+    async fn publish(&self, f: &Task) -> Result<Value, ToolError> {
+        let Some(ask) = f
+            .pending_decisions()
+            .find(|d| {
+                d.summary.ends_with(crate::controller::AND_OPEN_A_PR)
+                    && d.summary.contains("git push")
+            })
+            .cloned()
+        else {
+            return Err(fail(
+                "not_ready",
+                "the task isn't asking to publish: it asks in review, once its work is verified",
+            ));
+        };
+        let origin = &self.inner.origin;
+        if origin.authority().is_none() {
+            return Err(fail(
+                "needs_developer",
+                "publishing was put to the developer, and only they can answer that question now",
+            )
+            .next("tell the developer what you'd say"));
+        }
+        let command = origin.command("publish");
+        self.record(
+            TaskEvent::ToolCalled {
+                tool: "publish".into(),
+                origin: origin.name().into(),
+                authority: origin.authority().map(|m| m.id.to_string()),
+                detail: Some(ask.summary.clone()),
+            },
+            Some(&command),
+        )
+        .await;
+        let d = &self.inner.daemon;
+        d.decide(
+            &f.id,
+            &ask.id,
+            true,
+            None,
+            otter_core::task::Decider::User,
+            Some("You said publish".into()),
+        )
+        .await?;
+        self.record(
+            TaskEvent::ToolDone {
+                tool: "publish".into(),
+                error: None,
+            },
+            Some(&command),
+        )
+        .await;
+        self.inner
+            .done
+            .lock()
+            .unwrap()
+            .push("publish: allowed".into());
+        Ok(json!({"done": "publishing", "status": f.status.as_str()}))
+    }
+
+    /// A sub-task of `f` (D-194): its request is Otter's words, said so; it
+    /// works where it is told, else in a workspace of its own from `f`'s
+    /// repository; it starts at once. Made once per title and request in a
+    /// turn; at most [`MAX_SUBTASKS`] unfinished.
+    async fn create_subtask(&self, f: &Task, args: &Value) -> Result<Value, ToolError> {
+        use otter_core::task::TaskAction;
+        use otter_protocol::task::{TaskAct, TaskCreate, WorkspaceChoice};
+        let text = |k: &str, max: usize| {
+            args.get(k)
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|t| !t.is_empty() && t.len() <= max)
+                .map(str::to_owned)
+        };
+        let title = text("title", 200).ok_or_else(|| {
+            fail(
+                "invalid",
+                "title is the sub-task's name, at most 200 characters",
+            )
+        })?;
+        let request = text("request", 16_000).ok_or_else(|| {
+            fail(
+                "invalid",
+                "request is what the sub-task is to do, in your words, at most 16000 characters",
+            )
+        })?;
+        let d = &self.inner.daemon;
+        let origin = &self.inner.origin;
+        let hash = format!("{title}\n{request}")
+            .bytes()
+            .fold(0xcbf2_9ce4_8422_2325_u64, |h, b| {
+                (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3)
+            });
+        let command = format!("{}:{:08x}", origin.command("create_task"), hash as u32);
+        // Made already (the turn ran again): that one, nothing recorded twice.
+        if let Some(c) = d.tasks.lock().await.applied(&command).cloned() {
+            return Ok(json!({
+                "done": "already",
+                "task_id": c.id.as_str(),
+                "title": c.title,
+                "status": c.status.as_str(),
+            }));
+        }
+        let open = d
+            .tasks
+            .lock()
+            .await
+            .list()
+            .into_iter()
+            .filter(|c| {
+                // A failed one is over (Otter can't retry it): it frees its place.
+                c.parent.as_ref() == Some(&f.id)
+                    && !matches!(
+                        c.status,
+                        TaskStatus::Done | TaskStatus::Cancelled | TaskStatus::Failed
+                    )
+            })
+            .count();
+        if open >= MAX_SUBTASKS {
+            return Err(fail(
+                "conflict",
+                format!("this task has {open} sub-tasks not done yet, the most at once"),
+            )
+            .next("wait for one to finish, or do it in this task"));
+        }
+        let choice = Self::workspace_choice(args)?;
+        let answer_only = args
+            .get("answer_only")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        if answer_only {
+            d.can_answer_only()
+                .map_err(|e| fail("not_allowed_in_this_turn", e.message))?;
+        }
+        // Its own unless told otherwise: in this task's workspace first, then
+        // one of its own made from there (D-080, D-192).
+        let (workspace, own) = match choice {
+            Some(c) => (Some(c), false),
+            None => (
+                f.workspace_id
+                    .as_ref()
+                    .map(|w| WorkspaceChoice::Named(w.to_string())),
+                f.workspace_id.is_some(),
+            ),
+        };
+        let c = d
+            .task_create(TaskCreate {
+                command_id: command.clone(),
+                title: title.clone(),
+                request: format!(
+                    "{}, for the task “{}”:\n{request}",
+                    crate::runs::OTTER_SAYS,
+                    f.title
+                ),
+                workspace,
+                answer_only,
+            })
+            .await?;
+        // Its parent, and where the parent's Otter starts hearing from it.
+        let parent = f.id.clone();
+        let applied = d.tasks.lock().await.apply(&c.id, None, |c, _| {
+            if c.parent.is_none() {
+                c.parent = Some(parent.clone());
+            }
+            Ok(vec![])
+        })?;
+        d.task_changed(&applied);
+        self.record(
+            TaskEvent::ToolCalled {
+                tool: "create_task".into(),
+                origin: origin.name().into(),
+                authority: origin.authority().map(|m| m.id.to_string()),
+                detail: Some(format!("{} [{}]", redact(&title), c.id)),
+            },
+            Some(&command),
+        )
+        .await;
+        if own
+            && !c.has_written()
+            && let Err(e) = d
+                .clone()
+                .task_act(TaskAct {
+                    command_id: format!("{command}:own"),
+                    task: c.id.to_string(),
+                    action: TaskAction::OwnWorkspace,
+                })
+                .await
+        {
+            // It shares this task's workspace instead (one run at a time
+            // there, D-079).
+            tracing::info!(task = %c.id, "a sub-task's own workspace: {}", e.message);
+        }
+        let started = d
+            .clone()
+            .task_act(TaskAct {
+                command_id: format!("{command}:start"),
+                task: c.id.to_string(),
+                action: TaskAction::Start,
+            })
+            .await;
+        self.record(
+            TaskEvent::ToolDone {
+                tool: "create_task".into(),
+                error: started.as_ref().err().map(|_| "not_ready".into()),
+            },
+            Some(&command),
+        )
+        .await;
+        self.undoable("create_task", &c.id, TaskAction::Cancel)
+            .await;
+        self.inner
+            .done
+            .lock()
+            .unwrap()
+            .push(format!("create_task: {title} ({})", c.id));
+        let now = d.task_get(c.id.as_str()).await?;
+        let ws = match &now.workspace_id {
+            Some(w) => d
+                .store
+                .lock()
+                .await
+                .workspace(w.as_str())
+                .map(|w| w.name.clone()),
+            None => None,
+        };
+        Ok(json!({
+            "done": "created",
+            "task_id": c.id.as_str(),
+            "title": now.title,
+            "status": now.status.as_str(),
+            "workspace": ws,
+        }))
+    }
+
+    /// What undoes a change just made (D-193), on record for the developer.
+    async fn undoable(&self, tool: &str, task: &TaskId, action: otter_core::task::TaskAction) {
+        self.record(
+            TaskEvent::ToolUndo {
+                tool: tool.into(),
+                task_id: task.clone(),
+                action,
+            },
+            None,
+        )
+        .await;
+    }
+
+    /// The request was answered in Otter's reply, and nothing is to change
+    /// (D-193): the task ends done, with no workspace or coding agent —
+    /// only while the agent hasn't worked on it (what it did goes through
+    /// review).
+    async fn finish_with_answer(&self, f: &Task) -> Result<Value, ToolError> {
+        if f.status == TaskStatus::Done {
+            return Ok(json!({"done": "already", "status": "done"}));
+        }
+        if f.has_written() {
+            return Err(fail(
+                "not_ready",
+                "the coding agent has worked on this task: its work goes through review",
+            ));
+        }
+        if let Some(d) = f.pending_decisions().next() {
+            return Err(fail(
+                "needs_developer",
+                format!("it waits on the developer: {}", d.summary),
+            )
+            .next("tell them; it can end once they answer"));
+        }
+        let d = &self.inner.daemon;
+        // A sub-task that failed is over too (Otter can't retry it): the
+        // answer says so.
+        let (unfinished, failed) = {
+            let tasks = d.tasks.lock().await.list();
+            let mine = || tasks.iter().filter(|c| c.parent.as_ref() == Some(&f.id));
+            (
+                mine()
+                    .filter(|c| {
+                        !matches!(
+                            c.status,
+                            TaskStatus::Done | TaskStatus::Cancelled | TaskStatus::Failed
+                        )
+                    })
+                    .count(),
+                mine().filter(|c| c.status == TaskStatus::Failed).count(),
+            )
+        };
+        if unfinished > 0 {
+            return Err(fail(
+                "not_ready",
+                format!("{unfinished} of its sub-tasks aren't done"),
+            )
+            .next("wait for them (you'll hear), or cancel them first"));
+        }
+        let origin = &self.inner.origin;
+        let command = origin.command("finish_with_answer");
+        self.record(
+            TaskEvent::ToolCalled {
+                tool: "finish_with_answer".into(),
+                origin: origin.name().into(),
+                authority: origin.authority().map(|m| m.id.to_string()),
+                detail: None,
+            },
+            Some(&command),
+        )
+        .await;
+        let applied = d
+            .tasks
+            .lock()
+            .await
+            .apply(&f.id, Some(&command), |f, now| {
+                let mut changes = Vec::new();
+                // Its watches go with it; one being said now stays to be said.
+                let waiting: Vec<otter_core::WatchId> = f
+                    .watches
+                    .iter()
+                    .filter(|w| w.status == otter_core::watch::WatchStatus::Waiting)
+                    .map(|w| w.id.clone())
+                    .collect();
+                for w in waiting {
+                    if let Ok(c) = crate::watches::cancel(f, &w, &command, now) {
+                        changes.extend(c);
+                    }
+                }
+                if f.status != TaskStatus::Planning {
+                    changes.push(Change::new(
+                        f.transition(TaskStatus::Planning, None, now)
+                            .map_err(RpcError::conflict)?,
+                    ));
+                }
+                changes.push(Change::new(f.reason(ANSWERED_BY_OTTER)));
+                changes.push(Change::new(
+                    f.transition(TaskStatus::Done, Some(ANSWERED_BY_OTTER.into()), now)
+                        .map_err(RpcError::conflict)?,
+                ));
+                changes.push(
+                    Change::new(TaskEvent::ToolDone {
+                        tool: "finish_with_answer".into(),
+                        error: None,
+                    })
+                    .because(&command),
+                );
+                Ok(changes)
+            })?;
+        d.task_changed(&applied);
+        if !applied.duplicate {
+            self.undoable(
+                "finish_with_answer",
+                &f.id,
+                otter_core::task::TaskAction::RequestChanges {
+                    note: Some("Otter's answer wasn't enough: do the work".into()),
+                },
+            )
+            .await;
+            self.inner
+                .done
+                .lock()
+                .unwrap()
+                .push("finish_with_answer: done".into());
+        }
+        let mut out = json!({"done": "answered", "status": applied.task.status.as_str()});
+        if failed > 0 {
+            out["failed_sub_tasks"] = json!(failed);
+        }
+        Ok(out)
+    }
+
     /// Answer-only on or off, on the developer's word (D-092). On needs the
     /// SDK runtime, where the agent can be kept to reading.
     /// Say where a task works (D-186): one the developer named, one made
@@ -1446,16 +2262,18 @@ impl Gateway {
             ));
         };
         let d = &self.inner.daemon;
-        // D-080: not once it has worked, and not over a workspace it has
-        // (the developer changes that in the app) — but the same choice
-        // again, or the workspace made for it, is already done.
-        if !f.runs.is_empty() {
+        // D-080: not once it has worked (its work is where it is); before
+        // that, over the workspace it has too, as the app may (D-192). The
+        // same choice again, or the workspace made for it, is done already.
+        if f.has_written() {
             return Err(fail(
                 "not_ready",
                 "the coding agent has worked in this task's workspace already, and its work is there",
             ));
         }
         let placement = d.placement(&choice).await?;
+        let mut from = None;
+        let mut from_id = None;
         if let Some(cur) = &f.workspace_id {
             let (same, name, state) = {
                 let store = d.store.lock().await;
@@ -1485,17 +2303,17 @@ impl Gateway {
                     ws.map(|w| format!("{:?}", w.state).to_lowercase()),
                 )
             };
-            if !same {
-                return Err(fail("conflict", "this task has a workspace already")
-                    .next("the developer can give it another in the app"));
+            if same {
+                // Done already: nothing to do, nothing to record twice.
+                return Ok(json!({
+                    "done": "workspace set",
+                    "workspace": name,
+                    "workspace_state": state,
+                    "status": f.status.as_str(),
+                }));
             }
-            // Done already: nothing to do, nothing to record twice.
-            return Ok(json!({
-                "done": "workspace set",
-                "workspace": name,
-                "workspace_state": state,
-                "status": f.status.as_str(),
-            }));
+            from = name;
+            from_id = Some(cur.clone());
         }
         let origin = &self.inner.origin;
         let command = origin.command("set_workspace");
@@ -1504,6 +2322,7 @@ impl Gateway {
                 tool: "set_workspace".into(),
                 origin: origin.name().into(),
                 authority: origin.authority().map(|m| m.id.to_string()),
+                detail: None,
             },
             Some(&command),
         )
@@ -1530,12 +2349,26 @@ impl Gateway {
             "set_workspace: {}",
             name.as_deref().unwrap_or("none")
         ));
-        Ok(json!({
+        if let Some(back) = from_id {
+            self.undoable(
+                "set_workspace",
+                &f.id,
+                otter_core::task::TaskAction::SetWorkspace {
+                    workspace: back.to_string(),
+                },
+            )
+            .await;
+        }
+        let mut out = json!({
             "done": "workspace set",
             "workspace": name,
             "workspace_state": state,
             "status": placed.status.as_str(),
-        }))
+        });
+        if let Some(from) = from {
+            out["moved_from"] = json!(from);
+        }
+        Ok(out)
     }
 
     async fn set_answer_only(&self, f: &Task, args: &Value) -> Result<Value, ToolError> {
@@ -1550,12 +2383,14 @@ impl Gateway {
             })?;
         }
         let origin = &self.inner.origin;
+        let by_otter = origin.authority().is_none();
         let command = origin.command("set_answer_only");
         self.record(
             TaskEvent::ToolCalled {
                 tool: "set_answer_only".into(),
                 origin: origin.name().into(),
                 authority: origin.authority().map(|m| m.id.to_string()),
+                detail: None,
             },
             Some(&command),
         )
@@ -1567,10 +2402,11 @@ impl Gateway {
             if !on {
                 crate::controller::forget_decline(f);
             }
-            let why = f.reason(if on {
-                "You said only an answer is wanted: the coding agent only reads."
-            } else {
-                "You said changes are fine: the task is no longer answer-only."
+            let why = f.reason(match (on, by_otter) {
+                (true, false) => "You said only an answer is wanted: the coding agent only reads.",
+                (false, false) => "You said changes are fine: the task is no longer answer-only.",
+                (true, true) => "Otter made the task answer-only: the coding agent only reads.",
+                (false, true) => "Otter allowed changes again: the task is no longer answer-only.",
             });
             Ok(vec![
                 Change::new(why),
@@ -1598,6 +2434,18 @@ impl Gateway {
     /// already watched is that watch. It looks once first (W-1): the answer
     /// says what is true now, and what has already happened sets nothing.
     async fn set_watch(&self, f: &Task, args: &Value) -> Result<Value, ToolError> {
+        // A watch's own turn sets no other (D-183): a watch that sets the
+        // next would look again for ever, a model turn each time. Any other
+        // turn may watch where that is automatic (D-191).
+        if let Origin::Event { event_id } = &self.inner.origin
+            && event_id.starts_with("watch:")
+        {
+            return Err(fail(
+                "not_allowed_in_this_turn",
+                "a watch's own turn doesn't set another watch",
+            )
+            .next("say what you'd watch; the developer can ask for it"));
+        }
         let kind_name = args["kind"].as_str().unwrap_or_default();
         let kind = crate::watches::kind(kind_name).ok_or_else(|| {
             fail(
@@ -1663,6 +2511,7 @@ impl Gateway {
                 tool: "watch".into(),
                 origin: origin.name().into(),
                 authority: asked_in.as_ref().map(|m| m.to_string()),
+                detail: None,
             },
             Some(&command),
         )
@@ -1709,6 +2558,16 @@ impl Gateway {
         }
         if read_first && !applied.duplicate {
             d.looked(&watch.id, kind);
+        }
+        if !applied.duplicate {
+            self.undoable(
+                "watch",
+                &f.id,
+                otter_core::task::TaskAction::CancelWatch {
+                    watch_id: watch.id.clone(),
+                },
+            )
+            .await;
         }
         self.inner
             .done
@@ -1799,6 +2658,30 @@ impl Gateway {
                 ok => ok,
             };
         }
+        if name == "finish_with_answer" {
+            return match self.finish_with_answer(&f).await {
+                Err(e) => refused(e).await,
+                ok => ok,
+            };
+        }
+        if name == "tell_agent" {
+            return match self.tell_agent(&f, args).await {
+                Err(e) => refused(e).await,
+                ok => ok,
+            };
+        }
+        if name == "publish" {
+            return match self.publish(&f).await {
+                Err(e) => refused(e).await,
+                ok => ok,
+            };
+        }
+        if name == "create_task" {
+            return match self.create_subtask(&f, args).await {
+                Err(e) => refused(e).await,
+                ok => ok,
+            };
+        }
         if name == "watch" || name == "cancel_watch" {
             let done = if name == "watch" {
                 self.set_watch(&f, args).await
@@ -1858,12 +2741,26 @@ impl Gateway {
         let command = origin.command(name);
         let authority = origin.authority().map(|m| m.id.to_string());
         let by_otter = authority.is_none();
+        // A plan question already put to the developer is theirs: Otter
+        // approves plans on its own before asking (D-193), not over them.
+        // Refused before anything is recorded.
+        if by_otter && name == "approve_plan" {
+            return refused(
+                fail(
+                    "needs_developer",
+                    "the plan was put to the developer, and only they can answer that question now",
+                )
+                .next("tell the developer what you'd say"),
+            )
+            .await;
+        }
         // Written before the change: a change that never finished is known.
         self.record(
             TaskEvent::ToolCalled {
                 tool: name.into(),
                 origin: origin.name().into(),
                 authority: authority.clone(),
+                detail: None,
             },
             Some(&command),
         )
@@ -1873,15 +2770,15 @@ impl Gateway {
         let mut stop = false;
         let mut not_done: Option<String> = None;
         let applied = d.tasks.lock().await.apply(&f.id, Some(&command), |f, now| {
-            let (mut changes, stops) = if by_otter {
-                // Only pausing gets here without the developer's word.
-                let c = f
-                    .transition(TaskStatus::Paused, Some("Paused by Otter".into()), now)
-                    .map_err(RpcError::conflict)?;
-                (vec![Change::new(c)], true)
-            } else {
-                intent_step(f, effective, authority.as_deref().unwrap_or(&command), now)
-            };
+            // Without the developer's word (an event's turn, D-193), it is
+            // Otter's own doing, and the record says so.
+            let (mut changes, stops) = intent_step(
+                f,
+                effective,
+                authority.as_deref().unwrap_or(&command),
+                by_otter,
+                now,
+            );
             stop = stops;
             if effective == Intent::Finish && f.status != TaskStatus::Done {
                 not_done = Some(
@@ -1930,6 +2827,19 @@ impl Gateway {
         if let Some(why) = not_done {
             return Err(fail("not_ready", why).next("say what is missing"));
         }
+        // What undoes it (D-193): going on and stopping undo each other; an
+        // acceptance is undone by changing the goal again.
+        let undo = match (name, effective) {
+            ("pause_task", Intent::Pause) => Some(otter_core::task::TaskAction::Resume),
+            ("resume_task", Intent::Continue) => Some(otter_core::task::TaskAction::Pause),
+            ("accept_task", Intent::Finish) => Some(otter_core::task::TaskAction::RequestChanges {
+                note: Some("Otter's acceptance undone".into()),
+            }),
+            _ => None,
+        };
+        if let Some(undo) = undo {
+            self.undoable(name, &f.id, undo).await;
+        }
         let did = match effective {
             Intent::Guide => "passed on",
             Intent::Redirect => "redirected",
@@ -1949,6 +2859,13 @@ impl Gateway {
         Ok(json!({"done": did, "status": status.as_str()}))
     }
 }
+
+/// The most sub-tasks a task has unfinished at once (D-194).
+pub(crate) const MAX_SUBTASKS: usize = 3;
+
+/// Why a task Otter answered itself is done (D-193).
+pub(crate) const ANSWERED_BY_OTTER: &str =
+    "Otter answered it: nothing was to change, so there was no workspace or coding agent";
 
 /// The most one note in Otter's memory says, in characters.
 const MAX_NOTE: usize = 1_000;
@@ -2062,13 +2979,15 @@ mod tests {
                 .map(|t| t.name)
                 .collect();
             assert_eq!(routine, ["pause_task"]);
-            // Never Otter's: cancel, delete, decide anything else, publish.
+            // Never Otter's: cancel, delete, decide anything else, merge.
+            // (Publishing goes by its level, D-193; merging never does.)
             for n in [
                 "cancel_task",
                 "delete_task",
                 "decide",
                 "answer_pending_decision",
-                "publish",
+                "merge",
+                "merge_pull_request",
             ] {
                 assert!(!names.contains(&n), "{n}");
             }

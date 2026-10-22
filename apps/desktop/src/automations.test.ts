@@ -1,13 +1,16 @@
 import { afterAll, afterEach, describe, expect, it } from "vitest";
 import {
+  actionText,
   findItem,
   groupAutomations,
   localTime,
   nextText,
   openWatches,
+  originText,
   outcomeLabel,
   pastDeadline,
   policyText,
+  refusalText,
   scheduleText,
   triggerLine,
   untilText,
@@ -193,5 +196,23 @@ describe("automations", () => {
     expect(nextText(due, NOW)).toBe("due · runs at the next look");
     expect(triggerLine(due, NOW)).toBe("daily at 20:20 UTC · due · runs at the next look");
     expect(nextText(trigger({ enabled: false }).trigger, NOW)).toBe("paused");
+  });
+
+  it("says what Otter did in plain words, and who started it (D-193)", () => {
+    expect(["set_workspace", "watch", "publish", "accept_task", "approve_plan", "create_task", "tell_agent", "finish_with_answer"].map(actionText)).toEqual([
+      "Moved the task",
+      "Set a watch",
+      "Published",
+      "Accepted",
+      "Approved the plan",
+      "Made a sub-task",
+      "Told the coding agent",
+      "Answered and finished",
+    ]);
+    expect(["Bash", "WebSearch", "WebFetch"].map(actionText)).toEqual(["Ran a command", "Searched the web", "Read a page"]);
+    // One the app doesn't know yet, by its name.
+    expect(actionText("read_github")).toBe("Read github");
+    expect(["developer", "event", "auto"].map(originText)).toEqual(["on your word", "on its own", "on its own"]);
+    expect(refusalText("not_ready")).toBe("not ready");
   });
 });

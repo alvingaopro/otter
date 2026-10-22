@@ -22,6 +22,8 @@ mod chat_bootstrap;
 mod commands;
 #[path = "e2e/converse.rs"]
 mod converse;
+#[path = "e2e/coordination.rs"]
+mod coordination;
 #[path = "e2e/git_account.rs"]
 mod git_account;
 #[path = "e2e/host_chat.rs"]
@@ -2283,7 +2285,7 @@ hook SessionStart ',"source":"startup"'
 echo "claude ready"
 hook UserPromptSubmit ',"prompt":"go"'
 rec '{"type":"user","timestamp":"'$(now)'","sessionId":"'$id'","message":{"role":"user","content":"go"}}'
-# Its name for the conversation (D-192), written again on every start.
+# Its name for the conversation (D-196), written again on every start.
 [ -n "$FAKE_CLAUDE_TITLE" ] && rec '{"type":"ai-title","aiTitle":"'"$FAKE_CLAUDE_TITLE"'","sessionId":"'$id'"}'
 case "$FAKE_CODEX_MODE" in
   question)
@@ -2342,7 +2344,7 @@ exec sleep 600
 "#;
 
 /// A Claude Code session takes the name Claude Code gives its conversation
-/// while the developer hasn't named it (D-192): `/` and `:` as their
+/// while the developer hasn't named it (D-196): `/` and `:` as their
 /// full-width look-alikes, a second one the same `-2`. Named at creation
 /// or renamed, it keeps its name.
 #[tokio::test]
@@ -2420,6 +2422,29 @@ async fn fake_agent_host(mode: &str, controller: &str) -> FakeCodex {
 }
 
 /// Like [`fake_agent_host`], with more variables (given the scratch dir).
+/// The tool levels most tests run with (D-191): moving, publishing,
+/// approving plans and accepting stay the developer's, so a test's flow is
+/// the one it was written for.
+pub(crate) const HARNESS_LEVELS: &str =
+    "set_workspace=developer,publish=developer,approve_plan=developer,accept_task=developer";
+
+/// Set Otter's tools' levels on `host` (D-191), through Settings.
+pub(crate) async fn set_levels(host: &TestHost, levels: &[(&str, &str)]) {
+    let update = otter_protocol::host::SettingsUpdate {
+        tool_levels: levels
+            .iter()
+            .map(|(n, l)| {
+                (
+                    n.to_string(),
+                    Some(otter_core::tools::ToolLevel::parse(l).expect("a level")),
+                )
+            })
+            .collect(),
+        ..Default::default()
+    };
+    host.conn().await.settings_set(update).await.unwrap();
+}
+
 async fn fake_agent_host_with(
     mode: &str,
     controller: &str,
@@ -2479,6 +2504,10 @@ async fn fake_agent_host_with(
         // Planning starts without the agent's look at the code, unless a
         // test asks for it (D-064).
         ("OTTER_PLAN_TURN", "0".into()),
+        // What the controller does on its own when these are automatic
+        // (D-191, D-193) is the developer's in these tests, as before;
+        // the tests of Otter acting on its own set it themselves.
+        ("OTTER_TOOL_LEVELS", HARNESS_LEVELS.into()),
     ];
     let more = extra(scratch.path());
     let vars: Vec<(&str, String)> = vars.into_iter().chain(more).collect();
@@ -8104,6 +8133,7 @@ async fn settings_take_keys_write_only_and_keep_them() {
             otter_tools: None,
             delete_merged_workspaces: None,
             git: None,
+            tool_levels: Default::default(),
         })
         .await
         .unwrap();

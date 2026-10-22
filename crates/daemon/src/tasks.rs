@@ -329,7 +329,26 @@ impl TaskStore {
 
     /// A task's history with `seq > after`, oldest first.
     pub fn history(&self, id: &TaskId, after: u64, limit: usize) -> Result<Vec<TaskEventRecord>> {
-        let path = history_path(&self.dir, id);
+        read_history(&self.dir, id, after, limit)
+    }
+
+    /// Where the tasks are kept: their histories can be read from here
+    /// without the store (D-193's ledger).
+    pub fn dir(&self) -> &Path {
+        &self.dir
+    }
+}
+
+/// A task's history from `dir`, `seq > after`, at most `limit`, oldest
+/// first. Only appended to, so it can be read without the store's lock.
+pub(crate) fn read_history(
+    dir: &Path,
+    id: &TaskId,
+    after: u64,
+    limit: usize,
+) -> Result<Vec<TaskEventRecord>> {
+    {
+        let path = history_path(dir, id);
         let file = match std::fs::File::open(&path) {
             Ok(f) => f,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
@@ -798,6 +817,25 @@ pub fn apply_action(
         TaskAction::CancelWatch { watch_id } => {
             changes.extend(crate::watches::cancel(f, watch_id, command_id, now)?);
         }
+        // A task tightens what Otter may do in it (D-191); the host's level
+        // still applies where it is stricter.
+        TaskAction::SetToolLevel { tool, level } => {
+            if crate::levels::entry(tool).is_none() {
+                return Err(RpcError::invalid(format!("Otter has no tool `{tool}`")));
+            }
+            // A task only tightens: `auto` there is the host's level.
+            let said = match level.filter(|l| *l != otter_core::tools::ToolLevel::Auto) {
+                Some(l) => {
+                    f.tool_levels.insert(tool.clone(), l);
+                    format!("Otter's `{tool}` in this task: {}", l.as_str())
+                }
+                None => {
+                    f.tool_levels.remove(tool);
+                    format!("Otter's `{tool}` in this task: as the host's")
+                }
+            };
+            changes.push(Change::new(f.reason(said)));
+        }
         TaskAction::DeleteWatch { watch_id } => {
             changes.extend(crate::watches::delete(f, watch_id, command_id, now)?);
         }
@@ -1231,13 +1269,13 @@ impl Daemon {
 
     /// A worktree of the task's Git workspace's repository, on a branch
     /// of the task's own, from the same base (D-080).
-    async fn own_workspace(
+    pub(crate) async fn own_workspace(
         self: &std::sync::Arc<Self>,
         id: &TaskId,
     ) -> RpcResult<otter_core::Workspace> {
         let f = self.task_get(id.as_str()).await?;
         // Its work so far would stay behind: only before it has any.
-        if !f.runs.is_empty() {
+        if f.has_written() {
             return Err(RpcError::conflict(
                 "it has worked in its workspace already, and its work is there: give it its own before it starts",
             ));
@@ -1246,18 +1284,57 @@ impl Daemon {
             .workspace_id
             .clone()
             .ok_or_else(|| RpcError::conflict("the task has no workspace yet"))?;
-        let (name, repository, base) = {
+        let (name, source) = {
             let store = self.store.lock().await;
             let ws = store
                 .workspace(ws_id.as_str())
                 .ok_or_else(|| workspace_not_found(ws_id.as_str()))?;
-            let otter_core::WorkspaceSource::Git(g) = &ws.source else {
-                return Err(RpcError::conflict(
-                    "only a Git workspace can be given to a task of its own (a worktree of its repository)",
-                ));
-            };
-            (ws.name.clone(), g.repository.clone(), g.base.clone())
+            (ws.name.clone(), ws.source.clone())
         };
+        let (repository, base) = match source {
+            otter_core::WorkspaceSource::Git(g) => (g.repository, g.base),
+            // A directory in a repository (D-192): a workspace of its own
+            // from where that repository comes from, on the branch it has
+            // checked out when the remote has it. The directory itself is
+            // the developer's, and isn't touched.
+            otter_core::WorkspaceSource::Directory { path } => {
+                let env = self.environments.base().clone();
+                let git = crate::delivery::Git {
+                    root: std::path::Path::new(&path),
+                    env: &env,
+                };
+                let Some((url, branch)) = git.origin_and_branch().await else {
+                    return Err(RpcError::conflict(format!(
+                        "{name} isn't in a repository with a remote to make a workspace of its own from"
+                    )));
+                };
+                (
+                    self.stored_repository(&url).await,
+                    branch.map(|b| format!("origin/{b}")),
+                )
+            }
+            otter_core::WorkspaceSource::Empty => {
+                return Err(RpcError::conflict(format!(
+                    "{name} comes from no repository, so there's nothing to make a workspace of its own from"
+                )));
+            }
+        };
+        // One of its own from there already (asked twice, or moved away and
+        // back): that one, not a second (D-192).
+        {
+            let store = self.store.lock().await;
+            if let Some(w) = store.state.workspaces.iter().find(|w| {
+                w.task_id.as_ref() == Some(&f.id)
+                    && w.id != ws_id
+                    && matches!(
+                        w.state,
+                        otter_core::WorkspaceState::Ready | otter_core::WorkspaceState::Preparing
+                    )
+                    && matches!(&w.source, otter_core::WorkspaceSource::Git(g) if g.repository == repository)
+            }) {
+                return Ok(w.clone());
+            }
+        }
         self.make_workspace_for(
             &f,
             &name,
@@ -1279,13 +1356,20 @@ impl Daemon {
         source: SourceSpec,
     ) -> RpcResult<otter_core::Workspace> {
         {
+            // The one made for it from this source: a repeat makes no
+            // second; another source, asked for now, is another (D-192).
             let store = self.store.lock().await;
-            if let Some(w) = store
-                .state
-                .workspaces
-                .iter()
-                .find(|w| w.task_id.as_ref() == Some(&f.id))
-            {
+            if let Some(w) = store.state.workspaces.iter().find(|w| {
+                w.task_id.as_ref() == Some(&f.id)
+                    && match (&w.source, &source) {
+                        (
+                            otter_core::WorkspaceSource::Git(g),
+                            SourceSpec::Git { repository, .. },
+                        ) => &g.repository == repository,
+                        (otter_core::WorkspaceSource::Empty, SourceSpec::Empty) => true,
+                        _ => false,
+                    }
+            }) {
                 return Ok(w.clone());
             }
         }
@@ -1501,6 +1585,43 @@ impl Daemon {
         };
         if f.pending_decisions().next().is_some() {
             return;
+        }
+        // Those made for it that it left before working there (D-192): put
+        // away with it, quietly — nothing of its work is in them — unless
+        // another task works there now.
+        let elsewhere: Vec<otter_core::WorkspaceId> = self
+            .tasks
+            .lock()
+            .await
+            .list()
+            .into_iter()
+            .filter(|o| &o.id != id && !o.status.is_terminal())
+            .filter_map(|o| o.workspace_id)
+            .collect();
+        let left: Vec<(otter_core::WorkspaceId, String)> = {
+            let store = self.store.lock().await;
+            store
+                .state
+                .workspaces
+                .iter()
+                .filter(|w| {
+                    w.task_id.as_ref() == Some(id)
+                        && Some(&w.id) != f.workspace_id.as_ref()
+                        && matches!(
+                            w.state,
+                            otter_core::WorkspaceState::Ready | otter_core::WorkspaceState::Failed
+                        )
+                        && !w.sessions.iter().any(in_use)
+                        && !elsewhere.contains(&w.id)
+                        && self.workspace_holder(&w.id).is_none()
+                })
+                .map(|w| (w.id.clone(), w.name.clone()))
+                .collect()
+        };
+        for (left, name) in left {
+            if let Err(e) = self.workspace_archive(left.as_str()).await {
+                tracing::warn!(workspace = %name, "archiving a workspace its task left: {}", e.message);
+            }
         }
         let Some(ws_id) = f.workspace_id.clone() else {
             return;

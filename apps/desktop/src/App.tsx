@@ -20,7 +20,7 @@ import { HostPage } from "./HostPage";
 import { CliDialog } from "./CliDialog";
 import { WorkspacePane } from "./WorkspacePane";
 import { NewWorkspaceDialog } from "./NewWorkspaceDialog";
-import { SettingsDialog } from "./SettingsDialog";
+import { SettingsDialog, type SettingsTab } from "./SettingsDialog";
 import { ASK_TTL_MS, SignInAsks, type SignInAsk } from "./SignIn";
 import { PanelGrip, SIDEBAR, usePanelWidth } from "./panelResize";
 import { QuickOpen } from "./QuickOpen";
@@ -44,7 +44,7 @@ type Open =
   | { kind: "add" }
   | { kind: "cli" }
   | { kind: "new" }
-  | { kind: "settings" }
+  | { kind: "settings"; tab?: SettingsTab; host?: string }
   | { kind: "quick" }
   | { kind: "rename"; key: string }
   | null;
@@ -418,6 +418,8 @@ export default function App() {
               setTaskFocus({ key, at: Date.now() });
               setView("tasks");
             }}
+            onSettings={(host) => setOpen({ kind: "settings", tab: "tools", host })}
+            active={view === "automations"}
             grip={sidebarGrip}
           />
         </div>
@@ -565,7 +567,8 @@ export default function App() {
       {open?.kind === "settings" && (
         <SettingsDialog
           hosts={connectedHosts}
-          defaultHost={current?.host.name}
+          defaultHost={open.host ?? current?.host.name}
+          initialTab={open.tab}
           theme={themeChoice}
           onTheme={setTheme}
           onAddHost={() => setOpen({ kind: "add" })}

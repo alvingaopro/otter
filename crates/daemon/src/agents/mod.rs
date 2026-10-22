@@ -161,7 +161,7 @@ pub struct Observation {
     pub blocker: Option<Blocker>,
     /// The agent's own name for its conversation, as it last said it (the
     /// title it shows): it names the session while the developer hasn't
-    /// (D-192).
+    /// (D-196).
     pub title: Option<String>,
 }
 
