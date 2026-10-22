@@ -308,3 +308,11 @@ export function dropPlace(others: Box[], x: number, y: number): number {
   const at = Math.min(Math.max(y, top), bottom - 1);
   return others.filter((b) => b.bottom <= at || (b.top <= at && b.left + b.width / 2 < x)).length;
 }
+
+/** A session's name on its tab: a long one (an agent's title, D-192) cut at
+ * 40 characters, the whole of it in the tab's tooltip. */
+export function tabName(name: string): string {
+  const chars = [...name];
+  return chars.length > TAB_NAME ? `${chars.slice(0, TAB_NAME - 1).join("").trimEnd()}…` : name;
+}
+const TAB_NAME = 40;

@@ -122,6 +122,22 @@ struct ClaudeState {
     /// A prompt Claude Code is showing the developer, not yet answered.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pending: Option<Pending>,
+    /// The conversation's title Claude Code made (`ai-title`), and the one
+    /// given with `/rename` (`custom-title`), as last written (D-192).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    ai_title: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    custom_title: Option<String>,
+}
+
+impl ClaudeState {
+    /// Another transcript, another conversation: read from its start.
+    fn follow(&mut self, transcript: Option<PathBuf>) {
+        self.transcript = transcript;
+        self.offset = 0;
+        self.ai_title = None;
+        self.custom_title = None;
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -232,8 +248,7 @@ impl AgentProvider for ClaudeCode {
             .is_some_and(|id| ctx.managed.contains(id));
         if misbound {
             tracing::warn!("claude session was bound to a managed run's transcript; binding again");
-            state.transcript = None;
-            state.offset = 0;
+            state.follow(None);
             state_changed = true;
         }
 
@@ -253,8 +268,7 @@ impl AgentProvider for ClaudeCode {
             if info.provider_session_id.as_ref() != Some(&id) {
                 obs.provider_session_id = Some(id);
             }
-            state.transcript = Some(path);
-            state.offset = 0;
+            state.follow(Some(path));
             state_changed = true;
         }
 
@@ -279,6 +293,20 @@ impl AgentProvider for ClaudeCode {
                     }
                     obs.last_message = update.last_message;
                     last_user_at = update.last_user_at;
+                    // Its name for the conversation (D-192); a `/rename`
+                    // to nothing gives the made-up title back.
+                    if let Some(t) = update
+                        .ai_title
+                        .filter(|t| state.ai_title.as_ref() != Some(t))
+                    {
+                        state.ai_title = Some(t);
+                        state_changed = true;
+                    }
+                    if let Some(t) = update.custom_title {
+                        let t = Some(t).filter(|t| !t.trim().is_empty());
+                        state_changed |= state.custom_title != t;
+                        state.custom_title = t;
+                    }
                     if let Some(s) = update.state {
                         next = s;
                     }
@@ -355,6 +383,7 @@ impl AgentProvider for ClaudeCode {
         if state_changed {
             obs.provider_state = serde_json::to_value(&state).ok();
         }
+        obs.title = state.custom_title.or(state.ai_title);
         obs
     }
 
@@ -660,6 +689,9 @@ struct TranscriptUpdate {
     /// When the developer's side last wrote (a prompt, a tool result, an
     /// interruption), unix ms.
     last_user_at: Option<i64>,
+    /// The last `ai-title` and `custom-title` read (D-192).
+    ai_title: Option<String>,
+    custom_title: Option<String>,
 }
 
 fn read_transcript(path: &Path, offset: u64) -> Result<TranscriptUpdate> {
@@ -694,6 +726,22 @@ fn apply_record(record: &Value, update: &mut TranscriptUpdate) {
     // Subagent traffic and injected context don't change the main turn.
     if record["isSidechain"] == true || record["isMeta"] == true {
         return;
+    }
+    // The conversation's name, each written again and again; the last says.
+    match record["type"].as_str() {
+        Some("ai-title") => {
+            if let Some(t) = record["aiTitle"].as_str().filter(|t| !t.trim().is_empty()) {
+                update.ai_title = Some(t.to_owned());
+            }
+            return;
+        }
+        Some("custom-title") => {
+            if let Some(t) = record["customTitle"].as_str() {
+                update.custom_title = Some(t.to_owned());
+            }
+            return;
+        }
+        _ => {}
     }
     let message = &record["message"];
     match record["type"].as_str() {
@@ -770,6 +818,26 @@ mod tests {
             apply_record(&serde_json::from_str(l).unwrap(), &mut update);
         }
         update
+    }
+
+    /// Claude Code's names for the conversation (D-192): each written again
+    /// and again, the last one says; a sidechain's isn't the conversation's.
+    #[test]
+    fn the_conversations_titles_are_read_last_wins() {
+        let u = apply(&[
+            r#"{"type":"ai-title","aiTitle":"Fix the flaky test","sessionId":"s"}"#,
+            r#"{"type":"user","message":{"role":"user","content":"go"}}"#,
+            r#"{"type":"ai-title","aiTitle":"Fix the flaky test in CI","sessionId":"s"}"#,
+            r#"{"type":"ai-title","aiTitle":"  ","sessionId":"s"}"#,
+            r#"{"type":"ai-title","aiTitle":"Not this","isSidechain":true}"#,
+        ]);
+        assert_eq!(u.ai_title.as_deref(), Some("Fix the flaky test in CI"));
+        assert_eq!(u.custom_title, None);
+        // The user record still counts as the developer writing.
+        assert_eq!(u.state, Some(AgentState::Working));
+        let u =
+            apply(&[r#"{"type":"custom-title","customTitle":"Release notes","sessionId":"s"}"#]);
+        assert_eq!(u.custom_title.as_deref(), Some("Release notes"));
     }
 
     #[test]

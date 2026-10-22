@@ -243,6 +243,13 @@ An addition (no protocol bump): daemons before it answer `invalid_request`.
   attach or a reference by id carries on.
 - They emit `WorkspaceRenamed {workspace_id, name}` and `SessionRenamed
   {workspace_id, session_id, name}`.
+- An agent session the developer hasn't named takes the agent's own name
+  for its conversation (D-192: Claude Code's title, `/` and `:` as `／` and
+  `：`, unique with `-2`…), with the same `SessionRenamed`. A session's
+  `name_from` says where its name came from: `default`, `agent` or
+  `developer` (given at creation, or `session.rename`); absent on a
+  session from before it. Only `default` and `agent` names follow the
+  agent.
 - `session.move {workspace, session, to}` → the workspace (D-150): the
   session goes to place `to` (from 0) among the workspace's sessions, past
   the end to the last; the others keep their order. That order is the one

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { dropPlace, glance, movePin, moveTo, trayLabels } from "./model";
+import { dropPlace, glance, movePin, moveTo, tabName, trayLabels } from "./model";
 
 const line = (name: string, what: string, host = "code", key = name) => ({ key, name, what, host });
 
@@ -65,5 +65,17 @@ describe("putting things in order", () => {
     expect(dropPlace(others, 10, 400)).toBe(3);
     expect(dropPlace([tab(0, 0), tab(1, 0)], 100, 300)).toBe(1);
     expect(dropPlace([], 100, 16)).toBe(0);
+  });
+});
+
+describe("a session's tab", () => {
+  it("cuts a long name (an agent's title, D-192) at 40 characters", () => {
+    expect(tabName("claude")).toBe("claude");
+    const title = "Chat 聊天框 ／ 命令自动补全，再加上一个很长很长的说明文字，一直写到超过四十个字符为止";
+    const cut = tabName(title);
+    expect([...cut]).toHaveLength(40);
+    expect(cut.endsWith("…")).toBe(true);
+    expect(title.startsWith(cut.slice(0, -1))).toBe(true);
+    expect(tabName("x".repeat(40))).toBe("x".repeat(40));
   });
 });

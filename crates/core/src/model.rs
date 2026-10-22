@@ -360,9 +360,44 @@ pub struct Session {
     /// Execution history, oldest first. The last entry is the current one.
     #[serde(default)]
     pub executions: Vec<Execution>,
+    /// Where its name came from (D-192). Absent: a session from before.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name_from: Option<NameFrom>,
+}
+
+/// Where a session's name came from (D-192).
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum NameFrom {
+    /// Made from its command or agent (`claude`, `claude-2`).
+    Default,
+    /// The agent's own name for its conversation.
+    Agent,
+    /// The developer's: given at creation, or a rename.
+    Developer,
 }
 
 impl Session {
+    /// Whether the agent's own name for its conversation may name this
+    /// session (D-192): not once the developer has named it. A session from
+    /// before `name_from` was kept: only while its name is of the default
+    /// form (`claude`, `claude-2`), anything else being taken as theirs.
+    pub fn follows_agent_name(&self) -> bool {
+        match self.name_from {
+            Some(NameFrom::Developer) => false,
+            Some(NameFrom::Default | NameFrom::Agent) => true,
+            None => self.agent.as_ref().is_some_and(|a| {
+                let base = a.provider.as_str();
+                self.name == base
+                    || self
+                        .name
+                        .strip_prefix(base)
+                        .and_then(|n| n.strip_prefix('-'))
+                        .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
+            }),
+        }
+    }
+
     pub fn current_execution(&self) -> Option<&Execution> {
         self.executions.last()
     }
@@ -762,6 +797,52 @@ mod tests {
         }
     }
 
+    /// What the agent calls its conversation names a session only while the
+    /// developer hasn't named it (D-192); before `name_from`, by its form.
+    #[test]
+    fn a_session_follows_its_agents_name_until_named() {
+        let session = |name: &str, from: Option<NameFrom>, agent: bool| Session {
+            id: SessionId::generate(),
+            workspace_id: WorkspaceId::generate(),
+            name: name.into(),
+            kind: SessionKind::Agent,
+            command: None,
+            created_at: Utc::now(),
+            launch_error: None,
+            agent: agent.then(|| AgentInfo {
+                provider: "claude".into(),
+                provider_session_id: None,
+                provider_state: serde_json::Value::Null,
+                state: AgentState::Idle,
+                state_since: Utc::now(),
+                last_message: None,
+                prompt: None,
+                blocker: None,
+            }),
+            executions: vec![],
+            name_from: from,
+        };
+        assert!(session("anything", Some(NameFrom::Agent), true).follows_agent_name());
+        assert!(session("claude", Some(NameFrom::Default), true).follows_agent_name());
+        assert!(!session("claude", Some(NameFrom::Developer), true).follows_agent_name());
+        for (name, follows) in [
+            ("claude", true),
+            ("claude-2", true),
+            ("claude-12", true),
+            ("claude-", false),
+            ("claude-x", false),
+            ("claudette", false),
+            ("frontend", false),
+        ] {
+            assert_eq!(
+                session(name, None, true).follows_agent_name(),
+                follows,
+                "{name}"
+            );
+        }
+        assert!(!session("claude", None, false).follows_agent_name());
+    }
+
     #[test]
     fn session_status_follows_current_execution() {
         let mut s = Session {
@@ -774,6 +855,7 @@ mod tests {
             launch_error: None,
             agent: None,
             executions: vec![],
+            name_from: None,
         };
         assert_eq!(s.status(), SessionStatus::Pending);
         s.executions.push(exec(ExecutionState::Exited, Some(2)));

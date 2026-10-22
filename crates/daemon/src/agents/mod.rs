@@ -159,6 +159,10 @@ pub struct Observation {
     pub last_message: Option<String>,
     /// What a blocked agent is waiting for, when the agent said so.
     pub blocker: Option<Blocker>,
+    /// The agent's own name for its conversation, as it last said it (the
+    /// title it shows): it names the session while the developer hasn't
+    /// (D-192).
+    pub title: Option<String>,
 }
 
 /// What a blocked agent waits for, as reported by the agent itself (as

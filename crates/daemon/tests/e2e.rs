@@ -2283,6 +2283,8 @@ hook SessionStart ',"source":"startup"'
 echo "claude ready"
 hook UserPromptSubmit ',"prompt":"go"'
 rec '{"type":"user","timestamp":"'$(now)'","sessionId":"'$id'","message":{"role":"user","content":"go"}}'
+# Its name for the conversation (D-192), written again on every start.
+[ -n "$FAKE_CLAUDE_TITLE" ] && rec '{"type":"ai-title","aiTitle":"'"$FAKE_CLAUDE_TITLE"'","sessionId":"'$id'"}'
 case "$FAKE_CODEX_MODE" in
   question)
     rec '{"type":"assistant","timestamp":"'$(now)'","message":{"role":"assistant","stop_reason":"tool_use","content":[{"type":"tool_use","name":"AskUserQuestion"}]}}'
@@ -2338,6 +2340,74 @@ hook Stop ',"stop_hook_active":false'
 echo "done"
 exec sleep 600
 "#;
+
+/// A Claude Code session takes the name Claude Code gives its conversation
+/// while the developer hasn't named it (D-192): `/` and `:` as their
+/// full-width look-alikes, a second one the same `-2`. Named at creation
+/// or renamed, it keeps its name.
+#[tokio::test]
+async fn a_claude_session_takes_its_conversations_name_until_you_name_it() {
+    use otter_core::{AgentState, NameFrom};
+    let fake = fake_agent_host_with("normal", "rules", |_| {
+        vec![(
+            "FAKE_CLAUDE_TITLE",
+            "Fix the flaky test / CI: retries".into(),
+        )]
+    })
+    .await;
+    let host = &fake.host;
+    let mut named = SessionSpec::agent("claude");
+    named.name = Some("mine".into());
+    let ws = create(
+        host,
+        "cc",
+        Some(vec![
+            SessionSpec::agent("claude"),
+            SessionSpec::agent("claude"),
+            named,
+        ]),
+    )
+    .await;
+    let ids: Vec<_> = ws.sessions.iter().map(|s| s.id.clone()).collect();
+    assert_eq!(
+        ws.sessions
+            .iter()
+            .map(|s| s.name.as_str())
+            .collect::<Vec<_>>(),
+        ["claude", "claude-2", "mine"]
+    );
+    let title = "Fix the flaky test ／ CI： retries";
+    let ws = eventually("both named for their conversations", || async {
+        let ws = host.conn().await.workspace_get("cc").await.unwrap();
+        let names: Vec<String> = ws.sessions.iter().map(|s| s.name.clone()).collect();
+        (names[..2] == [title.to_owned(), format!("{title}-2")]).then_some(ws)
+    })
+    .await;
+    assert_eq!(ws.sessions[0].name_from, Some(NameFrom::Agent));
+    // Named at creation: the developer's.
+    let mine = ws.sessions.iter().find(|s| s.id == ids[2]).unwrap();
+    assert_eq!(mine.name, "mine");
+    assert_eq!(mine.name_from, Some(NameFrom::Developer));
+
+    // Renamed by the developer, it stays so, through a restart whose
+    // transcript says the title again.
+    host.conn()
+        .await
+        .session_rename("cc", ids[0].as_str(), "flaky")
+        .await
+        .unwrap();
+    host.conn()
+        .await
+        .session_restart("cc", ids[0].as_str())
+        .await
+        .unwrap();
+    wait_agent(host, "cc", "flaky", AgentState::WaitingForInput).await;
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    let ws = host.conn().await.workspace_get("cc").await.unwrap();
+    let names: Vec<&str> = ws.sessions.iter().map(|s| s.name.as_str()).collect();
+    assert_eq!(names, ["flaky", &format!("{title}-2"), "mine"]);
+    assert_eq!(ws.sessions[0].name_from, Some(NameFrom::Developer));
+}
 
 async fn fake_codex_host(mode: &str) -> FakeCodex {
     fake_agent_host(mode, "rules").await
