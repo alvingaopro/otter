@@ -16,6 +16,8 @@ use otter_protocol::{
     WorkspaceCreate,
 };
 
+#[path = "e2e/chat_bootstrap.rs"]
+mod chat_bootstrap;
 #[path = "e2e/converse.rs"]
 mod converse;
 #[path = "e2e/git_account.rs"]

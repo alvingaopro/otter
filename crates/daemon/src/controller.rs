@@ -1685,12 +1685,7 @@ impl Daemon {
         // on.
         if git
             && f.runs.is_empty()
-            && let Some(other) = self.tasks.lock().await.list().into_iter().find(|o| {
-                o.id != f.id
-                    && o.workspace_id.as_ref() == Some(ws_id)
-                    && !o.runs.is_empty()
-                    && !matches!(o.status, TaskStatus::Done | TaskStatus::Cancelled)
-            })
+            && let Some(other) = self.work_holding(ws_id, Some(&f.id)).await
         {
             return Some(if other.status.is_active() {
                 format!("{WAITING}{name}: “{}” is working there", other.title)
@@ -1699,6 +1694,20 @@ impl Daemon {
             });
         }
         busy_session.map(|s| format!("{WAITING}{name}: {s}{YOUR_AGENT}"))
+    }
+
+    /// Another task whose work in the workspace, not done, holds it (D-156).
+    pub(crate) async fn work_holding(
+        &self,
+        ws_id: &otter_core::WorkspaceId,
+        except: Option<&TaskId>,
+    ) -> Option<Task> {
+        self.tasks.lock().await.list().into_iter().find(|o| {
+            Some(&o.id) != except
+                && o.workspace_id.as_ref() == Some(ws_id)
+                && !o.runs.is_empty()
+                && !matches!(o.status, TaskStatus::Done | TaskStatus::Cancelled)
+        })
     }
 
     /// The task waits for its workspace (D-079): said once, on the
