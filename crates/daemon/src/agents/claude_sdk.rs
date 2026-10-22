@@ -299,6 +299,7 @@ impl AgentRuntime for ClaudeSdkRuntime {
                 pause: true,
                 redirect: true,
             },
+            message_commands: false,
         }
     }
 

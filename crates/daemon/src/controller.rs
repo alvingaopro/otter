@@ -243,10 +243,9 @@ impl Daemon {
                 let daemon = self.clone();
                 tokio::spawn(async move { daemon.put_away_workspace(&id).await });
             }
-            // Off: tasks stay where they are until the developer acts.
-            if self.brain_choice().controller.as_deref() == Some("off") {
-                continue;
-            }
+            // Off: tasks stay where they are until the developer acts — and
+            // a command is the developer acting (D-190).
+            let off = self.brain_choice().controller.as_deref() == Some("off");
             let ids: Vec<TaskId> = self
                 .tasks
                 .lock()
@@ -254,7 +253,9 @@ impl Daemon {
                 .list()
                 .into_iter()
                 .filter(|f| {
-                    !unanswered(f).is_empty()
+                    !crate::commands::pending(f).is_empty()
+                        || (!off
+                            && (!unanswered(f).is_empty()
                         // A watch found something: Otter says so (D-183),
                         // whatever the task's status.
                         || f.firing_watch().is_some()
@@ -262,7 +263,7 @@ impl Daemon {
                         || f.status == TaskStatus::Review
                         // Blocked: on a decision the brain hasn't seen yet,
                         // or on nothing any more (see `unblock`).
-                        || (f.status == TaskStatus::Blocked && f.workspace_id.is_some())
+                        || (f.status == TaskStatus::Blocked && f.workspace_id.is_some())))
                 })
                 .map(|f| f.id)
                 .collect();
@@ -274,7 +275,18 @@ impl Daemon {
                 tokio::spawn(async move {
                     let stepped = {
                         let (daemon, id) = (daemon.clone(), id.clone());
-                        contained(async move { daemon.step(&id).await }).await
+                        contained(async move {
+                            if !off {
+                                return daemon.step(&id).await;
+                            }
+                            // As in a step: a command that can't be done
+                            // never stops the task.
+                            if let Err(e) = daemon.run_commands(&id).await {
+                                tracing::warn!(task = %id, "a command: {}", redact(&e.message));
+                            }
+                            Ok(())
+                        })
+                        .await
                     };
                     if let Some(Err(e)) = stepped {
                         tracing::warn!(task = %id, "controller: {}", otter_core::redact::redact(&e.message));
@@ -347,6 +359,12 @@ impl Daemon {
     }
 
     async fn step(self: &Arc<Self>, id: &TaskId) -> RpcResult<()> {
+        // What the developer said to do, done first (D-190): it may pause,
+        // revise or go on. A command that can't be done says so; it never
+        // stops the task.
+        if let Err(e) = self.run_commands(id).await {
+            tracing::warn!(task = %id, "a command: {}", redact(&e.message));
+        }
         let mut f = self.task_get(id.as_str()).await?;
         // The developer said something: answer first (it may pause or go on)
         // — with Otter's tools where it has them (D-089).
@@ -1336,8 +1354,8 @@ impl Daemon {
         let said = f
             .messages
             .iter()
-            .find(|m| m.role == MessageRole::User)
-            .map(|m| m.text.clone());
+            .filter(|m| m.role == MessageRole::User)
+            .find_map(|m| m.for_the_work().map(str::to_owned));
         let answered = f
             .decisions
             .iter()
@@ -1410,12 +1428,13 @@ impl Daemon {
     async fn decide_open(self: &Arc<Self>, f: &Task) -> RpcResult<()> {
         // Asked what the task should do: a message is an answer too.
         if let Some(d) = f.pending_decisions().find(|d| d.summary == GOAL_QUESTION)
-            && let Some(m) = f
+            && let Some(text) = f
                 .messages
                 .iter()
-                .find(|m| m.role == MessageRole::User && m.at > d.created_at)
+                .filter(|m| m.role == MessageRole::User && m.at > d.created_at)
+                .find_map(|m| m.for_the_work().map(str::to_owned))
         {
-            let (did, text) = (d.id.clone(), m.text.clone());
+            let did = d.id.clone();
             self.decide(&f.id, &did, true, Some(text), Decider::User, None)
                 .await?;
             return Ok(());
@@ -3073,7 +3092,7 @@ fn pr_body(f: &Task) -> String {
 }
 
 /// The developer's messages since the Control Agent last answered one
-/// (the request that created the task isn't one).
+/// (the request that created the task isn't one, nor is a command).
 pub(crate) fn unanswered(f: &Task) -> Vec<otter_core::task::Message> {
     // The request isn't a message to answer (D-067).
     let request = f.request_message();
@@ -3089,7 +3108,10 @@ pub(crate) fn unanswered(f: &Task) -> Vec<otter_core::task::Message> {
         .iter()
         .enumerate()
         .skip(answered.map_or(0, |i| i + 1))
-        .filter(|(_, m)| m.role == MessageRole::User && Some(&m.id) != request)
+        // A command is done by otterd, not answered (D-190).
+        .filter(|(_, m)| {
+            m.role == MessageRole::User && Some(&m.id) != request && m.command.is_none()
+        })
         .map(|(_, m)| m.clone())
         .collect()
 }
@@ -3434,7 +3456,7 @@ fn developer_notes(
 ) -> Vec<String> {
     developer_messages(f, since, carried)
         .into_iter()
-        .map(|m| m.text.clone())
+        .filter_map(|m| m.for_the_work().map(str::to_owned))
         .collect()
 }
 
@@ -3450,6 +3472,8 @@ fn developer_messages<'a>(
         .filter(|m| Some(&m.id) != request)
         .filter(|m| m.role == MessageRole::User && since.is_none_or(|s| m.at > s))
         .filter(|m| !carried.contains(m.id.as_str()))
+        // A command's words go with it, or not at all (D-190).
+        .filter(|m| m.for_the_work().is_some())
         .collect()
 }
 
@@ -4197,5 +4221,45 @@ mod tests {
             warm.contains("has a header") && warm.contains("1 of 1"),
             "{warm}"
         );
+    }
+
+    /// The coding agent is told what the developer said for the work: a
+    /// message, or the words of `/revise` and `/tell`; never a command's
+    /// line, nor a command about the conversation (D-190).
+    #[test]
+    fn the_agent_gets_a_commands_words_or_nothing() {
+        use otter_core::task::{Message, MessageCommand};
+        let now = Utc::now();
+        let mut f = Task::new("t".into(), "Export it".into(), now);
+        let said = |text: &str, command: Option<MessageCommand>| Message {
+            id: otter_core::MessageId::generate(),
+            role: MessageRole::User,
+            text: text.into(),
+            at: now,
+            correlation_id: None,
+            attachments: vec![],
+            command,
+        };
+        f.messages = vec![
+            said("Use tabs", None),
+            said("/remember Tabs, not commas", Some(MessageCommand::Remember)),
+            said("/ask Where is it?", Some(MessageCommand::Ask)),
+            said("/watch ci", Some(MessageCommand::WatchCi)),
+            said("/tell Keep the header", Some(MessageCommand::Tell)),
+            said("/revise Also export JSON", Some(MessageCommand::Revise)),
+            said("/tell", Some(MessageCommand::Tell)),
+        ];
+        assert_eq!(
+            developer_notes(&f, None, &HashSet::new()),
+            [
+                "Use tabs",
+                "Keep the header",
+                "Also export JSON",
+                otter_core::task::PICTURES_ONLY
+            ]
+        );
+        let brief = brain::brief(&f);
+        assert!(!brief.contains('/'), "{brief}");
+        assert!(brief.contains("- Also export JSON"), "{brief}");
     }
 }

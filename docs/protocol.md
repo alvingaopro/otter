@@ -360,6 +360,8 @@ turns, messages, tool calls and interactions. See
   `available` needs Node, the installed worker and its `--check` (D-060);
   `notes` say which is missing. `worker_missing?` says the worker this
   otterd looks for isn't installed, which installing it would fix (D-129).
+  `message_commands?` says `task.send` takes a slash `command` (D-190); an
+  otterd before it leaves it out.
 - `runtime.test {backend?, model?}` → `{backend, ready, steps: [{name,
   state: passed|failed|skipped, detail}], worker_missing?}` (D-124, D-129): the coding agent
   started for one short reply, in a scratch directory under the host's
@@ -409,6 +411,19 @@ Product work owned by the daemon (D-043); see `otter_core::task`.
   `images` is the same list of `{media_type, data}` (the worker checks the
   same limits); worker frames, both ways, are at most 4 MiB (`MAX_FRAME`,
   was 1 MiB) so a turn with its pictures fits one.
+  `command?` is a slash command (D-190): `{"name": "ask" | "tell" |
+  "revise" | "remember" | "watch_ci"}`, `{"name": "remind", "in_minutes"}`
+  (1 to a week) or `{"name": "answer_only", "on"}`, and `text` is then only
+  the words after it (`ask`, `tell`, `revise` and `remember` need some;
+  pictures will do but for `remember`). The message is stored with
+  `command` and the line as written (`/remind 1h30m check the deploy`).
+  otterd does it with the tool Otter's turn would have called (`ask_agent`,
+  `forward_to_agent`, `revise_task`, `remember`, `watch`, `set_answer_only`),
+  passing on the words without the command, and adds Otter's message about
+  what came of it, correlated `command:<message id>`. Otter's turn doesn't
+  answer it. An otterd before it ignores the field and takes the words as a
+  plain message; clients send it only where `runtime.capabilities` says
+  `message_commands`.
 - `task.act {command_id, task, action, …}` → the task. `action`:
   `start`, `pause`, `resume`, `cancel`, `retry`, `accept {override_gates?}`,
   `request_changes {note?}` (the goal changed: plan again from where the

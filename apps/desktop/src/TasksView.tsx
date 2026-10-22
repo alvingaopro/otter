@@ -14,11 +14,24 @@ import type { TaskSource, WorkspaceRequest } from "./taskSource";
 import { routeHost } from "./route";
 import { QuestionForm, Turn, WorkHead } from "./Work";
 import { useComposition } from "./composing";
+import {
+  NEW_TASK_COMMANDS,
+  TASK_COMMANDS,
+  can,
+  leftOver,
+  newTask,
+  optionLabel,
+  slashed,
+  withOption,
+  type NewTaskOption,
+  type TaskCtx,
+  type TaskEffect,
+} from "./chatCommands";
+import { useSlash } from "./SlashMenu";
 import { openWatches, untilText } from "./automations";
 import { MAX_IMAGES, PICTURES_ONLY, pastedFiles, prepareImage, type PastedImage } from "./pastedImage";
 import {
   GROUPS,
-  HELD,
   STATUS_LABEL,
   budgetBinds,
   collapseReasons,
@@ -28,6 +41,9 @@ import {
   heardLine,
   needsYou,
   taskGlyph,
+  commandPrefix,
+  deletable,
+  gatesClear,
   pendingDecisions,
   sortTasks,
   statusDetail,
@@ -35,6 +51,7 @@ import {
   waitedSession,
   type DecisionRequest,
   type Evidence,
+  type MessageCommand,
   type Task,
   type TaskAction,
   type TaskEventRecord,
@@ -197,7 +214,10 @@ export function TasksView({ source, hosts, workspaces, now, focus, onOpenWorkspa
           <HelloBox
             hosts={hosts.length > 0 ? hosts : ["preview"]}
             workspaces={workspaces}
-            onSend={(host, request) => create(host, titleFrom(request), request, undefined, false, true)}
+            onSend={(host, request, options) => {
+              const t = newTask(options);
+              return create(host, titleFrom(request), request, t.workspace, t.answerOnly, t.start);
+            }}
           />
           <div className="empty-actions">
             <button className="btn outline" onClick={() => setCreating(true)}>
@@ -456,6 +476,18 @@ function TaskPane({
           onError={setError}
           details={details}
           onDetails={setDetails}
+          workspaces={workspaces}
+          onShow={(what) => {
+            if (what === "details") return setDetails(!details);
+            if (what === "open") return f.workspace_id && onOpenWorkspace(placed.host, f.workspace_id);
+            if (what === "memory") return setRemembering(true);
+            if (what === "delete") return setDeleting(true);
+            setDetails(true);
+            setTab(what === "activity" ? "activity" : "overview");
+            // What it changed is a section of the overview.
+            if (what === "changes")
+              requestAnimationFrame(() => document.querySelector('.task-detail [aria-label="Changes"]')?.scrollIntoView?.({ block: "start" }));
+          }}
         />
         {details && <PanelGrip panel={TASK_DETAIL} width={detailWidth} onResize={setDetailWidth} label="Details width" />}
         <section className="task-detail" id="task-details" aria-label="Details" hidden={!details}>
@@ -518,13 +550,6 @@ function useDetails(): [boolean, (open: boolean) => void] {
 }
 
 /** Not being worked on: nothing is planning, implementing, verifying or running. */
-export function deletable(f: Task): boolean {
-  return (
-    !["planning", "implementing", "verifying"].includes(f.status) &&
-    !f.runs.some((r) => ["starting", "running", "waiting"].includes(r.state))
-  );
-}
-
 function DeleteTaskDialog({
   placed,
   workspace,
@@ -578,24 +603,25 @@ function DeleteTaskDialog({
  * box, cancelling and deleting are in the ⋯ menu.
  */
 function TaskActions({ f, act }: { f: Task; act: (a: TaskAction) => void }) {
+  const ctx = { task: f };
   return (
     <span className="task-actions">
-      {f.status === "draft" && (
+      {can("start", ctx) && (
         <button className="btn primary" onClick={() => act({ action: "start" })}>
           Start
         </button>
       )}
-      {f.status === "paused" && (
+      {can("resume", ctx) && (
         <button className="btn primary" onClick={() => act({ action: "resume" })}>
           Resume
         </button>
       )}
-      {f.status === "failed" && (
+      {can("retry", ctx) && (
         <button className="btn primary" onClick={() => act({ action: "retry" })}>
           Retry
         </button>
       )}
-      {f.status === "review" &&
+      {can("accept", ctx) &&
         (gatesClear(f) ? (
           <button className="btn primary" onClick={() => act({ action: "accept" })}>
             Accept
@@ -667,7 +693,7 @@ function StatusBanner({
           <Glyph kind={yours ? "needs" : "working"} />
           <span className="banner-summary">{f.status_reason}</span>
         </span>
-        {(f.status_reason.endsWith("is working there") || f.status_reason.endsWith(HELD)) && f.runs.length === 0 && (
+        {can("own-workspace", { task: f }) && (
           <span className="banner-actions">
             {waited && (
               <button className="btn outline" title="Let it finish, or stop it, and the task starts" onClick={() => onOpenSession(waited.id)}>
@@ -697,14 +723,35 @@ const named = (role: string) => (role === "agent" ? undefined : (ROLE[role] ?? r
 
 /** What was said: the developer's words as typed; Otter's and the coding
  * agent's as the Markdown they write (D-086). */
-export function MessageText({ role, text, children }: { role: string; text: string; children?: ReactNode }) {
-  return role === "controller" || role === "agent" ? (
-    <Markdown className="message-text" text={text}>
-      {children}
-    </Markdown>
-  ) : (
+export function MessageText({
+  role,
+  text,
+  command,
+  children,
+}: {
+  role: string;
+  text: string;
+  /** A slash command it carries (D-190): shown as one. */
+  command?: MessageCommand;
+  children?: ReactNode;
+}) {
+  if (role === "controller" || role === "agent")
+    return (
+      <Markdown className="message-text" text={text}>
+        {children}
+      </Markdown>
+    );
+  const prefix = command ? commandPrefix(command) : undefined;
+  return (
     <div className="message-text">
-      {text}
+      {prefix && text.startsWith(prefix) ? (
+        <>
+          <span className="message-command">{prefix}</span>
+          {text.slice(prefix.length)}
+        </>
+      ) : (
+        text
+      )}
       {children}
     </div>
   );
@@ -756,6 +803,8 @@ function Conversation({
   onError,
   details,
   onDetails,
+  workspaces,
+  onShow,
 }: {
   placed: PlacedTask;
   source: TaskSource;
@@ -766,6 +815,10 @@ function Conversation({
   onError?: (e: string) => void;
   details: boolean;
   onDetails: (open: boolean) => void;
+  /** The host's workspaces, for `/workspace`. */
+  workspaces: WorkspaceChoice[];
+  /** What a Show command (D-190) opens. */
+  onShow: (what: Extract<TaskEffect, { kind: "show" }>["show"]) => void;
 }) {
   const [text, setText] = useState("");
   const [images, setImages] = useState<PastedImage[]>([]);
@@ -859,10 +912,51 @@ function Conversation({
 
   const composition = useComposition();
 
+  // Slash commands (D-190): the buttons beside the box ask the same rules.
+  const ctx: TaskCtx = { task: placed.task, live: !!live, caps, workspaces, memory: !!source.memory, details };
+  // One command at a time: a second Enter while one is away would do it twice.
+  const running = useRef(false);
+  async function command(effect: TaskEffect) {
+    if (effect.kind === "show") {
+      onShow(effect.show);
+      setText("");
+      return;
+    }
+    if (running.current || preparing > 0) return;
+    running.current = true;
+    setBusy(true);
+    try {
+      if (effect.kind === "act") {
+        await source.act(placed.key, effect.action);
+      } else {
+        const sending = imagesNow.current;
+        await source.send(placed.key, effect.words, sending, effect.command);
+        putImages(imagesNow.current.filter((i) => !sending.includes(i)));
+      }
+      setText("");
+    } catch (e) {
+      // What was written stays, to try again.
+      onError?.(String(e));
+    } finally {
+      running.current = false;
+      setBusy(false);
+    }
+  }
+  const slash = useSlash({
+    text,
+    setText,
+    commands: TASK_COMMANDS,
+    ctx,
+    enterSubmits: composition.enterSubmits,
+    run: (effect) => void command(effect),
+  });
+
   async function submit(e: FormEvent) {
     e.preventDefault();
     const t = text.trim();
-    if ((!t && images.length === 0) || busy || preparing > 0) return;
+    if (busy || preparing > 0) return;
+    if (slash.enter()) return;
+    if (!t && images.length === 0) return;
     setBusy(true);
     try {
       const sending = imagesNow.current;
@@ -928,7 +1022,7 @@ function Conversation({
                 <Said role={m.role} at={ago(m.at, now)} when={m.at} />
                 {m.text && !(m.attachments?.length && m.text === PICTURES_ONLY) && (
                   <Folded long={m.role === "agent" && m.text.length > FOLD_CHARS}>
-                    <MessageText role={m.role} text={m.text} />
+                    <MessageText role={m.role} text={m.text} command={m.command} />
                   </Folded>
                 )}
                 {m.attachments && m.attachments.length > 0 && (
@@ -994,6 +1088,8 @@ function Conversation({
           )}
           <WatchStrip task={placed.task} now={now} act={act} />
           <form className="composer" onSubmit={submit}>
+            {slash.menu}
+            {slash.hint}
             {preparing > 0 && <p className="muted small replying">Getting the picture ready…</p>}
             {images.length > 0 && (
               <ul className="plain-list pasted-images" aria-label="Pictures to send">
@@ -1043,11 +1139,11 @@ function Conversation({
                 aria-label="Message to Otter"
                 placeholder={
                   placed.task.status === "review" || placed.task.status === "done"
-                    ? "Happy with it? Or say what to change…"
-                    : "Tell Otter what you want…"
+                    ? "Happy with it? Or say what to change… (/ for commands)"
+                    : "Tell Otter what you want… (/ for commands)"
                 }
                 value={text}
-                onChange={(e) => setText(e.target.value)}
+                onChange={(e) => setText((e.nativeEvent as InputEvent).isComposing ? e.target.value : slashed(e.target.value))}
                 onPaste={(e) => {
                   const files = pastedFiles(e.clipboardData);
                   if (files.length === 0) return;
@@ -1057,13 +1153,14 @@ function Conversation({
                 onCompositionStart={composition.onCompositionStart}
                 onCompositionEnd={composition.onCompositionEnd}
                 onKeyDown={(e) => {
+                  if (slash.onKeyDown(e)) return;
                   if (composition.enterSubmits(e)) {
                     e.preventDefault();
                     void submit(e as unknown as FormEvent);
                   }
                 }}
               />
-              {["planning", "implementing", "verifying", "blocked"].includes(placed.task.status) && (
+              {!slash.command && can("pause", ctx) && (
                 <button
                   type="button"
                   className="btn outline composer-btn"
@@ -1083,7 +1180,7 @@ function Conversation({
                   Pause
                 </button>
               )}
-              {live && caps?.features.redirect && (
+              {!slash.command && can("stop", ctx) && (
                 <button
                   type="button"
                   className="btn outline composer-btn"
@@ -1106,17 +1203,24 @@ function Conversation({
                   Stop & send
                 </button>
               )}
-              <button
-                className="composer-send"
-                type="submit"
-                aria-label="Send"
-                title="Send"
-                disabled={busy || preparing > 0 || (!text.trim() && images.length === 0)}
-              >
-                <svg width="18" height="18" viewBox="0 0 18 18" aria-hidden="true">
-                  <path d="M9 15V3M4 8l5-5 5 5" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
-                </svg>
-              </button>
+              {slash.button ? (
+                // What Enter does with the command in the box (D-190).
+                <button className="btn composer-btn composer-cmd" type="submit" disabled={busy || preparing > 0 || slash.button.disabled}>
+                  {slash.button.label}
+                </button>
+              ) : (
+                <button
+                  className="composer-send"
+                  type="submit"
+                  aria-label="Send"
+                  title="Send"
+                  disabled={busy || preparing > 0 || (!text.trim() && images.length === 0)}
+                >
+                  <svg width="18" height="18" viewBox="0 0 18 18" aria-hidden="true">
+                    <path d="M9 15V3M4 8l5-5 5 5" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+                  </svg>
+                </button>
+              )}
             </div>
           </form>
         </div>
@@ -1431,11 +1535,6 @@ function Progress({ placed, onOpenWorkspace }: { placed: PlacedTask; onOpenWorks
 const GATE_GLYPH = { passed: "done", failed: "failed", pending: "working", not_applicable: "idle" } as const;
 
 /** Every gate but the developer's own acceptance passed (or doesn't apply). */
-function gatesClear(f: Task): boolean {
-  const gates = f.gates ?? [];
-  return gates.length > 0 && gates.filter((g) => g.name !== "Your acceptance").every((g) => g.status === "passed" || g.status === "not_applicable");
-}
-
 /**
  * What says the work is right: each acceptance criterion with the evidence
  * behind it, the gates (D-047), and evidence that backs no criterion.
@@ -1775,7 +1874,8 @@ function OtterHello() {
   );
 }
 
-/** The chat box of the empty page: what is written starts a task, on the host it names (D-187). */
+/** The chat box of the empty page: what is written starts a task, on the host it names (D-187),
+ * with the conditions its slash commands set (D-190). */
 function HelloBox({
   hosts,
   workspaces,
@@ -1783,21 +1883,36 @@ function HelloBox({
 }: {
   hosts: string[];
   workspaces: Record<string, WorkspaceChoice[]>;
-  onSend: (host: string, request: string) => Promise<void>;
+  onSend: (host: string, request: string, options: NewTaskOption[]) => Promise<void>;
 }) {
   const [text, setText] = useState("");
+  const [options, setOptions] = useState<NewTaskOption[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const composition = useComposition();
+  const slash = useSlash({
+    text,
+    setText,
+    commands: NEW_TASK_COMMANDS,
+    ctx: { hosts, workspaces },
+    enterSubmits: composition.enterSubmits,
+    below: true,
+    run: (option, command, rest) => {
+      setOptions((o) => withOption(o, option));
+      setText(leftOver(command, rest));
+    },
+  });
   async function send() {
+    if (busy) return;
+    if (slash.enter()) return;
     const request = text.trim();
-    if (!request || busy) return;
+    if (!request) return;
     const routed = hosts.length > 1 ? routeHost(request, workspaces) : undefined;
-    const host = routed?.kind === "one" ? routed.host : lastHost(hosts);
+    const host = newTask(options).host ?? (routed?.kind === "one" ? routed.host : lastHost(hosts));
     setBusy(true);
     setError(null);
     try {
-      await onSend(host, request);
+      await onSend(host, request, options);
       try {
         localStorage.setItem(LAST_HOST, host);
       } catch {
@@ -1816,27 +1931,48 @@ function HelloBox({
         void send();
       }}
     >
+      {options.length > 0 && (
+        <ul className="hello-options" aria-label="The new task">
+          {options.map((o) => (
+            <li key={o.kind} className="hello-option">
+              {optionLabel(o)}
+              <button type="button" aria-label={`Remove ${optionLabel(o)}`} onClick={() => setOptions((all) => all.filter((x) => x !== o))}>
+                ×
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
       <textarea
         rows={3}
         autoFocus
         aria-label="Tell Otter what you want"
-        placeholder="Tell Otter what you want…"
+        placeholder="Tell Otter what you want… (/ for where and how)"
         value={text}
-        onChange={(e) => setText(e.target.value)}
+        onChange={(e) => setText((e.nativeEvent as InputEvent).isComposing ? e.target.value : slashed(e.target.value))}
         onCompositionStart={composition.onCompositionStart}
         onCompositionEnd={composition.onCompositionEnd}
         onKeyDown={(e) => {
+          if (slash.onKeyDown(e)) return;
           if (composition.enterSubmits(e)) {
             e.preventDefault();
             void send();
           }
         }}
       />
+      {slash.hint}
+      {slash.menu}
       <div className="hello-row">
         {error ? <span className="error-text small">{error}</span> : <span className="muted small">Enter to start · Shift+Enter for a new line</span>}
-        <button type="submit" className="btn primary" disabled={!text.trim() || busy}>
-          Start
-        </button>
+        {slash.button ? (
+          <button type="submit" className="btn" disabled={busy || slash.button.disabled}>
+            {slash.button.label}
+          </button>
+        ) : (
+          <button type="submit" className="btn primary" disabled={!text.trim() || busy}>
+            {newTask(options).start ? "Start" : "Create draft"}
+          </button>
+        )}
       </div>
     </form>
   );

@@ -704,6 +704,26 @@ impl Connection {
             task: task.to_owned(),
             text: text.to_owned(),
             images,
+            command: None,
+        }))
+        .await
+    }
+
+    /// A slash command (D-190), with the words after it and any pictures.
+    pub async fn task_send_command(
+        &mut self,
+        command_id: &str,
+        task: &str,
+        command: otter_core::task::MessageCommand,
+        words: &str,
+        images: Vec<otter_protocol::task::TaskImage>,
+    ) -> Result<otter_core::task::Task> {
+        self.call(Request::TaskSend(otter_protocol::task::TaskSend {
+            command_id: command_id.to_owned(),
+            task: task.to_owned(),
+            text: words.to_owned(),
+            images,
+            command: Some(command),
         }))
         .await
     }

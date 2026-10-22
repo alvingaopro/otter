@@ -96,6 +96,39 @@ export interface Message {
   correlation_id?: string;
   /** Pictures that came with it, by name in the task's artifacts. */
   attachments?: string[];
+  /** The slash command it carries (D-190); `text` is the line as written. */
+  command?: MessageCommand;
+}
+
+/** A slash command otterd does (D-190), as `otter_core::task::MessageCommand`. */
+export type MessageCommand =
+  | { name: "ask" }
+  | { name: "tell" }
+  | { name: "revise" }
+  | { name: "remember" }
+  | { name: "watch_ci" }
+  | { name: "remind"; in_minutes: number }
+  | { name: "answer_only"; on: boolean };
+
+/** Minutes as `/remind` writes them: `45m`, `2h`, `1h30m`. */
+export function minutesWord(n: number): string {
+  const h = Math.floor(n / 60);
+  const m = n % 60;
+  return h === 0 ? `${m}m` : m === 0 ? `${h}h` : `${h}h${m}m`;
+}
+
+/** The command as typed, without the words after it (as otterd writes it). */
+export function commandPrefix(c: MessageCommand): string {
+  switch (c.name) {
+    case "watch_ci":
+      return "/watch ci";
+    case "remind":
+      return `/remind ${minutesWord(c.in_minutes)}`;
+    case "answer_only":
+      return `/answer-only ${c.on ? "on" : "off"}`;
+    default:
+      return `/${c.name}`;
+  }
 }
 
 export interface DecisionRequest {
@@ -345,6 +378,20 @@ export const GROUPS: { id: TaskGroup; label: string }[] = [
 ];
 
 const ACTIVE: TaskStatus[] = ["planning", "implementing", "verifying", "review"];
+
+/** Every gate passed or not for it, but the developer's own acceptance. */
+export function gatesClear(f: Task): boolean {
+  const gates = f.gates ?? [];
+  return gates.length > 0 && gates.filter((g) => g.name !== "Your acceptance").every((g) => g.status === "passed" || g.status === "not_applicable");
+}
+
+/** A task that can be deleted: nothing of it is at work. */
+export function deletable(f: Task): boolean {
+  return (
+    !["planning", "implementing", "verifying"].includes(f.status) &&
+    !f.runs.some((r) => ["starting", "running", "waiting"].includes(r.state))
+  );
+}
 
 export function pendingDecisions(f: Task): DecisionRequest[] {
   return f.decisions.filter((d) => d.status === "pending");
