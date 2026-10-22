@@ -398,6 +398,7 @@ mod tests {
             sessions: Vec::new(),
             attention: Vec::new(),
             task_id: None,
+            kept: None,
         }
     }
 

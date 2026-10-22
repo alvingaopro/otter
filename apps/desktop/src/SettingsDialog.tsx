@@ -40,6 +40,8 @@ export interface HostSettings {
   otter_tools_from_env?: string;
   /** How Otter answers on the host now: "with tools (…)", or "without tools…" and why. */
   otter_answers?: string;
+  /** A task's own workspace is deleted once its pull request is merged (D-189); absent from older daemons. */
+  delete_merged_workspaces?: boolean;
 }
 
 /** How the coding agent can run on a host (D-057): the SDK first, the default (D-124). */
@@ -133,6 +135,7 @@ export function SettingsDialog({
   const [recheck, setRecheck] = useState(0);
   // Otter answers with its tools (D-089): tried out per host.
   const [otterTools, setOtterTools] = useState(false);
+  const [deleteMerged, setDeleteMerged] = useState(false);
 
   function go(t: SettingsTab) {
     setTab(t);
@@ -150,6 +153,7 @@ export function SettingsDialog({
     setBackend(s.coding?.backend ?? "");
     setCodingModel(s.coding?.model ?? "");
     setOtterTools(s.otter_tools ?? false);
+    setDeleteMerged(s.delete_merged_workspaces ?? false);
     setKeys({});
     setReplacing(null);
   }
@@ -225,6 +229,7 @@ export function SettingsDialog({
     secrets?: Record<string, string | null>;
     coding?: { backend?: string; model?: string };
     otter_tools?: boolean;
+    delete_merged_workspaces?: boolean;
   }) {
     const at = host;
     const sent = Object.keys(update.secrets ?? {});
@@ -256,6 +261,7 @@ export function SettingsDialog({
   const needsModel = !!info?.models && !info.default_model && info.id !== "claude" && !model.trim();
   const codingSaved = settings?.coding?.backend;
   const toolsShown = settings?.otter_tools !== undefined && !settings.otter_tools_from_env;
+  const mergedShown = settings?.delete_merged_workspaces !== undefined;
   const typed = Object.entries(keys).filter(([, v]) => v.trim());
   const dirty =
     !!settings &&
@@ -263,7 +269,8 @@ export function SettingsDialog({
       model !== (settings.model ?? "") ||
       typed.length > 0 ||
       (!!codingSaved && (backend !== codingSaved || codingModel !== (settings.coding?.model ?? ""))) ||
-      (toolsShown && otterTools !== settings.otter_tools));
+      (toolsShown && otterTools !== settings.otter_tools) ||
+      (mergedShown && deleteMerged !== settings.delete_merged_workspaces));
   useEffect(() => {
     if (!dirty && !gitUnsaved) setLeaving(false);
   }, [dirty, gitUnsaved]);
@@ -286,6 +293,9 @@ export function SettingsDialog({
       ...(Object.keys(coding).length ? { coding } : {}),
       // Only where the host has it, and the environment doesn't decide.
       ...(toolsShown && otterTools !== settings.otter_tools ? { otter_tools: otterTools } : {}),
+      ...(mergedShown && deleteMerged !== settings.delete_merged_workspaces
+        ? { delete_merged_workspaces: deleteMerged }
+        : {}),
     });
   }
 
@@ -563,6 +573,23 @@ export function SettingsDialog({
                           checked={otterTools}
                           disabled={!!settings.otter_tools_from_env}
                           onChange={(e) => setOtterTools(e.target.checked)}
+                        />
+                      </Row>
+                    </Group>
+                  )}
+                  {mergedShown && (
+                    <Group title="Workspaces">
+                      <Row
+                        label="Delete a task's workspace once its work is merged"
+                        hint="A day after its pull request is merged, unless something is only there. Off: it stays archived."
+                      >
+                        <input
+                          type="checkbox"
+                          role="switch"
+                          className="switch"
+                          aria-label="Delete merged task workspaces"
+                          checked={deleteMerged}
+                          onChange={(e) => setDeleteMerged(e.target.checked)}
                         />
                       </Row>
                     </Group>

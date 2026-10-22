@@ -537,6 +537,7 @@ mod tests {
             ],
             attention: Vec::new(),
             task_id: None,
+            kept: None,
         });
         let backend = Arc::new(Paused::default());
         backend.procs.lock().unwrap().extend([

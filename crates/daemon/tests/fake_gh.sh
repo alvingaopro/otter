@@ -7,10 +7,14 @@ case "$1 $2" in
   "pr view")
     if [ -f "$dir/pr-view-fails" ]; then echo "error connecting to api.github.com" >&2; exit 1; fi
     if [ -f "$dir/pr" ]; then
-      # What GitHub says of it (D-184): set by a test in pr-state, mergeable.
+      # What GitHub says of it (D-184): set by a test in pr-state,
+      # mergeable, and (D-189) pr-head and merged-at.
       state=$(cat "$dir/pr-state" 2>/dev/null || echo OPEN)
       mergeable=$(cat "$dir/mergeable" 2>/dev/null || echo MERGEABLE)
-      printf '{"number":7,"url":"https://github.com/o/r/pull/7","state":"%s","mergeable":"%s","headRefOid":"0123456789abcdef","baseRefName":"main"}\n' "$state" "$mergeable"
+      head=$(cat "$dir/pr-head" 2>/dev/null || echo 0123456789abcdef)
+      merged=null
+      if [ -f "$dir/merged-at" ]; then merged="\"$(cat "$dir/merged-at")\""; fi
+      printf '{"number":7,"url":"https://github.com/o/r/pull/7","state":"%s","mergeable":"%s","headRefOid":"%s","baseRefName":"main","mergedAt":%s}\n' "$state" "$mergeable" "$head" "$merged"
     else
       echo "no pull requests found for branch" >&2; exit 1
     fi ;;

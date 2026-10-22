@@ -45,6 +45,8 @@ Inside the daemon (`crates/daemon/src`):
 - `sessions.rs` — sessions/executions, launching
 - `reconcile.rs` — process exits + agent observation, every 500 ms
 - `attention.rs` — what needs the developer (raise/resolve rules)
+- `merged.rs` — a task's own archived workspace is deleted once its pull
+  request is merged (D-189)
 - `tasks.rs` — tasks (D-043): their own store under `state/tasks/`,
   idempotent commands, per-task history
 - `controller.rs` + `brain.rs` — the Control Agent (D-045): the deterministic

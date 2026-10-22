@@ -1,7 +1,12 @@
 # A finished task's workspace goes once its work is merged: design
 
-**Status:** proposed (2026-10-22), not built. The decision number is taken
-when it is built.
+**Status:** built in D-189 (2026-10-22), with the recommended answers to
+§7: built now, 24 hours, on by default, a pull request closed without
+merging keeps its workspace. Where the build differs from this text,
+`docs/decisions.md` D-189 is right. It differs here: the branch a new
+workspace gets is `otter/<title>-<id>-<n>`, a name never pushed. Condition
+5 (§4.1) only keeps a workspace when the pull request's head is known
+locally; D-108's guard is the one that keeps what is on no remote.
 **Baseline:** `main` at `f85208c` (v0.7.80).
 
 What it would change, so it is written down once:

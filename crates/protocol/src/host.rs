@@ -143,6 +143,10 @@ pub struct Settings {
     /// tools…" and why.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub otter_answers: Option<String>,
+    /// A task's own workspace is deleted once its pull request is merged
+    /// (D-189) — on, off; absent from an otterd before it. On by default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delete_merged_workspaces: Option<bool>,
     /// Otter's own git on this host (D-133); absent from older daemons.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub git: Option<GitView>,
@@ -311,6 +315,10 @@ pub struct SettingsUpdate {
     /// Otter answers with its tools (D-089); left out: stays.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub otter_tools: Option<bool>,
+    /// Delete a task's own workspace once its pull request is merged
+    /// (D-189); left out: stays.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delete_merged_workspaces: Option<bool>,
     /// Who commits in Otter's repositories (D-133); left out: stays.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub git: Option<GitIdentity>,

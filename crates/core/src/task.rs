@@ -305,6 +305,23 @@ pub struct PausedFrom {
     pub reason: Option<String>,
 }
 
+/// The workspace made for a task, once it is gone (D-189): what a new one
+/// is made from when more is asked of the task.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct WorkspaceGone {
+    pub name: String,
+    /// Its repository, as shown (without credentials, D-075).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repository: Option<String>,
+    /// The branch its pull request went into, e.g. `main`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base: Option<String>,
+    pub at: Timestamp,
+    /// How many of the task's workspaces have gone: a new one's branch is
+    /// named after it, never one already pushed.
+    pub count: u32,
+}
+
 /// Where a task's own work starts (D-167): the revision its workspace was
 /// at when the task first worked there. What the task changed is measured
 /// from it, not from wherever the workspace's base happens to be.
@@ -628,6 +645,9 @@ pub struct Task {
     /// workspace with revisions. Absent in older documents.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub started_from: Option<StartPoint>,
+    /// The workspace made for it, deleted (D-189).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_gone: Option<WorkspaceGone>,
     /// What the developer allowed once and isn't asked about again in this
     /// task (D-066): `DecisionRequest::grant`s they approved.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -699,6 +719,7 @@ impl Task {
             last_verification: None,
             judged_runs: 0,
             started_from: None,
+            workspace_gone: None,
             grants: vec![],
             rationale: Vec::new(),
             allowed_commands: Vec::new(),

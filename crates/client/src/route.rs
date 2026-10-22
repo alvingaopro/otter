@@ -139,6 +139,7 @@ mod tests {
             sessions: vec![],
             attention: vec![],
             task_id: None,
+            kept: None,
         }
     }
 

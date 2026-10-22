@@ -130,6 +130,7 @@ impl Daemon {
                 sessions: Vec::new(),
                 attention: Vec::new(),
                 task_id: task,
+                kept: None,
             });
             save(&store)?;
             self.events.emit(Event::WorkspaceCreated {
@@ -280,6 +281,8 @@ impl Daemon {
             }
             ws.state = WorkspaceState::Preparing;
             ws.state_message = None;
+            // Back in use: what kept it is the developer's to see to (D-189).
+            ws.kept = None;
             ws.updated_at = Utc::now();
             let (id, quick) = (ws.id.clone(), !needs_worktree(ws));
             save(&store)?;
@@ -360,40 +363,21 @@ impl Daemon {
         let ws = self.workspace_get(&p.workspace).await?;
         self.not_being_deleted(&ws)?;
 
-        if let WorkspaceSource::Git(g) = &ws.source
-            && !p.force
+        if !p.force
+            && let Some(loses) = self.delete_loses(&ws).await
         {
-            let root = Path::new(&ws.root);
-            // What git has there decides, not the record alone: one ready
-            // without its branch, from before D-135, may have been worked in.
-            let found = self.git.found(&g.repo_id, root);
-            let nobodys = nobodys_work(&ws, &found);
-            if !nobodys
-                && root.join(".git").exists()
-                && self.git.is_dirty(root).await.unwrap_or(false)
-            {
-                return Err(RpcError::conflict(format!(
+            return Err(RpcError::conflict(match loses {
+                Loses::Uncommitted { .. } => format!(
                     "workspace `{}` has uncommitted changes in {}; delete with force to discard them",
                     ws.name, ws.root
-                )));
-            }
-            // Its branch goes with it (D-108): not commits that are nowhere else.
-            let branch = match (g.branch.as_str(), found) {
-                ("", Found::Worktree { branch, .. }) if !nobodys => branch,
-                ("", _) => None,
-                (b, _) => Some(b.to_owned()),
-            };
-            if let Some(branch) = branch {
-                let n = self.git.unpushed(&g.repo_id, &branch).await.unwrap_or(0);
-                if n > 0 {
-                    return Err(RpcError::conflict(format!(
-                        "workspace `{}`'s branch `{branch}` has {n} commit{} not pushed anywhere; delete with force to discard {}",
-                        ws.name,
-                        if n == 1 { "" } else { "s" },
-                        if n == 1 { "it" } else { "them" },
-                    )));
-                }
-            }
+                ),
+                Loses::Unpushed { branch, commits: n } => format!(
+                    "workspace `{}`'s branch `{branch}` has {n} commit{} not pushed anywhere; delete with force to discard {}",
+                    ws.name,
+                    if n == 1 { "" } else { "s" },
+                    if n == 1 { "it" } else { "them" },
+                ),
+            }));
         }
 
         let id = ws.id.clone();
@@ -420,6 +404,33 @@ impl Daemon {
                 .await;
         }
         deleted
+    }
+
+    /// What deleting a Git workspace without force would lose (D-108).
+    pub(crate) async fn delete_loses(&self, ws: &Workspace) -> Option<Loses> {
+        let WorkspaceSource::Git(g) = &ws.source else {
+            return None;
+        };
+        let root = Path::new(&ws.root);
+        // What git has there decides, not the record alone: one ready
+        // without its branch, from before D-135, may have been worked in.
+        let found = self.git.found(&g.repo_id, root);
+        let nobodys = nobodys_work(ws, &found);
+        if !nobodys
+            && root.join(".git").exists()
+            && let Some(untracked) = self.git.uncommitted(root).await.unwrap_or(None)
+        {
+            return Some(Loses::Uncommitted { untracked });
+        }
+        // Its branch goes with it (D-108): not commits that are nowhere else.
+        let branch = match (g.branch.as_str(), found) {
+            ("", Found::Worktree { branch, .. }) if !nobodys => branch,
+            ("", _) => None,
+            (b, _) => Some(b.to_owned()),
+        };
+        let branch = branch?;
+        let n = self.git.unpushed(&g.repo_id, &branch).await.unwrap_or(0);
+        (n > 0).then_some(Loses::Unpushed { branch, commits: n })
     }
 
     /// Delete a workspace whose preparation isn't running (D-135).
@@ -519,6 +530,8 @@ impl Daemon {
                 name: ws.name,
             });
         }
+        // The task it was made for no longer points at it (D-189).
+        self.workspace_gone(&ws).await;
 
         // The repository's copy goes when nothing uses it any more (D-108),
         // decided under its Git lock: a workspace being made on it is either
@@ -934,6 +947,14 @@ fn nobodys_work(ws: &Workspace, found: &Found) -> bool {
             ..
         }
     ) && ws.sessions.iter().all(|s| s.executions.is_empty())
+}
+
+/// What deleting a workspace without force would lose (D-108).
+pub(crate) enum Loses {
+    /// Uncommitted changes; `untracked`: only files Git doesn't track.
+    Uncommitted { untracked: bool },
+    /// Commits on its branch that are on no remote.
+    Unpushed { branch: String, commits: u32 },
 }
 
 /// Whether preparing `ws` makes its worktree (D-135): a Git workspace whose

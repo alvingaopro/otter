@@ -48,6 +48,10 @@ pub struct Workspace {
     /// (D-105). Was `feature_id` (D-107).
     #[serde(default, alias = "feature_id", skip_serializing_if = "Option::is_none")]
     pub task_id: Option<TaskId>,
+    /// Why it stays although its task's pull request is merged (D-189):
+    /// deleting it would lose what is only here. Cleared when unarchived.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kept: Option<String>,
 }
 
 impl Workspace {
@@ -812,6 +816,7 @@ mod tests {
             sessions: vec![],
             attention: vec![],
             task_id: None,
+            kept: None,
         };
         let json = serde_json::to_string(&ws).unwrap();
         assert!(json.contains(r#""source":{"type":"empty"}"#), "{json}");

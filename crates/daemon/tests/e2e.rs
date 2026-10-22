@@ -26,6 +26,8 @@ mod git_account;
 mod host_chat;
 #[path = "e2e/memory.rs"]
 mod memory;
+#[path = "e2e/merged.rs"]
+mod merged;
 #[path = "e2e/otter_turn.rs"]
 mod otter_turn;
 #[path = "e2e/provider_turn.rs"]
@@ -8028,6 +8030,7 @@ async fn settings_take_keys_write_only_and_keep_them() {
             .into(),
             coding: None,
             otter_tools: None,
+            delete_merged_workspaces: None,
             git: None,
         })
         .await

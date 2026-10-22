@@ -10,6 +10,8 @@ const state = vi.hoisted(() => ({
   backend: undefined as string | undefined,
   codingModel: undefined as string | undefined,
   otterTools: undefined as boolean | undefined,
+  // D-189: `undefined` from an otterd before it.
+  deleteMerged: undefined as boolean | undefined,
   oldTest: false,
   workerMissing: false,
   installFails: false,
@@ -96,6 +98,8 @@ vi.mock("@tauri-apps/api/core", () => ({
       if (u.secrets && "CLAUDE_CODE_OAUTH_TOKEN" in u.secrets) state.token = u.secrets.CLAUDE_CODE_OAUTH_TOKEN !== null;
       const tools = (args.update as { otter_tools?: boolean }).otter_tools;
       if (tools !== undefined && state.otterTools !== undefined) state.otterTools = tools;
+      const merged = (args.update as { delete_merged_workspaces?: boolean }).delete_merged_workspaces;
+      if (merged !== undefined && state.deleteMerged !== undefined) state.deleteMerged = merged;
     }
     return {
       controller: state.controller,
@@ -111,6 +115,7 @@ vi.mock("@tauri-apps/api/core", () => ({
             otter_answers: state.otterTools ? "with tools (claude)" : "without tools (off in Settings)",
           }
         : {}),
+      ...(state.deleteMerged !== undefined ? { delete_merged_workspaces: state.deleteMerged } : {}),
       ...(state.modern
         ? {
             active: "openrouter",
@@ -171,6 +176,7 @@ describe("Settings", () => {
     state.installFails = name.includes("can't be installed");
     state.noRelease = name.includes("no release");
     state.otterTools = name.includes("Otter's tools") ? false : undefined;
+    state.deleteMerged = name.includes("merged") ? true : undefined;
     state.oldTest = name.includes("older otterd");
     state.token = name.includes("sign-in") ? false : undefined;
     localStorage.removeItem("otter.settings-tab");
@@ -501,6 +507,18 @@ describe("Settings", () => {
     expect(dialog().textContent).toContain("Now: with tools (claude).");
   });
 
+  it("turns off deleting merged task workspaces for a host", async () => {
+    await tab("Otter");
+    const box = dialog().querySelector<HTMLInputElement>('input[role="switch"][aria-label="Delete merged task workspaces"]')!;
+    expect(box.checked).toBe(true);
+    await act(async () => box.click());
+    await act(async () => button("Save").click());
+    await flush();
+    const set = calls.find((c) => c.cmd === "settings_set")!;
+    expect((set.args.update as { delete_merged_workspaces: boolean }).delete_merged_workspaces).toBe(false);
+    expect(box.checked).toBe(false);
+  });
+
   it("shows no tools toggle for an older host", async () => {
     await tab("Otter");
     expect(dialog().querySelector('input[aria-label="Otter answers with tools"]')).toBeNull();
@@ -511,6 +529,8 @@ describe("Settings", () => {
     await flush();
     const set = calls.find((c) => c.cmd === "settings_set")!;
     expect(set.args.update).not.toHaveProperty("otter_tools");
+    expect(set.args.update).not.toHaveProperty("delete_merged_workspaces");
+    expect(dialog().querySelector('input[aria-label="Delete merged task workspaces"]')).toBeNull();
     expect(set.args.update).not.toHaveProperty("coding");
   });
 

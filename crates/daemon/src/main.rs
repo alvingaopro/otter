@@ -22,6 +22,7 @@ mod git_account;
 mod history;
 mod login;
 mod memory;
+mod merged;
 mod metrics;
 mod paths;
 mod process_table;
@@ -231,6 +232,8 @@ async fn serve(paths: Paths) -> Result<()> {
     tokio::spawn(daemon.clone().run_triggers());
     // Watches are probed from here on; their turns are the controller's (D-183).
     tokio::spawn(daemon.clone().run_watches());
+    // A task's own workspace goes once its work is merged (D-189).
+    tokio::spawn(daemon.clone().run_merged());
 
     // We hold the lock, so any socket file left behind is stale.
     let _ = std::fs::remove_file(&paths.socket);
