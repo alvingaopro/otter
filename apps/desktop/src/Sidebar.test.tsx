@@ -65,7 +65,7 @@ afterEach(() => {
   el.remove();
 });
 
-describe("the title bar (D-177)", () => {
+describe("the title bar (D-178)", () => {
   it("holds Otter's name, the counts and New workspace in one row", async () => {
     await render([host("code", "0.7.20")]);
     const top = el.querySelector(".sidebar-top")!;

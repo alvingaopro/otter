@@ -93,7 +93,7 @@ agent) cover the mechanics. Re-run with the audit's harness:
 
 | # | Scenario | Status | Evidence |
 |---|---|---|---|
-| M3-1 | Several tasks and workspaces at once on two hosts, handled from Chat and the sidebar (the Inbox until D-177): decisions answered on the task's page, a review accepted, a stopped task retried, notifications once per need | Pending | Offline: `TasksView.test.tsx` (an approval answered, Accept), `taskNeeds.test.ts` (a need told once), `what_a_task_needs_is_one_rule` (core), `tasks_that_need_you_are_listed` (`otter ls`) (D-071…D-073, D-177). |
+| M3-1 | Several tasks and workspaces at once on two hosts, handled from Chat and the sidebar (the Inbox until D-178): decisions answered on the task's page, a review accepted, a stopped task retried, notifications once per need | Pending | Offline: `TasksView.test.tsx` (an approval answered, Accept), `taskNeeds.test.ts` (a need told once), `what_a_task_needs_is_one_rule` (core), `tasks_that_need_you_are_listed` (`otter ls`) (D-071…D-073, D-178). |
 
 ## Diagnostics (plan M4)
 
@@ -105,7 +105,7 @@ agent) cover the mechanics. Re-run with the audit's harness:
 
 | # | Scenario | Status | Evidence |
 |---|---|---|---|
-| M5-1 | Three tasks on one real repository with live Claude: two in parallel worktrees, one waiting for the busy workspace and going on by itself; all paused at once and resumed; each PR with only its own work | Pending | Offline: `a_second_task_waits_for_the_workspace`, `a_waiting_task_gets_a_worktree_of_its_own`, `pause --all` in the CLI e2e, `TasksView.test.tsx`'s Pause all (D-079…D-081, D-177). |
+| M5-1 | Three tasks on one real repository with live Claude: two in parallel worktrees, one waiting for the busy workspace and going on by itself; all paused at once and resumed; each PR with only its own work | Pending | Offline: `a_second_task_waits_for_the_workspace`, `a_waiting_task_gets_a_worktree_of_its_own`, `pause --all` in the CLI e2e, `TasksView.test.tsx`'s Pause all (D-079…D-081, D-178). |
 
 ## Unattended work (plan M6)
 

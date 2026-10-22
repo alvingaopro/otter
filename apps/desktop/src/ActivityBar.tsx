@@ -73,7 +73,7 @@ export function ActivityBar({ view, onView, badges, settings }: Props) {
   );
 }
 
-/** The bar's icons: 22px, a 2px line, as the gear below them (D-177). */
+/** The bar's icons: 22px, a 2px line, as the gear below them (D-178). */
 function ViewIcon({ view }: { view: View }) {
   return (
     <svg width="22" height="22" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">

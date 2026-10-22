@@ -6465,7 +6465,35 @@ image (macOS colours it for its bar) when nothing needs you and orange when
 something does; in the app it is `assets/otter-mark.svg` used as a mask, so
 it takes the colour of the text around it in either theme.
 
-## D-177 — Chat and Workspaces; one title bar (2026-10-21)
+## D-177 — A task's conversation is a chat: Otter at the top, the message box floating at the bottom (2026-10-21)
+
+A task's conversation (D-175) now reads like a messaging app, as the
+developer asked, after Muse and iMessage:
+
+- The message box is one line in a pill, with **+** (pictures, as a paste
+  takes them, D-171) on its left and a round send on its right; it grows with
+  what is written, up to half the conversation's height, then scrolls. This replaces
+  D-175's taller box and its drag handle (`composerResize`): the developer
+  chose the growing box over a fixed height.
+- The box, and a decision waiting above it, float at the bottom of the
+  conversation, which scrolls under them (a sticky block, last in the
+  scroll); scrolled to its end, the last message sits just above them, and
+  stays there when what floats grows (a decision arrives, a picture is
+  added). Scrolled up, the conversation stays where it was.
+- Otter sits at the top, floating the same way: its mark, its name, and what
+  it is doing — working (a ring turns and Otter bobs; still if the Mac asks
+  for less motion), needs you (an orange ring), replying, or the task's
+  status. Otter writing its answer is three moving dots in its bubble.
+- Clicking Otter opens the details (Overview, Activity) on the right; × or
+  Otter again closes them. They are closed until asked for, then as last left
+  on this Mac (`otter.task-details`). Closed, they stay mounted, so a tab and
+  its place are kept.
+
+Tests: `keeps the details closed until Otter at the top is clicked, and
+remembers it (D-177)`, `adds pictures from the + as from a paste (D-177)`, and
+`composerGrow.test.ts`.
+
+## D-178 — Chat and Workspaces; one title bar (2026-10-21)
 
 The Inbox (D-072) repeated what the other views already showed: a task that
 waits on you is first in the task list, under NEEDS YOU; a workspace is first

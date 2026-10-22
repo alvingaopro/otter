@@ -682,7 +682,7 @@ workspaces in one list, NEEDS YOU longest-waiting first, by one rule for
 each (`Workspace::activity`, `Task::needs`/`activity` in `otter-core`,
 D-071). The desktop app had it as its **Inbox** (D-072); it now shows the
 same in its two views' lists, Chat's NEEDS YOU and the sidebar's, with a
-dot on each in the activity bar (D-177). What waits is done on the task's
+dot on each in the activity bar (D-178). What waits is done on the task's
 page, or in the workspace, opened at the session that needs you.
 
 ## 27. Fast Workspace Creation

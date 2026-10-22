@@ -287,7 +287,7 @@ export default function App() {
   }, [payload]);
 
   // A task newly needing you notifies once (D-073), unless the tasks are
-  // in front of you (D-177).
+  // in front of you (D-178).
   useEffect(() => {
     for (const n of newNeeds(taskSeen.current, tasks)) {
       if (focused.current && viewRef.current === "tasks") continue;
@@ -361,7 +361,7 @@ export default function App() {
         <ActivityBar
           view={view}
           onView={setView}
-          // What waits on you, as the menu bar item counts it (D-177).
+          // What waits on you, as the menu bar item counts it (D-178).
           badges={{
             tasks: taskNeeds,
             workspaces: placed.filter((p) => p.ws.activity === "needs_you" || p.ws.activity === "failed").length,

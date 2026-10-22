@@ -206,7 +206,7 @@ export function Sidebar(props: Props) {
 
   return (
     <nav className={drag ? "sidebar reordering" : "sidebar"} aria-label="Workspaces">
-      {/* The title bar, right of the traffic lights (D-177). */}
+      {/* The title bar, right of the traffic lights (D-178). */}
       <div className="sidebar-top" data-tauri-drag-region>
         <span className="brand" data-tauri-drag-region>
           <span className="otter-mark brand-icon" aria-hidden="true" data-tauri-drag-region />

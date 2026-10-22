@@ -22,7 +22,7 @@ describe("nav", () => {
     // Remembered before D-107.
     localStorage.setItem("otter.view", "features");
     expect(storedView()).toBe("tasks");
-    // The Inbox is gone (D-177): Chat instead.
+    // The Inbox is gone (D-178): Chat instead.
     localStorage.setItem("otter.view", "inbox");
     expect(storedView()).toBe("tasks");
   });

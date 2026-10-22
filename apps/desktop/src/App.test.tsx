@@ -130,7 +130,7 @@ describe("Activity Bar navigation", () => {
     host.remove();
   });
 
-  it("is an accessible tab list with Chat first and selected (D-177)", () => {
+  it("is an accessible tab list with Chat first and selected (D-178)", () => {
     const tabs = [...host.querySelectorAll('.activity-bar [role="tab"]')];
     // Labels carry a "N need you" count when there is one.
     expect(tabs.map((t) => t.getAttribute("aria-label")?.split(",")[0])).toEqual(["Chat", "Workspaces"]);

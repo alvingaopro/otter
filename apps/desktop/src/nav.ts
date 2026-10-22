@@ -11,7 +11,7 @@ export interface ViewEntry {
   digit: string;
 }
 
-/** Top to bottom: Chat (the tasks) first, then the workspaces (D-177). */
+/** Top to bottom: Chat (the tasks) first, then the workspaces (D-178). */
 export const VIEWS: ViewEntry[] = [
   { id: "tasks", label: "Chat", digit: "1" },
   { id: "workspaces", label: "Workspaces", digit: "2" },
@@ -20,7 +20,7 @@ export const VIEWS: ViewEntry[] = [
 const KEY = "otter.view";
 
 export function parseView(v: string | null | undefined): View | undefined {
-  // Remembered before D-107, when tasks were features; the Inbox left the app (D-177).
+  // Remembered before D-107, when tasks were features; the Inbox left the app (D-178).
   if (v === "features" || v === "inbox") return "tasks";
   // Otter's view on a host (D-093) left the app (D-115).
   return VIEWS.some((e) => e.id === v) ? (v as View) : undefined;

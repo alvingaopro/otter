@@ -1,9 +1,9 @@
-import { Fragment, useEffect, useMemo, useRef, useState, type CSSProperties, type FormEvent, type ReactNode } from "react";
+import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type FormEvent, type ReactNode } from "react";
 import { ChangesList, type Changes } from "./ChangesPanel";
 import { changesLine } from "./changes";
 import { Dialog } from "./Dialog";
 import { Glyph } from "./Glyph";
-import { ComposerGrip, useComposerHeight } from "./composerResize";
+import { atEnd, fitHeight } from "./composerGrow";
 import { Markdown } from "./Markdown";
 import { MemoryDialog } from "./MemoryDialog";
 import { Menu } from "./Menu";
@@ -57,7 +57,7 @@ interface Props {
   grip?: ReactNode;
 }
 
-/** The tasks, under Chat in the Activity Bar (D-041, D-042, D-177): product work, independent of the Workspace view. */
+/** The tasks, under Chat in the Activity Bar (D-041, D-042, D-178): product work, independent of the Workspace view. */
 export function TasksView({ source, hosts, workspaces, now, focus, onOpenWorkspace, onOpenPreview, grip }: Props) {
   const [list, setList] = useState<PlacedTask[]>(() => source.list());
   const [find, setFind] = useState("");
@@ -264,6 +264,7 @@ function TaskPane({
   const [remembering, setRemembering] = useState(false);
   const [tab, setTab] = useState<Tab>("overview");
   const [detailWidth, setDetailWidth] = usePanelWidth(TASK_DETAIL);
+  const [details, setDetails] = useDetails();
   const [error, setError] = useState<string | null>(null);
   // The coding agent's side (D-055…D-059), and what its runtime can do.
   const [conversations, setConversations] = useState<CodingConversation[]>([]);
@@ -398,10 +399,25 @@ function TaskPane({
         </div>
       )}
       {error && <p className="notice error-text">{error}</p>}
-      <div className="task-body" style={{ "--detail-width": `${detailWidth}px` } as CSSProperties}>
-        <Conversation placed={placed} source={source} now={now} caps={caps} act={act} interactions={interactions} onError={setError} />
-        <PanelGrip panel={TASK_DETAIL} width={detailWidth} onResize={setDetailWidth} label="Details width" />
-        <section className="task-detail" aria-label="Details">
+      <div className={details ? "task-body" : "task-body details-closed"} style={{ "--detail-width": `${detailWidth}px` } as CSSProperties}>
+        <Conversation
+          placed={placed}
+          source={source}
+          now={now}
+          caps={caps}
+          act={act}
+          interactions={interactions}
+          onError={setError}
+          details={details}
+          onDetails={setDetails}
+        />
+        {details && <PanelGrip panel={TASK_DETAIL} width={detailWidth} onResize={setDetailWidth} label="Details width" />}
+        <section className="task-detail" id="task-details" aria-label="Details" hidden={!details}>
+          <button type="button" className="icon-btn detail-close" aria-label="Hide details" title="Hide details" onClick={() => setDetails(false)}>
+            <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true">
+              <path d="M2.5 2.5l7 7M9.5 2.5l-7 7" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+            </svg>
+          </button>
           <div className="detail-tabs" role="tablist" aria-label="Task details">
             {(["overview", "activity"] as const).map((t) => (
               <button
@@ -428,6 +444,31 @@ function TaskPane({
       </div>
     </main>
   );
+}
+
+/** Whether a task's details are open beside its conversation (D-177): closed
+ * until asked for, then as last left on this Mac. */
+const DETAILS_KEY = "otter.task-details";
+
+function useDetails(): [boolean, (open: boolean) => void] {
+  const [open, setOpen] = useState(() => {
+    try {
+      return localStorage.getItem(DETAILS_KEY) === "open";
+    } catch {
+      return false;
+    }
+  });
+  return [
+    open,
+    (next) => {
+      setOpen(next);
+      try {
+        localStorage.setItem(DETAILS_KEY, next ? "open" : "closed");
+      } catch {
+        // Not remembered; fine.
+      }
+    },
+  ];
 }
 
 /** Not being worked on: nothing is planning, implementing, verifying or running. */
@@ -688,6 +729,8 @@ function Conversation({
   act,
   interactions,
   onError,
+  details,
+  onDetails,
 }: {
   placed: PlacedTask;
   source: TaskSource;
@@ -696,6 +739,8 @@ function Conversation({
   act: (a: TaskAction) => void;
   interactions: Map<string, Interaction>;
   onError?: (e: string) => void;
+  details: boolean;
+  onDetails: (open: boolean) => void;
 }) {
   const [text, setText] = useState("");
   const [images, setImages] = useState<PastedImage[]>([]);
@@ -708,8 +753,13 @@ function Conversation({
   // Pictures being made to fit: a message waits for them.
   const [preparing, setPreparing] = useState(0);
   const [busy, setBusy] = useState(false);
-  const [inputHeight, setInputHeight] = useComposerHeight();
-  const end = useRef<HTMLDivElement>(null);
+  // The conversation scrolls under the message box, which floats on it (D-177).
+  const thread = useRef<HTMLDivElement>(null);
+  const dock = useRef<HTMLDivElement>(null);
+  // At its end as last scrolled: what grows below (a decision, pictures, the box) keeps it there.
+  const pinned = useRef(true);
+  const input = useRef<HTMLTextAreaElement>(null);
+  const picker = useRef<HTMLInputElement>(null);
   const messages = placed.task.messages;
   const pending = pendingDecisions(placed.task);
   // A decision taken shows where it was asked; one waiting, above the message box.
@@ -735,11 +785,52 @@ function Conversation({
   const replying = drafts.some((d) => d.role === "controller");
   const awaitingReply =
     !replying && last?.role === "user" && messages.length > 1 && !ENDED.includes(placed.task.status);
-  // Not returned: where scrolling returns a promise, React would take it
-  // for the effect's cleanup and fail on it (Chromium does now).
+  // Otter at the top says what it is doing, and moves while it does (D-177).
+  const status = placed.task.status;
+  const mood =
+    live?.state === "waiting" || status === "blocked"
+      ? "waiting"
+      : live || ["planning", "implementing", "verifying"].includes(status)
+        ? "working"
+        : replying || awaitingReply
+          ? "replying"
+          : "";
+  const moodLabel = mood === "waiting" ? "needs you" : mood || STATUS_LABEL[status].toLowerCase();
+  // To the very end: the message box, last in the scroll, then sits below
+  // the last message instead of over it.
   useEffect(() => {
-    end.current?.scrollIntoView?.({ block: "end" });
+    const t = thread.current;
+    if (t) t.scrollTop = t.scrollHeight;
   }, [messages.length, activity.length, awaitingReply, draftText.length]);
+
+  useEffect(() => {
+    const t = thread.current;
+    const d = dock.current;
+    if (!t || !d || typeof ResizeObserver === "undefined") return;
+    const keep = new ResizeObserver(() => {
+      if (pinned.current) t.scrollTop = t.scrollHeight;
+    });
+    keep.observe(d);
+    return () => keep.disconnect();
+  }, []);
+
+  // One line, growing with what is written. Measuring shrinks it for a moment,
+  // which would move a conversation scrolled up: its place is put back.
+  useLayoutEffect(() => {
+    const box = input.current;
+    const t = thread.current;
+    if (!box || !t) return;
+    const top = t.scrollTop;
+    box.style.height = "auto";
+    if (box.scrollHeight > 0) {
+      const { height, scrolls } = fitHeight(box.scrollHeight, t.clientHeight || window.innerHeight);
+      box.style.height = `${height}px`;
+      box.style.overflowY = scrolls ? "auto" : "hidden";
+    } else {
+      box.style.height = "";
+    }
+    t.scrollTop = pinned.current ? t.scrollHeight : top;
+  }, [text]);
 
   const composition = useComposition();
 
@@ -779,147 +870,211 @@ function Conversation({
 
   return (
     <section className="conversation" aria-label="Conversation">
-      <div className="messages" role="log" aria-live="polite">
-        {messages.length === 0 && <p className="muted small">No messages yet. Describe what you want, or refine the request.</p>}
-        {said.map(({ key, message: m, decision }) =>
-          m ? (
-            <div key={key} className={`message ${m.role}`} role="article" aria-label={named(m.role)}>
-              <Said role={m.role} at={ago(m.at, now)} when={m.at} />
-              {m.text && !(m.attachments?.length && m.text === PICTURES_ONLY) && (
-                <Folded long={m.role === "agent" && m.text.length > FOLD_CHARS}>
-                  <MessageText role={m.role} text={m.text} />
-                </Folded>
-              )}
-              {m.attachments && m.attachments.length > 0 && (
-                <div className="message-pictures">
-                  {m.attachments.map((name, i) => (
-                    <Shot key={name} load={() => source.artifact(placed.key, name)} alt={`Picture ${i + 1} you sent`} className="message-picture" />
-                  ))}
-                </div>
+      <div
+        className="thread"
+        ref={thread}
+        onScroll={() => {
+          pinned.current = atEnd(thread.current!);
+        }}
+      >
+        <div className="thread-head">
+          <button
+            type="button"
+            className={mood ? `otter-chip ${mood}` : "otter-chip"}
+            aria-expanded={details}
+            aria-controls="task-details"
+            title={details ? "Hide details" : "Show details"}
+            onClick={() => onDetails(!details)}
+          >
+            <span className="otter-chip-face">
+              <span className="otter-mark" aria-hidden="true" />
+            </span>
+            <span className="otter-chip-card">
+              <span className="otter-chip-name">Otter</span>
+              <span className="otter-chip-state">{moodLabel}</span>
+            </span>
+          </button>
+        </div>
+        <div className="messages" role="log" aria-live="polite">
+          {messages.length === 0 && <p className="muted small">No messages yet. Describe what you want, or refine the request.</p>}
+          {said.map(({ key, message: m, decision }) =>
+            m ? (
+              <div key={key} className={`message ${m.role}`} role="article" aria-label={named(m.role)}>
+                <Said role={m.role} at={ago(m.at, now)} when={m.at} />
+                {m.text && !(m.attachments?.length && m.text === PICTURES_ONLY) && (
+                  <Folded long={m.role === "agent" && m.text.length > FOLD_CHARS}>
+                    <MessageText role={m.role} text={m.text} />
+                  </Folded>
+                )}
+                {m.attachments && m.attachments.length > 0 && (
+                  <div className="message-pictures">
+                    {m.attachments.map((name, i) => (
+                      <Shot key={name} load={() => source.artifact(placed.key, name)} alt={`Picture ${i + 1} you sent`} className="message-picture" />
+                    ))}
+                  </div>
+                )}
+              </div>
+            ) : (
+              <DecidedNote key={key} d={decision!} now={now} />
+            ),
+          )}
+          {drafts.map((d) => (
+            <div key={d.stream_id} className={`message ${d.role} streaming`} role="article" aria-label={named(d.role)}>
+              {/* Otter's cursor says it is writing; the agent's head says so in words. */}
+              <Said role={d.role} at={d.done ? "now" : d.role === "agent" ? "writing…" : ""} />
+              <MessageText role={d.role} text={d.text}>
+                {!d.done && <span className="cursor" aria-hidden="true" />}
+              </MessageText>
+            </div>
+          ))}
+          {live && (
+            <div className="message agent working" aria-live="polite">
+              <div className="message-head">
+                <span className="message-role">Coding agent</span>
+                <span className="message-at">{live.state === "waiting" ? "waiting for a decision" : "working…"}</span>
+              </div>
+              {activity.length > 0 && (
+                <ul className="activity">
+                  {activity.slice(-6).map((a, i) => {
+                    const at = activityAt?.[activity.length - Math.min(6, activity.length) + i];
+                    return (
+                      <li key={`${activity.length}-${i}`}>
+                        {at && <span className="activity-at">{ago(at, now)} </span>}
+                        {a}
+                      </li>
+                    );
+                  })}
+                </ul>
               )}
             </div>
-          ) : (
-            <DecidedNote key={key} d={decision!} now={now} />
-          ),
-        )}
-        {drafts.map((d) => (
-          <div key={d.stream_id} className={`message ${d.role} streaming`} role="article" aria-label={named(d.role)}>
-            {/* Otter's cursor says it is writing; the agent's head says so in words. */}
-            <Said role={d.role} at={d.done ? "now" : d.role === "agent" ? "writing…" : ""} />
-            <MessageText role={d.role} text={d.text}>
-              {!d.done && <span className="cursor" aria-hidden="true" />}
-            </MessageText>
-          </div>
-        ))}
-        {live && (
-          <div className="message agent working" aria-live="polite">
-            <div className="message-head">
-              <span className="message-role">Coding agent</span>
-              <span className="message-at">{live.state === "waiting" ? "waiting for a decision" : "working…"}</span>
+          )}
+          {awaitingReply && (
+            <div className="message controller typing" role="status">
+              <span className="visually-hidden">Otter is replying…</span>
+              <i aria-hidden="true" />
+              <i aria-hidden="true" />
+              <i aria-hidden="true" />
             </div>
-            {activity.length > 0 && (
-              <ul className="activity">
-                {activity.slice(-6).map((a, i) => {
-                  const at = activityAt?.[activity.length - Math.min(6, activity.length) + i];
-                  return (
-                    <li key={`${activity.length}-${i}`}>
-                      {at && <span className="activity-at">{ago(at, now)} </span>}
-                      {a}
-                    </li>
-                  );
-                })}
+          )}
+        </div>
+        <div className="composer-dock" ref={dock}>
+          {pending.length > 0 && (
+            <section className="pending-decisions" aria-label="Waiting for your decision">
+              <ul className="plain-list decisions">
+                {pending.map((d) => (
+                  <Decision key={d.id} d={d} act={act} now={now} interaction={interactions.get(d.id)} />
+                ))}
+              </ul>
+            </section>
+          )}
+          <form className="composer" onSubmit={submit}>
+            {preparing > 0 && <p className="muted small replying">Getting the picture ready…</p>}
+            {images.length > 0 && (
+              <ul className="plain-list pasted-images" aria-label="Pictures to send">
+                {images.map((img, i) => (
+                  <li key={i} className="pasted-image">
+                    <img src={`data:${img.media_type};base64,${img.data}`} alt={`Picture ${i + 1}`} />
+                    <button
+                      type="button"
+                      className="pasted-image-remove"
+                      aria-label={`Remove picture ${i + 1}`}
+                      onClick={() => putImages(imagesNow.current.filter((_, j) => j !== i))}
+                    >
+                      ×
+                    </button>
+                  </li>
+                ))}
               </ul>
             )}
-          </div>
-        )}
-        {awaitingReply && <p className="muted small replying">Otter is replying…</p>}
-        <div ref={end} />
-      </div>
-      {pending.length > 0 && (
-        <section className="pending-decisions" aria-label="Waiting for your decision">
-          <ul className="plain-list decisions">
-            {pending.map((d) => (
-              <Decision key={d.id} d={d} act={act} now={now} interaction={interactions.get(d.id)} />
-            ))}
-          </ul>
-        </section>
-      )}
-      <form className="composer" onSubmit={submit}>
-        <ComposerGrip height={inputHeight} onResize={setInputHeight} />
-        <div className="composer-box">
-          {preparing > 0 && <p className="muted small replying">Getting the picture ready…</p>}
-          {images.length > 0 && (
-            <ul className="plain-list pasted-images" aria-label="Pictures to send">
-              {images.map((img, i) => (
-                <li key={i} className="pasted-image">
-                  <img src={`data:${img.media_type};base64,${img.data}`} alt={`Picture ${i + 1}`} />
-                  <button
-                    type="button"
-                    className="pasted-image-remove"
-                    aria-label={`Remove picture ${i + 1}`}
-                    onClick={() => putImages(imagesNow.current.filter((_, j) => j !== i))}
-                  >
-                    ×
-                  </button>
-                </li>
-              ))}
-            </ul>
-          )}
-          <textarea
-            aria-label="Message to Otter"
-            style={{ height: inputHeight }}
-            placeholder={
-              placed.task.status === "review" || placed.task.status === "done"
-                ? "Happy with it? Or say what to change…"
-                : "Tell Otter what you want…"
-            }
-            value={text}
-            onChange={(e) => setText(e.target.value)}
-            onPaste={(e) => {
-              const files = pastedFiles(e.clipboardData);
-              if (files.length === 0) return;
-              e.preventDefault();
-              void takePictures(files);
-            }}
-            onCompositionStart={composition.onCompositionStart}
-            onCompositionEnd={composition.onCompositionEnd}
-            onKeyDown={(e) => {
-              if (composition.enterSubmits(e)) {
-                e.preventDefault();
-                void submit(e as unknown as FormEvent);
-              }
-            }}
-          />
-        </div>
-        <span className="composer-actions">
-          <button className="btn primary" type="submit" disabled={busy || preparing > 0 || (!text.trim() && images.length === 0)}>
-            Send
-          </button>
-          {live && caps?.features.redirect && (
-            <button
-              type="button"
-              className="btn outline"
-              title="Stop what the coding agent is doing and have it do this next"
-              disabled={busy || !text.trim()}
-              onClick={async () => {
-                const t = text.trim();
-                if (!t) return;
-                setBusy(true);
-                try {
-                  await source.act(placed.key, { action: "redirect", text: t });
-                  setText("");
-                } catch (e) {
-                  onError?.(String(e));
-                } finally {
-                  setBusy(false);
+            <div className="composer-row">
+              <button
+                type="button"
+                className="composer-add"
+                aria-label="Add pictures"
+                title="Add pictures"
+                disabled={images.length >= MAX_IMAGES}
+                onClick={() => picker.current?.click()}
+              >
+                <svg width="18" height="18" viewBox="0 0 18 18" aria-hidden="true">
+                  <path d="M9 3v12M3 9h12" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+                </svg>
+              </button>
+              <input
+                ref={picker}
+                type="file"
+                accept="image/*"
+                multiple
+                hidden
+                onChange={(e) => {
+                  const files = Array.from(e.target.files ?? []);
+                  e.target.value = "";
+                  if (files.length > 0) void takePictures(files);
+                }}
+              />
+              <textarea
+                ref={input}
+                rows={1}
+                aria-label="Message to Otter"
+                placeholder={
+                  placed.task.status === "review" || placed.task.status === "done"
+                    ? "Happy with it? Or say what to change…"
+                    : "Tell Otter what you want…"
                 }
-              }}
-            >
-              Redirect now
-            </button>
-          )}
-        </span>
-      </form>
+                value={text}
+                onChange={(e) => setText(e.target.value)}
+                onPaste={(e) => {
+                  const files = pastedFiles(e.clipboardData);
+                  if (files.length === 0) return;
+                  e.preventDefault();
+                  void takePictures(files);
+                }}
+                onCompositionStart={composition.onCompositionStart}
+                onCompositionEnd={composition.onCompositionEnd}
+                onKeyDown={(e) => {
+                  if (composition.enterSubmits(e)) {
+                    e.preventDefault();
+                    void submit(e as unknown as FormEvent);
+                  }
+                }}
+              />
+              {live && caps?.features.redirect && (
+                <button
+                  type="button"
+                  className="btn outline composer-redirect"
+                  title="Stop what the coding agent is doing and have it do this next"
+                  disabled={busy || !text.trim()}
+                  onClick={async () => {
+                    const t = text.trim();
+                    if (!t) return;
+                    setBusy(true);
+                    try {
+                      await source.act(placed.key, { action: "redirect", text: t });
+                      setText("");
+                    } catch (e) {
+                      onError?.(String(e));
+                    } finally {
+                      setBusy(false);
+                    }
+                  }}
+                >
+                  Redirect now
+                </button>
+              )}
+              <button
+                className="composer-send"
+                type="submit"
+                aria-label="Send"
+                title="Send"
+                disabled={busy || preparing > 0 || (!text.trim() && images.length === 0)}
+              >
+                <svg width="18" height="18" viewBox="0 0 18 18" aria-hidden="true">
+                  <path d="M9 15V3M4 8l5-5 5 5" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+                </svg>
+              </button>
+            </div>
+          </form>
+        </div>
+      </div>
     </section>
   );
 }
