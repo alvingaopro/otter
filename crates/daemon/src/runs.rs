@@ -192,7 +192,7 @@ impl Daemon {
         // The turn, then the run takes the conversation (a new generation).
         let run_id = RunId::generate();
         // The messages' pictures, if the agent can see them — as many as a
-        // turn carries, the rest said (D-179); else each message they came
+        // turn carries, the rest said (D-180); else each message they came
         // with is told so, once.
         // The developer hears of the ones left out once the run has started.
         let mut prompt = prompt;
@@ -1958,7 +1958,7 @@ pub(crate) fn host_paths(files: &[PathBuf]) -> Vec<String> {
         .collect()
 }
 
-/// The pictures one turn carries (D-179): the newest that fit what a turn
+/// The pictures one turn carries (D-180): the newest that fit what a turn
 /// takes — [`MAX_IMAGES`](otter_protocol::task::MAX_IMAGES), and
 /// [`MAX_IMAGES_TOTAL`](otter_protocol::task::MAX_IMAGES_TOTAL) in all —
 /// in the order they were sent, and how many older ones were left out. The
@@ -2348,7 +2348,7 @@ mod tests {
     }
 
     /// A turn carries the newest pictures that fit — four, 2 MB in all —
-    /// in the order they were sent, and says how many it left out (D-179).
+    /// in the order they were sent, and says how many it left out (D-180).
     #[test]
     fn a_turn_carries_the_newest_pictures_that_fit() {
         let dir = tempfile::tempdir().unwrap();

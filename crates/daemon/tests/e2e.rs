@@ -8558,7 +8558,7 @@ async fn a_picture_sent_while_the_agent_works_reaches_its_next_turn() {
 
 /// A run's first turn carries the newest pictures that fit — four, of the
 /// six two messages sent before it started — and the agent and the
-/// developer are told the rest were left out (D-179): the worker would
+/// developer are told the rest were left out (D-180): the worker would
 /// refuse the whole turn over its limits.
 #[tokio::test]
 async fn a_runs_first_turn_carries_the_pictures_that_fit() {

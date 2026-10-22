@@ -52,7 +52,7 @@ pub struct OtterRun<'a> {
     pub instructions: &'a str,
     /// What the turn starts with: the context and the developer's messages.
     pub prompt: &'a str,
-    /// The pictures that go with it (D-179): the worker puts them before
+    /// The pictures that go with it (D-180): the worker puts them before
     /// the text.
     pub images: Vec<crate::runtime::TurnImage>,
     /// Otter's tools: `{name, description, input_schema}` each.
@@ -388,7 +388,7 @@ mod tests {
     }
 
     /// The developer's pictures go to the worker with the turn's text
-    /// (D-179); a turn without them sends none.
+    /// (D-180); a turn without them sends none.
     #[tokio::test]
     async fn the_pictures_go_with_the_turn() {
         let (dir, mut env) = fake("ok");

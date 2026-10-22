@@ -6164,7 +6164,7 @@ conversation did not.
   (it and an Enter within 50 ms of the composition's end are the method's).
 
 **Not done.** Otter's own reply turn (the brain): only the coding agent is
-shown the pictures (D-179 shows them to Otter's turn too). Pictures on a
+shown the pictures (D-180 shows them to Otter's turn too). Pictures on a
 task's first request (`task.create`) and on Otter's host conversation. The
 stop-redirect action (`redirect {text}`) takes no pictures.
 
@@ -6534,7 +6534,7 @@ Checked with the app's tests and a production build, not in the macOS app
 itself. Supersedes D-072, and the Inbox's part in D-073 and D-081; D-041's
 views are now two.
 
-## D-179 — Otter's turn sees the developer's pictures (2026-10-22)
+## D-180 — Otter's turn sees the developer's pictures (2026-10-22)
 
 **Why.** Dogfooding D-171: a screenshot pasted into a task, and Otter
 answered that it couldn't see it — and couldn't tell whether the picture was
