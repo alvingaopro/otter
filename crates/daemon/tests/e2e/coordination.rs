@@ -253,3 +253,276 @@ async fn an_answer_only_task_reads_alongside_the_work() {
     assert_eq!(held, Value::String(writer.clone()), "{answers:?}");
     let _ = code;
 }
+
+/// A run as `gh run view --json` prints it, for the fake gh.
+fn write_run(fake: &FakeCodex, id: &str, status: &str, conclusion: &str) {
+    let failed = conclusion == "failure";
+    let run = serde_json::json!({
+        "name": "CI",
+        "displayTitle": "Fix the billing export",
+        "status": status,
+        "conclusion": conclusion,
+        "event": "push",
+        "headBranch": "main",
+        "headSha": "0123456789abcdef",
+        "createdAt": "2026-10-22T10:00:00Z",
+        "updatedAt": "2026-10-22T10:05:00Z",
+        "url": format!("https://github.com/sugerio/marketplace-service/actions/runs/{id}"),
+        "jobs": [
+            {"name": "lint", "status": "completed", "conclusion": "success", "steps": []},
+            {"name": "test", "status": if status == "completed" { "completed" } else { "in_progress" },
+             "conclusion": conclusion,
+             "steps": [{"name": "go test ./...", "conclusion": if failed { "failure" } else { "success" }}]},
+        ],
+    });
+    std::fs::write(fake.gh.join(format!("run-{id}.json")), run.to_string()).unwrap();
+    std::fs::write(
+        fake.gh.join("log"),
+        "test\tgo test ./...\t@TIME@ --- FAIL: TestExport (@SECS@)\ntest\tgo test ./...\t@TIME@ export_test.go:42: want 3 rows, got 2\n",
+    )
+    .unwrap();
+}
+
+const RUN_1: &str = "https://github.com/sugerio/marketplace-service/actions/runs/39824362436";
+const RUN_2: &str = "https://github.com/sugerio/marketplace-service/actions/runs/39833972735";
+
+/// The answers in a scripted reply, a line each.
+fn answers_in(reply: &str) -> Vec<Value> {
+    reply
+        .lines()
+        .filter_map(|l| {
+            l.split_once(": ")
+                .and_then(|(_, j)| serde_json::from_str(j).ok())
+        })
+        .collect()
+}
+
+fn reply_to_request(f: &Task) -> Option<String> {
+    let request = f.request_message()?.to_string();
+    f.messages
+        .iter()
+        .find(|m| {
+            m.role == MessageRole::Controller && m.correlation_id.as_deref() == Some(&request)
+        })
+        .map(|m| m.text.clone())
+}
+
+/// Eyes On CICD (D-192): two run links and no workspace. Otter reads both
+/// runs itself, answers, and the task ends — no workspace, no coding agent.
+#[tokio::test]
+async fn otter_reads_the_runs_itself_and_answers_without_a_workspace() {
+    let fake = coord_host("", vec![]).await;
+    let host = &fake.host;
+    write_run(&fake, "39824362436", "completed", "failure");
+    write_run(&fake, "39833972735", "completed", "success");
+    let request = format!(
+        "{RUN_1}\n{RUN_2}\nCALL: read_github {{\"url\": \"{RUN_1}\"}}\nCALL: read_github {{\"url\": \"{RUN_2}\"}}\nCALL: finish_with_answer {{}}"
+    );
+    let mut conn = host.conn().await;
+    let f = conn
+        .task_create(otter_protocol::task::TaskCreate {
+            command_id: "eyes".into(),
+            title: "Eyes On CICD".into(),
+            request,
+            workspace: None,
+            answer_only: false,
+        })
+        .await
+        .unwrap();
+    let id = f.id.to_string();
+    conn.task_act("eyes-start", &id, otter_core::task::TaskAction::Start)
+        .await
+        .unwrap();
+    let f = wait_task(host, &id, "answered and done", |f| {
+        f.status == TaskStatus::Done
+    })
+    .await;
+    assert!(f.workspace_id.is_none());
+    assert!(f.runs.is_empty());
+    let reply = reply_to_request(&f).unwrap();
+    let answers = answers_in(&reply);
+    assert_eq!(
+        answers.iter().map(code).collect::<Vec<_>>(),
+        ["ok", "ok", "ok"],
+        "{reply}"
+    );
+    let first = &answers[0]["data"];
+    assert_eq!(first["conclusion"], "failure");
+    assert_eq!(first["jobs"][1]["failed_steps"][0], "go test ./...");
+    let log = first["failed_log_end"].as_str().unwrap();
+    assert!(log.contains("want 3 rows, got 2"), "{log}");
+    assert!(!log.contains("2026-10-20T"), "times are cut: {log}");
+    assert_eq!(answers[1]["data"]["conclusion"], "success");
+    assert!(answers[0]["data"]["read_at"].is_string());
+    assert!(
+        f.status_reason
+            .as_deref()
+            .unwrap_or_default()
+            .starts_with("Otter answered it"),
+        "{:?}",
+        f.status_reason
+    );
+    // Nothing was made for it.
+    assert!(host.conn().await.workspace_list().await.unwrap().is_empty());
+}
+
+/// The same request, its workspace taken by another task's agent (the
+/// screenshot's case): Otter reads the runs before the task waits, and the
+/// task is done without ever waiting (D-191, D-192).
+#[tokio::test]
+async fn a_task_whose_workspace_is_taken_is_answered_before_it_waits() {
+    let fake = coord_host("set_workspace=developer", vec![]).await;
+    let host = &fake.host;
+    write_run(&fake, "39824362436", "completed", "failure");
+    let dir = host.home().join("marketplace");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("Makefile"), "test:\n\t@true\n").unwrap();
+    directory(host, "marketplace", &dir).await;
+    let busy = task_in(host, "a", "marketplace", "Add CSV export HANG", false).await;
+    at_work(host, &busy).await;
+    let eyes = task_in(
+        host,
+        "b",
+        "marketplace",
+        &format!(
+            "{RUN_1}\nCALL: read_github {{\"url\": \"{RUN_1}\"}}\nCALL: finish_with_answer {{}}"
+        ),
+        false,
+    )
+    .await;
+    let f = wait_task(host, &eyes, "answered and done", |f| {
+        f.status == TaskStatus::Done
+    })
+    .await;
+    assert!(f.runs.is_empty(), "no coding agent");
+    let recs = history(host, &eyes).await;
+    assert!(
+        !recs
+            .iter()
+            .any(|r| r.text.contains("Waiting for marketplace")),
+        "it never waited: {:#?}",
+        recs.iter().map(|r| &r.text).collect::<Vec<_>>()
+    );
+    let busy = host.conn().await.task_get(&busy).await.unwrap();
+    assert!(
+        busy.runs
+            .last()
+            .is_some_and(|r| r.state == RunState::Running)
+    );
+}
+
+/// A run still going: Otter watches it (kind run, by its link); the task
+/// waits on that, not on the developer; when the run ends, the watch's own
+/// turn answers and ends the task (D-192).
+#[tokio::test]
+async fn a_run_still_going_is_watched_and_the_watch_finishes_the_task() {
+    let fake = coord_host(
+        "",
+        vec![
+            ("OTTER_WATCH_TICK_MS", "100".into()),
+            ("OTTER_WATCH_POLL_MS", "100".into()),
+        ],
+    )
+    .await;
+    let host = &fake.host;
+    write_run(&fake, "39833972735", "in_progress", "");
+    let request = format!(
+        "{RUN_2}\nCALL: watch {{\"what\": \"say how it ends CALL: read_github {{\\\"url\\\": \\\"{RUN_2}\\\"}} CALL: finish_with_answer {{}}\", \"kind\": \"run\", \"url\": \"{RUN_2}\"}}"
+    );
+    let mut conn = host.conn().await;
+    let f = conn
+        .task_create(otter_protocol::task::TaskCreate {
+            command_id: "eyes".into(),
+            title: "Eyes On CICD".into(),
+            request,
+            workspace: None,
+            answer_only: false,
+        })
+        .await
+        .unwrap();
+    let id = f.id.to_string();
+    conn.task_act("eyes-start", &id, otter_core::task::TaskAction::Start)
+        .await
+        .unwrap();
+    let f = wait_task(host, &id, "waiting on the watch", |f| {
+        f.status_reason
+            .as_deref()
+            .is_some_and(|r| r.starts_with("Waiting for what Otter watches"))
+    })
+    .await;
+    assert_eq!(
+        f.status,
+        TaskStatus::Planning,
+        "not waiting on the developer"
+    );
+    assert!(f.needs().is_none());
+    let reply = reply_to_request(&f).unwrap();
+    let answers = answers_in(&reply);
+    assert_eq!(code(&answers[0]), "ok", "{reply}");
+    assert_eq!(
+        answers[0]["data"]["now"]["text"], "CI: in progress, 1 of 2 jobs not finished",
+        "{reply}"
+    );
+    // The run ends.
+    write_run(&fake, "39833972735", "completed", "failure");
+    let f = wait_task(
+        host,
+        &id,
+        "the watch's turn finished it, and said so",
+        |f| {
+            f.status == TaskStatus::Done
+                && f.messages.iter().any(|m| {
+                    m.correlation_id
+                        .as_deref()
+                        .is_some_and(|c| c.starts_with("watch:"))
+                })
+        },
+    )
+    .await;
+    let report = f
+        .messages
+        .iter()
+        .rev()
+        .find(|m| {
+            m.correlation_id
+                .as_deref()
+                .is_some_and(|c| c.starts_with("watch:"))
+        })
+        .map(|m| m.text.clone())
+        .unwrap();
+    assert!(report.contains("failed: test"), "{report}");
+    assert!(report.contains("finish_with_answer: {\"data\""), "{report}");
+    assert!(f.workspace_id.is_none() && f.runs.is_empty());
+}
+
+/// `read_github` reads a pull request too; a link that isn't GitHub's is
+/// refused (D-192).
+#[tokio::test]
+async fn read_github_reads_a_pull_request_and_refuses_other_links() {
+    let fake = coord_host("", vec![]).await;
+    let host = &fake.host;
+    std::fs::write(fake.gh.join("pr"), "").unwrap();
+    std::fs::write(
+        fake.gh.join("checks.json"),
+        r#"[{"name":"test","bucket":"pass","link":"https://github.com/o/r/actions/runs/1/job/2"}]"#,
+    )
+    .unwrap();
+    let dir = host.home().join("w");
+    std::fs::create_dir_all(&dir).unwrap();
+    directory(host, "w", &dir).await;
+    let id = task_in(host, "a", "w", "Add CSV export HANG", false).await;
+    at_work(host, &id).await;
+    let (_, answers) = super::otter_turn::run(
+        host,
+        &id,
+        "pr",
+        "CALL: read_github {\"url\": \"https://github.com/o/r/pull/7\"}\nCALL: read_github {\"url\": \"https://example.com/x\"}",
+    )
+    .await;
+    assert_eq!(answers[0]["data"]["state"], "OPEN", "{answers:?}");
+    assert_eq!(
+        answers[0]["data"]["checks"][0]["state"], "pass",
+        "{answers:?}"
+    );
+    assert_eq!(code(&answers[1]), "invalid", "{answers:?}");
+}

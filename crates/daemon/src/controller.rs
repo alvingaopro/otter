@@ -743,6 +743,21 @@ impl Daemon {
             f
         };
         if f.workspace_id.is_none() {
+            // Otter watches something for it (D-192): it waits on that, not
+            // on the developer; when the watch comes to something, Otter's
+            // turn answers it or says where it works.
+            if let Some(w) = f.open_watches().next() {
+                let why = format!("Waiting for what Otter watches: {}", w.label);
+                if f.status_reason.as_deref() != Some(why.as_str()) {
+                    self.controller_apply(&f.id, TaskStatus::Planning, move |f, _| {
+                        let event = f.reason(why.clone());
+                        f.status_reason = Some(why);
+                        Ok(vec![Change::new(event)])
+                    })
+                    .await?;
+                }
+                return Ok(());
+            }
             self.controller_apply(&f.id, TaskStatus::Planning, |f, now| {
                 let e = f
                     .transition(

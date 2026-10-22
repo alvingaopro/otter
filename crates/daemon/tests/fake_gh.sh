@@ -31,6 +31,12 @@ case "$1 $2" in
     echo "no checks reported on the branch" >&2; exit 1 ;;
   "pr comment") cat > "$dir/comment" ;;
   "run view")
+    # A run's state (D-192): run-<id>.json, as a test writes it.
+    case " $* " in
+      *" --json "*)
+        if [ -f "$dir/run-$3.json" ]; then cat "$dir/run-$3.json"; exit 0; fi
+        echo "could not find any workflow run with ID $3" >&2; exit 1 ;;
+    esac
     # As GitHub prints it, each view later than the last: @TIME@ and
     # @SECS@ in the log change from one view to the next.
     n=$(( $(cat "$dir/views" 2>/dev/null || echo 0) + 1 )); echo "$n" > "$dir/views"

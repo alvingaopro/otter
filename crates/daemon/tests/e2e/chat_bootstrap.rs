@@ -621,8 +621,9 @@ async fn a_message_sent_while_otter_reads_the_request_is_answered() {
     .await;
 }
 
-/// The turn on a request may look and say where the task works; it may not
-/// pause the task, change what it may do, or pass the request on.
+/// The turn on a request may look, say where the task works, answer it,
+/// have it only read or watch (D-192); it may not pause the task or pass
+/// the request on.
 #[tokio::test]
 async fn the_turn_on_a_request_may_only_look_and_place() {
     let (fake, _) = host_with_billing().await;
@@ -630,7 +631,7 @@ async fn the_turn_on_a_request_may_only_look_and_place() {
     let f = unplaced(
         host,
         "c-1",
-        "Add retries in billing.\nCALL: pause_task {}\nCALL: set_answer_only {\"on\": true}\nCALL: forward_to_agent {\"message_ids\": $MSG}\nCALL: set_workspace {\"workspace\": \"billing\"}",
+        "Add retries in billing.\nCALL: pause_task {}\nCALL: redirect_agent {\"message_ids\": $MSG}\nCALL: forward_to_agent {\"message_ids\": $MSG}\nCALL: set_workspace {\"workspace\": \"billing\"}",
     )
     .await;
     let id = f.id.to_string();

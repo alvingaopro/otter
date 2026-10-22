@@ -981,6 +981,94 @@ pub struct GitHub<'a> {
     pub repo: Option<String>,
 }
 
+/// An Actions run as GitHub says it (D-192).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct RunView {
+    pub name: String,
+    pub title: String,
+    /// `queued`, `in_progress`, `completed`, …
+    pub status: String,
+    /// Once completed: `success`, `failure`, `cancelled`, `skipped`,
+    /// `timed_out`, …
+    pub conclusion: String,
+    pub event: String,
+    pub branch: String,
+    pub commit: String,
+    pub created_at: String,
+    pub updated_at: String,
+    pub url: String,
+    pub jobs: Vec<JobView>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct JobView {
+    pub name: String,
+    pub status: String,
+    pub conclusion: String,
+    pub failed_steps: Vec<String>,
+}
+
+/// What a GitHub link points at (D-192).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum GithubLink {
+    /// An Actions run (or one of its jobs).
+    Run {
+        repo: String,
+        id: String,
+        job: Option<String>,
+    },
+    PullRequest {
+        repo: String,
+        number: u64,
+    },
+}
+
+impl GithubLink {
+    /// `https://github.com/<owner>/<repo>/actions/runs/<id>[/job/<id>]` or
+    /// `…/pull/<n>`; anything else is `None`.
+    pub fn parse(url: &str) -> Option<GithubLink> {
+        let url = url.trim();
+        let rest = url.split_once("://").map(|(_, r)| r).unwrap_or(url);
+        let rest = rest.split(['?', '#']).next()?;
+        let mut parts = rest.split('/').filter(|p| !p.is_empty());
+        if parts.next()? != "github.com" {
+            return None;
+        }
+        let (owner, name) = (parts.next()?, parts.next()?);
+        let ok = |s: &str| {
+            !s.is_empty()
+                && s.chars()
+                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+        };
+        if !ok(owner) || !ok(name) {
+            return None;
+        }
+        let repo = format!("{owner}/{name}");
+        let digits = |s: &str| !s.is_empty() && s.chars().all(|c| c.is_ascii_digit());
+        match (parts.next()?, parts.next()?) {
+            ("actions", "runs") => {
+                let id = parts.next().filter(|s| digits(s))?.to_owned();
+                let job = match (parts.next(), parts.next()) {
+                    (Some("job"), Some(j)) if digits(j) => Some(j.to_owned()),
+                    _ => None,
+                };
+                Some(GithubLink::Run { repo, id, job })
+            }
+            ("pull", n) => Some(GithubLink::PullRequest {
+                repo,
+                number: n.parse().ok()?,
+            }),
+            _ => None,
+        }
+    }
+
+    pub fn repo(&self) -> &str {
+        match self {
+            GithubLink::Run { repo, .. } | GithubLink::PullRequest { repo, .. } => repo,
+        }
+    }
+}
+
 /// What GitHub says of a pull request now (D-184).
 #[derive(Clone, Debug, PartialEq)]
 pub struct PrState {
@@ -1158,6 +1246,92 @@ impl<'a> GitHub<'a> {
                     .filter(|s| !s.is_empty()),
             })
             .collect())
+    }
+
+    /// An Actions run as GitHub says it now (D-192): its state, and its
+    /// jobs with the steps that failed.
+    pub async fn run_view(&self, id: &str) -> Result<RunView> {
+        let out = self
+            .gh(
+                &[
+                    "run",
+                    "view",
+                    id,
+                    "--json",
+                    "name,displayTitle,status,conclusion,event,headBranch,headSha,createdAt,updatedAt,url,jobs",
+                ],
+                None,
+            )
+            .await?;
+        let v: Value = serde_json::from_str(&out).context("reading gh run view")?;
+        let field = |v: &Value, k: &str| v[k].as_str().unwrap_or_default().to_owned();
+        Ok(RunView {
+            name: field(&v, "name"),
+            title: field(&v, "displayTitle"),
+            status: field(&v, "status"),
+            conclusion: field(&v, "conclusion"),
+            event: field(&v, "event"),
+            branch: field(&v, "headBranch"),
+            commit: field(&v, "headSha").chars().take(10).collect(),
+            created_at: field(&v, "createdAt"),
+            updated_at: field(&v, "updatedAt"),
+            url: field(&v, "url"),
+            jobs: v["jobs"]
+                .as_array()
+                .map(|jobs| {
+                    jobs.iter()
+                        .map(|j| JobView {
+                            name: field(j, "name"),
+                            status: field(j, "status"),
+                            conclusion: field(j, "conclusion"),
+                            failed_steps: j["steps"]
+                                .as_array()
+                                .map(|steps| {
+                                    steps
+                                        .iter()
+                                        .filter(|s| {
+                                            matches!(
+                                                s["conclusion"].as_str(),
+                                                Some("failure" | "timed_out" | "cancelled")
+                                            )
+                                        })
+                                        .map(|s| field(s, "name"))
+                                        .collect()
+                                })
+                                .unwrap_or_default(),
+                        })
+                        .collect()
+                })
+                .unwrap_or_default(),
+        })
+    }
+
+    /// The failed jobs' log of run `id`, cleaned as CI logs are (D-139).
+    pub async fn run_failed_log(&self, id: &str) -> Option<String> {
+        let out = self
+            .gh(&["run", "view", id, "--log-failed"], None)
+            .await
+            .ok()?;
+        Some(ci_log(&out)).filter(|l| !l.trim().is_empty())
+    }
+
+    /// A pull request as GitHub says it now (D-192): title, state,
+    /// mergeability, branches, link.
+    pub async fn pr_view(&self, pr: u64) -> Result<Value> {
+        let n = pr.to_string();
+        let out = self
+            .gh(
+                &[
+                    "pr",
+                    "view",
+                    &n,
+                    "--json",
+                    "title,state,mergeable,baseRefName,headRefName,url,isDraft",
+                ],
+                None,
+            )
+            .await?;
+        serde_json::from_str(&out).context("reading gh pr view")
     }
 
     /// The Actions run a check belongs to (`…/actions/runs/<id>/…`).
@@ -1533,6 +1707,44 @@ mod tests {
             "gh pr create --head otterd/r03br: pull request create failed: GraphQL: No commits between main and otterd/r03br (createPullRequest)"
         ));
         assert!(!no_commits_between("pull request create failed: HTTP 422"));
+    }
+
+    #[test]
+    fn github_links_say_what_they_point_at() {
+        assert_eq!(
+            GithubLink::parse(
+                "https://github.com/sugerio/marketplace-service/actions/runs/39824362436"
+            ),
+            Some(GithubLink::Run {
+                repo: "sugerio/marketplace-service".into(),
+                id: "39824362436".into(),
+                job: None
+            })
+        );
+        assert_eq!(
+            GithubLink::parse("github.com/o/r/actions/runs/12/job/34?pr=1"),
+            Some(GithubLink::Run {
+                repo: "o/r".into(),
+                id: "12".into(),
+                job: Some("34".into())
+            })
+        );
+        assert_eq!(
+            GithubLink::parse("https://github.com/o/r/pull/7#issuecomment-1"),
+            Some(GithubLink::PullRequest {
+                repo: "o/r".into(),
+                number: 7
+            })
+        );
+        for bad in [
+            "https://gitlab.com/o/r/pull/7",
+            "https://github.com/o/r/issues/7",
+            "https://github.com/o/r/actions/runs/--repo",
+            "https://github.com/o;rm/r/pull/7",
+            "not a link",
+        ] {
+            assert_eq!(GithubLink::parse(bad), None, "{bad}");
+        }
     }
 
     #[test]

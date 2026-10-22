@@ -456,6 +456,7 @@ mod tests {
             otter_tools: None,
             delete_merged_workspaces: None,
             git: None,
+            tool_levels: Default::default(),
         }
     }
 
