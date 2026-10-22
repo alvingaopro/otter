@@ -61,7 +61,7 @@ pub async fn task_create(
             command_id,
             title,
             request,
-            workspace,
+            workspace: workspace.map(Into::into),
             answer_only: answer_only.unwrap_or(false),
         })
         .await

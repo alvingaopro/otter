@@ -239,7 +239,7 @@ impl Daemon {
                 command_id: command.clone(),
                 title: t.title.clone(),
                 request: t.request.clone(),
-                workspace: Some(t.workspace_id.to_string()),
+                workspace: Some(t.workspace_id.to_string().into()),
                 answer_only: false,
             })
             .await?;

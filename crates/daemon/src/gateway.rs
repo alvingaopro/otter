@@ -311,8 +311,22 @@ pub fn host_tools() -> Vec<ToolSpec> {
         t(
             "list_workspaces",
             Observe,
-            "The workspaces on this host (where tasks do their work): id, name, state.",
-            none(),
+            "The workspaces on this host (where tasks do their work): id, name, state, the repository it comes from, its brief, and the task working in it now. query: only those whose name, repository or brief has these words.",
+            json!({
+                "type": "object",
+                "properties": {"query": {"type": "string"}},
+                "additionalProperties": false
+            }),
+        ),
+        t(
+            "list_repositories",
+            Observe,
+            "The repositories already on this host: the ones its workspaces come from. A task can start a workspace of its own from one (create_task new_workspace). query: only those with these words in them.",
+            json!({
+                "type": "object",
+                "properties": {"query": {"type": "string"}},
+                "additionalProperties": false
+            }),
         ),
         t(
             "get_task",
@@ -335,13 +349,24 @@ pub fn host_tools() -> Vec<ToolSpec> {
         t(
             "create_task",
             DeveloperWord,
-            "Make a task of what the developer asked for: their message(s) by id are its request, word for word; the title is yours; a workspace (name or id) if they said where; answer_only if they only want an answer; start if they asked for it to start.",
+            "Make a task of what the developer asked for: their message(s) by id are its request, word for word; the title is yours; where it works is at most one of: workspace (name or id of one that exists), new_workspace (a repository the developer named or list_repositories gave: a workspace of its own is made from it, and is prepared before the work starts), or scratch (an empty directory); answer_only if they only want an answer; start if they asked for it to start. If it isn't clear where, ask the developer first.",
             json!({
                 "type": "object",
                 "properties": {
                     "title": {"type": "string"},
                     "message_ids": {"type": "array", "items": {"type": "string"}, "minItems": 1},
                     "workspace": {"type": "string"},
+                    "new_workspace": {
+                        "type": "object",
+                        "properties": {
+                            "repository": {"type": "string"},
+                            "base": {"type": "string"},
+                            "branch": {"type": "string"}
+                        },
+                        "required": ["repository"],
+                        "additionalProperties": false
+                    },
+                    "scratch": {"type": "boolean"},
                     "answer_only": {"type": "boolean"},
                     "start": {"type": "boolean"}
                 },
@@ -387,6 +412,20 @@ pub struct ToolError {
     pub code: &'static str,
     pub message: String,
     pub next: Option<String>,
+}
+
+/// The repository a workspace comes from, as it may be shown.
+fn repository_of(w: &otter_core::Workspace) -> Option<String> {
+    match &w.source {
+        otter_core::WorkspaceSource::Git(g) => Some(g.repository.clone()),
+        _ => None,
+    }
+}
+
+/// Every word of `query` is in one of the `fields` (no words: all match).
+fn matches_query(query: &[String], fields: &[&str]) -> bool {
+    let hay = fields.join(" ").to_lowercase();
+    query.iter().all(|w| hay.contains(w.as_str()))
 }
 
 fn fail(code: &'static str, message: impl Into<String>) -> ToolError {
@@ -871,14 +910,61 @@ impl Gateway {
                 messages_page(&chat.get().messages, args)
             }
             "list_workspaces" => {
+                let query = Self::query(args);
+                let busy: std::collections::HashMap<_, _> = d
+                    .runs
+                    .lock()
+                    .unwrap()
+                    .values()
+                    .map(|r| (r.workspace.clone(), r.task.to_string()))
+                    .collect();
                 let store = d.store.lock().await;
                 let ws: Vec<Value> = store
                     .state
                     .workspaces
                     .iter()
-                    .map(|w| json!({"id": w.id.as_str(), "name": w.name, "state": format!("{:?}", w.state).to_lowercase()}))
+                    .cloned()
+                    .map(otter_core::Workspace::shown)
+                    .filter(|w| {
+                        matches_query(
+                            &query,
+                            &[
+                                &w.name,
+                                &repository_of(w).unwrap_or_default(),
+                                w.brief.title.as_deref().unwrap_or(""),
+                                w.brief.description.as_deref().unwrap_or(""),
+                            ],
+                        )
+                    })
+                    .map(|w| {
+                        json!({
+                            "id": w.id.as_str(),
+                            "name": w.name,
+                            "state": format!("{:?}", w.state).to_lowercase(),
+                            "repository": repository_of(&w),
+                            "brief": redact(w.brief.title.as_deref().unwrap_or("")),
+                            "task_working_in_it": busy.get(&w.id),
+                            "made_for_task": w.task_id.as_ref().map(|t| t.as_str()),
+                        })
+                    })
                     .collect();
                 Ok(json!({"workspaces": ws}))
+            }
+            "list_repositories" => {
+                let query = Self::query(args);
+                let store = d.store.lock().await;
+                let mut repos: Vec<String> = store
+                    .state
+                    .workspaces
+                    .iter()
+                    .cloned()
+                    .map(otter_core::Workspace::shown)
+                    .filter_map(|w| repository_of(&w))
+                    .filter(|r| matches_query(&query, &[r]))
+                    .collect();
+                repos.sort();
+                repos.dedup();
+                Ok(json!({"repositories": repos}))
             }
             _ => {
                 let task = Self::named_task(args)?;
@@ -933,10 +1019,7 @@ impl Gateway {
                 .map(|m| m.text.as_str())
                 .collect::<Vec<_>>()
                 .join("\n\n");
-            let workspace = args
-                .get("workspace")
-                .and_then(Value::as_str)
-                .map(str::to_owned);
+            let workspace = Self::workspace_choice(args)?;
             let answer_only = args
                 .get("answer_only")
                 .and_then(Value::as_bool)
@@ -1030,6 +1113,52 @@ impl Gateway {
     }
 
     // --- Changes -----------------------------------------------------------
+
+    /// The words a listing is narrowed to, lowercased.
+    fn query(args: &Value) -> Vec<String> {
+        args.get("query")
+            .and_then(Value::as_str)
+            .map(|q| q.split_whitespace().map(str::to_lowercase).collect())
+            .unwrap_or_default()
+    }
+
+    /// Where a new task works, from `create_task`'s arguments (D-178): at
+    /// most one of a workspace, a repository to make one from, or scratch.
+    fn workspace_choice(
+        args: &Value,
+    ) -> Result<Option<otter_protocol::task::WorkspaceChoice>, ToolError> {
+        use otter_protocol::task::{NewWorkspace, Scratch, WorkspaceChoice};
+        let named = args.get("workspace").and_then(Value::as_str);
+        let new = args.get("new_workspace").filter(|v| !v.is_null());
+        let scratch = args
+            .get("scratch")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        if [named.is_some(), new.is_some(), scratch]
+            .iter()
+            .filter(|b| **b)
+            .count()
+            > 1
+        {
+            return Err(fail(
+                "invalid",
+                "say where the task works one way: workspace, new_workspace or scratch",
+            ));
+        }
+        Ok(if let Some(w) = named {
+            Some(WorkspaceChoice::Named(w.to_owned()))
+        } else if let Some(n) = new {
+            let n: NewWorkspace = serde_json::from_value(n.clone())
+                .map_err(|_| fail("invalid", "new_workspace is {repository, base?, branch?}"))?;
+            Some(WorkspaceChoice::New { new: n })
+        } else if scratch {
+            Some(WorkspaceChoice::Scratch {
+                scratch: Scratch {},
+            })
+        } else {
+            None
+        })
+    }
 
     /// The developer's messages a forward or a redirect names: this turn's
     /// own, in their order.

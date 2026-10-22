@@ -380,7 +380,13 @@ Product work owned by the daemon (D-043); see `otter_core::task`.
 
 - `task.list` → every task, newest first; `task.get {task}` → one.
 - `task.create {command_id, title, request?, workspace?}` → a `draft`
-  task; the request becomes the first message.
+  task; the request becomes the first message. `workspace` is a workspace by
+  id or name (a string, as always), `{"new": {"repository", "base"?,
+  "branch"?}}` (a workspace made for the task from that repository, on a
+  branch of its own) or `{"scratch": {}}` (an empty directory made for it)
+  (D-178). The task is returned with the workspace set; a Git one is still
+  being prepared, and the task waits for it. An older otterd answers the
+  object forms `invalid_request`.
 - `task.send {command_id, task, text, images?}` → the task, with the
   developer's message added. `images`: up to 4 pictures, each a `TaskImage`
   `{media_type, data}` (`image/png`, `image/jpeg` or `image/webp`; `data`
