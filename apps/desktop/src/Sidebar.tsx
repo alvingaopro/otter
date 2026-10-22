@@ -209,8 +209,7 @@ export function Sidebar(props: Props) {
       {/* The title bar, right of the traffic lights (D-178). */}
       <div className="sidebar-top" data-tauri-drag-region>
         <span className="brand" data-tauri-drag-region>
-          <span className="otter-mark brand-icon" aria-hidden="true" data-tauri-drag-region />
-          <span className="brand-name" data-tauri-drag-region>Otter</span>
+          <span className="brand-name" data-tauri-drag-region>Workspace</span>
         </span>
         <span className="spacer" data-tauri-drag-region />
         <CountBadge kind="needs" count={needs.length} label="need you" onClick={() => onSelect(needs[0].key)} />

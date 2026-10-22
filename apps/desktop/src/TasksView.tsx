@@ -85,6 +85,23 @@ export function TasksView({ source, hosts, workspaces, now, focus, onOpenWorkspa
   // What Pause all holds: every task at work, found or not (D-081).
   const atWork = list.filter((p) => ["working", "preparing"].includes(taskActivity(p.task)));
 
+  async function create(
+    host: string,
+    title: string,
+    request: string,
+    workspace?: string | WorkspaceRequest,
+    answerOnly?: boolean,
+    start?: boolean,
+  ) {
+    const p = await source.create(host, title, request, workspace, answerOnly);
+    setFind("");
+    setSelected(p.key);
+    setCreating(false);
+    // The task exists either way; a failed start leaves it a draft with its
+    // Start button.
+    if (start) await source.act(p.key, { action: "start" }).catch(() => {});
+  }
+
   return (
     <>
       <nav className="sidebar" aria-label="Chat">
@@ -174,10 +191,16 @@ export function TasksView({ source, hosts, workspaces, now, focus, onOpenWorkspa
       ) : (
         <main className="pane empty">
           <div className="drag-strip" data-tauri-drag-region />
-          <h1 className="empty-title">Describe a task</h1>
-          <p className="muted">Say what you want: a task, a fix or an answer. Otter plans it, directs a coding agent in a workspace and verifies the result.</p>
+          <OtterHello />
+          <h1 className="empty-title">What shall we work on?</h1>
+          <p className="muted">Say what you want: a task, a fix or an answer. Otter finds the workspace, directs a coding agent and verifies the result.</p>
+          <HelloBox
+            hosts={hosts.length > 0 ? hosts : ["preview"]}
+            workspaces={workspaces}
+            onSend={(host, request) => create(host, titleFrom(request), request, undefined, false, true)}
+          />
           <div className="empty-actions">
-            <button className="btn primary" onClick={() => setCreating(true)}>
+            <button className="btn outline" onClick={() => setCreating(true)}>
               New task
             </button>
           </div>
@@ -188,12 +211,7 @@ export function TasksView({ source, hosts, workspaces, now, focus, onOpenWorkspa
           hosts={hosts.length > 0 ? hosts : ["preview"]}
           workspaces={workspaces}
           onClose={() => setCreating(false)}
-          onCreate={async (host, title, request, workspace, answerOnly) => {
-            const p = await source.create(host, title, request, workspace, answerOnly);
-            setFind("");
-            setSelected(p.key);
-            setCreating(false);
-          }}
+          onCreate={create}
         />
       )}
     </>
@@ -1723,6 +1741,113 @@ function lastHost(hosts: string[]): string {
   return hosts[0];
 }
 
+/** Otter, waiting for the first word: a round face, paws on the edge of the box below. */
+function OtterHello() {
+  return (
+    <div className="otter-hello" aria-hidden="true">
+      <svg className="otter-hello-art" viewBox="0 0 200 170" width="168" height="143">
+        <ellipse cx="100" cy="162" rx="52" ry="6" className="oh-shadow" />
+        <g className="oh-bob">
+          <circle cx="52" cy="46" r="15" className="oh-fur" />
+          <circle cx="148" cy="46" r="15" className="oh-fur" />
+          <circle cx="52" cy="47" r="7" className="oh-inner" />
+          <circle cx="148" cy="47" r="7" className="oh-inner" />
+          <ellipse cx="100" cy="92" rx="66" ry="58" className="oh-fur" />
+          <ellipse cx="100" cy="112" rx="40" ry="30" className="oh-muzzle" />
+          <ellipse cx="72" cy="104" rx="9" ry="6" className="oh-cheek" />
+          <ellipse cx="128" cy="104" rx="9" ry="6" className="oh-cheek" />
+          <g className="oh-eyes">
+            <ellipse cx="74" cy="84" rx="8" ry="10" className="oh-dark" />
+            <ellipse cx="126" cy="84" rx="8" ry="10" className="oh-dark" />
+            <circle cx="77" cy="80" r="3" className="oh-shine" />
+            <circle cx="129" cy="80" r="3" className="oh-shine" />
+          </g>
+          <ellipse cx="100" cy="98" rx="10" ry="7" className="oh-dark" />
+          <ellipse cx="97" cy="96" rx="3" ry="1.8" className="oh-shine" />
+          <path d="M100 105 v5 M100 110 q-8 9 -17 3 M100 110 q8 9 17 3" className="oh-line" />
+          <path d="M60 108 l-24 -4 M60 114 l-24 5 M140 108 l24 -4 M140 114 l24 5" className="oh-whisker" />
+          <ellipse cx="62" cy="152" rx="17" ry="12" className="oh-fur" />
+          <ellipse cx="138" cy="152" rx="17" ry="12" className="oh-fur" />
+          <path d="M55 154 v-4 M62 155 v-5 M69 154 v-4 M131 154 v-4 M138 155 v-5 M145 154 v-4" className="oh-line" />
+        </g>
+      </svg>
+    </div>
+  );
+}
+
+/** The chat box of the empty page: what is written starts a task, on the host it names (D-187). */
+function HelloBox({
+  hosts,
+  workspaces,
+  onSend,
+}: {
+  hosts: string[];
+  workspaces: Record<string, WorkspaceChoice[]>;
+  onSend: (host: string, request: string) => Promise<void>;
+}) {
+  const [text, setText] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const composition = useComposition();
+  async function send() {
+    const request = text.trim();
+    if (!request || busy) return;
+    const routed = hosts.length > 1 ? routeHost(request, workspaces) : undefined;
+    const host = routed?.kind === "one" ? routed.host : lastHost(hosts);
+    setBusy(true);
+    setError(null);
+    try {
+      await onSend(host, request);
+      try {
+        localStorage.setItem(LAST_HOST, host);
+      } catch {
+        // Only a convenience.
+      }
+    } catch (err) {
+      setError(String(err));
+      setBusy(false);
+    }
+  }
+  return (
+    <form
+      className="hello-box"
+      onSubmit={(e) => {
+        e.preventDefault();
+        void send();
+      }}
+    >
+      <textarea
+        rows={3}
+        autoFocus
+        aria-label="Tell Otter what you want"
+        placeholder="Tell Otter what you want…"
+        value={text}
+        onChange={(e) => setText(e.target.value)}
+        onCompositionStart={composition.onCompositionStart}
+        onCompositionEnd={composition.onCompositionEnd}
+        onKeyDown={(e) => {
+          if (composition.enterSubmits(e)) {
+            e.preventDefault();
+            void send();
+          }
+        }}
+      />
+      <div className="hello-row">
+        {error ? <span className="error-text small">{error}</span> : <span className="muted small">Enter to start · Shift+Enter for a new line</span>}
+        <button type="submit" className="btn primary" disabled={!text.trim() || busy}>
+          Start
+        </button>
+      </div>
+    </form>
+  );
+}
+
+/** A title from the request's first line, when none was written. */
+function titleFrom(request: string): string {
+  const line = request.trim().split("\n")[0].trim();
+  return line.length > 60 ? `${line.slice(0, 59).trimEnd()}…` : line;
+}
+
 function NewTaskDialog({
   hosts,
   workspaces,
@@ -1731,7 +1856,14 @@ function NewTaskDialog({
 }: {
   hosts: string[];
   workspaces: Record<string, WorkspaceChoice[]>;
-  onCreate: (host: string, title: string, request: string, workspace?: string | WorkspaceRequest, answerOnly?: boolean) => Promise<void>;
+  onCreate: (
+    host: string,
+    title: string,
+    request: string,
+    workspace?: string | WorkspaceRequest,
+    answerOnly?: boolean,
+    start?: boolean,
+  ) => Promise<void>;
   onClose: () => void;
 }) {
   const [hostPick, setHostPick] = useState(AUTO_HOST);
@@ -1759,9 +1891,11 @@ function NewTaskDialog({
   const placing = workspace === FROM_REPOSITORY || workspace === EMPTY_DIRECTORY || existing;
   const needsRepository = workspace === FROM_REPOSITORY && !repository.trim();
 
-  async function submit(e: FormEvent) {
-    e.preventDefault();
-    if (!title.trim() || needsRepository || busy) return;
+  const named = title.trim() || titleFrom(request);
+  const ready = !!named && !needsRepository && !busy;
+
+  async function submit(start: boolean) {
+    if (!ready) return;
     setBusy(true);
     setError(null);
     const where: string | WorkspaceRequest | undefined =
@@ -1773,7 +1907,7 @@ function NewTaskDialog({
             ? workspace
             : undefined;
     try {
-      await onCreate(host, title.trim(), request.trim(), where, answerOnly);
+      await onCreate(host, named, request.trim(), where, answerOnly, start);
       try {
         localStorage.setItem(LAST_HOST, host);
       } catch {
@@ -1787,86 +1921,104 @@ function NewTaskDialog({
 
   return (
     <Dialog title="New task" onClose={onClose}>
-      <form className="form" onSubmit={submit}>
-        <label className="field">
-          <span>Title</span>
-          <input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Export the timeline as CSV" />
-        </label>
+      <form
+        className="form"
+        onSubmit={(e) => {
+          e.preventDefault();
+          void submit(true);
+        }}
+      >
         <label className="field">
           <span>What do you want?</span>
-          <textarea rows={5} value={request} onChange={(e) => setRequest(e.target.value)} placeholder="Describe the outcome, constraints and how you'd check it." />
-        </label>
-        {hosts.length > 1 && (
-          <label className="field">
-            <span>Host</span>
-            <select
-              value={hostPick}
-              aria-describedby={hostPick === AUTO_HOST ? "new-task-host-hint" : undefined}
-              onChange={(e) => {
-                setHostPick(e.target.value);
-                setWorkspace("");
-              }}
-            >
-              <option value={AUTO_HOST}>From what I write</option>
-              {hosts.map((h) => (
-                <option key={h}>{h}</option>
-              ))}
-            </select>
-            {hostPick === AUTO_HOST && (
-              <small className="muted" id="new-task-host-hint">
-                {routed?.kind === "one"
-                  ? `Goes to ${routed.host}: it has ${routed.why}.`
-                  : routed?.kind === "several"
-                    ? `${routed.hosts.join(", ")} all have it; using ${host}. Choose a host to change that.`
-                    : `Nothing written names a host; using ${host}.`}
-              </small>
-            )}
-          </label>
-        )}
-        <label className="field">
-          <span>Workspace (where the work happens)</span>
-          <select value={placing ? workspace : ""} onChange={(e) => setWorkspace(e.target.value)}>
-            <option value="">Choose later</option>
-            {choices.map((w) => (
-              <option key={w.id} value={w.id}>
-                {w.name}
-              </option>
-            ))}
-            <option value={FROM_REPOSITORY}>A new one, from a repository…</option>
-            <option value={EMPTY_DIRECTORY}>A new one, an empty directory</option>
-          </select>
-        </label>
-        {workspace === FROM_REPOSITORY && (
-          <label className="field">
-            <span>Repository</span>
-            <input
-              aria-label="Repository"
-              value={repository}
-              onChange={(e) => setRepository(e.target.value)}
-              placeholder="git@github.com:acme/billing.git"
-            />
-            <small className="muted">
-              The task gets a workspace of its own, on a branch of its own, prepared before the work starts.
-            </small>
-          </label>
-        )}
-        <label className="check">
-          <input
-            type="checkbox"
-            aria-label="Only an answer"
-            checked={answerOnly}
-            onChange={(e) => setAnswerOnly(e.target.checked)}
+          <textarea
+            rows={5}
+            autoFocus
+            value={request}
+            onChange={(e) => setRequest(e.target.value)}
+            placeholder="Describe the outcome, constraints and how you'd check it. Name the project or repository and Otter finds or prepares the workspace."
           />
-          Only an answer — the coding agent reads, changes nothing
         </label>
+        <label className="field">
+          <span>Title (optional)</span>
+          <input value={title} onChange={(e) => setTitle(e.target.value)} placeholder={titleFrom(request) || "Export the timeline as CSV"} />
+        </label>
+        <details className="new-task-where">
+          <summary>Host, workspace and options</summary>
+          {hosts.length > 1 && (
+            <label className="field">
+              <span>Host</span>
+              <select
+                value={hostPick}
+                aria-describedby={hostPick === AUTO_HOST ? "new-task-host-hint" : undefined}
+                onChange={(e) => {
+                  setHostPick(e.target.value);
+                  setWorkspace("");
+                }}
+              >
+                <option value={AUTO_HOST}>From what I write</option>
+                {hosts.map((h) => (
+                  <option key={h}>{h}</option>
+                ))}
+              </select>
+              {hostPick === AUTO_HOST && (
+                <small className="muted" id="new-task-host-hint">
+                  {routed?.kind === "one"
+                    ? `Goes to ${routed.host}: it has ${routed.why}.`
+                    : routed?.kind === "several"
+                      ? `${routed.hosts.join(", ")} all have it; using ${host}. Choose a host to change that.`
+                      : `Nothing written names a host; using ${host}.`}
+                </small>
+              )}
+            </label>
+          )}
+          <label className="field">
+            <span>Workspace (where the work happens)</span>
+            <select value={placing ? workspace : ""} onChange={(e) => setWorkspace(e.target.value)}>
+              <option value="">Choose later</option>
+              {choices.map((w) => (
+                <option key={w.id} value={w.id}>
+                  {w.name}
+                </option>
+              ))}
+              <option value={FROM_REPOSITORY}>A new one, from a repository…</option>
+              <option value={EMPTY_DIRECTORY}>A new one, an empty directory</option>
+            </select>
+          </label>
+          {workspace === FROM_REPOSITORY && (
+            <label className="field">
+              <span>Repository</span>
+              <input
+                aria-label="Repository"
+                value={repository}
+                onChange={(e) => setRepository(e.target.value)}
+                placeholder="git@github.com:acme/billing.git"
+              />
+              <small className="muted">
+                The task gets a workspace of its own, on a branch of its own, prepared before the work starts.
+              </small>
+            </label>
+          )}
+          <label className="check">
+            <input
+              type="checkbox"
+              aria-label="Only an answer"
+              checked={answerOnly}
+              onChange={(e) => setAnswerOnly(e.target.checked)}
+            />
+            Only an answer — the coding agent reads, changes nothing
+          </label>
+        </details>
         {error && <p className="error-text small">{error}</p>}
         <div className="form-actions">
           <span className="spacer" />
           <button type="button" className="btn outline" onClick={onClose}>
             Cancel
           </button>
-          <button type="submit" className="btn primary" disabled={!title.trim() || needsRepository || busy}>
+          <button type="button" className="btn outline" disabled={!ready} onClick={() => void submit(false)}>
             Create draft
+          </button>
+          <button type="submit" className="btn primary" disabled={!ready}>
+            Create and start
           </button>
         </div>
       </form>

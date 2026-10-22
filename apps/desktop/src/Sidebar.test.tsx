@@ -69,7 +69,9 @@ describe("the title bar (D-178)", () => {
   it("holds Otter's name, the counts and New workspace in one row", async () => {
     await render([host("code", "0.7.20")]);
     const top = el.querySelector(".sidebar-top")!;
-    expect(top.querySelector(".brand-name")?.textContent).toBe("Otter");
+    expect(top.querySelector(".brand-name")?.textContent).toBe("Workspace");
+    // No mark beside it.
+    expect(top.querySelector(".otter-mark")).toBeNull();
     expect([...top.querySelectorAll("button")].map((b) => b.getAttribute("aria-label"))).toEqual([
       "0 need you",
       "0 working",
