@@ -329,6 +329,7 @@ fn observe_agent(ws: &mut Workspace, i: usize, seen: &Seen<'_>, events: &mut Vec
     };
     let mut changed = false;
     let mut blocker = None;
+    let mut title = None;
     let next = if !exec.is_running() {
         AgentState::Exited
     } else if let Some(provider) = agents::provider(&info.provider) {
@@ -365,6 +366,7 @@ fn observe_agent(ws: &mut Workspace, i: usize, seen: &Seen<'_>, events: &mut Vec
             info.last_message = Some(message);
         }
         blocker = obs.blocker;
+        title = obs.title;
         obs.state.unwrap_or(info.state)
     } else {
         info.state
@@ -408,7 +410,45 @@ fn observe_agent(ws: &mut Workspace, i: usize, seen: &Seen<'_>, events: &mut Vec
     if changed {
         ws.sessions[i].agent = Some(info);
     }
-    changed
+    changed | take_agent_name(ws, i, title.as_deref(), events)
+}
+
+/// Name session `i` for its agent's conversation (D-197), while the
+/// developer hasn't named it: the agent's title, made a session name.
+fn take_agent_name(
+    ws: &mut Workspace,
+    i: usize,
+    title: Option<&str>,
+    events: &mut Vec<Event>,
+) -> bool {
+    let session = &ws.sessions[i];
+    if !session.follows_agent_name() {
+        return false;
+    }
+    let Some(base) = title.and_then(crate::sessions::name_from_title) else {
+        return false;
+    };
+    // Named for it already (`-2` beside another of the same name): it stays
+    // so, even once the other is named something else.
+    let numbered = session
+        .name
+        .strip_prefix(base.as_str())
+        .and_then(|n| n.strip_prefix('-'))
+        .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()));
+    if session.name == base || numbered {
+        return false;
+    }
+    let name = crate::sessions::unique_session_name_but(ws, &base, &session.id);
+    tracing::info!(session = %session.name, to = %name, "session named for its agent's conversation");
+    let s = &mut ws.sessions[i];
+    s.name = name.clone();
+    s.name_from = Some(otter_core::NameFrom::Agent);
+    events.push(Event::SessionRenamed {
+        workspace_id: ws.id.clone(),
+        session_id: ws.sessions[i].id.clone(),
+        name,
+    });
+    true
 }
 
 #[cfg(test)]
@@ -496,6 +536,7 @@ mod tests {
                 prompt: None,
                 blocker: None,
             }),
+            name_from: None,
             executions: vec![Execution {
                 id: exec.into(),
                 backend: "paused".into(),

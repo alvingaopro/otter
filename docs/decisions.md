@@ -7541,3 +7541,59 @@ macOS app itself.
 
 Reviewed against the code (Fable) before merging. The review found that a
 lost `done` would have left the dots up for good; fixed above.
+
+## D-197 — A Claude Code session takes its conversation's name, until you name it (2026-10-22)
+
+The developer asked for a Claude Code session in Otter to be named as
+Claude Code names its conversation, while the session still has its
+default name, and never once they had named it themselves.
+
+- **Where the name is.** Claude Code writes its title into the transcript
+  Otter already follows (`agents/claude.rs`): `{"type":"ai-title",
+  "aiTitle":…}`, made after the first prompt and written again and again
+  (38 of the 40 newest local transcripts have one title, never changed),
+  and `{"type":"custom-title","customTitle":…}` from `/rename` (format
+  read from Claude Code 2.1.309; no local transcript has one yet). The
+  last of each says; `/rename`'s wins, and one to nothing gives the
+  made-up title back. Both are kept in the provider's state, so a session
+  read from where it left off still knows them, and dropped when the
+  session follows another transcript (`/clear` is another conversation,
+  with a title of its own). The provider reports it as
+  `Observation::title`; generic code only applies it.
+- **Whose name it is.** `Session::name_from` says where a name came from:
+  `default` (from the command or agent), `agent`, or `developer` — given at
+  creation, or any `session.rename` (the app's double-click on a tab, the
+  CLI), even to the name it has: that keeps an agent's name as it is. Only `default` and `agent` names follow the agent; a developer's
+  never does again. A session from before (no `name_from`) follows only
+  while its name has the default form (`claude`, `claude-2`); any other
+  name is taken as the developer's.
+- **Made a name.** `/` and `:` can't be in a name (they address sessions,
+  `[host:]workspace[/session]`), so they become their full-width
+  look-alikes `／` and `：`, which read the same; control characters and runs
+  of whitespace become one space; at most 124 bytes, cut between
+  characters, so a `-2` still fits a name's 128; secrets redacted, since
+  names go to `events.jsonl`. Unique
+  in the workspace with `-2`…, and a session already named so stays so
+  when the other is renamed: a tab doesn't change because another did.
+- **Applied** in the reconcile loop, as a `SessionRenamed` like the
+  developer's own; `updated_at` stays (it isn't activity). The app's tab
+  shows at most 40 characters of a name, all of it in the tab's tooltip.
+- **What it costs:** a session named by its title is addressed by that
+  name (quoted in a shell) or by its id; `otter attach ws/claude` stops
+  finding it once it is renamed. Codex sessions keep their names for now.
+
+Tests: `a_claude_session_takes_its_conversations_name_until_you_name_it`
+(e2e, with the fake Claude Code writing a title: two sessions take it, the
+second `-2`; one named at creation keeps its name; renamed, one keeps it
+through a restart whose transcript says the title again, and the other
+keeps its `-2`. Watched failing with a rename not marking the name the
+developer's), `the_conversations_titles_are_read_last_wins`,
+`titles_become_session_names`, `a_session_follows_its_agents_name_until_named`
+and the app's `cuts a long name (an agent's title, D-197) at 40
+characters`. Not checked with a real Claude Code, nor in the macOS app.
+
+Reviewed against the code (Fable) before merging. The review found a name
+kept by renaming it to itself still following the agent, and a `-2` taking
+a 128-byte title past a name's limit; both are fixed above. Merged with
+D-195, a transcript the hooks name is another conversation too: its titles
+start again.

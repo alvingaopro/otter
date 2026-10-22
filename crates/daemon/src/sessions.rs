@@ -6,7 +6,7 @@ use std::sync::Arc;
 use chrono::Utc;
 use otter_core::{
     AgentInfo, AgentState, AttentionKind, EnvironmentKind, Execution, ExecutionId, ExecutionState,
-    Session, SessionId, SessionKind, SessionSpec, Workspace, WorkspaceId, WorkspaceState,
+    NameFrom, Session, SessionId, SessionKind, SessionSpec, Workspace, WorkspaceId, WorkspaceState,
     validate_name,
 };
 use otter_protocol::{
@@ -124,7 +124,15 @@ impl Daemon {
         let mut store = self.store.lock().await;
         let (ws_id, session) = find_session(&store, &p.session)?;
         if session.name == name {
-            return Ok(session);
+            // Kept as it is: theirs now, though it came from the agent (D-197).
+            if session.name_from != Some(NameFrom::Developer) {
+                let ws = store.workspace_mut(ws_id.as_str()).expect("exists");
+                if let Some(s) = ws.sessions.iter_mut().find(|s| s.id == session.id) {
+                    s.name_from = Some(NameFrom::Developer);
+                }
+                save(&store)?;
+            }
+            return Ok(session_snapshot(&store, &ws_id, &session.id));
         }
         let ws = store.workspace_mut(ws_id.as_str()).expect("exists");
         if ws.sessions.iter().any(|s| s.name == name) {
@@ -142,6 +150,9 @@ impl Daemon {
             .find(|s| s.id == session.id)
             .expect("exists");
         s.name = name.clone();
+        // Theirs from now: the agent's name for its conversation no longer
+        // names it (D-197).
+        s.name_from = Some(NameFrom::Developer);
         ws.updated_at = Utc::now();
         save(&store)?;
         self.events.emit(Event::SessionRenamed {
@@ -442,6 +453,11 @@ impl Daemon {
         let ws = store
             .workspace_mut(ws_id.as_str())
             .ok_or_else(|| workspace_not_found(ws_id.as_str()))?;
+        let name_from = if spec.name.is_some() {
+            NameFrom::Developer
+        } else {
+            NameFrom::Default
+        };
         let name = match spec.name {
             Some(name) => {
                 validate_name("session", &name).map_err(RpcError::invalid)?;
@@ -490,6 +506,7 @@ impl Daemon {
             launch_error: None,
             agent,
             executions: Vec::new(),
+            name_from: Some(name_from),
         };
         let session_id = session.id.clone();
         let (name, kind) = (session.name.clone(), session.kind);
@@ -612,6 +629,49 @@ fn default_session_name(command: Option<&str>) -> String {
         .to_owned()
 }
 
+/// A session name from an agent's name for its conversation (D-197): what
+/// names can't hold (`/`, `:`, control characters) made the full-width
+/// look-alikes or spaces, whitespace run together, at most [`TITLE_BYTES`]
+/// (room for a `-2`… within a name's limit), secrets out. `None` if nothing
+/// is left.
+pub(crate) fn name_from_title(title: &str) -> Option<String> {
+    let mapped: String = otter_core::redact::redact(title)
+        .chars()
+        .map(|c| match c {
+            '/' => '／',
+            ':' => '：',
+            c if c.is_control() => ' ',
+            c => c,
+        })
+        .collect();
+    let mut name = mapped.split_whitespace().collect::<Vec<_>>().join(" ");
+    if name.len() > TITLE_BYTES {
+        let mut end = TITLE_BYTES;
+        while !name.is_char_boundary(end) {
+            end -= 1;
+        }
+        name.truncate(end);
+        name.truncate(name.trim_end().len());
+    }
+    (validate_name("session", &name).is_ok()).then_some(name)
+}
+
+/// The longest session name, in bytes (`validate_name`'s), less room for
+/// `-999`.
+const TITLE_BYTES: usize = 128 - 4;
+
+/// `base`, or `base-2`… — unique among the workspace's sessions but `own`.
+pub(crate) fn unique_session_name_but(ws: &Workspace, base: &str, own: &SessionId) -> String {
+    let taken = |n: &str| ws.sessions.iter().any(|s| &s.id != own && s.name == n);
+    if !taken(base) {
+        return base.to_owned();
+    }
+    (2..)
+        .map(|i| format!("{base}-{i}"))
+        .find(|n| !taken(n))
+        .expect("unbounded")
+}
+
 fn unique_session_name(ws: &Workspace, base: &str) -> String {
     let taken = |n: &str| ws.sessions.iter().any(|s| s.name == n);
     if !taken(base) {
@@ -626,6 +686,35 @@ fn unique_session_name(ws: &Workspace, base: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// An agent's title made a session name (D-197).
+    #[test]
+    fn titles_become_session_names() {
+        assert_eq!(
+            name_from_title("Chat 聊天框 / 命令自动补全").as_deref(),
+            Some("Chat 聊天框 ／ 命令自动补全")
+        );
+        assert_eq!(
+            name_from_title("  Fix:\tthe   build\n").as_deref(),
+            Some("Fix： the build")
+        );
+        assert_eq!(name_from_title(" \n "), None);
+        // At most 124 bytes (a `-2` still fits a name's 128), cut between
+        // characters, no trailing space.
+        let long = format!("{} {}", "a".repeat(123), "界界");
+        let name = name_from_title(&long).unwrap();
+        assert_eq!(name, "a".repeat(123));
+        let wide = "界".repeat(50);
+        let name = name_from_title(&wide).unwrap();
+        assert!(
+            name.len() <= 124 && name.chars().all(|c| c == '界'),
+            "{name}"
+        );
+        assert!(validate_name("session", &format!("{name}-999")).is_ok());
+        // A secret in it is never a name (names go to events.jsonl).
+        let secret = "Rotate ghp_abcdefghijklmnopqrstuvwxyz0123456789 now";
+        assert!(!name_from_title(secret).unwrap().contains("ghp_abcdef"));
+    }
 
     #[test]
     fn default_names() {
