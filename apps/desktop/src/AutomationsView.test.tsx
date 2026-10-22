@@ -93,6 +93,11 @@ describe("Automations view", () => {
     expect(readings).toEqual(["all 3 checks passed (at abc1234)", "2 of 3 checks running, 1 passed (at abc1234)", "no checks yet"]);
     // Ended: nothing to stop.
     expect(byText(".pane-head button", "Stop watching")).toBeUndefined();
+    // What Otter said of it, here, and the task one click away.
+    const report = q('[aria-label="Otter\'s report"]')!;
+    expect(report.textContent).toContain("CI on #31 passed: all 3 checks. It's yours to merge.");
+    await act(async () => byText('[aria-label="Otter\'s report"] button', "Open the task")!.click());
+    expect(onOpenTask).toHaveBeenCalledWith(expect.stringMatching(/^mac\/ft_/));
   });
 
   it("stops a watch, and deletes one only once you confirm", async () => {
@@ -137,12 +142,113 @@ describe("Automations view", () => {
     const row = byText('[role="listitem"]', "nightly")!;
     await act(async () => row.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, clientX: 10, clientY: 10 })));
     await act(async () => byText('[role="menuitem"]', "Run now")!.click());
-    expect(run).toHaveBeenCalledWith("mac/trg_nightly");
+    // Its own occurrence, taken at the click.
+    expect(run).toHaveBeenCalledWith("mac/trg_nightly", expect.stringMatching(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/));
+    // What came of it, from its last firing; a task not (or no longer) here isn't a link.
+    expect(q('[role="status"]')?.textContent).toBe("Started ft_mockrun.");
+    const runs = all('[aria-label="Runs, newest first"] li');
+    expect(runs[0].textContent).toContain("ft_mockrun (task deleted)");
+    expect(runs[0].querySelector("button")).toBeNull();
 
     // An otterd from before pausing answers with an error: said, in place.
     setEnabled.mockRejectedValueOnce("invalid request: unknown method `trigger.update`");
     await act(async () => byText(".pane-head button", "Resume")!.click());
     expect(q('[role="alert"]')?.textContent).toContain("unknown method `trigger.update`");
+    // About that trigger only: another one, and back, start clean.
+    await act(async () => byText('[role="listitem"]', "deps-check")!.click());
+    expect(q('[role="alert"]')).toBeNull();
+    await act(async () => byText('[role="listitem"]', "nightly")!.click());
+    expect(q('[role="alert"]')).toBeNull();
+    expect(q('[role="status"]')).toBeNull();
+  });
+
+  it("sends nothing more while an action is on its way", async () => {
+    const { source } = recorded();
+    const triggers = mockTriggers("mac");
+    let finish: () => void = () => {};
+    const run = vi.spyOn(triggers, "run").mockImplementation(
+      (key) =>
+        new Promise((resolve) => {
+          finish = () => resolve(triggers.list().find((p) => p.key === key)!.trigger);
+        }),
+    );
+    await render(source, triggers);
+    await act(async () => byText('[role="listitem"]', "nightly")!.click());
+    const row = byText('[role="listitem"]', "nightly")!;
+    await act(async () => row.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, clientX: 10, clientY: 10 })));
+    await act(async () => byText('[role="menuitem"]', "Run now")!.click());
+    // In flight: the pane's buttons are off, the menu offers nothing that acts.
+    expect((byText(".pane-head button", "Pause") as HTMLButtonElement).disabled).toBe(true);
+    await act(async () => row.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, clientX: 10, clientY: 10 })));
+    expect([...document.querySelectorAll('[role="menuitem"]')].map((m) => m.textContent)).toEqual([]);
+    expect(run).toHaveBeenCalledTimes(1);
+    await act(async () => finish());
+    expect((byText(".pane-head button", "Pause") as HTMLButtonElement).disabled).toBe(false);
+
+    // A watch's Stop, clicked twice: sent once.
+    let stopped: () => void = () => {};
+    const acts: TaskAction[] = [];
+    const slow: TaskSource = {
+      ...source,
+      act: (_k, a) => {
+        acts.push(a);
+        return new Promise<void>((resolve) => {
+          stopped = resolve;
+        });
+      },
+    };
+    await render(slow, triggers);
+    await act(async () => byText('[role="listitem"]', "See how the export is going")!.click());
+    const stop = byText(".pane-head button", "Stop watching") as HTMLButtonElement;
+    await act(async () => stop.click());
+    await act(async () => stop.click());
+    expect(stop.disabled).toBe(true);
+    expect(acts).toEqual([{ action: "cancel_watch", watch_id: "wch_mock1" }]);
+    await act(async () => stopped());
+  });
+
+  it("links a run to its task only while the task is there", async () => {
+    const { source } = recorded();
+    const tasks = source.list();
+    const kept = tasks[0];
+    const base = mockTriggers("mac");
+    const t = base.list()[0];
+    const one: TriggerSource = {
+      ...base,
+      list: () => [
+        {
+          ...t,
+          trigger: {
+            ...t.trigger,
+            history: [
+              { occurrence: "2026-10-21T20:20:00Z", at: "2026-10-21T20:20:01Z", task_id: kept.task.id },
+              { occurrence: "2026-10-22T20:20:00Z", at: "2026-10-22T20:20:01Z", task_id: "ft_gone" },
+            ],
+          },
+        },
+      ],
+      subscribe: () => () => {},
+    };
+    await render(source, one, tasks);
+    await act(async () => byText('[role="listitem"]', "nightly")!.click());
+    const runs = all('[aria-label="Runs, newest first"] li');
+    expect(runs[0].textContent).toContain("ft_gone (task deleted)");
+    expect(runs[0].querySelector("button")).toBeNull();
+    await act(async () => runs[1].querySelector("button")!.click());
+    expect(onOpenTask).toHaveBeenCalledWith(kept.key);
+  });
+
+  it("says a deadline has passed, in the list and the page, instead of a time ahead", async () => {
+    const { source } = recorded();
+    const tasks = source.list().map((p) =>
+      p.task.watches?.some((w) => w.status === "waiting")
+        ? { ...p, task: { ...p.task, watches: p.task.watches.map((w) => ({ ...w, deadline: new Date(Date.now() - 60_000).toISOString() })) } }
+        : p,
+    );
+    await render(source, mockTriggers("mac"), tasks);
+    const row = byText('[role="listitem"]', "See how the export is going")!;
+    expect(row.textContent).toContain("due · said at the next look");
+    expect(q(".automation-facts")?.textContent).toContain("Duedue · said at the next look");
   });
 
   it("says what it's for when there's nothing", async () => {
@@ -178,8 +284,34 @@ describe("Watches in Chat", () => {
     await act(async () => watched.click());
     const strip = q('[aria-label="Watching"]')!;
     expect(strip.textContent).toMatch(/^Watching See how the export is going · at \d{2}:\d{2}Stop$/);
-    await act(async () => byText('[aria-label="Watching"] button', "Stop")!.click());
+    await act(async () => q('[aria-label="Stop watching See how the export is going"]')!.click());
     expect(acts[0].action).toEqual({ action: "cancel_watch", watch_id: "wch_mock1" });
     expect(q('[aria-label="Watching"]')).toBeNull();
+  });
+
+  it("offers Stop for a watch that is telling you what it found, too", async () => {
+    const { source, acts } = recorded();
+    const firing: TaskSource = {
+      ...source,
+      list: () =>
+        source.list().map((p) =>
+          p.task.watches?.some((w) => w.status === "waiting")
+            ? {
+                ...p,
+                task: {
+                  ...p.task,
+                  watches: p.task.watches.map((w) => ({ ...w, status: "firing" as const, finding: { at: w.created_at, outcome: "due" as const, text: "the time came" } })),
+                },
+              }
+            : p,
+        ),
+    };
+    await act(async () =>
+      root.render(<TasksView source={firing} hosts={["mac"]} workspaces={{ mac: [] }} now={Date.now()} onOpenWorkspace={() => {}} />),
+    );
+    await act(async () => byText('[role="listitem"]', "Export workspace timeline as CSV")!.click());
+    expect(q('[aria-label="Watching"]')!.textContent).toContain("See how the export is going: telling you what it found");
+    await act(async () => q('[aria-label="Stop watching See how the export is going"]')!.click());
+    expect(acts[0].action).toEqual({ action: "cancel_watch", watch_id: "wch_mock1" });
   });
 });

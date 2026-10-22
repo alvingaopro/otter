@@ -1,20 +1,33 @@
-import { describe, expect, it } from "vitest";
+import { afterAll, afterEach, describe, expect, it } from "vitest";
 import {
   findItem,
   groupAutomations,
   localTime,
+  nextText,
   openWatches,
+  outcomeLabel,
+  pastDeadline,
   policyText,
   scheduleText,
   triggerLine,
+  untilText,
   watchGlyph,
   watchLine,
   watchState,
   watchTarget,
   type PlacedTrigger,
+  type Schedule,
   type Trigger,
 } from "./automations";
-import type { PlacedTask, Task, Watch } from "./tasks";
+import type { PlacedTask, Task, Watch, WatchOutcome } from "./tasks";
+
+// Times are this Mac's: the tests pick the zone (no @types/node here).
+const env = (globalThis as unknown as { process: { env: Record<string, string | undefined> } }).process.env;
+const zone = env.TZ;
+const inZone = (tz: string) => {
+  env.TZ = tz;
+};
+inZone("UTC");
 
 const NOW = Date.parse("2026-10-22T12:00:00Z");
 const at = (minutes: number) => new Date(NOW + minutes * 60_000).toISOString();
@@ -73,6 +86,11 @@ const trigger = (over: Partial<Trigger>): PlacedTrigger => {
 };
 
 describe("automations", () => {
+  afterEach(() => inZone("UTC"));
+  afterAll(() => {
+    env.TZ = zone;
+  });
+
   it("groups watches waiting by the soonest deadline, ended ones latest first, triggers on before paused", () => {
     const tasks = [
       task("ft_a", [
@@ -140,5 +158,40 @@ describe("automations", () => {
       "at most 30 min of work",
       "pauses after waiting 30 min for you",
     ]);
+  });
+
+  it("names an outcome, status or schedule from a newer otterd as it comes", () => {
+    expect(outcomeLabel("merged_by_bot")).toBe("merged_by_bot");
+    expect(outcomeLabel(undefined)).toBe("ended");
+    const newer = watch({ status: "reported", finding: { at: at(0), outcome: "merged_by_bot" as WatchOutcome, text: "x" } });
+    expect(watchState(newer)).toBe("merged_by_bot");
+    expect(watchState(watch({ status: "archived" as Watch["status"] }))).toBe("archived");
+    expect(scheduleText({ kind: "cron" } as unknown as Schedule)).toBe("cron");
+  });
+
+  it("shows a daily trigger's time in this Mac's zone, with the UTC beside it", () => {
+    inZone("Asia/Shanghai");
+    expect(scheduleText({ kind: "daily", at: "20:20" }, NOW)).toBe("daily at 04:20 (20:20 UTC)");
+    expect(scheduleText({ kind: "manual" }, NOW)).toBe("by hand");
+    inZone("UTC");
+    expect(scheduleText({ kind: "daily", at: "20:20" }, NOW)).toBe("daily at 20:20 UTC");
+    expect(localTime(at(30), NOW)).toBe("12:30");
+  });
+
+  it("says an open watch's deadline has passed rather than printing it as ahead", () => {
+    const late = watch({ deadline: at(-5) });
+    expect(pastDeadline(late, NOW)).toBe(true);
+    expect(untilText(late, NOW)).toBe("deadline passed · ends at the next look");
+    expect(untilText(watch({ kind: "time", deadline: at(-5) }), NOW)).toBe("due · said at the next look");
+    expect(untilText(watch({ deadline: at(30) }), NOW)).toBe("until 12:30");
+    // An ended one's deadline is just a time.
+    expect(pastDeadline(watch({ deadline: at(-5), status: "reported" }), NOW)).toBe(false);
+    const p = task("ft_a", [late]);
+    expect(watchLine({ key: "k", host: "mac", task: p, watch: late }, NOW)).toBe("Task ft_a · deadline passed · ends at the next look");
+    // A trigger due while otterd was down.
+    const due = trigger({ next_at: at(-1) }).trigger;
+    expect(nextText(due, NOW)).toBe("due · runs at the next look");
+    expect(triggerLine(due, NOW)).toBe("daily at 20:20 UTC · next due · runs at the next look");
+    expect(nextText(trigger({ enabled: false }).trigger, NOW)).toBe("paused");
   });
 });

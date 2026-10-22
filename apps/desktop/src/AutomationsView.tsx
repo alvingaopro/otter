@@ -1,22 +1,27 @@
 import { useEffect, useMemo, useState, type MouseEvent, type ReactNode } from "react";
 import { Dialog } from "./Dialog";
 import { Glyph } from "./Glyph";
+import { Markdown } from "./Markdown";
 import { ContextMenu, Menu, type MenuItem } from "./Menu";
 import { ago } from "./model";
 import {
-  OUTCOME_LABEL,
   findItem,
   groupAutomations,
   isOpen,
   kindLabel,
   localTime,
+  nextText,
+  outcomeLabel,
+  pastDeadline,
   policyText,
   scheduleText,
   triggerLine,
+  untilText,
   watchGlyph,
   watchLine,
   watchState,
   watchTarget,
+  type Firing,
   type Item,
   type PlacedTrigger,
   type PlacedWatch,
@@ -41,6 +46,9 @@ interface Props {
   grip?: ReactNode;
 }
 
+/** What an action said, about the item it was on. */
+type Said = { key: string; error: string } | { key: string; firing: Firing };
+
 /**
  * What Otter does without a message from you (D-185), under Automations in
  * the Activity Bar: the watches it keeps for you and the hosts' triggers —
@@ -56,28 +64,44 @@ export function AutomationsView({ tasks, source, triggers, now, workspaceName, o
   const [selected, setSelected] = useState<string | undefined>();
   const first = groups.watching[0]?.key ?? groups.scheduled[0]?.key ?? groups.history[0]?.key;
   const current = findItem(groups, selected) ?? findItem(groups, first);
+  const currentKey = current?.item.key;
   const [menu, setMenu] = useState<{ x: number; y: number; item: Item } | null>(null);
   const [deleting, setDeleting] = useState<Item | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  /** An action on its way: nothing more is sent until it's back (a second Run now, a second Stop). */
+  const [busy, setBusy] = useState(false);
+  const [said, setSaid] = useState<Said | null>(null);
+  // What was said is about the item it was on: another one starts clean.
+  useEffect(() => setSaid(null), [currentKey]);
 
-  const run = (p: Promise<void>) => {
-    setError(null);
-    p.catch((e) => setError(String(e)));
+  const run = (key: string, action: () => Promise<void>) => {
+    if (busy) return;
+    setBusy(true);
+    setSaid(null);
+    action()
+      .catch((e) => setSaid({ key, error: String(e) }))
+      .finally(() => setBusy(false));
   };
+  const stopWatch = (p: PlacedWatch) => run(p.key, () => source.act(p.task.key, { action: "cancel_watch", watch_id: p.watch.id }));
+  const setEnabled = (p: PlacedTrigger) => run(p.key, () => triggers.setEnabled(p.key, !p.trigger.enabled));
+  const runNow = (p: PlacedTrigger) =>
+    run(p.key, async () => {
+      // Its own occurrence, taken now: sent twice, still one task.
+      const t = await triggers.run(p.key, new Date().toISOString());
+      const firing = t.history[t.history.length - 1];
+      if (firing) setSaid({ key: p.key, firing });
+    });
   const actions = (it: Item): MenuItem[] => {
     if (it.kind === "watch") {
-      const { task, watch } = it.item;
       return [
-        { label: "Stop watching", hidden: !isOpen(watch), onSelect: () => run(source.act(task.key, { action: "cancel_watch", watch_id: watch.id })) },
-        { label: "Open the task", onSelect: () => onOpenTask(task.key) },
-        { label: "Delete…", danger: true, onSelect: () => setDeleting(it) },
+        { label: "Stop watching", hidden: busy || !isOpen(it.item.watch), onSelect: () => stopWatch(it.item) },
+        { label: "Open the task", onSelect: () => onOpenTask(it.item.task.key) },
+        { label: "Delete…", danger: true, hidden: busy, onSelect: () => setDeleting(it) },
       ];
     }
-    const { key, trigger } = it.item;
     return [
-      { label: trigger.enabled ? "Pause" : "Resume", onSelect: () => run(triggers.setEnabled(key, !trigger.enabled)) },
-      { label: "Run now", onSelect: () => run(triggers.run(key)) },
-      { label: "Delete…", danger: true, onSelect: () => setDeleting(it) },
+      { label: it.item.trigger.enabled ? "Pause" : "Resume", hidden: busy, onSelect: () => setEnabled(it.item) },
+      { label: "Run now", hidden: busy, onSelect: () => runNow(it.item) },
+      { label: "Delete…", danger: true, hidden: busy, onSelect: () => setDeleting(it) },
     ];
   };
   const openMenu = (e: MouseEvent, item: Item) => {
@@ -85,13 +109,15 @@ export function AutomationsView({ tasks, source, triggers, now, workspaceName, o
     setMenu({ x: e.clientX, y: e.clientY, item });
   };
   const empty = groups.watching.length + groups.scheduled.length + groups.history.length === 0;
+  const saidHere = said && said.key === currentKey ? said : null;
+  const taskOf = (host: string, id: string) => tasks.find((x) => x.host === host && x.task.id === id);
 
   const watchRow = (p: PlacedWatch, ended: boolean) => (
     <button
       key={p.key}
       role="listitem"
-      className={p.key === currentKey(current) ? "ws-row selected" : "ws-row"}
-      aria-current={p.key === currentKey(current)}
+      className={p.key === currentKey ? "ws-row selected" : "ws-row"}
+      aria-current={p.key === currentKey}
       onClick={() => setSelected(p.key)}
       onContextMenu={(e) => openMenu(e, { kind: "watch", item: p })}
     >
@@ -142,8 +168,8 @@ export function AutomationsView({ tasks, source, triggers, now, workspaceName, o
                   <button
                     key={p.key}
                     role="listitem"
-                    className={["ws-row", p.key === currentKey(current) ? "selected" : "", p.trigger.enabled ? "" : "stale"].filter(Boolean).join(" ")}
-                    aria-current={p.key === currentKey(current)}
+                    className={["ws-row", p.key === currentKey ? "selected" : "", p.trigger.enabled ? "" : "stale"].filter(Boolean).join(" ")}
+                    aria-current={p.key === currentKey}
                     onClick={() => setSelected(p.key)}
                     onContextMenu={(e) => openMenu(e, { kind: "trigger", item: p })}
                   >
@@ -181,9 +207,10 @@ export function AutomationsView({ tasks, source, triggers, now, workspaceName, o
           key={current.item.key}
           p={current.item}
           now={now}
-          error={error}
+          busy={busy}
+          error={saidHere && "error" in saidHere ? saidHere.error : null}
           actions={actions(current)}
-          onStop={() => run(source.act(current.item.task.key, { action: "cancel_watch", watch_id: current.item.watch.id }))}
+          onStop={() => stopWatch(current.item)}
           onOpenTask={onOpenTask}
         />
       ) : current?.kind === "trigger" ? (
@@ -191,11 +218,12 @@ export function AutomationsView({ tasks, source, triggers, now, workspaceName, o
           key={current.item.key}
           p={current.item}
           now={now}
-          error={error}
+          busy={busy}
+          said={saidHere}
           actions={actions(current)}
-          tasks={tasks}
+          taskOf={taskOf}
           workspace={workspaceName?.(current.item.host, current.item.trigger.workspace_id) ?? current.item.trigger.workspace_id}
-          onToggle={() => run(triggers.setEnabled(current.item.key, !current.item.trigger.enabled))}
+          onToggle={() => setEnabled(current.item)}
           onOpenTask={onOpenTask}
         />
       ) : (
@@ -224,10 +252,6 @@ export function AutomationsView({ tasks, source, triggers, now, workspaceName, o
   );
 }
 
-function currentKey(it: Item | undefined): string | undefined {
-  return it?.item.key;
-}
-
 /** A trigger's mark: a clock face, in the idle colour. */
 function ClockGlyph() {
   return (
@@ -238,9 +262,19 @@ function ClockGlyph() {
   );
 }
 
+function ErrorNotice({ error }: { error: string | null }) {
+  if (!error) return null;
+  return (
+    <p className="notice error" role="alert">
+      {error}
+    </p>
+  );
+}
+
 function WatchPane({
   p,
   now,
+  busy,
   error,
   actions,
   onStop,
@@ -248,6 +282,7 @@ function WatchPane({
 }: {
   p: PlacedWatch;
   now: number;
+  busy: boolean;
   error: string | null;
   actions: MenuItem[];
   onStop: () => void;
@@ -256,6 +291,8 @@ function WatchPane({
   const w = p.watch;
   const target = watchTarget(w);
   const readings = [...(w.readings ?? [])].reverse();
+  const report = w.report ? p.task.task.messages.find((m) => m.id === w.report) : undefined;
+  const overdue = pastDeadline(w, now);
   return (
     <main className="pane automation-pane" aria-label={w.label}>
       <header className="pane-head" data-tauri-drag-region>
@@ -265,23 +302,19 @@ function WatchPane({
         <span className="task-where">{p.host}</span>
         <span className="spacer" />
         {isOpen(w) && (
-          <button className="btn outline small-btn" onClick={onStop}>
+          <button className="btn outline small-btn" disabled={busy} onClick={onStop}>
             Stop watching
           </button>
         )}
         <Menu label="More actions" items={actions} />
       </header>
-      {error && (
-        <p className="notice error" role="alert">
-          {error}
-        </p>
-      )}
+      <ErrorNotice error={error} />
       <div className="automation-body">
         <section>
           <h2 className="ov-title">Asked</h2>
           <p className="ov-text">{w.what}</p>
           <p className="muted small automation-from">
-            {w.asked_in ? "You asked in " : "Set when you accepted before CI finished, in "}
+            {w.asked_in ? "You asked in " : "Set by Otter in "}
             <button className="link-btn" onClick={() => onOpenTask(p.task.key)}>
               {p.task.task.title}
             </button>
@@ -292,7 +325,7 @@ function WatchPane({
           <dt>Watches</dt>
           <dd>{target ? `${kindLabel(w.kind)} · ${target}` : kindLabel(w.kind)}</dd>
           <dt>{w.kind === "time" ? "Due" : "Until"}</dt>
-          <dd>{localTime(w.deadline, now)}</dd>
+          <dd>{overdue ? untilText(w, now) : localTime(w.deadline, now)}</dd>
           {w.ended_at && (
             <>
               <dt>{w.status === "cancelled" ? "Stopped" : "Ended"}</dt>
@@ -306,15 +339,19 @@ function WatchPane({
             <p className="ov-outcome">
               <Glyph kind={watchGlyph(w)} />
               <span>
-                {OUTCOME_LABEL[w.finding.outcome]}: {w.finding.text}
+                {outcomeLabel(w.finding.outcome)}: {w.finding.text}
               </span>
             </p>
             <p className="muted small">Read at {localTime(w.finding.at, now)}.</p>
-            {w.report && (
-              <button className="link-btn" onClick={() => onOpenTask(p.task.key)}>
-                Otter's report, in the task
-              </button>
-            )}
+          </section>
+        )}
+        {w.report && (
+          <section aria-label="Otter's report">
+            <h2 className="ov-title">Otter said</h2>
+            {report ? <Markdown className="automation-report" text={report.text} /> : <p className="muted small">It isn't in the task any more.</p>}
+            <button className="link-btn automation-open" onClick={() => onOpenTask(p.task.key)}>
+              Open the task
+            </button>
           </section>
         )}
         <section>
@@ -343,25 +380,27 @@ function WatchPane({
 function TriggerPane({
   p,
   now,
-  error,
+  busy,
+  said,
   actions,
-  tasks,
+  taskOf,
   workspace,
   onToggle,
   onOpenTask,
 }: {
   p: PlacedTrigger;
   now: number;
-  error: string | null;
+  busy: boolean;
+  said: Said | null;
   actions: MenuItem[];
-  tasks: PlacedTask[];
+  taskOf: (host: string, id: string) => PlacedTask | undefined;
   workspace: string;
   onToggle: () => void;
   onOpenTask: (key: string) => void;
 }) {
   const t = p.trigger;
   const firings = [...t.history].reverse();
-  const title = (id: string) => tasks.find((x) => x.host === p.host && x.task.id === id)?.task.title;
+  const ran = said && "firing" in said ? said.firing : undefined;
   return (
     <main className="pane automation-pane" aria-label={t.name}>
       <header className="pane-head" data-tauri-drag-region>
@@ -370,14 +409,15 @@ function TriggerPane({
         <span className={t.enabled ? "status-pill working" : "status-pill"}>{t.enabled ? "on" : "paused"}</span>
         <span className="task-where">{p.host}</span>
         <span className="spacer" />
-        <button className="btn outline small-btn" onClick={onToggle}>
+        <button className="btn outline small-btn" disabled={busy} onClick={onToggle}>
           {t.enabled ? "Pause" : "Resume"}
         </button>
         <Menu label="More actions" items={actions} />
       </header>
-      {error && (
-        <p className="notice error" role="alert">
-          {error}
+      <ErrorNotice error={said && "error" in said ? said.error : null} />
+      {ran && (
+        <p className="notice" role="status">
+          {ran.task_id ? `Started ${taskOf(p.host, ran.task_id)?.task.title ?? ran.task_id}.` : `Skipped: ${ran.skipped ?? "nothing started"}.`}
         </p>
       )}
       <div className="automation-body">
@@ -390,9 +430,9 @@ function TriggerPane({
         </section>
         <dl className="automation-facts">
           <dt>When</dt>
-          <dd>{scheduleText(t.schedule)}</dd>
+          <dd>{scheduleText(t.schedule, now)}</dd>
           <dt>Next</dt>
-          <dd>{!t.enabled ? "paused" : t.next_at ? localTime(t.next_at, now) : "only when run by hand"}</dd>
+          <dd>{nextText(t, now)}</dd>
           <dt>Workspace</dt>
           <dd>{workspace}</dd>
           <dt>Without you</dt>
@@ -406,18 +446,23 @@ function TriggerPane({
             <p className="muted small">It hasn't run yet.</p>
           ) : (
             <ol className="plain-list automation-readings" aria-label="Runs, newest first">
-              {firings.map((f) => (
-                <li key={f.occurrence}>
-                  <span className="automation-at">{localTime(f.occurrence, now)}</span>
-                  {f.task_id ? (
-                    <button className="link-btn" onClick={() => onOpenTask(`${p.host}/${f.task_id}`)}>
-                      {title(f.task_id) ?? f.task_id}
-                    </button>
-                  ) : (
-                    <span className="muted">Skipped: {f.skipped ?? "no task"}</span>
-                  )}
-                </li>
-              ))}
+              {firings.map((f) => {
+                const started = f.task_id ? taskOf(p.host, f.task_id) : undefined;
+                return (
+                  <li key={f.occurrence}>
+                    <span className="automation-at">{localTime(f.occurrence, now)}</span>
+                    {started ? (
+                      <button className="link-btn" onClick={() => onOpenTask(started.key)}>
+                        {started.task.title}
+                      </button>
+                    ) : f.task_id ? (
+                      <span className="muted">{f.task_id} (task deleted)</span>
+                    ) : (
+                      <span className="muted">Skipped: {f.skipped ?? "no task"}</span>
+                    )}
+                  </li>
+                );
+              })}
             </ol>
           )}
         </section>
@@ -431,8 +476,12 @@ function DeleteDialog({ item, onDelete, onClose }: { item: Item; onDelete: () =>
   const [error, setError] = useState<string | null>(null);
   const watch = item.kind === "watch";
   const name = watch ? item.item.watch.label : item.item.trigger.name;
+  // While it's being deleted it stays open: what comes of it is said here.
+  const close = () => {
+    if (!busy) onClose();
+  };
   return (
-    <Dialog title={watch ? "Delete watch" : "Delete trigger"} onClose={onClose}>
+    <Dialog title={watch ? "Delete watch" : "Delete trigger"} onClose={close}>
       <p>
         Delete <strong>{name}</strong> from {item.item.host}?{" "}
         {watch
@@ -441,10 +490,14 @@ function DeleteDialog({ item, onDelete, onClose }: { item: Item; onDelete: () =>
             : "Its readings are removed; Otter's report stays in the task."
           : "It won't start any more tasks; the tasks it started stay."}
       </p>
-      {error && <p className="error-text small">{error}</p>}
+      {error && (
+        <p className="error-text small" role="alert">
+          {error}
+        </p>
+      )}
       <div className="form-actions">
         <span className="spacer" />
-        <button type="button" className="btn outline" onClick={onClose}>
+        <button type="button" className="btn outline" disabled={busy} onClick={close}>
           Cancel
         </button>
         <button

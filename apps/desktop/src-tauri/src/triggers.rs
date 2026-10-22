@@ -32,12 +32,18 @@ pub async fn trigger_update(
         .map_err(|e| e.to_string())
 }
 
-/// Fire a trigger now, by hand.
+/// Fire a trigger now, by hand, for `occurrence` (taken at the click):
+/// sent twice, it still starts one task.
 #[tauri::command]
-pub async fn trigger_run(app: AppHandle, host: String, trigger: String) -> Result<Trigger, String> {
+pub async fn trigger_run(
+    app: AppHandle,
+    host: String,
+    trigger: String,
+    occurrence: Option<otter_core::Timestamp>,
+) -> Result<Trigger, String> {
     rpc(&app, &host)
         .await?
-        .trigger_run(&trigger, None)
+        .trigger_run(&trigger, occurrence)
         .await
         .map_err(|e| e.to_string())
 }

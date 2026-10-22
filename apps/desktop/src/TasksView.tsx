@@ -14,7 +14,7 @@ import type { TaskSource, WorkspaceRequest } from "./taskSource";
 import { routeHost } from "./route";
 import { QuestionForm, Turn, WorkHead } from "./Work";
 import { useComposition } from "./composing";
-import { localTime, openWatches } from "./automations";
+import { openWatches, untilText } from "./automations";
 import { MAX_IMAGES, PICTURES_ONLY, pastedFiles, prepareImage, type PastedImage } from "./pastedImage";
 import {
   GROUPS,
@@ -253,13 +253,11 @@ function WatchStrip({ task, now, act }: { task: Task; now: number; act: (a: Task
         <li key={w.id} className="watch-strip-item">
           <span className="watch-dot" aria-hidden="true" />
           <span className="watch-strip-text">
-            {w.status === "firing" ? `${w.label}: telling you what it found` : `Watching ${w.label} · ${w.kind === "time" ? "at" : "until"} ${localTime(w.deadline, now)}`}
+            {w.status === "firing" ? `${w.label}: telling you what it found` : `Watching ${w.label} · ${untilText(w, now)}`}
           </span>
-          {w.status === "waiting" && (
-            <button type="button" className="link-btn" onClick={() => act({ action: "cancel_watch", watch_id: w.id })}>
-              Stop
-            </button>
-          )}
+          <button type="button" className="link-btn" aria-label={`Stop watching ${w.label}`} onClick={() => act({ action: "cancel_watch", watch_id: w.id })}>
+            Stop
+          </button>
         </li>
       ))}
     </ul>

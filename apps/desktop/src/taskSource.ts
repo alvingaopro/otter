@@ -232,6 +232,7 @@ export function sampleTasks(now = Date.now()): Task[] {
       what: "see how the export is going",
       asked_in: "m1",
       created_at: iso(10, now),
+      // `iso` counts back: 20 minutes from now.
       deadline: iso(-20, now),
       status: "waiting",
       findings: 0,
@@ -256,7 +257,11 @@ export function sampleTasks(now = Date.now()): Task[] {
       finding: { at: iso(612, now), outcome: "passed", text: "all 3 checks passed (at abc1234)" },
       findings: 1,
       ended_at: iso(611, now),
+      report: "m_watch",
     },
+  ];
+  done.messages = [
+    { id: "m_watch", role: "controller", text: "CI on #31 passed: **all 3 checks**. It's yours to merge.", at: iso(611, now), correlation_id: "watch:wch_mock2:1" },
   ];
 
   const draft = base({ title: "Dark-mode charts legend", status: "draft", updated_at: iso(1440, now) });

@@ -100,7 +100,7 @@ export function localTime(iso: string | undefined, now: number): string {
   if (!iso) return "";
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return "";
-  const hm = d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false });
+  const hm = d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
   if (d.toDateString() === new Date(now).toDateString()) return hm;
   const day = d.toLocaleDateString([], { month: "short", day: "numeric" });
   return `${day} ${hm}`;
@@ -118,11 +118,31 @@ export const OUTCOME_LABEL: Record<WatchOutcome, string> = {
   unknown: "ended",
 };
 
+/** An outcome in words; one from a newer otterd as it's named. */
+export function outcomeLabel(o: string | undefined): string {
+  if (!o) return OUTCOME_LABEL.unknown;
+  return (OUTCOME_LABEL as Record<string, string>)[o] ?? o;
+}
+
 export function watchState(w: Watch): string {
   if (w.status === "cancelled") return "stopped";
   if (w.status === "waiting") return "watching";
-  const o = w.finding?.outcome ?? "unknown";
-  return w.status === "firing" ? `${OUTCOME_LABEL[o]} — telling you` : OUTCOME_LABEL[o];
+  const o = outcomeLabel(w.finding?.outcome);
+  if (w.status === "firing") return `${o} — telling you`;
+  if (w.status === "reported") return o;
+  // A status this build doesn't know: as it's named.
+  return w.status;
+}
+
+/** An open watch whose deadline is behind it: otterd was down, or hasn't looked yet. */
+export function pastDeadline(w: Watch, now: number): boolean {
+  return isOpen(w) && Date.parse(w.deadline) <= now;
+}
+
+/** When an open watch ends: its deadline, or that it ends when otterd looks next. */
+export function untilText(w: Watch, now: number): string {
+  if (pastDeadline(w, now)) return w.kind === "time" ? "due · said at the next look" : "deadline passed · ends at the next look";
+  return `${w.kind === "time" ? "at" : "until"} ${localTime(w.deadline, now)}`;
 }
 
 /** The status mark of a watch: shape and colour by how it stands. */
@@ -148,7 +168,7 @@ export function watchGlyph(w: Watch): "needs" | "working" | "done" | "failed" | 
 /** The second line of a watch's row. */
 export function watchLine(p: PlacedWatch, now: number): string {
   const w = p.watch;
-  if (isOpen(w)) return `${p.task.task.title} · until ${localTime(w.deadline, now)}`;
+  if (isOpen(w)) return `${p.task.task.title} · ${untilText(w, now)}`;
   return `${p.task.task.title} · ${watchState(w)}`;
 }
 
@@ -163,23 +183,39 @@ export function kindLabel(kind: string): string {
   return ({ ci: "CI", time: "A look later" } as Record<string, string>)[kind] ?? kind;
 }
 
-/** `every 30 min`, `every 2 h`, `daily at 20:20 UTC`, `by hand`. */
-export function scheduleText(s: Schedule): string {
+/** `every 30 min`, `every 2 h`, `daily at 04:20 (20:20 UTC)`, `by hand`; a kind from a newer otterd as it's named. */
+export function scheduleText(s: Schedule, now = Date.now()): string {
   switch (s.kind) {
     case "every":
       return s.minutes % 60 === 0 ? `every ${s.minutes / 60} h` : `every ${s.minutes} min`;
-    case "daily":
-      return `daily at ${s.at} UTC`;
-    default:
+    case "daily": {
+      // Today at that time UTC, in this Mac's zone.
+      const [h, m] = s.at.split(":").map(Number);
+      const d = new Date(now);
+      d.setUTCHours(h, m, 0, 0);
+      const local = Number.isNaN(d.getTime()) ? "" : d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
+      return local && local !== s.at ? `daily at ${local} (${s.at} UTC)` : `daily at ${s.at} UTC`;
+    }
+    case "manual":
       return "by hand";
+    default:
+      return (s as { kind: string }).kind;
   }
+}
+
+/** When a trigger runs next: its time, or that it's due and runs when otterd looks next. */
+export function nextText(t: Trigger, now: number): string {
+  if (!t.enabled) return "paused";
+  if (!t.next_at) return "only when run by hand";
+  if (Date.parse(t.next_at) <= now) return "due · runs at the next look";
+  return localTime(t.next_at, now);
 }
 
 /** The second line of a trigger's row. */
 export function triggerLine(t: Trigger, now: number): string {
-  if (!t.enabled) return `${scheduleText(t.schedule)} · paused`;
-  if (t.next_at) return `${scheduleText(t.schedule)} · next ${localTime(t.next_at, now)}`;
-  return scheduleText(t.schedule);
+  if (!t.enabled) return `${scheduleText(t.schedule, now)} · paused`;
+  if (t.next_at) return `${scheduleText(t.schedule, now)} · next ${nextText(t, now)}`;
+  return scheduleText(t.schedule, now);
 }
 
 /** What a trigger's policy allows, one phrase each. */

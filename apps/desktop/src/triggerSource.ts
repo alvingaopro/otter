@@ -1,7 +1,8 @@
 // Where the Automations view gets the hosts' triggers (D-083, D-185): each
 // connected host's otterd, reloaded when it says they changed
 // (`TriggersChanged`) or its event stream restarted. A host whose otterd
-// predates triggers (or this list) has none.
+// predates triggers (or this list) has none; one that fails to answer once
+// keeps what it last said.
 
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
@@ -14,8 +15,12 @@ export interface TriggerSource {
   subscribe(listener: (list: PlacedTrigger[]) => void): () => void;
   /** Pause (`false`) or resume (`true`). */
   setEnabled(key: string, enabled: boolean): Promise<void>;
-  /** Fire it now, by hand. */
-  run(key: string): Promise<void>;
+  /**
+   * Fire it now, by hand, for `occurrence` (an ISO time taken at the click):
+   * the daemon starts one task per occurrence however often it's sent.
+   * The trigger as it is then: its last firing says what came of it.
+   */
+  run(key: string, occurrence: string): Promise<Trigger>;
   remove(key: string): Promise<void>;
 }
 
@@ -38,16 +43,14 @@ export function daemonTriggers(): TriggerSource {
     try {
       byHost.set(host, await invoke<Trigger[]>("triggers_list", { host }));
     } catch {
-      byHost.delete(host);
+      // Too old for triggers: none. A hiccup: what it said last stays.
     }
     if (hosts.includes(host)) rebuild();
   };
   /** Put a trigger the daemon just returned in place, ahead of the event. */
   const put = (host: string, t: Trigger) => {
-    byHost.set(
-      host,
-      (byHost.get(host) ?? []).map((x) => (x.id === t.id ? t : x)),
-    );
+    const list = byHost.get(host) ?? [];
+    byHost.set(host, list.some((x) => x.id === t.id) ? list.map((x) => (x.id === t.id ? t : x)) : [...list, t]);
     rebuild();
   };
 
@@ -63,6 +66,8 @@ export function daemonTriggers(): TriggerSource {
     setHosts(next) {
       const added = next.filter((h) => !hosts.includes(h));
       const changed = added.length > 0 || next.length !== hosts.length;
+      // A host gone is read afresh if it comes back.
+      for (const h of hosts) if (!next.includes(h)) byHost.delete(h);
       hosts = next;
       added.forEach((h) => void load(h));
       if (changed) rebuild();
@@ -76,9 +81,11 @@ export function daemonTriggers(): TriggerSource {
       const { host, trigger } = split(key);
       put(host, await invoke<Trigger>("trigger_update", { host, trigger, enabled }));
     },
-    async run(key) {
+    async run(key, occurrence) {
       const { host, trigger } = split(key);
-      put(host, await invoke<Trigger>("trigger_run", { host, trigger }));
+      const t = await invoke<Trigger>("trigger_run", { host, trigger, occurrence });
+      put(host, t);
+      return t;
     },
     async remove(key) {
       const { host, trigger } = split(key);
@@ -146,7 +153,13 @@ export function mockTriggers(host = "preview", now = Date.now()): TriggerSource 
       list = list.map((p) => (p.key === key ? { ...p, trigger: { ...p.trigger, enabled } } : p));
       changed();
     },
-    async run() {},
+    async run(key, occurrence) {
+      const p = list.find((x) => x.key === key)!;
+      const trigger = { ...p.trigger, history: [...p.trigger.history, { occurrence, at: occurrence, task_id: "ft_mockrun" }] };
+      list = list.map((x) => (x.key === key ? { ...x, trigger } : x));
+      changed();
+      return trigger;
+    },
     async remove(key) {
       list = list.filter((p) => p.key !== key);
       changed();
