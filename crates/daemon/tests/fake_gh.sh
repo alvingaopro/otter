@@ -5,6 +5,7 @@ dir="$FAKE_GH_DIR"
 echo "gh $*" >> "$dir/calls.log"
 case "$1 $2" in
   "pr view")
+    if [ -f "$dir/pr-view-fails" ]; then echo "error connecting to api.github.com" >&2; exit 1; fi
     if [ -f "$dir/pr" ]; then
       # What GitHub says of it (D-184): set by a test in pr-state, mergeable.
       state=$(cat "$dir/pr-state" 2>/dev/null || echo OPEN)

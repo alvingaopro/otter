@@ -182,22 +182,11 @@ pub(crate) fn set(
     first: Option<Reading>,
     now: Timestamp,
 ) -> Result<(Watch, Vec<Change>), String> {
-    let what = what.trim();
-    if what.is_empty() {
-        return Err("say what to watch for (what)".into());
-    }
     if let Some(w) = same(f, kind.name(), &target.value) {
         return Ok((w.clone(), vec![]));
     }
-    let open: Vec<String> = f.open_watches().map(|w| w.label.clone()).collect();
-    if open.len() >= w::MAX_WAITING {
-        return Err(format!(
-            "this task already has {} watches open ({}): stop one first",
-            open.len(),
-            open.join("; ")
-        ));
-    }
-    let minutes = kind.minutes(args)?;
+    let minutes = check(f, kind, args, what)?;
+    let what = what.trim();
     let watch = Watch {
         id: WatchId::generate(),
         kind: kind.name().into(),
@@ -220,6 +209,28 @@ pub(crate) fn set(
     });
     f.watches.push(watch.clone());
     Ok((watch, vec![change]))
+}
+
+/// Whether a new watch of `kind` may be set on `f` for `what`: how many
+/// minutes it reaches, or why not (for the developer).
+pub(crate) fn check(
+    f: &Task,
+    kind: &dyn WatchKind,
+    args: &Value,
+    what: &str,
+) -> Result<u32, String> {
+    if what.trim().is_empty() {
+        return Err("say what to watch for (what)".into());
+    }
+    let open: Vec<String> = f.open_watches().map(|w| w.label.clone()).collect();
+    if open.len() >= w::MAX_WAITING {
+        return Err(format!(
+            "this task already has {} watches open ({}): stop one first",
+            open.len(),
+            open.join("; ")
+        ));
+    }
+    kind.minutes(args)
 }
 
 /// The open watch of `kind` on the same thing, if there is one.
@@ -528,8 +539,7 @@ impl Daemon {
 
     /// One look at what `kind` would watch on `f`, before the watch is set
     /// (W-1): what the turn says is what was read now. `None`: the kind
-    /// isn't probed (`time`), or nothing could be read in time — the watch
-    /// is set as it would be, and probed as usual.
+    /// isn't probed (`time`).
     pub(crate) async fn first_look(
         &self,
         kind: &'static dyn WatchKind,
@@ -554,13 +564,7 @@ impl Daemon {
             ended_at: None,
             report: None,
         };
-        match self.probe(kind, &f.id, &draft, FIRST_LOOK_LIMIT).await {
-            Probe::Unreadable(why) => {
-                tracing::info!(task = %f.id, "a watch's first look: {why}");
-                None
-            }
-            p => Some(p),
-        }
+        Some(self.probe(kind, &f.id, &draft, FIRST_LOOK_LIMIT).await)
     }
 
     /// `id` was just looked at (its first look): probed next a while from now.

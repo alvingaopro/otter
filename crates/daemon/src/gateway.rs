@@ -316,7 +316,7 @@ pub fn tools() -> Vec<ToolSpec> {
         t(
             "watch",
             DeveloperWord,
-            "Keep an eye on something for the developer, as they asked (D-183): kind ci — the task's pull request's CI until every check has finished, it can't run, or the pull request is merged or closed (for_minutes: how long at most, default 120); kind time — look at this task again in in_minutes. what: what they asked for, in their words. It reads ci once at once: now is what it read (say that, and when); done \"nothing to wait for\" means it already came to something (came_to), and nothing is watched — tell them what. When it comes to something later, a turn of its own tells them in this conversation. At most 3 at once.",
+            "Keep an eye on something for the developer, as they asked (D-183): kind ci — the task's pull request's CI until every check has finished, it can't run, or the pull request is merged or closed (for_minutes: how long at most, default 120); kind time — look at this task again in in_minutes. what: what they asked for, in their words. It reads CI once as it sets the watch: now is what it read (say that, and when), or not_read says why it couldn't; done \"nothing to wait for\" means it already came to something (came_to), and nothing is watched — tell them what. When it comes to something later, a turn of its own tells them in this conversation. At most 3 at once.",
             json!({
                 "type": "object",
                 "properties": {
@@ -1609,11 +1609,25 @@ impl Gateway {
         let target = kind
             .target(f, args, &what)
             .map_err(|e| fail("invalid", e))?;
-        let shown = |w: &otter_core::watch::Watch, done: &str| json!({"done": done, "watch_id": w.id.as_str(), "watching": w.label, "until": w.deadline});
+        // What it last read, if anything: the turn says that, not an older
+        // gate (W-1).
+        let shown = |w: &otter_core::watch::Watch, done: &str| {
+            json!({
+                "done": done,
+                "watch_id": w.id.as_str(),
+                "watching": w.label,
+                "status": format!("{:?}", w.status).to_lowercase(),
+                "until": w.deadline,
+                "now": w.last_reading().map(|r| json!({"text": redact(&r.text), "read_at": r.at})),
+            })
+        };
         if let Some(w) = crate::watches::same(f, kind.name(), &target.value) {
             return Ok(shown(w, "already watching"));
         }
+        // Refused before it reads anything: a read takes seconds of the turn.
+        crate::watches::check(f, kind, args, &what).map_err(|e| fail("conflict", e))?;
         let d = &self.inner.daemon;
+        let mut not_read = None;
         let first = match d.first_look(kind, f, &target).await {
             Some(crate::watches::Probe::Found { outcome, text }) => {
                 self.record_done("watch", None).await;
@@ -1629,7 +1643,12 @@ impl Gateway {
                 key,
                 text,
             }),
-            _ => None,
+            // Set all the same, and probed at the next tick as usual.
+            Some(crate::watches::Probe::Unreadable(why)) => {
+                not_read = Some(redact(&why));
+                None
+            }
+            None => None,
         };
         let origin = &self.inner.origin;
         let asked_in = origin.authority().map(|m| m.id.clone());
@@ -1649,9 +1668,7 @@ impl Gateway {
         )
         .await;
         let value = target.value.clone();
-        let now_read = first
-            .as_ref()
-            .map(|r| json!({"text": redact(&r.text), "read_at": r.at}));
+        let read_first = first.is_some();
         let mut set = None;
         let mut existed = false;
         let applied = d
@@ -1690,7 +1707,7 @@ impl Gateway {
         if existed {
             return Ok(shown(&watch, "already watching"));
         }
-        if !applied.duplicate {
+        if read_first && !applied.duplicate {
             d.looked(&watch.id, kind);
         }
         self.inner
@@ -1706,8 +1723,8 @@ impl Gateway {
                 "watching"
             },
         );
-        if let Some(now) = now_read {
-            answer["now"] = now;
+        if let Some(why) = not_read {
+            answer["not_read"] = json!(why);
         }
         Ok(answer)
     }

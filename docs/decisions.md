@@ -6965,9 +6965,13 @@ reading told as the present, which D-184 set out to end.
   to say that, not an older reading. Already come to something (passed,
   failed, can't run, merged or closed): nothing is set, and the answer says
   what (`done: "nothing to wait for"`, `came_to`), for Otter to tell the
-  developer. Unreadable in time, or a kind that isn't probed (`time`): set
-  as before. The first read counts as a probe: the next is an interval
-  later.
+  developer. Couldn't read it in time: set all the same, the answer says
+  why (`not_read`) so Otter doesn't fall back on an older reading, and it is
+  probed at the next tick as before. A kind that isn't probed (`time`): set
+  as before. A first read counts as a probe: the next is an interval later.
+  Already watching it (the developer asked twice, or *Accept anyway* set
+  it): the answer carries what that watch last read. What makes the tool
+  refuse (no `what`, the cap, the minutes) is checked before it reads.
 - The controller's line on a conflicting pull request is true whether or
   not CI ran before the conflict: GitHub "runs no CI on it until the branch
   is brought up to date".
@@ -6990,4 +6994,5 @@ Tests (`watches::*`): asked while CI runs, the answer says what it read and
 the watch keeps it as its first reading; asked once CI passed, nothing is
 set and the answer says it passed; asked on a conflicting pull request,
 nothing is set and the answer says it can't run; a watch set while it could
-still run fires when it comes to conflict.
+still run fires when it comes to conflict; GitHub unreadable as it is set,
+the watch is set, the answer says why, and it reads on its next look.

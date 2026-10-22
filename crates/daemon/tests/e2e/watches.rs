@@ -215,6 +215,40 @@ async fn a_ci_watch_says_once_what_ci_came_to() {
     assert_eq!(f.watches.len(), 1, "{:?}", f.watches);
 }
 
+/// GitHub can't be read as the watch is set: it's set all the same, the
+/// answer says why nothing was read, and it reads on its next look (W-1).
+#[tokio::test]
+async fn a_watch_that_cant_read_yet_says_so_and_is_set() {
+    let fake = host_with(vec![]).await;
+    let host = &fake.host;
+    let id = published(&fake).await;
+    std::fs::write(fake.gh.join("pr-view-fails"), "").unwrap();
+    let answers = say(host, &id, "watch-1", WATCH_CI).await;
+    assert_eq!(answers[0]["data"]["done"], "watching", "{answers:?}");
+    assert!(answers[0]["data"]["now"].is_null(), "{answers:?}");
+    assert!(
+        answers[0]["data"]["not_read"]
+            .as_str()
+            .unwrap()
+            .contains("error connecting"),
+        "{answers:?}"
+    );
+    let f = host.conn().await.task_get(&id).await.unwrap();
+    assert!(f.watches[0].readings.is_empty(), "{:?}", f.watches);
+    std::fs::remove_file(fake.gh.join("pr-view-fails")).unwrap();
+    wait_task(host, &id, "read on its next look", |f| {
+        f.watches[0].last_reading().is_some()
+    })
+    .await;
+    // Asked again: that watch, with what it read.
+    let again = say(host, &id, "watch-2", WATCH_CI).await;
+    assert_eq!(again[0]["data"]["done"], "already watching", "{again:?}");
+    assert_eq!(
+        again[0]["data"]["now"]["text"], "no checks yet",
+        "{again:?}"
+    );
+}
+
 /// D-184: a pull request that conflicts gets no CI. That isn't "running":
 /// the gates say so, Otter says so once; asked to watch it, Otter reads it
 /// first and says so (W-1), and a watch that comes to it fires at once.
