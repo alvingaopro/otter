@@ -984,17 +984,23 @@ impl Daemon {
         match set.await {
             Ok(f) => Ok(f),
             Err(e) => {
+                tracing::warn!(task = %created.id, "no workspace for a new task: {}", e.message);
                 let said = format!(
-                    "I couldn't make a workspace for this task ({}). Choose one to go on.",
-                    e.message.lines().next().unwrap_or("no reason given")
+                    "I couldn't make or choose a workspace for this task ({}). Choose one to go on.",
+                    otter_core::redact::redact(
+                        e.message.lines().next().unwrap_or("no reason given")
+                    )
                 );
                 let applied = self.tasks.lock().await.apply(&created.id, None, |f, _| {
                     let (m, c) = message(MessageRole::Controller, said.clone(), None);
                     f.messages.push(m);
                     Ok(vec![c])
                 });
-                if let Ok(a) = applied {
-                    self.task_changed(&a);
+                match applied {
+                    Ok(a) => self.task_changed(&a),
+                    Err(e) => {
+                        tracing::warn!(task = %created.id, "saying why it has no workspace: {}", e.message)
+                    }
                 }
                 self.task_get(created.id.as_str()).await
             }

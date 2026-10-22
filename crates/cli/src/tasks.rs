@@ -405,6 +405,7 @@ pub async fn task_command(config: &Config, cmd: TaskCommand, json: bool) -> Resu
                     (None, _) => bail!("several hosts; choose one with --host"),
                 },
             };
+            let repo_given = repo.is_some();
             let mut conn = connect(config, &entry).await?;
             let f = conn
                 .task_create(TaskCreate {
@@ -431,6 +432,13 @@ pub async fn task_command(config: &Config, cmd: TaskCommand, json: bool) -> Resu
                 .await?;
             if json {
                 return output::print_json(&f);
+            }
+            if f.workspace_id.is_none() && (repo_given || scratch) {
+                println!(
+                    "task {} ({}) on {} — made, but its workspace could not be: `otter task show {}` says why",
+                    f.title, f.id, entry.name, f.id
+                );
+                return Ok(());
             }
             println!(
                 "task {} ({}) on {} — a draft; `otter task start {}` hands it to Otter",

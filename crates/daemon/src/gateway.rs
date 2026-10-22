@@ -311,7 +311,7 @@ pub fn host_tools() -> Vec<ToolSpec> {
         t(
             "list_workspaces",
             Observe,
-            "The workspaces on this host (where tasks do their work): id, name, state, the repository it comes from, its brief, and the task holding it now (held_by_task: a new task there would wait). query: only those whose name, repository or brief has these words.",
+            "The workspaces on this host (where tasks do their work): id, name, state, the repository it comes from, its brief, and the task holding it now (held_by_task: a new task there would wait; the developer's own agent sessions aren't counted). query: only those whose name, repository or brief has these words.",
             json!({
                 "type": "object",
                 "properties": {"query": {"type": "string"}},
@@ -1025,6 +1025,13 @@ impl Gateway {
                 .collect::<Vec<_>>()
                 .join("\n\n");
             let workspace = Self::workspace_choice(args)?;
+            let made_one = matches!(
+                workspace,
+                Some(
+                    otter_protocol::task::WorkspaceChoice::New { .. }
+                        | otter_protocol::task::WorkspaceChoice::Scratch { .. }
+                )
+            );
             let answer_only = args
                 .get("answer_only")
                 .and_then(Value::as_bool)
@@ -1042,7 +1049,10 @@ impl Gateway {
                 })
                 .await?;
             let mut status = f.status;
-            if start {
+            // A workspace that couldn't be made leaves a task without one:
+            // not started, and said (D-179).
+            let unplaced = made_one && f.workspace_id.is_none();
+            if start && !unplaced {
                 status = d
                     .clone()
                     .task_act(TaskAct {
@@ -1078,6 +1088,16 @@ impl Gateway {
                 .lock()
                 .unwrap()
                 .push(format!("create_task: {} ({})", f.title, f.id));
+            if unplaced {
+                return Ok(json!({
+                    "done": "created",
+                    "task_id": f.id.as_str(),
+                    "title": f.title,
+                    "status": status.as_str(),
+                    "workspace": null,
+                    "note": "the workspace could not be made, so the task was not started; the task says why. Tell the developer, and ask where it should work."
+                }));
+            }
             return Ok(
                 json!({"done": "created", "task_id": f.id.as_str(), "title": f.title, "status": status.as_str()}),
             );
