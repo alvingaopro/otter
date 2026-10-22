@@ -20,6 +20,7 @@ mod gateway;
 mod git;
 mod git_account;
 mod history;
+mod levels;
 mod login;
 mod memory;
 mod merged;

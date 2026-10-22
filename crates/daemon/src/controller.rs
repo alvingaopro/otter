@@ -496,7 +496,7 @@ impl Daemon {
             );
             f.messages.push(m);
             let mut changes = vec![c];
-            let (step, stops) = intent_step(f, intent, last.id.as_str(), now);
+            let (step, stops) = intent_step(f, intent, last.id.as_str(), false, now);
             stop = stops;
             changes.extend(step);
             Ok(changes)
@@ -3336,6 +3336,7 @@ pub(crate) fn intent_step(
     f: &mut Task,
     intent: crate::brain::Intent,
     authority: &str,
+    by_otter: bool,
     now: otter_core::Timestamp,
 ) -> (Vec<Change>, bool) {
     use crate::brain::Intent;
@@ -3344,17 +3345,24 @@ pub(crate) fn intent_step(
             .ok()
             .map(Change::new)
     };
+    // Who said it, as the task's reasons say it (D-192): Otter acts on its
+    // own too, and the record says so.
+    let said = |you: &'static str, otter: &'static str| if by_otter { otter } else { you };
     let mut changes = Vec::new();
     let mut stop = false;
     let step = match (intent, f.status) {
-        (Intent::Continue, TaskStatus::Draft) => move_to(f, TaskStatus::Planning, "You said go on"),
+        (Intent::Continue, TaskStatus::Draft) => move_to(
+            f,
+            TaskStatus::Planning,
+            said("You said go on", "Otter went on"),
+        ),
         (Intent::Continue, TaskStatus::Paused) => match crate::tasks::resume_to(f) {
             (next, Some(reason)) => move_to(f, next, &reason),
-            (next, None) => move_to(f, next, "You said go on"),
+            (next, None) => move_to(f, next, said("You said go on", "Otter went on")),
         },
         (Intent::Continue, TaskStatus::Blocked) if f.pending_decisions().next().is_none() => {
             let next = crate::tasks::resume_status(f);
-            move_to(f, next, "You said go on")
+            move_to(f, next, said("You said go on", "Otter went on"))
         }
         (Intent::Continue, TaskStatus::Failed) => {
             f.budget.iterations_used = 0;
@@ -3365,20 +3373,30 @@ pub(crate) fn intent_step(
                 }
             }
             let next = crate::tasks::resume_status(f);
-            move_to(f, next, "You said go on: retrying with a fresh budget")
+            move_to(
+                f,
+                next,
+                said(
+                    "You said go on: retrying with a fresh budget",
+                    "Otter retried with a fresh budget",
+                ),
+            )
         }
         (Intent::Pause, s)
             if s.is_active() || s == TaskStatus::Blocked || s == TaskStatus::Review =>
         {
             stop = true;
-            move_to(f, TaskStatus::Paused, "Paused: you asked")
+            move_to(f, TaskStatus::Paused, said("Paused: you asked", "Paused by Otter"))
         }
         // The goal moved (D-050): plan again, keeping what is done.
         (Intent::Revise, s) if !s.is_terminal() => {
             stop = true;
             changes.extend(crate::tasks::replan(
                 f,
-                "You changed the goal: planning again",
+                said(
+                    "You changed the goal: planning again",
+                    "Otter is planning again",
+                ),
                 now,
             ));
             None
@@ -3390,7 +3408,13 @@ pub(crate) fn intent_step(
                 override_gates: false,
             };
             match crate::tasks::apply_action(f, &accept, authority, now) {
-                Ok(c) => changes.extend(c),
+                Ok(c) => {
+                    changes.extend(c);
+                    if by_otter {
+                        changes.push(Change::new(f.reason(ACCEPTED_BY_OTTER)));
+                        f.status_reason = Some(ACCEPTED_BY_OTTER.into());
+                    }
+                }
                 Err(e) => changes.push(Change::new(
                     f.reason(format!("Not done yet: {}", e.message)),
                 )),
@@ -3399,13 +3423,21 @@ pub(crate) fn intent_step(
         }
         (Intent::Finish, s) if s.is_active() || s == TaskStatus::Blocked => {
             stop = true;
-            move_to(f, TaskStatus::Paused, "Stopped: you said that's enough")
+            move_to(
+                f,
+                TaskStatus::Paused,
+                said("Stopped: you said that's enough", "Stopped by Otter"),
+            )
         }
         _ => None,
     };
     changes.extend(step);
     (changes, stop)
 }
+
+/// The reason a task Otter accepted is done (D-192).
+pub(crate) const ACCEPTED_BY_OTTER: &str =
+    "Accepted by Otter: every gate passed (accepting is automatic in Settings)";
 
 /// What a developer's message turns into for the coding agent.
 #[derive(Debug, PartialEq, Eq)]

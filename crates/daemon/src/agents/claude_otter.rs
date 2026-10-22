@@ -57,6 +57,9 @@ pub struct OtterRun<'a> {
     pub images: Vec<crate::runtime::TurnImage>,
     /// Otter's tools: `{name, description, input_schema}` each.
     pub tools: Vec<Value>,
+    /// Claude Code's own tools it may use (D-191); each call is put to
+    /// `call` as `@<name>` first. A worker before them ignores this.
+    pub builtins: Vec<&'a str>,
     /// Model round trips at most.
     pub max_turns: usize,
     /// Where the reply goes as Claude writes it (D-051). What it says
@@ -149,6 +152,7 @@ where
             strip_nulls(json!({
                 "profile": PROFILE,
                 "otter_tools": r.tools,
+                "otter_builtins": (!r.builtins.is_empty()).then_some(&r.builtins),
                 "conversation_id": otter_core::ConversationId::generate().to_string(),
                 "cwd": r.cwd,
                 "model": r.model,

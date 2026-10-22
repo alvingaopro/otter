@@ -132,7 +132,7 @@ export class Session {
   /** The SDK options for this run (exported for tests). */
   options(): Options {
     const i = this.init;
-    if (i.profile === "otter") return this.otterOptions(i.otter_tools ?? []);
+    if (i.profile === "otter") return this.otterOptions(i.otter_tools ?? [], i.otter_builtins ?? []);
     return {
       cwd: i.cwd,
       env: { ...process.env },
@@ -164,11 +164,13 @@ export class Session {
   }
 
   /**
-   * Otter's own turn (D-089): none of Claude Code's tools, no settings, no
-   * MCP servers but Otter's; each tool call goes to otterd, which checks and
-   * answers it. Anything else the model asks for is denied.
+   * Otter's own turn (D-089): no settings, no MCP servers but Otter's; each
+   * of Otter's tool calls goes to otterd, which checks and answers it. Of
+   * Claude Code's own tools, only the `builtins` otterd names (D-191), and
+   * each call of one is put to otterd first (`otterPreToolUse`). Anything
+   * else the model asks for is denied.
    */
-  private otterOptions(tools: OtterTool[]): Options {
+  private otterOptions(tools: OtterTool[], builtins: string[]): Options {
     const i = this.init;
     const server = createSdkMcpServer({
       name: OTTER_SERVER,
@@ -181,11 +183,12 @@ export class Session {
       env: { ...process.env },
       model: i.model,
       includePartialMessages: true,
-      tools: [],
+      tools: builtins,
       mcpServers: { [OTTER_SERVER]: server },
       strictMcpConfig: true,
-      allowedTools: tools.map((t) => otterToolName(t.name)),
+      allowedTools: [...tools.map((t) => otterToolName(t.name)), ...builtins],
       disallowedTools: DISALLOWED_TOOLS,
+      ...(builtins.length > 0 ? { hooks: { PreToolUse: [{ hooks: [this.otterPreToolUse(builtins)] }] } } : {}),
       settingSources: [],
       systemPrompt: i.instructions ?? "",
       maxTurns: i.max_turns,
@@ -196,6 +199,40 @@ export class Session {
       stderr: (data: string) => {
         process.stderr.write(data.length > 4000 ? `${data.slice(0, 4000)}…\n` : data);
       },
+    };
+  }
+
+  /**
+   * Before one of Claude Code's own tools runs in Otter's turn (D-191):
+   * otterd says allow or deny (`@<tool>`, answered like one of Otter's
+   * tools). Otter's own tools aren't asked about here: otterd checks them
+   * when it answers them. No answer is a denial.
+   */
+  otterPreToolUse(builtins: string[]): HookCallback {
+    return async (input) => {
+      const i = input as PreToolUseHookInput;
+      if (!builtins.includes(i.tool_name)) return {};
+      const result = await this.otterCall(`@${i.tool_name}`, i.tool_input);
+      let allow = false;
+      let why = "Otter couldn't check this call.";
+      try {
+        const v = JSON.parse(result.content[0]!.text) as {
+          ok?: boolean;
+          data?: { allow?: boolean; why?: string };
+          error?: { message?: string };
+        };
+        allow = v.ok === true && v.data?.allow === true;
+        why = v.data?.why ?? v.error?.message ?? why;
+      } catch {
+        // Not an answer: denied.
+      }
+      return {
+        hookSpecificOutput: {
+          hookEventName: "PreToolUse",
+          permissionDecision: allow ? "allow" : "deny",
+          ...(allow ? {} : { permissionDecisionReason: why }),
+        },
+      };
     };
   }
 

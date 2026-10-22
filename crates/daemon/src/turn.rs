@@ -50,6 +50,28 @@ impl Limits {
             max_round_trips: n("OTTER_TURN_ROUND_TRIPS", 6) as usize,
         }
     }
+
+    /// A turn that coordinates (D-190): an event's, a request's, a
+    /// sub-task's report. It reads and acts more than a reply does: 180 s,
+    /// 24 tool calls, 12 round trips (`OTTER_TURN_COORD_DEADLINE_MS`,
+    /// `OTTER_TURN_COORD_MAX_CALLS`, `OTTER_TURN_COORD_ROUND_TRIPS`).
+    pub fn coordinating() -> Self {
+        let reply = Limits::from_env();
+        let n = |var: &str, default: u64| {
+            std::env::var(var)
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .filter(|v| *v > 0)
+                .unwrap_or(default)
+        };
+        Limits {
+            deadline: Duration::from_millis(n("OTTER_TURN_COORD_DEADLINE_MS", 180_000))
+                .max(reply.deadline),
+            max_calls: (n("OTTER_TURN_COORD_MAX_CALLS", 24) as usize).max(reply.max_calls),
+            max_round_trips: (n("OTTER_TURN_COORD_ROUND_TRIPS", 12) as usize)
+                .max(reply.max_round_trips),
+        }
+    }
 }
 
 /// What a turn starts with.
@@ -72,6 +94,9 @@ pub struct Turn<'a> {
     /// the recent conversation. Details come through the tools.
     pub context: String,
     pub tools: Vec<ToolSpec>,
+    /// The SDK's own tools the turn may use (D-191), for a backend that has
+    /// them; each call is checked by the gateway as `@<name>`.
+    pub builtins: Vec<&'static str>,
     pub limits: &'a Limits,
     /// Where the reply goes as it is written.
     pub say: &'a Say<'a>,
@@ -272,15 +297,25 @@ impl Daemon {
                 messages: open.clone(),
             }
         };
-        let limits = Limits::from_env();
-        let available = if placing { placing_tools() } else { tools() };
+        let limits = if placing {
+            Limits::coordinating()
+        } else {
+            Limits::from_env()
+        };
+        let available =
+            self.offered(Some(f), if placing { placing_tools() } else { tools() });
+        let builtins = self.builtins_offered(Some(f));
         let gateway = if placing {
             Gateway::restricted(
                 self.clone(),
                 Scope::Task(f.id.clone()),
                 origin,
                 limits.max_calls,
-                available.iter().map(|t| t.name).collect(),
+                available
+                    .iter()
+                    .map(|t| t.name)
+                    .chain(builtins.iter().copied())
+                    .collect(),
             )
         } else {
             Gateway::new(
@@ -325,6 +360,7 @@ impl Daemon {
             pictures,
             context: context(f, &self.memories(Some(&f.id))),
             tools: available,
+            builtins,
             limits: &limits,
             say: &say,
         };
@@ -382,7 +418,7 @@ impl Daemon {
         event_id: String,
         what: String,
     ) -> Option<String> {
-        let limits = Limits::from_env();
+        let limits = Limits::coordinating();
         let gateway = Gateway::new(
             self.clone(),
             Scope::Task(f.id.clone()),
@@ -397,7 +433,8 @@ impl Daemon {
             messages: &[],
             pictures: vec![],
             context: context(f, &self.memories(Some(&f.id))),
-            tools: tools(),
+            tools: self.offered(Some(f), tools()),
+            builtins: self.builtins_offered(Some(f)),
             limits: &limits,
             say: &say,
         };
@@ -456,7 +493,8 @@ impl Daemon {
             messages: &open,
             pictures: vec![],
             context: self.host_context(&chat).await,
-            tools: host_tools(),
+            tools: self.offered(None, host_tools()),
+            builtins: self.builtins_offered(None),
             limits: &limits,
             say: &say,
         };
@@ -554,7 +592,7 @@ impl Daemon {
             None => format!("{what}."),
             Some(backend) => {
                 let chat = self.chat.lock().await.get().clone();
-                let limits = Limits::from_env();
+                let limits = Limits::coordinating();
                 let gateway = Gateway::new(
                     self.clone(),
                     Scope::Host,
@@ -571,7 +609,8 @@ impl Daemon {
                     messages: &[],
                     pictures: vec![],
                     context: self.host_context(&chat).await,
-                    tools: host_tools(),
+                    tools: self.offered(None, host_tools()),
+                    builtins: self.builtins_offered(None),
                     limits: &limits,
                     say: &say,
                 };
@@ -725,13 +764,13 @@ pub fn prompt(turn: &Turn<'_>) -> String {
         (&turn.event, turn.messages.is_empty(), turn.task.is_some())
     {
         return format!(
-            "{}\n\nNo message from the developer started this turn: a watch fired — {what}. Tell the developer, in a sentence or two and in the language they wrote in, what it came to, what it needs from them if anything, and when it was read. Look with your tools if that helps; act for them in nothing (pausing is all you may do).",
+            "{}\n\nNo message from the developer started this turn: {what}. Tell the developer, in a sentence or two and in the language they wrote in, what it came to, what it needs from them if anything, and when it was read. Look with your tools if that helps, and do what the task needs next with the tools you have (a tool that needs the developer's word says so): say what you did. Merging is never yours.",
             turn.context
         );
     }
     if let (Some((_, what)), true) = (&turn.event, turn.messages.is_empty()) {
         return format!(
-            "{}\n\nNo message from the developer started this turn: a task you follow changed — {what}. Say in a sentence or two what happened and what it needs from them, if anything. Look with your tools if that helps; act for them in nothing (pausing is all you may do).",
+            "{}\n\nNo message from the developer started this turn: a task you follow changed — {what}. Say in a sentence or two what happened and what it needs from them, if anything. Look with your tools if that helps, and do what it needs next with the tools you have (a tool that needs the developer's word says so): say what you did.",
             turn.context
         );
     }
@@ -826,6 +865,7 @@ impl TurnBackend for ClaudeTurn {
                 prompt: &prompt,
                 images,
                 tools,
+                builtins: turn.builtins.clone(),
                 max_turns: turn.limits.max_round_trips,
                 say: turn.say,
             },

@@ -179,6 +179,7 @@ async fn a_turn_an_event_started_may_pause() {
                 tool,
                 origin,
                 authority,
+                ..
             } if tool == "pause_task" => Some((origin, authority)),
             _ => None,
         })

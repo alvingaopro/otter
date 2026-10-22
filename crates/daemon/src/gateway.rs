@@ -25,6 +25,7 @@ use std::sync::{Arc, Mutex};
 use otter_core::TaskId;
 use otter_core::redact::redact;
 use otter_core::task::{Message, Task, TaskEvent, TaskStatus};
+use otter_core::tools::ToolLevel;
 use otter_protocol::{ErrorCode, RpcError};
 use serde_json::{Value, json};
 
@@ -633,6 +634,10 @@ impl Gateway {
             )
             .next("answer with what you know"));
         }
+        // The SDK's own tools, called as `@<name>` (D-191).
+        if let Some(b) = name.strip_prefix('@') {
+            return self.builtin(b, args).await;
+        }
         let Some(spec) = tools_for(&self.inner.scope)
             .into_iter()
             .find(|t| t.name == name)
@@ -650,7 +655,19 @@ impl Gateway {
             self.record_done(name, Some(e.code)).await;
             return Err(e);
         }
-        if spec.class == Class::DeveloperWord && self.inner.origin.authority().is_none() {
+        // How far it may go here (D-190): off isn't offered; `developer`
+        // needs a turn the developer's message started; `auto` goes.
+        let level = self.level(name).await;
+        if level == ToolLevel::Off {
+            let e = fail(
+                "not_allowed_in_this_turn",
+                format!("`{name}` is turned off for Otter here"),
+            )
+            .next("tell the developer; they can turn it on in Settings › Otter");
+            self.record_done(name, Some(e.code)).await;
+            return Err(e);
+        }
+        if !level.allows(self.inner.origin.authority().is_some()) {
             let e = fail(
                 "not_allowed_in_this_turn",
                 format!("`{name}` acts on the developer's word, and no message of theirs started this turn"),
@@ -659,6 +676,7 @@ impl Gateway {
             self.record_done(name, Some(e.code)).await;
             return Err(e);
         }
+        let _ = spec;
         if matches!(name, "remember" | "edit_memory") {
             return self.memory_tool(name, args).await;
         }
@@ -673,6 +691,104 @@ impl Gateway {
                 .await;
         }
         result
+    }
+
+    /// One of the SDK's own tools (D-191), before it runs in Otter's turn:
+    /// `{"allow": true}`, or `{"allow": false, "why": …}` for the model.
+    /// Its level decides, as for any tool; `Bash` runs in Otter's empty
+    /// directory and goes through the command policy too — routine runs,
+    /// what only the developer may allow is refused (nobody can answer in
+    /// the middle of a turn), what policy denies is denied. What the policy
+    /// leaves to a model's judgement (D-174) is Otter's own: it is the model
+    /// asking. Every call is on record, with what it was called on.
+    async fn builtin(&self, name: &str, args: &Value) -> Result<Value, ToolError> {
+        if !crate::levels::BUILTINS.contains(&name) {
+            return Err(fail("not_found", format!("there is no tool `{name}`")));
+        }
+        let refuse = |why: String| async move {
+            self.record_done(name, Some("refused")).await;
+            Ok(json!({"allow": false, "why": why}))
+        };
+        if let Some(only) = &self.inner.only
+            && !only.contains(&name)
+        {
+            return refuse(format!("`{name}` isn't for this turn")).await;
+        }
+        let level = self.level(name).await;
+        if level == ToolLevel::Off {
+            return refuse(format!(
+                "`{name}` is turned off for Otter here; the developer can turn it on in Settings › Otter"
+            ))
+            .await;
+        }
+        if !level.allows(self.inner.origin.authority().is_some()) {
+            return refuse(format!(
+                "`{name}` acts on the developer's word, and no message of theirs started this turn"
+            ))
+            .await;
+        }
+        let text = |k: &str| args.get(k).and_then(Value::as_str).unwrap_or_default();
+        let detail = match name {
+            "Bash" => text("command").to_owned(),
+            "WebSearch" => text("query").to_owned(),
+            _ => text("url").to_owned(),
+        };
+        if name == "Bash" {
+            use crate::runtime::policy::{self, Verdict};
+            let dir = self.inner.daemon.otter_dir();
+            let call = crate::runtime::ToolCall::Command {
+                line: detail.clone(),
+            };
+            match policy::classify(&call, &dir) {
+                Verdict::Allow | Verdict::Ask {
+                    user_only: false, ..
+                } => {}
+                Verdict::Ask {
+                    user_only: true,
+                    why,
+                    ..
+                } => {
+                    return refuse(format!(
+                        "only the developer may allow this ({why}); tell them what you'd run"
+                    ))
+                    .await;
+                }
+                Verdict::Deny { why } => {
+                    return refuse(format!("never allowed: {why}")).await;
+                }
+            }
+        }
+        let origin = &self.inner.origin;
+        self.record(
+            TaskEvent::ToolCalled {
+                tool: name.into(),
+                origin: origin.name().into(),
+                authority: origin.authority().map(|m| m.id.to_string()),
+                detail: Some(excerpt(&redact(&detail), 300)).filter(|d| !d.is_empty()),
+            },
+            None,
+        )
+        .await;
+        self.record_done(name, None).await;
+        self.inner
+            .done
+            .lock()
+            .unwrap()
+            .push(format!("{name}: {}", excerpt(&redact(&detail), 80)));
+        Ok(json!({"allow": true}))
+    }
+
+    /// `name`'s level in this turn's scope: the task's (the host's,
+    /// tightened by the task's own), or the host's.
+    async fn level(&self, name: &str) -> ToolLevel {
+        let d = &self.inner.daemon;
+        match &self.inner.scope {
+            Scope::Task(id) => match d.task_get(id.as_str()).await {
+                Ok(f) => d.tool_level(Some(&f), name),
+                Err(_) => d.tool_level(None, name),
+            },
+            Scope::Host => d.tool_level(None, name),
+        }
     }
 
     /// The task this turn is about (a task's conversation).
@@ -893,6 +1009,7 @@ impl Gateway {
                 tool: name.into(),
                 origin: origin.name().into(),
                 authority: origin.authority().map(|m| m.id.to_string()),
+                detail: None,
             },
             None,
         )
@@ -1150,6 +1267,7 @@ impl Gateway {
                 tool: name.into(),
                 origin: origin.name().into(),
                 authority: authority.clone(),
+                detail: None,
             };
             (event, command)
         };
@@ -1401,6 +1519,7 @@ impl Gateway {
                 tool: "ask_agent".into(),
                 origin: origin.name().into(),
                 authority: origin.authority().map(|m| m.id.to_string()),
+                detail: None,
             },
             Some(&command),
         )
@@ -1504,6 +1623,7 @@ impl Gateway {
                 tool: "set_workspace".into(),
                 origin: origin.name().into(),
                 authority: origin.authority().map(|m| m.id.to_string()),
+                detail: None,
             },
             Some(&command),
         )
@@ -1556,6 +1676,7 @@ impl Gateway {
                 tool: "set_answer_only".into(),
                 origin: origin.name().into(),
                 authority: origin.authority().map(|m| m.id.to_string()),
+                detail: None,
             },
             Some(&command),
         )
@@ -1663,6 +1784,7 @@ impl Gateway {
                 tool: "watch".into(),
                 origin: origin.name().into(),
                 authority: asked_in.as_ref().map(|m| m.to_string()),
+                detail: None,
             },
             Some(&command),
         )
@@ -1864,6 +1986,7 @@ impl Gateway {
                 tool: name.into(),
                 origin: origin.name().into(),
                 authority: authority.clone(),
+                detail: None,
             },
             Some(&command),
         )
@@ -1872,16 +1995,27 @@ impl Gateway {
         let d = &self.inner.daemon;
         let mut stop = false;
         let mut not_done: Option<String> = None;
+        // A plan question already put to the developer is theirs: Otter
+        // approves plans on its own before asking (D-192), not over them.
+        if by_otter && name == "approve_plan" {
+            let e = fail(
+                "needs_developer",
+                "the plan was put to the developer, and only they can answer that question now",
+            )
+            .next("tell the developer what you'd say");
+            self.record_done(name, Some(e.code)).await;
+            return Err(e);
+        }
         let applied = d.tasks.lock().await.apply(&f.id, Some(&command), |f, now| {
-            let (mut changes, stops) = if by_otter {
-                // Only pausing gets here without the developer's word.
-                let c = f
-                    .transition(TaskStatus::Paused, Some("Paused by Otter".into()), now)
-                    .map_err(RpcError::conflict)?;
-                (vec![Change::new(c)], true)
-            } else {
-                intent_step(f, effective, authority.as_deref().unwrap_or(&command), now)
-            };
+            // Without the developer's word (an event's turn, D-192), it is
+            // Otter's own doing, and the record says so.
+            let (mut changes, stops) = intent_step(
+                f,
+                effective,
+                authority.as_deref().unwrap_or(&command),
+                by_otter,
+                now,
+            );
             stop = stops;
             if effective == Intent::Finish && f.status != TaskStatus::Done {
                 not_done = Some(

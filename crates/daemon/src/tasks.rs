@@ -797,6 +797,24 @@ pub fn apply_action(
         TaskAction::CancelWatch { watch_id } => {
             changes.extend(crate::watches::cancel(f, watch_id, command_id, now)?);
         }
+        // A task tightens what Otter may do in it (D-190); the host's level
+        // still applies where it is stricter.
+        TaskAction::SetToolLevel { tool, level } => {
+            if crate::levels::entry(tool).is_none() {
+                return Err(RpcError::invalid(format!("Otter has no tool `{tool}`")));
+            }
+            let said = match level {
+                Some(l) => {
+                    f.tool_levels.insert(tool.clone(), *l);
+                    format!("Otter's `{tool}` in this task: {}", l.as_str())
+                }
+                None => {
+                    f.tool_levels.remove(tool);
+                    format!("Otter's `{tool}` in this task: as the host's")
+                }
+            };
+            changes.push(Change::new(f.reason(said)));
+        }
         TaskAction::DeleteWatch { watch_id } => {
             changes.extend(crate::watches::delete(f, watch_id, command_id, now)?);
         }

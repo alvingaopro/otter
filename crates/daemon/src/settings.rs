@@ -105,6 +105,10 @@ struct Stored {
     /// A task's own workspace goes once its pull request is merged (D-189).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     delete_merged_workspaces: Option<bool>,
+    /// Levels of Otter's tools set here (D-190): only those not at their
+    /// default.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    tool_levels: BTreeMap<String, otter_core::tools::ToolLevel>,
 }
 
 #[derive(Debug, Default)]
@@ -197,6 +201,16 @@ impl HostSettings {
         self.stored.delete_merged_workspaces.unwrap_or(true)
     }
 
+    /// A tool's level on this host (D-190): set here, else its default.
+    pub fn tool_level(&self, name: &str) -> otter_core::tools::ToolLevel {
+        self.stored
+            .tool_levels
+            .get(name)
+            .copied()
+            .or_else(|| crate::levels::entry(name).map(|e| e.default))
+            .unwrap_or_default()
+    }
+
     /// The coding agent's model (`None`: the provider's default).
     pub fn coding_model(&self) -> Option<String> {
         self.stored.coding_model.clone()
@@ -233,6 +247,7 @@ impl HostSettings {
             otter_answers: None,
             delete_merged_workspaces: Some(self.delete_merged_workspaces()),
             git: None,
+            tools: crate::levels::view(|n| self.tool_level(n)),
         }
     }
 
@@ -281,6 +296,19 @@ impl HostSettings {
         }
         if let Some(on) = u.delete_merged_workspaces {
             stored.delete_merged_workspaces = Some(on);
+        }
+        for (name, level) in u.tool_levels {
+            let Some(e) = crate::levels::entry(&name) else {
+                return Err(format!("Otter has no tool `{name}`"));
+            };
+            match level.filter(|l| *l != e.default) {
+                Some(l) => {
+                    stored.tool_levels.insert(name, l);
+                }
+                None => {
+                    stored.tool_levels.remove(&name);
+                }
+            }
         }
         let mut secrets = self.secrets.clone();
         for (name, value) in u.secrets {

@@ -678,6 +678,17 @@ pub struct Task {
     /// ones, and the last ended ones.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub watches: Vec<crate::watch::Watch>,
+    /// This task's own levels for Otter's tools (D-190): each tightens the
+    /// host's, never loosens it.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub tool_levels: std::collections::BTreeMap<String, crate::tools::ToolLevel>,
+    /// The task whose Otter made this one, a part of its work (D-193).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent: Option<TaskId>,
+    /// Each sub-task's change this task's Otter has had (D-193): the
+    /// sub-task's id, and its follow key when it was told.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub children_seen: std::collections::BTreeMap<String, String>,
     pub created_at: Timestamp,
     pub updated_at: Timestamp,
     /// The last entry of this task's history.
@@ -732,6 +743,9 @@ impl Task {
             delivery: None,
             report: None,
             watches: Vec::new(),
+            tool_levels: Default::default(),
+            parent: None,
+            children_seen: Default::default(),
             created_at: now,
             updated_at: now,
             history_seq: 0,
@@ -1105,6 +1119,13 @@ pub enum TaskAction {
     DeleteWatch {
         watch_id: crate::WatchId,
     },
+    /// This task's level for one of Otter's tools (D-190): stricter than
+    /// the host's, or `None` to take the host's again.
+    SetToolLevel {
+        tool: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        level: Option<crate::tools::ToolLevel>,
+    },
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -1211,6 +1232,7 @@ impl TaskAction {
             TaskAction::Redirect { .. } => "redirect",
             TaskAction::CancelWatch { .. } => "cancel_watch",
             TaskAction::DeleteWatch { .. } => "delete_watch",
+            TaskAction::SetToolLevel { .. } => "set_tool_level",
         }
     }
 }
@@ -1289,6 +1311,10 @@ pub enum TaskEvent {
         /// The developer's message the change acts on, when it does.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         authority: Option<String>,
+        /// What it was called on, when that says more than its name: the
+        /// command Otter ran, the sub-task it made (D-192). Redacted.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        detail: Option<String>,
     },
     /// What came of one of Otter's tools: done, or why not.
     ToolDone {
@@ -1373,6 +1399,11 @@ impl TaskEvent {
                 format!("Evidence: {kind:?}{verdict}").to_lowercase()
             }
             TaskEvent::LimitReached { limit } => format!("Stopped: {limit}"),
+            TaskEvent::ToolCalled {
+                tool,
+                detail: Some(d),
+                ..
+            } => format!("Otter: {tool}: {d}"),
             TaskEvent::ToolCalled { tool, .. } => format!("Otter: {tool}"),
             TaskEvent::ToolDone { tool, error } => match error {
                 Some(code) => format!("Otter: {tool} — {}", code.replace('_', " ")),
@@ -1923,6 +1954,7 @@ mod tests {
             tool: "pause_task".into(),
             origin: "developer".into(),
             authority: Some("msg_1".into()),
+            detail: None,
         };
         let json = serde_json::to_string(&called).unwrap();
         assert!(json.contains(r#""type":"ToolCalled""#), "{json}");

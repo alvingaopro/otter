@@ -150,6 +150,24 @@ pub struct Settings {
     /// Otter's own git on this host (D-133); absent from older daemons.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub git: Option<GitView>,
+    /// Otter's tools and how far each may go on this host (D-190); empty
+    /// from an otterd before it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tools: Vec<ToolInfo>,
+}
+
+/// One of Otter's tools as Settings shows it (D-190).
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ToolInfo {
+    pub name: String,
+    /// What it's for, in a line.
+    pub description: String,
+    /// `look`, `place`, `delegate`, `wait`, `deliver`, `remember`, `task`.
+    pub group: String,
+    /// Its level on this host now.
+    pub level: otter_core::tools::ToolLevel,
+    /// Its level when it isn't set.
+    pub default_level: otter_core::tools::ToolLevel,
 }
 
 /// Otter's own git on a host (D-133): who commits in the repositories it
@@ -322,6 +340,10 @@ pub struct SettingsUpdate {
     /// Who commits in Otter's repositories (D-133); left out: stays.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub git: Option<GitIdentity>,
+    /// Levels for Otter's tools (D-190), by name; `null` takes the default
+    /// again. Left out: stays.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub tool_levels: std::collections::BTreeMap<String, Option<otter_core::tools::ToolLevel>>,
 }
 
 /// How the coding agent runs on this host (D-057) — apart from Otter's own
