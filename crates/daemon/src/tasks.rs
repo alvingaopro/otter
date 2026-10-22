@@ -629,6 +629,8 @@ pub fn apply_action(
                 }
             }
             kept.push_str(". Remove the workspace when you no longer need the work.");
+            // Nothing more is looked at for it (D-183).
+            changes.extend(crate::watches::cancel_all(f, command_id, now));
             let (m, c) = message(MessageRole::Controller, kept, Some(command_id.to_owned()));
             f.messages.push(m);
             changes.push(c);
@@ -757,6 +759,16 @@ pub fn apply_action(
                 }
             }
             changes.push(to(f, TaskStatus::Done, Some("Accepted by you".into()))?);
+            // Accepted before CI finished: CI is watched by itself (D-183).
+            if *override_gates {
+                changes.extend(crate::watches::on_accept(f, now));
+            }
+        }
+        TaskAction::CancelWatch { watch_id } => {
+            changes.extend(crate::watches::cancel(f, watch_id, command_id, now)?);
+        }
+        TaskAction::DeleteWatch { watch_id } => {
+            changes.extend(crate::watches::delete(f, watch_id, command_id, now)?);
         }
         TaskAction::SetWorkspace { workspace } => {
             // `workspace` is an id by now (resolved in `task_act`).

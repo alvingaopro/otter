@@ -184,6 +184,9 @@ pub enum Event {
         #[serde(default)]
         done: bool,
     },
+    /// The host's triggers changed (D-185): one was made, changed, removed
+    /// or fired. Read them with `trigger.list`.
+    TriggersChanged {},
     /// A task was deleted (`task.delete`): it is gone, history and all.
     #[serde(alias = "FeatureDeleted")]
     TaskDeleted {
@@ -264,6 +267,7 @@ impl Event {
             Event::BrowserOpenAsked { .. } => "BrowserOpenAsked",
             Event::TaskChanged { .. } => "TaskChanged",
             Event::OtterChanged { .. } => "OtterChanged",
+            Event::TriggersChanged { .. } => "TriggersChanged",
             Event::OtterStream { .. } => "OtterStream",
             Event::TaskDeleted { .. } => "TaskDeleted",
             Event::ConversationChanged { .. } => "ConversationChanged",
@@ -278,6 +282,7 @@ impl Event {
             Event::DaemonStarted { .. }
             | Event::TaskChanged { .. }
             | Event::OtterChanged { .. }
+            | Event::TriggersChanged { .. }
             | Event::OtterStream { .. }
             | Event::TaskDeleted { .. }
             | Event::ConversationChanged { .. }

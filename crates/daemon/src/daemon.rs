@@ -377,6 +377,7 @@ impl Daemon {
             Request::TriggerList => json(self.trigger_list().await),
             Request::TriggerDelete(r) => json(self.trigger_delete(&r.trigger).await?),
             Request::TriggerRun(r) => json(self.trigger_run(&r.trigger, r.occurrence).await?),
+            Request::TriggerUpdate(p) => json(self.trigger_update(p).await?),
             Request::TaskDelete(r) => json(self.task_delete(&r.task).await?),
             // Contracts first (D-055); served once runs go through conversations.
             Request::RuntimeCapabilities => {

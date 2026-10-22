@@ -36,6 +36,7 @@ mod store;
 mod tasks;
 mod triggers;
 mod turn;
+mod watches;
 mod work_state;
 mod workspaces;
 
@@ -228,6 +229,8 @@ async fn serve(paths: Paths) -> Result<()> {
         tokio::spawn(async move { daemon.git.include_everywhere().await });
     }
     tokio::spawn(daemon.clone().run_triggers());
+    // Watches are probed from here on; their turns are the controller's (D-183).
+    tokio::spawn(daemon.clone().run_watches());
 
     // We hold the lock, so any socket file left behind is stale.
     let _ = std::fs::remove_file(&paths.socket);

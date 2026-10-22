@@ -96,6 +96,12 @@ id_type!(
     "trg_"
 );
 id_type!(
+    /// Identifies a [`crate::watch::Watch`] — something Otter looks at again
+    /// later, for the developer (D-183).
+    WatchId,
+    "wch_"
+);
+id_type!(
     /// Identifies a [`crate::task::Step`] of a plan. Keeps the `tk_`
     /// prefix it had as a plan's "task" (D-107).
     StepId,

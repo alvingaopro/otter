@@ -540,6 +540,19 @@ impl Connection {
         .await
     }
 
+    /// Pause (`enabled: false`) or resume a trigger (D-185).
+    pub async fn trigger_update(
+        &mut self,
+        trigger: &str,
+        enabled: Option<bool>,
+    ) -> Result<otter_core::trigger::Trigger> {
+        self.call(Request::TriggerUpdate(otter_protocol::TriggerUpdate {
+            trigger: trigger.to_owned(),
+            enabled,
+        }))
+        .await
+    }
+
     /// What the managed coding runtime on the host is and can do.
     pub async fn runtime_capabilities(
         &mut self,

@@ -30,6 +30,8 @@ mod memory;
 mod otter_turn;
 #[path = "e2e/provider_turn.rs"]
 mod provider_turn;
+#[path = "e2e/watches.rs"]
+mod watches;
 #[path = "e2e/workspace_prep.rs"]
 mod workspace_prep;
 
@@ -7690,7 +7692,7 @@ async fn a_task_ships_as_a_pull_request_once_ci_is_green() {
     assert_eq!(f.status, TaskStatus::Done);
     // Never merged, never anything gh wasn't meant to do; no token on a command line.
     let calls = std::fs::read_to_string(fake.gh.join("calls.log")).unwrap();
-    assert!(!calls.contains("merge"), "{calls}");
+    assert!(!calls.contains("pr merge"), "{calls}");
     assert!(!calls.to_lowercase().contains("token"), "{calls}");
 }
 
