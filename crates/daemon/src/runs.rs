@@ -1187,6 +1187,26 @@ impl Daemon {
         }
     }
 
+    /// Otter has begun a message in `task`'s conversation (D-191): said to
+    /// the app at once, before its first word, so the app shows Otter at it.
+    /// Ended without [`Writing::done`] (nothing came of it, an error, a
+    /// panic), it says so, and the app takes the sign away.
+    pub(crate) fn writing(&self, task: &TaskId, stream_id: &str) -> Writing<'_> {
+        self.stream(
+            task,
+            stream_id,
+            MessageRole::Controller,
+            String::new(),
+            false,
+        );
+        Writing {
+            daemon: self,
+            task: task.clone(),
+            stream_id: stream_id.to_owned(),
+            done: false,
+        }
+    }
+
     /// Text being written right now, to the app (transient, D-051).
     pub(crate) fn stream(
         &self,
@@ -1991,6 +2011,35 @@ pub(crate) fn left_out(n: usize) -> String {
         if n == 1 { "is" } else { "are" },
         MAX_IMAGES_TOTAL >> 20
     )
+}
+
+/// Otter writing a message (D-191), from [`Daemon::writing`].
+pub(crate) struct Writing<'a> {
+    daemon: &'a Daemon,
+    task: TaskId,
+    stream_id: String,
+    done: bool,
+}
+
+impl Writing<'_> {
+    /// The message is in the conversation, and its stream said `done`.
+    pub(crate) fn done(mut self) {
+        self.done = true;
+    }
+}
+
+impl Drop for Writing<'_> {
+    fn drop(&mut self) {
+        if !self.done {
+            self.daemon.stream(
+                &self.task,
+                &self.stream_id,
+                MessageRole::Controller,
+                String::new(),
+                true,
+            );
+        }
+    }
 }
 
 #[cfg(test)]

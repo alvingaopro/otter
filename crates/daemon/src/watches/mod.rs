@@ -638,6 +638,9 @@ impl Daemon {
             Some(k) => k.line(w, &finding),
             None => format!("{}: {}.", capital(&w.label), finding.text),
         };
+        // Otter at it while it looks (D-191); the report is said whole, so the
+        // sign goes once it is written.
+        let _writing = self.writing(&f.id, &format!("watch-{}", w.key()));
         let reply = match self.turn_backend() {
             None => line,
             Some(backend) => {

@@ -7174,3 +7174,40 @@ Reviewed against the code (Fable) before merging. The review found the
 commands' lines reaching the planner and the coding agent through every
 reader of the developer's messages but the two tools, and a command done
 twice by a second Enter while the first was away. Both are fixed above.
+
+## D-191 — Otter is shown typing as soon as it starts (2026-10-22)
+
+The developer: after a message, nothing seemed to happen until Otter's
+answer came. D-177 has three moving dots in Otter's bubble, but only while
+the app guessed a reply was on its way: the developer spoke last, the task
+isn't over, and it isn't the request alone. So no dots in a done task, which
+Otter still answers, and none while Otter read a new task's request for its
+workspace (D-186) — the empty Chat page's first wait.
+
+- **otterd says when Otter begins.** Each time Otter starts on a message —
+  its turn on the developer's messages (with tools or without), its look at
+  the request for a workspace, a watch's report — it sends `TaskStream`
+  with no text at once (`Daemon::writing`), before the model's first word.
+  However the turn ends, the stream ends: with the reply (`done`), or, if
+  nothing was said that way (a watch's report is written whole, an error, a
+  panic), with empty text and `done` when the guard goes (`Writing`'s
+  `Drop`).
+- **The app shows Otter typing** for a draft of Otter's with no words, in
+  place of an empty bubble with a cursor; its first words take the dots'
+  place. A draft that ends with no words is dropped. After a reconnect
+  (`host-resync`) the host's drafts are forgotten: one begun before may
+  never end.
+- **The app's own guess** stays for an otterd before this, and for the wait
+  before Otter's turn starts: the developer spoke last, and the task isn't
+  cancelled (a done task is answered too).
+- Compatible: an older app shows the empty draft as an empty bubble with
+  the writing cursor until the reply comes.
+
+Tests: `otters_reply_streams_as_it_is_written` (the empty start before
+the first words), `otter_is_shown_at_it_while_a_watch_is_reported` (begun,
+then ended with nothing once the report is written; it times out with the
+guard's `Drop` saying nothing), app `shows Otter typing once it has begun,
+and while your message waits, in a finished task too (D-191)` (fails with
+the old rule for a done task) and `drops a draft begun and ended with no
+words, and what was streaming when the host comes back (D-191)`. Not
+checked in the macOS app itself.

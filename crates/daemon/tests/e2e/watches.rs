@@ -581,3 +581,53 @@ async fn a_ci_watch_says_when_no_check_starts() {
     );
     assert_eq!(w.readings[0].text, "no checks yet");
 }
+
+/// While a watch's turn looks at what it found, the app is told Otter is at
+/// it; once the report is written, that it stopped (D-191).
+#[tokio::test]
+async fn otter_is_shown_at_it_while_a_watch_is_reported() {
+    use otter_protocol::Event;
+    let fake = host_with(vec![]).await;
+    let host = &fake.host;
+    let id = started_task(host, "Add CSV export").await;
+    let mut events = host.conn().await.subscribe(None).await.unwrap();
+    let answers = say(
+        host,
+        &id,
+        "soon",
+        r#"CALL: watch {"what": "see how the agent is doing", "kind": "time", "in_minutes": 1}"#,
+    )
+    .await;
+    assert_eq!(code(&answers[0]), "ok", "{answers:?}");
+    let mut said = Vec::new();
+    tokio::time::timeout(Duration::from_secs(20), async {
+        loop {
+            let rec = events.next().await.unwrap().unwrap();
+            if let Event::TaskStream {
+                stream_id,
+                text,
+                done,
+                ..
+            } = rec.event
+                && stream_id.starts_with("watch-")
+            {
+                said.push((text, done));
+                if done {
+                    return;
+                }
+            }
+        }
+    })
+    .await
+    .expect("the watch's turn ends");
+    assert_eq!(said, [(String::new(), false), (String::new(), true)]);
+    // Its report is in the conversation by then.
+    let f = host.conn().await.task_get(&id).await.unwrap();
+    assert!(
+        f.watches
+            .first()
+            .is_some_and(|w| w.status == WatchStatus::Reported),
+        "{:?}",
+        f.watches
+    );
+}
