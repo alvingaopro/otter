@@ -328,7 +328,7 @@ impl Provider {
     }
 
     /// Whether Otter's turn shows this provider the developer's pictures
-    /// (D-180): Anthropic's models all read them; behind the OpenAI shape,
+    /// (D-181): Anthropic's models all read them; behind the OpenAI shape,
     /// some models do and some refuse a request that has them.
     pub fn sees_pictures(&self) -> bool {
         self.style == Style::Anthropic
@@ -840,7 +840,7 @@ mod tests {
     }
 
     /// The developer's pictures go to Anthropic as image blocks before the
-    /// prompt (D-180); behind the OpenAI shape they don't go at all.
+    /// prompt (D-181); behind the OpenAI shape they don't go at all.
     #[test]
     fn a_first_message_with_pictures() {
         let png = crate::runtime::TurnImage {

@@ -107,7 +107,7 @@ async fn a_turn_an_event_started_cant_act_on_the_developers_word() {
 }
 
 /// Otter's turn is shown the developer's pictures, read from the task's
-/// files, and each message says which are its (D-180).
+/// files, and each message says which are its (D-181).
 #[tokio::test]
 async fn otters_turn_is_shown_the_developers_pictures() {
     use base64::Engine;

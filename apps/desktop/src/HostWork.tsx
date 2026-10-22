@@ -174,7 +174,7 @@ export function HostWork({
       acts:
         r.kind === "run" && r.taskId
           ? [
-              { label: "Interrupt", run: () => onTask(r.taskId!, { action: "interrupt" }) },
+              { label: "Pause", run: () => onTask(r.taskId!, { action: "pause" }) },
               { label: "Cancel task", ask: "Ends its run and the task.", danger: true, run: () => onTask(r.taskId!, { action: "cancel" }) },
             ]
           : r.workspace && r.session

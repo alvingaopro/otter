@@ -63,7 +63,7 @@ pub struct Turn<'a> {
     pub event: Option<(otter_core::TaskId, String)>,
     /// The developer's unanswered messages, oldest first.
     pub messages: &'a [Message],
-    /// The pictures of `messages` the model is shown (D-180), each with its
+    /// The pictures of `messages` the model is shown (D-181), each with its
     /// message's id, oldest first: none unless the backend
     /// [sees pictures](TurnBackend::sees_pictures), and no more than a turn
     /// carries ([`crate::runs::fitting`]).
@@ -87,7 +87,7 @@ pub trait TurnBackend: Send + Sync {
         false
     }
     /// Whether the model is shown the pictures of the developer's messages
-    /// (D-180); one that isn't is told they are there.
+    /// (D-181); one that isn't is told they are there.
     fn sees_pictures(&self) -> bool {
         false
     }
@@ -665,7 +665,7 @@ pub fn prompt(turn: &Turn<'_>) -> String {
     )
 }
 
-/// What a message's line says of its pictures (D-180): which of those the
+/// What a message's line says of its pictures (D-181): which of those the
 /// turn is shown are its — `with` of them, numbered after `before` — and
 /// how many of the `sent` ones the turn isn't shown.
 fn pictures_note(before: usize, with: usize, sent: usize) -> String {
@@ -972,7 +972,7 @@ mod tests {
     }
 
     /// Each message says which of the pictures the turn is shown are its,
-    /// and how many of its it isn't shown (D-180); the recent conversation
+    /// and how many of its it isn't shown (D-181); the recent conversation
     /// says which messages had pictures.
     #[test]
     fn a_turn_says_whose_the_pictures_are() {
