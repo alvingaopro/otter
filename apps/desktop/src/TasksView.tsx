@@ -188,11 +188,14 @@ export function TasksView({ source, hosts, workspaces, now, focus, onOpenWorkspa
           hosts={hosts.length > 0 ? hosts : ["preview"]}
           workspaces={workspaces}
           onClose={() => setCreating(false)}
-          onCreate={async (host, title, request, workspace, answerOnly) => {
+          onCreate={async (host, title, request, workspace, answerOnly, start) => {
             const p = await source.create(host, title, request, workspace, answerOnly);
             setFind("");
             setSelected(p.key);
             setCreating(false);
+            // The task exists either way; a failed start leaves it a draft
+            // with its Start button.
+            if (start) await source.act(p.key, { action: "start" }).catch(() => {});
           }}
         />
       )}
@@ -1723,6 +1726,12 @@ function lastHost(hosts: string[]): string {
   return hosts[0];
 }
 
+/** A title from the request's first line, when none was written. */
+function titleFrom(request: string): string {
+  const line = request.trim().split("\n")[0].trim();
+  return line.length > 60 ? `${line.slice(0, 59).trimEnd()}…` : line;
+}
+
 function NewTaskDialog({
   hosts,
   workspaces,
@@ -1731,7 +1740,14 @@ function NewTaskDialog({
 }: {
   hosts: string[];
   workspaces: Record<string, WorkspaceChoice[]>;
-  onCreate: (host: string, title: string, request: string, workspace?: string | WorkspaceRequest, answerOnly?: boolean) => Promise<void>;
+  onCreate: (
+    host: string,
+    title: string,
+    request: string,
+    workspace?: string | WorkspaceRequest,
+    answerOnly?: boolean,
+    start?: boolean,
+  ) => Promise<void>;
   onClose: () => void;
 }) {
   const [hostPick, setHostPick] = useState(AUTO_HOST);
@@ -1759,9 +1775,11 @@ function NewTaskDialog({
   const placing = workspace === FROM_REPOSITORY || workspace === EMPTY_DIRECTORY || existing;
   const needsRepository = workspace === FROM_REPOSITORY && !repository.trim();
 
-  async function submit(e: FormEvent) {
-    e.preventDefault();
-    if (!title.trim() || needsRepository || busy) return;
+  const named = title.trim() || titleFrom(request);
+  const ready = !!named && !needsRepository && !busy;
+
+  async function submit(start: boolean) {
+    if (!ready) return;
     setBusy(true);
     setError(null);
     const where: string | WorkspaceRequest | undefined =
@@ -1773,7 +1791,7 @@ function NewTaskDialog({
             ? workspace
             : undefined;
     try {
-      await onCreate(host, title.trim(), request.trim(), where, answerOnly);
+      await onCreate(host, named, request.trim(), where, answerOnly, start);
       try {
         localStorage.setItem(LAST_HOST, host);
       } catch {
@@ -1787,86 +1805,104 @@ function NewTaskDialog({
 
   return (
     <Dialog title="New task" onClose={onClose}>
-      <form className="form" onSubmit={submit}>
-        <label className="field">
-          <span>Title</span>
-          <input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Export the timeline as CSV" />
-        </label>
+      <form
+        className="form"
+        onSubmit={(e) => {
+          e.preventDefault();
+          void submit(true);
+        }}
+      >
         <label className="field">
           <span>What do you want?</span>
-          <textarea rows={5} value={request} onChange={(e) => setRequest(e.target.value)} placeholder="Describe the outcome, constraints and how you'd check it." />
-        </label>
-        {hosts.length > 1 && (
-          <label className="field">
-            <span>Host</span>
-            <select
-              value={hostPick}
-              aria-describedby={hostPick === AUTO_HOST ? "new-task-host-hint" : undefined}
-              onChange={(e) => {
-                setHostPick(e.target.value);
-                setWorkspace("");
-              }}
-            >
-              <option value={AUTO_HOST}>From what I write</option>
-              {hosts.map((h) => (
-                <option key={h}>{h}</option>
-              ))}
-            </select>
-            {hostPick === AUTO_HOST && (
-              <small className="muted" id="new-task-host-hint">
-                {routed?.kind === "one"
-                  ? `Goes to ${routed.host}: it has ${routed.why}.`
-                  : routed?.kind === "several"
-                    ? `${routed.hosts.join(", ")} all have it; using ${host}. Choose a host to change that.`
-                    : `Nothing written names a host; using ${host}.`}
-              </small>
-            )}
-          </label>
-        )}
-        <label className="field">
-          <span>Workspace (where the work happens)</span>
-          <select value={placing ? workspace : ""} onChange={(e) => setWorkspace(e.target.value)}>
-            <option value="">Choose later</option>
-            {choices.map((w) => (
-              <option key={w.id} value={w.id}>
-                {w.name}
-              </option>
-            ))}
-            <option value={FROM_REPOSITORY}>A new one, from a repository…</option>
-            <option value={EMPTY_DIRECTORY}>A new one, an empty directory</option>
-          </select>
-        </label>
-        {workspace === FROM_REPOSITORY && (
-          <label className="field">
-            <span>Repository</span>
-            <input
-              aria-label="Repository"
-              value={repository}
-              onChange={(e) => setRepository(e.target.value)}
-              placeholder="git@github.com:acme/billing.git"
-            />
-            <small className="muted">
-              The task gets a workspace of its own, on a branch of its own, prepared before the work starts.
-            </small>
-          </label>
-        )}
-        <label className="check">
-          <input
-            type="checkbox"
-            aria-label="Only an answer"
-            checked={answerOnly}
-            onChange={(e) => setAnswerOnly(e.target.checked)}
+          <textarea
+            rows={5}
+            autoFocus
+            value={request}
+            onChange={(e) => setRequest(e.target.value)}
+            placeholder="Describe the outcome, constraints and how you'd check it. Name the project or repository and Otter finds or prepares the workspace."
           />
-          Only an answer — the coding agent reads, changes nothing
         </label>
+        <label className="field">
+          <span>Title (optional)</span>
+          <input value={title} onChange={(e) => setTitle(e.target.value)} placeholder={titleFrom(request) || "Export the timeline as CSV"} />
+        </label>
+        <details className="new-task-where">
+          <summary>Host, workspace and options</summary>
+          {hosts.length > 1 && (
+            <label className="field">
+              <span>Host</span>
+              <select
+                value={hostPick}
+                aria-describedby={hostPick === AUTO_HOST ? "new-task-host-hint" : undefined}
+                onChange={(e) => {
+                  setHostPick(e.target.value);
+                  setWorkspace("");
+                }}
+              >
+                <option value={AUTO_HOST}>From what I write</option>
+                {hosts.map((h) => (
+                  <option key={h}>{h}</option>
+                ))}
+              </select>
+              {hostPick === AUTO_HOST && (
+                <small className="muted" id="new-task-host-hint">
+                  {routed?.kind === "one"
+                    ? `Goes to ${routed.host}: it has ${routed.why}.`
+                    : routed?.kind === "several"
+                      ? `${routed.hosts.join(", ")} all have it; using ${host}. Choose a host to change that.`
+                      : `Nothing written names a host; using ${host}.`}
+                </small>
+              )}
+            </label>
+          )}
+          <label className="field">
+            <span>Workspace (where the work happens)</span>
+            <select value={placing ? workspace : ""} onChange={(e) => setWorkspace(e.target.value)}>
+              <option value="">Choose later</option>
+              {choices.map((w) => (
+                <option key={w.id} value={w.id}>
+                  {w.name}
+                </option>
+              ))}
+              <option value={FROM_REPOSITORY}>A new one, from a repository…</option>
+              <option value={EMPTY_DIRECTORY}>A new one, an empty directory</option>
+            </select>
+          </label>
+          {workspace === FROM_REPOSITORY && (
+            <label className="field">
+              <span>Repository</span>
+              <input
+                aria-label="Repository"
+                value={repository}
+                onChange={(e) => setRepository(e.target.value)}
+                placeholder="git@github.com:acme/billing.git"
+              />
+              <small className="muted">
+                The task gets a workspace of its own, on a branch of its own, prepared before the work starts.
+              </small>
+            </label>
+          )}
+          <label className="check">
+            <input
+              type="checkbox"
+              aria-label="Only an answer"
+              checked={answerOnly}
+              onChange={(e) => setAnswerOnly(e.target.checked)}
+            />
+            Only an answer — the coding agent reads, changes nothing
+          </label>
+        </details>
         {error && <p className="error-text small">{error}</p>}
         <div className="form-actions">
           <span className="spacer" />
           <button type="button" className="btn outline" onClick={onClose}>
             Cancel
           </button>
-          <button type="submit" className="btn primary" disabled={!title.trim() || needsRepository || busy}>
+          <button type="button" className="btn outline" disabled={!ready} onClick={() => void submit(false)}>
             Create draft
+          </button>
+          <button type="submit" className="btn primary" disabled={!ready}>
+            Create and start
           </button>
         </div>
       </form>

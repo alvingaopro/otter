@@ -1,6 +1,6 @@
 # Chat bootstrap: say what to do, Otter finds or makes the workspace
 
-**Status:** P1 done (D-179); P2 done (D-182); P3 done (D-186). **Branch:** `chat-bootstrap`.
+**Status:** P1 done (D-179); P2 done (D-182); P3 done (D-186); the app's New task starts the task (D-187). **Branch:** `chat-bootstrap`.
 
 ## 1. The problem
 
@@ -123,5 +123,3 @@ surface; it is not in P1. In P1 Otter asks in text.
   `DecisionRequest` or be its own type. The app has no conversation with Otter
   on a host, so for now the question is asked in the task's own conversation
   (D-186).
-- Whether "Create draft" in the app should start the task when no workspace
-  is chosen, so Otter reads the request at once.

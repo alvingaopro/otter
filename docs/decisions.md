@@ -6919,3 +6919,18 @@ request can't pause the task or change what it may do; a different source than
 the workspace it has is a conflict. Each fails with its piece taken out: the
 hook, the mark, the check for work done, the boundary, the restriction, the
 source check.
+
+## D-187 — The app's New task starts the task (2026-10-22)
+
+The chat-bootstrap work (D-179, D-182, D-186) let Otter find or make a task's
+workspace from its request, but only once the task was started; the app's New
+task still made a draft and asked for a title, a host and a workspace first.
+The dialog now asks for what the developer wants, and its main button is
+**Create and start**: the task is made, then started, so Otter reads the
+request at once and places it. The title is optional (the request's first line
+when blank); host, workspace and "only an answer" are under "Host, workspace and
+options". **Create draft** stays beside it for a task that isn't to be started
+yet. A start that fails leaves the task a draft with its Start button; the task
+is never lost. The start is a second command after `task.create`, not a new
+protocol field: each is applied once and either can be repeated safely.
+

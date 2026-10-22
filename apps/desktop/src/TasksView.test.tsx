@@ -868,6 +868,60 @@ describe("Tasks view", () => {
     localStorage.removeItem("otter.new-task-host");
   });
 
+  /** newTaskOn, with the actions it was asked for recorded. */
+  async function startingOn(failStart = false) {
+    const acted: unknown[][] = [];
+    const created: unknown[][] = [];
+    const base = mockSource("mac");
+    const s: TaskSource = {
+      ...base,
+      create: async (...args) => {
+        created.push(args);
+        return base.create(...args);
+      },
+      act: async (key, action) => {
+        acted.push([key, action]);
+        if (failStart) throw new Error("no");
+        return base.act(key, action);
+      },
+    };
+    await act(async () =>
+      root.render(<TasksView source={s} hosts={["mac"]} workspaces={{ mac: [] }} now={Date.now()} onOpenWorkspace={async () => {}} />),
+    );
+    await act(async () => q('[aria-label="New task"]')!.click());
+    return { acted, created, dialog: document.querySelector('[role="dialog"]')! };
+  }
+
+  it("creates and starts a task from the request alone", async () => {
+    const { acted, created, dialog } = await startingOn();
+    expect(byText("button", "Create and start")!.hasAttribute("disabled")).toBe(true);
+    type(dialog.querySelector("textarea")!, "Fix the retry bug in billing\nIt drops the second attempt.");
+    await act(async () => {});
+    await act(async () => byText("button", "Create and start")!.click());
+    // No title written: the request's first line, and no workspace chosen.
+    expect(created).toEqual([["mac", "Fix the retry bug in billing", "Fix the retry bug in billing\nIt drops the second attempt.", undefined, false]]);
+    expect(acted).toEqual([[expect.any(String), { action: "start" }]]);
+    expect(q(".status-pill")?.textContent).toBe("Working");
+  });
+
+  it("creates a draft that is not started when asked for one", async () => {
+    const { acted, dialog } = await startingOn();
+    type(dialog.querySelector("textarea")!, "Look into the flaky test");
+    await act(async () => {});
+    await act(async () => byText("button", "Create draft")!.click());
+    expect(acted).toEqual([]);
+    expect(q(".status-pill")?.textContent).toBe("Draft");
+  });
+
+  it("keeps the task as a draft when starting it fails", async () => {
+    const { acted, dialog } = await startingOn(true);
+    type(dialog.querySelector("textarea")!, "Look into the flaky test");
+    await act(async () => {});
+    await act(async () => byText("button", "Create and start")!.click());
+    expect(acted).toHaveLength(1);
+    expect(q(".status-pill")?.textContent).toBe("Draft");
+  });
+
   it("does not carry a workspace to another host when the text moves the task there", async () => {
     localStorage.removeItem("otter.new-task-host");
     const { created, dialog } = await newTaskOn(["mac", "gpu"], {
