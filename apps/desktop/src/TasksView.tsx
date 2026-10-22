@@ -1741,14 +1741,36 @@ function lastHost(hosts: string[]): string {
   return hosts[0];
 }
 
-/** Otter, waiting for the first word. */
+/** Otter, waiting for the first word: a round face, paws on the edge of the box below. */
 function OtterHello() {
   return (
     <div className="otter-hello" aria-hidden="true">
-      <span className="otter-hello-face">
-        <span className="otter-mark" />
-      </span>
-      <span className="otter-hello-shadow" />
+      <svg className="otter-hello-art" viewBox="0 0 200 170" width="168" height="143">
+        <ellipse cx="100" cy="162" rx="52" ry="6" className="oh-shadow" />
+        <g className="oh-bob">
+          <circle cx="52" cy="46" r="15" className="oh-fur" />
+          <circle cx="148" cy="46" r="15" className="oh-fur" />
+          <circle cx="52" cy="47" r="7" className="oh-inner" />
+          <circle cx="148" cy="47" r="7" className="oh-inner" />
+          <ellipse cx="100" cy="92" rx="66" ry="58" className="oh-fur" />
+          <ellipse cx="100" cy="112" rx="40" ry="30" className="oh-muzzle" />
+          <ellipse cx="72" cy="104" rx="9" ry="6" className="oh-cheek" />
+          <ellipse cx="128" cy="104" rx="9" ry="6" className="oh-cheek" />
+          <g className="oh-eyes">
+            <ellipse cx="74" cy="84" rx="8" ry="10" className="oh-dark" />
+            <ellipse cx="126" cy="84" rx="8" ry="10" className="oh-dark" />
+            <circle cx="77" cy="80" r="3" className="oh-shine" />
+            <circle cx="129" cy="80" r="3" className="oh-shine" />
+          </g>
+          <ellipse cx="100" cy="98" rx="10" ry="7" className="oh-dark" />
+          <ellipse cx="97" cy="96" rx="3" ry="1.8" className="oh-shine" />
+          <path d="M100 105 v5 M100 110 q-8 9 -17 3 M100 110 q8 9 17 3" className="oh-line" />
+          <path d="M60 108 l-24 -4 M60 114 l-24 5 M140 108 l24 -4 M140 114 l24 5" className="oh-whisker" />
+          <ellipse cx="62" cy="152" rx="17" ry="12" className="oh-fur" />
+          <ellipse cx="138" cy="152" rx="17" ry="12" className="oh-fur" />
+          <path d="M55 154 v-4 M62 155 v-5 M69 154 v-4 M131 154 v-4 M138 155 v-5 M145 154 v-4" className="oh-line" />
+        </g>
+      </svg>
     </div>
   );
 }

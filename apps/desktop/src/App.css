@@ -1234,16 +1234,22 @@ td.work-acts { text-align: right; white-space: nowrap; }
 .automation-note { margin: 6px 0 0; }
 
 /* The empty Chat page: Otter, and the box to talk to it (D-187). */
-.otter-hello { display: flex; flex-direction: column; align-items: center; gap: 6px; margin-bottom: 14px; }
-.otter-hello-face {
-  width: 104px; height: 104px; border-radius: 50%; display: flex; align-items: center; justify-content: center;
-  background: var(--hover); color: var(--text); animation: otter-float 3.2s ease-in-out infinite;
-}
-.otter-hello-face .otter-mark { width: 64px; height: 64px; }
-.otter-hello-shadow { width: 56px; height: 7px; border-radius: 50%; background: var(--hover); animation: otter-shadow 3.2s ease-in-out infinite; }
-@keyframes otter-float { 50% { transform: translateY(-6px) rotate(-4deg); } }
-@keyframes otter-shadow { 50% { transform: scaleX(0.8); opacity: 0.6; } }
-@media (prefers-reduced-motion: reduce) { .otter-hello-face, .otter-hello-shadow { animation: none; } }
+.otter-hello { display: flex; justify-content: center; margin-bottom: 10px; }
+.otter-hello-art { max-width: 100%; height: auto; overflow: visible; }
+.oh-fur { fill: #9c6b43; }
+.oh-inner { fill: #6f4a2e; }
+.oh-muzzle { fill: #e6c9a2; }
+.oh-cheek { fill: #e59a8a; opacity: 0.55; }
+.oh-dark { fill: #2c1d14; }
+.oh-shine { fill: #fff; }
+.oh-line { fill: none; stroke: #2c1d14; stroke-width: 2.4; stroke-linecap: round; stroke-linejoin: round; }
+.oh-whisker { fill: none; stroke: var(--muted); stroke-width: 1.6; stroke-linecap: round; opacity: 0.7; }
+.oh-shadow { fill: var(--hover); }
+.oh-bob { animation: otter-float 3.2s ease-in-out infinite; }
+.oh-eyes { transform-box: fill-box; transform-origin: center; animation: otter-blink 5s infinite; }
+@keyframes otter-float { 50% { transform: translateY(-5px); } }
+@keyframes otter-blink { 0%, 94%, 100% { transform: scaleY(1); } 97% { transform: scaleY(0.1); } }
+@media (prefers-reduced-motion: reduce) { .oh-bob, .oh-eyes { animation: none; } }
 .hello-box {
   width: min(560px, 100%); margin-top: 18px; display: flex; flex-direction: column; gap: 8px; text-align: left;
   padding: 10px 12px; border: 1px solid var(--line); border-radius: 16px; background: var(--panel);

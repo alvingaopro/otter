@@ -922,7 +922,7 @@ describe("Tasks view", () => {
     await act(async () =>
       root.render(<TasksView source={s} hosts={["mac"]} workspaces={{ mac: [] }} now={Date.now()} onOpenWorkspace={async () => {}} />),
     );
-    expect(q(".otter-hello .otter-mark")).toBeTruthy();
+    expect(q(".otter-hello svg")).toBeTruthy();
     const box = q<HTMLTextAreaElement>('textarea[aria-label="Tell Otter what you want"]')!;
     expect(byText("button", "Start")!.hasAttribute("disabled")).toBe(true);
     type(box, "Add retries to the billing client");
