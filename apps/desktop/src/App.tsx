@@ -400,7 +400,6 @@ export default function App() {
               setView("workspaces");
             }}
             grip={sidebarGrip}
-            onOpenPreview={openPort}
           />
         </div>
         <div className="view" id="view-workspaces" role="tabpanel" aria-labelledby="view-tab-workspaces" hidden={view !== "workspaces"}>

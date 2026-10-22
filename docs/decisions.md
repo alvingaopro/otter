@@ -6583,3 +6583,23 @@ already existed.
 
 Tests: `chat_bootstrap.rs` (e2e), `workspace_choice_tests` (protocol),
 `repo_names_are_the_readable_part`.
+
+## D-180 — A task stops from beside its message box: Pause, or Stop & send (2026-10-21)
+
+The task view had three ways to stop the coding agent, and the developer
+couldn't tell them apart: **Interrupt** and **Pause** in the header (both
+leave the task paused, the agent's conversation kept; Pause also ends the
+run), and **Redirect now** by the message box. The header also had
+**Preview**, which the developer found of no use.
+
+- One way to stop: **Pause**, beside the message box while the task is
+  planning, implementing, verifying or blocked. **Resume** stays in the
+  header, with Start, Retry and Accept: what the task can be told to do next.
+  The host's Work tab offers Pause on a run's row where it offered Interrupt.
+- **Redirect now** is **Stop & send**: it stops the agent's current turn and
+  has it do what is written next, as before (`redirect`).
+- Interrupt and Preview are gone from the app. The daemon keeps the
+  `interrupt` and `preview` actions, for the CLI and anything else that asks.
+
+Tests: `shows the coding agent's work in Activity and offers pause and stop &
+send while it runs` and `offers neither where nothing runs`.
