@@ -1,7 +1,7 @@
 # Task states, transitions and checkpoints
 
 How a task goes from a request to a delivered pull request (M2,
-D-068, D-198), who moves it, and what is kept at each step so that otterd can stop
+D-068, D-199), who moves it, and what is kept at each step so that otterd can stop
 anywhere and pick up without doing anything twice. Code:
 `crates/core/src/task.rs` (`TaskStatus::can_become`),
 `crates/daemon/src/controller.rs` (the engine), `tasks.rs` (the
@@ -15,8 +15,8 @@ developer's actions), `runs.rs` (runs), `delivery.rs` (publishing).
 | `planning` | Finding the goal (D-067), the coding agent's look at the code — an answer or a plan (D-064, D-084) — the plan's review. | engine |
 | `implementing` | The next step is a turn in the task's conversation (D-064). | engine |
 | `verifying` | The check runs, the work's state is read, criteria are judged (D-062). | engine |
-| `review` | Verified (or delivered as it is, unverified): publishing, CI, gates, the report (D-047). Ends by itself once settled; never waits on the developer (D-198). | engine |
-| `done` | Delivered: every gate passed (D-198); or a question, answered (D-084). Not final: a new ask plans again (D-050). | engine |
+| `review` | Verified (or delivered as it is, unverified): publishing, CI, gates, the report (D-047). Ends by itself once settled; never waits on the developer (D-199). | engine |
+| `done` | Delivered: every gate passed (D-199); or a question, answered (D-084). Not final: a new ask plans again (D-050). | engine |
 | `blocked` | Waits on the developer: a decision only they make. | developer |
 | `paused` | Held by the developer; runs stopped, conversation held. | developer |
 | `failed` | A budget ran out or Otter couldn't go on; the plan is kept. | developer (retry) |
@@ -41,11 +41,11 @@ D-066).
 | planning → failed | engine | The look at the code failed or said nothing: no plan is guessed (D-084). |
 | implementing → verifying | engine | Every step done or skipped. |
 | verifying → implementing | engine | Something unmet, and the work changed since the last verdict, or on the same work fewer unmet than the last verdict left (the fix proved some): a fix step (D-062, D-165). |
-| verifying → review | engine | All criteria met; or, after a fix, the same work with no fewer unmet, whatever the verdict says (unverified: delivered as it is, D-062, D-165, D-198). |
+| verifying → review | engine | All criteria met; or, after a fix, the same work with no fewer unmet, whatever the verdict says (unverified: delivered as it is, D-062, D-165, D-199). |
 | verifying → blocked | engine | The check can't run here (D-062). |
-| review → implementing | engine | CI failed on the code: a fix step, unless it failed the same way after a fix (D-068). The pull request conflicts with its base: a step to bring the branch up to date, once per head (D-198). |
-| review → done | engine | Settled with every gate passed or not applicable — nothing to publish is, D-166 — and the report written (D-198). |
-| review → failed | engine | Settled with a gate that didn't pass, or CI failed the same way after a fix: the reason says which, with the pull request (D-198). |
+| review → implementing | engine | CI failed on the code: a fix step, unless it failed the same way after a fix (D-068). The pull request conflicts with its base: a step to bring the branch up to date, once per head (D-199). |
+| review → done | engine | Settled with every gate passed or not applicable — nothing to publish is, D-166 — and the report written (D-199). |
+| review → failed | engine | Settled with a gate that didn't pass, or CI failed the same way after a fix: the reason says which, with the pull request (D-199). |
 | done → planning | developer | A new ask (any message asking for work, D-084): the agent looks again. |
 | any active → blocked | engine | A decision only the developer may make (policy `user_only`). |
 | blocked → previous | engine | Nothing pending any more (`resume_status`). |

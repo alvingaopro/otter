@@ -324,7 +324,7 @@ async fn a_delivered_task_is_done_and_more_plans_again(v2: bool) {
     let fake = scripted(v2).await;
     let host = &fake.host;
     let id = started_task(host, "Add CSV export").await;
-    // Delivered, it is done by itself (D-198): nothing to accept.
+    // Delivered, it is done by itself (D-199): nothing to accept.
     let f = wait_task(host, &id, "done", |f| f.status == TaskStatus::Done).await;
     assert_eq!(f.status_reason.as_deref(), Some("Done: every gate passed"));
     assert!(

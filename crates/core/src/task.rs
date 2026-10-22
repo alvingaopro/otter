@@ -947,7 +947,7 @@ impl Task {
             })
         };
         match self.status {
-            // Review is delivery under way (D-198): never the developer's.
+            // Review is delivery under way (D-199): never the developer's.
             // It ends by itself — done, or stopped with the result — and
             // goes back to work on a failure it can fix.
             TaskStatus::Blocked => need(NeedKind::Blocked, reason("Waiting on you")),
@@ -1158,7 +1158,7 @@ pub enum NeedKind {
     /// To answer.
     Question,
     /// Ready for the developer to accept, or not. No longer raised
-    /// (D-198: nothing is accepted); kept for what older otterds sent.
+    /// (D-199: nothing is accepted); kept for what older otterds sent.
     Review,
     /// Waiting on something only the developer can do (no decision).
     Blocked,
@@ -1639,7 +1639,7 @@ mod tests {
         ];
         let next = "Then: once CI is settled, done with the report, or stopped with it if a gate didn't pass; a fix step if CI fails on the code or the branch conflicts.";
         assert_eq!(f.what_next().as_deref(), Some(next));
-        // The report written, it still waits on nobody (D-198).
+        // The report written, it still waits on nobody (D-199).
         f.report = Some("## Report".into());
         assert_eq!(f.what_next().as_deref(), Some(next));
         f.gates.truncate(1);
@@ -1973,7 +1973,7 @@ mod tests {
         f.decisions
             .iter_mut()
             .for_each(|d| d.status = DecisionStatus::Approved);
-        // Review is delivery under way (D-198): never waiting on the
+        // Review is delivery under way (D-199): never waiting on the
         // developer, a gate that failed included (it ends by itself).
         f.transition(Verifying, None, t0).unwrap();
         f.transition(Review, Some("Publishing".into()), later)

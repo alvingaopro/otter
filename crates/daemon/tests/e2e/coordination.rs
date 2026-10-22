@@ -573,7 +573,7 @@ async fn otter_tells_the_agent_in_its_own_words() {
 
 /// Publishing is automatic by default (D-193): the task publishes without
 /// asking, the ledger has it, and once CI passed the task is done by itself
-/// with the report (D-198) — there is no acceptance, Otter's or the
+/// with the report (D-199) — there is no acceptance, Otter's or the
 /// developer's.
 #[tokio::test]
 async fn otter_publishes_on_its_own_and_the_task_ends_when_ci_passes() {
@@ -594,7 +594,7 @@ async fn otter_publishes_on_its_own_and_the_task_ends_when_ci_passes() {
         r#"[{"name":"test","bucket":"pass","link":"https://github.com/o/r/actions/runs/1/job/2"}]"#,
     )
     .unwrap();
-    // No acceptance to wait for (D-198): every gate passed, so it's done,
+    // No acceptance to wait for (D-199): every gate passed, so it's done,
     // with the report.
     let f = wait_task(host, &id, "done by itself", |f| {
         f.status == TaskStatus::Done
@@ -743,7 +743,7 @@ async fn a_task_splits_into_sub_tasks_and_hears_from_them() {
         assert!(c.workspace_id.is_some(), "each works somewhere of its own");
     }
     // Each comes to something by itself — no acceptance to wait for
-    // (D-198); here, with nothing to do in an empty directory, each stops
+    // (D-199); here, with nothing to do in an empty directory, each stops
     // unverified — heard once each. A turn that hears one while others are
     // still at work can't finish the task; the one that hears the last
     // does, saying how many failed.

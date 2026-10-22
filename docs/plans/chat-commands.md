@@ -34,7 +34,7 @@ reminders only by asking Otter in words and hoping its turn chose the tool.
 | `/start` | starts a draft | draft ("Already started") | `task.act start` |
 | `/resume` | goes on from the pause | paused ("Not paused") | `task.act resume` |
 | `/retry` | tries again, fresh budget | failed ("Hasn't failed") | `task.act retry` |
-| ~~`/accept`~~ | removed (D-198): a task ends by itself once delivered | — | — |
+| ~~`/accept`~~ | removed (D-199): a task ends by itself once delivered | — | — |
 | `/pause` | stops the work until resumed | planning, implementing, verifying, blocked ("Nothing to pause") | `task.act pause` |
 | `/stop <what next>` | stops the agent's turn, has it do this | a run at work and `redirect` | `task.act redirect` |
 | `/workspace <name>` | sets where it works; completes from the host's | not over, no run at work ("Pause first: the agent is working") | `task.act set_workspace` |

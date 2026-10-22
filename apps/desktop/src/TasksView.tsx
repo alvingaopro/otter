@@ -660,7 +660,7 @@ function TaskActions({ f, act }: { f: Task; act: (a: TaskAction) => void }) {
 }
 
 /** The header's status: Otter's loop is "Working" and delivery "Delivering",
- * unless it waits on the developer (D-134, D-198). */
+ * unless it waits on the developer (D-134, D-199). */
 function pillLabel(f: Task): string {
   const looping = ["planning", "implementing", "verifying", "review"].includes(f.status);
   return looping && needsYou(f) ? "Needs you" : STATUS_LABEL[f.status];
@@ -1498,7 +1498,7 @@ function TaskChanges({ placed, source }: { placed: PlacedTask; source: TaskSourc
 }
 
 /**
- * Where it stands (in review, what delivery waits on, D-198), when the
+ * Where it stands (in review, what delivery waits on, D-199), when the
  * coding agent was last heard from, and what comes next (D-141); the
  * budget only once it constrains the work. A stop or a block is in the
  * banner.

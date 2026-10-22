@@ -624,7 +624,7 @@ fn ssh_host_normal_flow() {
 /// The M2 golden path from the terminal (D-068): a task written and
 /// started with `otter`, worked on by a coding agent (a fake one), checked,
 /// published as a pull request (a real Git remote, a fake `gh`), followed
-/// through CI and done by itself (D-198) — in a disposable repository.
+/// through CI and done by itself (D-199) — in a disposable repository.
 #[test]
 fn a_task_goes_from_the_terminal_to_a_delivered_pull_request() {
     use std::os::unix::fs::PermissionsExt;
@@ -777,7 +777,7 @@ fn a_task_goes_from_the_terminal_to_a_delivered_pull_request() {
         r#"[{"name":"test","bucket":"pass","link":"","description":""}]"#,
     )
     .unwrap();
-    // No acceptance (D-198): every gate passed, so it's done, with the report.
+    // No acceptance (D-199): every gate passed, so it's done, with the report.
     let f = wait("done by itself", &|f| f["status"] == "done");
     assert!(f["report"].is_string(), "{f:#}");
     // On the remote: the branch, with the work.

@@ -541,7 +541,7 @@ pub fn gates(f: &Task, cx: &GateContext) -> Vec<Gate> {
         _ if cx.nothing_to_publish => gate("CI", GateStatus::NotApplicable, NOTHING_TO_PUBLISH),
         _ => gate("CI", GateStatus::Pending, "after the pull request"),
     });
-    // No gate for the developer's acceptance any more (D-198): the task
+    // No gate for the developer's acceptance any more (D-199): the task
     // ends when these pass.
     out
 }
@@ -554,7 +554,7 @@ fn base_of(d: &otter_core::task::Delivery) -> String {
         .unwrap_or_else(|| "its base".into())
 }
 
-/// Every gate is clear: the work is delivered (D-198). An older task's
+/// Every gate is clear: the work is delivered (D-199). An older task's
 /// acceptance gate doesn't count.
 pub fn all_clear(gates: &[Gate]) -> bool {
     gates
@@ -1565,7 +1565,7 @@ mod tests {
         assert_eq!(status(&g, "Local tests"), GateStatus::Passed);
         assert_eq!(status(&g, "Pull request"), GateStatus::NotApplicable);
         assert_eq!(status(&g, "CI"), GateStatus::NotApplicable);
-        // No acceptance gate (D-198): delivered is done.
+        // No acceptance gate (D-199): delivered is done.
         assert!(!g.iter().any(|x| x.name == ACCEPTANCE_GATE));
         assert!(all_clear(&g));
     }

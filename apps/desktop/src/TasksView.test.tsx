@@ -34,7 +34,7 @@ describe("task contract helpers", () => {
     expect(needsYou(blocked)).toBe(true);
     expect(needsYou(active)).toBe(false);
     // Review is delivery under way: never yours, a failed gate included —
-    // it ends by itself, done or stopped with the result (D-198).
+    // it ends by itself, done or stopped with the result (D-199).
     const review: Task = { ...done, status: "review", gates: [{ name: "CI", status: "pending" }] };
     expect(needsYou(review)).toBe(false);
     expect(needsYou({ ...review, report: "## Report", gates: [{ name: "CI", status: "passed" }] })).toBe(false);
@@ -106,7 +106,7 @@ describe("task contract helpers", () => {
     // Planning, implementing and verifying are all just "Working" (D-050).
     expect([STATUS_LABEL.planning, STATUS_LABEL.implementing, STATUS_LABEL.verifying]).toEqual(["Working", "Working", "Working"]);
     expect(STATUS_LABEL.review).toBe("Delivering");
-    // Delivery says what it waits on, or the gate that failed (D-198).
+    // Delivery says what it waits on, or the gate that failed (D-199).
     const review: Task = { ...done, status: "review", status_reason: "Ready for your review", gates: [{ name: "CI", status: "pending" }] };
     expect(statusDetail(review)).toBe("waiting on CI");
     expect(statusDetail({ ...review, gates: [{ name: "CI", status: "passed" }] })).toBeUndefined();
@@ -804,7 +804,7 @@ describe("Tasks view", () => {
     expect(reasons.textContent).toContain("Answered. ×3");
   });
 
-  it("shows a task in review as delivery under way, with nothing to accept (D-198)", async () => {
+  it("shows a task in review as delivery under way, with nothing to accept (D-199)", async () => {
     const [done] = sampleTasks().filter((f) => f.status === "done");
     const review: Task = {
       ...done,
@@ -842,7 +842,7 @@ describe("Tasks view", () => {
     expect(host.querySelector('textarea[aria-label="Message to Otter"]')?.getAttribute("placeholder")).toBe("Tell Otter what you want… (/ for commands)");
   });
 
-  it("says a gate that failed in delivery, without asking you: the task stops by itself (D-198)", async () => {
+  it("says a gate that failed in delivery, without asking you: the task stops by itself (D-199)", async () => {
     const [done] = sampleTasks().filter((f) => f.status === "done");
     const review: Task = {
       ...done,

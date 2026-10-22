@@ -1034,7 +1034,7 @@ impl Scripted {
             },
             Intent::Pause => call("pause_task"),
             Intent::Revise => call("revise_task"),
-            // In review the task ends by itself (D-198): nothing to call.
+            // In review the task ends by itself (D-199): nothing to call.
             Intent::Finish if f.status == S::Review => vec![],
             Intent::Finish => call("pause_task"),
             Intent::None => vec![],

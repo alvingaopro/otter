@@ -249,7 +249,7 @@ async fn a_watch_that_cant_read_yet_says_so_and_is_set() {
     );
 }
 
-/// D-198: a pull request that conflicts with its base sends the task back
+/// D-199: a pull request that conflicts with its base sends the task back
 /// to work by itself — the coding agent brings the branch up to date — and
 /// once it no longer conflicts and CI passed, it is done. Nothing waits on
 /// the developer.

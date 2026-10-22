@@ -358,7 +358,7 @@ export type TaskAction =
   | { action: "cancel" }
   | { action: "retry" }
   | { action: "decide"; decision_id: string; approve: boolean; answer?: string; answers?: Record<string, string> }
-  // No `accept`: a task ends by itself once delivered (D-198); the
+  // No `accept`: a task ends by itself once delivered (D-199); the
   // protocol keeps it only for older clients.
   | { action: "request_changes"; note?: string }
   | { action: "set_workspace"; workspace: string }
@@ -384,7 +384,7 @@ export const GROUPS: { id: TaskGroup; label: string }[] = [
 
 const ACTIVE: TaskStatus[] = ["planning", "implementing", "verifying", "review"];
 
-/** An older task's gate for the developer's acceptance: there is none any more (D-198). */
+/** An older task's gate for the developer's acceptance: there is none any more (D-199). */
 const ACCEPTANCE_GATE = "Your acceptance";
 
 /** The task's gates (D-047), without an older task's acceptance gate. */
@@ -393,7 +393,7 @@ export function gatesOf(f: Task): Gate[] {
 }
 
 /**
- * Where a task in review stands (D-198): delivery is under way, waiting on
+ * Where a task in review stands (D-199): delivery is under way, waiting on
  * its gates, and ends by itself — done, or stopped with the result when a
  * gate didn't pass. Never the developer's to act on.
  */
@@ -446,7 +446,7 @@ export function taskActivity(f: Task): Activity {
   return "working";
 }
 
-/** The developer has to act: a decision, a block, a stop. Never delivery (D-198). */
+/** The developer has to act: a decision, a block, a stop. Never delivery (D-199). */
 export function needsYou(f: Task): boolean {
   return needOf(f) !== undefined;
 }

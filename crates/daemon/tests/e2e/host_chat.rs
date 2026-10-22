@@ -276,7 +276,7 @@ async fn otter_follows_up_the_tasks_it_made_once_per_change() {
         host.conn().await.otter_get().await.unwrap().follows.len(),
         1
     );
-    // Delivered, the task is done by itself (D-198): that's the change
+    // Delivered, the task is done by itself (D-199): that's the change
     // followed up (review isn't one any more).
     let chat = eventually("a follow-up on done", || async {
         let c = host.conn().await.otter_get().await.unwrap();
@@ -321,7 +321,7 @@ async fn otter_follows_up_the_tasks_it_made_once_per_change() {
         follow_ups(&chat)
     );
     // The task it didn't make was delivered too, unremarked.
-    wait_task(host, &other, "in review", |f| delivered(f)).await;
+    wait_task(host, &other, "in review", delivered).await;
     tokio::time::sleep(Duration::from_millis(800)).await;
     let chat = host.conn().await.otter_get().await.unwrap();
     assert!(

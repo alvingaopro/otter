@@ -118,9 +118,9 @@ const CI_FIX: &str = "Fix what CI found";
 const SAME_CI: &str = "CI failed the same way after the fix";
 /// The rationale's mark of a pull request found conflicting, per head (D-184).
 const CONFLICTS: &str = "The pull request conflicts with";
-/// The step that brings a conflicting branch up to date (D-198).
+/// The step that brings a conflicting branch up to date (D-199).
 const BRING_UP_TO_DATE: &str = "Bring the branch up to date";
-/// Why a task whose work is delivered is done (D-198).
+/// Why a task whose work is delivered is done (D-199).
 pub(crate) const DELIVERED: &str = "Done: every gate passed";
 /// What Otter asks when a task starts with nothing to do (D-067).
 const GOAL_QUESTION: &str = "What should this task do?";
@@ -2406,7 +2406,7 @@ impl Daemon {
                 // The same work after a fix, and nothing more proven: another
                 // round won't change it, whatever the verdict's wording. It
                 // is delivered as it is, and stops with the result once
-                // delivery settles (D-062, D-165, D-198).
+                // delivery settles (D-062, D-165, D-199).
                 let unproven = if mark.unmet.is_empty() {
                     "a check failed".to_owned()
                 } else {
@@ -2794,7 +2794,7 @@ impl Daemon {
         let mut d = f.delivery.clone();
         let mut evidence = Vec::new();
         let mut remediation: Option<String> = None;
-        // A branch that conflicts with its base: brought up to date (D-198).
+        // A branch that conflicts with its base: brought up to date (D-199).
         let mut up_to_date: Option<String> = None;
         // A failure that another attempt won't change: stopped, said why.
         let mut stuck: Option<String> = None;
@@ -3087,7 +3087,7 @@ impl Daemon {
                         dl.head.as_deref().unwrap_or("?")
                     );
                     // Back to work, once for each head that conflicts
-                    // (D-198): the attempts budget bounds it.
+                    // (D-199): the attempts budget bounds it.
                     if !f.rationale.iter().any(|r| r == &marker) {
                         notes.push(format!(
                             "The pull request conflicts with {base}, so GitHub runs no CI on it: the coding agent brings the branch up to date."
@@ -3168,7 +3168,7 @@ impl Daemon {
                                 "{SAME_CI} ({})",
                                 last.map(|e| e.id.as_str()).unwrap_or_default()
                             );
-                            // Stopped with the result (D-198): another
+                            // Stopped with the result (D-199): another
                             // attempt won't help.
                             if fixed && !f.rationale.iter().any(|r| r == &marker) {
                                 rationale.push(marker);
@@ -3217,7 +3217,7 @@ impl Daemon {
         next.evidence.extend(evidence.iter().cloned());
         let gates = delivery::gates(&next, &cx);
         // Settled: nothing pending, nothing going back to work. Then it
-        // ends by itself (D-198): done when every gate passed, else stopped
+        // ends by itself (D-199): done when every gate passed, else stopped
         // with the result, saying which didn't pass.
         let settled = remediation.is_none()
             && up_to_date.is_none()
@@ -3245,7 +3245,7 @@ impl Daemon {
                     .and_then(|e| e.detail.clone())
             });
         let write_report = (ready || stop.is_some()) && f.report.is_none();
-        // Delivered, the task is done (D-198): no acceptance to wait for;
+        // Delivered, the task is done (D-199): no acceptance to wait for;
         // merging stays the developer's.
         if d == f.delivery
             && evidence.is_empty()
@@ -3326,7 +3326,7 @@ impl Daemon {
                 return Ok(changes);
             }
             // The branch conflicts with its base: back to work, bringing it
-            // up to date (D-198).
+            // up to date (D-199).
             if let Some(base) = &up_to_date {
                 let id = StepId::generate();
                 f.steps.push(Step {
@@ -3440,7 +3440,7 @@ impl Daemon {
         }
     }
 
-    /// A task whose work is delivered is done (D-198): every gate kept
+    /// A task whose work is delivered is done (D-199): every gate kept
     /// clear and the report written; nothing waits on the developer. More
     /// asked of it later plans again (D-050).
     async fn done_delivered(self: &Arc<Self>, id: &TaskId) -> RpcResult<()> {
@@ -3936,7 +3936,7 @@ pub(crate) fn intent_step(
             None
         }
         // Satisfied: stop work in progress. A task in review is delivering
-        // and ends by itself (D-198): there is nothing to accept.
+        // and ends by itself (D-199): there is nothing to accept.
         (Intent::Finish, s) if s.is_active() || s == TaskStatus::Blocked => {
             stop = true;
             move_to(
@@ -3952,7 +3952,7 @@ pub(crate) fn intent_step(
 }
 
 /// Why a task whose delivery settled with a gate that didn't pass stopped
-/// (D-198): which, with the pull request if there is one.
+/// (D-199): which, with the pull request if there is one.
 fn not_passed(gates: &[Gate], pr: Option<&str>) -> String {
     let failed: Vec<String> = gates
         .iter()
