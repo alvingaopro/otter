@@ -2143,17 +2143,23 @@ impl Gateway {
             .next("tell them; it can end once they answer"));
         }
         let d = &self.inner.daemon;
-        let unfinished = d
-            .tasks
-            .lock()
-            .await
-            .list()
-            .iter()
-            .filter(|c| {
-                c.parent.as_ref() == Some(&f.id)
-                    && !matches!(c.status, TaskStatus::Done | TaskStatus::Cancelled)
-            })
-            .count();
+        // A sub-task that failed is over too (Otter can't retry it): the
+        // answer says so.
+        let (unfinished, failed) = {
+            let tasks = d.tasks.lock().await.list();
+            let mine = || tasks.iter().filter(|c| c.parent.as_ref() == Some(&f.id));
+            (
+                mine()
+                    .filter(|c| {
+                        !matches!(
+                            c.status,
+                            TaskStatus::Done | TaskStatus::Cancelled | TaskStatus::Failed
+                        )
+                    })
+                    .count(),
+                mine().filter(|c| c.status == TaskStatus::Failed).count(),
+            )
+        };
         if unfinished > 0 {
             return Err(fail(
                 "not_ready",
@@ -2227,7 +2233,11 @@ impl Gateway {
                 .unwrap()
                 .push("finish_with_answer: done".into());
         }
-        Ok(json!({"done": "answered", "status": applied.task.status.as_str()}))
+        let mut out = json!({"done": "answered", "status": applied.task.status.as_str()});
+        if failed > 0 {
+            out["failed_sub_tasks"] = json!(failed);
+        }
+        Ok(out)
     }
 
     /// Answer-only on or off, on the developer's word (D-092). On needs the

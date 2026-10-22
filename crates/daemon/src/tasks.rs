@@ -1298,6 +1298,10 @@ impl Daemon {
             if let Some(w) = store.state.workspaces.iter().find(|w| {
                 w.task_id.as_ref() == Some(&f.id)
                     && w.id != ws_id
+                    && matches!(
+                        w.state,
+                        otter_core::WorkspaceState::Ready | otter_core::WorkspaceState::Preparing
+                    )
                     && matches!(&w.source, otter_core::WorkspaceSource::Git(g) if g.repository == repository)
             }) {
                 return Ok(w.clone());
@@ -1555,7 +1559,17 @@ impl Daemon {
             return;
         }
         // Those made for it that it left before working there (D-191): put
-        // away with it, quietly — nothing of its work is in them.
+        // away with it, quietly — nothing of its work is in them — unless
+        // another task works there now.
+        let elsewhere: Vec<otter_core::WorkspaceId> = self
+            .tasks
+            .lock()
+            .await
+            .list()
+            .into_iter()
+            .filter(|o| &o.id != id && !o.status.is_terminal())
+            .filter_map(|o| o.workspace_id)
+            .collect();
         let left: Vec<(otter_core::WorkspaceId, String)> = {
             let store = self.store.lock().await;
             store
@@ -1570,6 +1584,8 @@ impl Daemon {
                             otter_core::WorkspaceState::Ready | otter_core::WorkspaceState::Failed
                         )
                         && !w.sessions.iter().any(in_use)
+                        && !elsewhere.contains(&w.id)
+                        && self.workspace_holder(&w.id).is_none()
                 })
                 .map(|w| (w.id.clone(), w.name.clone()))
                 .collect()

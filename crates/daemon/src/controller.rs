@@ -772,7 +772,10 @@ impl Daemon {
                 .iter()
                 .filter(|c| {
                     c.parent.as_ref() == Some(&f.id)
-                        && !matches!(c.status, TaskStatus::Done | TaskStatus::Cancelled)
+                        && !matches!(
+                            c.status,
+                            TaskStatus::Done | TaskStatus::Cancelled | TaskStatus::Failed
+                        )
                 })
                 .count();
             let waits_on = match f.open_watches().next() {
@@ -3310,13 +3313,19 @@ impl Daemon {
         branch: &str,
         git: &crate::delivery::Git<'_>,
     ) -> bool {
+        // A Git workspace made for this task, or one nobody works in by
+        // hand (no sessions): a workspace the developer uses may hold their
+        // own edits, which publishing would commit.
         let managed = match &f.workspace_id {
             Some(id) => self
                 .store
                 .lock()
                 .await
                 .workspace(id.as_str())
-                .is_some_and(|w| matches!(w.source, otter_core::WorkspaceSource::Git(_))),
+                .is_some_and(|w| {
+                    matches!(w.source, otter_core::WorkspaceSource::Git(_))
+                        && (w.task_id.as_ref() == Some(&f.id) || w.sessions.is_empty())
+                }),
             None => false,
         };
         if !managed || matches!(branch, "main" | "master" | "trunk" | "develop") {

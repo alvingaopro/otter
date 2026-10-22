@@ -7191,8 +7191,8 @@ Plan `docs/plans/agent-coordination.md` M1.
   only reading (`Task::has_written`).
 - **What it leaves goes with it.** A workspace made for a task that it
   moved away from before working there is put away (archived) with it when
-  it ends; asked for a workspace of its own again, it gets the one already
-  made.
+  it ends, unless another task works there now; asked for a workspace of
+  its own again, it gets the one already made.
 
 Tests (`coordination`): a task whose directory is taken gets a workspace
 of its own (base `origin/main`, the request read first, the directory left
@@ -7216,20 +7216,27 @@ Plan `docs/plans/agent-coordination.md` M2–M3.
   and a call it didn't answer (the SDK gave up on it, the turn ended, 120 s)
   falls to `canUseTool`, which denies. API-provider brains (D-095) have no
   built-ins.
-- **Otter's `Bash` only reads, by an allow-list** (`runtime/reads.rs`),
-  then the command policy as well. The coding agent's lexical deny-list
-  (D-170) let through `git -C <dir> push --force`, `gh api … /merge`,
-  `kill -9 -1`, `tmux kill-server` and env dumps in review — and Otter's
-  turn runs with its model's sign-in in the environment and reads CI logs
-  and web pages. So a line may join commands with `|`, `&&`, `||`, `;` and
-  nothing else (no `$`, backquotes, redirections, background `&`,
-  backslashes); each command is a text tool (`cat`, `grep`, `jq` without
-  the environment, …), `gh` reading (`run view`, `pr checks`, `api` with
-  GET only, …), `git` reading (`clone`, `log`, `ls-remote`, … with no
-  global options, no `-C`, nothing that runs a command), or `curl`
-  fetching (no data sent, nothing written); no word names a place outside
-  its directory. Its `gh` is Otter's own sign-in when it has one (D-133),
-  as `read_github`'s is.
+- **Otter's `Bash` only reads, by an allow-list down to each command's
+  options** (`runtime/reads.rs`), then the command policy as well. The
+  coding agent's lexical deny-list (D-170) let through
+  `git -C <dir> push --force`, `gh api … /merge`, `kill -9 -1`,
+  `tmux kill-server` and env dumps in review; a first allow-list still let
+  through glued options (`gh api -XPUT`, `-ftitle=x`, `sort -o/path`),
+  options that run a program (`git grep -O<pager>`, `rg --pre`) and reads
+  through a cloned repository's symlinks. Otter's turn runs with its
+  model's sign-in and Otter's GitHub sign-in in the environment, and reads
+  CI logs and web pages. So the list is short and exact: a line joins
+  commands with `|`, `&&`, `||`, `;` and nothing else (no `$`, backquotes,
+  redirections, background `&`, backslashes); each command is `gh` reading
+  (`run view|list`, `pr view|list|checks|diff`, `search`, `api` with GET
+  only, …), `curl` fetching an `http(s)` address, `git ls-remote`, or a
+  text filter (`grep`, `jq` away from the environment and modules, `head`,
+  `sort`, …) on what it is piped; every option is one its entry lists,
+  written on its own; no word is a path or another kind of address. Nothing
+  writes, so Otter's directory stays empty and no command has a file to
+  read; `sleep` is at most 60 s; nothing watches, follows or opens a
+  browser. Its `gh` is Otter's own sign-in when it has one (D-133), as
+  `read_github`'s is.
 - **Watches on any GitHub target**: kind `run` (an Actions run by its
   link, until it finishes) and `ci` with a pull request's `url`.
 - **A request that needs no code needs no workspace.** The turn on a
@@ -7251,9 +7258,13 @@ Plan `docs/plans/agent-coordination.md` M2–M3.
   Otter's own, as a trigger's policy does (D-083), on record; a question
   about it already put to the developer goes. Only from a Git workspace
   Otter manages, and never a default branch (`main`, `master`, the
-  workspace's base, origin's default, or one it can't tell): from a
-  directory the developer keeps — its tree may hold their own uncommitted
-  work — or on such a branch, the developer is asked, as before. `publish` as a tool allows it
+  workspace's base, origin's default, or one it can't tell), and from a
+  workspace made for the task or one nobody uses by hand (no sessions):
+  from a directory the developer keeps, a workspace they work in, or on
+  such a branch — a tree that may hold their own uncommitted work — the
+  developer is asked, as before. A trigger's `publish` policy is the
+  developer's own word given in advance (D-083), not Otter's: it is
+  unchanged. `publish` as a tool allows it
   on the developer's word when the level is `developer`.
 - **Plans are approved by Otter by default** (D-089's "the plan is the one
   decision a message settles for the developer" reversed): a plan the
@@ -7312,7 +7323,9 @@ D-064 (one conversation per task) stands: a sub-task is a task.
 - **A sub-task's request turn is an event's**, not the developer's: only
   what is automatic (a host that set `create_task` to `developer` gets no
   sub-tasks of sub-tasks from it). Made again in a turn run again, the same
-  sub-task is that one, recorded once.
+  sub-task is that one, recorded once. A sub-task that failed is over for
+  its parent too (Otter can't retry it): the parent's waiting ends, and its
+  answer says how many failed.
 - **A sub-task's change wakes its parent**: done, failed, in review, or
   waiting on the developer — once per change, kept on the parent
   (`children_seen`), like D-094's follow-ups. The parent's turn has what
