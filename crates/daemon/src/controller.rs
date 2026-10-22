@@ -551,6 +551,33 @@ impl Daemon {
         Ok(())
     }
 
+    /// Otter's turn on a task's request when the task has no workspace
+    /// (D-186): the one place the request, which is not a message to answer
+    /// (D-067), is answered, because what it says is where the work goes. It
+    /// is the developer's own word, so Otter may set the workspace on it. Once:
+    /// Otter's reply to the request is the mark that it looked. `None` when it
+    /// didn't (no tools, no request, looked already).
+    async fn place_from_request(self: &Arc<Self>, f: &Task) -> RpcResult<Option<Task>> {
+        let Some(request) = f.request_message().cloned() else {
+            return Ok(None);
+        };
+        let looked = f.messages.iter().any(|m| {
+            m.role == MessageRole::Controller
+                && m.correlation_id.as_deref() == Some(request.as_str())
+        });
+        let Some(message) = f.messages.iter().find(|m| m.id == request).cloned() else {
+            return Ok(None);
+        };
+        if looked {
+            return Ok(None);
+        }
+        let Some(backend) = self.turn_backend() else {
+            return Ok(None);
+        };
+        self.otter_turn_on(f, backend, vec![message]).await?;
+        Ok(Some(self.task_get(f.id.as_str()).await?))
+    }
+
     /// A task blocked on nothing that is still open (a decision that
     /// became moot, an interrupted run) picks up where its work stands.
     async fn unblock(&self, f: &Task) -> RpcResult<()> {
@@ -685,6 +712,17 @@ impl Daemon {
     }
 
     async fn plan_step(self: &Arc<Self>, f: &Task) -> RpcResult<()> {
+        // Started without a workspace, Otter reads the request for where
+        // the work goes before the task waits for the developer (D-186).
+        let placed;
+        let f = if f.workspace_id.is_none()
+            && let Some(fresh) = self.place_from_request(f).await?
+        {
+            placed = fresh;
+            &placed
+        } else {
+            f
+        };
         if f.workspace_id.is_none() {
             self.controller_apply(&f.id, TaskStatus::Planning, |f, now| {
                 let e = f

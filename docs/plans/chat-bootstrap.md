@@ -1,6 +1,6 @@
 # Chat bootstrap: say what to do, Otter finds or makes the workspace
 
-**Status:** P1 done (D-179); P2 done (D-182); P3 (Otter choosing inside a task's conversation) next. **Branch:** `chat-bootstrap`.
+**Status:** P1 done (D-179); P2 done (D-182); P3 done (D-186). **Branch:** `chat-bootstrap`.
 
 ## 1. The problem
 

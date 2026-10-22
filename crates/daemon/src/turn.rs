@@ -151,13 +151,28 @@ pub fn context(f: &Task, memories: &str) -> String {
         .map(|(i, t)| format!("{}. {} — {:?}", i + 1, t.title, t.status))
         .collect();
     format!(
-        "{brief}\nStatus: {status}\nSteps:\n{steps}\n{memories}\nRecent conversation:\n{recent}",
+        "{brief}\nStatus: {status}\nSteps:\n{steps}\n{workspace}{memories}\nRecent conversation:\n{recent}",
         brief = crate::brain::brief(f),
         status = crate::brain::status_text(f),
         steps = steps.join("\n"),
+        workspace = if f.workspace_id.is_none() {
+            NO_WORKSPACE
+        } else {
+            ""
+        },
         recent = recent(&f.messages),
     )
 }
+
+/// What Otter is told while a task has no workspace (D-186): how to find
+/// or make one from what the developer wrote. Only then, so a task at work
+/// isn't told it.
+const NO_WORKSPACE: &str = "\nThis task has no workspace yet, so no work can start. Find where it works from the developer's words, then set_workspace:
+- A workspace they named, or the one list_workspaces (with a query) shows comes from the repository they named. If another task holds it (held_by_task), make a workspace of its own from the same repository (new_workspace).
+- A repository they named that no workspace here comes from: new_workspace with it. It is prepared before the work goes on; say it is being prepared, not how.
+- They want no repository: scratch.
+- Never make a repository up: it comes from their words, list_repositories or your memory. If it isn't clear where, or the repository is only your guess, ask them in your reply, and set_workspace when they answer. Say what you found and what you chose.
+- A task that waits for a workspace goes on by itself once it has one; a draft needs start_task, only if they asked for it to start.\n";
 
 impl Daemon {
     /// The turn backend for a task's conversation, if Otter answers with
@@ -221,6 +236,17 @@ impl Daemon {
         backend: Box<dyn TurnBackend>,
     ) -> RpcResult<()> {
         let open = unanswered(f);
+        self.otter_turn_on(f, backend, open).await
+    }
+
+    /// As [`Self::otter_turn`], on the messages given: the developer's own,
+    /// so what they authorize is theirs. The task's request is one (D-186).
+    pub(crate) async fn otter_turn_on(
+        self: &Arc<Self>,
+        f: &Task,
+        backend: Box<dyn TurnBackend>,
+        open: Vec<otter_core::task::Message>,
+    ) -> RpcResult<()> {
         let Some(last) = open.last().cloned() else {
             return Ok(());
         };
