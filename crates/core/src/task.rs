@@ -320,6 +320,10 @@ pub struct WorkspaceGone {
     /// How many of the task's workspaces have gone: a new one's branch is
     /// named after it, never one already pushed.
     pub count: u32,
+    /// The pull request it went for once that was merged; absent when the
+    /// developer deleted it. Only then is a new one made by itself.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub merged: Option<u64>,
 }
 
 /// Where a task's own work starts (D-167): the revision its workspace was

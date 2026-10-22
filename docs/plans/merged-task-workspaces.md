@@ -6,7 +6,10 @@ merging keeps its workspace. Where the build differs from this text,
 `docs/decisions.md` D-189 is right. It differs here: the branch a new
 workspace gets is `otter/<title>-<id>-<n>`, a name never pushed. Condition
 5 (§4.1) only keeps a workspace when the pull request's head is known
-locally; D-108's guard is the one that keeps what is on no remote.
+locally; D-108's guard is the one that keeps what is on no remote. §4.4's
+"why" is `merged`, and a new workspace is made only when Otter deleted the
+old one once it was merged: deleted by the developer, the task waits for a
+workspace.
 **Baseline:** `main` at `f85208c` (v0.7.80).
 
 What it would change, so it is written down once:
@@ -117,7 +120,7 @@ archived, as now.
 ### 4.2 The sweep
 
 A loop of its own, beside `run_watches`: every 30 minutes with jitter, the
-first a minute after otterd starts (`OTTER_CLEANUP_MS` for tests). Each
+first a minute after otterd starts (`OTTER_MERGED_SWEEP_MS` for tests). Each
 pass reads which workspaces qualify by 1–3 and 6 from the store, then asks
 GitHub about each once: `gh pr view <n> --repo <owner/name> --json
 state,mergedAt,headRefOid`, with the CI watch's environment and limit. What

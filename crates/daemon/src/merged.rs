@@ -217,15 +217,28 @@ impl Daemon {
             self.keep_merged(c, why).await;
             return;
         }
+        // The task as it is now, too: asked for more meanwhile, it isn't
+        // over any more.
+        match self.task_get(c.task.as_str()).await {
+            Ok(f) if candidate(&f, &ws).is_some() => {}
+            _ => return,
+        }
+        // Still put away once the delete has begun: an unarchive meanwhile
+        // (the developer's, or the task's own when more is asked of it) is
+        // never undone.
         let deleted = self
-            .workspace_delete(&otter_protocol::WorkspaceDelete {
-                workspace: c.workspace.to_string(),
-                force: false,
-            })
+            .delete_workspace(
+                &otter_protocol::WorkspaceDelete {
+                    workspace: c.workspace.to_string(),
+                    force: false,
+                },
+                |w| w.state == WorkspaceState::Archived && w.kept.is_none(),
+                Some((c.pr, pr.base.clone())),
+            )
             .await;
         if let Err(e) = deleted {
-            // Being deleted by the developer, or something failed: looked
-            // at again on the next pass.
+            // Unarchived or being deleted meanwhile, or something failed:
+            // looked at again on the next pass.
             tracing::warn!(workspace = %c.name, "deleting a merged task's workspace: {}", e.message);
             return;
         }

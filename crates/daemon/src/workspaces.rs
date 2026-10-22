@@ -360,6 +360,20 @@ impl Daemon {
     /// which can take a while: the rest of the host goes on meanwhile
     /// (D-135).
     pub(crate) async fn workspace_delete(&self, p: &WorkspaceDelete) -> RpcResult<()> {
+        self.delete_workspace(p, |_| true, None).await
+    }
+
+    /// [`workspace_delete`](Self::workspace_delete), for the developer or for
+    /// Otter (D-189). `still` is checked once the delete has begun, when
+    /// nothing can unarchive the workspace any more: false, nothing goes.
+    /// `merged`: the pull request (its number and base) it goes for, which
+    /// its task keeps.
+    pub(crate) async fn delete_workspace(
+        &self,
+        p: &WorkspaceDelete,
+        still: impl Fn(&Workspace) -> bool + Send + Sync,
+        merged: Option<(u64, String)>,
+    ) -> RpcResult<()> {
         let ws = self.workspace_get(&p.workspace).await?;
         self.not_being_deleted(&ws)?;
 
@@ -388,6 +402,15 @@ impl Daemon {
             set: &self.deleting,
             id: id.clone(),
         };
+        // An unarchive is refused from here on (`not_being_deleted`, under
+        // the store's lock): what the delete was for is checked as it is now.
+        let as_now = self.store.lock().await.workspace(id.as_str()).map(&still);
+        if as_now != Some(true) {
+            return Err(RpcError::conflict(format!(
+                "workspace `{}` changed meanwhile: not deleted",
+                ws.name
+            )));
+        }
         // Its preparation stops, all of its Git with it, and is gone before
         // anything is removed.
         let prep = self.preparing.lock().unwrap().remove(&id);
@@ -396,7 +419,7 @@ impl Daemon {
             prep.abort();
             let _ = prep.await;
         }
-        let deleted = self.delete_stopped(p, &id).await;
+        let deleted = self.delete_stopped(p, &id, merged).await;
         // Its preparation was stopped: say what happened, so it can be
         // deleted again or prepared again, not left preparing.
         if stopped && let Err(e) = &deleted {
@@ -434,7 +457,12 @@ impl Daemon {
     }
 
     /// Delete a workspace whose preparation isn't running (D-135).
-    async fn delete_stopped(&self, p: &WorkspaceDelete, id: &WorkspaceId) -> RpcResult<()> {
+    async fn delete_stopped(
+        &self,
+        p: &WorkspaceDelete,
+        id: &WorkspaceId,
+        merged: Option<(u64, String)>,
+    ) -> RpcResult<()> {
         // Processes, under the lock as when archiving: marked stopped before
         // anything can find them gone.
         let ws = {
@@ -531,7 +559,7 @@ impl Daemon {
             });
         }
         // The task it was made for no longer points at it (D-189).
-        self.workspace_gone(&ws).await;
+        self.workspace_gone(&ws, merged).await;
 
         // The repository's copy goes when nothing uses it any more (D-108),
         // decided under its Git lock: a workspace being made on it is either

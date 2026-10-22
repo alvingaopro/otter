@@ -72,6 +72,14 @@ async fn finished(fake: &FakeCodex) -> (String, Workspace) {
     })
     .await;
     assert_eq!(ws.task_id.as_ref().map(|t| t.as_str()), Some(id.as_str()));
+    // Archived, the task says it doesn't stay for good.
+    wait_task(&fake.host, &id, "it says when it goes", |f| {
+        said(
+            f,
+            "It is deleted a day after pull request #7 is merged, unless something is only there",
+        ) == 1
+    })
+    .await;
     (id, ws)
 }
 
@@ -166,6 +174,7 @@ async fn a_tasks_workspace_goes_once_its_pull_request_is_merged() {
     let g = f.workspace_gone.clone().unwrap();
     assert_eq!((g.name.as_str(), g.count), (ws.name.as_str(), 1));
     assert_eq!(g.base.as_deref(), Some("main"));
+    assert_eq!(g.merged, Some(7));
     assert!(g.repository.unwrap().ends_with("origin"));
 
     // Asked for more: a new workspace of its own, on a new branch from
@@ -286,4 +295,36 @@ async fn a_merged_tasks_workspace_stays_while_something_is_only_there() {
         .await
         .unwrap();
     assert_eq!(kept.kept.as_deref(), Some(why));
+
+    // Deleted by the developer: the task stops pointing at it, and asked
+    // for more it waits for them to choose where, rather than starting
+    // again from main as if its work were merged.
+    host.conn()
+        .await
+        .workspace_delete(ws.id.as_str(), true)
+        .await
+        .unwrap();
+    let f = wait_task(host, &id, "no workspace", |f| f.workspace_id.is_none()).await;
+    assert_eq!(f.workspace_gone.as_ref().map(|g| g.merged), Some(None));
+    host.conn()
+        .await
+        .task_act(
+            "more",
+            &id,
+            TaskAction::RequestChanges {
+                note: Some("And a LICENSE".into()),
+            },
+        )
+        .await
+        .unwrap();
+    let f = wait_task(host, &id, "waiting for a workspace", |f| {
+        f.status == TaskStatus::Blocked
+    })
+    .await;
+    assert_eq!(
+        f.status_reason.as_deref(),
+        Some("Choose a workspace for this task")
+    );
+    assert_eq!(f.workspace_id, None);
+    assert_eq!(said(&f, "goes on in a new one"), 0);
 }

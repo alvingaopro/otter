@@ -7033,18 +7033,30 @@ host had shown such a backlog yet.
   the workspace gets `Workspace.kept` with the reason, and the conversation
   says it once. It isn't looked at again until it is unarchived, which
   clears the mark. Archived again, it qualifies again. Never with force.
+- **An unarchive is never undone.** The task and the workspace are read
+  again just before the delete. The workspace is checked once more after
+  the delete has begun, under the store's lock, when an unarchive is
+  already refused. An unarchive in between (the developer's, or the task's
+  own when more is asked of it, D-105) means nothing is deleted.
 - **The task stops pointing at it.** When the workspace made for a task is
   deleted, by this or by the developer, the task's `workspace_id` is
-  cleared and `Task.workspace_gone` keeps its name, its repository (shown
-  without credentials), the base its pull request went into, and a count.
-  Before this, more asked of a task whose workspace had been deleted failed
-  with "no workspace".
-- **More asked after that** (D-050): the task gets a new workspace of its
-  own from the same repository, on `otter/<title>-<id>-<count + 1>` from
-  `origin/<base>`, which already has the merged work. The branch name is one
-  never pushed; the old branch isn't brought back. This runs before D-186's
-  placement. If making the workspace fails, the conversation says why and
-  the task is placed as a new task is.
+  cleared (while it still points there) and `Task.workspace_gone` keeps its
+  name, its repository (shown without credentials), the base its pull
+  request went into, a count, and `merged`: the pull request, when Otter
+  deleted it for that. Before this, more asked of a task whose workspace
+  had been deleted failed with "no workspace". Now a task that was blocked
+  with nothing to wait on stays blocked until it is given a workspace.
+- **More asked after Otter deleted it** (D-050): the task gets a new
+  workspace of its own from the same repository, on
+  `otter/<title>-<id>-<count + 1>` from `origin/<base>`, which already has
+  the merged work. The branch name is one never pushed; the old branch
+  isn't brought back. This runs before D-186's placement. Deleted by the
+  developer, nothing is made: their work may not be merged, so the task
+  waits with "Choose a workspace for this task". If making the workspace
+  fails, the conversation says why and the task waits the same way.
+- **Archived, the task says it won't stay for good:** D-105's line adds "It
+  is deleted a day after pull request #n is merged, unless something is
+  only there" while the setting is on.
 - **A host setting**, *Delete a task's workspace once its work is merged*,
   on by default (`delete_merged_workspaces`). It is in the app's Settings
   under Otter, next to Otter's tools. Off, archived workspaces stay as
@@ -7065,6 +7077,14 @@ worktree, the task says so and keeps the record; asked for more, a new
 workspace from `origin/main` on `…-2`, and the task works again. A file Git
 doesn't track keeps it and is said once. Unarchived, the mark clears.
 Re-archived with a commit pushed after the pull request, it stays again.
-Watched failing: with the new workspace's making turned off, the first test
-times out waiting for it.
+Deleted by the developer, the task asked for more waits for a workspace
+rather than starting again from main. Watched failing: with the new
+workspace's making turned off, the first test times out waiting for it;
+made for a deletion by the developer too, the second times out waiting for
+the task to wait.
+
+Reviewed against the code (Fable) before merging. The review found that an
+unarchive between the sweep's check and the delete was undone. It also found
+that any delete, merged or not, made a new workspace from main that said
+the work was merged. Both are fixed above.
 
