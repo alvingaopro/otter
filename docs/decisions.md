@@ -7115,7 +7115,8 @@ allowed tools to be configurable, and later for `approve_plan` and
   changed ones; Settings › Otter); `OTTER_TOOL_LEVELS` in otterd's
   environment overrides it (operators, tests). A task tightens, never
   loosens: `Task.tool_levels`, set with `task.act set_tool_level` (`otter
-  task tool`); the stricter of the two applies. A trigger's policy is a
+  task tool`; `auto` there means the host's); the stricter of the two
+  applies. A task that can't be read gets nothing. A trigger's policy is a
   preset: its tasks get `publish: developer` unless the policy publishes,
   and `set_workspace: developer` — an occurrence stays where its trigger
   puts it and waits behind the last one there, as D-156 says.
@@ -7182,7 +7183,16 @@ Plan `docs/plans/agent-coordination.md` M1.
   the SDK runtime (whose hook keeps it to reading, D-092) neither claims
   the workspace nor waits for it; writers don't wait for it; it stays
   read-only for its whole life even if answer-only is turned off meanwhile.
-  `held_by_task` and D-079's holder never name it.
+  `held_by_task` and D-079's holder never name it. Whether it shares is
+  decided by the backend that will run it (a conversation keeps its own,
+  D-057), and kept on the run (`Run.read_only`): what a task "has done
+  there" — for moving it, giving it a workspace of its own, holding a Git
+  workspace (D-156), ending it with an answer — is its runs that weren't
+  only reading (`Task::has_written`).
+- **What it leaves goes with it.** A workspace made for a task that it
+  moved away from before working there is put away (archived) with it when
+  it ends; asked for a workspace of its own again, it gets the one already
+  made.
 
 Tests (`coordination`): a task whose directory is taken gets a workspace
 of its own (base `origin/main`, the request read first, the directory left
@@ -7202,21 +7212,32 @@ Plan `docs/plans/agent-coordination.md` M2–M3.
   had `tools: []`; it now gets the `WebSearch`, `WebFetch` and `Bash` that
   are not `off`, and a `PreToolUse` hook that puts each call to otterd as
   `@<name>`: the level decides, every call is recorded with what it was
-  called on. `Bash` runs in Otter's empty directory and through the command
-  policy: routine runs; what only the developer may allow is refused (no one
-  can answer in the middle of a turn); what policy denies is denied; what
-  policy leaves to a model's judgement (D-174) is allowed, since Otter is
-  that model here. That is the floor's one soft spot: the policy is lexical
-  (D-170) and known to leak, the empty directory is a start, not a fence,
-  and the host's environment carries gh's sign-in. `Bash` is the tool whose
-  `auto` has to be earned in use. API-provider brains (D-095) have no
+  called on. They are not in `allowedTools`: only the hook's yes runs one,
+  and a call it didn't answer (the SDK gave up on it, the turn ended, 120 s)
+  falls to `canUseTool`, which denies. API-provider brains (D-095) have no
   built-ins.
+- **Otter's `Bash` only reads, by an allow-list** (`runtime/reads.rs`),
+  then the command policy as well. The coding agent's lexical deny-list
+  (D-170) let through `git -C <dir> push --force`, `gh api … /merge`,
+  `kill -9 -1`, `tmux kill-server` and env dumps in review — and Otter's
+  turn runs with its model's sign-in in the environment and reads CI logs
+  and web pages. So a line may join commands with `|`, `&&`, `||`, `;` and
+  nothing else (no `$`, backquotes, redirections, background `&`,
+  backslashes); each command is a text tool (`cat`, `grep`, `jq` without
+  the environment, …), `gh` reading (`run view`, `pr checks`, `api` with
+  GET only, …), `git` reading (`clone`, `log`, `ls-remote`, … with no
+  global options, no `-C`, nothing that runs a command), or `curl`
+  fetching (no data sent, nothing written); no word names a place outside
+  its directory. Its `gh` is Otter's own sign-in when it has one (D-133),
+  as `read_github`'s is.
 - **Watches on any GitHub target**: kind `run` (an Actions run by its
   link, until it finishes) and `ci` with a pull request's `url`.
 - **A request that needs no code needs no workspace.** The turn on a
   request may read, watch, set answer-only and `finish_with_answer`: the
   request was answered in Otter's reply and nothing is to change, so the
-  task ends done with no workspace or coding agent. A task with no
+  task ends done with no workspace or coding agent — not while a decision
+  waits on the developer or a sub-task isn't done; its waiting watches stop
+  with it. A task with no
   workspace that Otter watches something for waits on that ("Waiting for
   what Otter watches: …"), not on the developer; the watch's turn may finish
   it.
@@ -7228,7 +7249,11 @@ Plan `docs/plans/agent-coordination.md` M2–M3.
 - **Publishing is automatic by default** (D-047's default reversed):
   review allows pushing the task's branch and opening its pull request on
   Otter's own, as a trigger's policy does (D-083), on record; a question
-  about it already put to the developer goes. `publish` as a tool allows it
+  about it already put to the developer goes. Only from a Git workspace
+  Otter manages, and never a default branch (`main`, `master`, the
+  workspace's base, origin's default, or one it can't tell): from a
+  directory the developer keeps — its tree may hold their own uncommitted
+  work — or on such a branch, the developer is asked, as before. `publish` as a tool allows it
   on the developer's word when the level is `developer`.
 - **Plans are approved by Otter by default** (D-089's "the plan is the one
   decision a message settles for the developer" reversed): a plan the
@@ -7238,7 +7263,9 @@ Plan `docs/plans/agent-coordination.md` M2–M3.
   change anything). A plan question already put to the developer is theirs.
 - **Tasks are accepted by Otter by default**: once every gate passed and
   the report is written ("I'm accepting it (accepting is automatic in
-  Settings). Merging stays yours."). Merging is never Otter's.
+  Settings). Merging stays yours."), checked against the gates just written
+  — nothing is written when they aren't clear, so a step never loops on a
+  refusal. Merging is never Otter's.
 - **The ledger.** `otter.actions` lists what Otter did across the host's
   tasks, newest first, from the histories: each `ToolCalled` (now with
   `detail`, and origin `auto` for the controller's own), what came of it,
@@ -7246,7 +7273,8 @@ Plan `docs/plans/agent-coordination.md` M2–M3.
   action: moving back, cancelling a watch, resuming or pausing, asking for
   changes again after an acceptance or an answer, cancelling a sub-task.
   The Automations view shows them with an Undo, and Settings › Otter is
-  where a tool goes down a level.
+  where a tool goes down a level. The histories are read off the store's
+  lock; a refusal later on isn't taken for the call's outcome.
 
 Tests (`coordination`): Eyes On CICD with no workspace (both runs read, the
 failed log's end, done with no workspace), the same with its workspace
@@ -7260,7 +7288,11 @@ worker's hook in `worker.test.ts`.
 **Not done.** Anthropic's server-side search for the API brains and a
 self-hosted search for the others; an undo for publishing (a push can't be
 taken back) or for answer-only (no `task.act` for it); the ledger reads the
-200 tasks touched last.
+200 tasks touched last. Event turns that start one another over time (a
+sub-task's report sets a watch, the watch's turn makes a sub-task, …) are
+bounded only by three open watches and three unfinished sub-tasks per task,
+not by a budget. When Otter has no GitHub sign-in of its own, its reads use
+the host's gh, as review does.
 
 ## D-193 — Otter splits a task into sub-tasks and hears from them (2026-10-22)
 
@@ -7277,6 +7309,10 @@ D-064 (one conversation per task) stands: a sub-task is a task.
   once; at most 3 unfinished per task. What undoes it is cancelling it.
 - **`list_tasks`** lists the sub-tasks; **`get_task {task_id}`** reads
   one (only one's own).
+- **A sub-task's request turn is an event's**, not the developer's: only
+  what is automatic (a host that set `create_task` to `developer` gets no
+  sub-tasks of sub-tasks from it). Made again in a turn run again, the same
+  sub-task is that one, recorded once.
 - **A sub-task's change wakes its parent**: done, failed, in review, or
   waiting on the developer — once per change, kept on the parent
   (`children_seen`), like D-094's follow-ups. The parent's turn has what

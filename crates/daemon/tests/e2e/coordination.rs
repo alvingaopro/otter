@@ -755,12 +755,17 @@ async fn a_task_splits_into_sub_tasks_and_hears_from_them() {
         assert!(c.workspace_id.is_some(), "each works somewhere of its own");
     }
     // Each comes to review (accepting is the developer's here): heard once
-    // each; the first one's turn finishes the task.
+    // each. The first one's turn tries to finish the task, and can't while
+    // its sub-tasks aren't done.
     let f = wait_task(host, &id, "heard from all three", |f| {
         f.children_seen.len() == 3
     })
     .await;
-    assert_eq!(f.status, TaskStatus::Done, "{:?}", f.status_reason);
+    assert_ne!(f.status, TaskStatus::Done, "{:?}", f.status_reason);
+    assert!(
+        f.needs().is_none(),
+        "waiting on its sub-tasks, not on the developer"
+    );
     let heard: Vec<&str> = f
         .messages
         .iter()
@@ -768,12 +773,17 @@ async fn a_task_splits_into_sub_tasks_and_hears_from_them() {
         .filter(|c| c.starts_with("child:"))
         .collect();
     assert_eq!(heard.len(), 3, "once each: {heard:?}");
-    let finished = f
+    let tried = f
         .messages
         .iter()
-        .find(|m| m.text.contains("finish_with_answer: {\"data\""))
-        .expect("a sub-task's turn finished it");
-    assert!(finished.text.contains("Part A"), "{}", finished.text);
+        .find(|m| m.text.contains("finish_with_answer: {"))
+        .expect("a sub-task's turn tried to finish it");
+    assert!(tried.text.contains("Part A"), "{}", tried.text);
+    assert!(
+        tried.text.contains("sub-tasks aren't done"),
+        "{}",
+        tried.text
+    );
     // The ledger: each sub-task made, and undone by cancelling it.
     let actions = host.conn().await.otter_actions(None).await.unwrap();
     let made: Vec<_> = actions.iter().filter(|a| a.tool == "create_task").collect();

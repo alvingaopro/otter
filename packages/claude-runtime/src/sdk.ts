@@ -64,6 +64,9 @@ export class InputQueue implements AsyncIterable<SDKUserMessage> {
   }
 }
 
+/** How long the SDK waits for otterd's answer on a built-in (D-192). */
+export const OTTER_HOOK_SECS = 120;
+
 /** Tools held back for now (subagents). */
 export const DISALLOWED_TOOLS = ["Task", "Agent"];
 
@@ -186,9 +189,14 @@ export class Session {
       tools: builtins,
       mcpServers: { [OTTER_SERVER]: server },
       strictMcpConfig: true,
-      allowedTools: [...tools.map((t) => otterToolName(t.name)), ...builtins],
+      // The built-ins aren't allowed here: only the hook's yes runs one, and
+      // a call it didn't answer (cancelled, timed out) falls to
+      // `canUseTool`, which denies (D-192).
+      allowedTools: tools.map((t) => otterToolName(t.name)),
       disallowedTools: DISALLOWED_TOOLS,
-      ...(builtins.length > 0 ? { hooks: { PreToolUse: [{ hooks: [this.otterPreToolUse(builtins)] }] } } : {}),
+      ...(builtins.length > 0
+        ? { hooks: { PreToolUse: [{ hooks: [this.otterPreToolUse(builtins)], timeout: OTTER_HOOK_SECS }] } }
+        : {}),
       settingSources: [],
       systemPrompt: i.instructions ?? "",
       maxTurns: i.max_turns,
@@ -209,10 +217,10 @@ export class Session {
    * when it answers them. No answer is a denial.
    */
   otterPreToolUse(builtins: string[]): HookCallback {
-    return async (input) => {
+    return async (input, _toolUseID, { signal }) => {
       const i = input as PreToolUseHookInput;
       if (!builtins.includes(i.tool_name)) return {};
-      const result = await this.otterCall(`@${i.tool_name}`, i.tool_input);
+      const result = await this.otterCall(`@${i.tool_name}`, i.tool_input, signal);
       let allow = false;
       let why = "Otter couldn't check this call.";
       try {
@@ -237,12 +245,15 @@ export class Session {
   }
 
   /** One of Otter's tools, called by the model: otterd answers (public for tests). */
-  async otterCall(name: string, args: unknown) {
+  async otterCall(name: string, args: unknown, signal?: AbortSignal) {
     const call_id = this.id("call-");
     this.emit({ type: "tool_call", call_id, tool: name, input: args });
     let output: string;
     try {
-      output = await this.toolResults.wait(call_id, this.abort.signal);
+      // The turn's end, or the SDK giving up on this call (a hook's own
+      // signal): either ends the wait, never in a yes.
+      const stop = signal ? AbortSignal.any([this.abort.signal, signal]) : this.abort.signal;
+      output = await this.toolResults.wait(call_id, stop);
     } catch {
       output = JSON.stringify({ ok: false, error: { code: "retryable", message: "the turn ended before Otter answered" } });
     }

@@ -231,8 +231,10 @@ impl Daemon {
         // project's (`.envrc`) — and a task still without a workspace
         // ("Choose a workspace") gets its answer too.
         let dir = self.otter_dir();
-        let env = self.environments.base();
-        crate::brain::select(env, &choice).turn(env, &dir)
+        // Its gh is Otter's own sign-in when it has one (D-133), as
+        // read_github's is (D-192), never a token from the environment.
+        let env = self.git_account.gh_env(self.environments.base());
+        crate::brain::select(&env, &choice).turn(&env, &dir)
     }
 
     /// Where Otter's turn runs: empty, and nothing to anyone.
@@ -315,6 +317,12 @@ impl Daemon {
         let origin = if backend.as_event(&open) {
             Origin::Event {
                 event_id: format!("test-{}", last.id),
+            }
+        } else if placing && f.parent.is_some() {
+            // A sub-task's request is Otter's words (D-193), not the
+            // developer's: only what is automatic.
+            Origin::Event {
+                event_id: format!("request:{}", last.id),
             }
         } else {
             Origin::Developer {

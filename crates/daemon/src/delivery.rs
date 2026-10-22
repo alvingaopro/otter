@@ -758,6 +758,17 @@ impl Git<'_> {
         Ok(self.output(args).await?.trim().to_owned())
     }
 
+    /// The remote's default branch (`origin/HEAD`), if Git knows it.
+    pub async fn default_branch(&self) -> Option<String> {
+        let head = self
+            .git(&["rev-parse", "--abbrev-ref", "origin/HEAD"])
+            .await
+            .ok()?;
+        head.strip_prefix("origin/")
+            .filter(|b| !b.is_empty())
+            .map(str::to_owned)
+    }
+
     /// Where this repository comes from (`origin`), and the branch checked
     /// out when `origin` has it too (D-191): what a workspace of its own is
     /// made from. `None` without a remote.

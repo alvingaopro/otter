@@ -123,7 +123,21 @@ impl Daemon {
         // One driver per workspace (D-079): claimed now, held while the run
         // lives. A run that only reads takes no claim and waits for none
         // (D-191): it changes nothing there.
-        let shared = self.reads_alongside(&task);
+        // The backend that will run it: the conversation's own when it
+        // continues one (D-057), else the host's — only the SDK's hook keeps
+        // an agent to reading.
+        let continues_on = resume.as_ref().and_then(|sid| {
+            task.runs
+                .iter()
+                .rev()
+                .find(|r| r.provider_session_id.as_ref() == Some(sid))
+                .and_then(|r| r.conversation_id.clone())
+                .and_then(|id| self.conversations.get(id.as_str()))
+                .map(|c| c.backend)
+        });
+        let shared = task.answer_only
+            && continues_on.unwrap_or_else(|| self.settings.read().unwrap().coding_backend())
+                == "sdk";
         let _claim = if shared {
             None
         } else {
@@ -372,6 +386,7 @@ impl Daemon {
                 turn_id: Some(turn),
                 worked_ms: 0,
                 working_since: Some(now),
+                read_only: shared,
             });
             changes.push(
                 Change::new(TaskEvent::RunStarted {
@@ -2090,6 +2105,7 @@ mod tests {
 
     fn run_of(step: &StepId, state: RunState) -> Run {
         Run {
+            read_only: false,
             id: RunId::generate(),
             step_id: step.clone(),
             runtime: DEFAULT_RUNTIME.into(),
@@ -2291,6 +2307,7 @@ mod tests {
         use otter_core::{StepId, TurnId};
         let at = Utc::now();
         let mut run = Run {
+            read_only: false,
             id: RunId::from("run_1"),
             step_id: StepId::from("t1"),
             runtime: DEFAULT_RUNTIME.into(),

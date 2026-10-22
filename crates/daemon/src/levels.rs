@@ -268,64 +268,87 @@ impl Daemon {
         use otter_core::task::TaskEvent;
         use otter_protocol::otter::{OtterAction, Undo};
         let limit = p.limit.unwrap_or(100).clamp(1, 500) as usize;
-        let mut tasks = self.tasks.lock().await.list();
-        tasks.sort_by_key(|f| std::cmp::Reverse(f.updated_at));
-        let mut all = Vec::new();
-        for f in tasks.iter().take(200) {
-            let history = match self.tasks.lock().await.history(&f.id, 0, usize::MAX) {
-                Ok(h) => h,
-                Err(e) => {
-                    tracing::warn!(task = %f.id, "reading the history: {e:#}");
-                    continue;
-                }
-            };
-            for (i, rec) in history.iter().enumerate() {
-                let TaskEvent::ToolCalled {
-                    tool,
-                    origin,
-                    authority,
-                    detail,
-                } = &rec.event
-                else {
-                    continue;
-                };
-                // What came of it, and what undoes it: the records after it
-                // for the same tool, before the next call.
-                let mut error = None;
-                let mut undo = None;
-                for later in &history[i + 1..] {
-                    match &later.event {
-                        TaskEvent::ToolCalled { .. } => break,
-                        TaskEvent::ToolDone { tool: t, error: e } if t == tool => {
-                            error = e.clone();
-                        }
-                        TaskEvent::ToolUndo {
-                            tool: t,
-                            task_id,
-                            action,
-                        } if t == tool => {
-                            undo = Some(Undo {
-                                task_id: task_id.clone(),
-                                action: action.clone(),
-                            });
-                        }
-                        _ => {}
+        // What to read, taken at once; the histories are read without the
+        // store's lock, off the async threads.
+        let (dir, mut tasks) = {
+            let store = self.tasks.lock().await;
+            let tasks: Vec<(otter_core::TaskId, String, otter_core::Timestamp)> = store
+                .list()
+                .into_iter()
+                .map(|f| (f.id.clone(), f.title.clone(), f.updated_at))
+                .collect();
+            (store.dir().to_path_buf(), tasks)
+        };
+        tasks.sort_by_key(|(_, _, at)| std::cmp::Reverse(*at));
+        tasks.truncate(200);
+        let all = tokio::task::spawn_blocking(move || {
+            let mut all = Vec::new();
+            for (id, title, _) in &tasks {
+                let history = match crate::tasks::read_history(&dir, id, 0, usize::MAX) {
+                    Ok(h) => h,
+                    Err(e) => {
+                        tracing::warn!(task = %id, "reading the history: {e:#}");
+                        continue;
                     }
+                };
+                for (i, rec) in history.iter().enumerate() {
+                    let TaskEvent::ToolCalled {
+                        tool,
+                        origin,
+                        authority,
+                        detail,
+                    } = &rec.event
+                    else {
+                        continue;
+                    };
+                    // What came of it — its first `ToolDone` (a later one is
+                    // a refusal of its own) — and what undoes it, before the
+                    // next call.
+                    let mut error = None;
+                    let mut done = false;
+                    let mut undo = None;
+                    for later in &history[i + 1..] {
+                        match &later.event {
+                            TaskEvent::ToolCalled { .. } => break,
+                            TaskEvent::ToolDone { tool: t, error: e } if t == tool => {
+                                if done {
+                                    break;
+                                }
+                                done = true;
+                                error = e.clone();
+                            }
+                            TaskEvent::ToolUndo {
+                                tool: t,
+                                task_id,
+                                action,
+                            } if t == tool => {
+                                undo = Some(Undo {
+                                    task_id: task_id.clone(),
+                                    action: action.clone(),
+                                });
+                            }
+                            _ => {}
+                        }
+                    }
+                    all.push(OtterAction {
+                        task_id: id.clone(),
+                        task_title: otter_core::redact::redact(title),
+                        seq: rec.seq,
+                        at: rec.ts,
+                        tool: tool.clone(),
+                        origin: origin.clone(),
+                        authority: authority.clone(),
+                        detail: detail.as_deref().map(otter_core::redact::redact),
+                        error,
+                        undo,
+                    });
                 }
-                all.push(OtterAction {
-                    task_id: f.id.clone(),
-                    task_title: otter_core::redact::redact(&f.title),
-                    seq: rec.seq,
-                    at: rec.ts,
-                    tool: tool.clone(),
-                    origin: origin.clone(),
-                    authority: authority.clone(),
-                    detail: detail.as_deref().map(otter_core::redact::redact),
-                    error,
-                    undo,
-                });
             }
-        }
+            all
+        })
+        .await
+        .map_err(|e| otter_protocol::RpcError::internal(format!("reading what Otter did: {e}")))?;
+        let mut all = all;
         all.sort_by_key(|a| std::cmp::Reverse(a.at));
         all.truncate(limit);
         Ok(all)

@@ -281,7 +281,12 @@ test("an otter run may have some of Claude Code's own tools, each put to otterd 
   const s = new Session((e) => out.push(e as never), { ...otterInit, otter_builtins: ["WebSearch", "Bash"] } as never);
   const o = s.options();
   assert.deepEqual(o.tools, ["WebSearch", "Bash"]);
-  assert.deepEqual(o.allowedTools, [otterToolName("get_task"), "WebSearch", "Bash"]);
+  // Not allowed outright: only the hook's yes runs one; unanswered, it falls
+  // to canUseTool, which denies.
+  assert.deepEqual(o.allowedTools, [otterToolName("get_task")]);
+  assert.equal(o.hooks!.PreToolUse![0]!.timeout, 120);
+  const denied0 = await o.canUseTool!("Bash", { command: "ls" }, { signal: new AbortController().signal, toolUseID: "tu" } as never);
+  assert.equal(denied0?.behavior, "deny");
   const hook = o.hooks!.PreToolUse![0]!.hooks[0]!;
   const ask = (tool_name: string, tool_input: unknown) =>
     hook({ hook_event_name: "PreToolUse", tool_name, tool_input, tool_use_id: "tu", session_id: "", transcript_path: "", cwd: "/w" } as never, "tu", {
@@ -299,6 +304,14 @@ test("an otter run may have some of Claude Code's own tools, each put to otterd 
   s.toolResult({ call_id: String(second.call_id), output: '{"ok":true,"data":{"allow":false,"why":"turned off"}}' });
   const d = (await denied) as { hookSpecificOutput: { permissionDecision: string; permissionDecisionReason: string } };
   assert.deepEqual([d.hookSpecificOutput.permissionDecision, d.hookSpecificOutput.permissionDecisionReason], ["deny", "turned off"]);
+  // The SDK gives up on the call (its signal): denied.
+  const gaveUp = new AbortController();
+  const cut = hook({ hook_event_name: "PreToolUse", tool_name: "Bash", tool_input: { command: "ls" }, tool_use_id: "tu2", session_id: "", transcript_path: "", cwd: "/w" } as never, "tu2", {
+    signal: gaveUp.signal,
+  });
+  await until(out, (e) => e.type === "tool_call" && (e.input as { command?: string }).command === "ls");
+  gaveUp.abort();
+  assert.equal(((await cut) as { hookSpecificOutput: { permissionDecision: string } }).hookSpecificOutput.permissionDecision, "deny");
   // No answer (the turn ended): denied, never allowed.
   const late = ask("Bash", { command: "ls" });
   await s.shutdown(10);

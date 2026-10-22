@@ -375,8 +375,11 @@ impl Daemon {
             self.watch_turn(&f, &w).await;
             f = self.task_get(id.as_str()).await?;
         }
-        // Then a sub-task that came to something (D-193): Otter hears it here.
-        if let Some((child, key)) = self.child_change(&f).await {
+        // Then a sub-task that came to something (D-193): Otter hears it
+        // here — not in a task that was cancelled.
+        if f.status != TaskStatus::Cancelled
+            && let Some((child, key)) = self.child_change(&f).await
+        {
             self.child_turn(&f, &child, &key).await;
             f = self.task_get(id.as_str()).await?;
         }
@@ -1831,7 +1834,7 @@ impl Daemon {
         // it. Not when this one has worked there already: neither would go
         // on.
         if git
-            && f.runs.is_empty()
+            && !f.has_written()
             && let Some(other) = self.work_holding(ws_id, Some(&f.id)).await
         {
             return others(if other.status.is_active() {
@@ -1850,7 +1853,7 @@ impl Daemon {
     /// a workspace of its own from the same repository. Whether it did
     /// either (the step goes on from the change).
     async fn instead_of_waiting(self: &Arc<Self>, f: &Task, taken: &Taken) -> RpcResult<bool> {
-        if !f.runs.is_empty() || f.started_by.is_some() {
+        if f.has_written() || f.started_by.is_some() {
             return Ok(false);
         }
         if let Some(message) = self.unread_request(f) {
@@ -1908,8 +1911,8 @@ impl Daemon {
         let ws = match self.own_workspace(&f.id).await {
             Ok(ws) => ws,
             Err(e) => {
-                tracing::info!(task = %f.id, "no workspace of its own: {}", e.message);
-                let why = e.message.clone();
+                let why = otter_core::redact::redact(&e.message);
+                tracing::info!(task = %f.id, "no workspace of its own: {why}");
                 self.controller_apply(&f.id, f.status, move |_, _| {
                     Ok(called(Some("not_ready".into()), Some(why)))
                 })
@@ -1926,11 +1929,14 @@ impl Daemon {
                 },
             })
             .await?;
-        let said = format!(
-            "{from} is taken ({}). I gave this task a workspace of its own from the same repository, {}; it's being prepared, then the work starts there.",
-            taken.why.split(": ").skip(1).collect::<Vec<_>>().join(": "),
+        let why = taken
+            .why
+            .strip_prefix(&format!("{}{from}: ", otter_core::task::WAITING))
+            .unwrap_or(&taken.why);
+        let said = otter_core::redact::redact(&format!(
+            "{from} is taken ({why}). I gave this task a workspace of its own from the same repository, {}; it's being prepared, then the work starts there.",
             ws.name
-        );
+        ));
         let detail = format!("{from} → {}", ws.name);
         let back = ws_id.to_string();
         self.controller_apply(&f.id, f.status, move |f, _| {
@@ -2056,7 +2062,7 @@ impl Daemon {
         self.tasks.lock().await.list().into_iter().find(|o| {
             Some(&o.id) != except
                 && o.workspace_id.as_ref() == Some(ws_id)
-                && !o.runs.is_empty()
+                && o.has_written()
                 && !matches!(o.status, TaskStatus::Done | TaskStatus::Cancelled)
         })
     }
@@ -2808,7 +2814,10 @@ impl Daemon {
                 // on record, as a trigger's policy allows it (D-083); a
                 // question about it already put to the developer goes.
                 let auto_allowed;
-                let f = if self.auto(f, "publish") && !f.allowed_commands.contains(&cmd) {
+                let f = if self.auto(f, "publish")
+                    && !f.allowed_commands.contains(&cmd)
+                    && self.may_publish_on_own(f, branch, &git).await
+                {
                     let ask = format!("Run `{cmd}` {AND_OPEN_A_PR}");
                     let (cmd2, branch2) = (cmd.clone(), branch.clone());
                     self.controller_apply(&f.id, TaskStatus::Review, move |f, now| {
@@ -3187,9 +3196,6 @@ impl Daemon {
         // Accepting is automatic (D-192): once every gate passed and the
         // report is written, Otter accepts; merging stays the developer's.
         let accept = ready && self.auto(f, "accept_task");
-        if accept && !write_report && f.report.is_some() {
-            return self.accept_on_own(&f.id).await;
-        }
         if d == f.delivery
             && evidence.is_empty()
             && gates == f.gates
@@ -3199,6 +3205,11 @@ impl Daemon {
             && rationale.is_empty()
             && moot.is_empty()
         {
+            // Nothing new to write: the gates kept are these, so accepting
+            // checks the ones just read.
+            if accept {
+                return self.accept_on_own(&f.id).await;
+            }
             return Ok(());
         }
         let mut posted = None;
@@ -3281,10 +3292,45 @@ impl Daemon {
         {
             tracing::warn!("posting the report: {e:#}");
         }
-        if accept && write_report {
+        // After the write, so the gates it checks are the ones just read.
+        if accept {
             return self.accept_on_own(&f.id).await;
         }
         Ok(())
+    }
+
+    /// Whether review may publish `branch` on Otter's own (D-192): only
+    /// from a workspace Otter manages for the work (a Git one, not a
+    /// directory the developer keeps, whose tree may hold their own
+    /// uncommitted work), and never a default branch. Otherwise the
+    /// developer is asked, as before.
+    async fn may_publish_on_own(
+        &self,
+        f: &Task,
+        branch: &str,
+        git: &crate::delivery::Git<'_>,
+    ) -> bool {
+        let managed = match &f.workspace_id {
+            Some(id) => self
+                .store
+                .lock()
+                .await
+                .workspace(id.as_str())
+                .is_some_and(|w| matches!(w.source, otter_core::WorkspaceSource::Git(_))),
+            None => false,
+        };
+        if !managed || matches!(branch, "main" | "master" | "trunk" | "develop") {
+            return false;
+        }
+        let base = self.workspace_base(f).await;
+        if base.as_deref() == Some(branch) {
+            return false;
+        }
+        match git.default_branch().await {
+            Some(default) => default != branch,
+            // Unknown: not on Otter's own.
+            None => false,
+        }
     }
 
     /// Otter accepts a task whose gates all passed (D-192), on record, as
@@ -3292,6 +3338,17 @@ impl Daemon {
     async fn accept_on_own(self: &Arc<Self>, id: &TaskId) -> RpcResult<()> {
         let applied = self.tasks.lock().await.apply(id, None, |f, now| {
             if f.status != TaskStatus::Review || f.pending_decisions().next().is_some() {
+                return Ok(vec![]);
+            }
+            // Only what would be accepted: every gate kept clear (the
+            // developer's acceptance aside) and the report written. Nothing
+            // written otherwise, so a step never loops on a refusal.
+            let open = f.gates.is_empty()
+                || f.report.is_none()
+                || f.gates
+                    .iter()
+                    .any(|g| !g.status.clear() && g.name != crate::delivery::ACCEPTANCE_GATE);
+            if open {
                 return Ok(vec![]);
             }
             let mut v = vec![Change::new(TaskEvent::ToolCalled {
@@ -4281,6 +4338,7 @@ mod tests {
                 turn_id: None,
                 worked_ms: 0,
                 working_since: None,
+                read_only: false,
             });
         }
         f

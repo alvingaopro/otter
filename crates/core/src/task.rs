@@ -402,6 +402,11 @@ pub struct Run {
     /// a decision, and once it is over.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub working_since: Option<Timestamp>,
+    /// It only read, alongside whatever worked there (D-191): an
+    /// answer-only task's run on the SDK runtime. It holds no workspace,
+    /// and it isn't "work done there" for moving the task or holding it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub read_only: bool,
 }
 
 fn is_zero(n: &u64) -> bool {
@@ -755,6 +760,12 @@ impl Task {
 
     pub fn step(&self, id: &StepId) -> Option<&Step> {
         self.steps.iter().find(|t| &t.id == id)
+    }
+
+    /// Whether the coding agent has done work of its own here: a run
+    /// that wasn't only reading (D-191).
+    pub fn has_written(&self) -> bool {
+        self.runs.iter().any(|r| !r.read_only)
     }
 
     /// The revision its own work starts from in its current workspace
@@ -1696,6 +1707,7 @@ mod tests {
 
     fn run_at(now: Timestamp) -> Run {
         Run {
+            read_only: false,
             id: RunId::generate(),
             step_id: StepId::generate(),
             runtime: "claude".into(),
