@@ -24,7 +24,7 @@ pub struct TaskCreate {
     #[serde(default)]
     pub request: String,
     /// Where the work is done: a workspace on this host, or one made for the
-    /// task (D-178). Without one, the task blocks when it starts until one is
+    /// task (D-179). Without one, the task blocks when it starts until one is
     /// chosen (`task.act` `set_workspace`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workspace: Option<WorkspaceChoice>,
@@ -34,7 +34,7 @@ pub struct TaskCreate {
     pub answer_only: bool,
 }
 
-/// Where a new task works (D-178). A plain string is a workspace by id or
+/// Where a new task works (D-179). A plain string is a workspace by id or
 /// name, as it always was.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(untagged)]
@@ -138,7 +138,7 @@ mod workspace_choice_tests {
         serde_json::from_value(v).unwrap()
     }
 
-    /// What an older client sends still means what it did (D-178).
+    /// What an older client sends still means what it did (D-179).
     #[test]
     fn a_plain_string_is_still_a_workspace_by_name() {
         assert_eq!(parse(serde_json::json!("proj")), "proj".into());

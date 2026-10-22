@@ -1,4 +1,4 @@
-//! A task that makes its own workspace (D-178): from a repository, or an empty
+//! A task that makes its own workspace (D-179): from a repository, or an empty
 //! directory, in the same command that makes the task; made once whatever
 //! repeats; put away with the task. And Otter on the host finding the
 //! workspace, or making one, from what the developer said.

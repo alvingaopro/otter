@@ -1,6 +1,6 @@
 # Chat bootstrap: say what to do, Otter finds or makes the workspace
 
-**Status:** P1 done (D-178); P2 (cross-host choice in the CLI and app) next. **Branch:** `chat-bootstrap`.
+**Status:** P1 done (D-179); P2 (cross-host choice in the CLI and app) next. **Branch:** `chat-bootstrap`.
 
 ## 1. The problem
 

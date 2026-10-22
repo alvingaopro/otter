@@ -880,7 +880,7 @@ impl Daemon {
         }
         check_text("title", &title, MAX_TITLE)?;
         check_text("request", &p.request, MAX_TEXT)?;
-        // A workspace made for the task (D-178) is made after the task, so
+        // A workspace made for the task (D-179) is made after the task, so
         // a repeat of the command finds the task and goes on from there:
         // nothing here makes a workspace before the applied check.
         let made = match &p.workspace {
@@ -1089,7 +1089,7 @@ impl Daemon {
         .await
     }
 
-    /// The workspace made for a task from a source (D-178): the one
+    /// The workspace made for a task from a source (D-179): the one
     /// already made for it if there is one, so a repeated command makes no
     /// second.
     pub(crate) async fn workspace_for_task(
@@ -1117,7 +1117,7 @@ impl Daemon {
 
     /// A workspace named `<prefix>-<title>`, on a branch of its own when it
     /// is a Git one, marked as made for the task so it is put away when the
-    /// task ends (D-105). Shared by D-080 and D-178.
+    /// task ends (D-105). Shared by D-080 and D-179.
     async fn make_workspace_for(
         self: &Arc<Self>,
         f: &Task,

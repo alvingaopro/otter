@@ -6493,7 +6493,7 @@ Tests: `keeps the details closed until Otter at the top is clicked, and
 remembers it (D-177)`, `adds pictures from the + as from a paste (D-177)`, and
 `composerGrow.test.ts`.
 
-## D-178 — A task can make its workspace; Otter finds or makes it from what the developer said (2026-10-22)
+## D-179 — A task can make its workspace; Otter finds or makes it from what the developer said (2026-10-22)
 
 Plan `docs/plans/chat-bootstrap.md`. Starting work meant choosing a host, a
 workspace and a repository by hand before the first word of the task. Otter's

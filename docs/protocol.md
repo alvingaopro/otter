@@ -384,7 +384,7 @@ Product work owned by the daemon (D-043); see `otter_core::task`.
   id or name (a string, as always), `{"new": {"repository", "base"?,
   "branch"?}}` (a workspace made for the task from that repository, on a
   branch of its own) or `{"scratch": {}}` (an empty directory made for it)
-  (D-178). The task is returned with the workspace set; a Git one is still
+  (D-179). The task is returned with the workspace set; a Git one is still
   being prepared, and the task waits for it. An older otterd answers the
   object forms `invalid_request`.
 - `task.send {command_id, task, text, images?}` → the task, with the

@@ -1122,7 +1122,7 @@ impl Gateway {
             .unwrap_or_default()
     }
 
-    /// Where a new task works, from `create_task`'s arguments (D-178): at
+    /// Where a new task works, from `create_task`'s arguments (D-179): at
     /// most one of a workspace, a repository to make one from, or scratch.
     fn workspace_choice(
         args: &Value,
