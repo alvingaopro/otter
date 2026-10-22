@@ -61,7 +61,9 @@ Inside the daemon (`crates/daemon/src`):
   through the worker's `otter` profile (no Claude Code tools, only Otter's);
   `chat.rs` is Otter's conversation on the host (D-093), with the host's
   tools, `otter chat` in the CLI; `memory.rs` is Otter's memory (D-113),
-  each conversation's and the host's, given to every turn
+  each conversation's and the host's, given to every turn; `commands.rs`
+  does the developer's slash commands in a task's conversation with the
+  same tools, no model (D-190)
 - `watches/` — watches (D-183): what Otter looks at again later on the
   developer's word. One engine (`mod.rs`: probing with no model, only
   changes written, firing before the turn, the turn in the task's step);

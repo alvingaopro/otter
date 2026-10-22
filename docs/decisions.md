@@ -7088,3 +7088,74 @@ unarchive between the sweep's check and the delete was undone. It also found
 that any delete, merged or not, made a new workspace from main that said
 the work was merged. Both are fixed above.
 
+
+## D-190 — The chat boxes list what Otter can do: slash commands (2026-10-22)
+
+Plan `docs/plans/chat-commands.md`. The developer asked for commands that
+start with `/` in the chat box, completed as they are typed, so that what
+Otter can do is found by typing rather than by knowing which button or menu
+has it.
+
+- **Every command is listed** when the box starts with `/`, under three
+  headings: *Task* (acts at once, as the buttons do: `/start` `/resume`
+  `/retry` `/accept` `/pause` `/stop <what next>` `/workspace <name>`
+  `/own-workspace` `/unwatch` `/cancel`), *Tell* (a message otterd does:
+  `/ask` `/tell` `/revise` `/remember` `/watch ci` `/remind <30m>`
+  `/answer-only on|off`) and *Show* (opens something in the app: `/details`
+  `/activity` `/changes` `/open` `/memory` `/delete`). One that can't be
+  used now is dimmed, with why ("Not paused", "Pause first: the agent is
+  working"), not hidden: the point is to find them. The rules are
+  `chatCommands.ts`, and the buttons beside the box and in the header (Start,
+  Resume, Retry, Accept, Pause, Stop & send, Work in its own workspace) read
+  the same ones.
+- **The box says what Enter will do** once it names a command, and the send
+  button takes that command's name. `/cancel`, and `/accept` with a gate
+  not passed, ask for Enter twice. What isn't a command (`/usr is full`, a
+  path) goes as a message. Only a `/` at the very start counts; Pinyin's
+  `、` and `／` there are `/`. An input method's Enter never runs one: the
+  menu's keys go through `useComposition().enterSubmits`, as sending does.
+  No Chinese aliases: the developer chose English names only.
+- **A Tell command is done by otterd, not read by a model.**
+  `task.send` takes `command` (protocol.md). The message keeps the line as
+  written and `Message.command`; otterd does it with the tool Otter's turn
+  would have called, through the same gateway (`Gateway::restricted`, one
+  call, the message as the developer's word), so the checks, the history
+  and doing it once are the tools' own. The words after the command are
+  what is passed on, never the command. Otter's line says what came of it,
+  in words for the developer (a refusal says why and what to do), under
+  `command:<message id>`: not the message's own id, which would count as
+  answering every message before it. `unanswered` leaves out a command, so
+  Otter's turn doesn't answer it. A crash between the change and the line
+  writes the line once after the restart and makes the change once.
+- **Commands run with the controller off.** Off leaves tasks where they are
+  until the developer acts; a command is the developer acting.
+- **Compatible, no version bump**: an optional request field. An otterd
+  before it would ignore `command` and take the words as a plain message,
+  so the app offers the Tell commands only where `runtime.capabilities`
+  says `message_commands`; elsewhere they are dimmed, "Update otterd on this
+  host to use this".
+- **The empty Chat page's box** takes `/in <workspace>` (any host's;
+  `name@host` where a name is on several), `/repo <repository>`, `/scratch`,
+  `/host <name>`, `/answer-only` and `/draft` as conditions on the new task,
+  shown as chips above it; where it works is one of in, repo or scratch, the
+  latest. Nothing new on the wire: they are `task.create`'s.
+- **Not done:** Claude Code's own slash commands (`/compact`), deciding by
+  command (the decision's buttons are above the box), and `otter chat` in
+  the CLI. A plain message that starts with `/` is passed on as before.
+
+Design page: https://claude.ai/artifact/3sDw9Z11fYXJdmGwK6Scbd.
+
+Tests: `commands::tests` (the line as written and read back, the
+developer's words for a refusal, what a CI watch read, what is pending) and
+e2e `commands::*` (`/tell` passes the words on and no turn answers it; a
+message before a command is still answered; `/revise`; `/remember` once;
+a refused `/ask` and a `/remind` watch; words missing; the controller off;
+a crash after the change). App: `chatCommands.test.ts` (parsing, each
+command's availability and why, effects, the menu's order, the new task's
+conditions) and `slashCommands.test.tsx` (the menu, Enter and an input
+method's Enter, Pinyin's `、`, the hint and the button, `/cancel` twice, a
+Tell command and its bubble, a non-command sent as a message, `/workspace`
+and Show, the empty page's chips). Watched failing: with `unanswered`
+counting commands, Otter's turn answers `/tell`; with the menu's Enter not
+asking the input method, an IME Enter runs `/pause`. Checked with the app's
+tests and a production build, not in the macOS app itself.
