@@ -2,7 +2,7 @@
 //! UI follows `TaskChanged` in `host-event` and reloads what changed.
 
 use otter_core::Activity;
-use otter_core::task::{Need, Task, TaskAction, TaskEventRecord};
+use otter_core::task::{MessageCommand, Need, Task, TaskAction, TaskEventRecord};
 use otter_protocol::task::{TaskCreate, TaskImage};
 use serde::Serialize;
 use tauri::AppHandle;
@@ -77,13 +77,23 @@ pub async fn task_send(
     task: String,
     text: String,
     images: Option<Vec<TaskImage>>,
+    command: Option<MessageCommand>,
 ) -> Result<TaskView, String> {
-    rpc(&app, &host)
-        .await?
-        .task_send_with_images(&command_id, &task, &text, images.unwrap_or_default())
-        .await
-        .map(TaskView::from)
-        .map_err(|e| e.to_string())
+    let mut rpc = rpc(&app, &host).await?;
+    let images = images.unwrap_or_default();
+    // A slash command (D-190): `text` is the words after it.
+    match command {
+        Some(c) => {
+            rpc.task_send_command(&command_id, &task, c, &text, images)
+                .await
+        }
+        None => {
+            rpc.task_send_with_images(&command_id, &task, &text, images)
+                .await
+        }
+    }
+    .map(TaskView::from)
+    .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
