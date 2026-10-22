@@ -236,6 +236,14 @@ where
                 Some("fatal") => {
                     break Err(anyhow!("the Claude worker: {}", text(&ev, &["message"])));
                 }
+                // A command it refused (pictures over its limits, say): the
+                // turn won't come, and why is said, not waited out.
+                Some("nack") => {
+                    break Err(anyhow!(
+                        "the Claude worker refused the turn: {}",
+                        text(&ev, &["error", "message"])
+                    ));
+                }
                 _ => {}
             }
         }
@@ -419,6 +427,19 @@ mod tests {
             "{log}"
         );
         assert!(!turns[1].contains("images"), "{log}");
+    }
+
+    /// A turn the worker refuses ends with why, not at the deadline.
+    #[tokio::test]
+    async fn a_turn_the_worker_refuses_says_why() {
+        let (dir, env) = fake("refuses");
+        let (reply, calls) = turn(&env, dir.path(), "[msg_x] hi").await;
+        let e = reply.unwrap_err().to_string();
+        assert!(
+            e.contains("the Claude worker refused the turn: at most 4 images"),
+            "{e}"
+        );
+        assert!(calls.is_empty());
     }
 
     #[tokio::test]

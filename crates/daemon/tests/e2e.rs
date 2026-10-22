@@ -8557,8 +8557,9 @@ async fn a_picture_sent_while_the_agent_works_reaches_its_next_turn() {
 }
 
 /// A run's first turn carries the newest pictures that fit — four, of the
-/// six two messages sent before it started — and says the rest were left
-/// out (D-179): the worker would refuse the whole turn over its limits.
+/// six two messages sent before it started — and the agent and the
+/// developer are told the rest were left out (D-179): the worker would
+/// refuse the whole turn over its limits.
 #[tokio::test]
 async fn a_runs_first_turn_carries_the_pictures_that_fit() {
     use base64::Engine;
@@ -8628,6 +8629,14 @@ async fn a_runs_first_turn_carries_the_pictures_that_fit() {
         ),
         "{turn}"
     );
+    // And so is the developer, on the task.
+    wait_task(host, id, "the developer told", |f| {
+        f.messages.iter().any(|m| {
+            m.role == otter_core::task::MessageRole::System
+                && m.text.starts_with("The coding agent was given the newest 4 pictures you sent, not the 2 before them")
+        })
+    })
+    .await;
 }
 
 /// Claude Code's sign-in from Settings (D-142): a token from `claude

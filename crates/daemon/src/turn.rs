@@ -249,7 +249,9 @@ impl Daemon {
             }
         };
         // The pictures that came with these messages, if the model can see
-        // them: as many as a turn carries, the newest.
+        // them: as many as a turn carries, the newest. One whose file is
+        // gone isn't shown, and its message says so: the numbers in the
+        // prompt are the pictures the model has.
         let pictures = if backend.sees_pictures() {
             let all = open
                 .iter()
@@ -257,6 +259,7 @@ impl Daemon {
                     let id = m.id.to_string();
                     self.pictures_of(&f.id, m)
                         .into_iter()
+                        .filter(|p| p.is_file())
                         .map(move |p| (id.clone(), p))
                 })
                 .collect();
@@ -663,15 +666,15 @@ pub fn prompt(turn: &Turn<'_>) -> String {
 
 /// What a message's line says of its pictures (D-179): which of those the
 /// turn is shown are its — `with` of them, numbered after `before` — and
-/// how many of its `of` the turn isn't shown.
-fn pictures_note(before: usize, with: usize, of: usize) -> String {
+/// how many of the `sent` ones the turn isn't shown.
+fn pictures_note(before: usize, with: usize, sent: usize) -> String {
     let mut parts = vec![];
     match with {
         0 => {}
         1 => parts.push(format!("picture {}", before + 1)),
         w => parts.push(format!("pictures {}–{}", before + 1, before + w)),
     }
-    match (of.saturating_sub(with), with) {
+    match (sent.saturating_sub(with), with) {
         (0, _) => {}
         (1, 0) => parts.push("1 picture you aren't shown".to_owned()),
         (n, 0) => parts.push(format!("{n} pictures you aren't shown")),

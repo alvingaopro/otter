@@ -199,6 +199,17 @@ impl Daemon {
             let (fit, left) = fitting(pictures);
             if left > 0 {
                 prompt.push_str(&format!("\n\n{}", left_out(left)));
+                self.tell_once(
+                    task_id,
+                    format!("pictures-left:{run_id}"),
+                    format!(
+                        "The coding agent was given the newest {} pictures you sent, not the {left} before them: one turn carries at most {}, {} MB in all. Send again any it still needs.",
+                        fit.len(),
+                        otter_protocol::task::MAX_IMAGES,
+                        otter_protocol::task::MAX_IMAGES_TOTAL >> 20
+                    ),
+                )
+                .await;
             }
             fit.into_iter().map(|(_, path)| path).collect()
         } else {
@@ -1498,17 +1509,22 @@ impl Daemon {
     /// The developer's pictures went with a message, and the coding agent
     /// here can't see them: said once on the task, so it isn't a surprise.
     async fn pictures_unseen(&self, task_id: &TaskId, key: &str) {
-        let correlation = format!("pictures:{key}");
+        self.tell_once(
+            task_id,
+            format!("pictures:{key}"),
+            "The coding agent on this host can't see pictures, so it wasn't given the ones you sent. Describe what they show, or use the SDK runtime in Settings.".into(),
+        )
+        .await;
+    }
+
+    /// A system message on the task, once for `correlation`.
+    async fn tell_once(&self, task_id: &TaskId, correlation: String, text: String) {
         let _ = self
             .tasks
             .lock()
             .await
             .apply(task_id, Some(&correlation), |f, _| {
-                let (m, c) = message(
-                    MessageRole::System,
-                    "The coding agent on this host can't see pictures, so it wasn't given the ones you sent. Describe what they show, or use the SDK runtime in Settings.".into(),
-                    Some(correlation.clone()),
-                );
+                let (m, c) = message(MessageRole::System, text, Some(correlation.clone()));
                 f.messages.push(m);
                 Ok(vec![c])
             });
