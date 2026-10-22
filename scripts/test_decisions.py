@@ -50,39 +50,86 @@ class Claims(unittest.TestCase):
 
     def test_numbers_follow_the_archive_and_each_other(self) -> None:
         a = self.repo.dir
-        self.assertEqual(decisions.claim("First", a), 198)
-        self.assertEqual(decisions.claim("Second", a), 199)
-        self.assertEqual(decisions.claimed(a), {198, 199})
-        # The claim says what for, and leaves no tag behind here.
-        msg = sh(a, "git", "ls-remote", "--tags", "origin")
-        self.assertIn("refs/tags/decision/D-198", msg)
-        self.assertEqual(sh(a, "git", "tag", "-l", "decision/*"), "")
+        n, obj = decisions.claim("First", a)
+        self.assertEqual(n, 198)
+        self.assertEqual(decisions.claim("Second", a)[0], 199)
+        claims = decisions.remote_claims(a)
+        self.assertEqual(set(claims), {198, 199})
+        self.assertEqual(claims[198], obj)
+        # The claim says what for, and no local ref was written.
+        self.assertIn("D-198 — First", sh(a, "git", "cat-file", "-p", obj))
+        self.assertEqual(sh(a, "git", "for-each-ref", "refs/tags"), "")
 
     def test_a_number_taken_meanwhile_is_skipped(self) -> None:
         a, b = self.repo.dir, self.repo.clone("b")
         # Both see D-197 as the last; b pushes first.
-        self.assertEqual(decisions.claim("b's", b), 198)
-        # a's first try is refused; it takes the next.
-        real = decisions.claimed
-        decisions.claimed = lambda cwd=None: set()
+        self.assertEqual(decisions.claim("b's", b)[0], 198)
+        # a looked before b's push: its first try is refused, it takes the next.
+        real = decisions.remote_claims
+        calls = []
+
+        def stale(cwd: Path = decisions.ROOT) -> dict:
+            calls.append(cwd)
+            return {} if len(calls) == 1 else real(cwd)
+
+        decisions.remote_claims = stale
         try:
-            self.assertEqual(decisions.claim("a's", a), 199)
+            self.assertEqual(decisions.claim("a's", a)[0], 199)
         finally:
-            decisions.claimed = real
-        self.assertEqual(decisions.claimed(a), {198, 199})
+            decisions.remote_claims = real
+        self.assertEqual(set(decisions.remote_claims(a)), {198, 199})
+
+    def test_two_worktrees_of_one_clone_get_two_numbers(self) -> None:
+        a = self.repo.dir
+        w = Path(self.repo.tmp.name) / "w"
+        sh(a, "git", "worktree", "add", "-q", "-b", "other", str(w), "origin/main")
+        # Worktrees share refs: a claim writes none, or two at once could
+        # push each other's (as `git tag` then `push` did).
+        ran = []
+        real = subprocess.run
+
+        def run(args, *rest, **kw):
+            ran.append(list(args))
+            return real(args, *rest, **kw)
+
+        decisions.subprocess.run = run
+        try:
+            n1, o1 = decisions.claim("Here", a)
+            n2, o2 = decisions.claim("There", w)
+        finally:
+            decisions.subprocess.run = real
+        self.assertEqual((n1, n2), (198, 199))
+        self.assertNotEqual(o1, o2)
+        writes = [r for r in ran if r[:2] in (["git", "tag"], ["git", "update-ref"])]
+        self.assertEqual(writes, [])
+        self.assertEqual(sh(a, "git", "for-each-ref", "refs/tags"), "")
+
+    def test_a_refused_push_says_why(self) -> None:
+        hook = self.repo.origin / "hooks/pre-receive"
+        hook.write_text("#!/bin/sh\necho no claims today >&2\nexit 1\n")
+        hook.chmod(0o755)
+        with self.assertRaises(SystemExit) as stop:
+            decisions.claim("Refused", self.repo.dir)
+        self.assertIn("couldn't claim D-198", str(stop.exception))
+        self.assertEqual(decisions.remote_claims(self.repo.dir), {})
 
     def test_new_writes_the_file_and_check_takes_it(self) -> None:
         a = self.repo.dir
         path = decisions.new("Decision numbers are claimed, one file each", a)
         self.assertEqual(path.name, "D-198-decision-numbers-are-claimed-one-file-each.md")
-        self.assertTrue(path.read_text().startswith("# D-198 — Decision numbers are claimed, one file each ("))
+        lines = path.read_text().splitlines()
+        self.assertTrue(lines[0].startswith("# D-198 — Decision numbers are claimed, one file each ("))
+        self.assertEqual(lines[1], f"<!-- claim: {decisions.remote_claims(a)[198]} -->")
         self.assertEqual(decisions.slug("聊天框"), "decision")
         self.assertEqual(decisions.check(a), [])
 
     def test_check_says_what_is_wrong(self) -> None:
-        a = self.repo.dir
+        a, b = self.repo.dir, self.repo.clone("b")
         decisions.new("Claimed", a)
         d = a / "docs/decisions"
+        # b claimed D-199; a writes it as its own.
+        decisions.claim("b's", b)
+        (d / "D-199-not-ours.md").write_text("# D-199 — Not ours (2026-10-23)\n<!-- claim: " + "0" * 40 + " -->\n")
         # Appended to the archive past its last; a file unclaimed; a
         # duplicate; a bad name and title; a number mentioned that none has.
         (a / "docs/decisions.md").write_text(ARCHIVE + "\n## D-198 — Late (2026-10-23)\n")
@@ -95,6 +142,7 @@ class Claims(unittest.TestCase):
         for want in [
             "D-198 is in docs/decisions.md: from D-198 on a decision is a file of its own",
             "D-198 is in docs/decisions.md and in docs/decisions/D-198-claimed.md",
+            "docs/decisions/D-199-not-ours.md: D-199 was claimed by another",
             "docs/decisions/D-205-unclaimed.md: D-205 wasn't claimed",
             "docs/decisions/notes.md: name it D-NNN-<slug>.md",
             "docs/decisions/D-206-wrong-title.md: its first line is `# D-206",
@@ -102,7 +150,9 @@ class Claims(unittest.TestCase):
         ]:
             self.assertIn(want, problems)
         # Offline, only what the files themselves say.
-        self.assertNotIn("wasn't claimed", "\n".join(decisions.check(a, offline=True)))
+        offline = "\n".join(decisions.check(a, offline=True))
+        self.assertNotIn("wasn't claimed", offline)
+        self.assertNotIn("claimed by another", offline)
 
 
 if __name__ == "__main__":

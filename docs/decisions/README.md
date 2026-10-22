@@ -13,6 +13,6 @@ python3 scripts/decisions.py new "What was decided"
 
 when the work starts, before its number is written into code, tests or
 docs. It claims the next number on `origin` (the tag `decision/D-NNN`, which
-only one agent can push) and writes the file. To claim a number without a
-file yet: `scripts/decisions.py claim "Title"`. CI runs
-`scripts/decisions.py check` (D-198).
+only one agent can push) and writes the file, its second line naming the
+claim (`<!-- claim: … -->`; keep it). CI runs `scripts/decisions.py check`
+(D-198).
