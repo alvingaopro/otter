@@ -54,7 +54,7 @@ Two gaps, both verified:
 | Overlap and missed runs have a stated policy | Temporal Schedules: overlap *Skip* by default, a catch-up window | Missed while otterd was down: once, as now (D-083's rule); one Otter turn per conversation at a time, the developer's messages first (the controller's own slots) |
 | Poll gently where there is no push | AWS, “Exponential backoff and jitter”; otterd has no public listener for webhooks (D-083, Not done) | One modest interval with jitter for slice 1; backoff if rate limits ever matter; webhooks later, through a relay |
 | Let the platform do what it does itself | GitHub auto-merge waits on required checks itself | If merging ever is on the developer's word, prefer `gh pr merge --auto` where the repository allows it (§6) |
-| Visible and cancellable | ChatGPT Tasks' list; Claude Code's `CronList`/`CronDelete` | `get_task` lists the task's watches, `cancel_watch`; a line on the task's page and `otter watch` in slice 1b |
+| Visible and cancellable | ChatGPT Tasks' list; Claude Code's `CronList`/`CronDelete` | `get_task` lists the task's watches, `cancel_watch`; in slice 1b an Automations view with their history, Stop and Delete (§5.7), a line on the task's page, and `otter watch` |
 | Authority is given when it's set up, not when it fires | D-083's policy decided in advance; GitHub records who turned auto-merge on | The developer's message that asked is the authority; the turn a watch starts has none |
 
 ## 3. Words
@@ -271,6 +271,55 @@ developer's message ──watch──► waiting ──probe: not yet──► w
   method: compatible, no `PROTOCOL_VERSION` bump (`protocol.md`,
   Compatibility).
 
+### 5.7 In the app: a view of its own
+
+The developer asked (2026-10-22) to see automatic work in the sidebar,
+with its history and details, and to stop and delete it. Otter's tasks
+have all of that in Chat. Automatic work has none: triggers have no UI at
+all, and a watch's next probe, deadline and readings show nowhere.
+
+- **A third view in the Activity Bar, *Automations* (⌘3)**, beside Chat
+  and Workspaces. Its sidebar has three groups, across every host:
+  - WATCHING — waiting and firing watches: what, the task's title, until
+    when;
+  - SCHEDULED — triggers: name, schedule, next occurrence; paused ones
+    dimmed;
+  - HISTORY — ended watches, newest first, and how each ended.
+- **Its pane.** A watch: what was asked, in which task (a link to the
+  message in its conversation), kind and target, status, next probe,
+  deadline, and its readings — each change of what the probe saw, not
+  every probe — then the firing and the report (a link to it). A trigger:
+  request, workspace, schedule, policy, next occurrence, and its firings
+  (the 20 kept): when, the task each started (a link), or why it was
+  skipped.
+- **Actions** in the pane and the row's context menu, as for tasks (D-178
+  took actions off the rows). A watch: *Stop* (cancel) and *Delete…* (out
+  of the history; a waiting one is stopped first). A trigger: *Pause* /
+  *Resume*, *Run now*, *Delete…*.
+- **No dot on the Activity Bar.** The dot says something needs the
+  developer; a waiting watch doesn't.
+- In Chat, a task with a waiting watch shows it on its row (a small eye)
+  and above the message box (§5.6).
+
+What it takes:
+
+- Watches come with the tasks the app already has from every host
+  (`Task.watches`): the list is a flatten, no new request. Kept on the
+  task: its last 20 ended watches; for each watch, at most 50 readings
+  (changes of the probe's `seen` key only).
+- `watch.delete`: removes it, with `WatchDeleted` in the task's history.
+- Triggers: `trigger.list`, `trigger.run` and `trigger.delete` exist. New:
+  `trigger.update` (`enabled`, for pausing) and a `TriggersChanged` event
+  — there is none today, so the view would go stale. All compatible
+  additions (`protocol.md`).
+- **This revises D-178's count.** D-178 found the bar had three entries
+  for two kinds of work, and removed the Inbox because it repeated what
+  the other views showed. Automatic work is a third kind, shown nowhere
+  else: a view for it repeats nothing. Recorded as a revision when built.
+  The lighter alternative: a WATCHING group in Chat's list, above Active,
+  with details on the task's page — but triggers would still have no UI
+  (§9, question 5).
+
 ## 6. Merging on green: the developer's call, not in slices 0–2
 
 D-047: Otter never merges. The ask in §1 came right after “you can merge
@@ -312,7 +361,8 @@ instead wherever the repository allows auto-merge.
    own `accept_task` never overrides the gates, so this is the app's and
    the CLI's override (`task.act`), placed in `apply_action`'s Accept and
    keyed by that act's command id.
-   1b. The line above the message box and `otter watch`.
+   1b. The Automations view (§5.7), for watches and for the triggers
+   that exist today; the line above the message box; `otter watch`.
 2. **The host's conversation:** `pr` and `task` kinds; D-094's follow-ups
    become the `task` watches Otter sets on the tasks it makes.
 3. **If decided (§6):** merging on green.
@@ -352,7 +402,10 @@ turn backend (which gains a count of its turns):
 2. *Accept anyway* while CI hasn't finished sets a watch by itself: yes by
    default?
 3. Defaults: CI deadline 2 h; probe every 60 s; 3 waiting per task.
-4. The word: *watch* (盯) — or *check back*, *reminder*?
+4. The words: *watch* (盯) for the thing, *Automations* for the view — or
+   *check back* / *reminder*, *Scheduled* / *Later*?
+5. Where: a third view in the Activity Bar (revising D-178's count), or a
+   WATCHING group in Chat's list (triggers keep no UI)?
 
 ## Sources
 
