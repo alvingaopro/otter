@@ -79,7 +79,6 @@ pub(crate) enum Probe {
 
 /// What a probe may use.
 pub(crate) struct ProbeContext<'a> {
-    pub task: &'a Task,
     /// Where commands run: Otter's own directory, not the workspace (put
     /// away once the task is done).
     pub dir: &'a Path,
@@ -160,7 +159,8 @@ fn jitter(d: Duration) -> Duration {
 }
 
 /// Set a watch on `f` (inside a store step): `kind` on what `args` name,
-/// for `what` the developer asked. `Err`: why not, for the developer.
+/// for `what` the developer asked. The same thing watched already is that
+/// watch, with no changes. `Err`: why not, for the developer.
 pub(crate) fn set(
     f: &mut Task,
     kind: &dyn WatchKind,
@@ -174,12 +174,15 @@ pub(crate) fn set(
     if what.is_empty() {
         return Err("say what to watch for (what)".into());
     }
-    let waiting: Vec<String> = f.open_watches().map(|w| w.label.clone()).collect();
-    if waiting.len() >= w::MAX_WAITING {
+    if let Some(w) = same(f, kind.name(), &target.value) {
+        return Ok((w.clone(), vec![]));
+    }
+    let open: Vec<String> = f.open_watches().map(|w| w.label.clone()).collect();
+    if open.len() >= w::MAX_WAITING {
         return Err(format!(
-            "this task already has {} watches waiting ({}): stop one first",
-            waiting.len(),
-            waiting.join("; ")
+            "this task already has {} watches open ({}): stop one first",
+            open.len(),
+            open.join("; ")
         ));
     }
     let minutes = kind.minutes(args)?;
@@ -285,13 +288,14 @@ pub(crate) fn on_accept(f: &mut Task, now: Timestamp) -> Vec<Change> {
     let Ok(target) = CI.target(f, &Value::Null, what) else {
         return vec![];
     };
-    if same(f, "ci", &target.value).is_some() {
-        return vec![];
-    }
     let label = target.label.clone();
     let Ok((watch, mut changes)) = set(f, &CI, target, &Value::Null, what, None, now) else {
         return vec![];
     };
+    // Watched already: nothing more to say.
+    if changes.is_empty() {
+        return vec![];
+    }
     let hours = (watch.deadline - now).num_hours().max(1);
     let (m, c) = message(
         MessageRole::Controller,
@@ -356,11 +360,26 @@ impl Daemon {
             p.failures.retain(|id, _| ids.contains(id));
             p.turned.retain(|id, _| ids.contains(id));
         }
+        // With the controller off no turn says what a watch found: a plain
+        // line does, so a firing watch still ends (D-183).
+        if self.brain_choice().controller.as_deref() == Some("off") {
+            for (task, w) in open.iter().filter(|(_, w)| w.status == WatchStatus::Firing) {
+                let line = match (kind(&w.kind), &w.finding) {
+                    (Some(k), Some(f)) => k.line(w, f),
+                    _ => format!("{}: it came to something.", capital(&w.label)),
+                };
+                self.record_watch_report(task, &w.id, line).await;
+            }
+        }
         let waiting: Vec<(TaskId, Watch)> = open
             .into_iter()
             .filter(|(_, w)| w.status == WatchStatus::Waiting)
             .collect();
         for (task, w) in waiting {
+            // A probe in flight answers first; its deadline waits a tick.
+            if self.controller.lock().unwrap().watches.busy.contains(&w.id) {
+                continue;
+            }
             let Some(kind) = kind(&w.kind) else {
                 // A kind from a newer build: it ends at its deadline.
                 if now >= w.deadline {
@@ -410,13 +429,12 @@ impl Daemon {
 
     /// One probe of `w`, on its task as it is now.
     async fn probe(&self, kind: &'static dyn WatchKind, task: &TaskId, w: &Watch) -> Probe {
-        let Ok(f) = self.task_get(task.as_str()).await else {
+        if self.task_get(task.as_str()).await.is_err() {
             return Probe::Unreadable("the task is gone".into());
-        };
+        }
         let env = self.git_account.gh_env(self.environments.base());
         let dir = self.otter_dir();
         let cx = ProbeContext {
-            task: &f,
             dir: &dir,
             env: &env,
         };
@@ -564,6 +582,14 @@ impl Daemon {
                 }
             }
         };
+        // A turn that took long and whose report can't be written is tried
+        // again a minute after it ended, not at once.
+        self.controller
+            .lock()
+            .unwrap()
+            .watches
+            .turned
+            .insert(w.id.clone(), Instant::now());
         crate::gateway::crash_point("watch", "report");
         self.record_watch_report(&f.id, &w.id, reply).await;
     }

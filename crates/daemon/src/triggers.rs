@@ -150,17 +150,10 @@ impl Daemon {
                 t.next_at = t.schedule.next_after(now, t.created_at);
             }
             store.save()?;
+            let t = store.list[i].clone();
             drop(store);
             self.triggers_changed();
-            return Ok(self
-                .triggers
-                .lock()
-                .await
-                .list
-                .iter()
-                .find(|t| t.name == p.trigger || t.id.as_str() == p.trigger)
-                .cloned()
-                .expect("just updated"));
+            return Ok(t);
         }
         Ok(store.list[i].clone())
     }

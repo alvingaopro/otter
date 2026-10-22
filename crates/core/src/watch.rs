@@ -32,6 +32,9 @@ pub enum WatchStatus {
     Reported,
     /// Stopped before it fired. Final.
     Cancelled,
+    /// A status this build doesn't know: ended, as far as it can tell.
+    #[serde(other)]
+    Unknown,
 }
 
 impl WatchStatus {

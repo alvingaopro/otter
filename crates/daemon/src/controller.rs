@@ -205,6 +205,8 @@ pub(crate) struct ControllerState {
     asked: HashSet<DecisionId>,
     /// When each task's CI was last read.
     ci_polled: std::collections::HashMap<TaskId, std::time::Instant>,
+    /// When each task's pull request's mergeability was last read (D-184).
+    pr_polled: std::collections::HashMap<TaskId, std::time::Instant>,
     /// The same, by the clock, for what Otter is told (D-184): written to
     /// the task only when what was read changed.
     pub(crate) ci_read: std::collections::HashMap<TaskId, otter_core::Timestamp>,
@@ -2412,7 +2414,7 @@ impl Daemon {
             browser_checks: crate::browser::load_checks(&root).is_ok_and(|c| !c.is_empty()),
             ci_settling: false,
             nothing_to_publish: false,
-            no_ci_after_push: None,
+            no_ci_after_push: false,
         };
         let mut d = f.delivery.clone();
         let mut evidence = Vec::new();
@@ -2611,9 +2613,7 @@ impl Daemon {
                 .as_ref()
                 .filter(|d| d.ci.is_empty())
                 .and_then(|d| d.pushed_at)
-                .map(|t| Utc::now() - t)
-                .filter(|gone| *gone > start)
-                .map(|gone| gone.num_minutes());
+                .is_some_and(|t| Utc::now() - t > start);
             if let Some(dl) = d.as_mut()
                 && let Some(n) = dl.pr_number
                 && !cx.ci_settling
@@ -2626,16 +2626,21 @@ impl Daemon {
                     Err(e) => tracing::warn!(task = %f.id, "reading CI: {e:#}"),
                 }
                 // Whether it can be merged at all: one that conflicts gets
-                // no CI (D-184). GitHub still working it out says nothing.
-                match gh.pr_state(n).await {
-                    Ok(p) => {
-                        dl.mergeable = Some(p.mergeable)
-                            .filter(|m| m == "MERGEABLE" || m == delivery::CONFLICTING);
-                        if dl.base.as_deref().is_none_or(str::is_empty) && !p.base.is_empty() {
-                            dl.base = Some(p.base);
+                // no CI (D-184). Read once a minute, and whenever it isn't
+                // known (a push makes a new Delivery); GitHub still working
+                // it out (`UNKNOWN`) keeps the last reading.
+                if dl.mergeable.is_none() || self.pr_due(&f.id) {
+                    match gh.pr_state(n).await {
+                        Ok(p) => {
+                            if p.mergeable == "MERGEABLE" || p.mergeable == delivery::CONFLICTING {
+                                dl.mergeable = Some(p.mergeable);
+                            }
+                            if dl.base.as_deref().is_none_or(str::is_empty) && !p.base.is_empty() {
+                                dl.base = Some(p.base);
+                            }
                         }
+                        Err(e) => tracing::warn!(task = %f.id, "reading the pull request: {e:#}"),
                     }
-                    Err(e) => tracing::warn!(task = %f.id, "reading the pull request: {e:#}"),
                 }
                 self.controller
                     .lock()
@@ -2896,6 +2901,21 @@ impl Daemon {
                 .as_deref()
                 .map(|b| b.trim_start_matches("origin/").to_owned()),
             _ => None,
+        }
+    }
+
+    /// Whether it's time to read whether the pull request can be merged
+    /// (`OTTER_PR_POLL_MS`, a minute; D-184).
+    fn pr_due(&self, id: &TaskId) -> bool {
+        let every = env_ms("OTTER_PR_POLL_MS", 60_000);
+        let mut st = self.controller.lock().unwrap();
+        let now = std::time::Instant::now();
+        match st.pr_polled.get(id) {
+            Some(t) if now.duration_since(*t) < every => false,
+            _ => {
+                st.pr_polled.insert(id.clone(), now);
+                true
+            }
         }
     }
 

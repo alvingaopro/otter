@@ -6735,7 +6735,9 @@ third Activity Bar entry (D-185), and asked for it built in the same PR.
   decision of its own.
 - **Only changes are written.** A watch's document changes when it is set,
   when what its probe saw changed (a reading, the last 50), when it fires
-  and when it ends. When to probe next and failures in a row are in memory:
+  and when it ends; and the task store no longer writes a step that changed
+  nothing (no command, no history, the task the same) — a write moves the
+  task in every list and wakes every client. When to probe next and failures in a row are in memory:
   a restart probes once at start. `ci` is probed every 60 s, a tenth either
   way.
 - **Firing before the turn.** What was found is written with the status
@@ -6749,12 +6751,15 @@ third Activity Bar entry (D-185), and asked for it built in the same PR.
   answering the developer's messages. It runs apart from the step: no
   answer, an error or a panic is said as a plain line, and the watch ends;
   one cancelled meanwhile says nothing. The controller steps a task with a
-  firing watch whatever its status.
+  firing watch whatever its status; with the controller off, a plain line
+  says it. A probe still in flight answers before a deadline fires.
 - **Otter's tools:** `watch {what, kind, in_minutes?, for_minutes?}` on the
   developer's word, made under their message and what is watched (a turn
   run again sets it once; the same thing watched already is that watch);
-  `cancel_watch {watch_id}` in any turn (the safe direction); the task's
-  watches in `get_task`. At most 3 waiting per task; `time` 1 minute to
+  `cancel_watch {watch_id}` on the developer's word too, never a watch
+  being said (its report isn't Otter's to drop); the task's watches in
+  `get_task`, with a newer CI reading by a watch beside the task's own. At
+  most 3 open (waiting or being said) per task; `time` 1 minute to
   7 days ahead; `ci` 2 hours unless told, 7 days at most. Otter is told to
   say when what it reports about CI was read, and never "I just looked" at
   something it didn't read in that turn.
@@ -6790,15 +6795,20 @@ frozen; the gates read "no checks, and the repository has workflows" as
 
 - **Mergeable is read with the checks** (`gh pr view --json
   state,mergeable,headRefOid,baseRefName`) and kept on `delivery.mergeable`
-  (`MERGEABLE` / `CONFLICTING`; GitHub's `UNKNOWN`, still working it out,
-  is nothing). A pull request that conflicts fails the `Pull request` gate
+  (`MERGEABLE` / `CONFLICTING`; GitHub's `UNKNOWN`, still working it out
+  after a push to either branch, keeps the last reading; a push of Otter's
+  starts it unknown). Read once a minute (`OTTER_PR_POLL_MS`) beside the
+  checks' 15 s, and whenever it isn't known. A pull request that conflicts fails the `Pull request` gate
   ("conflicts with main") and, with no checks, the `CI` gate ("can't run:
   the branch conflicts with main"); Otter says so once per head — bring the
   branch up to date, by asking the coding agent or by hand. It isn't a fix
   step by itself: the developer says.
 - **No check at all** 10 minutes after the push (`OTTER_CI_START_MS`):
-  the `CI` gate says "no check has started N min after the push", not
-  "running".
+  the `CI` gate says "no check has started 10 min after the push", not
+  "running" (no running count of minutes: the task would be written every
+  minute). A `ci` watch measures it from when it first saw that head with
+  no checks, so a push by anyone starts it again; a repository without CI
+  on its pull requests isn't watched.
 - **When CI was read:** `delivery.ci_read_at` is written when what was
   read changed (each poll would move the task in the app and wake every
   client); otterd keeps the latest read in memory, and `get_task` gives

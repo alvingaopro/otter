@@ -35,6 +35,14 @@ impl WatchKind for Ci {
                 "this task has no pull request yet: there's no CI of its own to watch".into(),
             );
         };
+        if f.gates
+            .iter()
+            .any(|g| g.name == "CI" && g.status == otter_core::task::GateStatus::NotApplicable)
+        {
+            return Err(
+                "its repository runs no CI on the pull request: there's nothing to watch".into(),
+            );
+        }
         let repo = repo_of(url).ok_or_else(|| format!("`{url}` isn't a GitHub pull request"))?;
         Ok(Target {
             value: json!({ "pr": pr, "repo": repo }),
@@ -100,40 +108,40 @@ impl WatchKind for Ci {
             state.base.clone()
         };
         // GitHub runs no `pull_request` workflow on a pull request that
-        // conflicts (D-184): waiting is waiting for nothing.
-        if state.mergeable == CONFLICTING {
-            let text = if checks.is_empty() {
-                format!(
-                    "it conflicts with {base}, so GitHub runs no CI on it until the branch is brought up to date"
-                )
-            } else {
-                format!("it conflicts with {base}: it can't be merged as it is")
-            };
+        // conflicts (D-184): waiting for its CI is waiting for nothing.
+        let conflicts = state.mergeable == CONFLICTING;
+        if conflicts && checks.is_empty() {
             return Probe::Found {
                 outcome: Outcome::Stuck,
-                text,
+                text: format!(
+                    "it conflicts with {base}, so GitHub runs no CI on it until the branch is brought up to date"
+                ),
             };
         }
         if checks.is_empty() {
-            let since = cx
-                .task
-                .delivery
-                .as_ref()
-                .and_then(|d| d.pushed_at)
-                .map_or(w.created_at, |p| p.max(w.created_at));
+            // Measured from when this head was first seen with no checks: a
+            // push by anyone starts it again.
+            let none = format!("{head}:none");
+            let Some(since) = w.readings.iter().find(|r| r.key == none).map(|r| r.at) else {
+                return Probe::NotYet {
+                    key: none,
+                    text: "no checks yet".into(),
+                };
+            };
             let start = chrono::Duration::from_std(env_ms("OTTER_CI_START_MS", 600_000))
                 .unwrap_or_default();
-            if Utc::now() - since > start {
+            let gone = Utc::now() - since;
+            if gone > start {
                 return Probe::Found {
                     outcome: Outcome::Stuck,
                     text: format!(
-                        "no CI check has started on it ({} min)",
-                        (Utc::now() - since).num_minutes()
+                        "no CI check has started on it in {} min",
+                        gone.num_minutes()
                     ),
                 };
             }
             return Probe::NotYet {
-                key: format!("{head}:none"),
+                key: none,
                 text: "no checks yet".into(),
             };
         }
@@ -157,14 +165,33 @@ impl WatchKind for Ci {
                 .collect::<Vec<_>>()
                 .join(", ")
         };
+        let conflict = if conflicts {
+            format!("; it conflicts with {base}")
+        } else {
+            String::new()
+        };
         if pending > 0 {
             let mut text = format!("{pending} of {n} checks running, {passed} passed");
             if failed > 0 {
                 text.push_str(&format!(", failed: {}", failed_names()));
             }
             return Probe::NotYet {
-                key: format!("{head}:{passed}/{failed}/{pending}"),
-                text: format!("{text} (at {head})"),
+                key: format!("{head}:{passed}/{failed}/{pending}:{conflicts}"),
+                text: format!("{text} (at {head}){conflict}"),
+            };
+        }
+        // Every check finished, but it can't be merged as it is.
+        if conflicts {
+            let checks = if failed > 0 {
+                format!("failed: {}", failed_names())
+            } else {
+                format!("all {n} checks passed")
+            };
+            return Probe::Found {
+                outcome: Outcome::Stuck,
+                text: format!(
+                    "{checks} (at {head}), but it conflicts with {base}: it can't be merged as it is"
+                ),
             };
         }
         if failed > 0 {

@@ -265,6 +265,18 @@ impl TaskStore {
         let from = doc.task.status;
         let now = Utc::now();
         let changes = step(&mut doc.task, now)?;
+        // Nothing changed and no command to remember: nothing is written —
+        // a write moves the task in every list and wakes every client.
+        if command_id.is_none()
+            && changes.is_empty()
+            && self.docs.get(id).is_some_and(|d| d.task == doc.task)
+        {
+            return Ok(Applied {
+                task: doc.task,
+                duplicate: true,
+                from: Some(from),
+            });
+        }
         doc.task.updated_at = now;
         self.commit(doc, command_id, changes)
             .map(|a| Applied {

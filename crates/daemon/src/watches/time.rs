@@ -20,10 +20,15 @@ impl WatchKind for Time {
 
     fn target(&self, _f: &Task, args: &Value, what: &str) -> Result<Target, String> {
         let minutes = self.minutes(args)?;
+        let what = what.trim();
+        // What it's for tells two looks in as many minutes apart.
+        let hash = what.bytes().fold(0xcbf2_9ce4_8422_2325_u64, |h, b| {
+            (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3)
+        });
         Ok(Target {
-            value: json!({ "in_minutes": minutes }),
-            label: crate::agents::excerpt(what.trim(), 60),
-            key: format!("in{minutes}"),
+            value: json!({ "in_minutes": minutes, "for": crate::agents::excerpt(what, 200) }),
+            label: crate::agents::excerpt(what, 60),
+            key: format!("in{minutes}-{:08x}", hash as u32),
         })
     }
 

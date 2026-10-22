@@ -376,9 +376,8 @@ pub struct GateContext {
     pub ci_settling: bool,
     /// The task has nothing of its own to publish (D-166).
     pub nothing_to_publish: bool,
-    /// No CI check has started this many minutes after the last push
-    /// (D-184), if that's long enough to say so.
-    pub no_ci_after_push: Option<i64>,
+    /// No CI check has started long after the last push (D-184).
+    pub no_ci_after_push: bool,
 }
 
 /// GitHub's word for a pull request that conflicts with its base.
@@ -516,13 +515,13 @@ pub fn gates(f: &Task, cx: &GateContext) -> Vec<Gate> {
                     GateStatus::Failed,
                     format!("can't run: the branch conflicts with {}", base_of(d)),
                 )
-            } else if let (true, true, Some(mins)) =
-                (d.ci.is_empty(), cx.has_ci, cx.no_ci_after_push)
-            {
+            } else if d.ci.is_empty() && cx.has_ci && cx.no_ci_after_push {
+                // No count of minutes in it: the gate would change, and the
+                // task be written, every minute.
                 gate(
                     "CI",
                     GateStatus::Pending,
-                    format!("no check has started {mins} min after the push"),
+                    "no check has started 10 min after the push",
                 )
             } else if pending || (d.ci.is_empty() && cx.has_ci) {
                 gate("CI", GateStatus::Pending, "running")
@@ -1299,7 +1298,7 @@ mod tests {
             browser_checks: false,
             ci_settling: false,
             nothing_to_publish: false,
-            no_ci_after_push: None,
+            no_ci_after_push: false,
         };
         let g = gates(&f, &cx);
         assert_eq!(status(&g, "Pull request"), GateStatus::Failed);
@@ -1312,7 +1311,7 @@ mod tests {
         // Mergeable, no checks long after the push: said, still waited on.
         f.delivery.as_mut().unwrap().mergeable = Some("MERGEABLE".into());
         let late = GateContext {
-            no_ci_after_push: Some(14),
+            no_ci_after_push: true,
             ..cx
         };
         let g = gates(&f, &late);
@@ -1321,7 +1320,7 @@ mod tests {
         assert_eq!(ci.status, GateStatus::Pending);
         assert_eq!(
             ci.detail.as_deref(),
-            Some("no check has started 14 min after the push")
+            Some("no check has started 10 min after the push")
         );
     }
 
@@ -1336,7 +1335,7 @@ mod tests {
                 browser_checks: false,
                 ci_settling: false,
                 nothing_to_publish: false,
-                no_ci_after_push: None,
+                no_ci_after_push: false,
             },
         );
         assert_eq!(status(&g, "Requirements met"), GateStatus::Passed);
@@ -1356,7 +1355,7 @@ mod tests {
             browser_checks: true,
             ci_settling: false,
             nothing_to_publish: false,
-            no_ci_after_push: None,
+            no_ci_after_push: false,
         };
         let g = gates(&f, &cx);
         assert_eq!(status(&g, "Pull request"), GateStatus::Pending);
@@ -1426,7 +1425,7 @@ mod tests {
                 browser_checks: false,
                 ci_settling: false,
                 nothing_to_publish: false,
-                no_ci_after_push: None,
+                no_ci_after_push: false,
             },
         );
         f.rationale

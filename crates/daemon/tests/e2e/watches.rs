@@ -370,10 +370,27 @@ async fn watches_are_bounded_and_end_with_their_task() {
     let answers = say(
         host,
         &id,
+        "event-stop",
+        "AS: event\nCALL: cancel_watch {\"watch_id\": \"wch_x\"}",
+    )
+    .await;
+    assert_eq!(code(&answers[0]), "not_allowed_in_this_turn", "{answers:?}");
+
+    // Two looks in as many minutes, for different things, are two.
+    let answers = say(
+        host,
+        &id,
         "many",
-        &[60, 61, 62, 63]
-            .map(|m| format!("CALL: watch {{\"what\": \"look {m}\", \"kind\": \"time\", \"in_minutes\": {m}}}"))
-            .join("\n"),
+        &[
+            (60, "is it stuck"),
+            (60, "did the deploy finish"),
+            (62, "c"),
+            (63, "d"),
+        ]
+        .map(|(m, w)| {
+            format!("CALL: watch {{\"what\": \"{w}\", \"kind\": \"time\", \"in_minutes\": {m}}}")
+        })
+        .join("\n"),
     )
     .await;
     let codes: Vec<&str> = answers.iter().map(code).collect();
@@ -465,4 +482,32 @@ async fn a_trigger_is_paused_and_resumed() {
         .filter(|e| matches!(e.event, otter_protocol::Event::TriggersChanged { .. }))
         .count();
     assert_eq!(changed, 3, "made, paused, resumed");
+}
+
+/// No check on the head long after the watch first saw it: said, not
+/// waited on to the deadline (D-184).
+#[tokio::test]
+async fn a_ci_watch_says_when_no_check_starts() {
+    let fake = host_with(vec![("OTTER_CI_START_MS", "1500".into())]).await;
+    let host = &fake.host;
+    let id = published(&fake).await;
+    say(host, &id, "watch-1", WATCH_CI).await;
+    let f = wait_task(host, &id, "reported", |f| {
+        f.watches
+            .first()
+            .is_some_and(|w| w.status == WatchStatus::Reported)
+    })
+    .await;
+    let w = &f.watches[0];
+    assert_eq!(w.finding.as_ref().unwrap().outcome, Outcome::Stuck);
+    assert!(
+        w.finding
+            .as_ref()
+            .unwrap()
+            .text
+            .starts_with("no CI check has started on it"),
+        "{:?}",
+        w.finding
+    );
+    assert_eq!(w.readings[0].text, "no checks yet");
 }

@@ -244,7 +244,7 @@ developer's message ──watch──► waiting ──probe: not yet──► w
 | Tool | Class | What |
 |---|---|---|
 | `watch` | on the developer's word | `{what, kind, target?, in_minutes?, for_minutes?}`; `kind` is one of the kinds built (`time`, `ci` in slice 1), `target` that kind's own arguments; `ci` watches the task's own PR |
-| `cancel_watch` | routine (the safe direction, as pausing) | `{watch_id}` |
+| `cancel_watch` | on the developer's word (built so: in a watch's own turn, cancelling would drop the developer's report) | `{watch_id}`; never a watch being said |
 
 - The task's watches, waiting and lately reported, are in `get_task`'s
   answer; no tool of their own.

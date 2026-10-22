@@ -408,7 +408,8 @@ Product work owned by the daemon (D-043); see `otter_core::task`.
   turn stops and this goes next; refused when nothing is running),
   `cancel_watch {watch_id}` (stop a watch; one already ended is a
   `conflict`), `delete_watch {watch_id}` (remove one; a waiting one is
-  stopped first) (D-183). An
+  stopped first) (D-183; an older otterd answers these two
+  `invalid_request`). An
   action the lifecycle doesn't allow fails with `conflict`, and so does
   `accept` while a gate (D-047) is open, unless `override_gates`.
 - `task.delete {task}` → `null`: removes a task with its history
@@ -452,7 +453,7 @@ publish there (D-166) has its `Pull request` and `CI` gates
 ones and the last 20 ended: `{id, kind ("time", "ci"; clients show an
 unknown kind by its label), target (the kind's own; `ci`: `{pr, repo}`),
 label, what, asked_in?, created_at, deadline, status ("waiting", "firing",
-"reported", "cancelled"), readings? [{at, key, text}] (each change of what
+"reported", "cancelled"; an unknown one reads as ended), readings? [{at, key, text}] (each change of what
 it saw, the last 50), finding? {at, outcome, text}, findings, ended_at?,
 report? (the message that said it)}`. `outcome` is `passed`, `failed`,
 `stuck`, `gone`, `due`, `expired` or `unreadable`; an unknown one reads as

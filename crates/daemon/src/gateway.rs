@@ -4,8 +4,7 @@
 //! - **Observe** tools read the task, its history, its run, its
 //!   decisions and evidence, and the conversation's older messages;
 //!   everything they return is redacted (D-075) and bounded.
-//! - **Routine**: pausing, and stopping a watch (D-183) — the safe
-//!   direction — in any turn.
+//! - **Routine**: pausing — the safe direction — in any turn.
 //! - **On the developer's word**: forwarding their messages, redirecting,
 //!   starting, resuming, retrying, approving the plan, accepting, a changed
 //!   goal. Only in a turn the developer's message started; each change is
@@ -289,8 +288,8 @@ pub fn tools() -> Vec<ToolSpec> {
         ),
         t(
             "cancel_watch",
-            Routine,
-            "Stop a watch (its id is in get_task's watches): it won't come back.",
+            DeveloperWord,
+            "Stop a watch the developer wants stopped (its id is in get_task's watches): it won't come back.",
             json!({
                 "type": "object",
                 "properties": {"watch_id": {"type": "string"}},
@@ -697,6 +696,13 @@ impl Gateway {
                     "conflicts_with_base": d.mergeable.as_deref() == Some(crate::delivery::CONFLICTING),
                     "ci": d.ci.iter().map(|c| json!({"name": r(&c.name), "state": c.state})).collect::<Vec<_>>(),
                     "read_at": self.inner.daemon.ci_read_at(&f.id).or(d.ci_read_at),
+                    // A watch on it may have read it since: newer than the above.
+                    "read_since_by_a_watch": f.watches.iter()
+                        .filter(|w| w.kind == "ci")
+                        .filter_map(|w| w.last_reading())
+                        .filter(|x| Some(x.at) > self.inner.daemon.ci_read_at(&f.id).or(d.ci_read_at))
+                        .max_by_key(|x| x.at)
+                        .map(|x| json!({"at": x.at, "text": r(&x.text)})),
                 })),
                 "watches": f.watches.iter().rev().take(8).map(|w| json!({
                     "id": w.id.as_str(),
@@ -1425,7 +1431,9 @@ impl Gateway {
         )
         .await;
         let d = &self.inner.daemon;
+        let value = target.value.clone();
         let mut set = None;
+        let mut existed = false;
         let applied = d
             .tasks
             .lock()
@@ -1434,6 +1442,8 @@ impl Gateway {
                 let (w, mut changes) =
                     crate::watches::set(f, kind, target, args, &what, asked_in.clone(), now)
                         .map_err(RpcError::conflict)?;
+                // Set meanwhile (accepting anyway): that one.
+                existed = changes.is_empty();
                 set = Some(w);
                 changes.push(
                     Change::new(TaskEvent::ToolDone {
@@ -1453,10 +1463,13 @@ impl Gateway {
                 .watches
                 .iter()
                 .rev()
-                .find(|w| w.kind == kind.name() && w.asked_in == asked_in)
+                .find(|w| w.kind == kind.name() && w.target == value)
                 .cloned()
                 .ok_or_else(|| fail("retryable", "the watch isn't there"))?,
         };
+        if existed {
+            return Ok(shown(&watch, "already watching"));
+        }
         self.inner
             .done
             .lock()
@@ -1472,12 +1485,22 @@ impl Gateway {
         ))
     }
 
-    /// `cancel_watch`: the safe direction, in any turn.
+    /// `cancel_watch`, on the developer's word. Never a watch being said:
+    /// its report isn't Otter's to drop.
     async fn cancel_watch(&self, f: &Task, args: &Value) -> Result<Value, ToolError> {
         let id = otter_core::WatchId::from(args["watch_id"].as_str().unwrap_or_default());
-        if f.watch(&id).is_none() {
-            return Err(fail("not_found", format!("no watch `{id}` on this task"))
-                .next("get_task lists its watches"));
+        match f.watch(&id).map(|w| w.status) {
+            None => {
+                return Err(fail("not_found", format!("no watch `{id}` on this task"))
+                    .next("get_task lists its watches"));
+            }
+            Some(otter_core::watch::WatchStatus::Firing) => {
+                return Err(fail(
+                    "not_ready",
+                    "that watch came to something: it's being said now",
+                ));
+            }
+            _ => {}
         }
         let command = self.inner.origin.command(&format!("cancel_watch:{id}"));
         let d = &self.inner.daemon;
@@ -1773,10 +1796,7 @@ mod tests {
 
     #[test]
     fn each_tool_has_one_class_and_a_closed_schema() {
-        for (all, safe) in [
-            (tools(), &["pause_task", "cancel_watch"][..]),
-            (host_tools(), &["pause_task"][..]),
-        ] {
+        for all in [tools(), host_tools()] {
             let mut names: Vec<&str> = all.iter().map(|t| t.name).collect();
             names.sort();
             names.dedup();
@@ -1785,14 +1805,13 @@ mod tests {
                 assert_eq!(t.input["type"], "object", "{}", t.name);
                 assert_eq!(t.input["additionalProperties"], false, "{}", t.name);
             }
-            // Only pausing (and stopping a watch, D-183) changes anything
-            // without the developer's word: the safe direction.
+            // Only pausing changes anything without the developer's word.
             let routine: Vec<&str> = all
                 .iter()
                 .filter(|t| t.class == Class::Routine)
                 .map(|t| t.name)
                 .collect();
-            assert_eq!(routine, safe);
+            assert_eq!(routine, ["pause_task"]);
             // Never Otter's: cancel, delete, decide anything else, publish.
             for n in [
                 "cancel_task",

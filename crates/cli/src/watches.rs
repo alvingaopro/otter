@@ -148,6 +148,7 @@ fn show(host: &str, t: &Task, w: &Watch) {
             None => "said".into(),
         },
         WatchStatus::Cancelled => "stopped".into(),
+        WatchStatus::Unknown => "ended".into(),
     };
     println!(
         "{}  {}  {}  · “{}” on {host}",
