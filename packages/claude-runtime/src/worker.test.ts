@@ -40,6 +40,9 @@ test("a turn's pictures are checked: type, base64, count and size", () => {
   assert.equal(turn([{ media_type: "image/png", data: big }]), false, "one over the limit");
   const large = Buffer.alloc(600 * 1024).toString("base64");
   assert.equal(turn(Array(4).fill({ media_type: "image/png", data: large })), false, "over the limit together");
+  // The most otterd sends in one turn (`runs::fitting`): four, 2 MiB together.
+  const most = Buffer.alloc(512 * 1024).toString("base64");
+  assert.equal(turn(Array(4).fill({ media_type: "image/png", data: most })), true, "at the limits");
 });
 
 test("a turn with pictures reaches Claude as image blocks before the text", async () => {

@@ -4,7 +4,8 @@
 # behaviour: ok (a turn with a policy check, a tool result and a two-question
 # form), silent (never ready), fatal (fails to start), noisy (floods stderr
 # and sends an oversized frame), old (an older protocol), coding-only (no
-# Otter profile). Every command is appended to FAKE_WORKER_LOG.
+# Otter profile), refuses (refuses an Otter turn, as over its picture
+# limits). Every command is appended to FAKE_WORKER_LOG.
 #
 # Initialized with the Otter profile (D-089), a turn looks the task up
 # (get_task); when the prompt says FORWARD, it passes on the developer's
@@ -106,6 +107,10 @@ while IFS= read -r line; do
       ;;
     *'"type":"send_turn"'*)
       if [ -n "$otter" ]; then
+        if [ "$mode" = refuses ]; then
+          out '{"type":"nack","request_id":"r2","error":"at most 4 images","category":"invalid_input"}'
+          continue
+        fi
         turn=t1
         case "$line" in *FORWARD*) forward=1 ;; esac
         msg=$(printf '%s' "$line" | grep -o '\[msg_[A-Za-z0-9]*\]' | tail -1 | tr -d '[]')

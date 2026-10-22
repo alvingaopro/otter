@@ -140,7 +140,6 @@ async function render(s: TaskSource) {
         workspaces={{ mac: [{ id: "ws_demo", name: "demo" }] }}
         now={Date.now()}
         onOpenWorkspace={onOpenWorkspace}
-        onOpenPreview={async () => {}}
       />,
     ),
   );
@@ -530,7 +529,7 @@ describe("Tasks view", () => {
     expect(byText(".chip", "Answer only")).toBeTruthy();
   });
 
-  it("shows the coding agent's work in Activity and offers interrupt and redirect while it runs", async () => {
+  it("shows the coding agent's work in Activity and offers pause and stop & send while it runs", async () => {
     const base = mockSource("mac");
     const acts: unknown[] = [];
     const s: TaskSource = { ...base, act: async (_key, action) => void acts.push(action) };
@@ -546,12 +545,16 @@ describe("Tasks view", () => {
     expect(q(".feed")!.textContent).not.toContain("cargo test timeline::csv");
     await act(async () => byText(".seg-btn", "Coding agent")!.click());
     expect(q(".feed")!.textContent).toContain("cargo test timeline::csv");
-    // Its runtime can interrupt and redirect: the buttons are there.
-    await act(async () => byText("button", "Interrupt")!.click());
-    expect(acts).toContainEqual({ action: "interrupt" });
+    // Stopping is beside the message box, not in the header (D-180).
+    const header = q("header")!;
+    for (const label of ["Pause", "Interrupt", "Preview", "Open preview"]) {
+      expect(Array.from(header.querySelectorAll("button")).some((b) => b.textContent === label)).toBe(false);
+    }
+    await act(async () => byText(".composer-row button", "Pause")!.click());
+    expect(acts).toContainEqual({ action: "pause" });
     const composer = q<HTMLTextAreaElement>('textarea[aria-label="Message to Otter"]')!;
     type(composer, "Use the existing icon");
-    await act(async () => byText("button", "Redirect now")!.click());
+    await act(async () => byText(".composer-row button", "Stop & send")!.click());
     expect(acts).toContainEqual({ action: "redirect", text: "Use the existing icon" });
     // Cancelling is in the menu now.
     await menu();
@@ -562,8 +565,8 @@ describe("Tasks view", () => {
   it("offers neither where nothing runs", async () => {
     await render(mockSource("mac"));
     await open("Show host uptime");
-    expect(byText("button", "Interrupt")).toBeUndefined();
-    expect(byText("button", "Redirect now")).toBeUndefined();
+    expect(byText(".composer-row button", "Pause")).toBeUndefined();
+    expect(byText(".composer-row button", "Stop & send")).toBeUndefined();
   });
 
   it("creates a task in a chosen workspace", async () => {
@@ -784,7 +787,6 @@ describe("Tasks view", () => {
           workspaces={{ mac: [{ id: "ws_demo", name: "demo", sessions: [{ id: "ses_c", name: "claude" }] }] }}
           now={Date.now()}
           onOpenWorkspace={onOpenWorkspace}
-          onOpenPreview={async () => {}}
         />,
       ),
     );
@@ -816,7 +818,6 @@ describe("Tasks view", () => {
           workspaces={{ mac: [{ id: "ws_demo", name: "demo", sessions: [] }] }}
           now={Date.now()}
           onOpenWorkspace={async () => {}}
-          onOpenPreview={async () => {}}
         />,
       ),
     );

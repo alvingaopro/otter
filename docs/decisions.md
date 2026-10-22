@@ -6163,10 +6163,10 @@ conversation did not.
   method's candidate (macOS Pinyin and the like) no longer sends the message
   (it and an Enter within 50 ms of the composition's end are the method's).
 
-**Not done.** Otter's own reply turn (the brain) is not shown the pictures;
-the coding agent is. Pictures on a task's first request (`task.create`) and
-on Otter's host conversation. The stop-redirect action (`redirect {text}`)
-takes no pictures.
+**Not done.** Otter's own reply turn (the brain): only the coding agent is
+shown the pictures (D-181 shows them to Otter's turn too). Pictures on a
+task's first request (`task.create`) and on Otter's host conversation. The
+stop-redirect action (`redirect {text}`) takes no pictures.
 
 ## D-172 — The app comes to the front after it updates itself (2026-10-21)
 
@@ -6583,6 +6583,81 @@ already existed.
 
 Tests: `chat_bootstrap.rs` (e2e), `workspace_choice_tests` (protocol),
 `repo_names_are_the_readable_part`.
+
+## D-180 — A task stops from beside its message box: Pause, or Stop & send (2026-10-21)
+
+The task view had three ways to stop the coding agent, and the developer
+couldn't tell them apart: **Interrupt** and **Pause** in the header (both
+leave the task paused, the agent's conversation kept; Pause also ends the
+run), and **Redirect now** by the message box. The header also had
+**Preview**, which the developer found of no use.
+
+- One way to stop: **Pause**, beside the message box while the task is
+  planning, implementing, verifying or blocked. **Resume** stays in the
+  header, with Start, Retry and Accept: what the task can be told to do next.
+  The host's Work tab offers Pause on a run's row where it offered Interrupt.
+- **Redirect now** is **Stop & send**: it stops the agent's current turn and
+  has it do what is written next, as before (`redirect`).
+- Interrupt and Preview are gone from the app. The daemon keeps the
+  `interrupt` and `preview` actions, for the CLI and anything else that asks.
+
+Tests: `shows the coding agent's work in Activity and offers pause and stop &
+send while it runs` and `offers neither where nothing runs`.
+
+## D-181 — Otter's turn sees the developer's pictures (2026-10-22)
+
+**Why.** Dogfooding D-171: a screenshot pasted into a task, and Otter
+answered that it couldn't see it — and couldn't tell whether the picture was
+sent at all. Otter's turn was given each message as `[id] text`, the
+pictures neither shown nor mentioned, so the model guessed. The coding agent
+got them; the one the developer was talking to didn't.
+
+**Decision.**
+- **Otter's turn is shown the pictures of the messages it answers**, read
+  from the task's files as a run's turn reads them (`turn_input`): one that
+  can't be read, or isn't a picture, is said in the text. On the Claude
+  worker (`otter` profile) they go on `send_turn` as `images`, as a coding
+  run's do; on Anthropic's API, as image blocks before the prompt. A picture
+  whose file is gone isn't shown, so the numbers in the prompt are the
+  pictures the model has. A command the worker refuses (a `nack`) ends the
+  turn with the worker's reason, not at the turn's deadline. A backend
+  says whether it sees pictures (`TurnBackend::sees_pictures`): behind the
+  OpenAI shape it doesn't — some of those models refuse a request that has
+  one, which would lose the whole answer — and the host conversation and a
+  follow-up's turn have none to show.
+- **Each message says which pictures are its**: `[msg] text [pictures 2–3]`,
+  numbered in the order the model is shown them, and the ones it isn't shown
+  (`[2 pictures you aren't shown]`, `[…; 1 more you aren't shown]`). The
+  recent conversation marks a message that had pictures (`[1 picture]`).
+  Otter's instructions say the pictures it is shown come with the messages,
+  one it isn't shown it can't see, and a message's pictures go to the coding
+  agent with its words.
+- **A turn carries at most what the worker takes** (`runs::fitting`): the
+  newest pictures, four, 2 MB in all, in the order they were sent. One
+  message can't be over that (D-171), but a turn gathers several: Otter's
+  over the messages it answers, and a run's first turn over every message
+  since the last (the worker refused such a turn whole, as `invalid_input`).
+  The ones left out are said: in a run's prompt ("2 older pictures … are
+  left out") and, once the run has started, to the developer in a system
+  message on the task (they aren't offered again: send again what it still
+  needs); in Otter's,
+  as "you aren't shown".
+
+**Not done.** Pictures in the OpenAI-shaped providers (it would need to know
+which models read them). Otter without its tools (D-096, `reply`): its
+recent conversation marks the pictures, but it isn't shown them. Pictures in
+Otter's host conversation, and on a task's first request (both still
+D-171's). A worker older than D-171 with the Otter profile ignores
+`images`; `otter host install` updates it with otterd. The limits are the
+same numbers in otterd and the worker, kept by hand; the worker's tests
+check it takes the most otterd sends.
+
+Tests: `a_turn_says_whose_the_pictures_are`,
+`a_turn_carries_the_newest_pictures_that_fit`, `the_pictures_go_with_the_turn`,
+`a_turn_the_worker_refuses_says_why`, `a_first_message_with_pictures`, the
+worker's `a turn's pictures are checked`, and end to end
+`otters_turn_is_shown_the_developers_pictures` and
+`a_runs_first_turn_carries_the_pictures_that_fit`.
 
 ## D-181 — A message goes to the host that has the workspace it names (2026-10-22)
 

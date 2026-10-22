@@ -52,14 +52,12 @@ interface Props {
   focus?: { key: string; at: number };
   /** Show a workspace (and session) in the Workspaces view. */
   onOpenWorkspace: (host: string, workspaceId: string, sessionId?: string) => void;
-  /** Open a preview port of a host in the browser (forwarding it if remote). */
-  onOpenPreview: (host: string, port: number, path: string) => Promise<void>;
   /** The list's resize handle (D-097): the same width as the Workspaces list. */
   grip?: ReactNode;
 }
 
 /** The tasks, under Chat in the Activity Bar (D-041, D-042, D-178): product work, independent of the Workspace view. */
-export function TasksView({ source, hosts, workspaces, now, focus, onOpenWorkspace, onOpenPreview, grip }: Props) {
+export function TasksView({ source, hosts, workspaces, now, focus, onOpenWorkspace, grip }: Props) {
   const [list, setList] = useState<PlacedTask[]>(() => source.list());
   const [find, setFind] = useState("");
   const [selected, setSelected] = useState<string | undefined>();
@@ -170,7 +168,6 @@ export function TasksView({ source, hosts, workspaces, now, focus, onOpenWorkspa
           now={now}
           workspaces={workspaces[current.host] ?? []}
           onOpenWorkspace={onOpenWorkspace}
-          onOpenPreview={onOpenPreview}
         />
       ) : (
         <main className="pane empty">
@@ -249,14 +246,12 @@ function TaskPane({
   now,
   workspaces,
   onOpenWorkspace,
-  onOpenPreview,
 }: {
   placed: PlacedTask;
   source: TaskSource;
   now: number;
   workspaces: WorkspaceChoice[];
   onOpenWorkspace: Props["onOpenWorkspace"];
-  onOpenPreview: Props["onOpenPreview"];
 }) {
   const f = placed.task;
   const ws = workspaces.find((w) => w.id === f.workspace_id);
@@ -321,25 +316,7 @@ function TaskPane({
           )}
         </span>
         <span className="spacer" />
-        {f.workspace_id && !ENDED.includes(f.status) && (
-          <button
-            className="btn"
-            title={f.preview ? `Port ${f.preview.port} on ${placed.host}` : "Start the app's preview in its workspace"}
-            onClick={async () => {
-              setError(null);
-              try {
-                if (!f.preview) await source.act(placed.key, { action: "preview" });
-                const p = source.list().find((x) => x.key === placed.key)?.task.preview ?? f.preview;
-                if (p) await onOpenPreview(placed.host, p.port, p.path);
-              } catch (e) {
-                setError(String(e));
-              }
-            }}
-          >
-            {f.preview ? "Open preview" : "Preview"}
-          </button>
-        )}
-        <TaskActions f={f} act={act} caps={caps} />
+        <TaskActions f={f} act={act} />
         <Menu
           label="More actions"
           items={[
@@ -528,37 +505,16 @@ function DeleteTaskDialog({
   );
 }
 
-/** What the task can be told to do now; cancelling and deleting are in the ⋯ menu. */
-function TaskActions({
-  f,
-  act,
-  caps,
-}: {
-  f: Task;
-  act: (a: TaskAction) => void;
-  caps?: RuntimeCapabilities | null;
-}) {
-  const live = ["planning", "implementing", "verifying", "blocked"].includes(f.status);
-  const running = f.runs.some((r) => ["starting", "running", "waiting"].includes(r.state));
+/**
+ * What the task can be told to do next; stopping it is beside the message
+ * box, cancelling and deleting are in the ⋯ menu.
+ */
+function TaskActions({ f, act }: { f: Task; act: (a: TaskAction) => void }) {
   return (
     <span className="task-actions">
-      {running && caps?.features.interrupt_turn && (
-        <button
-          className="btn"
-          title="Stop what the coding agent is doing now, and wait for you"
-          onClick={() => act({ action: "interrupt" })}
-        >
-          Interrupt
-        </button>
-      )}
       {f.status === "draft" && (
         <button className="btn primary" onClick={() => act({ action: "start" })}>
           Start
-        </button>
-      )}
-      {live && (
-        <button className="btn" onClick={() => act({ action: "pause" })}>
-          Pause
         </button>
       )}
       {f.status === "paused" && (
@@ -1038,10 +994,30 @@ function Conversation({
                   }
                 }}
               />
+              {["planning", "implementing", "verifying", "blocked"].includes(placed.task.status) && (
+                <button
+                  type="button"
+                  className="btn outline composer-btn"
+                  title="Stop the work and wait until you resume it"
+                  disabled={busy}
+                  onClick={async () => {
+                    setBusy(true);
+                    try {
+                      await source.act(placed.key, { action: "pause" });
+                    } catch (e) {
+                      onError?.(String(e));
+                    } finally {
+                      setBusy(false);
+                    }
+                  }}
+                >
+                  Pause
+                </button>
+              )}
               {live && caps?.features.redirect && (
                 <button
                   type="button"
-                  className="btn outline composer-redirect"
+                  className="btn outline composer-btn"
                   title="Stop what the coding agent is doing and have it do this next"
                   disabled={busy || !text.trim()}
                   onClick={async () => {
@@ -1058,7 +1034,7 @@ function Conversation({
                     }
                   }}
                 >
-                  Redirect now
+                  Stop & send
                 </button>
               )}
               <button
