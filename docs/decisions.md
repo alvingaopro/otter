@@ -6775,7 +6775,7 @@ third Activity Bar entry (D-185), and asked for it built in the same PR.
 Not done (slice 2 and later): the host's conversation, the `pr` and `task`
 kinds, D-094's follow-ups as `task` watches, a NEEDS YOU kind for a report
 and what clears it, a look with the coding agent from a watch, recurring
-looks, notifications outside the app. Live check W-1 pending.
+looks, notifications outside the app. Live check W-1: passed, D-188.
 
 Tests: `watch::tests` (core), `watches::*` end to end (scripted turn, fake
 `gh`, a minute a second): a `ci` watch said once with its readings and
@@ -6938,3 +6938,61 @@ protocol field: each is applied once and either can be repeated safely.
 The Chat page with no task selected is Otter and a chat box: what is written
 there starts a task at once, on the host it names (D-182), else the last one
 used. The Workspace view's title bar says "Workspace" and carries no mark.
+
+## D-188 — A watch reads before it is set; the live check (2026-10-22)
+
+Live check W-1 (`docs/runtime-validation.md`): v0.7.78 in a sandbox of its
+own, real Claude (`claude-opus-5-5` with Otter's tools, the coding agent on
+the SDK runtime), real pull requests on the scratch repository, based on a
+branch whose CI has a check that sleeps four minutes. Asked "CI 跑完告诉我一声"
+while that check ran, Otter set a `ci` watch and said, in Chinese, what it
+watched and until when; the probe read "all 4 checks passed" at 03:56:05 and
+Otter's report followed 3 s later, once, with the commit, the time it was
+read, and that merging stays the developer's. `time` ("两分钟后再帮我看一下这个任务")
+fired 11 s after it was due and said what had changed since. A pull request
+that conflicted when it opened (#171's case, no CI at all) was said at once:
+the gates read "can't run: the branch conflicts with w1-base", and the
+watch's first probe found it 4 s after it was set.
+
+What it found: Otter's reply as it set that last watch said CI was "still
+waiting for checks" — `get_task`'s gate was read before the conflict was
+known — and the watch's report said 5 s later that CI can't run. A stale
+reading told as the present, which D-184 set out to end.
+
+- **`watch` reads once before it sets anything.** The kind's probe runs in
+  the tool call (20 s at most). Not yet: the watch is set with that as its
+  first reading, the answer carries it (`now`, with when), and Otter is told
+  to say that, not an older reading. Already come to something (passed,
+  failed, can't run, merged or closed): nothing is set, and the answer says
+  what (`done: "nothing to wait for"`, `came_to`), for Otter to tell the
+  developer. Couldn't read it in time: set all the same, the answer says
+  why (`not_read`) so Otter doesn't fall back on an older reading, and it is
+  probed at the next tick as before. A kind that isn't probed (`time`): set
+  as before. A first read counts as a probe: the next is an interval later.
+  Already watching it (the developer asked twice, or *Accept anyway* set
+  it): the answer carries what that watch last read. What makes the tool
+  refuse (no `what`, the cap, the minutes) is checked before it reads.
+- The controller's line on a conflicting pull request is true whether or
+  not CI ran before the conflict: GitHub "runs no CI on it until the branch
+  is brought up to date".
+
+Not done, found by the check, for the developer to decide:
+
+- In review, the controller says itself that every gate passed, or that
+  the pull request conflicts; a `ci` watch says it again up to a minute
+  later (its interval). Two messages for one piece of news: the watch could
+  fire on the controller's own reading and its report stand for the line.
+- Times are said in UTC ("until 05:52 UTC"): a turn doesn't know the
+  developer's time zone (the app shows the watch in local time).
+- A coding agent opened its pull request itself, against `main`, though the
+  workspace's base was another branch; Otter's own publishing uses the base.
+- Slice 2 (watches in Otter's conversation on the host, the `pr` and `task`
+  kinds) is held: that conversation left the app in D-115, unused, and
+  only `otter chat` shows it.
+
+Tests (`watches::*`): asked while CI runs, the answer says what it read and
+the watch keeps it as its first reading; asked once CI passed, nothing is
+set and the answer says it passed; asked on a conflicting pull request,
+nothing is set and the answer says it can't run; a watch set while it could
+still run fires when it comes to conflict; GitHub unreadable as it is set,
+the watch is set, the answer says why, and it reads on its next look.

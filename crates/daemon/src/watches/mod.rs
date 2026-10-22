@@ -10,6 +10,9 @@
 //!   when it ends. When to probe next and failures in a row live in memory
 //!   ([`Probing`]): a restart probes once at start. Every write moves the
 //!   task in the app's list and wakes every client — never once a minute.
+//! - **One look before it's set** (W-1). The `watch` tool reads what it
+//!   would wait for once, at once: the turn says what is true now, not an
+//!   older gate; what has already happened needs no watch, and is said.
 //! - **Firing before the turn.** What the probe found is written with the
 //!   status `firing` before any model runs; a restart says it then, on what
 //!   was found, instead of probing again for another answer.
@@ -57,6 +60,7 @@ pub(crate) struct Probing {
 }
 
 /// What a watch is on, as its kind resolved it.
+#[derive(Clone)]
 pub(crate) struct Target {
     /// The kind's own, kept on the watch.
     pub value: Value,
@@ -147,6 +151,11 @@ fn tick() -> Duration {
     env_ms("OTTER_WATCH_TICK_MS", 15_000)
 }
 
+/// How long a probe may take before it counts as one that failed.
+const PROBE_LIMIT: Duration = Duration::from_secs(150);
+/// How long a watch's first look may take: it's inside Otter's turn.
+const FIRST_LOOK_LIMIT: Duration = Duration::from_secs(20);
+
 /// `d`, give or take a tenth, so watches set together don't probe together.
 fn jitter(d: Duration) -> Duration {
     use rand::Rng;
@@ -159,8 +168,10 @@ fn jitter(d: Duration) -> Duration {
 }
 
 /// Set a watch on `f` (inside a store step): `kind` on what `args` name,
-/// for `what` the developer asked. The same thing watched already is that
-/// watch, with no changes. `Err`: why not, for the developer.
+/// for `what` the developer asked, with what a first look read, if one did.
+/// The same thing watched already is that watch, with no changes. `Err`:
+/// why not, for the developer.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn set(
     f: &mut Task,
     kind: &dyn WatchKind,
@@ -168,24 +179,14 @@ pub(crate) fn set(
     args: &Value,
     what: &str,
     asked_in: Option<MessageId>,
+    first: Option<Reading>,
     now: Timestamp,
 ) -> Result<(Watch, Vec<Change>), String> {
-    let what = what.trim();
-    if what.is_empty() {
-        return Err("say what to watch for (what)".into());
-    }
     if let Some(w) = same(f, kind.name(), &target.value) {
         return Ok((w.clone(), vec![]));
     }
-    let open: Vec<String> = f.open_watches().map(|w| w.label.clone()).collect();
-    if open.len() >= w::MAX_WAITING {
-        return Err(format!(
-            "this task already has {} watches open ({}): stop one first",
-            open.len(),
-            open.join("; ")
-        ));
-    }
-    let minutes = kind.minutes(args)?;
+    let minutes = check(f, kind, args, what)?;
+    let what = what.trim();
     let watch = Watch {
         id: WatchId::generate(),
         kind: kind.name().into(),
@@ -196,7 +197,7 @@ pub(crate) fn set(
         created_at: now,
         deadline: now + minute() * minutes as i32,
         status: WatchStatus::Waiting,
-        readings: vec![],
+        readings: first.into_iter().collect(),
         finding: None,
         findings: 0,
         ended_at: None,
@@ -208,6 +209,28 @@ pub(crate) fn set(
     });
     f.watches.push(watch.clone());
     Ok((watch, vec![change]))
+}
+
+/// Whether a new watch of `kind` may be set on `f` for `what`: how many
+/// minutes it reaches, or why not (for the developer).
+pub(crate) fn check(
+    f: &Task,
+    kind: &dyn WatchKind,
+    args: &Value,
+    what: &str,
+) -> Result<u32, String> {
+    if what.trim().is_empty() {
+        return Err("say what to watch for (what)".into());
+    }
+    let open: Vec<String> = f.open_watches().map(|w| w.label.clone()).collect();
+    if open.len() >= w::MAX_WAITING {
+        return Err(format!(
+            "this task already has {} watches open ({}): stop one first",
+            open.len(),
+            open.join("; ")
+        ));
+    }
+    kind.minutes(args)
 }
 
 /// The open watch of `kind` on the same thing, if there is one.
@@ -289,7 +312,7 @@ pub(crate) fn on_accept(f: &mut Task, now: Timestamp) -> Vec<Change> {
         return vec![];
     };
     let label = target.label.clone();
-    let Ok((watch, mut changes)) = set(f, &CI, target, &Value::Null, what, None, now) else {
+    let Ok((watch, mut changes)) = set(f, &CI, target, &Value::Null, what, None, None, now) else {
         return vec![];
     };
     // Watched already: nothing more to say.
@@ -416,7 +439,7 @@ impl Daemon {
             }
             let daemon = self.clone();
             tokio::spawn(async move {
-                let probe = daemon.probe(kind, &task, &w).await;
+                let probe = daemon.probe(kind, &task, &w, PROBE_LIMIT).await;
                 daemon.after_probe(&task, &w, probe).await;
                 let mut c = daemon.controller.lock().unwrap();
                 c.watches.busy.remove(&w.id);
@@ -427,8 +450,14 @@ impl Daemon {
         }
     }
 
-    /// One probe of `w`, on its task as it is now.
-    async fn probe(&self, kind: &'static dyn WatchKind, task: &TaskId, w: &Watch) -> Probe {
+    /// One probe of `w`, on its task as it is now, for at most `limit`.
+    async fn probe(
+        &self,
+        kind: &'static dyn WatchKind,
+        task: &TaskId,
+        w: &Watch,
+        limit: Duration,
+    ) -> Probe {
         if self.task_get(task.as_str()).await.is_err() {
             return Probe::Unreadable("the task is gone".into());
         }
@@ -439,7 +468,7 @@ impl Daemon {
             env: &env,
         };
         // A probe that hangs is a probe that failed (`gh` has its own limit).
-        match tokio::time::timeout(Duration::from_secs(150), kind.probe(w, &cx)).await {
+        match tokio::time::timeout(limit, kind.probe(w, &cx)).await {
             Ok(p) => p,
             Err(_) => Probe::Unreadable("reading it took too long".into()),
         }
@@ -505,6 +534,48 @@ impl Daemon {
                     self.fire_watch(task, &seen.id, finding).await;
                 }
             }
+        }
+    }
+
+    /// One look at what `kind` would watch on `f`, before the watch is set
+    /// (W-1): what the turn says is what was read now. `None`: the kind
+    /// isn't probed (`time`).
+    pub(crate) async fn first_look(
+        &self,
+        kind: &'static dyn WatchKind,
+        f: &Task,
+        target: &Target,
+    ) -> Option<Probe> {
+        kind.every()?;
+        let now = Utc::now();
+        let draft = Watch {
+            id: WatchId::generate(),
+            kind: kind.name().into(),
+            target: target.value.clone(),
+            label: target.label.clone(),
+            what: String::new(),
+            asked_in: None,
+            created_at: now,
+            deadline: now,
+            status: WatchStatus::Waiting,
+            readings: vec![],
+            finding: None,
+            findings: 0,
+            ended_at: None,
+            report: None,
+        };
+        Some(self.probe(kind, &f.id, &draft, FIRST_LOOK_LIMIT).await)
+    }
+
+    /// `id` was just looked at (its first look): probed next a while from now.
+    pub(crate) fn looked(&self, id: &WatchId, kind: &dyn WatchKind) {
+        if let Some(every) = kind.every() {
+            self.controller
+                .lock()
+                .unwrap()
+                .watches
+                .next
+                .insert(id.clone(), Instant::now() + jitter(every));
         }
     }
 

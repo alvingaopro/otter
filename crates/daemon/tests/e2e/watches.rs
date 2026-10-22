@@ -109,11 +109,14 @@ async fn a_ci_watch_says_once_what_ci_came_to() {
     let answers = say(host, &id, "watch-1", WATCH_CI).await;
     assert_eq!(code(&answers[0]), "ok", "{answers:?}");
     assert_eq!(answers[0]["data"]["watching"], "CI on #7");
+    // Read as it's set (W-1): the answer says what CI is now.
+    assert_eq!(answers[0]["data"]["now"]["text"], "no checks yet");
     let f = host.conn().await.task_get(&id).await.unwrap();
     let w = &f.watches[0];
     assert_eq!((w.kind.as_str(), w.status), ("ci", WatchStatus::Waiting));
     assert_eq!(w.target["repo"], "o/r");
     assert!(w.asked_in.is_some());
+    assert_eq!(w.readings.len(), 1, "{:?}", w.readings);
     // Asked again while it waits: the same watch.
     let again = say(host, &id, "watch-2", WATCH_CI).await;
     assert_eq!(again[0]["data"]["done"], "already watching", "{again:?}");
@@ -200,10 +203,55 @@ async fn a_ci_watch_says_once_what_ci_came_to() {
         "{calls}"
     );
     assert!(!calls.contains("pr merge"), "{calls}");
+
+    // Asked once CI has finished: it says what CI came to, and sets nothing.
+    let answers = say(host, &id, "watch-3", WATCH_CI).await;
+    assert_eq!(
+        answers[0]["data"]["done"], "nothing to wait for",
+        "{answers:?}"
+    );
+    assert_eq!(answers[0]["data"]["came_to"]["outcome"], "passed");
+    let f = host.conn().await.task_get(&id).await.unwrap();
+    assert_eq!(f.watches.len(), 1, "{:?}", f.watches);
+}
+
+/// GitHub can't be read as the watch is set: it's set all the same, the
+/// answer says why nothing was read, and it reads on its next look (W-1).
+#[tokio::test]
+async fn a_watch_that_cant_read_yet_says_so_and_is_set() {
+    let fake = host_with(vec![]).await;
+    let host = &fake.host;
+    let id = published(&fake).await;
+    std::fs::write(fake.gh.join("pr-view-fails"), "").unwrap();
+    let answers = say(host, &id, "watch-1", WATCH_CI).await;
+    assert_eq!(answers[0]["data"]["done"], "watching", "{answers:?}");
+    assert!(answers[0]["data"]["now"].is_null(), "{answers:?}");
+    assert!(
+        answers[0]["data"]["not_read"]
+            .as_str()
+            .unwrap()
+            .contains("error connecting"),
+        "{answers:?}"
+    );
+    let f = host.conn().await.task_get(&id).await.unwrap();
+    assert!(f.watches[0].readings.is_empty(), "{:?}", f.watches);
+    std::fs::remove_file(fake.gh.join("pr-view-fails")).unwrap();
+    wait_task(host, &id, "read on its next look", |f| {
+        f.watches[0].last_reading().is_some()
+    })
+    .await;
+    // Asked again: that watch, with what it read.
+    let again = say(host, &id, "watch-2", WATCH_CI).await;
+    assert_eq!(again[0]["data"]["done"], "already watching", "{again:?}");
+    assert_eq!(
+        again[0]["data"]["now"]["text"], "no checks yet",
+        "{again:?}"
+    );
 }
 
 /// D-184: a pull request that conflicts gets no CI. That isn't "running":
-/// the gates say so, Otter says so once, and a watch on it fires at once.
+/// the gates say so, Otter says so once; asked to watch it, Otter reads it
+/// first and says so (W-1), and a watch that comes to it fires at once.
 #[tokio::test]
 async fn a_conflicting_pull_request_is_said_at_once() {
     let fake = host_with(vec![]).await;
@@ -236,12 +284,34 @@ async fn a_conflicting_pull_request_is_said_at_once() {
         .iter()
         .filter(|m| {
             m.text
-                .contains("conflicts with main, so GitHub won't run CI")
+                .contains("conflicts with main, so GitHub runs no CI on it until")
         })
         .count();
     assert_eq!(said, 1, "once per head");
 
-    say(host, &id, "watch-1", WATCH_CI).await;
+    // Asked to watch it as it is: read at once, nothing to wait for.
+    let answers = say(host, &id, "watch-1", WATCH_CI).await;
+    assert_eq!(
+        answers[0]["data"]["done"], "nothing to wait for",
+        "{answers:?}"
+    );
+    assert_eq!(answers[0]["data"]["came_to"]["outcome"], "stuck");
+    assert!(
+        answers[0]["data"]["came_to"]["text"]
+            .as_str()
+            .unwrap()
+            .contains("conflicts with main"),
+        "{answers:?}"
+    );
+    let f = host.conn().await.task_get(&id).await.unwrap();
+    assert!(f.watches.is_empty(), "{:?}", f.watches);
+
+    // Watched while it could still run; then it conflicts: said at once.
+    std::fs::write(fake.gh.join("mergeable"), "MERGEABLE").unwrap();
+    let answers = say(host, &id, "watch-2", WATCH_CI).await;
+    assert_eq!(answers[0]["data"]["done"], "watching", "{answers:?}");
+    assert_eq!(answers[0]["data"]["now"]["text"], "no checks yet");
+    std::fs::write(fake.gh.join("mergeable"), "CONFLICTING").unwrap();
     let f = wait_task(host, &id, "reported", |f| {
         f.watches
             .first()

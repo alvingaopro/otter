@@ -7,7 +7,11 @@ entry. Built as designed but for: a watch is stopped and removed with
 `task.act` `cancel_watch` / `delete_watch`, not methods of its own (the
 command ids, the app's and CLI's plumbing and the history come with it);
 `OTTER_WATCH_TICK_MS`, `OTTER_WATCH_POLL_MS` and `OTTER_WATCH_MINUTE_MS`
-(tests) tune it. Slices 2 and 3 are not built. Live check W-1 pending.
+(tests) tune it. Slices 2 and 3 are not built. Live check W-1 passed
+(2026-10-22, D-188), and `watch` now reads once before it sets anything.
+Slice 2 is held: its surface, Otter's conversation on the host, left the
+app in D-115 because the developer didn't use it (only `otter chat` shows
+it), so the developer decides whether it's wanted.
 Reviewed against the code (Fable) before it was built.
 **Baseline:** `main` at `e456132` (v0.7.70).
 The design as a page: https://claude.ai/artifact/2cMjnbdYyXCo4bWhbQbuTW.

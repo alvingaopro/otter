@@ -316,7 +316,7 @@ pub fn tools() -> Vec<ToolSpec> {
         t(
             "watch",
             DeveloperWord,
-            "Keep an eye on something for the developer, as they asked (D-183): kind ci — the task's pull request's CI until every check has finished, it can't run, or the pull request is merged or closed (for_minutes: how long at most, default 120); kind time — look at this task again in in_minutes. what: what they asked for, in their words. When it comes to something, a turn of its own tells them in this conversation. At most 3 at once.",
+            "Keep an eye on something for the developer, as they asked (D-183): kind ci — the task's pull request's CI until every check has finished, it can't run, or the pull request is merged or closed (for_minutes: how long at most, default 120); kind time — look at this task again in in_minutes. what: what they asked for, in their words. It reads CI once as it sets the watch: now is what it read (say that, and when), or not_read says why it couldn't; done \"nothing to wait for\" means it already came to something (came_to), and nothing is watched — tell them what. When it comes to something later, a turn of its own tells them in this conversation. At most 3 at once.",
             json!({
                 "type": "object",
                 "properties": {
@@ -1595,7 +1595,8 @@ impl Gateway {
 
     /// `watch` (D-183): set on the developer's word, under their message
     /// and what is watched — a turn run again sets it once; the same thing
-    /// already watched is that watch.
+    /// already watched is that watch. It looks once first (W-1): the answer
+    /// says what is true now, and what has already happened sets nothing.
     async fn set_watch(&self, f: &Task, args: &Value) -> Result<Value, ToolError> {
         let kind_name = args["kind"].as_str().unwrap_or_default();
         let kind = crate::watches::kind(kind_name).ok_or_else(|| {
@@ -1608,10 +1609,47 @@ impl Gateway {
         let target = kind
             .target(f, args, &what)
             .map_err(|e| fail("invalid", e))?;
-        let shown = |w: &otter_core::watch::Watch, done: &str| json!({"done": done, "watch_id": w.id.as_str(), "watching": w.label, "until": w.deadline});
+        // What it last read, if anything: the turn says that, not an older
+        // gate (W-1).
+        let shown = |w: &otter_core::watch::Watch, done: &str| {
+            json!({
+                "done": done,
+                "watch_id": w.id.as_str(),
+                "watching": w.label,
+                "status": format!("{:?}", w.status).to_lowercase(),
+                "until": w.deadline,
+                "now": w.last_reading().map(|r| json!({"text": redact(&r.text), "read_at": r.at})),
+            })
+        };
         if let Some(w) = crate::watches::same(f, kind.name(), &target.value) {
             return Ok(shown(w, "already watching"));
         }
+        // Refused before it reads anything: a read takes seconds of the turn.
+        crate::watches::check(f, kind, args, &what).map_err(|e| fail("conflict", e))?;
+        let d = &self.inner.daemon;
+        let mut not_read = None;
+        let first = match d.first_look(kind, f, &target).await {
+            Some(crate::watches::Probe::Found { outcome, text }) => {
+                self.record_done("watch", None).await;
+                return Ok(json!({
+                    "done": "nothing to wait for",
+                    "watching": target.label,
+                    "came_to": {"outcome": outcome.as_str(), "text": redact(&text)},
+                    "read_at": chrono::Utc::now(),
+                }));
+            }
+            Some(crate::watches::Probe::NotYet { key, text }) => Some(otter_core::watch::Reading {
+                at: chrono::Utc::now(),
+                key,
+                text,
+            }),
+            // Set all the same, and probed at the next tick as usual.
+            Some(crate::watches::Probe::Unreadable(why)) => {
+                not_read = Some(redact(&why));
+                None
+            }
+            None => None,
+        };
         let origin = &self.inner.origin;
         let asked_in = origin.authority().map(|m| m.id.clone());
         let command = format!(
@@ -1629,8 +1667,8 @@ impl Gateway {
             Some(&command),
         )
         .await;
-        let d = &self.inner.daemon;
         let value = target.value.clone();
+        let read_first = first.is_some();
         let mut set = None;
         let mut existed = false;
         let applied = d
@@ -1639,7 +1677,7 @@ impl Gateway {
             .await
             .apply(&f.id, Some(&command), |f, now| {
                 let (w, mut changes) =
-                    crate::watches::set(f, kind, target, args, &what, asked_in.clone(), now)
+                    crate::watches::set(f, kind, target, args, &what, asked_in.clone(), first, now)
                         .map_err(RpcError::conflict)?;
                 // Set meanwhile (accepting anyway): that one.
                 existed = changes.is_empty();
@@ -1669,19 +1707,26 @@ impl Gateway {
         if existed {
             return Ok(shown(&watch, "already watching"));
         }
+        if read_first && !applied.duplicate {
+            d.looked(&watch.id, kind);
+        }
         self.inner
             .done
             .lock()
             .unwrap()
             .push(format!("watch: {}", watch.label));
-        Ok(shown(
+        let mut answer = shown(
             &watch,
             if applied.duplicate {
                 "already"
             } else {
                 "watching"
             },
-        ))
+        );
+        if let Some(why) = not_read {
+            answer["not_read"] = json!(why);
+        }
+        Ok(answer)
     }
 
     /// `cancel_watch`, on the developer's word. Never a watch being said:
