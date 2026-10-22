@@ -192,19 +192,28 @@ code, .mono { font-family: var(--mono); }
 .ws-summary { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .ws-age { flex: none; color: var(--faint); }
 
-.sidebar-top { display: flex; align-items: center; gap: 4px; padding: 0 10px 0 16px; }
-/* macOS: leave room for the traffic lights (the Activity Bar takes 48px of it). */
-.mac .sidebar-top { padding-left: 48px; }
-.sidebar-top .icon-btn { width: 30px; height: 30px; border-radius: 7px; }
-.brand { display: flex; align-items: center; gap: 10px; padding: 14px 16px 8px 20px; }
-.brand-name { font-weight: 600; font-size: 15px; letter-spacing: -0.1px; }
+/* The title row is its own size container (D-178): nothing positioned is
+   in it, so a menu elsewhere in the sidebar stays placed by the window. */
+.sidebar-top { display: flex; align-items: center; gap: 4px; padding: 0 10px 0 16px; container-type: inline-size; }
+/* macOS: the traffic lights sit in the title bar over the Activity Bar (52px)
+   and the sidebar's first 18px; the sidebar's title starts past them (D-178). */
+.mac .sidebar-top { padding-left: 34px; }
+.sidebar-top .icon-btn { width: 30px; height: 30px; border-radius: 7px; flex: none; }
+.sidebar-top .count-badge { flex: none; }
+/* The title: Otter's mark and name. A narrow sidebar leaves the name out;
+   the counts and the button keep their size (D-178). */
+.brand { display: flex; align-items: center; gap: 8px; min-width: 22px; }
+.brand-name { font-weight: 600; font-size: 15px; letter-spacing: -0.1px; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+@container (max-width: 189px) {
+  .brand .brand-name { display: none; }
+}
 /* Otter's mark, in the colour of what it sits in (D-176). */
 .otter-mark {
   display: block; flex: none; background: currentColor;
   -webkit-mask: url(./assets/otter-mark.svg) center / contain no-repeat;
   mask: url(./assets/otter-mark.svg) center / contain no-repeat;
 }
-.brand-icon { width: 24px; height: 24px; color: var(--text); }
+.brand-icon { width: 22px; height: 22px; color: var(--text); }
 .count-badge {
   display: inline-flex; align-items: center; gap: 5px; height: 20px; padding: 0 7px; border-radius: 10px;
   background: var(--hover); color: var(--faint); font-family: var(--mono); font-size: 11px; font-weight: 500;
@@ -522,25 +531,30 @@ code, .mono { font-family: var(--mono); }
 .ws-row.dragging { background: var(--raised); box-shadow: 0 4px 14px var(--shadow); cursor: grabbing; position: relative; z-index: 1; }
 .sidebar.reordering .ws-row:not(.dragging) { pointer-events: none; }
 
-/* Activity Bar and views (D-041) */
+/* Activity Bar and views (D-041, D-178) */
 .activity-bar {
-  width: 48px; flex: none; display: flex; flex-direction: column; align-items: center; gap: 4px;
-  padding-bottom: 10px; background: var(--statusbar); border-right: 1px solid var(--line);
+  width: 52px; flex: none; display: flex; flex-direction: column; align-items: center; gap: 6px;
+  padding-bottom: 12px; background: var(--statusbar); border-right: 1px solid var(--line);
 }
-.activity-top { height: 52px; width: 100%; flex: none; }
+.activity-top { height: 52px; flex: none; align-self: stretch; }
 .app:not(.mac) .activity-top { height: 10px; }
-.activity-views { display: flex; flex-direction: column; gap: 4px; }
+/* macOS: the bar's top is the title bar's, with the sidebar's: one band over
+   both, the traffic lights in it, and no edge between them (D-178). */
+.mac .activity-top { background: var(--sidebar); border-bottom: 1px solid var(--line); margin-right: -1px; }
+.activity-views { display: flex; flex-direction: column; gap: 6px; padding-top: 4px; }
 .activity-btn {
-  position: relative; width: 36px; height: 36px; display: inline-flex; align-items: center; justify-content: center;
-  border-radius: 8px; color: var(--faint);
+  position: relative; width: 40px; height: 40px; display: inline-flex; align-items: center; justify-content: center;
+  border-radius: 50%; color: var(--muted);
 }
 .activity-btn:hover { color: var(--text); background: var(--hover); }
 .activity-btn.active { color: var(--text); background: var(--selected); }
-.activity-btn.active::before {
-  content: ""; position: absolute; left: -6px; top: 8px; bottom: 8px; width: 2px; border-radius: 2px; background: var(--text);
+.activity-btn:focus-visible { outline: 2px solid var(--working); outline-offset: 2px; }
+.activity-badge {
+  position: absolute; top: 8px; right: 8px; width: 8px; height: 8px; border-radius: 50%;
+  background: var(--needs); box-shadow: 0 0 0 2px var(--statusbar);
 }
-.activity-btn:focus-visible { outline: 2px solid var(--working); outline-offset: 1px; }
-.activity-badge { position: absolute; top: 6px; right: 6px; width: 7px; height: 7px; border-radius: 50%; background: var(--needs); }
+.activity-btn:hover .activity-badge { box-shadow: 0 0 0 2px var(--hover); }
+.activity-btn.active .activity-badge { box-shadow: 0 0 0 2px var(--selected); }
 .view { flex: 1; min-width: 0; display: flex; }
 .view[hidden] { display: none; }
 
@@ -821,22 +835,13 @@ body.resizing-col { cursor: col-resize; user-select: none; }
 .question legend { font-size: 13px; font-weight: 500; margin-bottom: 4px; }
 .question .option { display: flex; align-items: baseline; gap: 6px; font-size: 13px; }
 
-/* The Inbox (D-072): one list of what is going on, on every host. */
-.pane.inbox { overflow-y: auto; }
-.inbox-body { width: 100%; max-width: 760px; margin: 0 auto; padding: 8px 24px 32px; display: flex; flex-direction: column; gap: 22px; }
-.inbox-title { margin: 0; font-size: 18px; font-weight: 600; }
-.inbox-items { display: flex; flex-direction: column; gap: 8px; }
-.inbox-item { padding: 10px 12px; border-radius: 8px; border: 1px solid var(--line); display: flex; flex-direction: column; gap: 6px; }
-.inbox-head { display: flex; align-items: center; gap: 8px; min-width: 0; }
-.inbox-name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.inbox-summary { margin: 0; color: var(--muted); font-size: 13px; overflow-wrap: anywhere; }
-.inbox .tag { font-size: 11px; padding: 1px 6px; border-radius: 4px; background: var(--btn); color: var(--muted); }
 .turn-next { color: var(--muted); }
 .failure-text { margin: 4px 0 0; max-height: 160px; overflow: auto; font-family: var(--mono); font-size: 12px; white-space: pre-wrap; overflow-wrap: anywhere; user-select: text; }
 .problems { display: flex; flex-direction: column; gap: 8px; }
 .problem { padding: 8px 10px; border-radius: 8px; border: 1px solid var(--needs-border); background: var(--needs-bg); }
 .problem-what { font-weight: 600; }
-.inbox-group-actions { display: flex; gap: 8px; align-items: center; padding: 0 10px 6px; }
+/* Pause all, under the Chat list's ACTIVE label (D-081, D-178). */
+.group-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; padding: 0 10px 6px; }
 
 /* Kept workspaces (D-100): mounted, attached, not shown. */
 .ws-pane[hidden] { display: none; }
@@ -854,7 +859,7 @@ body.resizing-col { cursor: col-resize; user-select: none; }
 .quick-what { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
 .quick-host { font-size: 11.5px; font-family: var(--mono); }
 .quick-none { padding: 10px; font-size: 13px; }
-.sidebar-filter { padding: 4px 14px 2px 16px; }
+.sidebar-filter { padding: 10px 14px 2px 16px; }
 .sidebar-filter input {
   width: 100%; height: 28px; padding: 0 9px; border-radius: 7px; border: 1px solid var(--line); background: var(--bg);
   color: var(--text); font: inherit; font-size: 12.5px; outline: none;

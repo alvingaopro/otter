@@ -206,21 +206,20 @@ export function Sidebar(props: Props) {
 
   return (
     <nav className={drag ? "sidebar reordering" : "sidebar"} aria-label="Workspaces">
+      {/* The title bar, right of the traffic lights (D-178). */}
       <div className="sidebar-top" data-tauri-drag-region>
+        <span className="brand" data-tauri-drag-region>
+          <span className="otter-mark brand-icon" aria-hidden="true" data-tauri-drag-region />
+          <span className="brand-name" data-tauri-drag-region>Otter</span>
+        </span>
         <span className="spacer" data-tauri-drag-region />
+        <CountBadge kind="needs" count={needs.length} label="need you" onClick={() => onSelect(needs[0].key)} />
+        <CountBadge kind="working" count={working.length} label="working" onClick={() => onSelect(working[0].key)} />
         <button className="icon-btn" aria-label="New workspace" title="New workspace (⌘N)" onClick={props.onNew}>
           <svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true">
             <path d="M7 2v10M2 7h10" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
           </svg>
         </button>
-      </div>
-
-      <div className="brand" data-tauri-drag-region>
-        <span className="otter-mark brand-icon" aria-hidden="true" />
-        <span className="brand-name" data-tauri-drag-region>Otter</span>
-        <span className="spacer" data-tauri-drag-region />
-        <CountBadge kind="needs" count={needs.length} label="need you" onClick={() => onSelect(needs[0].key)} />
-        <CountBadge kind="working" count={working.length} label="working" onClick={() => onSelect(working[0].key)} />
       </div>
 
       <div className="sidebar-filter">

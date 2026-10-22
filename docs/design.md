@@ -677,13 +677,13 @@ branch       environment      state
 The UI should feel closer to browser tabs + an inbox than a traditional terminal
 multiplexer.
 
-Built as the desktop app's **Inbox** (D-072) — first in the activity bar —
-and `otter ls` (D-073): tasks (work Otter drives, D-043) and workspaces
-in one list, NEEDS YOU longest-waiting first, by one rule for each
-(`Workspace::activity`, `Task::needs`/`activity` in `otter-core`, D-071).
-What waits is done from the list: a task's decision answered, review
-accepted, a stopped task retried, a workspace opened at the session that
-needs you.
+Built as `otter ls` (D-073): tasks (work Otter drives, D-043) and
+workspaces in one list, NEEDS YOU longest-waiting first, by one rule for
+each (`Workspace::activity`, `Task::needs`/`activity` in `otter-core`,
+D-071). The desktop app had it as its **Inbox** (D-072); it now shows the
+same in its two views' lists, Chat's NEEDS YOU and the sidebar's, with a
+dot on each in the activity bar (D-178). What waits is done on the task's
+page, or in the workspace, opened at the session that needs you.
 
 ## 27. Fast Workspace Creation
 

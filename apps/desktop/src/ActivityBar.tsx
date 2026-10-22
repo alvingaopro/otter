@@ -73,30 +73,20 @@ export function ActivityBar({ view, onView, badges, settings }: Props) {
   );
 }
 
+/** The bar's icons: 22px, a 2px line, as the gear below them (D-178). */
 function ViewIcon({ view }: { view: View }) {
-  if (view === "inbox") {
-    // A tray: what comes in.
-    return (
-      <svg width="18" height="18" viewBox="0 0 18 18" aria-hidden="true">
-        <path d="M2.5 10.5 4.5 3.5h9l2 7v4h-13z" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round" />
-        <path d="M2.5 10.5h4l1 2h3l1-2h4" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round" />
-      </svg>
-    );
-  }
-  if (view === "tasks") {
-    // A flag: a goal to reach.
-    return (
-      <svg width="18" height="18" viewBox="0 0 18 18" aria-hidden="true">
-        <path d="M4 16V2.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-        <path d="M4 3h9.5l-2 3.25 2 3.25H4" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round" />
-      </svg>
-    );
-  }
-  // Stacked panes: places where work runs.
   return (
-    <svg width="18" height="18" viewBox="0 0 18 18" aria-hidden="true">
-      <rect x="2.5" y="3" width="13" height="5" rx="1.5" fill="none" stroke="currentColor" strokeWidth="1.5" />
-      <rect x="2.5" y="10" width="13" height="5" rx="1.5" fill="none" stroke="currentColor" strokeWidth="1.5" />
+    <svg width="22" height="22" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      {view === "tasks" ? (
+        // A speech bubble: talking a task through.
+        <path d="M12 4.25c4.83 0 8.75 3.16 8.75 7.06s-3.92 7.06-8.75 7.06c-1.13 0-2.2-.17-3.19-.49L4.5 19.75l1.14-3.84c-1.48-1.25-2.39-2.9-2.39-4.6 0-3.9 3.92-7.06 8.75-7.06z" />
+      ) : (
+        // Stacked panes: places where work runs.
+        <>
+          <rect x="3.75" y="4.25" width="16.5" height="6.5" rx="2.25" />
+          <rect x="3.75" y="13.25" width="16.5" height="6.5" rx="2.25" />
+        </>
+      )}
     </svg>
   );
 }

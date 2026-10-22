@@ -217,6 +217,16 @@ describe("Tasks view", () => {
     expect(host.textContent).toContain("No task matches.");
   });
 
+  it("pauses every task at work at once, from the ACTIVE group (D-081, D-178)", async () => {
+    await render(mockSource("mac", Date.parse("2026-10-09T12:00:00Z")));
+    expect(q(".sidebar")?.getAttribute("aria-label")).toBe("Chat");
+    expect(q(".sidebar-top .brand-name")?.textContent).toBe("Chat");
+    await act(async () => byText('section[aria-label="Active"] button', "Pause all tasks")!.click());
+    const working = source.list().filter((p) => ["planning", "implementing", "verifying"].includes(p.task.status));
+    expect(working).toEqual([]);
+    expect(source.list().some((p) => p.task.status === "paused")).toBe(true);
+  });
+
   it("deletes a task that isn't running, after asking, from the ⋯ menu", async () => {
     await render(mockSource("mac"));
     // Being worked on: no Delete.
