@@ -239,7 +239,7 @@ impl Daemon {
         if let Err(e) = deleted {
             // Unarchived or being deleted meanwhile, or something failed:
             // looked at again on the next pass.
-            tracing::warn!(workspace = %c.name, "deleting a merged task's workspace: {}", e.message);
+            tracing::info!(workspace = %c.name, "not deleting a merged task's workspace now: {}", e.message);
             return;
         }
         tracing::info!(workspace = %c.name, pr = c.pr, "deleted a task's workspace: its pull request is merged");

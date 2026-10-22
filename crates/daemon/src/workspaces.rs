@@ -405,11 +405,15 @@ impl Daemon {
         // An unarchive is refused from here on (`not_being_deleted`, under
         // the store's lock): what the delete was for is checked as it is now.
         let as_now = self.store.lock().await.workspace(id.as_str()).map(&still);
-        if as_now != Some(true) {
-            return Err(RpcError::conflict(format!(
-                "workspace `{}` changed meanwhile: not deleted",
-                ws.name
-            )));
+        match as_now {
+            None => return Err(workspace_not_found(&p.workspace)),
+            Some(false) => {
+                return Err(RpcError::conflict(format!(
+                    "workspace `{}` changed meanwhile: not deleted",
+                    ws.name
+                )));
+            }
+            Some(true) => {}
         }
         // Its preparation stops, all of its Git with it, and is gone before
         // anything is removed.
