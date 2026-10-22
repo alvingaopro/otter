@@ -376,7 +376,12 @@ pub struct GateContext {
     pub ci_settling: bool,
     /// The task has nothing of its own to publish (D-166).
     pub nothing_to_publish: bool,
+    /// No CI check has started long after the last push (D-184).
+    pub no_ci_after_push: bool,
 }
+
+/// GitHub's word for a pull request that conflicts with its base.
+pub const CONFLICTING: &str = "CONFLICTING";
 
 fn gate(name: &str, status: GateStatus, detail: impl Into<String>) -> Gate {
     let d: String = detail.into();
@@ -465,6 +470,11 @@ pub fn gates(f: &Task, cx: &GateContext) -> Vec<Gate> {
             GateStatus::NotApplicable,
             "you chose not to publish",
         ),
+        Some(d) if d.pr_url.is_some() && d.mergeable.as_deref() == Some(CONFLICTING) => gate(
+            "Pull request",
+            GateStatus::Failed,
+            format!("conflicts with {}", base_of(d)),
+        ),
         Some(d) if d.pr_url.is_some() => gate(
             "Pull request",
             GateStatus::Passed,
@@ -498,6 +508,21 @@ pub fn gates(f: &Task, cx: &GateContext) -> Vec<Gate> {
                     GateStatus::Failed,
                     format!("failed: {}", failed.join(", ")),
                 )
+            } else if d.ci.is_empty() && d.mergeable.as_deref() == Some(CONFLICTING) {
+                // GitHub runs no `pull_request` workflow on it (D-184).
+                gate(
+                    "CI",
+                    GateStatus::Failed,
+                    format!("can't run: the branch conflicts with {}", base_of(d)),
+                )
+            } else if d.ci.is_empty() && cx.has_ci && cx.no_ci_after_push {
+                // No count of minutes in it: the gate would change, and the
+                // task be written, every minute.
+                gate(
+                    "CI",
+                    GateStatus::Pending,
+                    "no check has started 10 min after the push",
+                )
             } else if pending || (d.ci.is_empty() && cx.has_ci) {
                 gate("CI", GateStatus::Pending, "running")
             } else if d.ci.is_empty() {
@@ -530,6 +555,14 @@ pub fn gates(f: &Task, cx: &GateContext) -> Vec<Gate> {
         "",
     ));
     out
+}
+
+/// The branch a pull request goes into, to name it.
+fn base_of(d: &otter_core::task::Delivery) -> String {
+    d.base
+        .clone()
+        .filter(|b| !b.is_empty())
+        .unwrap_or_else(|| "its base".into())
 }
 
 /// Every gate but the developer's acceptance is clear.
@@ -903,6 +936,19 @@ pub struct GitHub<'a> {
     pub gh: std::path::PathBuf,
     pub root: &'a Path,
     pub env: &'a EnvMap,
+    /// `owner/name`, when `root` isn't the repository (a watch, D-183).
+    pub repo: Option<String>,
+}
+
+/// What GitHub says of a pull request now (D-184).
+#[derive(Clone, Debug, PartialEq)]
+pub struct PrState {
+    /// `OPEN`, `MERGED` or `CLOSED`.
+    pub state: String,
+    /// `MERGEABLE`, `CONFLICTING` or `UNKNOWN` (GitHub still working it out).
+    pub mergeable: String,
+    pub head: String,
+    pub base: String,
 }
 
 impl<'a> GitHub<'a> {
@@ -911,15 +957,55 @@ impl<'a> GitHub<'a> {
             gh: which("gh", env)?,
             root,
             env,
+            repo: None,
         })
     }
 
+    /// `args`, with `--repo` for a pull request or run when `root` isn't
+    /// the repository.
+    fn with_repo<'b>(&'b self, args: &[&'b str]) -> Vec<&'b str> {
+        let mut all = args.to_vec();
+        if let Some(r) = self.repo.as_deref()
+            && matches!(args.first(), Some(&"pr") | Some(&"run"))
+        {
+            all.extend(["--repo", r]);
+        }
+        all
+    }
+
     async fn gh(&self, args: &[&str], input: Option<&str>) -> Result<String> {
-        let (ok, out, err) = run(&self.gh, args, self.root, self.env, input).await?;
+        let args = self.with_repo(args);
+        let (ok, out, err) = run(&self.gh, &args, self.root, self.env, input).await?;
         if !ok {
-            bail!(failed("gh", args, &err, 500));
+            bail!(failed("gh", &args, &err, 500));
         }
         Ok(out)
+    }
+
+    /// What GitHub says of pull request `pr` now: open or not, whether it
+    /// can be merged, its head and base (D-184).
+    pub async fn pr_state(&self, pr: u64) -> Result<PrState> {
+        let n = pr.to_string();
+        let out = self
+            .gh(
+                &[
+                    "pr",
+                    "view",
+                    &n,
+                    "--json",
+                    "state,mergeable,headRefOid,baseRefName",
+                ],
+                None,
+            )
+            .await?;
+        let v: Value = serde_json::from_str(&out).context("reading gh pr view")?;
+        let field = |k: &str, or: &str| v[k].as_str().unwrap_or(or).to_owned();
+        Ok(PrState {
+            state: field("state", "OPEN"),
+            mergeable: field("mergeable", "UNKNOWN"),
+            head: field("headRefOid", ""),
+            base: field("baseRefName", ""),
+        })
     }
 
     /// The open pull request for `branch`, if there is one.
@@ -1000,20 +1086,9 @@ impl<'a> GitHub<'a> {
     pub async fn checks(&self, pr: u64) -> Result<Vec<CiCheck>> {
         // `gh pr checks` exits non-zero while checks fail or wait: read
         // its output either way.
-        let (_, out, err) = run(
-            &self.gh,
-            &[
-                "pr",
-                "checks",
-                &pr.to_string(),
-                "--json",
-                "name,bucket,link,description",
-            ],
-            self.root,
-            self.env,
-            None,
-        )
-        .await?;
+        let n = pr.to_string();
+        let args = self.with_repo(&["pr", "checks", &n, "--json", "name,bucket,link,description"]);
+        let (_, out, err) = run(&self.gh, &args, self.root, self.env, None).await?;
         if out.trim().is_empty() {
             if err.contains("no checks") {
                 return Ok(Vec::new());
@@ -1204,7 +1279,49 @@ mod tests {
                 .collect(),
             reruns: 0,
             declined: false,
+            mergeable: None,
+            ci_read_at: None,
         }
+    }
+
+    /// D-184: a pull request that conflicts gets no CI; that isn't "running".
+    #[test]
+    fn a_conflicting_pull_request_fails_its_gates_instead_of_waiting() {
+        let mut f = task();
+        let mut d = delivery(&[]);
+        d.base = Some("main".into());
+        d.mergeable = Some(CONFLICTING.into());
+        f.delivery = Some(d);
+        let cx = GateContext {
+            publishable: true,
+            has_ci: true,
+            browser_checks: false,
+            ci_settling: false,
+            nothing_to_publish: false,
+            no_ci_after_push: false,
+        };
+        let g = gates(&f, &cx);
+        assert_eq!(status(&g, "Pull request"), GateStatus::Failed);
+        let ci = g.iter().find(|g| g.name == "CI").unwrap();
+        assert_eq!(ci.status, GateStatus::Failed);
+        assert_eq!(
+            ci.detail.as_deref(),
+            Some("can't run: the branch conflicts with main")
+        );
+        // Mergeable, no checks long after the push: said, still waited on.
+        f.delivery.as_mut().unwrap().mergeable = Some("MERGEABLE".into());
+        let late = GateContext {
+            no_ci_after_push: true,
+            ..cx
+        };
+        let g = gates(&f, &late);
+        assert_eq!(status(&g, "Pull request"), GateStatus::Passed);
+        let ci = g.iter().find(|g| g.name == "CI").unwrap();
+        assert_eq!(ci.status, GateStatus::Pending);
+        assert_eq!(
+            ci.detail.as_deref(),
+            Some("no check has started 10 min after the push")
+        );
     }
 
     #[test]
@@ -1218,6 +1335,7 @@ mod tests {
                 browser_checks: false,
                 ci_settling: false,
                 nothing_to_publish: false,
+                no_ci_after_push: false,
             },
         );
         assert_eq!(status(&g, "Requirements met"), GateStatus::Passed);
@@ -1237,6 +1355,7 @@ mod tests {
             browser_checks: true,
             ci_settling: false,
             nothing_to_publish: false,
+            no_ci_after_push: false,
         };
         let g = gates(&f, &cx);
         assert_eq!(status(&g, "Pull request"), GateStatus::Pending);
@@ -1274,6 +1393,8 @@ mod tests {
         // Declining to publish takes the PR and CI gates out of the way.
         f.delivery = Some(Delivery {
             declined: true,
+            mergeable: None,
+            ci_read_at: None,
             pr_url: None,
             ..delivery(&[])
         });
@@ -1304,6 +1425,7 @@ mod tests {
                 browser_checks: false,
                 ci_settling: false,
                 nothing_to_publish: false,
+                no_ci_after_push: false,
             },
         );
         f.rationale

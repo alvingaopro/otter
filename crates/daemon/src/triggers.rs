@@ -125,7 +125,42 @@ impl Daemon {
         };
         store.list.push(t.clone());
         store.save()?;
+        self.triggers_changed();
         Ok(t)
+    }
+
+    /// Pause or resume a trigger (D-185): off, it doesn't fire on its
+    /// schedule; by hand it still runs. Back on, it fires next on its
+    /// schedule from now — what it missed while off isn't fired.
+    pub(crate) async fn trigger_update(
+        &self,
+        p: otter_protocol::TriggerUpdate,
+    ) -> RpcResult<Trigger> {
+        let mut store = self.triggers.lock().await;
+        let i = store
+            .find(&p.trigger)
+            .ok_or_else(|| RpcError::not_found(format!("no trigger `{}`", p.trigger)))?;
+        if let Some(on) = p.enabled
+            && store.list[i].enabled != on
+        {
+            let now = Utc::now();
+            let t = &mut store.list[i];
+            t.enabled = on;
+            if on {
+                t.next_at = t.schedule.next_after(now, t.created_at);
+            }
+            store.save()?;
+            let t = store.list[i].clone();
+            drop(store);
+            self.triggers_changed();
+            return Ok(t);
+        }
+        Ok(store.list[i].clone())
+    }
+
+    /// Tell clients the triggers changed (D-185).
+    fn triggers_changed(&self) {
+        self.events.emit(otter_protocol::Event::TriggersChanged {});
     }
 
     pub(crate) async fn trigger_list(&self) -> Vec<Trigger> {
@@ -138,7 +173,9 @@ impl Daemon {
             .find(r)
             .ok_or_else(|| RpcError::not_found(format!("no trigger `{r}`")))?;
         store.list.remove(i);
-        store.save()
+        store.save()?;
+        self.triggers_changed();
+        Ok(())
     }
 
     /// Fire `r` for `occurrence` (by hand: now, or the one a script names).
@@ -315,6 +352,8 @@ impl Daemon {
             let extra = x.history.len().saturating_sub(HISTORY);
             x.history.drain(..extra);
         }
-        store.save()
+        store.save()?;
+        self.triggers_changed();
+        Ok(())
     }
 }

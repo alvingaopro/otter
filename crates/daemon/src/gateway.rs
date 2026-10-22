@@ -313,6 +313,33 @@ pub fn tools() -> Vec<ToolSpec> {
             "Accept the task in review; its gates still apply.",
             none(),
         ),
+        t(
+            "watch",
+            DeveloperWord,
+            "Keep an eye on something for the developer, as they asked (D-183): kind ci — the task's pull request's CI until every check has finished, it can't run, or the pull request is merged or closed (for_minutes: how long at most, default 120); kind time — look at this task again in in_minutes. what: what they asked for, in their words. When it comes to something, a turn of its own tells them in this conversation. At most 3 at once.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "what": {"type": "string"},
+                    "kind": {"type": "string", "enum": ["ci", "time"]},
+                    "in_minutes": {"type": "integer", "minimum": 1, "maximum": otter_core::watch::MAX_MINUTES},
+                    "for_minutes": {"type": "integer", "minimum": 1, "maximum": otter_core::watch::MAX_MINUTES}
+                },
+                "required": ["what", "kind"],
+                "additionalProperties": false
+            }),
+        ),
+        t(
+            "cancel_watch",
+            DeveloperWord,
+            "Stop a watch the developer wants stopped (its id is in get_task's watches): it won't come back.",
+            json!({
+                "type": "object",
+                "properties": {"watch_id": {"type": "string"}},
+                "required": ["watch_id"],
+                "additionalProperties": false
+            }),
+        ),
     ]
     .into_iter()
     .chain(conversation_tools())
@@ -744,6 +771,31 @@ impl Gateway {
                 "attempts": {"used": f.budget.iterations_used, "max": f.budget.max_iterations},
                 "runs": f.runs.len(),
                 "report": f.report.as_deref().map(|t| short(t, 4000)),
+                // What CI and the pull request were, and when that was read
+                // (D-184): never "just now" unless it was.
+                "pull_request": f.delivery.as_ref().filter(|d| d.pr_url.is_some()).map(|d| json!({
+                    "url": d.pr_url,
+                    "conflicts_with_base": d.mergeable.as_deref() == Some(crate::delivery::CONFLICTING),
+                    "ci": d.ci.iter().map(|c| json!({"name": r(&c.name), "state": c.state})).collect::<Vec<_>>(),
+                    "read_at": self.inner.daemon.ci_read_at(&f.id).or(d.ci_read_at),
+                    // A watch on it may have read it since: newer than the above.
+                    "read_since_by_a_watch": f.watches.iter()
+                        .filter(|w| w.kind == "ci")
+                        .filter_map(|w| w.last_reading())
+                        .filter(|x| Some(x.at) > self.inner.daemon.ci_read_at(&f.id).or(d.ci_read_at))
+                        .max_by_key(|x| x.at)
+                        .map(|x| json!({"at": x.at, "text": r(&x.text)})),
+                })),
+                "watches": f.watches.iter().rev().take(8).map(|w| json!({
+                    "id": w.id.as_str(),
+                    "kind": w.kind,
+                    "label": r(&w.label),
+                    "what": r(&w.what),
+                    "status": format!("{:?}", w.status).to_lowercase(),
+                    "until": w.deadline,
+                    "last_read": w.last_reading().map(|x| json!({"at": x.at, "text": r(&x.text)})),
+                    "came_to": w.finding.as_ref().map(|x| json!({"outcome": x.outcome.as_str(), "text": r(&x.text), "at": x.at})),
+                })).collect::<Vec<_>>(),
             })),
             "get_task_history" => {
                 let n = lim(20, 100)?;
@@ -1541,6 +1593,140 @@ impl Gateway {
         Ok(json!({"done": did, "status": applied.task.status.as_str()}))
     }
 
+    /// `watch` (D-183): set on the developer's word, under their message
+    /// and what is watched — a turn run again sets it once; the same thing
+    /// already watched is that watch.
+    async fn set_watch(&self, f: &Task, args: &Value) -> Result<Value, ToolError> {
+        let kind_name = args["kind"].as_str().unwrap_or_default();
+        let kind = crate::watches::kind(kind_name).ok_or_else(|| {
+            fail(
+                "invalid",
+                format!("there is no kind of watch `{kind_name}`"),
+            )
+        })?;
+        let what = args["what"].as_str().unwrap_or_default().to_owned();
+        let target = kind
+            .target(f, args, &what)
+            .map_err(|e| fail("invalid", e))?;
+        let shown = |w: &otter_core::watch::Watch, done: &str| json!({"done": done, "watch_id": w.id.as_str(), "watching": w.label, "until": w.deadline});
+        if let Some(w) = crate::watches::same(f, kind.name(), &target.value) {
+            return Ok(shown(w, "already watching"));
+        }
+        let origin = &self.inner.origin;
+        let asked_in = origin.authority().map(|m| m.id.clone());
+        let command = format!(
+            "{}:watch:{}:{}",
+            asked_in.as_ref().map_or("turn", |m| m.as_str()),
+            kind.name(),
+            target.key
+        );
+        self.record(
+            TaskEvent::ToolCalled {
+                tool: "watch".into(),
+                origin: origin.name().into(),
+                authority: asked_in.as_ref().map(|m| m.to_string()),
+            },
+            Some(&command),
+        )
+        .await;
+        let d = &self.inner.daemon;
+        let value = target.value.clone();
+        let mut set = None;
+        let mut existed = false;
+        let applied = d
+            .tasks
+            .lock()
+            .await
+            .apply(&f.id, Some(&command), |f, now| {
+                let (w, mut changes) =
+                    crate::watches::set(f, kind, target, args, &what, asked_in.clone(), now)
+                        .map_err(RpcError::conflict)?;
+                // Set meanwhile (accepting anyway): that one.
+                existed = changes.is_empty();
+                set = Some(w);
+                changes.push(
+                    Change::new(TaskEvent::ToolDone {
+                        tool: "watch".into(),
+                        error: None,
+                    })
+                    .because(&command),
+                );
+                Ok(changes)
+            })?;
+        d.task_changed(&applied);
+        let watch = match set {
+            Some(w) => w,
+            // Set before (the turn ran again): that one.
+            None => applied
+                .task
+                .watches
+                .iter()
+                .rev()
+                .find(|w| w.kind == kind.name() && w.target == value)
+                .cloned()
+                .ok_or_else(|| fail("retryable", "the watch isn't there"))?,
+        };
+        if existed {
+            return Ok(shown(&watch, "already watching"));
+        }
+        self.inner
+            .done
+            .lock()
+            .unwrap()
+            .push(format!("watch: {}", watch.label));
+        Ok(shown(
+            &watch,
+            if applied.duplicate {
+                "already"
+            } else {
+                "watching"
+            },
+        ))
+    }
+
+    /// `cancel_watch`, on the developer's word. Never a watch being said:
+    /// its report isn't Otter's to drop.
+    async fn cancel_watch(&self, f: &Task, args: &Value) -> Result<Value, ToolError> {
+        let id = otter_core::WatchId::from(args["watch_id"].as_str().unwrap_or_default());
+        match f.watch(&id).map(|w| w.status) {
+            None => {
+                return Err(fail("not_found", format!("no watch `{id}` on this task"))
+                    .next("get_task lists its watches"));
+            }
+            Some(otter_core::watch::WatchStatus::Firing) => {
+                return Err(fail(
+                    "not_ready",
+                    "that watch came to something: it's being said now",
+                ));
+            }
+            _ => {}
+        }
+        let command = self.inner.origin.command(&format!("cancel_watch:{id}"));
+        let d = &self.inner.daemon;
+        let applied = d
+            .tasks
+            .lock()
+            .await
+            .apply(&f.id, Some(&command), |f, now| {
+                let mut changes = crate::watches::cancel(f, &id, &command, now)?;
+                changes.push(
+                    Change::new(TaskEvent::ToolDone {
+                        tool: "cancel_watch".into(),
+                        error: None,
+                    })
+                    .because(&command),
+                );
+                Ok(changes)
+            })?;
+        d.task_changed(&applied);
+        self.inner
+            .done
+            .lock()
+            .unwrap()
+            .push(format!("cancel_watch: {id}"));
+        Ok(json!({"done": "stopped", "watch_id": id.as_str()}))
+    }
+
     async fn write(&self, name: &str, args: &Value) -> Result<Value, ToolError> {
         let refused = |e: ToolError| async move {
             self.record_done(name, Some(e.code)).await;
@@ -1564,6 +1750,17 @@ impl Gateway {
         }
         if name == "set_answer_only" {
             return match self.set_answer_only(&f, args).await {
+                Err(e) => refused(e).await,
+                ok => ok,
+            };
+        }
+        if name == "watch" || name == "cancel_watch" {
+            let done = if name == "watch" {
+                self.set_watch(&f, args).await
+            } else {
+                self.cancel_watch(&f, args).await
+            };
+            return match done {
                 Err(e) => refused(e).await,
                 ok => ok,
             };

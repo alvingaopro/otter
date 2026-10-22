@@ -18,6 +18,7 @@ must keep, with the tests that guard them.
 | the wire protocol, events or client                    | [`docs/protocol.md`](docs/protocol.md) · decisions D-004, D-016 · invariant 12 |
 | tasks, the controller, delivery                     | [`docs/task-states.md`](docs/task-states.md) · decisions D-045, D-047, D-062–D-068 |
 | Otter's conversation, the brain's tools                | [`docs/plans/brain-runtime-v2.md`](docs/plans/brain-runtime-v2.md) · decisions D-084, D-089–D-096 |
+| watches, triggers, the app's Automations view          | [`docs/plans/watches.md`](docs/plans/watches.md) · decisions D-083, D-183–D-185 |
 | transport, daemon lifecycle, persistence               | decisions D-003, D-005, D-008 · invariants 4, 8, 11, 12                    |
 | the architecture itself                                | [`docs/design.md`](docs/design.md), [`docs/decisions.md`](docs/decisions.md), [`docs/architecture-lessons.md`](docs/architecture-lessons.md) |
 
@@ -59,6 +60,11 @@ Inside the daemon (`crates/daemon/src`):
   `chat.rs` is Otter's conversation on the host (D-093), with the host's
   tools, `otter chat` in the CLI; `memory.rs` is Otter's memory (D-113),
   each conversation's and the host's, given to every turn
+- `watches/` — watches (D-183): what Otter looks at again later on the
+  developer's word. One engine (`mod.rs`: probing with no model, only
+  changes written, firing before the turn, the turn in the task's step);
+  each kind of thing watched behind `WatchKind` (`time.rs`, `ci.rs`).
+  `triggers.rs` — recurring work that starts tasks (D-083)
 - `runs.rs` + `runtime/` — managed agent runs (D-044): the runtime contract,
   the approval `policy`, the conversation `actor` and registry (D-055/D-056),
   and the bridge from a run to its task; `agents/claude_stream.rs` is

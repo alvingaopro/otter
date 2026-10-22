@@ -2,7 +2,7 @@
 // Switching views only changes what is in front: nothing here may stop,
 // detach or restart anything.
 
-export type View = "tasks" | "workspaces";
+export type View = "tasks" | "workspaces" | "automations";
 
 export interface ViewEntry {
   id: View;
@@ -11,10 +11,11 @@ export interface ViewEntry {
   digit: string;
 }
 
-/** Top to bottom: Chat (the tasks) first, then the workspaces (D-178). */
+/** Top to bottom: Chat (the tasks) first, then the workspaces (D-178), then what runs without a message (D-185). */
 export const VIEWS: ViewEntry[] = [
   { id: "tasks", label: "Chat", digit: "1" },
   { id: "workspaces", label: "Workspaces", digit: "2" },
+  { id: "automations", label: "Automations", digit: "3" },
 ];
 
 const KEY = "otter.view";

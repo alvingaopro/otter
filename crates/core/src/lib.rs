@@ -9,10 +9,11 @@ pub mod model;
 pub mod redact;
 pub mod task;
 pub mod trigger;
+pub mod watch;
 
 pub use ids::{
     AttentionId, BlockId, ConversationId, DecisionId, EvidenceId, ExecutionId, MessageId, RunId,
-    SessionId, StepId, TaskId, ToolCallId, TriggerId, TurnId, WorkspaceId,
+    SessionId, StepId, TaskId, ToolCallId, TriggerId, TurnId, WatchId, WorkspaceId,
 };
 pub use model::*;
 

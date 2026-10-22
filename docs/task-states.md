@@ -74,7 +74,8 @@ journal is the agent's. A restarted otterd reads them and goes on.
 | Commit | `Committed <sha>` evidence | A clean tree: nothing to commit again. |
 | Push | `delivery.branch`, `head`, `pushed_at` | Pushes only if HEAD moved or work is uncommitted; a push is idempotent. Not pushed when nothing of the task's own is known to be unpublished; the forge's refusal of the pull request after a push is nothing to publish, the push kept (D-166). |
 | Pull request | `delivery.pr_number`, `pr_url`, `PullRequest` evidence | An open PR for the branch is adopted (`gh pr view`), never opened twice. |
-| CI | `delivery.ci`, `reruns`, `Ci` evidence (pass per HEAD, failure with its log) | Read again; a failure already acted on isn't acted on twice. |
+| CI | `delivery.ci`, `reruns`, `Ci` evidence (pass per HEAD, failure with its log); `mergeable` and `ci_read_at` (D-184): a pull request that conflicts gets no CI, said once per head | Read again; a failure already acted on isn't acted on twice. |
+| Watch | `watches[]` (D-183): set, each change of what it saw, `firing` with the finding before any turn, reported with the message | Probed once at start; a firing one is said once, on what was found. |
 | Done | `gates`, `report`, status | — |
 | Every reason | a line in `rationale`, and `Reasoned` in the history at its time (D-141) | — |
 
@@ -98,6 +99,11 @@ At any checkpoint, deterministically:
   (D-068).
 - **Decide** — answer what the task waits on; an approval of an ask
   raised only for where it reaches is remembered for the task (D-066).
+- **Watch** — on the developer's word, Otter looks again later (D-183):
+  CI until it finishes, or the task in so many minutes; said once in the
+  conversation, whatever the task's status. *Stop* and *Delete* a watch
+  (`cancel_watch`, `delete_watch`); cancelling the task stops them all.
+  A watch only looks and says: it never moves the task or merges.
 
 ## Budgets and stops
 

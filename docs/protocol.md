@@ -405,7 +405,11 @@ Product work owned by the daemon (D-043); see `otter_core::task`.
   approve, answer?, answers?}` (`answers`: per question, for a form),
   `set_workspace {workspace}`, `preview`, `interrupt` (stop the coding
   agent's current turn and pause, D-059), `redirect {text}` (the current
-  turn stops and this goes next; refused when nothing is running). An
+  turn stops and this goes next; refused when nothing is running),
+  `cancel_watch {watch_id}` (stop a watch; one already ended is a
+  `conflict`), `delete_watch {watch_id}` (remove one; a waiting one is
+  stopped first) (D-183; an older otterd answers these two
+  `invalid_request`). An
   action the lifecycle doesn't allow fails with `conflict`, and so does
   `accept` while a gate (D-047) is open, unless `override_gates`.
 - `task.delete {task}` → `null`: removes a task with its history
@@ -443,6 +447,26 @@ until then, outside Git, and in older documents. Verification's `Working
 tree` evidence is the change since it; a task with nothing of its own to
 publish there (D-166) has its `Pull request` and `CI` gates
 `not_applicable`, detail `nothing to publish`.
+
+**Watches** (D-183; an optional field, old peers ignore it): a task has
+`watches?` — what Otter looks at again later for the developer, the open
+ones and the last 20 ended: `{id, kind ("time", "ci"; clients show an
+unknown kind by its label), target (the kind's own; `ci`: `{pr, repo}`),
+label, what, asked_in?, created_at, deadline, status ("waiting", "firing",
+"reported", "cancelled"; an unknown one reads as ended), readings? [{at, key, text}] (each change of what
+it saw, the last 50), finding? {at, outcome, text}, findings, ended_at?,
+report? (the message that said it)}`. `outcome` is `passed`, `failed`,
+`stuck`, `gone`, `due`, `expired` or `unreadable`; an unknown one reads as
+`unknown`. Watches are set by Otter on the developer's word in a task's
+conversation; their changes come as `TaskChanged`. History: `WatchSet`,
+`WatchFiring`, `WatchReported`, `WatchCancelled`, `WatchDeleted`, each with
+`watch_id` and `label`.
+
+**What CI was, and when** (D-184; optional fields): `delivery.mergeable?`
+is `MERGEABLE` or `CONFLICTING` as last read (absent: unknown) — a pull
+request that conflicts gets no `pull_request` CI, and its `Pull request`
+and `CI` gates say so (`failed`); `delivery.ci_read_at?` is when what
+`ci` and `mergeable` say was read.
 
 **Commands are idempotent.** `command_id` is the client's id for one intent
 (a random string). A command the daemon has applied is not applied again: a
@@ -544,9 +568,15 @@ What starts unattended work on a host (D-083), kept in
 - `trigger.run {trigger, occurrence?}` → the trigger, fired now — for
   `occurrence` (RFC 3339) when given: one task per occurrence, so a
   script that retries with the same one starts no second task.
+- `trigger.update {trigger, enabled?}` → the trigger (D-185). `enabled:
+  false` pauses it: it doesn't fire on its schedule (`trigger.run` still
+  does); `true` resumes it from now — what it missed meanwhile isn't
+  fired. An older otterd answers `invalid_request`.
 
-A triggered task carries `started_by {trigger_id, trigger, occurrence,
-policy}`. An addition (no protocol bump).
+Every change — made, paused or resumed, removed, fired — emits
+`TriggersChanged {}`; a client reads `trigger.list` again (D-185). A
+triggered task carries `started_by {trigger_id, trigger, occurrence,
+policy}`. Additions (no protocol bump).
 
 ## Files and image paste
 

@@ -15,6 +15,7 @@ mod settings;
 mod sign_in;
 mod tasks;
 mod tray;
+mod triggers;
 mod updates;
 mod view;
 
@@ -135,6 +136,10 @@ pub fn run() {
             forwards::forward_remove,
             forwards::forward_pin,
             tasks::tasks_list,
+            triggers::triggers_list,
+            triggers::trigger_update,
+            triggers::trigger_run,
+            triggers::trigger_delete,
             tasks::task_create,
             tasks::memory_get,
             tasks::memory_set,

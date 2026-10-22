@@ -305,6 +305,10 @@ pub enum Request {
     /// [`otter_core::trigger::Trigger`], its history saying what came of it.
     #[serde(rename = "trigger.run")]
     TriggerRun(TriggerRun),
+    /// Pause or resume a trigger (D-185). Result: the
+    /// [`otter_core::trigger::Trigger`].
+    #[serde(rename = "trigger.update")]
+    TriggerUpdate(TriggerUpdate),
 
     /// What the managed coding runtime on this host is and can do (D-055).
     /// Result: [`conversation::RuntimeCapabilities`].
@@ -400,6 +404,7 @@ impl Request {
             Request::TriggerList => "trigger.list",
             Request::TriggerDelete(_) => "trigger.delete",
             Request::TriggerRun(_) => "trigger.run",
+            Request::TriggerUpdate(_) => "trigger.update",
             Request::RuntimeCapabilities => "runtime.capabilities",
             Request::RuntimeTest(_) => "runtime.test",
             Request::ConversationList(_) => "conversation.list",
@@ -437,6 +442,15 @@ pub struct TriggerRun {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct TriggerRef {
     pub trigger: String,
+}
+
+/// `trigger.update` (D-185): what changes; what's absent stays.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TriggerUpdate {
+    pub trigger: String,
+    /// Off: it doesn't fire on its schedule (by hand it still runs).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<bool>,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]

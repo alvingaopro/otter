@@ -6709,6 +6709,149 @@ repository or empty), `a_message_goes_to_the_host_that_has_the_workspace_it_name
 (CLI e2e, two real hosts). The Tauri crate isn't built on Linux: the only
 change there is `workspace` taking the new type.
 
+## D-183 — Otter looks again later, on the developer's word (2026-10-22)
+
+Plan `docs/plans/watches.md`. Dogfooding: in a task's conversation, the
+task accepted and its pull request open, the developer asked "可以帮我盯一下吗?"
+— keep an eye on it for me? Otter couldn't: its turn runs on a message, the
+engine steps a done task only for a message, and triggers (D-083) start new
+work on a schedule. The developer chose the design's recommendations and the
+third Activity Bar entry (D-185), and asked for it built in the same PR.
+
+- **A watch** is something Otter looks at again later, for the developer,
+  in the task's conversation where they asked: until what they wait for
+  happens, or its deadline. It fires once. Kept on the task
+  (`Task::watches`): the open ones and the last 20 ended. A trigger stays
+  recurring *work*; a watch never starts work, it looks and says.
+- **One engine, many kinds** (`crates/daemon/src/watches/`): everything —
+  storage, lifecycle, ids, caps, probing, the turn, the report — is the
+  engine's; a kind only says what it watches and how to read its state,
+  behind `WatchKind`, a file each. Built: `time` (look at the task again in
+  so many minutes) and `ci` (the task's pull request's CI until every check
+  finished, it can't run, or the pull request is merged or closed; read with
+  `gh --repo` from Otter's own directory, the workspace being put away once
+  the task is done). A kind is deterministic, read-only, asks nothing and
+  calls no model; a command as a condition is the policy's business and a
+  decision of its own.
+- **Only changes are written.** A watch's document changes when it is set,
+  when what its probe saw changed (a reading, the last 50), when it fires
+  and when it ends; and the task store no longer writes a step that changed
+  nothing (no command, no history, the task the same) — a write moves the
+  task in every list and wakes every client. When to probe next and failures in a row are in memory:
+  a restart probes once at start. `ci` is probed every 60 s, a tenth either
+  way.
+- **Firing before the turn.** What was found is written with the status
+  `firing` before any model runs; after a restart the turn says it on what
+  was found, not on a second probe.
+- **The turn is the controller's**, in the task's step after the
+  developer's messages (one turn per task): no message started it
+  (`Origin::Event`, `watch:<id>:<n>`), so it may look and pause, nothing on
+  the developer's word — not `watch`, so a watch never sets another. Its
+  report is tied to the watch, never to a `msg_` id, which would count as
+  answering the developer's messages. It runs apart from the step: no
+  answer, an error or a panic is said as a plain line, and the watch ends;
+  one cancelled meanwhile says nothing. The controller steps a task with a
+  firing watch whatever its status; with the controller off, a plain line
+  says it. A probe still in flight answers before a deadline fires.
+- **Otter's tools:** `watch {what, kind, in_minutes?, for_minutes?}` on the
+  developer's word, made under their message and what is watched (a turn
+  run again sets it once; the same thing watched already is that watch);
+  `cancel_watch {watch_id}` on the developer's word too, never a watch
+  being said (its report isn't Otter's to drop); the task's watches in
+  `get_task`, with a newer CI reading by a watch beside the task's own. At
+  most 3 open (waiting or being said) per task; `time` 1 minute to
+  7 days ahead; `ci` 2 hours unless told, 7 days at most. Otter is told to
+  say when what it reports about CI was read, and never "I just looked" at
+  something it didn't read in that turn.
+- **Accept anyway** while CI hasn't finished sets a `ci` watch, said in
+  the conversation (the developer's recommended default). Otter's own
+  `accept_task` never overrides the gates, so this is the app's and the
+  CLI's override. Cancelling a task stops its watches; `task.act`
+  `cancel_watch` / `delete_watch` stop and remove one.
+- **Merging stays the developer's** (D-047): a watch reports. Merging on
+  green — GitHub's auto-merge, or a one-off grant with
+  `--match-head-commit` — is a decision of its own if wanted.
+
+Not done (slice 2 and later): the host's conversation, the `pr` and `task`
+kinds, D-094's follow-ups as `task` watches, a NEEDS YOU kind for a report
+and what clears it, a look with the coding agent from a watch, recurring
+looks, notifications outside the app. Live check W-1 pending.
+
+Tests: `watch::tests` (core), `watches::*` end to end (scripted turn, fake
+`gh`, a minute a second): a `ci` watch said once with its readings and
+history, asked twice is one; a conflicting pull request at once; accepting
+anyway watches CI on the done task; fired then crashed, said once after;
+`time`, a watch's own turn refused, the cap, no pull request, cancelling
+the task; stopped and deleted by the developer.
+
+## D-184 — What CI says, and when it was read (2026-10-22)
+
+The same dogfooding: Otter said "I just looked again, CI is still running
+(pending)" on #171. GitHub had run nothing: the pull request conflicted with
+`main`, and GitHub doesn't start `pull_request` workflows on one that
+conflicts. otterd read CI only in review, so the accepted task's `ci` was
+frozen; the gates read "no checks, and the repository has workflows" as
+"running"; and `get_task` didn't say when CI was read.
+
+- **Mergeable is read with the checks** (`gh pr view --json
+  state,mergeable,headRefOid,baseRefName`) and kept on `delivery.mergeable`
+  (`MERGEABLE` / `CONFLICTING`; GitHub's `UNKNOWN`, still working it out
+  after a push to either branch, keeps the last reading; a push of Otter's
+  starts it unknown). Read once a minute (`OTTER_PR_POLL_MS`) beside the
+  checks' 15 s, and whenever it isn't known. A pull request that conflicts fails the `Pull request` gate
+  ("conflicts with main") and, with no checks, the `CI` gate ("can't run:
+  the branch conflicts with main"); Otter says so once per head — bring the
+  branch up to date, by asking the coding agent or by hand. It isn't a fix
+  step by itself: the developer says.
+- **No check at all** 10 minutes after the push (`OTTER_CI_START_MS`):
+  the `CI` gate says "no check has started 10 min after the push", not
+  "running" (no running count of minutes: the task would be written every
+  minute). A `ci` watch measures it from when it first saw that head with
+  no checks, so a push by anyone starts it again; a repository without CI
+  on its pull requests isn't watched.
+- **When CI was read:** `delivery.ci_read_at` is written when what was
+  read changed (each poll would move the task in the app and wake every
+  client); otterd keeps the latest read in memory, and `get_task` gives
+  Otter the pull request, its checks, whether it conflicts and when that was
+  read.
+
+Tests: `a_conflicting_pull_request_fails_its_gates_instead_of_waiting`
+(unit), `watches::a_conflicting_pull_request_is_said_at_once` (e2e). The
+checks that no `gh` call merges now look for `pr merge` (the field
+`mergeable` has the word in it).
+
+## D-185 — Automatic work has a view of its own; triggers pause (2026-10-22)
+
+The developer asked to see automatic work in the sidebar, with its history
+and details, and to stop and delete it; they chose a third Activity Bar
+entry over a group in Chat's list. Tasks have all of that in Chat;
+automatic work had none: triggers had no UI at all, and a watch's deadline
+and readings were shown nowhere.
+
+- **This revises D-178's count.** D-178 found the bar had three entries for
+  two kinds of work, and removed the Inbox because it repeated what the
+  other views showed. Automatic work is a third kind, shown nowhere else: a
+  view of it repeats nothing.
+- **Automations (⌘3)**, after Chat and Workspaces, across every host:
+  WATCHING (open watches), SCHEDULED (triggers; paused ones dimmed),
+  HISTORY (ended watches and how each ended). A watch's pane: what was
+  asked and in which task, what it watches, until when, its readings, what
+  it came to, the report; a trigger's: its request, workspace, schedule,
+  policy, next occurrence and its firings with their tasks. Actions in the
+  pane and the row's menu, as for tasks: a watch — Stop, Delete; a trigger
+  — Pause / Resume, Run now, Delete. No dot on the bar: a waiting watch
+  doesn't need the developer. In Chat, a task with an open watch shows an
+  eye on its row and a line above its message box.
+- **`trigger.update {trigger, enabled?}`:** paused, a trigger doesn't fire
+  on its schedule (by hand it still runs); resumed, it fires on its
+  schedule from then — what it missed isn't fired. Every change to the
+  triggers emits `TriggersChanged {}` (there was none: a view would go
+  stale). `otter trigger pause/resume`, `otter watch ls/stop/rm`.
+
+Tests: `watches::a_trigger_is_paused_and_resumed` (e2e), the CLI's
+`a_task_goes_from_the_terminal_to_an_accepted_pull_request` (pause,
+resume, `watch ls`), and the app's tests for the view.
+
 ## D-186 — Otter places a task from its request, and in its conversation (2026-10-22)
 
 Plan `docs/plans/chat-bootstrap.md` P3. D-179 and D-182 let a task make its

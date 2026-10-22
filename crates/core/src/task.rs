@@ -650,6 +650,10 @@ pub struct Task {
     /// The final report: what changed, decisions, evidence, risks, the PR.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub report: Option<String>,
+    /// What Otter looks at again later for the developer (D-183): the open
+    /// ones, and the last ended ones.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub watches: Vec<crate::watch::Watch>,
     pub created_at: Timestamp,
     pub updated_at: Timestamp,
     /// The last entry of this task's history.
@@ -702,6 +706,7 @@ impl Task {
             gates: Vec::new(),
             delivery: None,
             report: None,
+            watches: Vec::new(),
             created_at: now,
             updated_at: now,
             history_seq: 0,
@@ -1067,6 +1072,14 @@ pub enum TaskAction {
     Redirect {
         text: String,
     },
+    /// Stop a watch (D-183): it won't fire.
+    CancelWatch {
+        watch_id: crate::WatchId,
+    },
+    /// Remove a watch (D-183); a waiting one is stopped first.
+    DeleteWatch {
+        watch_id: crate::WatchId,
+    },
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -1133,6 +1146,15 @@ pub struct Delivery {
     /// The developer declined publishing: delivery stays local.
     #[serde(default)]
     pub declined: bool,
+    /// Whether GitHub can merge the pull request into its base, as last
+    /// read: `MERGEABLE`, `CONFLICTING` or `UNKNOWN` (D-184). A pull request
+    /// that conflicts gets no `pull_request` CI at all.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mergeable: Option<String>,
+    /// When CI was read as `ci` and `mergeable` say (D-184): written when
+    /// what was read changed. otterd keeps the latest read in memory.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ci_read_at: Option<Timestamp>,
 }
 
 /// A preview of the app running in the task's workspace (D-046): a
@@ -1162,6 +1184,8 @@ impl TaskAction {
             TaskAction::Preview => "preview",
             TaskAction::Interrupt => "interrupt",
             TaskAction::Redirect { .. } => "redirect",
+            TaskAction::CancelWatch { .. } => "cancel_watch",
+            TaskAction::DeleteWatch { .. } => "delete_watch",
         }
     }
 }
@@ -1253,6 +1277,31 @@ pub enum TaskEvent {
     Reasoned {
         why: String,
     },
+    /// A watch was set (D-183).
+    WatchSet {
+        watch_id: crate::WatchId,
+        label: String,
+    },
+    /// A watch found what it waited for, or its time came: Otter says so
+    /// next.
+    WatchFiring {
+        watch_id: crate::WatchId,
+        label: String,
+        outcome: crate::watch::Outcome,
+    },
+    /// Otter said what a watch found.
+    WatchReported {
+        watch_id: crate::WatchId,
+        label: String,
+    },
+    WatchCancelled {
+        watch_id: crate::WatchId,
+        label: String,
+    },
+    WatchDeleted {
+        watch_id: crate::WatchId,
+        label: String,
+    },
     /// A kind this build doesn't know.
     #[serde(other)]
     Unknown,
@@ -1308,6 +1357,13 @@ impl TaskEvent {
             TaskEvent::Reasoned { why } => {
                 format!("Why: {}", why.lines().next().unwrap_or_default().trim_end())
             }
+            TaskEvent::WatchSet { label, .. } => format!("Watching {label}"),
+            TaskEvent::WatchFiring { label, outcome, .. } => {
+                format!("{}: {}", capital(label), outcome.as_str())
+            }
+            TaskEvent::WatchReported { label, .. } => format!("Said what {label} came to"),
+            TaskEvent::WatchCancelled { label, .. } => format!("Stopped watching {label}"),
+            TaskEvent::WatchDeleted { label, .. } => format!("Deleted the watch on {label}"),
             TaskEvent::Unknown => "Something happened".into(),
         }
     }

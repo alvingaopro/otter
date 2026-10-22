@@ -6,7 +6,10 @@ echo "gh $*" >> "$dir/calls.log"
 case "$1 $2" in
   "pr view")
     if [ -f "$dir/pr" ]; then
-      printf '{"number":7,"url":"https://github.com/o/r/pull/7","state":"OPEN"}\n'
+      # What GitHub says of it (D-184): set by a test in pr-state, mergeable.
+      state=$(cat "$dir/pr-state" 2>/dev/null || echo OPEN)
+      mergeable=$(cat "$dir/mergeable" 2>/dev/null || echo MERGEABLE)
+      printf '{"number":7,"url":"https://github.com/o/r/pull/7","state":"%s","mergeable":"%s","headRefOid":"0123456789abcdef","baseRefName":"main"}\n' "$state" "$mergeable"
     else
       echo "no pull requests found for branch" >&2; exit 1
     fi ;;

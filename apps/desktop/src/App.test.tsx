@@ -133,7 +133,10 @@ describe("Activity Bar navigation", () => {
   it("is an accessible tab list with Chat first and selected (D-178)", () => {
     const tabs = [...host.querySelectorAll('.activity-bar [role="tab"]')];
     // Labels carry a "N need you" count when there is one.
-    expect(tabs.map((t) => t.getAttribute("aria-label")?.split(",")[0])).toEqual(["Chat", "Workspaces"]);
+    expect(tabs.map((t) => t.getAttribute("aria-label")?.split(",")[0])).toEqual(["Chat", "Workspaces", "Automations"]);
+    // Automations (D-185) asks nothing of you: never a count.
+    expect(tab("automations").getAttribute("aria-label")).toBe("Automations");
+    expect(panel("automations").hidden).toBe(true);
     expect(tab("tasks").getAttribute("aria-selected")).toBe("true");
     expect(tab("tasks").tabIndex).toBe(0);
     expect(tab("workspaces").tabIndex).toBe(-1);
@@ -167,6 +170,7 @@ describe("Activity Bar navigation", () => {
     calls.mockClear();
     for (let i = 0; i < 3; i++) {
       await act(async () => tab("workspaces").click());
+      await act(async () => tab("automations").click());
       await act(async () => tab("tasks").click());
     }
     const changing = calls.mock.calls

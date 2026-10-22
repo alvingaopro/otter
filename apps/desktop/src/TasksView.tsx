@@ -14,6 +14,7 @@ import type { TaskSource, WorkspaceRequest } from "./taskSource";
 import { routeHost } from "./route";
 import { QuestionForm, Turn, WorkHead } from "./Work";
 import { useComposition } from "./composing";
+import { openWatches, untilText } from "./automations";
 import { MAX_IMAGES, PICTURES_ONLY, pastedFiles, prepareImage, type PastedImage } from "./pastedImage";
 import {
   GROUPS,
@@ -145,6 +146,7 @@ export function TasksView({ source, hosts, workspaces, now, focus, onOpenWorkspa
                     <span className="ws-text">
                       <span className="ws-line">
                         <span className="ws-name">{p.task.title}</span>
+                        <WatchingMark task={p.task} />
                         <span className="ws-host">{p.host}</span>
                       </span>
                       <span className="ws-line sub">
@@ -223,6 +225,54 @@ function PauseAll({ source, tasks }: { source: TaskSource; tasks: PlacedTask[] }
         </span>
       )}
     </div>
+  );
+}
+
+/** An eye on a task's row while Otter watches something for it (D-183). */
+function WatchingMark({ task }: { task: Task }) {
+  const open = openWatches(task);
+  if (open.length === 0) return null;
+  const what = open.map((w) => w.label).join("; ");
+  return (
+    <span className="watching-mark" title={`Watching: ${what}`} aria-label={`Watching: ${what}`} role="img">
+      <svg width="13" height="13" viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+        <path d="M1.5 8s2.4-4.5 6.5-4.5S14.5 8 14.5 8 12.1 12.5 8 12.5 1.5 8 1.5 8z" />
+        <circle cx="8" cy="8" r="2" />
+      </svg>
+    </span>
+  );
+}
+
+/** What Otter watches for this task, above the message box (D-183): each with Stop. */
+function WatchStrip({ task, now, act }: { task: Task; now: number; act: (a: TaskAction) => void }) {
+  // Stops sent: their button goes, so a second click doesn't say "already ended".
+  const [stopping, setStopping] = useState<string[]>([]);
+  const open = openWatches(task);
+  if (open.length === 0) return null;
+  return (
+    <ul className="plain-list watch-strip" aria-label="Watching">
+      {open.map((w) => (
+        <li key={w.id} className="watch-strip-item">
+          <span className="watch-dot" aria-hidden="true" />
+          <span className="watch-strip-text">
+            {w.status === "firing" ? `${w.label}: telling you what it found` : `Watching ${w.label} · ${untilText(w, now)}`}
+          </span>
+          {!stopping.includes(w.id) && (
+            <button
+              type="button"
+              className="link-btn"
+              aria-label={`Stop watching ${w.label}`}
+              onClick={() => {
+                setStopping((s) => [...s, w.id]);
+                act({ action: "cancel_watch", watch_id: w.id });
+              }}
+            >
+              Stop
+            </button>
+          )}
+        </li>
+      ))}
+    </ul>
   );
 }
 
@@ -924,6 +974,7 @@ function Conversation({
               </ul>
             </section>
           )}
+          <WatchStrip task={placed.task} now={now} act={act} />
           <form className="composer" onSubmit={submit}>
             {preparing > 0 && <p className="muted small replying">Getting the picture ready…</p>}
             {images.length > 0 && (

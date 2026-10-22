@@ -779,7 +779,7 @@ fn a_task_goes_from_the_terminal_to_an_accepted_pull_request() {
     assert!(pushed.contains("export.sh"), "{pushed}");
     let calls = std::fs::read_to_string(gh.join("calls.log")).unwrap();
     assert_eq!(calls.matches("gh pr create").count(), 1, "{calls}");
-    assert!(!calls.contains("merge"), "{calls}");
+    assert!(!calls.contains("pr merge"), "{calls}");
 
     // Unattended next time (D-083): a trigger, its policy set here.
     let out = cli.ok(&[
@@ -817,7 +817,20 @@ fn a_task_goes_from_the_terminal_to_an_accepted_pull_request() {
         "soon",
     ]);
     assert!(err.contains("isn't a duration"), "{err}");
+    // Paused and resumed (D-185).
+    let out = cli.ok(&["trigger", "pause", "nightly"]);
+    assert!(
+        out.contains("nightly  paused (daily at 02:00 UTC)"),
+        "{out}"
+    );
+    let out = cli.ok(&["trigger", "resume", "nightly"]);
+    assert!(out.contains("nightly  daily at 02:00 UTC, next"), "{out}");
     assert!(cli.ok(&["trigger", "rm", "nightly"]).contains("removed"));
+    // Nothing watched: said, with how to start (D-183).
+    let out = cli.ok(&["watch", "ls"]);
+    assert!(out.contains("nothing watched now"), "{out}");
+    let err = cli.fails(&["watch", "stop", "wch_nope"]);
+    assert!(err.contains("no watch `wch_nope`"), "{err}");
 }
 
 /// `otter doctor` (D-077): each host's problems with what to do, a host it

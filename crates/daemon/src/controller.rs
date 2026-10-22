@@ -116,6 +116,8 @@ const PLANNING: &str = "Look at the code and plan the work";
 /// The step CI's failure becomes, and what is said when a fix didn't change it.
 const CI_FIX: &str = "Fix what CI found";
 const SAME_CI: &str = "CI failed the same way after the fix";
+/// The rationale's mark of a pull request found conflicting, per head (D-184).
+const CONFLICTS: &str = "The pull request conflicts with";
 /// What Otter asks when a task starts with nothing to do (D-067).
 const GOAL_QUESTION: &str = "What should this task do?";
 /// Why a task is done when its request was a question (D-084).
@@ -203,6 +205,13 @@ pub(crate) struct ControllerState {
     asked: HashSet<DecisionId>,
     /// When each task's CI was last read.
     ci_polled: std::collections::HashMap<TaskId, std::time::Instant>,
+    /// When each task's pull request's mergeability was last read (D-184).
+    pr_polled: std::collections::HashMap<TaskId, std::time::Instant>,
+    /// The same, by the clock, for what Otter is told (D-184): written to
+    /// the task only when what was read changed.
+    pub(crate) ci_read: std::collections::HashMap<TaskId, otter_core::Timestamp>,
+    /// Watches' probes: when next, failures in a row, in flight (D-183).
+    pub(crate) watches: crate::watches::Probing,
     /// A turn in Otter's conversation on the host is running (D-093).
     host_turn: bool,
 }
@@ -246,6 +255,9 @@ impl Daemon {
                 .into_iter()
                 .filter(|f| {
                     !unanswered(f).is_empty()
+                        // A watch found something: Otter says so (D-183),
+                        // whatever the task's status.
+                        || f.firing_watch().is_some()
                         || f.status.is_active()
                         || f.status == TaskStatus::Review
                         // Blocked: on a decision the brain hasn't seen yet,
@@ -343,6 +355,11 @@ impl Daemon {
                 Some(backend) => self.otter_turn(&f, backend).await?,
                 None => self.converse(&f).await?,
             }
+            f = self.task_get(id.as_str()).await?;
+        }
+        // Then a watch that fired (D-183): its turn never fails the task.
+        if let Some(w) = f.firing_watch().cloned() {
+            self.watch_turn(&f, &w).await;
             f = self.task_get(id.as_str()).await?;
         }
         // Unattended work doesn't wait for ever on the developer (D-083).
@@ -2440,6 +2457,7 @@ impl Daemon {
             browser_checks: crate::browser::load_checks(&root).is_ok_and(|c| !c.is_empty()),
             ci_settling: false,
             nothing_to_publish: false,
+            no_ci_after_push: false,
         };
         let mut d = f.delivery.clone();
         let mut evidence = Vec::new();
@@ -2503,6 +2521,8 @@ impl Daemon {
                             ci: vec![],
                             reruns: 0,
                             declined: true,
+                            mergeable: None,
+                            ci_read_at: None,
                         });
                         notes.push("You chose not to publish: delivery stays local.".into());
                     }
@@ -2567,6 +2587,8 @@ impl Daemon {
                                     ci: vec![],
                                     reruns: 0,
                                     declined: false,
+                                    mergeable: None,
+                                    ci_read_at: None,
                                 });
                                 break 'publish;
                             }
@@ -2585,6 +2607,8 @@ impl Daemon {
                             ci: vec![],
                             reruns: 0,
                             declined: false,
+                            mergeable: None,
+                            ci_read_at: None,
                         });
                         if first {
                             let mut e = evidence_item(
@@ -2626,14 +2650,61 @@ impl Daemon {
                 .as_ref()
                 .and_then(|d| d.pushed_at)
                 .is_some_and(|t| Utc::now() < t + settle);
+            // No check at all long after the push: said, not "running" (D-184).
+            let start = chrono::Duration::from_std(env_ms("OTTER_CI_START_MS", 600_000)).unwrap();
+            cx.no_ci_after_push = d
+                .as_ref()
+                .filter(|d| d.ci.is_empty())
+                .and_then(|d| d.pushed_at)
+                .is_some_and(|t| Utc::now() - t > start);
             if let Some(dl) = d.as_mut()
                 && let Some(n) = dl.pr_number
                 && !cx.ci_settling
                 && self.ci_due(&f.id)
             {
+                let read = Utc::now();
+                let before = (dl.ci.clone(), dl.mergeable.clone());
                 match gh.checks(n).await {
                     Ok(ci) => dl.ci = ci,
                     Err(e) => tracing::warn!(task = %f.id, "reading CI: {e:#}"),
+                }
+                // Whether it can be merged at all: one that conflicts gets
+                // no CI (D-184). Read once a minute, and whenever it isn't
+                // known (a push makes a new Delivery); GitHub still working
+                // it out (`UNKNOWN`) keeps the last reading.
+                if dl.mergeable.is_none() || self.pr_due(&f.id) {
+                    match gh.pr_state(n).await {
+                        Ok(p) => {
+                            if p.mergeable == "MERGEABLE" || p.mergeable == delivery::CONFLICTING {
+                                dl.mergeable = Some(p.mergeable);
+                            }
+                            if dl.base.as_deref().is_none_or(str::is_empty) && !p.base.is_empty() {
+                                dl.base = Some(p.base);
+                            }
+                        }
+                        Err(e) => tracing::warn!(task = %f.id, "reading the pull request: {e:#}"),
+                    }
+                }
+                self.controller
+                    .lock()
+                    .unwrap()
+                    .ci_read
+                    .insert(f.id.clone(), read);
+                if (dl.ci.clone(), dl.mergeable.clone()) != before {
+                    dl.ci_read_at = Some(read);
+                }
+                if dl.mergeable.as_deref() == Some(delivery::CONFLICTING) {
+                    let base = dl.base.clone().unwrap_or_else(|| "its base".into());
+                    let marker = format!(
+                        "{CONFLICTS} {base} at {}",
+                        dl.head.as_deref().unwrap_or("?")
+                    );
+                    if !f.rationale.iter().any(|r| r == &marker) {
+                        notes.push(format!(
+                            "The pull request conflicts with {base}, so GitHub won't run CI on it. Bring the branch up to date — say so and the coding agent will — or resolve it yourself."
+                        ));
+                        rationale.push(marker);
+                    }
                 }
                 let mut failed: Vec<_> = dl
                     .ci
@@ -2874,6 +2945,26 @@ impl Daemon {
                 .map(|b| b.trim_start_matches("origin/").to_owned()),
             _ => None,
         }
+    }
+
+    /// Whether it's time to read whether the pull request can be merged
+    /// (`OTTER_PR_POLL_MS`, a minute; D-184).
+    fn pr_due(&self, id: &TaskId) -> bool {
+        let every = env_ms("OTTER_PR_POLL_MS", 60_000);
+        let mut st = self.controller.lock().unwrap();
+        let now = std::time::Instant::now();
+        match st.pr_polled.get(id) {
+            Some(t) if now.duration_since(*t) < every => false,
+            _ => {
+                st.pr_polled.insert(id.clone(), now);
+                true
+            }
+        }
+    }
+
+    /// When the task's CI was last read, if since otterd started (D-184).
+    pub(crate) fn ci_read_at(&self, id: &TaskId) -> Option<otter_core::Timestamp> {
+        self.controller.lock().unwrap().ci_read.get(id).copied()
     }
 
     /// Whether it's time to look at CI again (`OTTER_CI_POLL_MS`, 15 s).

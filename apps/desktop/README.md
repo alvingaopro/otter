@@ -45,7 +45,12 @@ Layout:
 - `src-tauri/src/updates.rs` — the app's own updates, from the latest release (D-125).
 - `src-tauri/src/perf.rs` — the app process's memory and CPU, for the performance overlay (D-128).
 - `src-tauri/src/tasks.rs` — task commands, passed through to each host's otterd (D-043).
-- `src/` — React: `ActivityBar` + `nav.ts` (the Chat and Workspaces views, D-041, D-088, D-107; Otter's view on a host left the app, D-115; the Inbox, D-178),
+- `src-tauri/src/triggers.rs` — trigger commands (list, pause/resume, run now, delete), for Automations (D-185).
+- `src/` — React: `ActivityBar` + `nav.ts` (the Chat, Workspaces and Automations views, D-041, D-088, D-107, D-185; Otter's view on a host left the app, D-115; the Inbox, D-178),
+  `AutomationsView` + `automations.ts` + `triggerSource.ts` (⌘3: what Otter does without a message — the watches it keeps
+  for you, D-183, and the hosts' triggers, D-083 — in WATCHING, SCHEDULED and HISTORY; a watch's readings and what it came
+  to, a trigger's runs; Stop, Pause/Resume, Run now and Delete, from the page or the row's menu; no dot on the bar, D-185;
+  in Chat, a watched task's row has an eye and its message box the watches with Stop),
   `TasksView` (a grouped list; a task's Overview and Activity, D-114) + `tasks.ts` (the contract) + `taskSource.ts` (where
   tasks come from: the hosts, or sample data in tests; D-042),
   `Sidebar` (with the filter, and updating every host behind the app at once, D-131), `QuickOpen` (⌘K), `WorkspacePane` (kept
