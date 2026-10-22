@@ -6996,3 +6996,95 @@ set and the answer says it passed; asked on a conflicting pull request,
 nothing is set and the answer says it can't run; a watch set while it could
 still run fires when it comes to conflict; GitHub unreadable as it is set,
 the watch is set, the answer says why, and it reads on its next look.
+
+## D-189 — A task's own workspace goes once its work is merged (2026-10-22)
+
+D-105 archives a task's own workspace when the task ends and keeps it for
+good: worktree, branch and build output. On 2026-10-22 the developer's VM
+filled with 230G of worktrees, 5–23G of `target/` each. Those were made by
+hand by Claude Code sessions, not by Otter. The developer asked whether
+Otter cleans up its own, and took the plan in
+`docs/plans/merged-task-workspaces.md` with its recommended answers. No
+host had shown such a backlog yet.
+
+- **otterd looks at the tasks' archived workspaces** every half hour, the
+  first a minute after it starts (`OTTER_MERGED_SWEEP_MS`). It looks at one
+  that was made for its task (D-080), is archived, comes from Git and is
+  still the task's, and that isn't marked kept. The task must be done or
+  cancelled, ask nothing, and have a pull request on GitHub that delivery
+  didn't decline. For each, it reads the pull request once with `gh pr view`
+  (D-184's read, now with `mergedAt`), through Otter's GitHub sign-in
+  (D-133).
+- **Merged a day ago or more, the workspace is deleted** with the ordinary
+  delete, without force: the worktree, its branch, and the repository's copy
+  once nothing uses it (D-108). The conversation says so: "Its workspace … is
+  deleted: pull request #n was merged, and everything in it is on main.
+  Asked for more, the task starts again from main." Merged within the day,
+  still open, or GitHub didn't say when it merged: looked at again on the
+  next pass. Closed without merging: it stays, and is asked about again a
+  day later, since it can be reopened.
+- **What is only there keeps it.** D-108's guard is the one that decides:
+  uncommitted changes, files Git doesn't track (they count, so a scratch
+  file an agent left is enough), and commits on no remote (a squash or
+  rebase merge counts as landed, by patch id). The sweep adds one check of
+  its own: commits that are on the remote but not in the pull request,
+  pushed after it, also keep it. The check reads whether HEAD is the pull
+  request's head or behind it, and only when that commit is known here. Kept,
+  the workspace gets `Workspace.kept` with the reason, and the conversation
+  says it once. It isn't looked at again until it is unarchived, which
+  clears the mark. Archived again, it qualifies again. Never with force.
+- **An unarchive is never undone.** The task and the workspace are read
+  again just before the delete. The workspace is checked once more after
+  the delete has begun, under the store's lock, when an unarchive is
+  already refused. An unarchive in between (the developer's, or the task's
+  own when more is asked of it, D-105) means nothing is deleted.
+- **The task stops pointing at it.** When the workspace made for a task is
+  deleted, by this or by the developer, the task's `workspace_id` is
+  cleared (while it still points there) and `Task.workspace_gone` keeps its
+  name, its repository (shown without credentials), the base its pull
+  request went into, a count, and `merged`: the pull request, when Otter
+  deleted it for that. Before this, more asked of a task whose workspace
+  had been deleted failed with "no workspace". Now a task that was blocked
+  with nothing to wait on stays blocked until it is given a workspace.
+- **More asked after Otter deleted it** (D-050): the task gets a new
+  workspace of its own from the same repository, on
+  `otter/<title>-<id>-<count + 1>` from `origin/<base>`, which already has
+  the merged work. The branch name is one never pushed; the old branch
+  isn't brought back. This runs before D-186's placement. Deleted by the
+  developer, nothing is made: their work may not be merged, so the task
+  waits with "Choose a workspace for this task". If making the workspace
+  fails, the conversation says why and the task waits the same way.
+- **Archived, the task says it won't stay for good:** D-105's line adds "It
+  is deleted a day after pull request #n is merged, unless something is
+  only there" while the setting is on.
+- **A host setting**, *Delete a task's workspace once its work is merged*,
+  on by default (`delete_merged_workspaces`). It is in the app's Settings
+  under Otter, next to Otter's tools. Off, archived workspaces stay as
+  before.
+- A host without `gh`, a task with no pull request, a workspace the
+  developer unarchived, chose or attached: nothing changes.
+
+Not a watch (D-183): a watch only looks and says, and ends in Otter's turn.
+This deletes, with no model and no deadline, so it is a loop of its own
+(`merged.rs`).
+
+Tests: unit tests for what is looked at (`merged::tests`: a task's own
+archived workspace with a pull request; not one in review, unarchived,
+kept, chosen, attached, declined, or without a GitHub pull request) and for
+the grace. End to end (`merged::*`, with the fake `gh`): open, merged an
+instant ago, or the setting off, it stays; merged long ago, it goes with its
+worktree, the task says so and keeps the record; asked for more, a new
+workspace from `origin/main` on `…-2`, and the task works again. A file Git
+doesn't track keeps it and is said once. Unarchived, the mark clears.
+Re-archived with a commit pushed after the pull request, it stays again.
+Deleted by the developer, the task asked for more waits for a workspace
+rather than starting again from main. Watched failing: with the new
+workspace's making turned off, the first test times out waiting for it;
+made for a deletion by the developer too, the second times out waiting for
+the task to wait.
+
+Reviewed against the code (Fable) before merging. The review found that an
+unarchive between the sweep's check and the delete was undone. It also found
+that any delete, merged or not, made a new workspace from main that said
+the work was merged. Both are fixed above.
+

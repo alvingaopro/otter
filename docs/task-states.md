@@ -97,6 +97,10 @@ At any checkpoint, deterministically:
 - **Cancel** — runs end and the conversation closes; the workspace, its
   files, the branch and an open pull request stay, and the message says so
   (D-068).
+  Done or cancelled, the task's own workspace is archived (D-105), and it is
+  deleted a day after the pull request is merged unless something is only
+  there (D-189). Asked for more after that, the task gets a new one from the
+  pull request's base.
 - **Decide** — answer what the task waits on; an approval of an ask
   raised only for where it reaches is remembered for the task (D-066).
 - **Watch** — on the developer's word, Otter looks again later (D-183):

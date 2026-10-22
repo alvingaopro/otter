@@ -221,6 +221,17 @@ An addition (no protocol bump): daemons before it answer `invalid_request`.
   `workspace.prepare` or `workspace.unarchive` of it gets `conflict`
   (D-135). A delete that fails after stopping the workspace's preparation
   leaves it `failed` (`WorkspaceFailed`), saying so.
+- Deleting the workspace made for a task (D-189) clears the task's
+  `workspace_id` while it points there, and sets `Task.workspace_gone {name,
+  repository?, base?, at, count, merged?}`. When Otter deleted it once pull
+  request `merged` was merged, a new one is made if more is asked of the
+  task.
+- otterd deletes a task's own archived workspace by itself a day after the
+  task's pull request is merged, unless something is only there. Then the
+  workspace keeps `kept` (the reason), cleared when it is unarchived
+  (D-189). The view of `settings.get` has `delete_merged_workspaces` (on by
+  default); `settings.set {delete_merged_workspaces: bool}` turns it on or
+  off. All additions (no protocol bump), absent from older daemons.
 
 ## Names and order
 

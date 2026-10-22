@@ -809,6 +809,19 @@ impl Git<'_> {
         self.git(&["rev-parse", "HEAD"]).await
     }
 
+    /// Whether HEAD is `rev` or behind it; `None` when `rev` isn't known
+    /// here (D-189).
+    pub async fn within(&self, rev: &str) -> Option<bool> {
+        self.git(&["cat-file", "-e", &format!("{rev}^{{commit}}")])
+            .await
+            .ok()?;
+        Some(
+            self.git(&["merge-base", "--is-ancestor", "HEAD", rev])
+                .await
+                .is_ok(),
+        )
+    }
+
     /// Whether HEAD is `rev` or descends from it.
     pub async fn descends_from(&self, rev: &str) -> bool {
         self.git(&["merge-base", "--is-ancestor", rev, "HEAD"])
@@ -949,6 +962,8 @@ pub struct PrState {
     pub mergeable: String,
     pub head: String,
     pub base: String,
+    /// When it was merged, if it was (D-189).
+    pub merged_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 impl<'a> GitHub<'a> {
@@ -983,7 +998,8 @@ impl<'a> GitHub<'a> {
     }
 
     /// What GitHub says of pull request `pr` now: open or not, whether it
-    /// can be merged, its head and base (D-184).
+    /// can be merged, its head and base (D-184), and when it was merged
+    /// (D-189).
     pub async fn pr_state(&self, pr: u64) -> Result<PrState> {
         let n = pr.to_string();
         let out = self
@@ -993,7 +1009,7 @@ impl<'a> GitHub<'a> {
                     "view",
                     &n,
                     "--json",
-                    "state,mergeable,headRefOid,baseRefName",
+                    "state,mergeable,headRefOid,baseRefName,mergedAt",
                 ],
                 None,
             )
@@ -1005,6 +1021,10 @@ impl<'a> GitHub<'a> {
             mergeable: field("mergeable", "UNKNOWN"),
             head: field("headRefOid", ""),
             base: field("baseRefName", ""),
+            merged_at: v["mergedAt"]
+                .as_str()
+                .and_then(|t| chrono::DateTime::parse_from_rfc3339(t).ok())
+                .map(|t| t.with_timezone(&chrono::Utc)),
         })
     }
 

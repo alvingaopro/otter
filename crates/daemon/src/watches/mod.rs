@@ -131,7 +131,7 @@ pub(crate) fn minutes_arg(args: &Value, key: &str) -> Result<Option<u32>, String
     }
 }
 
-fn env_ms(var: &str, default: u64) -> Duration {
+pub(crate) fn env_ms(var: &str, default: u64) -> Duration {
     Duration::from_millis(
         std::env::var(var)
             .ok()
@@ -157,7 +157,7 @@ const PROBE_LIMIT: Duration = Duration::from_secs(150);
 const FIRST_LOOK_LIMIT: Duration = Duration::from_secs(20);
 
 /// `d`, give or take a tenth, so watches set together don't probe together.
-fn jitter(d: Duration) -> Duration {
+pub(crate) fn jitter(d: Duration) -> Duration {
     use rand::Rng;
     let tenth = d.as_millis() as u64 / 10;
     if tenth == 0 {

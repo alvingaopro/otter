@@ -734,12 +734,16 @@ impl Daemon {
     }
 
     async fn plan_step(self: &Arc<Self>, f: &Task) -> RpcResult<()> {
-        // Started without a workspace, Otter reads the request for where
-        // the work goes before the task waits for the developer (D-186).
+        // Its own workspace deleted once its work was merged, a new one is
+        // made like it (D-189). Else, started without a workspace, Otter
+        // reads the request for where the work goes before the task waits
+        // for the developer (D-186).
         let placed;
         let f = if f.workspace_id.is_none()
-            && let Some(fresh) = self.place_from_request(f).await?
-        {
+            && let Some(fresh) = match self.workspace_again(f).await? {
+                Some(again) => Some(again),
+                None => self.place_from_request(f).await?,
+            } {
             placed = fresh;
             &placed
         } else {

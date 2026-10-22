@@ -102,6 +102,9 @@ struct Stored {
     /// Otter answers with its tools (D-089).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     otter_tools: Option<bool>,
+    /// A task's own workspace goes once its pull request is merged (D-189).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    delete_merged_workspaces: Option<bool>,
 }
 
 #[derive(Debug, Default)]
@@ -188,6 +191,12 @@ impl HostSettings {
         }
     }
 
+    /// Whether a task's own workspace is deleted once its pull request is
+    /// merged (D-189); on by default.
+    pub fn delete_merged_workspaces(&self) -> bool {
+        self.stored.delete_merged_workspaces.unwrap_or(true)
+    }
+
     /// The coding agent's model (`None`: the provider's default).
     pub fn coding_model(&self) -> Option<String> {
         self.stored.coding_model.clone()
@@ -222,6 +231,7 @@ impl HostSettings {
             otter_tools: Some(self.otter_tools()),
             otter_tools_from_env: otter_tools_from_env(),
             otter_answers: None,
+            delete_merged_workspaces: Some(self.delete_merged_workspaces()),
             git: None,
         }
     }
@@ -268,6 +278,9 @@ impl HostSettings {
         }
         if let Some(on) = u.otter_tools {
             stored.otter_tools = Some(on);
+        }
+        if let Some(on) = u.delete_merged_workspaces {
+            stored.delete_merged_workspaces = Some(on);
         }
         let mut secrets = self.secrets.clone();
         for (name, value) in u.secrets {
@@ -393,6 +406,7 @@ mod tests {
                 .unwrap_or_default(),
             coding: None,
             otter_tools: None,
+            delete_merged_workspaces: None,
             git: None,
         }
     }
@@ -420,6 +434,25 @@ mod tests {
         let again = HostSettings::load(dir.path()).unwrap();
         assert!(!again.otter_tools());
         assert_eq!(again.view().otter_tools, Some(false));
+    }
+
+    /// Deleting a task's workspace once its work is merged (D-189): on by
+    /// default, off when turned off, and kept.
+    #[test]
+    fn merged_workspaces_go_until_turned_off() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut s = HostSettings::load(dir.path()).unwrap();
+        assert!(s.delete_merged_workspaces());
+        assert_eq!(s.view().delete_merged_workspaces, Some(true));
+        s.update(SettingsUpdate {
+            delete_merged_workspaces: Some(false),
+            ..Default::default()
+        })
+        .unwrap();
+        s.update(update(Some("claude"), None)).unwrap();
+        let again = HostSettings::load(dir.path()).unwrap();
+        assert!(!again.delete_merged_workspaces());
+        assert_eq!(again.view().delete_merged_workspaces, Some(false));
     }
 
     #[test]

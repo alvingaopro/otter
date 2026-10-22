@@ -610,10 +610,11 @@ impl GitManager {
         }
     }
 
-    /// Whether the worktree at `path` has uncommitted changes.
-    pub async fn is_dirty(&self, path: &Path) -> Result<bool> {
+    /// Whether the worktree at `path` has uncommitted changes: `Some(true)`
+    /// when they are only files Git doesn't track (D-189).
+    pub async fn uncommitted(&self, path: &Path) -> Result<Option<bool>> {
         if !path.exists() {
-            return Ok(false);
+            return Ok(None);
         }
         let out = self
             .git(
@@ -621,7 +622,11 @@ impl GitManager {
                 &["status", "--porcelain", "--untracked-files=normal"],
             )
             .await?;
-        Ok(!out.trim().is_empty())
+        let mut lines = out.lines().filter(|l| !l.trim().is_empty()).peekable();
+        if lines.peek().is_none() {
+            return Ok(None);
+        }
+        Ok(Some(lines.all(|l| l.starts_with("??"))))
     }
 
     async fn default_base(&self, repo: &Path) -> Result<String> {

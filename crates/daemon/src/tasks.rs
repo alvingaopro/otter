@@ -865,6 +865,21 @@ pub fn apply_action(
     Ok(changes)
 }
 
+/// The branch a task's own workspace is made on (D-080):
+/// `otter/<title>-<the end of its id>`.
+fn own_branch(f: &Task) -> String {
+    let short: String =
+        f.id.as_str()
+            .chars()
+            .rev()
+            .take(4)
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .collect();
+    format!("otter/{}-{short}", crate::git::slug(&f.title))
+}
+
 /// The goal moved (D-050): plan again from where the work stands — what is
 /// done stays done. Nothing to do for a cancelled task. The coding agent
 /// plans again, in its conversation (D-084): the planning turn is due again,
@@ -1263,15 +1278,6 @@ impl Daemon {
         source: SourceSpec,
     ) -> RpcResult<otter_core::Workspace> {
         let slug = crate::git::slug(&f.title);
-        let short: String =
-            f.id.as_str()
-                .chars()
-                .rev()
-                .take(4)
-                .collect::<Vec<_>>()
-                .into_iter()
-                .rev()
-                .collect();
         let prefix: String = prefix.chars().take(40).collect();
         let source = match source {
             SourceSpec::Git {
@@ -1280,7 +1286,7 @@ impl Daemon {
                 base,
             } => SourceSpec::Git {
                 repository,
-                branch: Some(branch.unwrap_or_else(|| format!("otter/{slug}-{short}"))),
+                branch: Some(branch.unwrap_or_else(|| own_branch(f))),
                 base,
             },
             other => other,
@@ -1330,6 +1336,131 @@ impl Daemon {
         Err(last.expect("tried at least once"))
     }
 
+    /// The workspace made for a task is deleted (D-189): the task no longer
+    /// points at it, and keeps what a new one is made from if more is
+    /// asked of it. `merged`: deleted by Otter once its pull request (its
+    /// number and base) was merged. A workspace the task was only given is
+    /// no concern here.
+    pub(crate) async fn workspace_gone(
+        &self,
+        ws: &otter_core::Workspace,
+        merged: Option<(u64, String)>,
+    ) {
+        let Some(task) = ws.task_id.clone() else {
+            return;
+        };
+        let repository = match &ws.source {
+            otter_core::WorkspaceSource::Git(g) => {
+                Some(otter_core::redact::url_credentials(&g.repository))
+            }
+            _ => None,
+        };
+        let (id, name) = (ws.id.clone(), ws.name.clone());
+        let applied = self.tasks.lock().await.apply(&task, None, |f, now| {
+            if f.workspace_id.as_ref() != Some(&id) {
+                return Ok(vec![]);
+            }
+            f.workspace_id = None;
+            let delivered = f.delivery.as_ref().and_then(|d| d.base.clone());
+            let (pr, base) = match merged {
+                Some((pr, base)) if !base.is_empty() => (Some(pr), Some(base)),
+                Some((pr, _)) => (Some(pr), delivered),
+                None => (None, delivered),
+            };
+            f.workspace_gone = Some(otter_core::task::WorkspaceGone {
+                name: name.clone(),
+                repository,
+                base,
+                at: now,
+                count: f.workspace_gone.as_ref().map_or(0, |g| g.count) + 1,
+                merged: pr,
+            });
+            let why = match pr {
+                Some(pr) => {
+                    format!("Its workspace {name} was deleted: pull request #{pr} was merged")
+                }
+                None => format!("Its workspace {name} was deleted"),
+            };
+            Ok(vec![Change::new(f.reason(why))])
+        });
+        if let Ok(a) = applied {
+            self.task_changed(&a);
+        }
+    }
+
+    /// More asked of a task whose own workspace Otter deleted once its work
+    /// was merged (D-189): a new one of its own, from the same repository,
+    /// on a new branch from the base its pull request went into, which has
+    /// that work. The old branch isn't brought back. `None` when the
+    /// developer deleted it (they choose where it goes on), when there's
+    /// nothing to make it from, or when making it failed: then its
+    /// conversation says why, and it waits for a workspace.
+    pub(crate) async fn workspace_again(self: &Arc<Self>, f: &Task) -> RpcResult<Option<Task>> {
+        if f.workspace_id.is_some() {
+            return Ok(None);
+        }
+        let Some(gone) = f.workspace_gone.clone().filter(|g| g.merged.is_some()) else {
+            return Ok(None);
+        };
+        let Some(repository) = gone.repository.clone() else {
+            return Ok(None);
+        };
+        // Never a branch already pushed: one with this name on the remote
+        // would be checked out instead of made.
+        let branch = format!("{}-{}", own_branch(f), gone.count + 1);
+        let base = gone.base.as_ref().map(|b| format!("origin/{b}"));
+        let source = SourceSpec::Git {
+            repository: self.stored_repository(&repository).await,
+            branch: Some(branch.clone()),
+            base: base.clone(),
+        };
+        let command = format!("again-{}-{}", f.id, gone.count);
+        let (made, text) = match self.place_task(f, Placement::Make(source), &command).await {
+            Ok(_) => {
+                let name = {
+                    let store = self.store.lock().await;
+                    store
+                        .state
+                        .workspaces
+                        .iter()
+                        .find(|w| w.task_id.as_ref() == Some(&f.id))
+                        .map(|w| w.name.clone())
+                        .unwrap_or_default()
+                };
+                (
+                    true,
+                    format!(
+                        "Its workspace {} was deleted once its work was merged: the work goes on in a new one, {name}, on `{branch}` from {}.",
+                        gone.name,
+                        gone.base.as_deref().unwrap_or("the default branch")
+                    ),
+                )
+            }
+            Err(e) => {
+                let why = otter_core::redact::redact(&e.message);
+                tracing::warn!(task = %f.id, "making the task a workspace again: {why}");
+                (
+                    false,
+                    format!(
+                        "Its workspace {} was deleted, and making it a new one from {repository} failed: {why}. Choose a workspace for it.",
+                        gone.name
+                    ),
+                )
+            }
+        };
+        let applied = self.tasks.lock().await.apply(&f.id, None, |f, _| {
+            // Tried once: failed, it waits for a workspace.
+            if !made {
+                f.workspace_gone = None;
+            }
+            let (m, c) = message(MessageRole::Controller, text, None);
+            f.messages.push(m);
+            Ok(vec![c])
+        })?;
+        self.task_changed(&applied);
+        Ok(made.then_some(applied.task))
+    }
+
     /// When a task ends (done or cancelled), the workspace made for it
     /// (D-080) is archived (D-105): files, branch and conversations kept,
     /// nothing left running. Not while the task still asks something (a
@@ -1364,9 +1495,21 @@ impl Daemon {
             tracing::warn!(workspace = %name, "archiving a finished task's workspace: {}", e.message);
             return;
         }
-        let text = format!(
+        let mut text = format!(
             "Its workspace {name} is archived now that the task is over: its files and branch are kept. Unarchive it to look at the work."
         );
+        // It doesn't stay for good once the work is merged (D-189).
+        if let Some(pr) = f
+            .delivery
+            .as_ref()
+            .filter(|d| !d.declined)
+            .and_then(|d| d.pr_number)
+            && self.settings.read().unwrap().delete_merged_workspaces()
+        {
+            text.push_str(&format!(
+                " It is deleted a day after pull request #{pr} is merged, unless something is only there."
+            ));
+        }
         let applied = self.tasks.lock().await.apply(id, None, |f, _| {
             let (m, c) = message(MessageRole::Controller, text, None);
             f.messages.push(m);
