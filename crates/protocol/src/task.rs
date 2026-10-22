@@ -23,15 +23,56 @@ pub struct TaskCreate {
     /// message of the conversation.
     #[serde(default)]
     pub request: String,
-    /// A workspace (id or name) on this host to do the work in. Without
-    /// one, the task blocks when it starts until one is chosen
-    /// (`task.act` `set_workspace`).
+    /// Where the work is done: a workspace on this host, or one made for the
+    /// task (D-179). Without one, the task blocks when it starts until one is
+    /// chosen (`task.act` `set_workspace`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub workspace: Option<String>,
+    pub workspace: Option<WorkspaceChoice>,
     /// Only an answer is wanted: the coding agent only reads (D-092). Needs
     /// the coding agent on the SDK runtime.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub answer_only: bool,
+}
+
+/// Where a new task works (D-179). A plain string is a workspace by id or
+/// name, as it always was.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(untagged)]
+pub enum WorkspaceChoice {
+    /// A workspace on this host, by id or name.
+    Named(String),
+    /// A workspace made for the task from a repository.
+    New { new: NewWorkspace },
+    /// An empty directory made for the task: `{"scratch": {}}`.
+    Scratch { scratch: Scratch },
+}
+
+/// An empty directory has nothing to say about itself (room to grow).
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct Scratch {}
+
+/// The repository a task's own workspace is made from.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct NewWorkspace {
+    pub repository: String,
+    /// Revision to branch from (default: the repository's default branch).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base: Option<String>,
+    /// Name for the task's branch (default: made from the title).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub branch: Option<String>,
+}
+
+impl From<&str> for WorkspaceChoice {
+    fn from(s: &str) -> Self {
+        WorkspaceChoice::Named(s.to_owned())
+    }
+}
+
+impl From<String> for WorkspaceChoice {
+    fn from(s: String) -> Self {
+        WorkspaceChoice::Named(s)
+    }
 }
 
 /// A message from the developer to the task's Control Agent.
@@ -87,4 +128,53 @@ pub struct TaskEvents {
     pub after: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub limit: Option<u32>,
+}
+
+#[cfg(test)]
+mod workspace_choice_tests {
+    use super::*;
+
+    fn parse(v: serde_json::Value) -> WorkspaceChoice {
+        serde_json::from_value(v).unwrap()
+    }
+
+    /// What an older client sends still means what it did (D-179).
+    #[test]
+    fn a_plain_string_is_still_a_workspace_by_name() {
+        assert_eq!(parse(serde_json::json!("proj")), "proj".into());
+        let c: TaskCreate = serde_json::from_value(serde_json::json!({
+            "command_id": "c", "title": "t", "workspace": "scratch"
+        }))
+        .unwrap();
+        assert_eq!(c.workspace, Some("scratch".into()));
+    }
+
+    #[test]
+    fn a_workspace_can_be_made_from_a_repository_or_be_empty() {
+        assert_eq!(
+            parse(serde_json::json!({"new": {"repository": "git@h:a/b.git", "base": "dev"}})),
+            WorkspaceChoice::New {
+                new: NewWorkspace {
+                    repository: "git@h:a/b.git".into(),
+                    base: Some("dev".into()),
+                    branch: None,
+                }
+            }
+        );
+        assert_eq!(
+            parse(serde_json::json!({"scratch": {}})),
+            WorkspaceChoice::Scratch {
+                scratch: Scratch {}
+            }
+        );
+        let back = serde_json::to_value(WorkspaceChoice::New {
+            new: NewWorkspace {
+                repository: "r".into(),
+                base: None,
+                branch: None,
+            },
+        })
+        .unwrap();
+        assert_eq!(back, serde_json::json!({"new": {"repository": "r"}}));
+    }
 }
