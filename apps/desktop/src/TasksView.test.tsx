@@ -183,7 +183,7 @@ describe("Tasks view", () => {
     // Start from nothing.
     const s: TaskSource = { ...empty, list: () => [], subscribe: () => () => {} };
     await render(s);
-    expect(host.textContent).toContain("Describe a task");
+    expect(host.textContent).toContain("What shall we work on?");
     expect(host.textContent).toContain("No tasks yet.");
     expect(byText("button", "New task")).toBeTruthy();
   });
@@ -902,6 +902,33 @@ describe("Tasks view", () => {
     expect(created).toEqual([["mac", "Fix the retry bug in billing", "Fix the retry bug in billing\nIt drops the second attempt.", undefined, false]]);
     expect(acted).toEqual([[expect.any(String), { action: "start" }]]);
     expect(q(".status-pill")?.textContent).toBe("Working");
+  });
+
+  it("starts a task from the chat box of the empty page, beside a cute Otter", async () => {
+    const acted: unknown[][] = [];
+    const created: unknown[][] = [];
+    const base = mockSource("mac");
+    const s: TaskSource = {
+      ...base,
+      list: () => [],
+      create: async (...args) => {
+        created.push(args);
+        return base.create(...args);
+      },
+      act: async (key, action) => {
+        acted.push([key, action]);
+      },
+    };
+    await act(async () =>
+      root.render(<TasksView source={s} hosts={["mac"]} workspaces={{ mac: [] }} now={Date.now()} onOpenWorkspace={async () => {}} />),
+    );
+    expect(q(".otter-hello .otter-mark")).toBeTruthy();
+    const box = q<HTMLTextAreaElement>('textarea[aria-label="Tell Otter what you want"]')!;
+    expect(byText("button", "Start")!.hasAttribute("disabled")).toBe(true);
+    type(box, "Add retries to the billing client");
+    await act(async () => byText("button", "Start")!.click());
+    expect(created).toEqual([["mac", "Add retries to the billing client", "Add retries to the billing client", undefined, false]]);
+    expect(acted).toEqual([[expect.any(String), { action: "start" }]]);
   });
 
   it("creates a draft that is not started when asked for one", async () => {

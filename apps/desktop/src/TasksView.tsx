@@ -85,6 +85,23 @@ export function TasksView({ source, hosts, workspaces, now, focus, onOpenWorkspa
   // What Pause all holds: every task at work, found or not (D-081).
   const atWork = list.filter((p) => ["working", "preparing"].includes(taskActivity(p.task)));
 
+  async function create(
+    host: string,
+    title: string,
+    request: string,
+    workspace?: string | WorkspaceRequest,
+    answerOnly?: boolean,
+    start?: boolean,
+  ) {
+    const p = await source.create(host, title, request, workspace, answerOnly);
+    setFind("");
+    setSelected(p.key);
+    setCreating(false);
+    // The task exists either way; a failed start leaves it a draft with its
+    // Start button.
+    if (start) await source.act(p.key, { action: "start" }).catch(() => {});
+  }
+
   return (
     <>
       <nav className="sidebar" aria-label="Chat">
@@ -174,10 +191,16 @@ export function TasksView({ source, hosts, workspaces, now, focus, onOpenWorkspa
       ) : (
         <main className="pane empty">
           <div className="drag-strip" data-tauri-drag-region />
-          <h1 className="empty-title">Describe a task</h1>
-          <p className="muted">Say what you want: a task, a fix or an answer. Otter plans it, directs a coding agent in a workspace and verifies the result.</p>
+          <OtterHello />
+          <h1 className="empty-title">What shall we work on?</h1>
+          <p className="muted">Say what you want: a task, a fix or an answer. Otter finds the workspace, directs a coding agent and verifies the result.</p>
+          <HelloBox
+            hosts={hosts.length > 0 ? hosts : ["preview"]}
+            workspaces={workspaces}
+            onSend={(host, request) => create(host, titleFrom(request), request, undefined, false, true)}
+          />
           <div className="empty-actions">
-            <button className="btn primary" onClick={() => setCreating(true)}>
+            <button className="btn outline" onClick={() => setCreating(true)}>
               New task
             </button>
           </div>
@@ -188,15 +211,7 @@ export function TasksView({ source, hosts, workspaces, now, focus, onOpenWorkspa
           hosts={hosts.length > 0 ? hosts : ["preview"]}
           workspaces={workspaces}
           onClose={() => setCreating(false)}
-          onCreate={async (host, title, request, workspace, answerOnly, start) => {
-            const p = await source.create(host, title, request, workspace, answerOnly);
-            setFind("");
-            setSelected(p.key);
-            setCreating(false);
-            // The task exists either way; a failed start leaves it a draft
-            // with its Start button.
-            if (start) await source.act(p.key, { action: "start" }).catch(() => {});
-          }}
+          onCreate={create}
         />
       )}
     </>
@@ -1724,6 +1739,85 @@ function lastHost(hosts: string[]): string {
     // Without it, the first host.
   }
   return hosts[0];
+}
+
+/** Otter, waiting for the first word. */
+function OtterHello() {
+  return (
+    <div className="otter-hello" aria-hidden="true">
+      <span className="otter-hello-face">
+        <span className="otter-mark" />
+      </span>
+      <span className="otter-hello-shadow" />
+    </div>
+  );
+}
+
+/** The chat box of the empty page: what is written starts a task, on the host it names (D-187). */
+function HelloBox({
+  hosts,
+  workspaces,
+  onSend,
+}: {
+  hosts: string[];
+  workspaces: Record<string, WorkspaceChoice[]>;
+  onSend: (host: string, request: string) => Promise<void>;
+}) {
+  const [text, setText] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const composition = useComposition();
+  async function send() {
+    const request = text.trim();
+    if (!request || busy) return;
+    const routed = hosts.length > 1 ? routeHost(request, workspaces) : undefined;
+    const host = routed?.kind === "one" ? routed.host : lastHost(hosts);
+    setBusy(true);
+    setError(null);
+    try {
+      await onSend(host, request);
+      try {
+        localStorage.setItem(LAST_HOST, host);
+      } catch {
+        // Only a convenience.
+      }
+    } catch (err) {
+      setError(String(err));
+      setBusy(false);
+    }
+  }
+  return (
+    <form
+      className="hello-box"
+      onSubmit={(e) => {
+        e.preventDefault();
+        void send();
+      }}
+    >
+      <textarea
+        rows={3}
+        autoFocus
+        aria-label="Tell Otter what you want"
+        placeholder="Tell Otter what you want…"
+        value={text}
+        onChange={(e) => setText(e.target.value)}
+        onCompositionStart={composition.onCompositionStart}
+        onCompositionEnd={composition.onCompositionEnd}
+        onKeyDown={(e) => {
+          if (composition.enterSubmits(e)) {
+            e.preventDefault();
+            void send();
+          }
+        }}
+      />
+      <div className="hello-row">
+        {error ? <span className="error-text small">{error}</span> : <span className="muted small">Enter to start · Shift+Enter for a new line</span>}
+        <button type="submit" className="btn primary" disabled={!text.trim() || busy}>
+          Start
+        </button>
+      </div>
+    </form>
+  );
 }
 
 /** A title from the request's first line, when none was written. */
