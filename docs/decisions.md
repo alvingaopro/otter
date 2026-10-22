@@ -6659,7 +6659,7 @@ worker's `a turn's pictures are checked`, and end to end
 `otters_turn_is_shown_the_developers_pictures` and
 `a_runs_first_turn_carries_the_pictures_that_fit`.
 
-## D-181 — A message goes to the host that has the workspace it names (2026-10-22)
+## D-182 — A message goes to the host that has the workspace it names (2026-10-22)
 
 Plan `docs/plans/chat-bootstrap.md` P2. otterd knows one host, and Otter's
 conversation stays one per host (D-093), so choosing the host is the client's
