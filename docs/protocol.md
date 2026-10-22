@@ -387,7 +387,8 @@ Product work owned by the daemon (D-043); see `otter_core::task`.
   base64, at most 700 KB decoded, 2 MB in all); `text` may then be empty. The
   daemon keeps each in the task's artifacts (`task.artifact`) and lists the
   names on the message's `attachments` (D-171). The pictures reach the coding
-  agent's turn as the worker's `send_turn {turn_id, text, images?}`, where
+  agent's turn, and Otter's (D-179), as the worker's
+  `send_turn {turn_id, text, images?}`, where
   `images` is the same list of `{media_type, data}` (the worker checks the
   same limits); worker frames, both ways, are at most 4 MiB (`MAX_FRAME`,
   was 1 MiB) so a turn with its pictures fits one.

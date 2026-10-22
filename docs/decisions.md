@@ -6164,9 +6164,9 @@ conversation did not.
   (it and an Enter within 50 ms of the composition's end are the method's).
 
 **Not done.** Otter's own reply turn (the brain) is not shown the pictures;
-the coding agent is. Pictures on a task's first request (`task.create`) and
-on Otter's host conversation. The stop-redirect action (`redirect {text}`)
-takes no pictures.
+the coding agent is (Otter's turn is since D-179). Pictures on a task's
+first request (`task.create`) and on Otter's host conversation. The
+stop-redirect action (`redirect {text}`) takes no pictures.
 
 ## D-172 — The app comes to the front after it updates itself (2026-10-21)
 
@@ -6492,3 +6492,47 @@ developer asked, after Muse and iMessage:
 Tests: `keeps the details closed until Otter at the top is clicked, and
 remembers it (D-177)`, `adds pictures from the + as from a paste (D-177)`, and
 `composerGrow.test.ts`.
+
+## D-179 — Otter's turn sees the developer's pictures (2026-10-22)
+
+**Why.** Dogfooding D-171: a screenshot pasted into a task, and Otter
+answered that it couldn't see it — and couldn't tell whether the picture was
+sent at all. Otter's turn was given each message as `[id] text`, the
+pictures neither shown nor mentioned, so the model guessed. The coding agent
+got them; the one the developer was talking to didn't.
+
+**Decision.**
+- **Otter's turn is shown the pictures of the messages it answers**, read
+  from the task's files as a run's turn reads them (`turn_input`): one that
+  can't be read, or isn't a picture, is said in the text. On the Claude
+  worker (`otter` profile) they go on `send_turn` as `images`, as a coding
+  run's do; on Anthropic's API, as image blocks before the prompt. A backend
+  says whether it sees pictures (`TurnBackend::sees_pictures`): behind the
+  OpenAI shape it doesn't — some of those models refuse a request that has
+  one, which would lose the whole answer — and the host conversation and a
+  follow-up's turn have none to show.
+- **Each message says which pictures are its**: `[msg] text [pictures 2–3]`,
+  numbered in the order the model is shown them, and the ones it isn't shown
+  (`[2 pictures you aren't shown]`, `[…; 1 more you aren't shown]`). The
+  recent conversation marks a message that had pictures (`[1 picture]`).
+  Otter's instructions say the pictures it is shown come with the messages,
+  one it isn't shown it can't see, and a message's pictures go to the coding
+  agent with its words.
+- **A turn carries at most what the worker takes** (`runs::fitting`): the
+  newest pictures, four, 2 MB in all, in the order they were sent. One
+  message can't be over that (D-171), but a turn gathers several: Otter's
+  over the messages it answers, and a run's first turn over every message
+  since the last (the worker refused such a turn whole, as `invalid_input`).
+  The ones left out are said in the run's prompt ("2 older pictures … are
+  left out") and as "you aren't shown" in Otter's.
+
+**Not done.** Pictures in the OpenAI-shaped providers (it would need to know
+which models read them). Pictures in Otter's host conversation, and on a
+task's first request (both still D-171's). A worker older than D-171 with the
+Otter profile ignores `images`; `otter host install` updates it with otterd.
+
+Tests: `a_turn_says_whose_the_pictures_are`,
+`a_turn_carries_the_newest_pictures_that_fit`, `the_pictures_go_with_the_turn`,
+`a_first_message_with_pictures`, and end to end
+`otters_turn_is_shown_the_developers_pictures` and
+`a_runs_first_turn_carries_the_pictures_that_fit`.

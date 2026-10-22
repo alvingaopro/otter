@@ -106,6 +106,53 @@ async fn a_turn_an_event_started_cant_act_on_the_developers_word() {
     assert_eq!(f.status, TaskStatus::Done);
 }
 
+/// Otter's turn is shown the developer's pictures, read from the task's
+/// files, and each message says which are its (D-179).
+#[tokio::test]
+async fn otters_turn_is_shown_the_developers_pictures() {
+    use base64::Engine;
+    use otter_protocol::task::TaskImage;
+    let fake = host_with(vec![]).await;
+    let host = &fake.host;
+    let id = at_work(host, "Add CSV export HANG").await;
+    let mut png = b"\x89PNG\r\n\x1a\n".to_vec();
+    png.extend_from_slice(b"pixels");
+    let picture = TaskImage {
+        media_type: "image/png".into(),
+        data: base64::engine::general_purpose::STANDARD.encode(&png),
+    };
+    let f = host
+        .conn()
+        .await
+        .task_send_with_images("pic-otter", &id, "Can you see it?\nPICTURES", vec![picture])
+        .await
+        .unwrap();
+    let msg = f
+        .messages
+        .iter()
+        .rfind(|m| m.role == MessageRole::User)
+        .unwrap()
+        .id
+        .to_string();
+    let reply = |f: &Task| {
+        f.messages
+            .iter()
+            .find(|m| {
+                m.role == MessageRole::Controller && m.correlation_id.as_deref() == Some(&msg)
+            })
+            .map(|m| m.text.clone())
+    };
+    let f = wait_task(host, &id, "Otter's answer", |f| reply(f).is_some()).await;
+    let reply = reply(&f).unwrap();
+    assert!(reply.starts_with("Shown: [image/png]\n"), "{reply}");
+    assert!(
+        reply.contains(&format!("[{msg}] Can you see it?\nPICTURES [picture 1]")),
+        "{reply}"
+    );
+    // The host's path to the file is nowhere in what the model read.
+    assert!(!reply.contains("/artifacts/"), "{reply}");
+}
+
 #[tokio::test]
 async fn a_turn_an_event_started_may_pause() {
     let fake = host_with(vec![]).await;

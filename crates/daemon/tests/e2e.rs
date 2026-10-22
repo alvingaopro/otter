@@ -8556,6 +8556,80 @@ async fn a_picture_sent_while_the_agent_works_reaches_its_next_turn() {
     assert!(!log.contains("/artifacts/"), "{log}");
 }
 
+/// A run's first turn carries the newest pictures that fit — four, of the
+/// six two messages sent before it started — and says the rest were left
+/// out (D-179): the worker would refuse the whole turn over its limits.
+#[tokio::test]
+async fn a_runs_first_turn_carries_the_pictures_that_fit() {
+    use base64::Engine;
+    use otter_core::task::TaskAction;
+    use otter_protocol::task::{TaskCreate, TaskImage};
+    let (fake, worker_log) = fake_sdk_host().await;
+    let host = &fake.host;
+    let dir = host.home().join("pics");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("Makefile"), "test:\n\t@echo all good\n").unwrap();
+    let mut conn = host.conn().await;
+    conn.workspace_create(WorkspaceCreate {
+        name: "pics".into(),
+        source: SourceSpec::Directory {
+            path: dir.to_string_lossy().into_owned(),
+        },
+        sessions: Some(vec![]),
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+    let f = conn
+        .task_create(TaskCreate {
+            command_id: "pics-create".into(),
+            title: "Match the mock".into(),
+            request: "Make the page look like the mock".into(),
+            workspace: Some("pics".into()),
+            answer_only: false,
+        })
+        .await
+        .unwrap();
+    let id = f.id.as_str();
+    let picture = |n: u8| {
+        let mut png = b"\x89PNG\r\n\x1a\n".to_vec();
+        png.push(n);
+        TaskImage {
+            media_type: "image/png".into(),
+            data: base64::engine::general_purpose::STANDARD.encode(&png),
+        }
+    };
+    conn.task_send_with_images("pics-1", id, "first mock", (1..=3).map(picture).collect())
+        .await
+        .unwrap();
+    conn.task_send_with_images("pics-2", id, "second mock", (4..=6).map(picture).collect())
+        .await
+        .unwrap();
+    conn.task_act("pics-start", id, TaskAction::Start)
+        .await
+        .unwrap();
+    let turn = eventually("the run's first turn", || async {
+        let log = std::fs::read_to_string(&worker_log).unwrap_or_default();
+        log.lines()
+            .find(|l| l.contains(r#""type":"send_turn""#) && l.contains("second mock"))
+            .map(str::to_owned)
+    })
+    .await;
+    let v: serde_json::Value = serde_json::from_str(&turn).unwrap();
+    let images = v["payload"]["images"].as_array().unwrap();
+    // The newest four, in the order they were sent: the first message's
+    // last, then the second's.
+    let sent: Vec<String> = (3..=6).map(|n| picture(n).data).collect();
+    let got: Vec<&str> = images.iter().map(|i| i["data"].as_str().unwrap()).collect();
+    assert_eq!(got, sent);
+    assert!(
+        v["payload"]["text"].as_str().unwrap().contains(
+            "(2 older pictures the developer sent are left out: a turn carries at most 4, 2 MB in all.)"
+        ),
+        "{turn}"
+    );
+}
+
 /// Claude Code's sign-in from Settings (D-142): a token from `claude
 /// setup-token` reaches the coding agent's worker, for a test and for a
 /// task's run, and goes when cleared; it is never shown or written out.

@@ -191,10 +191,16 @@ impl Daemon {
         })?;
         // The turn, then the run takes the conversation (a new generation).
         let run_id = RunId::generate();
-        // The messages' pictures, if the agent can see them; else each message
-        // they came with is told so, once.
+        // The messages' pictures, if the agent can see them — as many as a
+        // turn carries, the rest said (D-179); else each message they came
+        // with is told so, once.
+        let mut prompt = prompt;
         let pictures: Vec<PathBuf> = if sees_pictures(&backend) {
-            pictures.into_iter().map(|(_, path)| path).collect()
+            let (fit, left) = fitting(pictures);
+            if left > 0 {
+                prompt.push_str(&format!("\n\n{}", left_out(left)));
+            }
+            fit.into_iter().map(|(_, path)| path).collect()
         } else {
             let mut told = std::collections::HashSet::new();
             for (message, _) in &pictures {
@@ -1922,11 +1928,46 @@ fn sees_pictures(backend: &str) -> bool {
 }
 
 /// Host paths of files, as a turn's attachments name them.
-fn host_paths(files: &[PathBuf]) -> Vec<String> {
+pub(crate) fn host_paths(files: &[PathBuf]) -> Vec<String> {
     files
         .iter()
         .map(|p| p.to_string_lossy().into_owned())
         .collect()
+}
+
+/// The pictures one turn carries (D-179): the newest that fit what a turn
+/// takes — [`MAX_IMAGES`](otter_protocol::task::MAX_IMAGES), and
+/// [`MAX_IMAGES_TOTAL`](otter_protocol::task::MAX_IMAGES_TOTAL) in all —
+/// in the order they were sent, and how many older ones were left out. The
+/// worker refuses a turn over those whole, and a turn may gather several
+/// messages' pictures.
+pub(crate) fn fitting<T>(pictures: Vec<(T, PathBuf)>) -> (Vec<(T, PathBuf)>, usize) {
+    use otter_protocol::task::{MAX_IMAGES, MAX_IMAGES_TOTAL};
+    let all = pictures.len();
+    let mut total = 0u64;
+    let mut kept: Vec<(T, PathBuf)> = pictures
+        .into_iter()
+        .rev()
+        .take(MAX_IMAGES)
+        .take_while(|(_, path)| {
+            total += std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+            total <= MAX_IMAGES_TOTAL as u64
+        })
+        .collect();
+    kept.reverse();
+    let left = all - kept.len();
+    (kept, left)
+}
+
+/// What a turn says of the pictures [`fitting`] left out.
+pub(crate) fn left_out(n: usize) -> String {
+    use otter_protocol::task::{MAX_IMAGES, MAX_IMAGES_TOTAL};
+    format!(
+        "({n} older {} the developer sent {} left out: a turn carries at most {MAX_IMAGES}, {} MB in all.)",
+        if n == 1 { "picture" } else { "pictures" },
+        if n == 1 { "is" } else { "are" },
+        MAX_IMAGES_TOTAL >> 20
+    )
 }
 
 #[cfg(test)]
@@ -2281,6 +2322,37 @@ mod tests {
         }
         assert_eq!(finished_run(&c, &run), None);
         assert_eq!(finished_run(&c, &RunId::from("run_other")), None);
+    }
+
+    /// A turn carries the newest pictures that fit — four, 2 MB in all —
+    /// in the order they were sent, and says how many it left out (D-179).
+    #[test]
+    fn a_turn_carries_the_newest_pictures_that_fit() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = |name: &str, kb: usize| {
+            let path = dir.path().join(name);
+            std::fs::write(&path, vec![0u8; kb * 1024]).unwrap();
+            path
+        };
+        let six: Vec<(String, PathBuf)> = (1..=6)
+            .map(|i| (format!("m{}", i.min(3)), file(&format!("{i}.png"), 10)))
+            .collect();
+        let (kept, left) = fitting(six.clone());
+        assert_eq!(kept, six[2..].to_vec());
+        assert_eq!(left, 2);
+        // By size: three of 700 KB are over 2 MB together.
+        let big: Vec<((), PathBuf)> = (1..=3)
+            .map(|i| ((), file(&format!("big{i}.png"), 700)))
+            .collect();
+        let (kept, left) = fitting(big.clone());
+        assert_eq!(kept, big[1..].to_vec());
+        assert_eq!(left, 1);
+        assert_eq!(fitting(six[..2].to_vec()), (six[..2].to_vec(), 0));
+        assert_eq!(
+            left_out(1),
+            "(1 older picture the developer sent is left out: a turn carries at most 4, 2 MB in all.)"
+        );
+        assert!(left_out(2).starts_with("(2 older pictures the developer sent are left out"));
     }
 
     #[test]
