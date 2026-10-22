@@ -495,10 +495,17 @@ export function daemonSource(): TaskSource {
     } catch {
       byHost.delete(host);
     }
-    // Written drafts give way to the messages just loaded.
+    // Written drafts give way to the messages just loaded; so does Otter's
+    // whose message is here, its end missed (a stream that fell behind drops
+    // transient events): `reply-<message>` and `watch-<key>` are named for
+    // what Otter's message answers (D-196).
     for (const [key, ds] of drafts) {
       if (!key.startsWith(`${host}/`)) continue;
-      for (const [id, d] of ds) if (d.done) ds.delete(id);
+      const task = byHost.get(host)?.find((f) => `${host}/${f.id}` === key);
+      const said = (d: Draft) =>
+        d.role === "controller" &&
+        !!task?.messages?.some((m) => m.role === "controller" && m.correlation_id === d.stream_id.replace(/^(reply|watch)-/, ""));
+      for (const [id, d] of ds) if (d.done || said(d)) ds.delete(id);
       if (ds.size === 0) drafts.delete(key);
     }
     if (hosts.includes(host)) rebuild();
@@ -561,14 +568,20 @@ export function daemonSource(): TaskSource {
       // The coding agent writing is it being heard from (D-141).
       if (r.role === "agent") heard(host, r.task_id);
       const ds = drafts.get(key) ?? new Map<string, Draft>();
-      ds.set(r.stream_id, { stream_id: r.stream_id, role: r.role, text: r.text, done: !!r.done });
-      drafts.set(key, ds);
+      // Begun and ended with no words (D-196): nothing to show.
+      if (r.done && !r.text) ds.delete(r.stream_id);
+      else ds.set(r.stream_id, { stream_id: r.stream_id, role: r.role, text: r.text, done: !!r.done });
+      if (ds.size > 0) drafts.set(key, ds);
+      else drafts.delete(key);
       // A new list (same tasks) so views redraw.
       list = [...list];
       listeners.forEach((l) => l(list));
     }
   });
   void listen<{ host: string }>("host-resync", (e) => {
+    // What streamed before the stream came back may never end: otterd says
+    // again what it still writes.
+    for (const key of [...drafts.keys()]) if (key.startsWith(`${e.payload.host}/`)) drafts.delete(key);
     if (hosts.includes(e.payload.host)) void load(e.payload.host);
   });
 

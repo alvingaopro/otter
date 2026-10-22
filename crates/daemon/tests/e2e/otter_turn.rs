@@ -750,11 +750,16 @@ async fn otters_reply_streams_as_it_is_written() {
     })
     .await
     .expect("the stream finishes");
-    // Sent at most every 100 ms: the first piece goes at once, the rest with
-    // the reply (the fake writes them all inside that).
+    // Otter at it before its first word (D-196); then sent at most every
+    // 100 ms: the first piece goes at once, the rest with the reply (the
+    // fake writes them all inside that).
     assert_eq!(
-        pieces.first().map(String::as_str),
-        Some("Let me "),
+        pieces
+            .iter()
+            .take(2)
+            .map(String::as_str)
+            .collect::<Vec<_>>(),
+        ["", "Let me "],
         "{pieces:?}"
     );
     assert_eq!(last, "The task is draft.");

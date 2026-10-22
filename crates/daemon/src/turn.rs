@@ -357,6 +357,8 @@ impl Daemon {
             )
         };
         let stream_id = format!("reply-{}", last.id);
+        // The app shows Otter at it from now, not from its first word (D-196).
+        let writing = self.writing(&f.id, &stream_id);
         let draft = std::sync::Mutex::new(crate::runs::Draft::new(stream_id.clone()));
         let say = |piece: &str| {
             let mut d = draft.lock().unwrap();
@@ -439,6 +441,7 @@ impl Daemon {
         })?;
         self.task_changed(&applied);
         self.stream(&f.id, &stream_id, MessageRole::Controller, reply, true);
+        writing.done();
         Ok(())
     }
 
