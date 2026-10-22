@@ -183,10 +183,15 @@ export function TasksView({ source, hosts, workspaces, now, focus, onOpenWorkspa
         <TaskPane
           key={current.key}
           placed={current}
+          tasks={list}
           source={source}
           now={now}
           workspaces={workspaces[current.host] ?? []}
           onOpenWorkspace={onOpenWorkspace}
+          onOpenTask={(key) => {
+            setFind("");
+            setSelected(key);
+          }}
         />
       ) : (
         <main className="pane empty">
@@ -310,18 +315,25 @@ const ENDED = ["done", "cancelled"];
 
 function TaskPane({
   placed,
+  tasks,
   source,
   now,
   workspaces,
   onOpenWorkspace,
+  onOpenTask,
 }: {
   placed: PlacedTask;
+  /** Every task: the one this is part of, and its sub-tasks (D-193). */
+  tasks: PlacedTask[];
   source: TaskSource;
   now: number;
   workspaces: WorkspaceChoice[];
   onOpenWorkspace: Props["onOpenWorkspace"];
+  onOpenTask: (key: string) => void;
 }) {
   const f = placed.task;
+  const parent = f.parent ? tasks.find((p) => p.host === placed.host && p.task.id === f.parent) : undefined;
+  const subtasks = subtasksOf(placed, tasks);
   const ws = workspaces.find((w) => w.id === f.workspace_id);
   const wsName = ws?.name;
   const [deleting, setDeleting] = useState(false);
@@ -383,6 +395,18 @@ function TaskPane({
             </>
           )}
         </span>
+        {f.parent && (
+          <span className="task-parent">
+            Part of{" "}
+            {parent ? (
+              <button className="link-btn" title="Open the task this is part of" onClick={() => onOpenTask(parent.key)}>
+                {parent.task.title}
+              </button>
+            ) : (
+              "another task"
+            )}
+          </span>
+        )}
         <span className="spacer" />
         <TaskActions f={f} act={act} />
         <Menu
@@ -481,7 +505,15 @@ function TaskPane({
           </div>
           <div className="detail-body" role="tabpanel" id={`fpanel-${tab}`} aria-labelledby={`ftab-${tab}`}>
             {tab === "overview" ? (
-              <Overview placed={placed} source={source} now={now} onOpenWorkspace={onOpenWorkspace} shot={(name) => source.artifact(placed.key, name)} />
+              <Overview
+                placed={placed}
+                subtasks={subtasks}
+                source={source}
+                now={now}
+                onOpenWorkspace={onOpenWorkspace}
+                onOpenTask={onOpenTask}
+                shot={(name) => source.artifact(placed.key, name)}
+              />
             ) : (
               <ActivityFeed placed={placed} source={source} conversations={conversations} now={now} />
             )}
@@ -1255,15 +1287,19 @@ function Section({ title, count, children }: { title: string; count?: string; ch
  */
 function Overview({
   placed,
+  subtasks,
   source,
   now,
   onOpenWorkspace,
+  onOpenTask,
   shot,
 }: {
   placed: PlacedTask;
+  subtasks: PlacedTask[];
   source: TaskSource;
   now: number;
   onOpenWorkspace: Props["onOpenWorkspace"];
+  onOpenTask: (key: string) => void;
   shot: (name: string) => Promise<string>;
 }) {
   const f = placed.task;
@@ -1271,6 +1307,7 @@ function Overview({
     now: <Now f={f} now={now} />,
     outcome: <Outcome f={f} />,
     progress: <Progress placed={placed} onOpenWorkspace={onOpenWorkspace} />,
+    subtasks: <Subtasks subtasks={subtasks} onOpenTask={onOpenTask} />,
     checks: <Checks f={f} now={now} shot={shot} />,
     changes: <TaskChanges placed={placed} source={source} />,
     delivery: <DeliveryInfo f={f} />,
@@ -1283,10 +1320,10 @@ function Overview({
     request: <Request f={f} />,
   };
   const order = ENDED.includes(f.status)
-    ? ["outcome", "report", "changes", "checks", "delivery", "progress", "decisions", "request"]
+    ? ["outcome", "report", "changes", "checks", "delivery", "progress", "subtasks", "decisions", "request"]
     : f.status === "review"
-      ? ["now", "changes", "checks", "delivery", "report", "progress", "decisions", "request"]
-      : ["now", "progress", "changes", "checks", "delivery", "report", "decisions", "request"];
+      ? ["now", "changes", "checks", "delivery", "report", "progress", "subtasks", "decisions", "request"]
+      : ["now", "progress", "subtasks", "changes", "checks", "delivery", "report", "decisions", "request"];
   return (
     <div className="overview">
       {order.map((k) => (
@@ -1421,6 +1458,36 @@ function Progress({ placed, onOpenWorkspace }: { placed: PlacedTask; onOpenWorks
                 {t.session_id ? "Open session" : "Open workspace"}
               </button>
             )}
+          </li>
+        ))}
+      </ul>
+    </Section>
+  );
+}
+
+/** The tasks Otter made as parts of this one (D-193), oldest first. */
+function subtasksOf(placed: PlacedTask, tasks: PlacedTask[]): PlacedTask[] {
+  return tasks
+    .filter((p) => p.host === placed.host && p.task.parent === placed.task.id)
+    .sort((a, b) => a.task.created_at.localeCompare(b.task.created_at));
+}
+
+/** The parts Otter split the task into (D-193): each where it stands, one click away. */
+function Subtasks({ subtasks, onOpenTask }: { subtasks: PlacedTask[]; onOpenTask: (key: string) => void }) {
+  if (subtasks.length === 0) return null;
+  const done = subtasks.filter((p) => p.task.status === "done").length;
+  return (
+    <Section title="Sub-tasks" count={`${done} of ${subtasks.length} done`}>
+      <ul className="plain-list steps">
+        {subtasks.map((p) => (
+          <li key={p.key} className="step">
+            <Glyph kind={taskGlyph(p.task)} />
+            <span className="step-text">
+              <button className="link-btn subtask-link" onClick={() => onOpenTask(p.key)}>
+                {p.task.title}
+              </button>
+              <span className="muted small">{pillLabel(p.task)}</span>
+            </span>
           </li>
         ))}
       </ul>

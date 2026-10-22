@@ -583,6 +583,9 @@ body.resizing-col { cursor: col-resize; user-select: none; }
 .task-actions { display: flex; gap: 8px; flex: none; }
 .task-where { flex: none; font-family: var(--mono); font-size: 12px; color: var(--faint); white-space: nowrap; }
 .task-where .link-btn { font-family: var(--mono); font-size: 12px; }
+/* A sub-task's header says what it's part of (D-193); a long title is cut off. */
+.task-parent { flex: 0 1 auto; min-width: 0; font-size: 12.5px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.subtask-link { align-self: flex-start; max-width: 100%; text-align: left; font-size: 13.5px; font-weight: 500; overflow-wrap: anywhere; }
 
 .task-body { flex: 1; min-height: 0; display: flex; margin-top: 10px; border-top: 1px solid var(--line); }
 /* Overview/Activity: resizable like the Files panel (TASK_DETAIL, D-175); the conversation keeps 360px. */
@@ -1232,6 +1235,15 @@ td.work-acts { text-align: right; white-space: nowrap; }
 .automation-readings li { display: grid; grid-template-columns: 7.5em minmax(0, 1fr); gap: 10px; align-items: baseline; }
 .automation-at { font-family: var(--mono); font-size: 12px; color: var(--faint); font-variant-numeric: tabular-nums; white-space: nowrap; }
 .automation-note { margin: 6px 0 0; }
+/* What Otter did (D-192): when, what and on which task, who started it, and Undo. */
+.ledger li { grid-template-columns: 7.5em minmax(0, 1fr) auto; }
+.ledger-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.ledger-line { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px; }
+.ledger-what { font-weight: 500; }
+.ledger-error { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; color: var(--failed); }
+.ledger-detail { font-family: var(--mono); font-size: 12px; color: var(--muted); overflow-wrap: anywhere; user-select: text; }
+.ledger-undo { align-self: center; }
+.ledger-settings { align-self: flex-start; }
 
 /* The empty Chat page: Otter, and the box to talk to it (D-187). */
 .otter-hello { display: flex; justify-content: center; margin-bottom: 10px; }

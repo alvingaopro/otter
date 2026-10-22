@@ -4,6 +4,7 @@
 
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import type { OtterAction } from "./automations";
 import type { CodingConversation, RuntimeCapabilities } from "./conversation";
 import { daemonMemory, mockMemory, type MemorySource } from "./memory";
 import { WHOLE_FILE } from "./changes";
@@ -47,6 +48,8 @@ export interface TaskSource {
   changes?(host: string, workspace: string): Promise<WorkspaceChanges | undefined>;
   /** One changed file's diff there. */
   diff?(host: string, workspace: string, path: string): Promise<FileDiff>;
+  /** What Otter did on its tools across the host's tasks (D-192), newest first; `undefined`: its otterd can't say. */
+  actions?(host: string): Promise<OtterAction[] | undefined>;
 }
 
 /** The coding agent's work on the sample tasks. */
@@ -382,7 +385,7 @@ export function mockSource(host = "preview", now = Date.now()): TaskSource {
         request_changes: "implementing",
         set_workspace: "planning",
       };
-      if (action.action === "preview" || action.action === "own_workspace") return;
+      if (action.action === "preview" || action.action === "own_workspace" || action.action === "set_tool_level") return;
       if (action.action === "cancel_watch" || action.action === "delete_watch") {
         const id = action.watch_id;
         const gone = action.action === "delete_watch";
@@ -457,6 +460,9 @@ const splitKey = (key: string) => {
   const i = key.indexOf("/");
   return { host: key.slice(0, i), task: key.slice(i + 1) };
 };
+
+/** How many of Otter's actions a host is asked for (D-192). */
+const ACTIONS_SHOWN = 100;
 
 /** How often a host with a live run is read again (D-141). */
 const HEARD_REFRESH_MS = 30_000;
@@ -621,6 +627,9 @@ export function daemonSource(): TaskSource {
     diff(host, workspace, path) {
       // The whole file, folded where it's shown (D-111).
       return invoke<FileDiff>("workspace_diff", { host, workspace, path, context: WHOLE_FILE });
+    },
+    actions(host) {
+      return invokeNewer<OtterAction[]>(host, "otter_actions", { host, limit: ACTIONS_SHOWN });
     },
     drafts(key) {
       return [...(drafts.get(key)?.values() ?? [])];

@@ -701,6 +701,59 @@ describe("Tasks view", () => {
     expect(q(".reasons")).toBeNull();
   });
 
+  it("links a sub-task to the task it's part of, and a task to its sub-tasks (D-193)", async () => {
+    const base = mockSource("mac");
+    const [active, , , done, draft] = sampleTasks();
+    const tasks: Task[] = [
+      active,
+      { ...done, id: "ft_child1", title: "Write the CSV docs", parent: active.id, created_at: "2026-10-22T10:00:00Z" },
+      { ...draft, id: "ft_child2", title: "Add an export test", parent: active.id, created_at: "2026-10-22T11:00:00Z" },
+      { ...draft, id: "ft_orphan", title: "Left over", parent: "ft_gone" },
+    ];
+    await render({ ...base, list: () => tasks.map((task) => ({ host: "mac", task, key: `mac/${task.id}` })), subscribe: () => () => {} });
+    await open(active.title);
+    // Its parts, each where it stands; it's part of nothing.
+    const parts = q('[aria-label="Sub-tasks"]')!;
+    expect(parts.querySelector(".count")?.textContent).toBe("1 of 2 done");
+    expect([...parts.querySelectorAll("li")].map((li) => li.textContent)).toEqual(["Write the CSV docsDone", "Add an export testDraft"]);
+    expect(q(".task-parent")).toBeNull();
+    await act(async () => byText('[aria-label="Sub-tasks"] button', "Add an export test")!.click());
+    expect(q(".pane-head h1")?.textContent).toBe("Add an export test");
+    expect(q(".task-parent")?.textContent).toBe(`Part of ${active.title}`);
+    expect(q('[aria-label="Sub-tasks"]')).toBeNull();
+    await act(async () => q<HTMLButtonElement>(".task-parent button")!.click());
+    expect(q(".pane-head h1")?.textContent).toBe(active.title);
+    // One whose task isn't here says so, with nothing to click.
+    await open("Left over");
+    expect(q(".task-parent")?.textContent).toBe("Part of another task");
+    expect(q(".task-parent button")).toBeNull();
+  });
+
+  it("shows what Otter did and what undoes it in Activity (D-192)", async () => {
+    const [done] = sampleTasks().filter((f) => f.status === "done");
+    const base = mockSource("mac");
+    const ev = (seq: number, type: string, text: string, extra: object = {}): TaskEventRecord =>
+      Object.assign({ seq, ts: new Date(Date.now() - (10 - seq) * 1000).toISOString(), v: 1, type, text }, extra);
+    const s: TaskSource = {
+      ...base,
+      list: () => [{ host: "mac", task: done, key: "mac/" + done.id }],
+      subscribe: () => () => {},
+      history: async () => [
+        ev(1, "ToolCalled", "Otter: set_workspace: demo", { tool: "set_workspace", origin: "developer", detail: "demo" }),
+        ev(2, "ToolUndo", "Otter: set_workspace — can be undone", {
+          tool: "set_workspace",
+          task_id: done.id,
+          action: { action: "set_workspace", workspace: "ws_old" },
+        }),
+        ev(3, "ToolDone", "Otter: set_workspace — done", { tool: "set_workspace" }),
+      ],
+    };
+    await render(s);
+    await act(async () => byText('[role="tab"]', "Activity")!.click());
+    const lines = [...host.querySelectorAll(".feed-event")].map((l) => l.lastElementChild?.textContent);
+    expect(lines).toEqual(["Otter: set_workspace — done", "Otter: set_workspace — can be undone", "Otter: set_workspace: demo"]);
+  });
+
   it("lists Otter's reasons in Activity, a repeated one once", async () => {
     const [done] = sampleTasks().filter((f) => f.status === "done");
     await single({ ...done, rationale: ["Planned it.", "Answered.", "Answered.", "Answered."] });

@@ -5,15 +5,18 @@ import { Markdown } from "./Markdown";
 import { ContextMenu, Menu, type MenuItem } from "./Menu";
 import { ago } from "./model";
 import {
+  actionText,
   findItem,
   groupAutomations,
   isOpen,
   kindLabel,
   localTime,
   nextText,
+  originText,
   outcomeLabel,
   pastDeadline,
   policyText,
+  refusalText,
   scheduleText,
   triggerLine,
   untilText,
@@ -23,6 +26,7 @@ import {
   watchTarget,
   type Firing,
   type Item,
+  type OtterAction,
   type PlacedTrigger,
   type PlacedWatch,
 } from "./automations";
@@ -42,9 +46,20 @@ interface Props {
   workspaceName?: (host: string, id: string) => string | undefined;
   /** Show a task in Chat. */
   onOpenTask: (key: string) => void;
+  /** Open Settings at what Otter may do on a host (D-190). */
+  onSettings?: (host: string) => void;
+  /** In front: what Otter did is read only then, as it reads every task's history. */
+  active?: boolean;
   /** The list's resize handle: the same width as the other lists (D-097). */
   grip?: ReactNode;
 }
+
+/** What Otter did on a host is selected by this key. */
+const LEDGER = "did:";
+const ledgerHost = (key: string | undefined) => (key?.startsWith(LEDGER) ? key.slice(LEDGER.length) : undefined);
+
+/** What the page shows: a watch, a trigger, or what Otter did on a host. */
+type Shown = Item | { kind: "ledger"; host: string };
 
 /** What an action said, about the item it was on. */
 type Said = { key: string; error: string } | { key: string; firing: Firing };
@@ -52,19 +67,28 @@ type Said = { key: string; error: string } | { key: string; firing: Firing };
 /**
  * What Otter does without a message from you (D-185), under Automations in
  * the Activity Bar: the watches it keeps for you and the hosts' triggers —
- * where they stand, what they did, and stopping or deleting them.
+ * where they stand, what they did, and stopping or deleting them — and what
+ * Otter did on its tools, with Undo where something undoes it (D-192).
  */
-export function AutomationsView({ tasks, source, triggers, now, workspaceName, onOpenTask, grip }: Props) {
+export function AutomationsView({ tasks, source, triggers, now, workspaceName, onOpenTask, onSettings, active = true, grip }: Props) {
   const [triggerList, setTriggerList] = useState<PlacedTrigger[]>(() => triggers.list());
   useEffect(() => {
     setTriggerList(triggers.list());
     return triggers.subscribe(setTriggerList);
   }, [triggers]);
   const groups = useMemo(() => groupAutomations(tasks, triggerList), [tasks, triggerList]);
+  const ledger = useLedger(tasks, source, active);
+  const ledgerHosts = Object.keys(ledger.byHost).sort();
   const [selected, setSelected] = useState<string | undefined>();
-  const first = groups.watching[0]?.key ?? groups.scheduled[0]?.key ?? groups.history[0]?.key;
-  const current = findItem(groups, selected) ?? findItem(groups, first);
-  const currentKey = current?.item.key;
+  const first =
+    groups.watching[0]?.key ?? groups.scheduled[0]?.key ?? groups.history[0]?.key ?? (ledgerHosts[0] !== undefined ? LEDGER + ledgerHosts[0] : undefined);
+  const shown = (key: string | undefined): Shown | undefined => {
+    const host = ledgerHost(key);
+    if (host !== undefined) return ledger.byHost[host] ? { kind: "ledger", host } : undefined;
+    return findItem(groups, key);
+  };
+  const current = shown(selected) ?? shown(first);
+  const currentKey = current?.kind === "ledger" ? LEDGER + current.host : current?.item.key;
   const [menu, setMenu] = useState<{ x: number; y: number; item: Item } | null>(null);
   const [deleting, setDeleting] = useState<Item | null>(null);
   /** An action on its way: nothing more is sent until it's back (a second Run now, a second Stop). */
@@ -110,7 +134,7 @@ export function AutomationsView({ tasks, source, triggers, now, workspaceName, o
     if (busy) return;
     setMenu({ x: e.clientX, y: e.clientY, item });
   };
-  const empty = groups.watching.length + groups.scheduled.length + groups.history.length === 0;
+  const empty = groups.watching.length + groups.scheduled.length + groups.history.length + ledgerHosts.length === 0;
   const saidHere = said && said.key === currentKey ? said : null;
   const taskOf = (host: string, id: string) => tasks.find((x) => x.host === host && x.task.id === id);
 
@@ -201,6 +225,42 @@ export function AutomationsView({ tasks, source, triggers, now, workspaceName, o
               <div role="list">{groups.history.map((p) => watchRow(p, true))}</div>
             </section>
           )}
+          {ledgerHosts.length > 0 && (
+            <section className="group" aria-label="What Otter did">
+              <h2 className="group-label archived">
+                <span>WHAT OTTER DID</span>
+              </h2>
+              <div role="list">
+                {ledgerHosts.map((host) => {
+                  const key = LEDGER + host;
+                  const latest = ledger.byHost[host][0];
+                  return (
+                    <button
+                      key={key}
+                      role="listitem"
+                      className={key === currentKey ? "ws-row selected" : "ws-row"}
+                      aria-current={key === currentKey}
+                      onClick={() => setSelected(key)}
+                    >
+                      <span className="ws-glyph">
+                        <LedgerGlyph />
+                      </span>
+                      <span className="ws-text">
+                        <span className="ws-line">
+                          <span className="ws-name">Otter's actions</span>
+                          <span className="ws-host">{host}</span>
+                        </span>
+                        <span className="ws-line sub">
+                          <span className="ws-summary">{latest ? `${actionText(latest.tool)} · ${latest.task_title}` : "Nothing yet"}</span>
+                          {latest && <span className="ws-age">{ago(latest.at, now)}</span>}
+                        </span>
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+            </section>
+          )}
         </div>
       </nav>
       {grip}
@@ -214,6 +274,25 @@ export function AutomationsView({ tasks, source, triggers, now, workspaceName, o
           actions={actions(current)}
           onStop={() => stopWatch(current.item)}
           onOpenTask={onOpenTask}
+        />
+      ) : current?.kind === "ledger" ? (
+        <LedgerPane
+          key={currentKey}
+          host={current.host}
+          actions={ledger.byHost[current.host]}
+          now={now}
+          busy={busy}
+          error={saidHere && "error" in saidHere ? saidHere.error : null}
+          undone={ledger.undone}
+          taskOf={taskOf}
+          onUndo={(a) =>
+            run(LEDGER + current.host, async () => {
+              await source.act(`${current.host}/${a.undo!.task_id}`, a.undo!.action);
+              ledger.markUndone(current.host, a);
+            })
+          }
+          onOpenTask={onOpenTask}
+          onSettings={onSettings}
         />
       ) : current?.kind === "trigger" ? (
         <TriggerPane
@@ -251,6 +330,70 @@ export function AutomationsView({ tasks, source, triggers, now, workspaceName, o
         />
       )}
     </>
+  );
+}
+
+/** How long after the last change of a task what Otter did is read again: changes come in bursts. */
+const LEDGER_SETTLE_MS = 300;
+
+/**
+ * What Otter did on each host (D-192), read while the view is in front and
+ * again when a task's history grows (that's where it's kept). A host whose
+ * otterd can't say isn't in it; one that fails to answer once keeps what it
+ * said last.
+ */
+function useLedger(tasks: PlacedTask[], source: TaskSource, active: boolean) {
+  const [byHost, setByHost] = useState<Record<string, OtterAction[]>>({});
+  /** Undone from here, by `host/task/seq`: Undo isn't offered twice. */
+  const [undone, setUndone] = useState<Set<string>>(() => new Set());
+  const [reload, setReload] = useState(0);
+  // Every task's history, as far as it goes: any change can be one of Otter's.
+  const histories = tasks.map((p) => `${p.key}:${p.task.history_seq ?? p.task.updated_at}`).join("\n");
+  useEffect(() => {
+    const read = source.actions?.bind(source);
+    if (!read || !active) return;
+    const hosts = [...new Set(tasks.map((p) => p.host))];
+    let live = true;
+    const t = setTimeout(() => {
+      for (const host of hosts) {
+        read(host)
+          .then((list) => {
+            if (!live) return;
+            setByHost((m) => {
+              const { [host]: _, ...rest } = m;
+              return list ? { ...rest, [host]: list } : rest;
+            });
+          })
+          .catch(() => {
+            // A hiccup: what it said last stays.
+          });
+      }
+    }, LEDGER_SETTLE_MS);
+    return () => {
+      live = false;
+      clearTimeout(t);
+    };
+    // `histories` stands for the tasks.
+  }, [source, histories, active, reload]);
+  // A host gone from the list goes from here too.
+  const hosts = new Set(tasks.map((p) => p.host));
+  const shown = Object.fromEntries(Object.entries(byHost).filter(([h]) => hosts.has(h)));
+  return {
+    byHost: shown,
+    undone,
+    markUndone(host: string, a: OtterAction) {
+      setUndone((s) => new Set(s).add(`${host}/${a.task_id}/${a.seq}`));
+      setReload((n) => n + 1);
+    },
+  };
+}
+
+/** What Otter did's mark: lines of a list, in the idle colour. */
+function LedgerGlyph() {
+  return (
+    <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true" className="glyph">
+      <path d="M2 3h8M2 6h8M2 9h5" fill="none" stroke="var(--idle)" strokeWidth="1.4" strokeLinecap="round" />
+    </svg>
   );
 }
 
@@ -462,6 +605,117 @@ function TriggerPane({
                     ) : (
                       <span className="muted">Skipped: {f.skipped ?? "no task"}</span>
                     )}
+                  </li>
+                );
+              })}
+            </ol>
+          )}
+        </section>
+      </div>
+    </main>
+  );
+}
+
+/** The words of your message Otter acted on, when the task is here to say. */
+function asked(task: PlacedTask | undefined, id: string | undefined): string | undefined {
+  const text = id ? task?.task.messages.find((m) => m.id === id)?.text.trim() : undefined;
+  if (!text) return undefined;
+  const line = text.split("\n")[0];
+  return line.length > 80 || text.includes("\n") ? `${line.slice(0, 80).trimEnd()}…` : line;
+}
+
+/**
+ * What Otter did on a host's tasks (D-192), newest first: each thing in a
+ * few words, on which task, who started it, and Undo where something undoes
+ * it.
+ */
+function LedgerPane({
+  host,
+  actions,
+  now,
+  busy,
+  error,
+  undone,
+  taskOf,
+  onUndo,
+  onOpenTask,
+  onSettings,
+}: {
+  host: string;
+  actions: OtterAction[];
+  now: number;
+  busy: boolean;
+  error: string | null;
+  undone: Set<string>;
+  taskOf: (host: string, id: string) => PlacedTask | undefined;
+  onUndo: (a: OtterAction) => void;
+  onOpenTask: (key: string) => void;
+  onSettings?: (host: string) => void;
+}) {
+  return (
+    <main className="pane automation-pane" aria-label={`What Otter did on ${host}`}>
+      <header className="pane-head" data-tauri-drag-region>
+        <LedgerGlyph />
+        <h1 className="task-title">What Otter did</h1>
+        <span className="task-where">{host}</span>
+        <span className="spacer" />
+      </header>
+      <ErrorNotice error={error} />
+      <div className="automation-body">
+        <section>
+          <p className="muted small automation-from">
+            What Otter did with its tools in {host}'s tasks: on its own where a tool is automatic, or on your word. Undo puts back what can be put back.
+          </p>
+          {onSettings && (
+            <button className="link-btn ledger-settings" onClick={() => onSettings(host)}>
+              Change what Otter may do
+            </button>
+          )}
+        </section>
+        <section>
+          {actions.length === 0 ? (
+            <p className="muted small">Nothing yet.</p>
+          ) : (
+            <ol className="plain-list automation-readings ledger" aria-label="What Otter did, newest first">
+              {actions.map((a) => {
+                const task = taskOf(host, a.task_id);
+                const said = asked(task, a.authority);
+                const done = undone.has(`${host}/${a.task_id}/${a.seq}`);
+                return (
+                  <li key={`${a.task_id}/${a.seq}`} className={a.error ? "ledger-row refused" : "ledger-row"}>
+                    <span className="automation-at">{localTime(a.at, now)}</span>
+                    <span className="ledger-text">
+                      <span className="ledger-line">
+                        <span className="ledger-what">{actionText(a.tool)}</span>
+                        {a.error && (
+                          <span className="ledger-error" title="It did nothing">
+                            <Glyph kind="failed" />
+                            {refusalText(a.error)}
+                          </span>
+                        )}
+                        <span className="muted">·</span>
+                        {task ? (
+                          <button className="link-btn" onClick={() => onOpenTask(task.key)}>
+                            {a.task_title}
+                          </button>
+                        ) : (
+                          <span>{a.task_title}</span>
+                        )}
+                      </span>
+                      {a.detail && <span className="ledger-detail">{a.detail}</span>}
+                      <span className="muted small">
+                        {originText(a.origin)}
+                        {said && `: “${said}”`}
+                      </span>
+                    </span>
+                    {a.undo &&
+                      (done ? (
+                        <span className="muted small ledger-undo">Undone</span>
+                      ) : (
+                        <button className="btn outline small-btn ledger-undo" disabled={busy} onClick={() => onUndo(a)}>
+                          Undo
+                        </button>
+                      ))}
                   </li>
                 );
               })}

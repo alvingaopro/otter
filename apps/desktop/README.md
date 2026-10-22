@@ -44,21 +44,22 @@ Layout:
 - `src-tauri/src/pins.rs` — pinned workspaces, kept in `pins.toml` (D-040).
 - `src-tauri/src/updates.rs` — the app's own updates, from the latest release (D-125).
 - `src-tauri/src/perf.rs` — the app process's memory and CPU, for the performance overlay (D-128).
-- `src-tauri/src/tasks.rs` — task commands, passed through to each host's otterd (D-043).
+- `src-tauri/src/tasks.rs` — task commands, passed through to each host's otterd (D-043), and what Otter did on its tools (D-192).
 - `src-tauri/src/triggers.rs` — trigger commands (list, pause/resume, run now, delete), for Automations (D-185).
 - `src/` — React: `ActivityBar` + `nav.ts` (the Chat, Workspaces and Automations views, D-041, D-088, D-107, D-185; Otter's view on a host left the app, D-115; the Inbox, D-178),
   `AutomationsView` + `automations.ts` + `triggerSource.ts` (⌘3: what Otter does without a message — the watches it keeps
   for you, D-183, and the hosts' triggers, D-083 — in WATCHING, SCHEDULED and HISTORY; a watch's readings and what it came
   to, a trigger's runs; Stop, Pause/Resume, Run now and Delete, from the page or the row's menu; no dot on the bar, D-185;
-  in Chat, a watched task's row has an eye and its message box the watches with Stop),
-  `TasksView` (a grouped list; a task's Overview and Activity, D-114) + `tasks.ts` (the contract) + `taskSource.ts` (where
+  in Chat, a watched task's row has an eye and its message box the watches with Stop; WHAT OTTER DID, each host's record of
+  Otter's tools with Undo, D-192),
+  `TasksView` (a grouped list; a task's Overview and Activity, D-114; a sub-task's parent and a task's sub-tasks, D-193) + `tasks.ts` (the contract) + `taskSource.ts` (where
   tasks come from: the hosts, or sample data in tests; D-042),
   `Sidebar` (with the filter, and updating every host behind the app at once, D-131), `QuickOpen` (⌘K), `WorkspacePane` (kept
   mounted while hidden, D-100; its sessions' terminals too, `keepSessions.ts`, D-152), `ChangesPanel` + `changes.ts` (D-102),
   `FindPanel` (⌘F), `SessionTerminal` (a session's terminal and its end
   banners; two side by side, D-110), `DiffView` + `diff.ts` + `highlight.ts`
   (diffs side by side, folded, highlighted, D-111), `Terminal` (xterm.js, which keeps the session's history, D-118; `imeCommit.ts` for Pinyin's punctuation, D-126; `pixelScroll.ts` for scrolling by the pixel, D-130; `links.ts` for ⌘-click,
-  `terminalFont.ts` for ⌘=/⌘- and the font in Settings › Appearance, D-116; `SettingsDialog`, tabs by kind, D-127; `PerfOverlay` + `perf.ts`, Settings › Developer's readout, D-128), `newer.ts` (requests older hosts don't
+  `terminalFont.ts` for ⌘=/⌘- and the font in Settings › Appearance, D-116; `SettingsDialog`, tabs by kind, D-127, Otter's tools and their levels, D-190; `PerfOverlay` + `perf.ts`, Settings › Developer's readout, D-128), `newer.ts` (requests older hosts don't
   know), `panelResize` (the
   list's and the Files/Timeline panel's widths, D-097, and a task's details,
   D-175; `composerGrow` is the message box growing as it is written in, D-177), `model.ts`

@@ -191,6 +191,8 @@ export interface Task {
   needs?: Need;
   /** What Otter looks at again later for you (D-183): open ones and the last ended ones. */
   watches?: Watch[];
+  /** The task whose Otter made this one, as a part of its work (D-193). */
+  parent?: string;
 }
 
 /** Where a watch is: probed now and then, found something, said it, or stopped. */
@@ -331,7 +333,9 @@ export type TaskAction =
   | { action: "interrupt" }
   | { action: "redirect"; text: string }
   | { action: "cancel_watch"; watch_id: string }
-  | { action: "delete_watch"; watch_id: string };
+  | { action: "delete_watch"; watch_id: string }
+  /** This task's level for one of Otter's tools (D-190); none: the host's again. */
+  | { action: "set_tool_level"; tool: string; level?: "auto" | "developer" | "off" };
 
 // --- Wording and grouping (no runtime state) ---
 

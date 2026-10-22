@@ -20,6 +20,8 @@ const state = vi.hoisted(() => ({
   noRelease: false,
   // Claude Code's sign-in (D-142): `undefined` from an otterd before it.
   token: undefined as boolean | undefined,
+  // Otter's tools and their levels (D-190): `undefined` from an otterd before them.
+  tools: undefined as { name: string; description: string; group: string; level: string; default_level: string }[] | undefined,
 }));
 // Holds back the host's answers to a save or a test until let go.
 const gate = vi.hoisted(() => ({ wait: null as Promise<void> | null }));
@@ -100,6 +102,9 @@ vi.mock("@tauri-apps/api/core", () => ({
       if (tools !== undefined && state.otterTools !== undefined) state.otterTools = tools;
       const merged = (args.update as { delete_merged_workspaces?: boolean }).delete_merged_workspaces;
       if (merged !== undefined && state.deleteMerged !== undefined) state.deleteMerged = merged;
+      // A level, or `null`: the default again.
+      const levels = (args.update as { tool_levels?: Record<string, string | null> }).tool_levels;
+      if (levels && state.tools) state.tools = state.tools.map((t) => (t.name in levels ? { ...t, level: levels[t.name] ?? t.default_level } : t));
     }
     return {
       controller: state.controller,
@@ -116,6 +121,7 @@ vi.mock("@tauri-apps/api/core", () => ({
           }
         : {}),
       ...(state.deleteMerged !== undefined ? { delete_merged_workspaces: state.deleteMerged } : {}),
+      ...(state.tools ? { tools: state.tools } : {}),
       ...(state.modern
         ? {
             active: "openrouter",
@@ -132,6 +138,15 @@ vi.mock("@tauri-apps/api/core", () => ({
 }));
 
 const { SettingsDialog } = await import("./SettingsDialog");
+
+/** Some of Otter's tools as a host lists them (D-190): publishing on your word only, not by default. */
+const TOOLS = () => [
+  { name: "get_task", description: "Read where a task stands", group: "look", level: "auto", default_level: "auto" },
+  { name: "Bash", description: "Run commands in Otter's own empty directory", group: "look", level: "auto", default_level: "auto" },
+  { name: "create_task", description: "Make a task, or a sub-task of the task", group: "delegate", level: "auto", default_level: "auto" },
+  { name: "publish", description: "Push a task's branch and open its pull request", group: "deliver", level: "developer", default_level: "auto" },
+  { name: "remember", description: "Note something in Otter's memory", group: "remember", level: "developer", default_level: "developer" },
+];
 
 let root: Root;
 let host: HTMLDivElement;
@@ -179,6 +194,7 @@ describe("Settings", () => {
     state.deleteMerged = name.includes("merged") ? true : undefined;
     state.oldTest = name.includes("older otterd");
     state.token = name.includes("sign-in") ? false : undefined;
+    state.tools = name.includes("D-190") ? TOOLS() : undefined;
     localStorage.removeItem("otter.settings-tab");
     host = document.createElement("div");
     document.body.appendChild(host);
@@ -532,6 +548,66 @@ describe("Settings", () => {
     expect(set.args.update).not.toHaveProperty("delete_merged_workspaces");
     expect(dialog().querySelector('input[aria-label="Delete merged task workspaces"]')).toBeNull();
     expect(set.args.update).not.toHaveProperty("coding");
+  });
+
+  it("sets each tool's level for Otter, one at a time and at once (D-190)", async () => {
+    expect(tabs().map((b) => b.textContent)).toEqual(["Appearance", "Sign-in pages", "Developer", "Git & GitHub", "Otter", "Otter's tools", "API keys0 set"]);
+    await tab("Otter's tools");
+    expect(dialog().querySelector("h2")?.textContent).toBe("Otter's tools");
+    // What the levels mean, and what no level allows, first.
+    expect(dialog().textContent).toContain("On your word: only when your message asked for it.");
+    expect(dialog().textContent).toContain("are never Otter's, whatever the level.");
+    // Grouped as the host lists them, in plain words.
+    expect([...dialog().querySelectorAll(".settings-group h3")].map((h) => h.textContent)).toEqual([
+      "Looking things up",
+      "Handing work on",
+      "Delivering",
+      "Memory",
+    ]);
+    const row = (description: string) =>
+      [...dialog().querySelectorAll<HTMLElement>(".settings-row")].find((r) => r.querySelector(".settings-label")?.textContent?.startsWith(description))!;
+    const changed = () => [...dialog().querySelectorAll(".settings-row")].filter((r) => r.querySelector(".settings-tag")).map((r) => r.querySelector(".mono")?.textContent);
+    // Only what isn't at its default is marked.
+    expect(changed()).toEqual(["publish"]);
+    expect(radio("Push a task's branch and open its pull request", "On your word").checked).toBe(true);
+    expect(row("Note something").textContent).toContain("remember");
+
+    // A choice goes to the host at once, that tool alone.
+    await act(async () => radio("Make a task, or a sub-task of the task", "On your word").click());
+    await flush();
+    expect(calls.filter((c) => c.cmd === "settings_set").map((c) => c.args)).toEqual([{ host: "mac", update: { tool_levels: { create_task: "developer" } } }]);
+    expect(radio("Make a task, or a sub-task of the task", "On your word").checked).toBe(true);
+    expect(changed()).toEqual(["create_task", "publish"]);
+    // Its default again is sent as none.
+    await act(async () => radio("Push a task's branch and open its pull request", "Automatic").click());
+    await flush();
+    expect(calls.filter((c) => c.cmd === "settings_set").pop()!.args).toEqual({ host: "mac", update: { tool_levels: { publish: null } } });
+    expect(changed()).toEqual(["create_task"]);
+    expect(dialog().textContent).toContain("Saved on mac.");
+    expect(dialog().textContent).not.toContain("Unsaved changes");
+  });
+
+  it("opens on Otter's tools when asked to from elsewhere (D-190)", async () => {
+    act(() => root.unmount());
+    root = createRoot(host);
+    await act(async () =>
+      root.render(<SettingsDialog hosts={["mac"]} initialTab="tools" theme="system" onTheme={() => {}} onClose={() => {}} />),
+    );
+    await flush();
+    expect(dialog().querySelector("h2")?.textContent).toBe("Otter's tools");
+    expect(dialog().querySelector('[aria-current="page"]')?.textContent).toBe("Otter's tools");
+  });
+
+  it("shows no tool levels for an older host, even when asked to open there", async () => {
+    expect(tabs().map((b) => b.textContent)).not.toContain("Otter's tools");
+    act(() => root.unmount());
+    root = createRoot(host);
+    await act(async () =>
+      root.render(<SettingsDialog hosts={["mac"]} initialTab="tools" theme="system" onTheme={() => {}} onClose={() => {}} />),
+    );
+    await flush();
+    expect(dialog().querySelector("h2")?.textContent).toBe("Otter");
+    expect(dialog().querySelector('[aria-label="Make a task, or a sub-task of the task"]')).toBeNull();
   });
 
   it("shows nothing about coding for an older host", async () => {

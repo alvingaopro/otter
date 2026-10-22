@@ -6,10 +6,12 @@ import { TasksView } from "./TasksView";
 import { mockSource, type TaskSource } from "./taskSource";
 import { mockTriggers, type TriggerSource } from "./triggerSource";
 import type { PlacedTask, TaskAction } from "./tasks";
+import type { OtterAction } from "./automations";
 
 let root: Root;
 let host: HTMLDivElement;
 const onOpenTask = vi.fn();
+const onSettings = vi.fn();
 
 const q = <T extends Element = HTMLElement>(sel: string) => host.querySelector<T & HTMLElement>(sel);
 const all = (sel: string) => [...host.querySelectorAll<HTMLElement>(sel)];
@@ -32,7 +34,7 @@ function recorded(): { source: TaskSource; acts: { key: string; action: TaskActi
   };
 }
 
-async function render(source: TaskSource, triggers: TriggerSource, tasks: PlacedTask[] = source.list()) {
+async function render(source: TaskSource, triggers: TriggerSource, tasks: PlacedTask[] = source.list(), active?: boolean) {
   await act(async () =>
     root.render(
       <AutomationsView
@@ -42,9 +44,59 @@ async function render(source: TaskSource, triggers: TriggerSource, tasks: Placed
         now={Date.now()}
         workspaceName={(_h, id) => (id === "ws_demo" ? "demo" : undefined)}
         onOpenTask={onOpenTask}
+        onSettings={onSettings}
+        active={active}
       />,
     ),
   );
+}
+
+/** What Otter did is read a moment after the tasks change. */
+const settle = () => act(async () => new Promise((r) => setTimeout(r, 350)));
+
+/** What Otter did on the sample tasks (D-192): moved one on your word, failed to publish one, made a sub-task of one gone. */
+function sampleActions(source: TaskSource): OtterAction[] {
+  const of = (title: string) => source.list().find((p) => p.task.title === title)!.task;
+  const csv = of("Export workspace timeline as CSV");
+  const uptime = of("Show host uptime on the host page");
+  const at = (minutesAgo: number) => new Date(Date.now() - minutesAgo * 60_000).toISOString();
+  return [
+    {
+      task_id: csv.id,
+      task_title: csv.title,
+      seq: 9,
+      at: at(2),
+      tool: "set_workspace",
+      origin: "developer",
+      authority: "m1",
+      detail: "demo",
+      undo: { task_id: csv.id, action: { action: "set_workspace", workspace: "ws_old" } },
+    },
+    { task_id: uptime.id, task_title: uptime.title, seq: 7, at: at(30), tool: "publish", origin: "auto", error: "not_ready" },
+    {
+      task_id: "ft_gone",
+      task_title: "Document the export",
+      seq: 3,
+      at: at(90),
+      tool: "create_task",
+      origin: "event",
+      detail: "Write the CSV docs (ft_child)",
+      undo: { task_id: "ft_child", action: { action: "cancel" } },
+    },
+  ];
+}
+
+/** A source that says what Otter did on each host (`undefined`: an otterd that can't say), counting the reads. */
+function withActions(source: TaskSource, byHost: Record<string, OtterAction[] | undefined>): TaskSource & { reads: string[] } {
+  const reads: string[] = [];
+  return {
+    ...source,
+    reads,
+    actions: async (h) => {
+      reads.push(h);
+      return byHost[h];
+    },
+  };
 }
 
 describe("Automations view", () => {
@@ -257,6 +309,120 @@ describe("Automations view", () => {
     await render(source, none, []);
     expect(host.textContent).toContain("Nothing yet.");
     expect(host.textContent).toContain("Nothing automatic yet");
+  });
+});
+
+describe("What Otter did (D-192)", () => {
+  beforeEach(() => {
+    (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    root = createRoot(host);
+    onOpenTask.mockReset();
+    onSettings.mockReset();
+  });
+  afterEach(() => {
+    act(() => root.unmount());
+    host.remove();
+  });
+
+  const rows = () => all('[aria-label="What Otter did, newest first"] li');
+
+  it("lists what Otter did on a host, newest first, with the task one click away", async () => {
+    const { source } = recorded();
+    const actions = sampleActions(source);
+    await render(withActions(source, { mac: actions }), mockTriggers("mac"));
+    await settle();
+    // Under the watches and triggers, one entry for the host.
+    const groups = all(".sidebar .group-label").map((g) => g.firstElementChild?.textContent);
+    expect(groups).toEqual(["WATCHING", "SCHEDULED", "HISTORY", "WHAT OTTER DID"]);
+    const entry = byText('[role="listitem"]', "Otter's actions")!;
+    expect(entry.querySelector(".ws-summary")?.textContent).toBe("Moved the task · Export workspace timeline as CSV");
+    await act(async () => entry.click());
+    expect(q(".pane-head h1")?.textContent).toBe("What Otter did");
+
+    const [moved, published, made] = rows();
+    expect(rows()).toHaveLength(3);
+    // In plain words, what it was done on, and on whose word — your message's, quoted.
+    expect(moved.textContent).toContain("Moved the task");
+    expect(moved.textContent).toContain("demo");
+    expect(moved.textContent).toContain("on your word: “Let me export a workspace's timeline as CSV from the Timeline panel.”");
+    // What it couldn't do is marked, and has nothing to undo.
+    expect(published.querySelector(".ledger-error")?.textContent).toBe("not ready");
+    expect(published.textContent).toContain("Published");
+    expect(published.textContent).toContain("on its own");
+    expect(published.querySelector(".ledger-undo")).toBeNull();
+    // A task no longer here isn't a link.
+    expect(made.textContent).toContain("Made a sub-task");
+    expect(made.textContent).toContain("Document the export");
+    expect([...made.querySelectorAll("button")].map((b) => b.textContent)).toEqual(["Undo"]);
+
+    await act(async () => byText("li button", "Export workspace timeline as CSV")!.click());
+    expect(onOpenTask).toHaveBeenCalledWith(source.list().find((p) => p.task.id === actions[0].task_id)!.key);
+    await act(async () => byText("button", "Change what Otter may do")!.click());
+    expect(onSettings).toHaveBeenCalledWith("mac");
+  });
+
+  it("undoes what Otter did, once, on the task that undoes it, and reads it again", async () => {
+    const { source, acts } = recorded();
+    const actions = sampleActions(source);
+    const s = withActions(source, { mac: actions });
+    await render(s, mockTriggers("mac"));
+    await settle();
+    await act(async () => byText('[role="listitem"]', "Otter's actions")!.click());
+    const reads = s.reads.length;
+    await act(async () => rows()[0].querySelector<HTMLButtonElement>(".ledger-undo")!.click());
+    expect(acts).toEqual([{ key: `mac/${actions[0].task_id}`, action: { action: "set_workspace", workspace: "ws_old" } }]);
+    // Undone: said instead of offered again, and what Otter did read again.
+    expect(rows()[0].querySelector(".ledger-undo")?.textContent).toBe("Undone");
+    await settle();
+    expect(s.reads.length).toBeGreaterThan(reads);
+    // A sub-task Otter made is undone on the sub-task.
+    await act(async () => rows()[2].querySelector<HTMLButtonElement>(".ledger-undo")!.click());
+    expect(acts[1]).toEqual({ key: "mac/ft_child", action: { action: "cancel" } });
+
+    // What the host says when it can't is said in place, and Undo stays.
+    act(() => root.unmount());
+    root = createRoot(host);
+    const refusing: TaskSource = { ...s, act: async () => Promise.reject("invalid request: the task has worked since") };
+    await render(refusing, mockTriggers("mac"));
+    await settle();
+    await act(async () => byText('[role="listitem"]', "Otter's actions")!.click());
+    await act(async () => rows()[0].querySelector<HTMLButtonElement>(".ledger-undo")!.click());
+    expect(q('[role="alert"]')?.textContent).toContain("the task has worked since");
+    expect(rows()[0].querySelector(".ledger-undo")?.textContent).toBe("Undo");
+  });
+
+  it("reads it only while in front, and shows nothing for a host whose otterd can't say", async () => {
+    const { source } = recorded();
+    const s = withActions(source, { mac: sampleActions(source) });
+    await render(s, mockTriggers("mac"), source.list(), false);
+    await settle();
+    expect(s.reads).toEqual([]);
+    expect(byText('[role="listitem"]', "Otter's actions")).toBeUndefined();
+    await render(s, mockTriggers("mac"), source.list(), true);
+    await settle();
+    expect(s.reads).toEqual(["mac"]);
+
+    // An older otterd: no entry, the rest as before.
+    act(() => root.unmount());
+    root = createRoot(host);
+    await render(withActions(source, { mac: undefined }), mockTriggers("mac"));
+    await settle();
+    expect(all(".sidebar .group-label").map((g) => g.firstElementChild?.textContent)).toEqual(["WATCHING", "SCHEDULED", "HISTORY"]);
+    expect(host.textContent).not.toContain("What Otter did");
+  });
+
+  it("says when Otter hasn't done anything yet, and is what shows when nothing else is", async () => {
+    const { source } = recorded();
+    const none: TriggerSource = { ...mockTriggers("mac"), list: () => [], subscribe: () => () => {} };
+    const quiet = source.list().map((p) => ({ ...p, task: { ...p.task, watches: [] } }));
+    await render(withActions(source, { mac: [] }), none, quiet);
+    await settle();
+    expect(host.textContent).not.toContain("Nothing automatic yet");
+    expect(q(".pane-head h1")?.textContent).toBe("What Otter did");
+    expect(byText('[role="listitem"]', "Otter's actions")?.querySelector(".ws-summary")?.textContent).toBe("Nothing yet");
+    expect(q(".automation-body")?.textContent).toContain("Nothing yet.");
   });
 });
 
