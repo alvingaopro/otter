@@ -8,6 +8,8 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 import { Sidebar } from "./Sidebar";
 import { ActivityBar } from "./ActivityBar";
 import { TasksView } from "./TasksView";
+import { AutomationsView } from "./AutomationsView";
+import { daemonTriggers } from "./triggerSource";
 import { newNeeds, trayTasks } from "./taskNeeds";
 import type { PlacedTask } from "./tasks";
 import { daemonSource } from "./taskSource";
@@ -95,6 +97,8 @@ export default function App() {
   const [taskSource] = useState(() => daemonSource());
   const [tasks, setTasks] = useState<PlacedTask[]>(() => taskSource.list());
   useEffect(() => taskSource.subscribe(setTasks), [taskSource]);
+  /** The hosts' triggers, for Automations (D-185). */
+  const [triggerSource] = useState(() => daemonTriggers());
   const taskNeeds = tasks.filter((p) => taskNeedsYou(p.task)).length;
   /** A task to show in the Tasks view, opened from a notification or the menu bar. */
   const [taskFocus, setTaskFocus] = useState<{ key: string; at: number } | undefined>();
@@ -232,6 +236,7 @@ export default function App() {
   const connectedHosts = (payload?.hosts ?? []).filter((h) => h.status === "connected").map((h) => h.name);
   const connectedKey = connectedHosts.join("\n");
   useEffect(() => taskSource.setHosts?.(connectedKey ? connectedKey.split("\n") : []), [taskSource, connectedKey]);
+  useEffect(() => triggerSource.setHosts(connectedKey ? connectedKey.split("\n") : []), [triggerSource, connectedKey]);
 
   const setPins = (next: string[]) => {
     setPinsState(next);
@@ -398,6 +403,20 @@ export default function App() {
               setHostPage(null);
               if (session) setSessions((m) => ({ ...m, [key]: session }));
               setView("workspaces");
+            }}
+            grip={sidebarGrip}
+          />
+        </div>
+        <div className="view" id="view-automations" role="tabpanel" aria-labelledby="view-tab-automations" hidden={view !== "automations"}>
+          <AutomationsView
+            tasks={tasks}
+            source={taskSource}
+            triggers={triggerSource}
+            now={now}
+            workspaceName={(host, id) => payload?.hosts.find((h) => h.name === host)?.workspaces.find((w) => w.id === id)?.name}
+            onOpenTask={(key) => {
+              setTaskFocus({ key, at: Date.now() });
+              setView("tasks");
             }}
             grip={sidebarGrip}
           />

@@ -294,7 +294,8 @@ async fn follow(app: &AppHandle, name: &str, transport: &Transport) -> Result<Ne
                             record: &rec,
                         },
                     );
-                    // Tasks load on their own (taskSource.ts): their
+                    // Tasks and triggers load on their own (taskSource.ts,
+                    // triggerSource.ts): their
                     // events, and the text streaming in many times a second
                     // (D-051), don't need a fresh snapshot of the workspaces.
                     if matches!(
@@ -306,6 +307,7 @@ async fn follow(app: &AppHandle, name: &str, transport: &Transport) -> Result<Ne
                             | otter_protocol::Event::ConversationChanged { .. }
                             | otter_protocol::Event::OtterChanged { .. }
                             | otter_protocol::Event::OtterStream { .. }
+                            | otter_protocol::Event::TriggersChanged { .. }
                     ) {
                         continue;
                     }

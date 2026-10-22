@@ -80,6 +80,12 @@ function ViewIcon({ view }: { view: View }) {
       {view === "tasks" ? (
         // A speech bubble: talking a task through.
         <path d="M12 4.25c4.83 0 8.75 3.16 8.75 7.06s-3.92 7.06-8.75 7.06c-1.13 0-2.2-.17-3.19-.49L4.5 19.75l1.14-3.84c-1.48-1.25-2.39-2.9-2.39-4.6 0-3.9 3.92-7.06 8.75-7.06z" />
+      ) : view === "automations" ? (
+        // A clock: what happens later, without a message (D-185).
+        <>
+          <circle cx="12" cy="12" r="8.25" />
+          <path d="M12 7.5V12l3 2" />
+        </>
       ) : (
         // Stacked panes: places where work runs.
         <>

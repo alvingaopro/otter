@@ -222,6 +222,43 @@ export function sampleTasks(now = Date.now()): Task[] {
     { id: "ev_2", kind: "pull_request", title: "PR #31", uri: "https://github.com/example/otter/pull/31", at: iso(605, now) },
   ];
 
+  // What Otter keeps an eye on (D-183): one look later, one CI it reported.
+  active.watches = [
+    {
+      id: "wch_mock1",
+      kind: "time",
+      target: { in_minutes: 30 },
+      label: "See how the export is going",
+      what: "see how the export is going",
+      asked_in: "m1",
+      created_at: iso(10, now),
+      deadline: iso(-20, now),
+      status: "waiting",
+      findings: 0,
+    },
+  ];
+  done.watches = [
+    {
+      id: "wch_mock2",
+      kind: "ci",
+      target: { pr: 31, repo: "example/otter" },
+      label: "CI on #31",
+      what: "tell me when CI is done",
+      asked_in: "m9",
+      created_at: iso(640, now),
+      deadline: iso(520, now),
+      status: "reported",
+      readings: [
+        { at: iso(639, now), key: "a:none", text: "no checks yet" },
+        { at: iso(630, now), key: "a:1/0/2", text: "2 of 3 checks running, 1 passed (at abc1234)" },
+        { at: iso(612, now), key: "passed", text: "all 3 checks passed (at abc1234)" },
+      ],
+      finding: { at: iso(612, now), outcome: "passed", text: "all 3 checks passed (at abc1234)" },
+      findings: 1,
+      ended_at: iso(611, now),
+    },
+  ];
+
   const draft = base({ title: "Dark-mode charts legend", status: "draft", updated_at: iso(1440, now) });
   return [active, blocked, failed, done, draft];
 }
@@ -341,6 +378,18 @@ export function mockSource(host = "preview", now = Date.now()): TaskSource {
         set_workspace: "planning",
       };
       if (action.action === "preview" || action.action === "own_workspace") return;
+      if (action.action === "cancel_watch" || action.action === "delete_watch") {
+        const id = action.watch_id;
+        const gone = action.action === "delete_watch";
+        update(key, (f) => ({
+          ...f,
+          watches: (f.watches ?? [])
+            .filter((w) => !(gone && w.id === id))
+            .map((w) => (w.id === id && (w.status === "waiting" || w.status === "firing") ? { ...w, status: "cancelled" as const, ended_at: stamp() } : w)),
+        }));
+        log(key, gone ? "WatchDeleted" : "WatchCancelled", gone ? "Deleted a watch" : "Stopped a watch", id);
+        return;
+      }
       if (action.action === "decide") {
         update(key, (f) => ({
           ...f,

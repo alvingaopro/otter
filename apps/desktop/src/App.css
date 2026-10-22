@@ -1206,3 +1206,29 @@ td.work-acts { text-align: right; white-space: nowrap; }
 .work-empty { padding: 24px; text-align: center; }
 .work-note { margin: 0; }
 @media (max-width: 720px) { .work-detail-grid { grid-template-columns: minmax(0, 1fr); } .work-search { width: 100%; margin-left: 0; } }
+
+/* Watches in a task's conversation (D-183): an eye on its row while Otter
+   watches, and what it watches above the message box, each with Stop. */
+.watching-mark { flex: none; display: inline-flex; align-items: center; color: var(--working-text); margin-right: auto; }
+.watch-strip { gap: 4px; margin-bottom: 8px; }
+.watch-strip-item {
+  display: flex; align-items: center; gap: 8px; padding: 5px 12px; border-radius: 16px;
+  background: var(--card); border: 1px solid var(--line); font-size: 12.5px; color: var(--muted);
+}
+.watch-strip-text { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.watch-dot { flex: none; width: 7px; height: 7px; border-radius: 50%; background: var(--working); animation: watch-pulse 2s ease-in-out infinite; }
+@keyframes watch-pulse { 50% { opacity: 0.35; } }
+@media (prefers-reduced-motion: reduce) { .watch-dot { animation: none; } }
+
+/* Automations (D-185): a watch's or a trigger's page. */
+.automation-body { flex: 1; min-height: 0; overflow-y: auto; padding: 18px 22px 28px; display: flex; flex-direction: column; gap: 22px; max-width: 760px; }
+.automation-body section { display: flex; flex-direction: column; gap: 4px; }
+.automation-from { margin: 2px 0 0; }
+.automation-request { white-space: pre-wrap; color: var(--muted); }
+.automation-facts { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 6px 18px; margin: 0; font-size: 13px; }
+.automation-facts dt { color: var(--faint); }
+.automation-facts dd { margin: 0; min-width: 0; overflow-wrap: anywhere; user-select: text; }
+.automation-readings { gap: 6px; font-size: 13px; }
+.automation-readings li { display: grid; grid-template-columns: 7.5em minmax(0, 1fr); gap: 10px; align-items: baseline; }
+.automation-at { font-family: var(--mono); font-size: 12px; color: var(--faint); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.automation-note { margin: 6px 0 0; }

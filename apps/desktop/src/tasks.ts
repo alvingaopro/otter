@@ -189,6 +189,41 @@ export interface Task {
   activity?: Activity;
   /** What it waits on you for, computed by otter-core (D-071). */
   needs?: Need;
+  /** What Otter looks at again later for you (D-183): open ones and the last ended ones. */
+  watches?: Watch[];
+}
+
+/** Where a watch is: probed now and then, found something, said it, or stopped. */
+export type WatchStatus = "waiting" | "firing" | "reported" | "cancelled";
+
+/** What a watch's firing found (`otter_core::watch::Outcome`). */
+export type WatchOutcome = "passed" | "failed" | "stuck" | "gone" | "due" | "expired" | "unreadable" | "unknown";
+
+/** Something Otter looks at again later, for the developer (D-183): mirrors `otter_core::watch::Watch`. */
+export interface Watch {
+  id: string;
+  /** What kind of thing it watches: `time`, `ci`. */
+  kind: string;
+  /** The kind's own: for `ci`, `{ pr, repo }`; for `time`, `{ in_minutes }`. */
+  target: Record<string, unknown> | null;
+  /** What it watches, to show: “CI on #171”. */
+  label: string;
+  /** What the developer asked for, as Otter put it. */
+  what: string;
+  /** The developer's message that asked; absent when accepting before CI finished set it. */
+  asked_in?: string;
+  created_at: string;
+  /** When it gives up; for `time`, when it's due. */
+  deadline: string;
+  status: WatchStatus;
+  /** Each change of what it saw, oldest first. */
+  readings?: { at: string; key: string; text: string }[];
+  /** What its firing found. */
+  finding?: { at: string; outcome: WatchOutcome; text: string };
+  findings: number;
+  ended_at?: string;
+  /** Otter's message that reported it. */
+  report?: string;
 }
 
 export type NeedKind = "decision" | "question" | "review" | "blocked" | "failed";
@@ -219,6 +254,10 @@ export interface Delivery {
   ci: { name: string; state: string; url?: string; description?: string }[];
   reruns: number;
   declined: boolean;
+  /** `MERGEABLE`, `CONFLICTING` or `UNKNOWN`, as last read (D-184). */
+  mergeable?: string;
+  /** When CI was read as `ci` says (D-184). */
+  ci_read_at?: string;
 }
 
 /** A workspace a task can work in. */
@@ -290,7 +329,9 @@ export type TaskAction =
   | { action: "own_workspace" }
   | { action: "preview" }
   | { action: "interrupt" }
-  | { action: "redirect"; text: string };
+  | { action: "redirect"; text: string }
+  | { action: "cancel_watch"; watch_id: string }
+  | { action: "delete_watch"; watch_id: string };
 
 // --- Wording and grouping (no runtime state) ---
 

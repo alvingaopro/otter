@@ -184,6 +184,18 @@ impl TaskStore {
         self.docs.get(&TaskId::from(id)).map(|d| &d.task)
     }
 
+    /// Every open watch (D-183) and its task, without copying the tasks.
+    pub fn open_watches(&self) -> Vec<(TaskId, otter_core::watch::Watch)> {
+        self.docs
+            .values()
+            .flat_map(|d| {
+                d.task
+                    .open_watches()
+                    .map(|w| (d.task.id.clone(), w.clone()))
+            })
+            .collect()
+    }
+
     /// The task a command was applied to, if it was.
     pub fn applied(&self, command_id: &str) -> Option<&Task> {
         self.docs

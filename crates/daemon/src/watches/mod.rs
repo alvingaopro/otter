@@ -346,19 +346,19 @@ impl Daemon {
 
     async fn watch_tick(self: &Arc<Self>) {
         let now = Utc::now();
-        let waiting: Vec<(TaskId, Watch)> = self
-            .tasks
-            .lock()
-            .await
-            .list()
+        let open = self.tasks.lock().await.open_watches();
+        // What memory keeps is only for watches still open.
+        {
+            let ids: HashSet<&WatchId> = open.iter().map(|(_, w)| &w.id).collect();
+            let mut c = self.controller.lock().unwrap();
+            let p = &mut c.watches;
+            p.next.retain(|id, _| ids.contains(id));
+            p.failures.retain(|id, _| ids.contains(id));
+            p.turned.retain(|id, _| ids.contains(id));
+        }
+        let waiting: Vec<(TaskId, Watch)> = open
             .into_iter()
-            .flat_map(|f| {
-                let id = f.id.clone();
-                f.watches
-                    .into_iter()
-                    .filter(|w| w.status == WatchStatus::Waiting)
-                    .map(move |w| (id.clone(), w))
-            })
+            .filter(|(_, w)| w.status == WatchStatus::Waiting)
             .collect();
         for (task, w) in waiting {
             let Some(kind) = kind(&w.kind) else {

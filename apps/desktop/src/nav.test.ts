@@ -17,6 +17,8 @@ describe("nav", () => {
     expect(storedView()).toBe("tasks");
     saveView("workspaces");
     expect(storedView()).toBe("workspaces");
+    saveView("automations");
+    expect(storedView()).toBe("automations");
     saveView("tasks");
     expect(storedView()).toBe("tasks");
     // Remembered before D-107.
@@ -36,20 +38,23 @@ describe("nav", () => {
     expect(parseView(null)).toBeUndefined();
   });
 
-  it("maps ⌘1–⌘2 and nothing else", () => {
+  it("maps ⌘1–⌘3 and nothing else", () => {
     expect(viewForShortcut(key("1", { metaKey: true }))).toBe("tasks");
     expect(viewForShortcut(key("2", { metaKey: true }))).toBe("workspaces");
-    expect(viewForShortcut(key("3", { metaKey: true }))).toBeUndefined();
+    // Automations (D-185).
+    expect(viewForShortcut(key("3", { metaKey: true }))).toBe("automations");
+    expect(viewForShortcut(key("4", { metaKey: true }))).toBeUndefined();
     expect(viewForShortcut(key("2"))).toBeUndefined();
     expect(viewForShortcut(key("2", { metaKey: true, shiftKey: true }))).toBeUndefined();
   });
 
   it("moves with arrows, wrapping, and jumps with Home/End", () => {
     expect(viewForArrow("tasks", "ArrowDown")).toBe("workspaces");
-    expect(viewForArrow("workspaces", "ArrowDown")).toBe("tasks");
-    expect(viewForArrow("tasks", "ArrowUp")).toBe("workspaces");
-    expect(viewForArrow("workspaces", "Home")).toBe("tasks");
-    expect(viewForArrow("tasks", "End")).toBe("workspaces");
+    expect(viewForArrow("workspaces", "ArrowDown")).toBe("automations");
+    expect(viewForArrow("automations", "ArrowDown")).toBe("tasks");
+    expect(viewForArrow("tasks", "ArrowUp")).toBe("automations");
+    expect(viewForArrow("automations", "Home")).toBe("tasks");
+    expect(viewForArrow("tasks", "End")).toBe("automations");
     expect(viewForArrow("tasks", "Enter")).toBeUndefined();
   });
 });
