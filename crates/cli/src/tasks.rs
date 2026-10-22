@@ -188,7 +188,7 @@ fn hosts(config: &Config, host: Option<&str>) -> Result<Vec<HostEntry>> {
 }
 
 /// Every host's tasks (skipping hosts that can't be reached, said so).
-async fn all_tasks(
+pub(crate) async fn all_tasks(
     config: &Config,
     host: Option<&str>,
 ) -> Result<(Vec<(HostEntry, Connection, Vec<Task>)>, Vec<String>)> {

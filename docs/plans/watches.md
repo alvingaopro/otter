@@ -1,9 +1,15 @@
 # Watches — Otter looks again later: design
 
-**Status:** proposed (2026-10-22), nothing built. Reviewed once against
-the code (Fable); its corrections are folded in. The decision is recorded
-(the next free D-number) when slice 1 is built, with the developer's
-answers to §9. **Baseline:** `main` at `e456132` (v0.7.70).
+**Status:** slices 0, 1 and 1b built (2026-10-22): D-183 (watches), D-184
+(what CI says), D-185 (the Automations view, triggers pause). The
+developer took the recommended answers to §9 and the third Activity Bar
+entry. Built as designed but for: a watch is stopped and removed with
+`task.act` `cancel_watch` / `delete_watch`, not methods of its own (the
+command ids, the app's and CLI's plumbing and the history come with it);
+`OTTER_WATCH_TICK_MS`, `OTTER_WATCH_POLL_MS` and `OTTER_WATCH_MINUTE_MS`
+(tests) tune it. Slices 2 and 3 are not built. Live check W-1 pending.
+Reviewed against the code (Fable) before it was built.
+**Baseline:** `main` at `e456132` (v0.7.70).
 The design as a page: https://claude.ai/artifact/2cMjnbdYyXCo4bWhbQbuTW.
 
 > **Core decision:** when the developer asks Otter to keep an eye on
@@ -267,9 +273,9 @@ developer's message ──watch──► waiting ──probe: not yet──► w
   17:40 · Cancel” — in the developer's local time (the tool takes minutes,
   so the model needs no time zone); `otter watch ls [--task]`,
   `otter watch rm`.
-- `watches` on the task is an optional field and `watch.cancel` a new
-  method: compatible, no `PROTOCOL_VERSION` bump (`protocol.md`,
-  Compatibility).
+- `watches` on the task is an optional field and `cancel_watch` /
+  `delete_watch` new `task.act` actions: compatible, no `PROTOCOL_VERSION`
+  bump (`protocol.md`, Compatibility).
 
 ### 5.7 In the app: a view of its own
 
@@ -307,7 +313,8 @@ What it takes:
   (`Task.watches`): the list is a flatten, no new request. Kept on the
   task: its last 20 ended watches; for each watch, at most 50 readings
   (changes of the probe's `seen` key only).
-- `watch.delete`: removes it, with `WatchDeleted` in the task's history.
+- `task.act` `delete_watch`: removes it, with `WatchDeleted` in the task's
+  history.
 - Triggers: `trigger.list`, `trigger.run` and `trigger.delete` exist. New:
   `trigger.update` (`enabled`, for pausing) and a `TriggersChanged` event
   — there is none today, so the view would go stale. All compatible

@@ -4,7 +4,8 @@
 //! - **Observe** tools read the task, its history, its run, its
 //!   decisions and evidence, and the conversation's older messages;
 //!   everything they return is redacted (D-075) and bounded.
-//! - **Routine**: pausing — the safe direction — in any turn.
+//! - **Routine**: pausing, and stopping a watch (D-183) — the safe
+//!   direction — in any turn.
 //! - **On the developer's word**: forwarding their messages, redirecting,
 //!   starting, resuming, retrying, approving the plan, accepting, a changed
 //!   goal. Only in a turn the developer's message started; each change is
@@ -1772,7 +1773,10 @@ mod tests {
 
     #[test]
     fn each_tool_has_one_class_and_a_closed_schema() {
-        for all in [tools(), host_tools()] {
+        for (all, safe) in [
+            (tools(), &["pause_task", "cancel_watch"][..]),
+            (host_tools(), &["pause_task"][..]),
+        ] {
             let mut names: Vec<&str> = all.iter().map(|t| t.name).collect();
             names.sort();
             names.dedup();
@@ -1781,13 +1785,14 @@ mod tests {
                 assert_eq!(t.input["type"], "object", "{}", t.name);
                 assert_eq!(t.input["additionalProperties"], false, "{}", t.name);
             }
-            // Only pausing changes anything without the developer's word.
+            // Only pausing (and stopping a watch, D-183) changes anything
+            // without the developer's word: the safe direction.
             let routine: Vec<&str> = all
                 .iter()
                 .filter(|t| t.class == Class::Routine)
                 .map(|t| t.name)
                 .collect();
-            assert_eq!(routine, ["pause_task"]);
+            assert_eq!(routine, safe);
             // Never Otter's: cancel, delete, decide anything else, publish.
             for n in [
                 "cancel_task",

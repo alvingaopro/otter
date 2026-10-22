@@ -61,6 +61,18 @@ pub enum TriggerCommand {
         #[arg(long)]
         host: Option<String>,
     },
+    /// Stop a trigger firing on its schedule (by hand it still runs).
+    Pause {
+        name: String,
+        #[arg(long)]
+        host: Option<String>,
+    },
+    /// Let a paused trigger fire on its schedule again, from now.
+    Resume {
+        name: String,
+        #[arg(long)]
+        host: Option<String>,
+    },
     /// Fire a trigger now. With `--occurrence`, a retry of the same one
     /// starts no second task.
     Run {
@@ -174,6 +186,8 @@ pub async fn command(config: &Config, cmd: TriggerCommand, json: bool) -> Result
             }
             Ok(())
         }
+        TriggerCommand::Pause { name, host: h } => enable(config, &name, h, false, json).await,
+        TriggerCommand::Resume { name, host: h } => enable(config, &name, h, true, json).await,
         TriggerCommand::Remove { name, host: h } => {
             let entry = host(config, h.as_deref())?;
             connect(config, &entry).await?.trigger_delete(&name).await?;
@@ -213,6 +227,26 @@ pub async fn command(config: &Config, cmd: TriggerCommand, json: bool) -> Result
     }
 }
 
+/// Pause (`on: false`) or resume a trigger (D-185).
+async fn enable(
+    config: &Config,
+    name: &str,
+    h: Option<String>,
+    on: bool,
+    json: bool,
+) -> Result<()> {
+    let entry = host(config, h.as_deref())?;
+    let t = connect(config, &entry)
+        .await?
+        .trigger_update(name, Some(on))
+        .await?;
+    if json {
+        return output::print_json(&t);
+    }
+    show(&t);
+    Ok(())
+}
+
 fn show(t: &Trigger) {
     let next = t
         .next_at
@@ -228,8 +262,12 @@ fn show(t: &Trigger) {
     println!(
         "{}  {}{}{}  “{}”",
         t.name,
-        t.schedule.describe(),
-        next,
+        if t.enabled {
+            t.schedule.describe()
+        } else {
+            format!("paused ({})", t.schedule.describe())
+        },
+        if t.enabled { next } else { String::new() },
         if policy.is_empty() {
             String::new()
         } else {

@@ -11,6 +11,7 @@ mod output;
 mod target;
 mod tasks;
 mod triggers;
+mod watches;
 
 use std::collections::HashMap;
 use std::io::IsTerminal;
@@ -57,6 +58,9 @@ enum Command {
     /// Triggers: work that starts by itself, unattended, under a policy set in advance.
     #[command(subcommand)]
     Trigger(triggers::TriggerCommand),
+    /// Watches: what Otter looks at again later for you, on your word.
+    #[command(subcommand)]
+    Watch(watches::WatchCommand),
     /// The coding agent's conversations: what it was asked, did and said.
     #[command(subcommand, visible_alias = "conv")]
     Conversation(tasks::ConversationCommand),
@@ -411,6 +415,7 @@ async fn run(cli: Cli) -> Result<()> {
         Command::Session(cmd) => session_command(&config, cmd, json).await,
         Command::Task(cmd) => tasks::task_command(&config, cmd, json).await,
         Command::Trigger(cmd) => triggers::command(&config, cmd, json).await,
+        Command::Watch(cmd) => watches::command(&config, cmd, json).await,
         Command::Conversation(cmd) => tasks::conversation_command(&config, cmd, json).await,
         Command::Runtime(RuntimeCommand::Status { host }) => {
             tasks::runtime_status(&config, host, json).await
