@@ -174,14 +174,7 @@ const GH: &[(&str, &str)] = &[
 
 /// `gh`'s options here (none that opens a browser, watches, downloads,
 /// or reaches another host).
-const GH_FLAGS: &[&str] = &[
-    "--log",
-    "--log-failed",
-    "--paginate",
-    "--name-only",
-    "-i",
-    "--include",
-];
+const GH_FLAGS: &[&str] = &["--log", "--log-failed", "--name-only", "-i", "--include"];
 const GH_VALUES: &[&str] = &[
     "-R",
     "--repo",
@@ -203,43 +196,6 @@ const GH_VALUES: &[&str] = &[
     "--label",
     "--search",
 ];
-
-/// `curl`'s options here: no data sent, nothing written.
-const CURL: Command = Command {
-    name: "curl",
-    flags: &[
-        "-s",
-        "-S",
-        "-L",
-        "-f",
-        "-i",
-        "-I",
-        "-sS",
-        "-sL",
-        "-fsSL",
-        "-sSL",
-        "-fsS",
-        "--silent",
-        "--show-error",
-        "--location",
-        "--fail",
-        "--head",
-        "--include",
-        "--compressed",
-    ],
-    values: &[
-        "-H",
-        "--header",
-        "-m",
-        "--max-time",
-        "-A",
-        "--user-agent",
-        "--retry",
-        "--connect-timeout",
-    ],
-    words: Words::Urls,
-    max_words: 8,
-};
 
 const GIT_LS_REMOTE: Command = Command {
     name: "git ls-remote",
@@ -358,7 +314,7 @@ fn is_url(w: &str) -> bool {
 /// that isn't `http(s)`.
 fn a_path(w: &str) -> bool {
     w.starts_with('/')
-        || w.starts_with('~')
+        || w.contains('~')
         || w.split('/').any(|p| p == "..")
         || (w.contains("://") && !is_url(w))
 }
@@ -393,13 +349,6 @@ fn command(words: &[String]) -> Result<(), String> {
             )),
         },
         "gh" => gh(args),
-        "curl" => {
-            options(&CURL, args)?;
-            if !args.iter().any(|a| is_url(a)) {
-                return Err("curl with no http(s) address".into());
-            }
-            Ok(())
-        }
         "git" => match args.first().map(String::as_str) {
             Some("ls-remote") => options(&GIT_LS_REMOTE, &args[1..]),
             _ => {
@@ -407,7 +356,7 @@ fn command(words: &[String]) -> Result<(), String> {
             }
         },
         _ => Err(format!(
-            "`{name}` isn't one of the commands Otter runs: gh and curl to read, git ls-remote, and text filters on what they print"
+            "`{name}` isn't one of the commands Otter runs: gh to read, git ls-remote, and text filters on what they print (WebFetch reads the web)"
         )),
     }
 }
@@ -446,6 +395,13 @@ fn options(c: &Command, args: &[String]) -> Result<(), String> {
                 if matches!(opt, "-R" | "--repo") && !owner_name(value) {
                     return Err(format!("`{} {a} {value}`: owner/name only", c.name));
                 }
+                // grep's -e is its pattern: a word like any other.
+                if c.name == "grep" && opt == "-e" {
+                    words += 1;
+                    if words > c.max_words {
+                        return Err("grep takes one pattern and reads what it is piped".into());
+                    }
+                }
                 i += if glued.is_some() { 1 } else { 2 };
                 continue;
             }
@@ -457,7 +413,7 @@ fn options(c: &Command, args: &[String]) -> Result<(), String> {
         let ok = match c.words {
             Words::None => false,
             Words::Any => !a_path(a) && !is_url(a) && !a.starts_with('@'),
-            Words::Urls => is_url(a) && !private(a),
+            Words::Urls => public_page(a).is_ok(),
         };
         if !ok {
             return Err(format!("`{} {a}`: not here", c.name));
@@ -484,40 +440,41 @@ fn owner_name(v: &str) -> bool {
     matches!(v.split('/').collect::<Vec<_>>().as_slice(), [o, n] if ok(o) && ok(n) && !o.contains('.'))
 }
 
-/// An address on this host or its network: loopback, private, link-local
-/// (a cloud's metadata service), or a bare name.
-fn private(url: &str) -> bool {
-    let rest = url.split_once("://").map_or(url, |(_, r)| r);
+/// Whether WebFetch may read `url` (D-193): an `https` (or `http`) page
+/// on a public name — never an address written as numbers in any of the
+/// forms a resolver takes (`127.1`, `0x7f…`, `[::ffff:…]`), a port, a
+/// user, a local name or a trailing dot. A public name that resolves to a
+/// private address isn't caught here: that is the one thing a lexical rule
+/// can't see.
+pub fn public_page(url: &str) -> Result<(), String> {
+    let rest = url
+        .strip_prefix("https://")
+        .or_else(|| url.strip_prefix("http://"))
+        .ok_or("only an http(s) address")?;
     let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
-    let host = authority.rsplit('@').next().unwrap_or_default();
-    let host = if let Some(h) = host.strip_prefix('[') {
-        h.split(']').next().unwrap_or_default()
-    } else {
-        host.split(':').next().unwrap_or_default()
+    if authority.contains(['@', ':', '[', ']', '%', '{', '}']) {
+        return Err(format!(
+            "`{authority}`: a plain name only (no user, port or address)"
+        ));
     }
-    .to_ascii_lowercase();
-    if host.is_empty() || (!host.contains('.') && !host.contains(':')) {
-        return true; // localhost, a bare name
+    let host = authority.to_ascii_lowercase();
+    let labels: Vec<&str> = host.split('.').collect();
+    let label_ok = |l: &&str| {
+        !l.is_empty()
+            && l.len() <= 63
+            && l.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
+            && !l.starts_with('-')
+            && !l.ends_with('-')
+    };
+    let tld = labels.last().copied().unwrap_or_default();
+    if labels.len() < 2
+        || !labels.iter().all(label_ok)
+        || !tld.chars().all(|c| c.is_ascii_alphabetic())
+        || ["localhost", "local", "internal", "lan", "home", "arpa"].contains(&tld)
+    {
+        return Err(format!("`{host}` isn't a public name"));
     }
-    if let Ok(ip) = host.parse::<std::net::IpAddr>() {
-        return match ip {
-            std::net::IpAddr::V4(v4) => {
-                v4.is_loopback()
-                    || v4.is_private()
-                    || v4.is_link_local()
-                    || v4.is_unspecified()
-                    || v4.is_broadcast()
-                    || (v4.octets()[0] == 100 && (64..128).contains(&v4.octets()[1]))
-            }
-            std::net::IpAddr::V6(v6) => {
-                v6.is_loopback()
-                    || v6.is_unspecified()
-                    || (v6.segments()[0] & 0xfe00) == 0xfc00
-                    || (v6.segments()[0] & 0xffc0) == 0xfe80
-            }
-        };
-    }
-    host.ends_with(".localhost") || host.ends_with(".local") || host.ends_with(".internal")
+    Ok(())
 }
 
 fn gh(args: &[String]) -> Result<(), String> {
@@ -571,9 +528,8 @@ mod tests {
             "gh pr checks 7 -R o/r",
             "gh api repos/o/r/actions/runs/1/jobs | jq -r '.jobs[].name'",
             "gh api -X GET repos/o/r/pulls",
-            "gh api --method=GET repos/o/r/pulls --paginate",
+            "gh api --method=GET repos/o/r/pulls",
             "gh run list --repo o/r --limit 5 --json status,conclusion",
-            "curl -sSL https://example.com/status.json | jq -r .status",
             "git ls-remote --heads https://github.com/o/r",
             "echo 'a | b; c' && sleep 5",
             "gh run view 1 -R o/r --log | grep -n -i 'error' | head -n 20",
@@ -581,6 +537,41 @@ mod tests {
             "gh run view 1 -R o/r --log | grep -c 'error.*timeout'",
         ] {
             assert_eq!(otter_reads(ok), Ok(()), "{ok}");
+        }
+    }
+
+    #[test]
+    fn webfetch_reads_public_pages_only() {
+        for ok in [
+            "https://docs.github.com/en/actions",
+            "https://example.com",
+            "http://example.co.uk/a?b#c",
+        ] {
+            assert_eq!(public_page(ok), Ok(()), "{ok}");
+        }
+        for bad in [
+            "http://127.0.0.1/",
+            "http://127.1/",
+            "http://0177.0.0.1/",
+            "http://0x7f.0.0.1/",
+            "http://[::ffff:127.0.0.1]/",
+            "http://[::ffff:169.254.169.254]/latest/",
+            "http://[fe80::1%25eth0]/",
+            "http://169.254.169.254/metadata/instance",
+            "http://localhost/",
+            "http://localhost./",
+            "http://example.com./",
+            "http://example.com:8080/",
+            "http://user@example.com/",
+            "http://metadata.google.internal/",
+            "http://printer.local/",
+            "http://{169.254.169.254}/",
+            "http://127.0.0.[1-1]/",
+            "file:///etc/passwd",
+            "ftp://example.com/",
+            "http://intranet/",
+        ] {
+            assert!(public_page(bad).is_err(), "{bad} should be refused");
         }
     }
 
@@ -689,6 +680,12 @@ mod tests {
             "grep x somefile",
             "jq . file",
             "echo *",
+            // Fourth review: curl is gone (WebFetch reads the web); -e is a
+            // pattern; no ~ anywhere; no --paginate.
+            "curl -s https://example.com/",
+            "grep -e token somefile",
+            "gh api -H x=~/foo user",
+            "gh api repos/o/r/issues --paginate",
         ] {
             assert!(otter_reads(bad).is_err(), "{bad} should be refused");
         }

@@ -7315,15 +7315,21 @@ Plan `docs/plans/agent-coordination.md` M2–M3.
   commands with `|`, `&&`, `||`, `;` and nothing else (no `$`, backquotes,
   redirections, background `&`, backslashes); each command is `gh` reading
   (`run view|list`, `pr view|list|checks|diff`, `search`, `api` with GET
-  only, …), `curl` fetching an `http(s)` address, `git ls-remote`, or a
+  only, …), `git ls-remote` to a public `https` name, or a
   text filter (`grep`, `jq` away from the environment and modules, `head`,
   `sort`, …) on what it is piped, with its pattern and no files; every
   option is one its entry lists, written on its own; no word or value is a
   path, an `@file`, a glob outside quotes, or another kind of address;
   `gh --jq` is out (gh's jq reads the environment: pipe into `jq`), `-R` is
-  `owner/name` on github.com, and `curl` reaches no loopback, private or
-  link-local address (a cloud's metadata). A third review found the `--jq`,
-  `-H @file` and `-R host/…` ways through; this is the list after it.
+  `owner/name` on github.com. A third review found the `--jq`, `-H @file`
+  and `-R host/…` ways through, a fourth that `curl`'s host check, being
+  lexical, missed the address forms a resolver takes (`127.1`, octal, hex,
+  `[::ffff:…]`, a trailing dot), redirects and curl's own URL globs: `curl`
+  is out of Otter's Bash, and the web is WebFetch's. WebFetch reads a
+  public page only: an `http(s)` address whose host is a name of two or
+  more labels with an alphabetic last one — no IP written in any form, no
+  port, user, local suffix or trailing dot. A public name that resolves to
+  a private address isn't caught (a lexical rule can't see DNS).
   Nothing writes, so Otter's directory stays empty and no command has a
   file to read; sleeping is at most 60 s a line; nothing watches, follows
   or opens a browser. Its `gh` is Otter's own sign-in when it has one (D-133), as

@@ -813,6 +813,12 @@ impl Gateway {
             "WebSearch" => text("query").to_owned(),
             _ => text("url").to_owned(),
         };
+        // A public page only (D-193): never this host or its network.
+        if name == "WebFetch"
+            && let Err(why) = crate::runtime::reads::public_page(&detail)
+        {
+            return refuse(format!("WebFetch reads public pages only: {why}")).await;
+        }
         if name == "Bash" {
             use crate::runtime::policy::{self, Verdict};
             // Only reading, by an allow-list (D-193): the floor holds for
