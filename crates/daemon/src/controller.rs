@@ -3386,7 +3386,11 @@ pub(crate) fn intent_step(
             if s.is_active() || s == TaskStatus::Blocked || s == TaskStatus::Review =>
         {
             stop = true;
-            move_to(f, TaskStatus::Paused, said("Paused: you asked", "Paused by Otter"))
+            move_to(
+                f,
+                TaskStatus::Paused,
+                said("Paused: you asked", "Paused by Otter"),
+            )
         }
         // The goal moved (D-050): plan again, keeping what is done.
         (Intent::Revise, s) if !s.is_terminal() => {

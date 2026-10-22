@@ -740,7 +740,8 @@ impl Gateway {
                 line: detail.clone(),
             };
             match policy::classify(&call, &dir) {
-                Verdict::Allow | Verdict::Ask {
+                Verdict::Allow
+                | Verdict::Ask {
                     user_only: false, ..
                 } => {}
                 Verdict::Ask {
@@ -1719,6 +1720,18 @@ impl Gateway {
     /// already watched is that watch. It looks once first (W-1): the answer
     /// says what is true now, and what has already happened sets nothing.
     async fn set_watch(&self, f: &Task, args: &Value) -> Result<Value, ToolError> {
+        // A watch's own turn sets no other (D-183): a watch that sets the
+        // next would look again for ever, a model turn each time. Any other
+        // turn may watch where that is automatic (D-190).
+        if let Origin::Event { event_id } = &self.inner.origin
+            && event_id.starts_with("watch:")
+        {
+            return Err(fail(
+                "not_allowed_in_this_turn",
+                "a watch's own turn doesn't set another watch",
+            )
+            .next("say what you'd watch; the developer can ask for it"));
+        }
         let kind_name = args["kind"].as_str().unwrap_or_default();
         let kind = crate::watches::kind(kind_name).ok_or_else(|| {
             fail(

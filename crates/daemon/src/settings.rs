@@ -57,6 +57,24 @@ pub fn otter_tools_from_env() -> Option<String> {
         .filter(|v| !v.is_empty())
 }
 
+/// `OTTER_TOOL_LEVELS` in otterd's environment: `name=level` pairs,
+/// comma-separated, over the settings (D-190). Read once.
+pub fn tool_levels_from_env() -> &'static BTreeMap<String, otter_core::tools::ToolLevel> {
+    static LEVELS: std::sync::OnceLock<BTreeMap<String, otter_core::tools::ToolLevel>> =
+        std::sync::OnceLock::new();
+    LEVELS.get_or_init(|| {
+        std::env::var("OTTER_TOOL_LEVELS")
+            .unwrap_or_default()
+            .split(',')
+            .filter_map(|pair| {
+                let (name, level) = pair.split_once('=')?;
+                let level = otter_core::tools::ToolLevel::parse(level.trim())?;
+                Some((name.trim().to_owned(), level))
+            })
+            .collect()
+    })
+}
+
 pub fn controllers() -> Vec<ControllerInfo> {
     let fixed = |id: &str, label: &str, models: bool| ControllerInfo {
         id: id.into(),
@@ -201,12 +219,14 @@ impl HostSettings {
         self.stored.delete_merged_workspaces.unwrap_or(true)
     }
 
-    /// A tool's level on this host (D-190): set here, else its default.
+    /// A tool's level on this host (D-190): `OTTER_TOOL_LEVELS` in
+    /// otterd's environment (`name=level,…`; operators, tests), else set
+    /// here, else its default.
     pub fn tool_level(&self, name: &str) -> otter_core::tools::ToolLevel {
-        self.stored
-            .tool_levels
+        tool_levels_from_env()
             .get(name)
             .copied()
+            .or_else(|| self.stored.tool_levels.get(name).copied())
             .or_else(|| crate::levels::entry(name).map(|e| e.default))
             .unwrap_or_default()
     }

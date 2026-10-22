@@ -302,8 +302,7 @@ impl Daemon {
         } else {
             Limits::from_env()
         };
-        let available =
-            self.offered(Some(f), if placing { placing_tools() } else { tools() });
+        let available = self.offered(Some(f), if placing { placing_tools() } else { tools() });
         let builtins = self.builtins_offered(Some(f));
         let gateway = if placing {
             Gateway::restricted(
@@ -1016,6 +1015,15 @@ impl TurnBackend for Scripted {
 
     async fn run(&self, turn: &Turn<'_>, gateway: &Gateway) -> Result<String> {
         let mut lines = Self::lines(turn.messages);
+        // An event's turn (a watch's, a sub-task's): each `CALL:` in what
+        // happened is one of its calls, up to its last `}`.
+        if let (Some((_, what)), true) = (&turn.event, turn.messages.is_empty()) {
+            lines.extend(
+                what.split("CALL:")
+                    .skip(1)
+                    .filter_map(|call| Some(format!("CALL: {}", call[..=call.rfind('}')?].trim()))),
+            );
+        }
         // `ASK`: the turn's messages, as a question for the coding agent.
         if lines.iter().any(|l| l == "ASK") {
             let ids: Vec<&str> = turn.messages.iter().map(|m| m.id.as_str()).collect();

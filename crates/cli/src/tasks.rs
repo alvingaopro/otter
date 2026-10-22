@@ -546,12 +546,13 @@ pub async fn task_command(config: &Config, cmd: TaskCommand, json: bool) -> Resu
             .await
         }
         TaskCommand::Tool { task, tool, level } => {
-            let level = match level.as_str() {
-                "host" => None,
-                l => Some(otter_core::tools::ToolLevel::parse(l).ok_or_else(|| {
-                    anyhow::anyhow!("the level is auto, developer, off or host")
-                })?),
-            };
+            let level =
+                match level.as_str() {
+                    "host" => None,
+                    l => Some(otter_core::tools::ToolLevel::parse(l).ok_or_else(|| {
+                        anyhow::anyhow!("the level is auto, developer, off or host")
+                    })?),
+                };
             let said = level.map_or("as the host's", |l| l.as_str());
             act(
                 config,

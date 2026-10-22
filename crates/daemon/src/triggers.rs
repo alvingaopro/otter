@@ -321,8 +321,7 @@ impl Daemon {
                 // last one there, it doesn't make a workspace of its own).
                 use otter_core::tools::ToolLevel;
                 if !policy.publish {
-                    f.tool_levels
-                        .insert("publish".into(), ToolLevel::Developer);
+                    f.tool_levels.insert("publish".into(), ToolLevel::Developer);
                 }
                 f.tool_levels
                     .insert("set_workspace".into(), ToolLevel::Developer);

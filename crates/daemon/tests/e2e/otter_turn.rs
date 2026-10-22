@@ -93,7 +93,15 @@ async fn at_work(host: &TestHost, request: &str) -> String {
 
 #[tokio::test]
 async fn a_turn_an_event_started_cant_act_on_the_developers_word() {
-    let fake = host_with(vec![]).await;
+    // What is the developer's word here (D-190): the levels say so.
+    let fake = host_with(vec![(
+        "OTTER_TOOL_LEVELS",
+        format!(
+            "{},resume_task=developer,retry_task=developer,start_task=developer,revise_task=developer",
+            crate::HARNESS_LEVELS
+        ),
+    )])
+    .await;
     let host = &fake.host;
     let id = in_review(host).await;
     let script = "AS: event\nCALL: accept_task {}\nCALL: resume_task {}\nCALL: retry_task {}\nCALL: start_task {}\nCALL: revise_task {}";
@@ -109,6 +117,41 @@ async fn a_turn_an_event_started_cant_act_on_the_developers_word() {
     assert_eq!(code(&answers[0]), "ok", "{answers:#?}");
     assert_eq!(answers[0]["data"]["done"], "accepted");
     assert_eq!(f.status, TaskStatus::Done);
+}
+
+/// What is automatic, an event's turn does on its own, as Otter's doing on
+/// record (D-190, D-192): it plans again and accepts what passed its gates.
+#[tokio::test]
+async fn a_turn_an_event_started_acts_with_what_is_automatic() {
+    let fake = host_with(vec![(
+        "OTTER_TOOL_LEVELS",
+        "set_workspace=developer,publish=developer,approve_plan=developer".into(),
+    )])
+    .await;
+    let host = &fake.host;
+    let id = in_review(host).await;
+    let (f, answers) = run(host, &id, "ev-1", "AS: event\nCALL: accept_task {}").await;
+    assert_eq!(code(&answers[0]), "ok", "{answers:#?}");
+    assert_eq!(f.status, TaskStatus::Done);
+    assert_eq!(
+        f.status_reason.as_deref(),
+        Some("Accepted by Otter: every gate passed (accepting is automatic in Settings)")
+    );
+    let recs = records(host, &id).await;
+    assert!(recs.iter().any(|r| matches!(&r.event,
+        TaskEvent::ToolCalled { tool, origin, authority, .. }
+            if tool == "accept_task" && origin == "event" && authority.is_none())));
+    // Done isn't final: the goal moved, Otter plans again, as its own doing.
+    let (f, answers) = run(host, &id, "ev-2", "AS: event\nCALL: revise_task {}").await;
+    assert_eq!(code(&answers[0]), "ok", "{answers:#?}");
+    assert_ne!(f.status, TaskStatus::Done);
+    let recs = records(host, &id).await;
+    assert!(
+        recs.iter()
+            .any(|r| r.text.contains("Otter is planning again")),
+        "{:#?}",
+        recs.iter().map(|r| &r.text).collect::<Vec<_>>()
+    );
 }
 
 /// Otter's turn is shown the developer's pictures, read from the task's
@@ -1418,11 +1461,13 @@ async fn answer_only_needs_the_sdk_runtime() {
     assert!(e.contains("SDK runtime"), "{e}");
 }
 
-/// Otter turns it on on the developer's word, not on an event's (D-092).
+/// Otter turns it on on the developer's word, not on an event's, where
+/// that is its level (D-092, D-190); automatic, an event's turn may too.
 #[tokio::test]
 async fn otter_sets_answer_only_on_the_developers_word() {
     let fake = sdk_host("hang").await;
     let host = &fake.host;
+    set_levels(host, &[("set_answer_only", "developer")]).await;
     let id = at_work(host, "Add CSV export").await;
     let (f, answers) = run(
         host,
@@ -1442,6 +1487,17 @@ async fn otter_sets_answer_only_on_the_developers_word() {
     .await;
     assert_eq!(answers[0]["data"]["done"], "answer only", "{answers:?}");
     assert!(f.answer_only);
+    // Automatic (the default), an event's turn may change it too.
+    set_levels(host, &[("set_answer_only", "auto")]).await;
+    let (f, answers) = run(
+        host,
+        &id,
+        "ao-ev-2",
+        "AS: event\nCALL: set_answer_only {\"on\": false}",
+    )
+    .await;
+    assert_eq!(answers[0]["data"]["done"], "changes allowed", "{answers:?}");
+    assert!(!f.answer_only);
 }
 
 /// Real Claude as the coding agent on an answer-only task (D-092) whose
