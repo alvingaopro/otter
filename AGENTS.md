@@ -20,10 +20,14 @@ must keep, with the tests that guard them.
 | Otter's conversation, the brain's tools                | [`docs/plans/brain-runtime-v2.md`](docs/plans/brain-runtime-v2.md) · decisions D-084, D-089–D-096 |
 | watches, triggers, the app's Automations view          | [`docs/plans/watches.md`](docs/plans/watches.md) · decisions D-083, D-183–D-185 |
 | transport, daemon lifecycle, persistence               | decisions D-003, D-005, D-008 · invariants 4, 8, 11, 12                    |
-| the architecture itself                                | [`docs/design.md`](docs/design.md), [`docs/decisions.md`](docs/decisions.md), [`docs/architecture-lessons.md`](docs/architecture-lessons.md) |
+| the architecture itself                                | [`docs/design.md`](docs/design.md), [`docs/decisions.md`](docs/decisions.md) and [`docs/decisions/`](docs/decisions/), [`docs/architecture-lessons.md`](docs/architecture-lessons.md) |
 
-Record new decisions and deliberate deviations in `docs/decisions.md`; don't
-silently drift from the design. Prefer dogfooding evidence over speculative
+Record new decisions and deliberate deviations as a file of their own in
+`docs/decisions/`, made with `python3 scripts/decisions.py new "Title"` when
+the work starts, before the number goes into code or docs: it claims the
+number on `origin`, so two agents never take the same one (D-198). Never
+append to `docs/decisions.md`, which keeps D-001–D-197. Don't silently drift
+from the design. Prefer dogfooding evidence over speculative
 architecture (architecture-lessons §24–§25).
 
 ## Layout

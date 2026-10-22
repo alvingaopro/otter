@@ -12,6 +12,15 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  decisions:
+    name: Decisions
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      # Numbers claimed, none twice, each in a file of its own (D-198).
+      - run: python3 -m unittest scripts/test_decisions.py
+      - run: python3 scripts/decisions.py check
+
   rust:
     name: Daemon, CLI and crates
     runs-on: ubuntu-latest
