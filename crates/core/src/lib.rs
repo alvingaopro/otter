@@ -8,6 +8,7 @@ pub mod ids;
 pub mod model;
 pub mod redact;
 pub mod task;
+pub mod tools;
 pub mod trigger;
 pub mod watch;
 

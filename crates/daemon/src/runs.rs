@@ -45,6 +45,10 @@ pub(crate) struct LiveRun {
     pub task: TaskId,
     /// The workspace it works in: one driver at a time (D-079).
     pub workspace: otter_core::WorkspaceId,
+    /// It only reads (an answer-only task's, on the SDK runtime, D-192):
+    /// it neither holds the workspace nor waits for it, and stays reading
+    /// until it ends.
+    pub shared: bool,
     pub conversation: ConversationId,
     /// The run's actor.
     tx: mpsc::Sender<ActorCmd>,
@@ -62,6 +66,9 @@ const ACTIVITY_LINES: usize = 30;
 
 /// Live runs by id.
 pub(crate) type Runs = std::sync::Mutex<HashMap<RunId, LiveRun>>;
+
+/// How the coding agent is told what Otter itself says (D-193).
+pub(crate) const OTTER_SAYS: &str = "From Otter, your tech lead (not the developer)";
 
 /// What a run that can't start because its workspace is taken says first:
 /// the task waits, it doesn't fail (D-079).
@@ -114,23 +121,41 @@ impl Daemon {
             .cloned()
             .ok_or_else(|| workspace_not_found(ws_id.as_str()))?;
         // One driver per workspace (D-079): claimed now, held while the run
-        // lives.
-        let _claim = {
+        // lives. A run that only reads takes no claim and waits for none
+        // (D-192): it changes nothing there.
+        // The backend that will run it: the conversation's own when it
+        // continues one (D-057), else the host's — only the SDK's hook keeps
+        // an agent to reading.
+        let continues_on = resume.as_ref().and_then(|sid| {
+            task.runs
+                .iter()
+                .rev()
+                .find(|r| r.provider_session_id.as_ref() == Some(sid))
+                .and_then(|r| r.conversation_id.clone())
+                .and_then(|id| self.conversations.get(id.as_str()))
+                .map(|c| c.backend)
+        });
+        let shared = task.answer_only
+            && continues_on.unwrap_or_else(|| self.settings.read().unwrap().coding_backend())
+                == "sdk";
+        let _claim = if shared {
+            None
+        } else {
             let runs = self.runs.lock().unwrap();
             let mut starting = self.starting.lock().unwrap();
             let holder = runs
                 .values()
-                .find(|r| r.workspace == ws.id && &r.task != task_id)
+                .find(|r| r.workspace == ws.id && &r.task != task_id && !r.shared)
                 .map(|r| r.task.clone())
                 .or_else(|| starting.get(&ws.id).filter(|f| *f != task_id).cloned());
             if let Some(other) = holder {
                 return Err(RpcError::conflict(format!("{BUSY}{other}")));
             }
             starting.insert(ws.id.clone(), task_id.clone());
-            Claim {
+            Some(Claim {
                 daemon: self.as_ref(),
                 workspace: ws.id.clone(),
-            }
+            })
         };
         // Never two drivers for one conversation: not while a developer has
         // it. The task's steps share one (D-064).
@@ -361,6 +386,7 @@ impl Daemon {
                 turn_id: Some(turn),
                 worked_ms: 0,
                 working_since: Some(now),
+                read_only: shared,
             });
             changes.push(
                 Change::new(TaskEvent::RunStarted {
@@ -410,6 +436,7 @@ impl Daemon {
             LiveRun {
                 task: task_id.clone(),
                 workspace: ws.id.clone(),
+                shared,
                 conversation: conversation_id.clone(),
                 tx: tx.clone(),
                 stopping: stopping.clone(),
@@ -464,7 +491,7 @@ impl Daemon {
     pub(crate) fn workspace_holder(&self, workspace: &otter_core::WorkspaceId) -> Option<TaskId> {
         let runs = self.runs.lock().unwrap();
         runs.values()
-            .find(|r| &r.workspace == workspace)
+            .find(|r| &r.workspace == workspace && !r.shared)
             .map(|r| r.task.clone())
             .or_else(|| self.starting.lock().unwrap().get(workspace).cloned())
     }
@@ -521,12 +548,13 @@ impl Daemon {
         let mut ending: Option<(RunState, Option<String>, bool)> = None;
         // Its conversation: a question's turn there only reads (D-089 M2.5),
         // and how the work's last turn ended stays the run's result.
-        let conversation = self
+        let (conversation, shared) = self
             .runs
             .lock()
             .unwrap()
             .get(&run)
-            .map(|r| r.conversation.clone());
+            .map(|r| (Some(r.conversation.clone()), r.shared))
+            .unwrap_or((None, false));
         let mut work_ending: Option<(RunState, Option<String>, bool)> = None;
         while let Some(ev) = events.recv().await {
             match ev {
@@ -562,7 +590,8 @@ impl Daemon {
                         .await;
                 }
                 ActorEvent::Ask { interaction, ask } => {
-                    let only_reads = self.reads_only(conversation.as_ref(), None)
+                    let only_reads = shared
+                        || self.reads_only(conversation.as_ref(), None)
                         || self.answer_only(&task).await;
                     let (verdict, scope) = self.verdict_of(&ask.call, &root, only_reads).await;
                     let grant = policy::grant_in(&ask.call, &scope);
@@ -595,7 +624,8 @@ impl Daemon {
                     call,
                     ..
                 } => {
-                    let only_reads = self.reads_only(conversation.as_ref(), None)
+                    let only_reads = shared
+                        || self.reads_only(conversation.as_ref(), None)
                         || self.answer_only(&task).await;
                     let (verdict, scope) = self.verdict_of(&call, &root, only_reads).await;
                     let decision = match &verdict {
@@ -1187,7 +1217,7 @@ impl Daemon {
         }
     }
 
-    /// Otter has begun a message in `task`'s conversation (D-191): said to
+    /// Otter has begun a message in `task`'s conversation (D-195): said to
     /// the app at once, before its first word, so the app shows Otter at it.
     /// Ended without [`Writing::done`] (nothing came of it, an error, a
     /// panic), it says so, and the app takes the sign away.
@@ -1333,6 +1363,28 @@ impl Daemon {
         pictures: Vec<PathBuf>,
         read_only: bool,
     ) -> usize {
+        self.queue_turn_from(
+            task_id,
+            command_id,
+            input,
+            pictures,
+            read_only,
+            Initiator::User,
+        )
+        .await
+    }
+
+    /// [`Self::queue_turn`], said by `initiator` (Otter's own instructions
+    /// are the controller's, D-193).
+    async fn queue_turn_from(
+        &self,
+        task_id: &TaskId,
+        command_id: &str,
+        input: String,
+        pictures: Vec<PathBuf>,
+        read_only: bool,
+        initiator: Initiator,
+    ) -> usize {
         let live: Vec<_> = self
             .runs
             .lock()
@@ -1368,7 +1420,7 @@ impl Daemon {
                     command_id: command_id.into(),
                     fingerprint: format!("{input}{}", pictures.join("\n")),
                     command: Command::SendTurn {
-                        initiator: Initiator::User,
+                        initiator,
                         input: input_blocks(input.clone(), pictures),
                         read_only,
                     },
@@ -1386,6 +1438,13 @@ impl Daemon {
             }
         }
         queued_in
+    }
+
+    /// Whether `task`'s run would only read, alongside whatever else works
+    /// in its workspace (D-192): an answer-only task, where the SDK
+    /// runtime's hook keeps the agent to reading.
+    pub(crate) fn reads_alongside(&self, task: &Task) -> bool {
+        task.answer_only && self.can_answer_only().is_ok()
     }
 
     /// Whether the task only wants an answer (D-092): all its turns read.
@@ -1528,6 +1587,52 @@ impl Daemon {
                 })
                 .await;
         }
+    }
+
+    /// Otter's own instructions for the run in progress (D-193), said as
+    /// Otter's — never as the developer's (D-089): after its current turn,
+    /// or (`now`) stopping it first. How many runs they reached.
+    pub(crate) async fn otter_tells_runs(
+        &self,
+        task_id: &TaskId,
+        command_id: &str,
+        text: &str,
+        now: bool,
+    ) -> usize {
+        if !now {
+            return self
+                .queue_turn_from(
+                    task_id,
+                    command_id,
+                    format!("{OTTER_SAYS}:\n{text}"),
+                    vec![],
+                    false,
+                    Initiator::Controller,
+                )
+                .await;
+        }
+        let live: Vec<_> = self
+            .runs
+            .lock()
+            .unwrap()
+            .values()
+            .filter(|r| &r.task == task_id)
+            .map(|r| r.tx.clone())
+            .collect();
+        let n = live.len();
+        for tx in live {
+            let _ = tx
+                .send(ActorCmd::Redirect {
+                    command_id: command_id.to_owned(),
+                    initiator: Initiator::Controller,
+                    text: format!(
+                        "{OTTER_SAYS} — a change of direction, before anything else:\n{text}"
+                    ),
+                    pictures: vec![],
+                })
+                .await;
+        }
+        n
     }
 
     /// The developer's pictures went with a message, and the coding agent
@@ -2013,7 +2118,7 @@ pub(crate) fn left_out(n: usize) -> String {
     )
 }
 
-/// Otter writing a message (D-191), from [`Daemon::writing`].
+/// Otter writing a message (D-195), from [`Daemon::writing`].
 pub(crate) struct Writing<'a> {
     daemon: &'a Daemon,
     task: TaskId,
@@ -2049,6 +2154,7 @@ mod tests {
 
     fn run_of(step: &StepId, state: RunState) -> Run {
         Run {
+            read_only: false,
             id: RunId::generate(),
             step_id: step.clone(),
             runtime: DEFAULT_RUNTIME.into(),
@@ -2250,6 +2356,7 @@ mod tests {
         use otter_core::{StepId, TurnId};
         let at = Utc::now();
         let mut run = Run {
+            read_only: false,
             id: RunId::from("run_1"),
             step_id: StepId::from("t1"),
             runtime: DEFAULT_RUNTIME.into(),

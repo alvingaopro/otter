@@ -22,6 +22,22 @@ export interface ControllerInfo {
   default_model?: string;
 }
 
+/** How far one of Otter's tools may go (D-191): on its own, on your word, or not at all. */
+export type ToolLevel = "auto" | "developer" | "off";
+
+/** Mirrors `otter_protocol::host::ToolInfo` (D-191). */
+export interface ToolInfo {
+  name: string;
+  /** What it's for, in a line. */
+  description: string;
+  /** `look`, `place`, `task`, `delegate`, `wait`, `deliver` or `remember`. */
+  group: string;
+  /** Its level on the host now. */
+  level: ToolLevel;
+  /** Its level when it isn't set. */
+  default_level: ToolLevel;
+}
+
 /** Mirrors `otter_protocol::host::Settings` (D-048). */
 export interface HostSettings {
   controller?: string;
@@ -42,6 +58,8 @@ export interface HostSettings {
   otter_answers?: string;
   /** A task's own workspace is deleted once its pull request is merged (D-189); absent from older daemons. */
   delete_merged_workspaces?: boolean;
+  /** Otter's tools and how far each may go on the host (D-191); absent from older daemons. */
+  tools?: ToolInfo[];
 }
 
 /** How the coding agent can run on a host (D-057): the SDK first, the default (D-124). */
@@ -72,9 +90,9 @@ type Test = { state: "running" } | { state: "done"; result: RuntimeTest } | { st
 type Install = { state: "running" } | { state: "done"; output: string } | { state: "error"; error: string };
 
 /** The tabs (D-127): this Mac's, then the chosen host's. */
-export type SettingsTab = "appearance" | "signin" | "developer" | "git" | "otter" | "coding" | "keys";
-const TABS: SettingsTab[] = ["appearance", "signin", "developer", "git", "otter", "coding", "keys"];
-const HOST_TABS: SettingsTab[] = ["otter", "coding", "keys"];
+export type SettingsTab = "appearance" | "signin" | "developer" | "git" | "otter" | "tools" | "coding" | "keys";
+const TABS: SettingsTab[] = ["appearance", "signin", "developer", "git", "otter", "tools", "coding", "keys"];
+const HOST_TABS: SettingsTab[] = ["otter", "tools", "coding", "keys"];
 const TAB_KEY = "otter.settings-tab";
 
 function storedTab(): SettingsTab {
@@ -97,6 +115,7 @@ function storedTab(): SettingsTab {
 export function SettingsDialog({
   hosts,
   defaultHost,
+  initialTab,
   theme,
   onTheme,
   onAddHost,
@@ -105,13 +124,15 @@ export function SettingsDialog({
 }: {
   hosts: string[];
   defaultHost?: string;
+  /** The tab to open on, when asked from elsewhere; else the one last left. */
+  initialTab?: SettingsTab;
   theme: ThemeChoice;
   onTheme: (t: ThemeChoice) => void;
   onAddHost?: () => void;
   version?: string;
   onClose: () => void;
 }) {
-  const [tab, setTab] = useState<SettingsTab>(storedTab);
+  const [tab, setTab] = useState<SettingsTab>(() => initialTab ?? storedTab());
   const [host, setHost] = useState(hosts.includes(defaultHost ?? "") ? defaultHost! : hosts[0]);
   const [settings, setSettings] = useState<HostSettings | null>(null);
   const [controller, setController] = useState("");
@@ -136,6 +157,8 @@ export function SettingsDialog({
   // Otter answers with its tools (D-089): tried out per host.
   const [otterTools, setOtterTools] = useState(false);
   const [deleteMerged, setDeleteMerged] = useState(false);
+  // A tool's level as just chosen, until the host's answer has it (D-191).
+  const [levels, setLevels] = useState<Record<string, ToolLevel>>({});
 
   function go(t: SettingsTab) {
     setTab(t);
@@ -167,6 +190,7 @@ export function SettingsDialog({
     setTest(null);
     setInstall(null);
     setKeys({});
+    setLevels({});
     invoke<HostSettings>("settings_get", { host })
       .then((s) => {
         if (!live) return;
@@ -230,6 +254,7 @@ export function SettingsDialog({
     coding?: { backend?: string; model?: string };
     otter_tools?: boolean;
     delete_merged_workspaces?: boolean;
+    tool_levels?: Record<string, ToolLevel | null>;
   }) {
     const at = host;
     const sent = Object.keys(update.secrets ?? {});
@@ -297,6 +322,15 @@ export function SettingsDialog({
         ? { delete_merged_workspaces: deleteMerged }
         : {}),
     });
+  }
+
+  /** One tool's level, saved at once: only that tool is sent, and its default as none (D-191). */
+  function setLevel(t: ToolInfo, level: ToolLevel) {
+    if (busy || level === t.level) return;
+    setLevels((l) => ({ ...l, [t.name]: level }));
+    void save({ tool_levels: { [t.name]: level === t.default_level ? null : level } }).finally(() =>
+      setLevels(({ [t.name]: _, ...rest }) => rest),
+    );
   }
 
   async function runTest() {
@@ -387,8 +421,9 @@ export function SettingsDialog({
   // of a backend not saved yet (D-129).
   const offerInstall = !!capsHere?.worker_missing || (!!tested?.worker_missing && tested.backend === backend);
   const hostTab = HOST_TABS.includes(tab);
-  // An older host has no coding settings: its tab goes.
-  const shown = tab === "coding" && settings && !codingSaved ? "otter" : tab;
+  // An older host has no coding settings, or no tool levels: their tabs go.
+  const toolsKept = !!settings?.tools?.length;
+  const shown = settings && ((tab === "coding" && !codingSaved) || (tab === "tools" && !toolsKept)) ? "otter" : tab;
 
   const heads: Record<SettingsTab, [string, string]> = {
     appearance: ["Appearance", "On this Mac. Changes apply right away."],
@@ -396,6 +431,7 @@ export function SettingsDialog({
     developer: ["Developer", "On this Mac. For working on the app itself; changes apply right away."],
     git: ["Git & GitHub", "For every host, in the repositories Otter manages there; each host's own git stays as it is."],
     otter: ["Otter", host ? `On ${host}. Plans each task, decides, and checks the work, also while this app is closed.` : "Kept on each host."],
+    tools: ["Otter's tools", host ? `On ${host}. What Otter may do, tool by tool.` : "Kept on each host."],
     coding: ["Coding agent", host ? `On ${host}. Claude Code, which writes the code.` : "Kept on each host."],
     keys: ["API keys", host ? `On ${host}. Kept there, never read back.` : "Kept on each host."],
   };
@@ -439,6 +475,7 @@ export function SettingsDialog({
           )}
         </div>
         {nav("otter", "Otter", <Icon d="otter" />)}
+        {(!settings || toolsKept) && nav("tools", "Otter's tools", <Icon d="tools" />)}
         {(!settings || codingSaved) && nav("coding", "Coding agent", <Icon d="coding" />)}
         {nav(
           "keys",
@@ -595,6 +632,10 @@ export function SettingsDialog({
                     </Group>
                   )}
                 </>
+              )}
+
+              {shown === "tools" && settings.tools && (
+                <ToolLevels tools={settings.tools.map((t) => (levels[t.name] ? { ...t, level: levels[t.name] } : t))} onSet={setLevel} />
               )}
 
               {shown === "coding" && codingSaved && (
@@ -826,6 +867,72 @@ function Appearance({ theme, onTheme }: { theme: ThemeChoice; onTheme: (t: Theme
   );
 }
 
+/** The levels a tool can have, as Settings names them. */
+const LEVELS: [ToolLevel, string][] = [
+  ["auto", "Automatic"],
+  ["developer", "On your word"],
+  ["off", "Off"],
+];
+
+/** The daemon's groups of tools, in plain words. */
+const TOOL_GROUPS: Record<string, string> = {
+  look: "Looking things up",
+  place: "Where the work happens",
+  task: "The work",
+  delegate: "Handing work on",
+  wait: "Coming back to it",
+  deliver: "Delivering",
+  remember: "Memory",
+};
+
+/**
+ * Otter's tools on the host and how far each may go (D-191), grouped as the
+ * host lists them; a choice is saved at once. What no level allows is said
+ * first.
+ */
+function ToolLevels({ tools, onSet }: { tools: ToolInfo[]; onSet: (t: ToolInfo, level: ToolLevel) => void }) {
+  const groups = [...new Set(tools.map((t) => t.group))];
+  const name = (l: ToolLevel) => LEVELS.find(([id]) => id === l)?.[1] ?? l;
+  return (
+    <>
+      <p className="muted small">
+        Automatic: Otter uses the tool on its own, and says so. On your word: only when your message asked for it. Off: Otter isn't given it.
+        Merging, force-pushing, deleting outside Otter's own folders and credentials are never Otter's, whatever the level.
+      </p>
+      {groups.map((g) => (
+        <Group key={g} title={TOOL_GROUPS[g] ?? g.charAt(0).toUpperCase() + g.slice(1)}>
+          {tools
+            .filter((t) => t.group === g)
+            .map((t) => (
+              <Row
+                key={t.name}
+                label={
+                  <>
+                    {t.description}
+                    {t.level !== t.default_level && (
+                      <span className="settings-tag" title={`Usually ${name(t.default_level)}`}>
+                        Changed
+                      </span>
+                    )}
+                  </>
+                }
+                hint={<span className="mono">{t.name}</span>}
+              >
+                <Segmented
+                  label={t.description}
+                  name={`tool-${t.name}`}
+                  value={t.level}
+                  options={LEVELS}
+                  onChange={(v) => onSet(t, v as ToolLevel)}
+                />
+              </Row>
+            ))}
+        </Group>
+      ))}
+    </>
+  );
+}
+
 /** How installing the Claude worker went (D-129). */
 function InstallResult({ install, host, caps }: { install: Install; host: string; caps: RuntimeCapabilities | null }) {
   if (install.state === "running") {
@@ -1049,6 +1156,13 @@ const ICONS: Record<string, ReactNode> = {
     </>
   ),
   developer: <path d="M1.8 8.5h2.6l1.8-4.3 3.2 7.6 1.8-3.3h3" />,
+  tools: (
+    <>
+      <path d="M2.5 4.5h4M9.5 4.5h4M2.5 11.5h7M12.5 11.5h1" />
+      <circle cx="8" cy="4.5" r="1.5" />
+      <circle cx="11" cy="11.5" r="1.5" />
+    </>
+  ),
   git: (
     <>
       <circle cx="4.5" cy="3.8" r="1.6" />

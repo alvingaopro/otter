@@ -315,6 +315,16 @@ impl Daemon {
                 {
                     f.allowed_commands.push(cmd);
                 }
+                // The trigger's policy as a preset of Otter's tools (D-191):
+                // publishing only if it allows it, and the work stays where
+                // the trigger puts it (D-156: an occurrence waits behind the
+                // last one there, it doesn't make a workspace of its own).
+                use otter_core::tools::ToolLevel;
+                if !policy.publish {
+                    f.tool_levels.insert("publish".into(), ToolLevel::Developer);
+                }
+                f.tool_levels
+                    .insert("set_workspace".into(), ToolLevel::Developer);
                 Ok(vec![])
             },
         );

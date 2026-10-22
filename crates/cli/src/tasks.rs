@@ -92,10 +92,20 @@ pub enum TaskCommand {
     /// Stop a task for good. Nothing of the work is removed: its files,
     /// branch and pull request stay.
     Cancel { task: String },
-    /// Give a task a workspace of its own — a worktree of its Git
-    /// workspace's repository, on a branch for it — when another agent
+    /// Give a task a workspace of its own — from the repository its
+    /// workspace comes from, on a branch for it — when another agent
     /// (another task's, or one you started) is working in the one it has.
     OwnWorkspace { task: String },
+    /// How far Otter may go with one of its tools in this task: `auto`,
+    /// `developer` (only on your word) or `off` — never looser than the
+    /// host's (Settings › Otter); `host` takes the host's again.
+    Tool {
+        task: String,
+        /// The tool (`Bash`, `publish`, `set_workspace`, …).
+        tool: String,
+        /// `auto`, `developer`, `off` or `host`.
+        level: String,
+    },
     /// What happened to a task, oldest first: its history, a line each.
     History {
         task: String,
@@ -533,6 +543,27 @@ pub async fn task_command(config: &Config, cmd: TaskCommand, json: bool) -> Resu
                         .unwrap_or_default()
                 )
             })
+            .await
+        }
+        TaskCommand::Tool { task, tool, level } => {
+            let level =
+                match level.as_str() {
+                    "host" => None,
+                    l => Some(otter_core::tools::ToolLevel::parse(l).ok_or_else(|| {
+                        anyhow::anyhow!("the level is auto, developer, off or host")
+                    })?),
+                };
+            let said = level.map_or("as the host's", |l| l.as_str());
+            act(
+                config,
+                &task,
+                TaskAction::SetToolLevel {
+                    tool: tool.clone(),
+                    level,
+                },
+                json,
+                |f| format!("{}: Otter's `{tool}` here is {said}", f.title),
+            )
             .await
         }
         TaskCommand::History { task, limit } => {

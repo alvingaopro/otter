@@ -143,6 +143,7 @@ pub fn run() {
             tasks::task_create,
             tasks::memory_get,
             tasks::memory_set,
+            tasks::otter_actions,
             tasks::task_send,
             tasks::task_act,
             tasks::task_events,

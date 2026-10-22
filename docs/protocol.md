@@ -335,6 +335,17 @@ The Control Agent's model and API keys on this host (D-048).
     until it ends.
   - `git.github_logout` → the view.
   An older daemon answers `invalid_request`.
+- The view also has `tools?: [{name, description, group, level,
+  default_level}]` (D-191): each of Otter's tools — its own, the Claude
+  Agent SDK's `WebSearch`, `WebFetch` and `Bash` it may use, and what the
+  controller does on its own (`publish`, `approve_plan`, `accept_task`) —
+  and how far it may go on this host: `auto` (Otter uses it on its own, in
+  any turn), `developer` (only in a turn the developer's message started)
+  or `off` (not offered). `group` is `look`, `place`, `task`, `delegate`,
+  `wait`, `deliver` or `remember`. `settings.set {tool_levels: {name:
+  level | null}}` sets them (`null`: back to the default); an unknown tool
+  is `invalid_request`. `OTTER_TOOL_LEVELS` in otterd's environment
+  (`name=level,…`) overrides them. Absent from older daemons.
 - `settings.models {controller}` → `[{id, name?}]`: the models that
   controller offers, as its provider lists them, asked by the host with the
   key set there (OpenRouter's list needs none); `claude` answers Claude
@@ -435,7 +446,12 @@ Product work owned by the daemon (D-043); see `otter_core::task`.
   `cancel_watch {watch_id}` (stop a watch; one already ended is a
   `conflict`), `delete_watch {watch_id}` (remove one; a waiting one is
   stopped first) (D-183; an older otterd answers these two
-  `invalid_request`). An
+  `invalid_request`), `set_tool_level {tool, level?}` (this task's level
+  for one of Otter's tools, D-191: it only tightens the host's; no `level`
+  takes the host's again; an unknown tool is `invalid_request`). `set_workspace` and
+  `own_workspace` move a task that hasn't worked (D-192); `own_workspace`
+  splits a directory workspace in a repository too: a workspace of its own
+  from its `origin`, on the branch it has checked out. An
   action the lifecycle doesn't allow fails with `conflict`, and so does
   `accept` while a gate (D-047) is open, unless `override_gates`.
 - `task.delete {task}` → `null`: removes a task with its history
@@ -488,6 +504,24 @@ conversation; their changes come as `TaskChanged`. History: `WatchSet`,
 `WatchFiring`, `WatchReported`, `WatchCancelled`, `WatchDeleted`, each with
 `watch_id` and `label`.
 
+**Watch kinds** (D-193): `ci` takes any pull request by its `url`
+(`target {pr, repo}` as before), and `run` watches a GitHub Actions run
+until it finishes (`target {repo, run}`): `passed`, `failed` or `gone`
+(cancelled).
+
+**Otter's own doing** (D-191–D-194; optional fields, old peers ignore
+them): a task has `tool_levels?` (its own levels, above), `parent?` (the
+task whose Otter made it, a sub-task) and `children_seen?` (each sub-task's
+change its Otter has heard). History: `ToolCalled` carries `detail?` (the
+command Otter ran, the sub-task it made, where it moved the task) and its
+`origin` may be `auto` (the controller, where the tool is automatic);
+`ToolUndo {tool, task_id, action}` says what undoes a change (a
+`task.act` action on that task). A task Otter answered itself is `done`
+with no runs; Otter's own instructions to the coding agent are `Controller`
+messages starting "To the coding agent: ", their `correlation_id`
+`tell:…`; a sub-task's change is said in its parent as a `Controller`
+message whose `correlation_id` is `child:<task>:<change>`.
+
 **What CI was, and when** (D-184; optional fields): `delivery.mergeable?`
 is `MERGEABLE` or `CONFLICTING` as last read (absent: unknown) — a pull
 request that conflicts gets no `pull_request` CI, and its `Pull request`
@@ -515,7 +549,7 @@ message is complete. The coding agent's text along the way isn't stored in
 the task: only each turn's result is (D-069); the rest is in its
 conversation. Otter (role `controller`) begins with an empty `text` as
 soon as it starts on a message — a reply, its look at a request for a
-workspace, a watch's report — before its first word (D-191). An empty
+workspace, a watch's report — before its first word (D-195). An empty
 `text` with `done` means it ended with nothing to say there (the message,
 if any, is in the task); a client drops that draft. After a stream is
 picked up again (a reconnect), what was being written may never get its
@@ -560,6 +594,12 @@ turn them on.
   `correlation_id` is the developer's message's id.
 - `otter.events {after?, limit?}` → `TaskEventRecord[]`: the history of
   Otter's tool calls there (`ToolCalled`, `ToolDone`).
+- `otter.actions {limit?}` → `OtterAction[]` (D-193): what Otter did across
+  the host's tasks, newest first (default 100, at most 500): `{task_id,
+  task_title, seq, at, tool, origin, authority?, detail?, error?, undo?:
+  {task_id, action}}` — each `ToolCalled` in the tasks' histories, with
+  what came of it and what undoes it. Refusals that changed nothing aren't
+  listed. An older daemon answers `invalid_request`.
 - Events: `OtterChanged {history_seq}`; `OtterStream {stream_id, text,
   done}` — the reply as it is written, transient like `TaskStream`.
 - A task made from it is an ordinary task; its request is the

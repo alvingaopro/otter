@@ -52,7 +52,7 @@ const CHECK_OUTPUT: usize = 3000;
 /// The title of delivery's diffstat evidence, before the branch.
 const CHANGES_ON: &str = "Changes on ";
 /// What publishing asks to do, after the push (D-047).
-const AND_OPEN_A_PR: &str = "and open a pull request";
+pub(crate) const AND_OPEN_A_PR: &str = "and open a pull request";
 /// A task with nothing of its own to publish (D-166): said once, and kept
 /// in the rationale with the commit it was said of.
 const NOTHING_TO_PUBLISH: &str = "Nothing to publish";
@@ -214,6 +214,9 @@ pub(crate) struct ControllerState {
     pub(crate) watches: crate::watches::Probing,
     /// A turn in Otter's conversation on the host is running (D-093).
     host_turn: bool,
+    /// A task moved to a workspace of its own is moved once from each
+    /// (D-192): what couldn't be made isn't tried on every wake.
+    pub(crate) moves_tried: HashSet<(TaskId, otter_core::WorkspaceId)>,
 }
 
 impl Daemon {
@@ -246,16 +249,26 @@ impl Daemon {
             // Off: tasks stay where they are until the developer acts — and
             // a command is the developer acting (D-190).
             let off = self.brain_choice().controller.as_deref() == Some("off");
-            let ids: Vec<TaskId> = self
-                .tasks
-                .lock()
-                .await
-                .list()
+            let all = self.tasks.lock().await.list();
+            // Parents whose sub-task came to something they haven't heard
+            // (D-194).
+            let told: HashSet<TaskId> = all
+                .iter()
+                .filter_map(|c| {
+                    let parent = all.iter().find(|p| Some(&p.id) == c.parent.as_ref())?;
+                    let key = c.follow_key()?;
+                    (parent.children_seen.get(c.id.as_str()) != Some(&key)
+                        && parent.status != TaskStatus::Cancelled)
+                        .then(|| parent.id.clone())
+                })
+                .collect();
+            let ids: Vec<TaskId> = all
                 .into_iter()
                 .filter(|f| {
                     !crate::commands::pending(f).is_empty()
                         || (!off
                             && (!unanswered(f).is_empty()
+                        || told.contains(&f.id)
                         // A watch found something: Otter says so (D-183),
                         // whatever the task's status.
                         || f.firing_watch().is_some()
@@ -380,6 +393,14 @@ impl Daemon {
             self.watch_turn(&f, &w).await;
             f = self.task_get(id.as_str()).await?;
         }
+        // Then a sub-task that came to something (D-194): Otter hears it
+        // here — not in a task that was cancelled.
+        if f.status != TaskStatus::Cancelled
+            && let Some((child, key)) = self.child_change(&f).await
+        {
+            self.child_turn(&f, &child, &key).await;
+            f = self.task_get(id.as_str()).await?;
+        }
         // Unattended work doesn't wait for ever on the developer (D-083).
         if self.waited_too_long(&f).await? {
             return Ok(());
@@ -465,7 +486,7 @@ impl Daemon {
             .collect::<Vec<_>>()
             .join("\n");
         let stream_id = format!("reply-{}", last.id);
-        // The app shows Otter at it from now, not from its first word (D-191).
+        // The app shows Otter at it from now, not from its first word (D-195).
         let writing = self.writing(&f.id, &stream_id);
         let reply = match self.task_workspace(f).await {
             Ok((root, env)) => {
@@ -516,7 +537,7 @@ impl Daemon {
             );
             f.messages.push(m);
             let mut changes = vec![c];
-            let (step, stops) = intent_step(f, intent, last.id.as_str(), now);
+            let (step, stops) = intent_step(f, intent, last.id.as_str(), false, now);
             stop = stops;
             changes.extend(step);
             Ok(changes)
@@ -601,19 +622,9 @@ impl Daemon {
         if f.started_by.is_some() {
             return Ok(None);
         }
-        let Some(request) = f.request_message().cloned() else {
+        let Some(message) = self.unread_request(f) else {
             return Ok(None);
         };
-        let looked = f.messages.iter().any(|m| {
-            m.role == MessageRole::Controller
-                && m.correlation_id.as_deref() == Some(request.as_str())
-        });
-        let Some(message) = f.messages.iter().find(|m| m.id == request).cloned() else {
-            return Ok(None);
-        };
-        if looked {
-            return Ok(None);
-        }
         let Some(backend) = self.turn_backend() else {
             return Ok(None);
         };
@@ -771,6 +782,42 @@ impl Daemon {
             f
         };
         if f.workspace_id.is_none() {
+            // Otter watches something for it (D-193): it waits on that, not
+            // on the developer; when the watch comes to something, Otter's
+            // turn answers it or says where it works.
+            let unfinished = self
+                .tasks
+                .lock()
+                .await
+                .list()
+                .iter()
+                .filter(|c| {
+                    c.parent.as_ref() == Some(&f.id)
+                        && !matches!(
+                            c.status,
+                            TaskStatus::Done | TaskStatus::Cancelled | TaskStatus::Failed
+                        )
+                })
+                .count();
+            let waits_on = match f.open_watches().next() {
+                Some(w) => Some(format!("Waiting for what Otter watches: {}", w.label)),
+                // Its work is in its sub-tasks (D-194): it waits on them.
+                None if unfinished > 0 => {
+                    Some(format!("Waiting for its sub-tasks: {unfinished} not done"))
+                }
+                None => None,
+            };
+            if let Some(why) = waits_on {
+                if f.status_reason.as_deref() != Some(why.as_str()) {
+                    self.controller_apply(&f.id, TaskStatus::Planning, move |f, _| {
+                        let event = f.reason(why.clone());
+                        f.status_reason = Some(why);
+                        Ok(vec![Change::new(event)])
+                    })
+                    .await?;
+                }
+                return Ok(());
+            }
             self.controller_apply(&f.id, TaskStatus::Planning, |f, now| {
                 let e = f
                     .transition(
@@ -926,6 +973,31 @@ impl Daemon {
         // A decline's mark isn't a sending back (D-158).
         if step.detail.is_none() || plan_declined(step) {
             self.send_plan_back(f, step, issues).await
+        } else if self.auto(f, "approve_plan") {
+            // Approving plans is automatic (D-193): sent back once, the
+            // agent's plan stands — it is the one that saw the code — with
+            // the review's points on record.
+            let points = issues.clone();
+            self.controller_apply(&f.id, TaskStatus::Planning, move |f, _| {
+                Ok(vec![
+                    Change::new(TaskEvent::ToolCalled {
+                        tool: "approve_plan".into(),
+                        origin: "auto".into(),
+                        authority: None,
+                        detail: Some(crate::agents::excerpt(&points, 300)),
+                    }),
+                    Change::new(f.reason(format!(
+                        "Otter approved the plan (approving plans is automatic in Settings), the review's points still open:\n{points}"
+                    ))),
+                    Change::new(TaskEvent::ToolDone {
+                        tool: "approve_plan".into(),
+                        error: None,
+                    }),
+                ])
+            })
+            .await?;
+            self.set_plan(f, plan, "approved by Otter after its review", &root)
+                .await
         } else {
             self.ask_about_the_plan(f, step, &plan, issues).await
         }
@@ -1702,8 +1774,20 @@ impl Daemon {
     /// (D-079): another task's run is there, another task's work is there
     /// and not done (D-156), or an agent the developer started is at work
     /// there.
-    async fn workspace_taken(self: &Arc<Self>, f: &Task) -> Option<String> {
+    async fn workspace_taken(self: &Arc<Self>, f: &Task) -> Option<Taken> {
         let ws_id = f.workspace_id.as_ref()?;
+        let state = |why: String| {
+            Some(Taken {
+                why,
+                by_others: false,
+            })
+        };
+        let others = |why: String| {
+            Some(Taken {
+                why,
+                by_others: true,
+            })
+        };
         let (name, busy_session, git) = {
             let store = self.store.lock().await;
             let ws = store.workspace(ws_id.as_str())?;
@@ -1711,27 +1795,32 @@ impl Daemon {
             // is the developer's to bring back.
             if ws.state == otter_core::WorkspaceState::Archived {
                 if ws.task_id.as_ref() != Some(&f.id) {
-                    return Some(format!("{WAITING}{}{ARCHIVED}", ws.name));
+                    return state(format!("{WAITING}{}{ARCHIVED}", ws.name));
                 }
                 let name = ws.name.clone();
                 drop(store);
                 if let Err(e) = self.workspace_unarchive(ws_id.as_str()).await {
-                    return Some(format!("{WAITING}{name}: {}", e.message));
+                    return state(format!("{WAITING}{name}: {}", e.message));
                 }
-                return Some(format!("{WAITING}{name}: it's being prepared"));
+                return state(format!("{WAITING}{name}: it's being prepared"));
             }
             // A workspace still being made (one of its own, D-080).
             if ws.state == otter_core::WorkspaceState::Preparing {
-                return Some(format!("{WAITING}{}: it's being prepared", ws.name));
+                return state(format!("{WAITING}{}: it's being prepared", ws.name));
             }
             // Its preparation failed: the developer's to fix (D-135).
             if ws.state == otter_core::WorkspaceState::Failed {
                 let why = ws.state_message.as_deref().unwrap_or("no reason given");
-                return Some(format!(
+                return state(format!(
                     "{WAITING}{}: preparing it failed ({}); prepare it again to go on",
                     ws.name,
                     why.lines().next().unwrap_or(why)
                 ));
+            }
+            // It only reads (D-192): whatever else works there, it reads
+            // alongside.
+            if self.reads_alongside(f) {
+                return None;
             }
             let busy = ws
                 .sessions
@@ -1761,7 +1850,7 @@ impl Daemon {
                 .await
                 .map(|o| o.title)
                 .unwrap_or_else(|_| other.to_string());
-            return Some(format!("{WAITING}{name}: “{title}” is working there"));
+            return others(format!("{WAITING}{name}: “{title}” is working there"));
         }
         // In a Git repository, another task's work there, not done, holds
         // it between its runs too, or publishing it would take this one's
@@ -1770,16 +1859,223 @@ impl Daemon {
         // it. Not when this one has worked there already: neither would go
         // on.
         if git
-            && f.runs.is_empty()
+            && !f.has_written()
             && let Some(other) = self.work_holding(ws_id, Some(&f.id)).await
         {
-            return Some(if other.status.is_active() {
+            return others(if other.status.is_active() {
                 format!("{WAITING}{name}: “{}” is working there", other.title)
             } else {
                 format!("{WAITING}{name}: “{}”{HELD}", other.title)
             });
         }
-        busy_session.map(|s| format!("{WAITING}{name}: {s}{YOUR_AGENT}"))
+        others(format!("{WAITING}{name}: {}{YOUR_AGENT}", busy_session?))
+    }
+
+    /// What a task whose workspace others hold does instead of waiting
+    /// (D-192), once it has done nothing there yet: Otter reads its request
+    /// first, once — it may answer it without a workspace, have it only
+    /// read, or say where it goes; then, where moving is automatic, it gets
+    /// a workspace of its own from the same repository. Whether it did
+    /// either (the step goes on from the change).
+    async fn instead_of_waiting(self: &Arc<Self>, f: &Task, taken: &Taken) -> RpcResult<bool> {
+        if f.has_written() || f.started_by.is_some() {
+            return Ok(false);
+        }
+        if let Some(message) = self.unread_request(f) {
+            let Some(backend) = self.turn_backend() else {
+                return Ok(false);
+            };
+            let note = format!(
+                "\nThis task's workspace is taken: {}. Before it waits, read the request: if it only needs what you can read yourself (a GitHub run or pull request, the web), answer it and finish_with_answer; if it only asks about the code, set_answer_only on (it reads alongside what works there); to choose where it works, set_workspace. Otherwise just say so in a line: it gets a workspace of its own from the same repository, or waits.\n",
+                taken.why.trim_start_matches(otter_core::task::WAITING)
+            );
+            self.otter_turn_note(f, backend, vec![message], true, Some(note))
+                .await?;
+            return Ok(true);
+        }
+        if !self.auto(f, "set_workspace") {
+            return Ok(false);
+        }
+        let Some(ws_id) = f.workspace_id.clone() else {
+            return Ok(false);
+        };
+        // Tried once for this workspace: what couldn't be made isn't tried
+        // on every wake.
+        if !self
+            .controller
+            .lock()
+            .unwrap()
+            .moves_tried
+            .insert((f.id.clone(), ws_id.clone()))
+        {
+            return Ok(false);
+        }
+        let from = {
+            let store = self.store.lock().await;
+            match store.workspace(ws_id.as_str()) {
+                // Its own already (D-080): it moves no further.
+                Some(w) if w.task_id.as_ref() == Some(&f.id) => return Ok(false),
+                Some(w) => w.name.clone(),
+                None => return Ok(false),
+            }
+        };
+        let command = format!("auto-move:{}:{ws_id}", f.id);
+        let called = |error: Option<String>, detail: Option<String>| {
+            let mut v = vec![Change::new(TaskEvent::ToolCalled {
+                tool: "set_workspace".into(),
+                origin: "auto".into(),
+                authority: None,
+                detail,
+            })];
+            v.push(Change::new(TaskEvent::ToolDone {
+                tool: "set_workspace".into(),
+                error,
+            }));
+            v
+        };
+        let ws = match self.own_workspace(&f.id).await {
+            Ok(ws) => ws,
+            Err(e) => {
+                let why = otter_core::redact::redact(&e.message);
+                tracing::info!(task = %f.id, "no workspace of its own: {why}");
+                self.controller_apply(&f.id, f.status, move |_, _| {
+                    Ok(called(Some("not_ready".into()), Some(why)))
+                })
+                .await?;
+                return Ok(false);
+            }
+        };
+        self.clone()
+            .task_act(otter_protocol::task::TaskAct {
+                command_id: command,
+                task: f.id.to_string(),
+                action: otter_core::task::TaskAction::SetWorkspace {
+                    workspace: ws.id.to_string(),
+                },
+            })
+            .await?;
+        let why = taken
+            .why
+            .strip_prefix(&format!("{}{from}: ", otter_core::task::WAITING))
+            .unwrap_or(&taken.why);
+        let said = otter_core::redact::redact(&format!(
+            "{from} is taken ({why}). I gave this task a workspace of its own from the same repository, {}; it's being prepared, then the work starts there.",
+            ws.name
+        ));
+        let detail = format!("{from} → {}", ws.name);
+        let back = ws_id.to_string();
+        self.controller_apply(&f.id, f.status, move |f, _| {
+            let (m, c) = message(MessageRole::Controller, said, None);
+            f.messages.push(m);
+            let mut v = called(None, Some(detail));
+            // Back where it was, while it hasn't worked (D-193).
+            v.push(Change::new(TaskEvent::ToolUndo {
+                tool: "set_workspace".into(),
+                task_id: f.id.clone(),
+                action: otter_core::task::TaskAction::SetWorkspace { workspace: back },
+            }));
+            v.push(c);
+            Ok(v)
+        })
+        .await?;
+        Ok(true)
+    }
+
+    /// A sub-task of `f` that came to something its Otter hasn't heard
+    /// (D-194): done, failed, in review, or waiting on the developer — and
+    /// that change's key.
+    async fn child_change(&self, f: &Task) -> Option<(Task, String)> {
+        self.tasks
+            .lock()
+            .await
+            .list()
+            .into_iter()
+            .filter(|c| c.parent.as_ref() == Some(&f.id))
+            .find_map(|c| {
+                let key = c.follow_key()?;
+                (f.children_seen.get(c.id.as_str()) != Some(&key)).then_some((c, key))
+            })
+    }
+
+    /// Otter's turn on a sub-task's change (D-194), in the parent's
+    /// conversation: no message started it, so it may do what is
+    /// automatic. Said once, with the change it is about, in one write.
+    async fn child_turn(self: &Arc<Self>, f: &Task, c: &Task, key: &str) {
+        let reason = c
+            .status_reason
+            .as_deref()
+            .map(|r| format!(": {r}"))
+            .unwrap_or_default();
+        let report = c
+            .report
+            .as_deref()
+            .map(|r| format!(" Its report: {}", crate::agents::excerpt(r, 1_500)))
+            .unwrap_or_default();
+        let pr = c
+            .delivery
+            .as_ref()
+            .and_then(|d| d.pr_url.as_deref())
+            .map(|u| format!(" Its pull request: {u}."))
+            .unwrap_or_default();
+        let what = format!(
+            "your sub-task “{}” [{}] is now {}{reason}.{pr}{report}",
+            c.title,
+            c.id,
+            c.status.as_str()
+        );
+        let line = format!(
+            "Sub-task “{}” is now {}{reason}.{pr}",
+            c.title,
+            c.status.as_str()
+        );
+        let text = match self.turn_backend() {
+            None => line,
+            Some(backend) => {
+                let (daemon, parent, event_id) =
+                    (self.clone(), f.clone(), format!("child:{}:{key}", c.id));
+                // Apart: a panic in the turn is said, not the task's failure.
+                let turn = tokio::spawn(async move {
+                    daemon.event_turn(&*backend, &parent, event_id, what).await
+                });
+                match turn.await {
+                    Ok(Some(text)) => text,
+                    Ok(None) => line,
+                    Err(_) => format!("{line} (I couldn't look further: my turn stopped.)"),
+                }
+            }
+        };
+        let (child, key) = (c.id.to_string(), key.to_owned());
+        let applied = self.tasks.lock().await.apply(&f.id, None, |f, _| {
+            if f.children_seen.get(&child) == Some(&key) {
+                return Ok(vec![]);
+            }
+            f.children_seen.insert(child.clone(), key.clone());
+            let (m, ch) = message(
+                MessageRole::Controller,
+                text,
+                Some(format!("child:{child}:{key}")),
+            );
+            f.messages.push(m);
+            Ok(vec![ch])
+        });
+        match applied {
+            Ok(a) => self.task_changed(&a),
+            Err(e) => tracing::warn!(task = %f.id, "a sub-task's report: {}", e.message),
+        }
+    }
+
+    /// The task's request, if Otter hasn't read it yet (D-186): the reply
+    /// to it is the mark that it did.
+    pub(crate) fn unread_request(&self, f: &Task) -> Option<otter_core::task::Message> {
+        let request = f.request_message()?;
+        let looked = f.messages.iter().any(|m| {
+            m.role == MessageRole::Controller
+                && m.correlation_id.as_deref() == Some(request.as_str())
+        });
+        if looked {
+            return None;
+        }
+        f.messages.iter().find(|m| &m.id == request).cloned()
     }
 
     /// Another task whose work in the workspace, not done, holds it (D-156).
@@ -1791,7 +2087,7 @@ impl Daemon {
         self.tasks.lock().await.list().into_iter().find(|o| {
             Some(&o.id) != except
                 && o.workspace_id.as_ref() == Some(ws_id)
-                && !o.runs.is_empty()
+                && o.has_written()
                 && !matches!(o.status, TaskStatus::Done | TaskStatus::Cancelled)
         })
     }
@@ -1814,8 +2110,13 @@ impl Daemon {
     /// Give `step` to the coding agent: a turn in the task's conversation.
     async fn start_turn(self: &Arc<Self>, f: &Task, step: &Step) -> RpcResult<()> {
         let step = step.clone();
-        if let Some(why) = self.workspace_taken(f).await {
-            return self.wait_for_workspace(f, why).await;
+        if let Some(taken) = self.workspace_taken(f).await {
+            // Before it waits on others: Otter may answer it or move it
+            // (D-192), else it waits.
+            if taken.by_others && self.instead_of_waiting(f, &taken).await? {
+                return Ok(());
+            }
+            return self.wait_for_workspace(f, taken.why).await;
         }
         // One conversation per task (D-064): the next step, a fix and a
         // retry are turns in the session the work began in. A turn of this
@@ -1888,8 +2189,8 @@ impl Daemon {
         {
             // Taken in the meantime: wait, as above.
             Err(e) if e.message.starts_with(crate::runs::BUSY) => {
-                if let Some(why) = self.workspace_taken(f).await {
-                    self.wait_for_workspace(f, why).await?;
+                if let Some(taken) = self.workspace_taken(f).await {
+                    self.wait_for_workspace(f, taken.why).await?;
                 }
             }
             Err(e) => {
@@ -2534,6 +2835,57 @@ impl Daemon {
                         .map(|d| d.id.clone()),
                 );
             } else if !published || d.as_ref().and_then(|d| d.head.clone()) != head || unpublished {
+                // Publishing is automatic (D-193): allowed on Otter's own,
+                // on record, as a trigger's policy allows it (D-083); a
+                // question about it already put to the developer goes.
+                let auto_allowed;
+                let f = if self.auto(f, "publish")
+                    && !f.allowed_commands.contains(&cmd)
+                    && self.may_publish_on_own(f, branch, &git).await
+                {
+                    let ask = format!("Run `{cmd}` {AND_OPEN_A_PR}");
+                    let (cmd2, branch2) = (cmd.clone(), branch.clone());
+                    self.controller_apply(&f.id, TaskStatus::Review, move |f, now| {
+                            let mut v = vec![Change::new(TaskEvent::ToolCalled {
+                                tool: "publish".into(),
+                                origin: "auto".into(),
+                                authority: None,
+                                detail: Some(branch2.clone()),
+                            })];
+                            if !f.allowed_commands.contains(&cmd2) {
+                                f.allowed_commands.push(cmd2.clone());
+                            }
+                            let asked: Vec<DecisionId> = f
+                                .pending_decisions()
+                                .filter(|d| d.summary == ask)
+                                .map(|d| d.id.clone())
+                                .collect();
+                            for id in asked {
+                                if let Some(d) = f.decision_mut(&id) {
+                                    d.status = DecisionStatus::Cancelled;
+                                    d.decided_at = Some(now);
+                                    v.push(Change::new(TaskEvent::DecisionResolved {
+                                        decision_id: id.clone(),
+                                        status: DecisionStatus::Cancelled,
+                                        by: Decider::Policy,
+                                    }));
+                                }
+                            }
+                            v.push(Change::new(f.reason(format!(
+                                "Publishing {branch2} on Otter's own: publishing is automatic in Settings."
+                            ))));
+                            v.push(Change::new(TaskEvent::ToolDone {
+                                tool: "publish".into(),
+                                error: None,
+                            }));
+                            Ok(v)
+                        })
+                        .await?;
+                    auto_allowed = self.task_get(f.id.as_str()).await?;
+                    &auto_allowed
+                } else {
+                    f
+                };
                 match self.allowance(f, &cmd, AND_OPEN_A_PR, &root).await? {
                     Allowance::Pending => {}
                     Allowance::Denied(_) => {
@@ -2866,6 +3218,9 @@ impl Daemon {
                     .and_then(|e| e.detail.clone())
             });
         let write_report = ready && f.report.is_none();
+        // Accepting is automatic (D-193): once every gate passed and the
+        // report is written, Otter accepts; merging stays the developer's.
+        let accept = ready && self.auto(f, "accept_task");
         if d == f.delivery
             && evidence.is_empty()
             && gates == f.gates
@@ -2875,6 +3230,11 @@ impl Daemon {
             && rationale.is_empty()
             && moot.is_empty()
         {
+            // Nothing new to write: the gates kept are these, so accepting
+            // checks the ones just read.
+            if accept {
+                return self.accept_on_own(&f.id).await;
+            }
             return Ok(());
         }
         let mut posted = None;
@@ -2939,11 +3299,12 @@ impl Daemon {
                 let r = delivery::report(f, diffstat.as_deref());
                 posted = Some(r.clone());
                 f.report = Some(r);
-                let (m, c) = message(
-                    MessageRole::Controller,
-                    "Every gate has passed; the report is ready. Accept when you're happy with it — I won't merge or deploy.".into(),
-                    None,
-                );
+                let said = if accept {
+                    "Every gate has passed; the report is ready, and I'm accepting it (accepting is automatic in Settings). Merging stays yours."
+                } else {
+                    "Every gate has passed; the report is ready. Accept when you're happy with it — I won't merge or deploy."
+                };
+                let (m, c) = message(MessageRole::Controller, said.into(), None);
                 f.messages.push(m);
                 changes.push(c);
             }
@@ -2956,6 +3317,97 @@ impl Daemon {
         {
             tracing::warn!("posting the report: {e:#}");
         }
+        // After the write, so the gates it checks are the ones just read.
+        if accept {
+            return self.accept_on_own(&f.id).await;
+        }
+        Ok(())
+    }
+
+    /// Whether review may publish `branch` on Otter's own (D-193): only
+    /// from a workspace Otter manages for the work (a Git one, not a
+    /// directory the developer keeps, whose tree may hold their own
+    /// uncommitted work), and never a default branch. Otherwise the
+    /// developer is asked, as before.
+    async fn may_publish_on_own(
+        &self,
+        f: &Task,
+        branch: &str,
+        git: &crate::delivery::Git<'_>,
+    ) -> bool {
+        // A Git workspace made for this task, or one nobody works in by
+        // hand (no sessions): a workspace the developer uses may hold their
+        // own edits, which publishing would commit.
+        let managed = match &f.workspace_id {
+            Some(id) => self
+                .store
+                .lock()
+                .await
+                .workspace(id.as_str())
+                .is_some_and(|w| {
+                    matches!(w.source, otter_core::WorkspaceSource::Git(_))
+                        && (w.task_id.as_ref() == Some(&f.id) || w.sessions.is_empty())
+                }),
+            None => false,
+        };
+        if !managed || matches!(branch, "main" | "master" | "trunk" | "develop") {
+            return false;
+        }
+        let base = self.workspace_base(f).await;
+        if base.as_deref() == Some(branch) {
+            return false;
+        }
+        match git.default_branch().await {
+            Some(default) => default != branch,
+            // Unknown: not on Otter's own.
+            None => false,
+        }
+    }
+
+    /// Otter accepts a task whose gates all passed (D-193), on record, as
+    /// its own doing; what undoes it is changing the goal again.
+    async fn accept_on_own(self: &Arc<Self>, id: &TaskId) -> RpcResult<()> {
+        let applied = self.tasks.lock().await.apply(id, None, |f, now| {
+            if f.status != TaskStatus::Review || f.pending_decisions().next().is_some() {
+                return Ok(vec![]);
+            }
+            // Only what would be accepted: every gate kept clear (the
+            // developer's acceptance aside) and the report written. Nothing
+            // written otherwise, so a step never loops on a refusal.
+            let open = f.gates.is_empty()
+                || f.report.is_none()
+                || f.gates
+                    .iter()
+                    .any(|g| !g.status.clear() && g.name != crate::delivery::ACCEPTANCE_GATE);
+            if open {
+                return Ok(vec![]);
+            }
+            let mut v = vec![Change::new(TaskEvent::ToolCalled {
+                tool: "accept_task".into(),
+                origin: "auto".into(),
+                authority: None,
+                detail: None,
+            })];
+            let (changes, _) =
+                intent_step(f, crate::brain::Intent::Finish, "auto:accept", true, now);
+            v.extend(changes);
+            let done = f.status == TaskStatus::Done;
+            v.push(Change::new(TaskEvent::ToolDone {
+                tool: "accept_task".into(),
+                error: (!done).then(|| "not_ready".into()),
+            }));
+            if done {
+                v.push(Change::new(TaskEvent::ToolUndo {
+                    tool: "accept_task".into(),
+                    task_id: f.id.clone(),
+                    action: otter_core::task::TaskAction::RequestChanges {
+                        note: Some("Otter's acceptance undone".into()),
+                    },
+                }));
+            }
+            Ok(v)
+        })?;
+        self.task_changed(&applied);
         Ok(())
     }
 
@@ -3361,6 +3813,7 @@ pub(crate) fn intent_step(
     f: &mut Task,
     intent: crate::brain::Intent,
     authority: &str,
+    by_otter: bool,
     now: otter_core::Timestamp,
 ) -> (Vec<Change>, bool) {
     use crate::brain::Intent;
@@ -3369,17 +3822,24 @@ pub(crate) fn intent_step(
             .ok()
             .map(Change::new)
     };
+    // Who said it, as the task's reasons say it (D-193): Otter acts on its
+    // own too, and the record says so.
+    let said = |you: &'static str, otter: &'static str| if by_otter { otter } else { you };
     let mut changes = Vec::new();
     let mut stop = false;
     let step = match (intent, f.status) {
-        (Intent::Continue, TaskStatus::Draft) => move_to(f, TaskStatus::Planning, "You said go on"),
+        (Intent::Continue, TaskStatus::Draft) => move_to(
+            f,
+            TaskStatus::Planning,
+            said("You said go on", "Otter went on"),
+        ),
         (Intent::Continue, TaskStatus::Paused) => match crate::tasks::resume_to(f) {
             (next, Some(reason)) => move_to(f, next, &reason),
-            (next, None) => move_to(f, next, "You said go on"),
+            (next, None) => move_to(f, next, said("You said go on", "Otter went on")),
         },
         (Intent::Continue, TaskStatus::Blocked) if f.pending_decisions().next().is_none() => {
             let next = crate::tasks::resume_status(f);
-            move_to(f, next, "You said go on")
+            move_to(f, next, said("You said go on", "Otter went on"))
         }
         (Intent::Continue, TaskStatus::Failed) => {
             f.budget.iterations_used = 0;
@@ -3390,20 +3850,34 @@ pub(crate) fn intent_step(
                 }
             }
             let next = crate::tasks::resume_status(f);
-            move_to(f, next, "You said go on: retrying with a fresh budget")
+            move_to(
+                f,
+                next,
+                said(
+                    "You said go on: retrying with a fresh budget",
+                    "Otter retried with a fresh budget",
+                ),
+            )
         }
         (Intent::Pause, s)
             if s.is_active() || s == TaskStatus::Blocked || s == TaskStatus::Review =>
         {
             stop = true;
-            move_to(f, TaskStatus::Paused, "Paused: you asked")
+            move_to(
+                f,
+                TaskStatus::Paused,
+                said("Paused: you asked", "Paused by Otter"),
+            )
         }
         // The goal moved (D-050): plan again, keeping what is done.
         (Intent::Revise, s) if !s.is_terminal() => {
             stop = true;
             changes.extend(crate::tasks::replan(
                 f,
-                "You changed the goal: planning again",
+                said(
+                    "You changed the goal: planning again",
+                    "Otter is planning again",
+                ),
                 now,
             ));
             None
@@ -3415,7 +3889,13 @@ pub(crate) fn intent_step(
                 override_gates: false,
             };
             match crate::tasks::apply_action(f, &accept, authority, now) {
-                Ok(c) => changes.extend(c),
+                Ok(c) => {
+                    changes.extend(c);
+                    if by_otter {
+                        changes.push(Change::new(f.reason(ACCEPTED_BY_OTTER)));
+                        f.status_reason = Some(ACCEPTED_BY_OTTER.into());
+                    }
+                }
                 Err(e) => changes.push(Change::new(
                     f.reason(format!("Not done yet: {}", e.message)),
                 )),
@@ -3424,12 +3904,28 @@ pub(crate) fn intent_step(
         }
         (Intent::Finish, s) if s.is_active() || s == TaskStatus::Blocked => {
             stop = true;
-            move_to(f, TaskStatus::Paused, "Stopped: you said that's enough")
+            move_to(
+                f,
+                TaskStatus::Paused,
+                said("Stopped: you said that's enough", "Stopped by Otter"),
+            )
         }
         _ => None,
     };
     changes.extend(step);
     (changes, stop)
+}
+
+/// The reason a task Otter accepted is done (D-193).
+pub(crate) const ACCEPTED_BY_OTTER: &str =
+    "Accepted by Otter: every gate passed (accepting is automatic in Settings)";
+
+/// Why a task's workspace can't be worked in now (D-079): the reason it
+/// says, and whether others hold it — another task's run or work, an agent
+/// the developer started — rather than its own state.
+pub(crate) struct Taken {
+    pub why: String,
+    pub by_others: bool,
 }
 
 /// What a developer's message turns into for the coding agent.
@@ -3459,9 +3955,19 @@ fn developer_notes(
 ) -> Vec<String> {
     developer_messages(f, since, carried)
         .into_iter()
-        .filter_map(|m| m.for_the_work().map(str::to_owned))
+        .filter_map(|m| match m.text.strip_prefix(TO_THE_AGENT) {
+            // Otter's own instructions (D-193): said as Otter's.
+            Some(t) if m.role == MessageRole::Controller => {
+                Some(format!("{}: {}", crate::runs::OTTER_SAYS, t.trim()))
+            }
+            _ => m.for_the_work().map(str::to_owned),
+        })
         .collect()
 }
+
+/// How a message of Otter's to the coding agent starts in the task's
+/// conversation (D-193); its correlation is `tell:<command>`.
+pub(crate) const TO_THE_AGENT: &str = "To the coding agent: ";
 
 /// The messages `developer_notes` says, themselves.
 fn developer_messages<'a>(
@@ -3473,7 +3979,14 @@ fn developer_messages<'a>(
     f.messages
         .iter()
         .filter(|m| Some(&m.id) != request)
-        .filter(|m| m.role == MessageRole::User && since.is_none_or(|s| m.at > s))
+        .filter(|m| {
+            (m.role == MessageRole::User
+                || (m.role == MessageRole::Controller
+                    && m.correlation_id
+                        .as_deref()
+                        .is_some_and(|c| c.starts_with("tell:"))))
+                && since.is_none_or(|s| m.at > s)
+        })
         .filter(|m| !carried.contains(m.id.as_str()))
         // A command's words go with it, or not at all (D-190).
         .filter(|m| m.for_the_work().is_some())
@@ -3482,12 +3995,27 @@ fn developer_messages<'a>(
 
 /// The developer's notes, as a prompt says them.
 fn notes_text(notes: &[String]) -> String {
-    if notes.is_empty() {
-        String::new()
-    } else {
-        let lines: Vec<String> = notes.iter().map(|n| format!("- {n}")).collect();
-        format!("\nFrom the developer:\n{}\n", lines.join("\n"))
+    let otter_says = format!("{}: ", crate::runs::OTTER_SAYS);
+    let (otter, developer): (Vec<&String>, Vec<&String>) =
+        notes.iter().partition(|n| n.starts_with(&otter_says));
+    let mut text = String::new();
+    if !developer.is_empty() {
+        let lines: Vec<String> = developer.iter().map(|n| format!("- {n}")).collect();
+        text.push_str(&format!("\nFrom the developer:\n{}\n", lines.join("\n")));
     }
+    // Otter's own instructions (D-193), apart: never as the developer's.
+    if !otter.is_empty() {
+        let lines: Vec<String> = otter
+            .iter()
+            .map(|n| format!("- {}", &n[otter_says.len()..]))
+            .collect();
+        text.push_str(&format!(
+            "\n{}:\n{}\n",
+            crate::runs::OTTER_SAYS,
+            lines.join("\n")
+        ));
+    }
+    text
 }
 
 /// What a coding agent is told to start `step`, with the developer's
@@ -3846,6 +4374,7 @@ mod tests {
                 turn_id: None,
                 worked_ms: 0,
                 working_since: None,
+                read_only: false,
             });
         }
         f

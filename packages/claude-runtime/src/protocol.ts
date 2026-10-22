@@ -47,6 +47,9 @@ export interface OtterTool {
  * `otter_tools`). A worker says which it has (`ready`, `--check`).
  */
 export const PROFILES = ["coding", "otter"] as const;
+
+/** Claude Code's own tools an `otter` run may be given (D-192). */
+export const OTTER_BUILTINS = ["WebSearch", "WebFetch", "Bash"] as const;
 export type Profile = (typeof PROFILES)[number];
 
 export interface InitializePayload {
@@ -54,6 +57,11 @@ export interface InitializePayload {
   profile?: Profile;
   /** The tools of an `otter` run (required there, refused elsewhere). */
   otter_tools?: OtterTool[];
+  /**
+   * Claude Code's own tools an `otter` run may use ([`OTTER_BUILTINS`]),
+   * each call checked by otterd first (D-192). Absent: none.
+   */
+  otter_builtins?: string[];
   conversation_id: string;
   cwd: string;
   /** The coding model; absent: the SDK's default. */
@@ -213,7 +221,15 @@ export function parseCommand(line: string): { ok: true; command: Command } | { o
           isObject(t.input_schema);
         if (!tools.every(ok)) return bad("each otter tool needs a name, a description and an input_schema");
         if (sources.length > 0) return bad("an otter run reads no settings");
-      } else if (p.otter_tools !== undefined) {
+        const builtins = p.otter_builtins;
+        if (
+          builtins !== undefined &&
+          (!Array.isArray(builtins) ||
+            !builtins.every((b) => typeof b === "string" && (OTTER_BUILTINS as readonly string[]).includes(b)))
+        ) {
+          return bad(`otter_builtins are some of ${OTTER_BUILTINS.join(", ")}`);
+        }
+      } else if (p.otter_tools !== undefined || p.otter_builtins !== undefined) {
         return bad("otter_tools are for an otter run");
       }
       break;

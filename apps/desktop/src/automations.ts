@@ -1,8 +1,9 @@
 // Automations (D-185): what Otter does without a message from you — the
-// watches it keeps for you (D-183) and the host's triggers (D-083). Pure:
-// grouping and wording, no runtime state.
+// watches it keeps for you (D-183) and the host's triggers (D-083) — and
+// what it did on its tools (D-193). Pure: grouping and wording, no runtime
+// state.
 
-import type { PlacedTask, Watch, WatchOutcome } from "./tasks";
+import type { PlacedTask, TaskAction, Watch, WatchOutcome } from "./tasks";
 
 /** When a trigger fires: mirrors `otter_core::trigger::Schedule`. */
 export type Schedule = { kind: "every"; minutes: number } | { kind: "daily"; at: string } | { kind: "manual" };
@@ -239,4 +240,71 @@ export function findItem(groups: AutomationGroups, key: string | undefined): Ite
   if (w) return { kind: "watch", item: w };
   const t = groups.scheduled.find((x) => x.key === key);
   return t ? { kind: "trigger", item: t } : undefined;
+}
+
+/**
+ * One thing Otter did on its tools (D-193), from its task's history:
+ * mirrors `otter_protocol::otter::OtterAction`.
+ */
+export interface OtterAction {
+  task_id: string;
+  task_title: string;
+  /** Its place in the task's history. */
+  seq: number;
+  at: string;
+  tool: string;
+  /** What started it: `developer` (your message), `event` (a watch, a sub-task, a change) or `auto` (Otter's own step). */
+  origin: string;
+  /** Your message it acted on (its id), when it did. */
+  authority?: string;
+  /** What it was done on, when that says more than the tool: the command, the sub-task. */
+  detail?: string;
+  /** Why it did nothing, when it didn't: a refusal's code. */
+  error?: string;
+  /** What undoes it: an action on a task (the sub-task's, for one Otter made). */
+  undo?: { task_id: string; action: TaskAction };
+}
+
+/** What each of Otter's tools did, in a few words; others by their name. */
+const DID: Record<string, string> = {
+  set_workspace: "Moved the task",
+  set_answer_only: "Changed whether it only answers",
+  start_task: "Started the task",
+  resume_task: "Resumed the task",
+  retry_task: "Retried the task",
+  pause_task: "Paused the task",
+  revise_task: "Planned it again",
+  approve_plan: "Approved the plan",
+  accept_task: "Accepted",
+  finish_with_answer: "Answered and finished",
+  create_task: "Made a sub-task",
+  forward_to_agent: "Passed your message on",
+  ask_agent: "Asked the coding agent",
+  redirect_agent: "Redirected the coding agent",
+  tell_agent: "Told the coding agent",
+  watch: "Set a watch",
+  cancel_watch: "Stopped a watch",
+  publish: "Published",
+  remember: "Noted in its memory",
+  edit_memory: "Corrected its memory",
+  Bash: "Ran a command",
+  WebSearch: "Searched the web",
+  WebFetch: "Read a page",
+};
+
+/** What Otter did, in plain words. */
+export function actionText(tool: string): string {
+  if (DID[tool]) return DID[tool];
+  const words = tool.replace(/_/g, " ");
+  return words.charAt(0).toUpperCase() + words.slice(1);
+}
+
+/** Who started it: your message, or Otter on its own (a step of its own, or something that happened). */
+export function originText(origin: string): string {
+  return origin === "developer" ? "on your word" : "on its own";
+}
+
+/** Why it did nothing, from the refusal's code. */
+export function refusalText(code: string): string {
+  return code.replace(/_/g, " ");
 }

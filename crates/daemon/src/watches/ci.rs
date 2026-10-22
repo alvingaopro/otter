@@ -25,7 +25,20 @@ impl WatchKind for Ci {
         "ci"
     }
 
-    fn target(&self, f: &Task, _args: &Value, _what: &str) -> Result<Target, String> {
+    fn target(&self, f: &Task, args: &Value, _what: &str) -> Result<Target, String> {
+        // Any pull request's, by its link (D-193).
+        if let Some(url) = args["url"].as_str().filter(|u| !u.trim().is_empty()) {
+            let Some(crate::delivery::GithubLink::PullRequest { repo, number }) =
+                crate::delivery::GithubLink::parse(url)
+            else {
+                return Err("a ci watch's url is a GitHub pull request's".into());
+            };
+            return Ok(Target {
+                value: json!({ "pr": number, "repo": repo }),
+                label: format!("CI on {repo}#{number}"),
+                key: format!("pr{number}-{repo}"),
+            });
+        }
         let d = f.delivery.as_ref();
         let (Some(pr), Some(url)) = (
             d.and_then(|d| d.pr_number),
