@@ -1316,6 +1316,14 @@ pub enum TaskEvent {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         detail: Option<String>,
     },
+    /// What undoes one of Otter's changes (D-192), for the developer: the
+    /// task it is on (a sub-task's, for the sub-task Otter made) and the
+    /// action, as `task.act` takes it.
+    ToolUndo {
+        tool: String,
+        task_id: TaskId,
+        action: TaskAction,
+    },
     /// What came of one of Otter's tools: done, or why not.
     ToolDone {
         tool: String,
@@ -1405,6 +1413,7 @@ impl TaskEvent {
                 ..
             } => format!("Otter: {tool}: {d}"),
             TaskEvent::ToolCalled { tool, .. } => format!("Otter: {tool}"),
+            TaskEvent::ToolUndo { tool, .. } => format!("Otter: {tool} — can be undone"),
             TaskEvent::ToolDone { tool, error } => match error {
                 Some(code) => format!("Otter: {tool} — {}", code.replace('_', " ")),
                 None => format!("Otter: {tool} — done"),

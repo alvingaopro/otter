@@ -334,7 +334,7 @@ async fn otter_reads_the_runs_itself_and_answers_without_a_workspace() {
         .await
         .unwrap();
     let f = wait_task(host, &id, "answered and done", |f| {
-        f.status == TaskStatus::Done
+        f.status == TaskStatus::Done && reply_to_request(f).is_some()
     })
     .await;
     assert!(f.workspace_id.is_none());
@@ -391,7 +391,7 @@ async fn a_task_whose_workspace_is_taken_is_answered_before_it_waits() {
     )
     .await;
     let f = wait_task(host, &eyes, "answered and done", |f| {
-        f.status == TaskStatus::Done
+        f.status == TaskStatus::Done && reply_to_request(f).is_some()
     })
     .await;
     assert!(f.runs.is_empty(), "no coding agent");
@@ -525,4 +525,153 @@ async fn read_github_reads_a_pull_request_and_refuses_other_links() {
         "{answers:?}"
     );
     assert_eq!(code(&answers[1]), "invalid", "{answers:?}");
+}
+
+/// Otter tells the coding agent what to do in its own words (D-192): said
+/// in the conversation as Otter's, and to the run as Otter's — never as the
+/// developer's — from a turn no message started too.
+#[tokio::test]
+async fn otter_tells_the_agent_in_its_own_words() {
+    let fake = coord_host("", vec![]).await;
+    let host = &fake.host;
+    let id = started_task(host, "Add CSV export HANG").await;
+    at_work(host, &id).await;
+    let (f, answers) = super::otter_turn::run(
+        host,
+        &id,
+        "tell",
+        "AS: event\nCALL: tell_agent {\"text\": \"Look at export_test.go first: it fails on the header.\"}",
+    )
+    .await;
+    assert_eq!(answers[0]["data"]["done"], "told", "{answers:?}");
+    let said = f
+        .messages
+        .iter()
+        .find(|m| m.role == MessageRole::Controller && m.text.starts_with("To the coding agent: "))
+        .unwrap();
+    assert!(said.correlation_id.as_deref().unwrap().starts_with("tell:"));
+    let conv = host
+        .conn()
+        .await
+        .conversation_get(
+            f.runs
+                .last()
+                .unwrap()
+                .conversation_id
+                .as_ref()
+                .unwrap()
+                .as_str(),
+        )
+        .await
+        .unwrap();
+    let turn = conv
+        .conversation
+        .turns
+        .iter()
+        .find(|t| t.text().contains("export_test.go"))
+        .expect("queued to the run");
+    assert!(
+        turn.text()
+            .starts_with("From Otter, your tech lead (not the developer):"),
+        "{}",
+        turn.text()
+    );
+    assert!(!turn.text().contains("From the developer"));
+}
+
+/// Publishing and accepting are automatic by default (D-192): the task
+/// publishes without asking, Otter accepts it once CI passed, says so, and
+/// the ledger has both with what undoes the acceptance — which works.
+#[tokio::test]
+async fn otter_publishes_and_accepts_on_its_own_and_it_can_be_undone() {
+    let fake = coord_host("set_workspace=developer,approve_plan=developer", vec![]).await;
+    let host = &fake.host;
+    let (id, _) = git_task(&fake).await;
+    let f = wait_task(host, &id, "published without asking", |f| {
+        f.delivery.as_ref().is_some_and(|d| d.pr_url.is_some())
+    })
+    .await;
+    assert!(
+        !f.decisions.iter().any(|d| d.summary.contains("git push")),
+        "not asked: {:?}",
+        f.decisions
+    );
+    std::fs::write(
+        fake.gh.join("checks.json"),
+        r#"[{"name":"test","bucket":"pass","link":"https://github.com/o/r/actions/runs/1/job/2"}]"#,
+    )
+    .unwrap();
+    let f = wait_task(host, &id, "accepted by Otter", |f| {
+        f.status == TaskStatus::Done
+    })
+    .await;
+    assert_eq!(
+        f.status_reason.as_deref(),
+        Some("Accepted by Otter: every gate passed (accepting is automatic in Settings)")
+    );
+    assert!(
+        f.messages
+            .iter()
+            .any(|m| m.text.contains("I'm accepting it"))
+    );
+    let actions = host.conn().await.otter_actions(None).await.unwrap();
+    let publish = actions
+        .iter()
+        .find(|a| a.tool == "publish")
+        .expect("publish on record");
+    assert_eq!(publish.origin, "auto");
+    assert_eq!(publish.detail.as_deref(), Some("feature/csv"));
+    let accept = actions
+        .iter()
+        .find(|a| a.tool == "accept_task")
+        .expect("acceptance on record");
+    assert_eq!(accept.origin, "auto");
+    assert_eq!(accept.error, None);
+    let undo = accept.undo.clone().expect("it can be undone");
+    assert_eq!(undo.task_id.as_str(), id);
+    host.conn()
+        .await
+        .task_act("undo-accept", &id, undo.action)
+        .await
+        .unwrap();
+    let f = host.conn().await.task_get(&id).await.unwrap();
+    assert_ne!(f.status, TaskStatus::Done);
+}
+
+/// Approving plans is automatic by default (D-192): the plan the review
+/// had points on goes back to the agent once, then Otter approves it —
+/// the developer isn't asked.
+#[tokio::test]
+async fn otter_approves_the_plan_after_one_send_back() {
+    let fake = coord_host(
+        "set_workspace=developer,publish=developer,accept_task=developer",
+        vec![("OTTER_PLAN_TURN", "1".into())],
+    )
+    .await;
+    let host = &fake.host;
+    let id = started_task(host, "Add CSV export").await;
+    let f = wait_task(host, &id, "planned and at work", |f| {
+        f.steps.iter().any(|t| !t.planning)
+    })
+    .await;
+    assert!(
+        !f.decisions
+            .iter()
+            .any(|d| d.kind == otter_core::task::DecisionKind::PlanApproval && d.user_only),
+        "the developer wasn't asked: {:?}",
+        f.decisions
+    );
+    assert!(
+        f.rationale
+            .iter()
+            .any(|r| r.starts_with("Otter approved the plan")),
+        "{:#?}",
+        f.rationale
+    );
+    let actions = host.conn().await.otter_actions(None).await.unwrap();
+    assert!(
+        actions
+            .iter()
+            .any(|a| a.tool == "approve_plan" && a.origin == "auto")
+    );
 }

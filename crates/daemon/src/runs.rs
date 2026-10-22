@@ -67,6 +67,9 @@ const ACTIVITY_LINES: usize = 30;
 /// Live runs by id.
 pub(crate) type Runs = std::sync::Mutex<HashMap<RunId, LiveRun>>;
 
+/// How the coding agent is told what Otter itself says (D-192).
+pub(crate) const OTTER_SAYS: &str = "From Otter, your tech lead (not the developer)";
+
 /// What a run that can't start because its workspace is taken says first:
 /// the task waits, it doesn't fail (D-079).
 pub(crate) const BUSY: &str = "busy: ";
@@ -1325,6 +1328,28 @@ impl Daemon {
         pictures: Vec<PathBuf>,
         read_only: bool,
     ) -> usize {
+        self.queue_turn_from(
+            task_id,
+            command_id,
+            input,
+            pictures,
+            read_only,
+            Initiator::User,
+        )
+        .await
+    }
+
+    /// [`Self::queue_turn`], said by `initiator` (Otter's own instructions
+    /// are the controller's, D-192).
+    async fn queue_turn_from(
+        &self,
+        task_id: &TaskId,
+        command_id: &str,
+        input: String,
+        pictures: Vec<PathBuf>,
+        read_only: bool,
+        initiator: Initiator,
+    ) -> usize {
         let live: Vec<_> = self
             .runs
             .lock()
@@ -1360,7 +1385,7 @@ impl Daemon {
                     command_id: command_id.into(),
                     fingerprint: format!("{input}{}", pictures.join("\n")),
                     command: Command::SendTurn {
-                        initiator: Initiator::User,
+                        initiator,
                         input: input_blocks(input.clone(), pictures),
                         read_only,
                     },
@@ -1380,7 +1405,6 @@ impl Daemon {
         queued_in
     }
 
-    /// Whether the task only wants an answer (D-092): all its turns read.
     /// Whether `task`'s run would only read, alongside whatever else works
     /// in its workspace (D-191): an answer-only task, where the SDK
     /// runtime's hook keeps the agent to reading.
@@ -1388,6 +1412,7 @@ impl Daemon {
         task.answer_only && self.can_answer_only().is_ok()
     }
 
+    /// Whether the task only wants an answer (D-092): all its turns read.
     async fn answer_only(&self, task: &TaskId) -> bool {
         self.tasks
             .lock()
@@ -1527,6 +1552,52 @@ impl Daemon {
                 })
                 .await;
         }
+    }
+
+    /// Otter's own instructions for the run in progress (D-192), said as
+    /// Otter's — never as the developer's (D-089): after its current turn,
+    /// or (`now`) stopping it first. How many runs they reached.
+    pub(crate) async fn otter_tells_runs(
+        &self,
+        task_id: &TaskId,
+        command_id: &str,
+        text: &str,
+        now: bool,
+    ) -> usize {
+        if !now {
+            return self
+                .queue_turn_from(
+                    task_id,
+                    command_id,
+                    format!("{OTTER_SAYS}:\n{text}"),
+                    vec![],
+                    false,
+                    Initiator::Controller,
+                )
+                .await;
+        }
+        let live: Vec<_> = self
+            .runs
+            .lock()
+            .unwrap()
+            .values()
+            .filter(|r| &r.task == task_id)
+            .map(|r| r.tx.clone())
+            .collect();
+        let n = live.len();
+        for tx in live {
+            let _ = tx
+                .send(ActorCmd::Redirect {
+                    command_id: command_id.to_owned(),
+                    initiator: Initiator::Controller,
+                    text: format!(
+                        "{OTTER_SAYS} — a change of direction, before anything else:\n{text}"
+                    ),
+                    pictures: vec![],
+                })
+                .await;
+        }
+        n
     }
 
     /// The developer's pictures went with a message, and the coding agent

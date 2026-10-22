@@ -230,6 +230,17 @@ pub fn tools() -> Vec<ToolSpec> {
             message_ids(),
         ),
         t(
+            "tell_agent",
+            DeveloperWord,
+            "Give the coding agent your own instructions for the work — what to look at, what to do next, a fix to make — said as yours, never as the developer's. now: stop its current turn for them (as redirect_agent does); otherwise they come after its current turn, or with its next one when none is at work.",
+            json!({
+                "type": "object",
+                "properties": {"text": {"type": "string"}, "now": {"type": "boolean"}},
+                "required": ["text"],
+                "additionalProperties": false
+            }),
+        ),
+        t(
             "list_workspaces",
             Observe,
             "The workspaces on this host (where tasks do their work): id, name, state, the repository it comes from, its brief, and the task holding it now (held_by_task: another task there would wait; the developer's own agent sessions aren't counted). query: only those whose name, repository or brief has these words.",
@@ -318,6 +329,12 @@ pub fn tools() -> Vec<ToolSpec> {
             "accept_task",
             DeveloperWord,
             "Accept the task in review; its gates still apply.",
+            none(),
+        ),
+        t(
+            "publish",
+            DeveloperWord,
+            "Push this task's branch and open its pull request, when the developer says so and the task asks to publish in review. Where publishing is automatic, review does it by itself.",
             none(),
         ),
         t(
@@ -1680,6 +1697,157 @@ impl Gateway {
         Ok(json!({"done": "asked", "turns": asked, "status": f.status.as_str()}))
     }
 
+    /// Otter's own instructions to the coding agent (D-192): a message in
+    /// the task's conversation, said as Otter's, and to the run at work —
+    /// or with the next one. Each text once per turn.
+    async fn tell_agent(&self, f: &Task, args: &Value) -> Result<Value, ToolError> {
+        let text = args
+            .get("text")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|t| !t.is_empty() && t.len() <= 4_000)
+            .ok_or_else(|| {
+                fail(
+                    "invalid",
+                    "text is what to tell it, at most 4000 characters",
+                )
+            })?
+            .to_owned();
+        let now = args.get("now").and_then(Value::as_bool).unwrap_or(false);
+        let origin = &self.inner.origin;
+        let hash = text.bytes().fold(0xcbf2_9ce4_8422_2325_u64, |h, b| {
+            (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3)
+        });
+        let command = format!("{}:{:08x}", origin.command("tell_agent"), hash as u32);
+        self.record(
+            TaskEvent::ToolCalled {
+                tool: "tell_agent".into(),
+                origin: origin.name().into(),
+                authority: origin.authority().map(|m| m.id.to_string()),
+                detail: Some(excerpt(&redact(&text), 200)),
+            },
+            Some(&command),
+        )
+        .await;
+        let d = &self.inner.daemon;
+        let said = text.clone();
+        let applied = d.tasks.lock().await.apply(&f.id, Some(&command), |f, _| {
+            let (m, c) = crate::tasks::message(
+                otter_core::task::MessageRole::Controller,
+                format!("{}{said}", crate::controller::TO_THE_AGENT),
+                Some(format!("tell:{command}")),
+            );
+            f.messages.push(m);
+            Ok(vec![
+                c,
+                Change::new(TaskEvent::ToolDone {
+                    tool: "tell_agent".into(),
+                    error: None,
+                })
+                .because(&command),
+            ])
+        })?;
+        d.task_changed(&applied);
+        let Some(m) = applied
+            .task
+            .messages
+            .iter()
+            .rev()
+            .find(|m| m.correlation_id.as_deref() == Some(format!("tell:{command}").as_str()))
+        else {
+            return Err(fail("retryable", "the message wasn't kept"));
+        };
+        let runs = d.otter_tells_runs(&f.id, m.id.as_str(), &text, now).await;
+        if !applied.duplicate {
+            self.inner
+                .done
+                .lock()
+                .unwrap()
+                .push(format!("tell_agent: {}", excerpt(&text, 60)));
+        }
+        Ok(json!({
+            "done": if runs > 0 { "told" } else { "with its next turn" },
+            "runs": runs,
+            "status": applied.task.status.as_str(),
+        }))
+    }
+
+    /// Publishing allowed on the developer's word (D-192): the task's ask
+    /// to push its branch and open its pull request, answered yes. Where
+    /// publishing is automatic, review publishes by itself; a question
+    /// already put to the developer is theirs.
+    async fn publish(&self, f: &Task) -> Result<Value, ToolError> {
+        let Some(ask) = f
+            .pending_decisions()
+            .find(|d| {
+                d.summary.ends_with(crate::controller::AND_OPEN_A_PR)
+                    && d.summary.contains("git push")
+            })
+            .cloned()
+        else {
+            return Err(fail(
+                "not_ready",
+                "the task isn't asking to publish: it asks in review, once its work is verified",
+            ));
+        };
+        let origin = &self.inner.origin;
+        if origin.authority().is_none() {
+            return Err(fail(
+                "needs_developer",
+                "publishing was put to the developer, and only they can answer that question now",
+            )
+            .next("tell the developer what you'd say"));
+        }
+        let command = origin.command("publish");
+        self.record(
+            TaskEvent::ToolCalled {
+                tool: "publish".into(),
+                origin: origin.name().into(),
+                authority: origin.authority().map(|m| m.id.to_string()),
+                detail: Some(ask.summary.clone()),
+            },
+            Some(&command),
+        )
+        .await;
+        let d = &self.inner.daemon;
+        d.decide(
+            &f.id,
+            &ask.id,
+            true,
+            None,
+            otter_core::task::Decider::User,
+            Some("You said publish".into()),
+        )
+        .await?;
+        self.record(
+            TaskEvent::ToolDone {
+                tool: "publish".into(),
+                error: None,
+            },
+            Some(&command),
+        )
+        .await;
+        self.inner
+            .done
+            .lock()
+            .unwrap()
+            .push("publish: allowed".into());
+        Ok(json!({"done": "publishing", "status": f.status.as_str()}))
+    }
+
+    /// What undoes a change just made (D-192), on record for the developer.
+    async fn undoable(&self, tool: &str, task: &TaskId, action: otter_core::task::TaskAction) {
+        self.record(
+            TaskEvent::ToolUndo {
+                tool: tool.into(),
+                task_id: task.clone(),
+                action,
+            },
+            None,
+        )
+        .await;
+    }
+
     /// The request was answered in Otter's reply, and nothing is to change
     /// (D-192): the task ends done, with no workspace or coding agent —
     /// only while the agent hasn't worked on it (what it did goes through
@@ -1732,6 +1900,14 @@ impl Gateway {
             })?;
         d.task_changed(&applied);
         if !applied.duplicate {
+            self.undoable(
+                "finish_with_answer",
+                &f.id,
+                otter_core::task::TaskAction::RequestChanges {
+                    note: Some("Otter's answer wasn't enough: do the work".into()),
+                },
+            )
+            .await;
             self.inner
                 .done
                 .lock()
@@ -1764,6 +1940,7 @@ impl Gateway {
         }
         let placement = d.placement(&choice).await?;
         let mut from = None;
+        let mut from_id = None;
         if let Some(cur) = &f.workspace_id {
             let (same, name, state) = {
                 let store = d.store.lock().await;
@@ -1803,6 +1980,7 @@ impl Gateway {
                 }));
             }
             from = name;
+            from_id = Some(cur.clone());
         }
         let origin = &self.inner.origin;
         let command = origin.command("set_workspace");
@@ -1838,6 +2016,16 @@ impl Gateway {
             "set_workspace: {}",
             name.as_deref().unwrap_or("none")
         ));
+        if let Some(back) = from_id {
+            self.undoable(
+                "set_workspace",
+                &f.id,
+                otter_core::task::TaskAction::SetWorkspace {
+                    workspace: back.to_string(),
+                },
+            )
+            .await;
+        }
         let mut out = json!({
             "done": "workspace set",
             "workspace": name,
@@ -2036,6 +2224,16 @@ impl Gateway {
         if read_first && !applied.duplicate {
             d.looked(&watch.id, kind);
         }
+        if !applied.duplicate {
+            self.undoable(
+                "watch",
+                &f.id,
+                otter_core::task::TaskAction::CancelWatch {
+                    watch_id: watch.id.clone(),
+                },
+            )
+            .await;
+        }
         self.inner
             .done
             .lock()
@@ -2127,6 +2325,18 @@ impl Gateway {
         }
         if name == "finish_with_answer" {
             return match self.finish_with_answer(&f).await {
+                Err(e) => refused(e).await,
+                ok => ok,
+            };
+        }
+        if name == "tell_agent" {
+            return match self.tell_agent(&f, args).await {
+                Err(e) => refused(e).await,
+                ok => ok,
+            };
+        }
+        if name == "publish" {
+            return match self.publish(&f).await {
                 Err(e) => refused(e).await,
                 ok => ok,
             };
@@ -2273,6 +2483,19 @@ impl Gateway {
             .await?;
         if let Some(why) = not_done {
             return Err(fail("not_ready", why).next("say what is missing"));
+        }
+        // What undoes it (D-192): going on and stopping undo each other; an
+        // acceptance is undone by changing the goal again.
+        let undo = match (name, effective) {
+            ("pause_task", Intent::Pause) => Some(otter_core::task::TaskAction::Resume),
+            ("resume_task", Intent::Continue) => Some(otter_core::task::TaskAction::Pause),
+            ("accept_task", Intent::Finish) => Some(otter_core::task::TaskAction::RequestChanges {
+                note: Some("Otter's acceptance undone".into()),
+            }),
+            _ => None,
+        };
+        if let Some(undo) = undo {
+            self.undoable(name, &f.id, undo).await;
         }
         let did = match effective {
             Intent::Guide => "passed on",

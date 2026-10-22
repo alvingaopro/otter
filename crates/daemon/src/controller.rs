@@ -52,7 +52,7 @@ const CHECK_OUTPUT: usize = 3000;
 /// The title of delivery's diffstat evidence, before the branch.
 const CHANGES_ON: &str = "Changes on ";
 /// What publishing asks to do, after the push (D-047).
-const AND_OPEN_A_PR: &str = "and open a pull request";
+pub(crate) const AND_OPEN_A_PR: &str = "and open a pull request";
 /// A task with nothing of its own to publish (D-166): said once, and kept
 /// in the rationale with the commit it was said of.
 const NOTHING_TO_PUBLISH: &str = "Nothing to publish";
@@ -913,6 +913,31 @@ impl Daemon {
         // A decline's mark isn't a sending back (D-158).
         if step.detail.is_none() || plan_declined(step) {
             self.send_plan_back(f, step, issues).await
+        } else if self.auto(f, "approve_plan") {
+            // Approving plans is automatic (D-192): sent back once, the
+            // agent's plan stands — it is the one that saw the code — with
+            // the review's points on record.
+            let points = issues.clone();
+            self.controller_apply(&f.id, TaskStatus::Planning, move |f, _| {
+                Ok(vec![
+                    Change::new(TaskEvent::ToolCalled {
+                        tool: "approve_plan".into(),
+                        origin: "auto".into(),
+                        authority: None,
+                        detail: Some(crate::agents::excerpt(&points, 300)),
+                    }),
+                    Change::new(f.reason(format!(
+                        "Otter approved the plan (approving plans is automatic in Settings), the review's points still open:\n{points}"
+                    ))),
+                    Change::new(TaskEvent::ToolDone {
+                        tool: "approve_plan".into(),
+                        error: None,
+                    }),
+                ])
+            })
+            .await?;
+            self.set_plan(f, plan, "approved by Otter after its review", &root)
+                .await
         } else {
             self.ask_about_the_plan(f, step, &plan, issues).await
         }
@@ -1874,10 +1899,17 @@ impl Daemon {
             ws.name
         );
         let detail = format!("{from} → {}", ws.name);
+        let back = ws_id.to_string();
         self.controller_apply(&f.id, f.status, move |f, _| {
             let (m, c) = message(MessageRole::Controller, said, None);
             f.messages.push(m);
             let mut v = called(None, Some(detail));
+            // Back where it was, while it hasn't worked (D-192).
+            v.push(Change::new(TaskEvent::ToolUndo {
+                tool: "set_workspace".into(),
+                task_id: f.id.clone(),
+                action: otter_core::task::TaskAction::SetWorkspace { workspace: back },
+            }));
             v.push(c);
             Ok(v)
         })
@@ -2656,6 +2688,54 @@ impl Daemon {
                         .map(|d| d.id.clone()),
                 );
             } else if !published || d.as_ref().and_then(|d| d.head.clone()) != head || unpublished {
+                // Publishing is automatic (D-192): allowed on Otter's own,
+                // on record, as a trigger's policy allows it (D-083); a
+                // question about it already put to the developer goes.
+                let auto_allowed;
+                let f = if self.auto(f, "publish") && !f.allowed_commands.contains(&cmd) {
+                    let ask = format!("Run `{cmd}` {AND_OPEN_A_PR}");
+                    let (cmd2, branch2) = (cmd.clone(), branch.clone());
+                    self.controller_apply(&f.id, TaskStatus::Review, move |f, now| {
+                            let mut v = vec![Change::new(TaskEvent::ToolCalled {
+                                tool: "publish".into(),
+                                origin: "auto".into(),
+                                authority: None,
+                                detail: Some(branch2.clone()),
+                            })];
+                            if !f.allowed_commands.contains(&cmd2) {
+                                f.allowed_commands.push(cmd2.clone());
+                            }
+                            let asked: Vec<DecisionId> = f
+                                .pending_decisions()
+                                .filter(|d| d.summary == ask)
+                                .map(|d| d.id.clone())
+                                .collect();
+                            for id in asked {
+                                if let Some(d) = f.decision_mut(&id) {
+                                    d.status = DecisionStatus::Cancelled;
+                                    d.decided_at = Some(now);
+                                    v.push(Change::new(TaskEvent::DecisionResolved {
+                                        decision_id: id.clone(),
+                                        status: DecisionStatus::Cancelled,
+                                        by: Decider::Policy,
+                                    }));
+                                }
+                            }
+                            v.push(Change::new(f.reason(format!(
+                                "Publishing {branch2} on Otter's own: publishing is automatic in Settings."
+                            ))));
+                            v.push(Change::new(TaskEvent::ToolDone {
+                                tool: "publish".into(),
+                                error: None,
+                            }));
+                            Ok(v)
+                        })
+                        .await?;
+                    auto_allowed = self.task_get(f.id.as_str()).await?;
+                    &auto_allowed
+                } else {
+                    f
+                };
                 match self.allowance(f, &cmd, AND_OPEN_A_PR, &root).await? {
                     Allowance::Pending => {}
                     Allowance::Denied(_) => {
@@ -2988,6 +3068,12 @@ impl Daemon {
                     .and_then(|e| e.detail.clone())
             });
         let write_report = ready && f.report.is_none();
+        // Accepting is automatic (D-192): once every gate passed and the
+        // report is written, Otter accepts; merging stays the developer's.
+        let accept = ready && self.auto(f, "accept_task");
+        if accept && !write_report && f.report.is_some() {
+            return self.accept_on_own(&f.id).await;
+        }
         if d == f.delivery
             && evidence.is_empty()
             && gates == f.gates
@@ -3061,11 +3147,12 @@ impl Daemon {
                 let r = delivery::report(f, diffstat.as_deref());
                 posted = Some(r.clone());
                 f.report = Some(r);
-                let (m, c) = message(
-                    MessageRole::Controller,
-                    "Every gate has passed; the report is ready. Accept when you're happy with it — I won't merge or deploy.".into(),
-                    None,
-                );
+                let said = if accept {
+                    "Every gate has passed; the report is ready, and I'm accepting it (accepting is automatic in Settings). Merging stays yours."
+                } else {
+                    "Every gate has passed; the report is ready. Accept when you're happy with it — I won't merge or deploy."
+                };
+                let (m, c) = message(MessageRole::Controller, said.into(), None);
                 f.messages.push(m);
                 changes.push(c);
             }
@@ -3078,6 +3165,45 @@ impl Daemon {
         {
             tracing::warn!("posting the report: {e:#}");
         }
+        if accept && write_report {
+            return self.accept_on_own(&f.id).await;
+        }
+        Ok(())
+    }
+
+    /// Otter accepts a task whose gates all passed (D-192), on record, as
+    /// its own doing; what undoes it is changing the goal again.
+    async fn accept_on_own(self: &Arc<Self>, id: &TaskId) -> RpcResult<()> {
+        let applied = self.tasks.lock().await.apply(id, None, |f, now| {
+            if f.status != TaskStatus::Review || f.pending_decisions().next().is_some() {
+                return Ok(vec![]);
+            }
+            let mut v = vec![Change::new(TaskEvent::ToolCalled {
+                tool: "accept_task".into(),
+                origin: "auto".into(),
+                authority: None,
+                detail: None,
+            })];
+            let (changes, _) =
+                intent_step(f, crate::brain::Intent::Finish, "auto:accept", true, now);
+            v.extend(changes);
+            let done = f.status == TaskStatus::Done;
+            v.push(Change::new(TaskEvent::ToolDone {
+                tool: "accept_task".into(),
+                error: (!done).then(|| "not_ready".into()),
+            }));
+            if done {
+                v.push(Change::new(TaskEvent::ToolUndo {
+                    tool: "accept_task".into(),
+                    task_id: f.id.clone(),
+                    action: otter_core::task::TaskAction::RequestChanges {
+                        note: Some("Otter's acceptance undone".into()),
+                    },
+                }));
+            }
+            Ok(v)
+        })?;
+        self.task_changed(&applied);
         Ok(())
     }
 
@@ -3622,9 +3748,19 @@ fn developer_notes(
 ) -> Vec<String> {
     developer_messages(f, since, carried)
         .into_iter()
-        .map(|m| m.text.clone())
+        .map(|m| match m.text.strip_prefix(TO_THE_AGENT) {
+            // Otter's own instructions (D-192): said as Otter's.
+            Some(t) if m.role == MessageRole::Controller => {
+                format!("{}: {}", crate::runs::OTTER_SAYS, t.trim())
+            }
+            _ => m.text.clone(),
+        })
         .collect()
 }
+
+/// How a message of Otter's to the coding agent starts in the task's
+/// conversation (D-192); its correlation is `tell:<command>`.
+pub(crate) const TO_THE_AGENT: &str = "To the coding agent: ";
 
 /// The messages `developer_notes` says, themselves.
 fn developer_messages<'a>(
@@ -3636,19 +3772,41 @@ fn developer_messages<'a>(
     f.messages
         .iter()
         .filter(|m| Some(&m.id) != request)
-        .filter(|m| m.role == MessageRole::User && since.is_none_or(|s| m.at > s))
+        .filter(|m| {
+            (m.role == MessageRole::User
+                || (m.role == MessageRole::Controller
+                    && m.correlation_id
+                        .as_deref()
+                        .is_some_and(|c| c.starts_with("tell:"))))
+                && since.is_none_or(|s| m.at > s)
+        })
         .filter(|m| !carried.contains(m.id.as_str()))
         .collect()
 }
 
 /// The developer's notes, as a prompt says them.
 fn notes_text(notes: &[String]) -> String {
-    if notes.is_empty() {
-        String::new()
-    } else {
-        let lines: Vec<String> = notes.iter().map(|n| format!("- {n}")).collect();
-        format!("\nFrom the developer:\n{}\n", lines.join("\n"))
+    let otter_says = format!("{}: ", crate::runs::OTTER_SAYS);
+    let (otter, developer): (Vec<&String>, Vec<&String>) =
+        notes.iter().partition(|n| n.starts_with(&otter_says));
+    let mut text = String::new();
+    if !developer.is_empty() {
+        let lines: Vec<String> = developer.iter().map(|n| format!("- {n}")).collect();
+        text.push_str(&format!("\nFrom the developer:\n{}\n", lines.join("\n")));
     }
+    // Otter's own instructions (D-192), apart: never as the developer's.
+    if !otter.is_empty() {
+        let lines: Vec<String> = otter
+            .iter()
+            .map(|n| format!("- {}", &n[otter_says.len()..]))
+            .collect();
+        text.push_str(&format!(
+            "\n{}:\n{}\n",
+            crate::runs::OTTER_SAYS,
+            lines.join("\n")
+        ));
+    }
+    text
 }
 
 /// What a coding agent is told to start `step`, with the developer's

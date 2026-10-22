@@ -368,6 +368,7 @@ impl Daemon {
             Request::TaskAct(p) => json(self.for_clients(self.clone().task_act(p).await?)),
             Request::TaskEvents(p) => json(self.task_events(&p).await?),
             Request::OtterGet => json(self.otter_get().await),
+            Request::OtterActions(p) => json(self.otter_actions(p).await?),
             Request::OtterSend(p) => json(self.otter_send(p).await?),
             Request::OtterEvents(p) => json(self.otter_events(&p).await?),
             Request::MemoryGet(p) => json(self.memory_get(&p).await?),

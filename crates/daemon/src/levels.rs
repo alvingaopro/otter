@@ -296,3 +296,79 @@ mod tests {
         }
     }
 }
+
+impl Daemon {
+    /// What Otter did across the host's tasks (D-192), newest first: each
+    /// change it set off (`ToolCalled`), with what came of it and what
+    /// undoes it, from the tasks' histories. The tasks touched last first;
+    /// at most `limit`.
+    pub(crate) async fn otter_actions(
+        &self,
+        p: otter_protocol::otter::OtterActions,
+    ) -> crate::daemon::RpcResult<Vec<otter_protocol::otter::OtterAction>> {
+        use otter_core::task::TaskEvent;
+        use otter_protocol::otter::{OtterAction, Undo};
+        let limit = p.limit.unwrap_or(100).clamp(1, 500) as usize;
+        let mut tasks = self.tasks.lock().await.list();
+        tasks.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+        let mut all = Vec::new();
+        for f in tasks.iter().take(200) {
+            let history = match self.tasks.lock().await.history(&f.id, 0, usize::MAX) {
+                Ok(h) => h,
+                Err(e) => {
+                    tracing::warn!(task = %f.id, "reading the history: {e:#}");
+                    continue;
+                }
+            };
+            for (i, rec) in history.iter().enumerate() {
+                let TaskEvent::ToolCalled {
+                    tool,
+                    origin,
+                    authority,
+                    detail,
+                } = &rec.event
+                else {
+                    continue;
+                };
+                // What came of it, and what undoes it: the records after it
+                // for the same tool, before the next call.
+                let mut error = None;
+                let mut undo = None;
+                for later in &history[i + 1..] {
+                    match &later.event {
+                        TaskEvent::ToolCalled { .. } => break,
+                        TaskEvent::ToolDone { tool: t, error: e } if t == tool => {
+                            error = e.clone();
+                        }
+                        TaskEvent::ToolUndo {
+                            tool: t,
+                            task_id,
+                            action,
+                        } if t == tool => {
+                            undo = Some(Undo {
+                                task_id: task_id.clone(),
+                                action: action.clone(),
+                            });
+                        }
+                        _ => {}
+                    }
+                }
+                all.push(OtterAction {
+                    task_id: f.id.clone(),
+                    task_title: otter_core::redact::redact(&f.title),
+                    seq: rec.seq,
+                    at: rec.ts,
+                    tool: tool.clone(),
+                    origin: origin.clone(),
+                    authority: authority.clone(),
+                    detail: detail.as_deref().map(otter_core::redact::redact),
+                    error,
+                    undo,
+                });
+            }
+        }
+        all.sort_by(|a, b| b.at.cmp(&a.at));
+        all.truncate(limit);
+        Ok(all)
+    }
+}
