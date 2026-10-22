@@ -639,6 +639,17 @@ impl Connection {
         self.call(Request::OtterGet).await
     }
 
+    /// What Otter did on its tools across the host's tasks (D-193).
+    pub async fn otter_actions(
+        &mut self,
+        limit: Option<u32>,
+    ) -> Result<Vec<otter_protocol::otter::OtterAction>> {
+        self.call(Request::OtterActions(otter_protocol::otter::OtterActions {
+            limit,
+        }))
+        .await
+    }
+
     pub async fn otter_send(
         &mut self,
         command_id: &str,

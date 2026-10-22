@@ -251,6 +251,10 @@ pub enum Request {
     /// `Vec<`[`otter_core::task::TaskEventRecord`]`>`.
     #[serde(rename = "otter.events")]
     OtterEvents(otter::OtterEvents),
+    /// What Otter did on its tools across the host's tasks (D-193), newest
+    /// first. Result: `Vec<`[`otter::OtterAction`]`>`.
+    #[serde(rename = "otter.actions")]
+    OtterActions(otter::OtterActions),
     /// Otter's memories (D-113): the host's and one conversation's. Result:
     /// [`otter::OtterMemory`].
     #[serde(rename = "memory.get")]
@@ -390,6 +394,7 @@ impl Request {
             Request::OtterGet => "otter.get",
             Request::OtterSend(_) => "otter.send",
             Request::OtterEvents(_) => "otter.events",
+            Request::OtterActions(_) => "otter.actions",
             Request::MemoryGet(_) => "memory.get",
             Request::MemorySet(_) => "memory.set",
             Request::TaskList => "task.list",
