@@ -6851,3 +6851,71 @@ and readings were shown nowhere.
 Tests: `watches::a_trigger_is_paused_and_resumed` (e2e), the CLI's
 `a_task_goes_from_the_terminal_to_an_accepted_pull_request` (pause,
 resume, `watch ls`), and the app's tests for the view.
+
+## D-186 — Otter places a task from its request, and in its conversation (2026-10-22)
+
+Plan `docs/plans/chat-bootstrap.md` P3. D-179 and D-182 let a task make its
+workspace and a message find its host, but the developer still said where in
+a field. The app has no conversation with Otter on a host, so the place to say
+it is the task's own conversation: write the request, start the task, and
+Otter finds where it works.
+
+- **A scoped exception to D-067.** The request is not a message to answer,
+  and Otter's turn does not run on it. But a task that is started with no
+  workspace is about to wait for one, and what its request says is usually
+  where. So `plan_step` (the point just before it blocks for want of a
+  workspace) runs Otter's turn once on the request, as the developer's own
+  word (`Origin::Developer`), so Otter may set the workspace on it. Otter's
+  reply to the request is the mark that it looked: a task paused and resumed
+  isn't looked at again. If Otter placed it, planning goes on; if not, the
+  task blocks as before ("Choose a workspace for this task") and Otter's reply
+  is in the conversation, saying what it found or asking. Only when Otter
+  answers with tools here (`turn_backend`); otherwise as before.
+  The exception is only for placing: this turn may look (the observing tools)
+  and `set_workspace`, nothing else — the request is the developer's word for
+  where, not for pausing the task, changing what it may do, or passing itself
+  on to the coding agent (the gateway refuses the rest, `Gateway::restricted`).
+  A triggered task (`started_by`) is never looked at this way: its workspace
+  comes from its trigger, and the text a trigger carries is not the
+  developer's word to place it. Otter's reply to the request doesn't count as
+  an answer to what the developer wrote while it looked (`unanswered`), so
+  that message is still answered.
+- **Tools in a task's conversation** (`gateway.rs`): `list_workspaces` and
+  `list_repositories` (the host's own, one implementation), and
+  `set_workspace` — a workspace by name, `new_workspace` or `scratch`, the
+  same input and the same checks as `task.create` (`Daemon::placement`,
+  `place_task`; one function for both, so a branch or a repository is
+  validated alike). It is the developer's word (`DeveloperWord`): an event's
+  turn is refused. It is refused once the coding agent has worked (D-080),
+  and over a workspace the task has (the developer changes that in the app),
+  except the same one again: the same workspace, or the one made for the task
+  from the same repository (or an empty directory). That is done already, and
+  nothing is made or recorded twice. A task blocked for want of a workspace goes on
+  by itself when it has one (`SetWorkspace`, as in the app); a draft still
+  needs `start_task`. `get_task` says which workspace it has.
+- **How Otter chooses** is in the turn's context, only while the task has no
+  workspace (`NO_WORKSPACE` in `turn.rs`), so a task at work isn't told it:
+  the workspace or repository the developer named; a workspace another task
+  holds is not shared, a workspace of its own from the same repository is
+  made; a repository named that no workspace comes from is cloned (the
+  developer named it); never a repository made up; if it isn't clear, or the
+  repository is only a guess, ask in the reply and place the task when they
+  answer.
+- No wire change: `set_workspace` is a gateway tool over `task.act`; the
+  app's "Choose the workspace" banner stays as the manual way.
+
+**Not done.** "Create draft" in the app still waits for Start; Otter's turn
+on the request needs the task started. Not tested with a real model: the
+scripted brain's `CALL:` lines stand for the model's tool calls, as in every
+test of Otter's tools; whether Claude chooses well from `NO_WORKSPACE` is for
+dogfooding.
+
+Tests (`chat_bootstrap.rs`): a started task is placed from its request (a
+named workspace; a repository, made, marked, ready); a task with no clear
+place asks, an event's turn and both-ways are refused, the developer's answer
+places it and it goes on, and a task that has worked isn't moved; the request
+is looked at once. Also: a message sent while Otter reads the request is answered; the turn on a
+request can't pause the task or change what it may do; a different source than
+the workspace it has is a conflict. Each fails with its piece taken out: the
+hook, the mark, the check for work done, the boundary, the restriction, the
+source check.

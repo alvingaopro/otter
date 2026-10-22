@@ -407,7 +407,7 @@ function TaskPane({
       />
       {!f.workspace_id && !ENDED.includes(f.status) && (
         <div className="banner info" role="group" aria-label="Workspace">
-          <span className="banner-text">Choose the workspace this task's work happens in.</span>
+          <span className="banner-text">Choose the workspace this task's work happens in, or tell Otter where in the conversation.</span>
           <span className="banner-actions">
             <select
               aria-label="Workspace"

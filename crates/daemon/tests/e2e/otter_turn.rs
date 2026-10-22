@@ -18,7 +18,12 @@ async fn host_with(more: Vec<(&'static str, String)>) -> FakeCodex {
 
 /// Send `script` as the developer; wait for the one reply to it. Returns
 /// the task then and each call's answer, in order.
-async fn run(host: &TestHost, id: &str, command_id: &str, script: &str) -> (Task, Vec<Value>) {
+pub(super) async fn run(
+    host: &TestHost,
+    id: &str,
+    command_id: &str,
+    script: &str,
+) -> (Task, Vec<Value>) {
     let f = host
         .conn()
         .await
@@ -57,7 +62,7 @@ async fn run(host: &TestHost, id: &str, command_id: &str, script: &str) -> (Task
     (f, answers)
 }
 
-fn code(answer: &Value) -> &str {
+pub(super) fn code(answer: &Value) -> &str {
     answer["error"]["code"].as_str().unwrap_or("ok")
 }
 

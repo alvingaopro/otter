@@ -507,6 +507,12 @@ pub(crate) fn check_text(what: &str, text: &str, max: usize) -> RpcResult<()> {
     Ok(())
 }
 
+/// Where a task's work goes (D-179).
+pub(crate) enum Placement {
+    Existing(WorkspaceId),
+    Make(SourceSpec),
+}
+
 /// A branch or revision the model or a client gave: short, one word, and not
 /// an option for Git (D-179).
 fn check_revision(what: &str, v: &str) -> RpcResult<()> {
@@ -934,37 +940,14 @@ impl Daemon {
         // A workspace made for the task (D-179) is made after the task, so
         // a repeat of the command finds the task and goes on from there:
         // nothing here makes a workspace before the applied check.
-        let made = match &p.workspace {
-            Some(WorkspaceChoice::New { new }) => {
-                let repository = new.repository.trim();
-                if repository.is_empty() {
-                    return Err(RpcError::invalid("a repository must not be empty"));
-                }
-                check_text("repository", repository, MAX_REPOSITORY)?;
-                for (what, v) in [("base", &new.base), ("branch", &new.branch)] {
-                    if let Some(v) = v {
-                        check_revision(what, v)?;
-                    }
-                }
-                Some(SourceSpec::Git {
-                    repository: self.stored_repository(repository).await,
-                    branch: new.branch.clone(),
-                    base: new.base.clone(),
-                })
-            }
-            Some(WorkspaceChoice::Scratch { .. }) => Some(SourceSpec::Empty),
-            _ => None,
+        let placement = match &p.workspace {
+            Some(choice) => Some(self.placement(choice).await?),
+            None => None,
         };
-        let workspace_id: Option<WorkspaceId> = match &p.workspace {
-            Some(WorkspaceChoice::Named(w)) => Some(
-                self.store
-                    .lock()
-                    .await
-                    .workspace(w)
-                    .map(|ws| ws.id.clone())
-                    .ok_or_else(|| workspace_not_found(w))?,
-            ),
-            _ => None,
+        let (workspace_id, made) = match placement {
+            Some(Placement::Existing(id)) => (Some(id), None),
+            Some(Placement::Make(source)) => (None, Some(source)),
+            None => (None, None),
         };
         if p.answer_only {
             self.can_answer_only()?;
@@ -1005,18 +988,7 @@ impl Daemon {
         // The task is made; if its workspace can't be, it stays a task
         // without one, with the reason on it, rather than an error that a
         // retry would answer with a second task (D-179).
-        let set = async {
-            let ws = self.workspace_for_task(&created, source).await?;
-            self.clone()
-                .task_act(TaskAct {
-                    command_id: format!("{:.100}:workspace", p.command_id),
-                    task: created.id.to_string(),
-                    action: TaskAction::SetWorkspace {
-                        workspace: ws.id.to_string(),
-                    },
-                })
-                .await
-        };
+        let set = self.place_task(&created, Placement::Make(source), &p.command_id);
         match set.await {
             Ok(f) => Ok(f),
             Err(e) => {
@@ -1041,6 +1013,64 @@ impl Daemon {
                 self.task_get(created.id.as_str()).await
             }
         }
+    }
+
+    /// Where a task's work goes, checked: a workspace that exists, or the
+    /// source of one to make (D-179). The same for a new task and for one
+    /// Otter places in its conversation.
+    pub(crate) async fn placement(&self, choice: &WorkspaceChoice) -> RpcResult<Placement> {
+        match choice {
+            WorkspaceChoice::Named(w) => Ok(Placement::Existing(
+                self.store
+                    .lock()
+                    .await
+                    .workspace(w)
+                    .map(|ws| ws.id.clone())
+                    .ok_or_else(|| workspace_not_found(w))?,
+            )),
+            WorkspaceChoice::Scratch { .. } => Ok(Placement::Make(SourceSpec::Empty)),
+            WorkspaceChoice::New { new } => {
+                let repository = new.repository.trim();
+                if repository.is_empty() {
+                    return Err(RpcError::invalid("a repository must not be empty"));
+                }
+                check_text("repository", repository, MAX_REPOSITORY)?;
+                for (what, v) in [("base", &new.base), ("branch", &new.branch)] {
+                    if let Some(v) = v {
+                        check_revision(what, v)?;
+                    }
+                }
+                Ok(Placement::Make(SourceSpec::Git {
+                    repository: self.stored_repository(repository).await,
+                    branch: new.branch.clone(),
+                    base: new.base.clone(),
+                }))
+            }
+        }
+    }
+
+    /// Give a task its workspace: make it if it is to be made, then choose
+    /// it (`set_workspace`, which takes a blocked task on). A repeat of the
+    /// command makes no second workspace.
+    pub(crate) async fn place_task(
+        self: &Arc<Self>,
+        f: &Task,
+        placement: Placement,
+        command_id: &str,
+    ) -> RpcResult<Task> {
+        let id = match placement {
+            Placement::Existing(id) => id,
+            Placement::Make(source) => self.workspace_for_task(f, source).await?.id,
+        };
+        self.clone()
+            .task_act(TaskAct {
+                command_id: format!("{command_id:.100}:workspace"),
+                task: f.id.to_string(),
+                action: TaskAction::SetWorkspace {
+                    workspace: id.to_string(),
+                },
+            })
+            .await
     }
 
     /// A repository as stored, when `given` is a stored one as it is shown
