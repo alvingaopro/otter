@@ -256,47 +256,6 @@ pub fn view(level: impl Fn(&str) -> ToolLevel) -> Vec<ToolInfo> {
         .collect()
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn every_tool_otter_has_has_a_level() {
-        let names: Vec<&str> = crate::gateway::tools()
-            .into_iter()
-            .chain(crate::gateway::host_tools())
-            .map(|t| t.name)
-            .chain(BUILTINS.iter().copied())
-            .collect();
-        for n in &names {
-            assert!(entry(n).is_some(), "{n} has no level");
-        }
-        // And nothing is in the catalog that isn't a tool, but what the
-        // controller does on its own.
-        for e in CATALOG {
-            assert!(
-                names.contains(&e.name) || ["publish"].contains(&e.name),
-                "{} is no tool",
-                e.name
-            );
-        }
-        let mut seen = std::collections::HashSet::new();
-        assert!(CATALOG.iter().all(|e| seen.insert(e.name)));
-    }
-
-    #[test]
-    fn everything_is_automatic_but_memory() {
-        for e in CATALOG {
-            let want = if e.group == "remember" {
-                Developer
-            } else {
-                Auto
-            };
-            assert_eq!(e.default, want, "{}", e.name);
-        }
-    }
-}
-
 impl Daemon {
     /// What Otter did across the host's tasks (D-192), newest first: each
     /// change it set off (`ToolCalled`), with what came of it and what
@@ -310,7 +269,7 @@ impl Daemon {
         use otter_protocol::otter::{OtterAction, Undo};
         let limit = p.limit.unwrap_or(100).clamp(1, 500) as usize;
         let mut tasks = self.tasks.lock().await.list();
-        tasks.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+        tasks.sort_by_key(|f| std::cmp::Reverse(f.updated_at));
         let mut all = Vec::new();
         for f in tasks.iter().take(200) {
             let history = match self.tasks.lock().await.history(&f.id, 0, usize::MAX) {
@@ -367,8 +326,49 @@ impl Daemon {
                 });
             }
         }
-        all.sort_by(|a, b| b.at.cmp(&a.at));
+        all.sort_by_key(|a| std::cmp::Reverse(a.at));
         all.truncate(limit);
         Ok(all)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_tool_otter_has_has_a_level() {
+        let names: Vec<&str> = crate::gateway::tools()
+            .into_iter()
+            .chain(crate::gateway::host_tools())
+            .map(|t| t.name)
+            .chain(BUILTINS.iter().copied())
+            .collect();
+        for n in &names {
+            assert!(entry(n).is_some(), "{n} has no level");
+        }
+        // And nothing is in the catalog that isn't a tool, but what the
+        // controller does on its own.
+        for e in CATALOG {
+            assert!(
+                names.contains(&e.name) || ["publish"].contains(&e.name),
+                "{} is no tool",
+                e.name
+            );
+        }
+        let mut seen = std::collections::HashSet::new();
+        assert!(CATALOG.iter().all(|e| seen.insert(e.name)));
+    }
+
+    #[test]
+    fn everything_is_automatic_but_memory() {
+        for e in CATALOG {
+            let want = if e.group == "remember" {
+                Developer
+            } else {
+                Auto
+            };
+            assert_eq!(e.default, want, "{}", e.name);
+        }
     }
 }

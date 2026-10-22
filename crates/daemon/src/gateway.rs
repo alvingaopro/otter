@@ -2031,8 +2031,9 @@ impl Gateway {
             Some(&command),
         )
         .await;
-        if own && c.runs.is_empty() {
-            if let Err(e) = d
+        if own
+            && c.runs.is_empty()
+            && let Err(e) = d
                 .clone()
                 .task_act(TaskAct {
                     command_id: format!("{command}:own"),
@@ -2040,11 +2041,10 @@ impl Gateway {
                     action: TaskAction::OwnWorkspace,
                 })
                 .await
-            {
-                // It shares this task's workspace instead (one run at a time
-                // there, D-079).
-                tracing::info!(task = %c.id, "a sub-task's own workspace: {}", e.message);
-            }
+        {
+            // It shares this task's workspace instead (one run at a time
+            // there, D-079).
+            tracing::info!(task = %c.id, "a sub-task's own workspace: {}", e.message);
         }
         let started = d
             .clone()
@@ -2898,13 +2898,15 @@ mod tests {
                 .map(|t| t.name)
                 .collect();
             assert_eq!(routine, ["pause_task"]);
-            // Never Otter's: cancel, delete, decide anything else, publish.
+            // Never Otter's: cancel, delete, decide anything else, merge.
+            // (Publishing goes by its level, D-192; merging never does.)
             for n in [
                 "cancel_task",
                 "delete_task",
                 "decide",
                 "answer_pending_decision",
-                "publish",
+                "merge",
+                "merge_pull_request",
             ] {
                 assert!(!names.contains(&n), "{n}");
             }
