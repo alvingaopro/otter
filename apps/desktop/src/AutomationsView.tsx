@@ -106,6 +106,8 @@ export function AutomationsView({ tasks, source, triggers, now, workspaceName, o
   };
   const openMenu = (e: MouseEvent, item: Item) => {
     e.preventDefault();
+    // An action in flight: no menu of nothing.
+    if (busy) return;
     setMenu({ x: e.clientX, y: e.clientY, item });
   };
   const empty = groups.watching.length + groups.scheduled.length + groups.history.length === 0;

@@ -245,6 +245,8 @@ function WatchingMark({ task }: { task: Task }) {
 
 /** What Otter watches for this task, above the message box (D-183): each with Stop. */
 function WatchStrip({ task, now, act }: { task: Task; now: number; act: (a: TaskAction) => void }) {
+  // Stops sent: their button goes, so a second click doesn't say "already ended".
+  const [stopping, setStopping] = useState<string[]>([]);
   const open = openWatches(task);
   if (open.length === 0) return null;
   return (
@@ -255,9 +257,19 @@ function WatchStrip({ task, now, act }: { task: Task; now: number; act: (a: Task
           <span className="watch-strip-text">
             {w.status === "firing" ? `${w.label}: telling you what it found` : `Watching ${w.label} · ${untilText(w, now)}`}
           </span>
-          <button type="button" className="link-btn" aria-label={`Stop watching ${w.label}`} onClick={() => act({ action: "cancel_watch", watch_id: w.id })}>
-            Stop
-          </button>
+          {!stopping.includes(w.id) && (
+            <button
+              type="button"
+              className="link-btn"
+              aria-label={`Stop watching ${w.label}`}
+              onClick={() => {
+                setStopping((s) => [...s, w.id]);
+                act({ action: "cancel_watch", watch_id: w.id });
+              }}
+            >
+              Stop
+            </button>
+          )}
         </li>
       ))}
     </ul>

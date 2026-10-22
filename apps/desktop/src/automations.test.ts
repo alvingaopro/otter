@@ -191,7 +191,7 @@ describe("automations", () => {
     // A trigger due while otterd was down.
     const due = trigger({ next_at: at(-1) }).trigger;
     expect(nextText(due, NOW)).toBe("due · runs at the next look");
-    expect(triggerLine(due, NOW)).toBe("daily at 20:20 UTC · next due · runs at the next look");
+    expect(triggerLine(due, NOW)).toBe("daily at 20:20 UTC · due · runs at the next look");
     expect(nextText(trigger({ enabled: false }).trigger, NOW)).toBe("paused");
   });
 });

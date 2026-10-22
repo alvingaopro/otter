@@ -214,7 +214,11 @@ export function nextText(t: Trigger, now: number): string {
 /** The second line of a trigger's row. */
 export function triggerLine(t: Trigger, now: number): string {
   if (!t.enabled) return `${scheduleText(t.schedule, now)} · paused`;
-  if (t.next_at) return `${scheduleText(t.schedule, now)} · next ${nextText(t, now)}`;
+  if (t.next_at) {
+    const next = nextText(t, now);
+    // "due · runs at the next look" says when on its own.
+    return `${scheduleText(t.schedule, now)} · ${Date.parse(t.next_at) <= now ? next : `next ${next}`}`;
+  }
   return scheduleText(t.schedule, now);
 }
 

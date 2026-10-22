@@ -25,7 +25,15 @@ export function Menu({ label, items }: { label: string; items: MenuItem[] }) {
   const visible = items.filter((i) => !i.hidden);
   return (
     <div className="menu" ref={box}>
-      <button className="icon-btn menu-btn" aria-label={label} title={label} aria-expanded={open} onClick={() => setOpen((o) => !o)}>
+      <button
+        className="icon-btn menu-btn"
+        aria-label={label}
+        title={label}
+        aria-expanded={open}
+        // Nothing to do just now (an action in flight): no empty popover.
+        disabled={visible.length === 0}
+        onClick={() => setOpen((o) => !o)}
+      >
         <svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true">
           <circle cx="3" cy="7" r="1.2" fill="currentColor" />
           <circle cx="7" cy="7" r="1.2" fill="currentColor" />
