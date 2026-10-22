@@ -478,7 +478,13 @@ impl Message {
     pub fn for_the_work(&self) -> Option<&str> {
         match &self.command {
             None => Some(&self.text),
-            Some(c @ (MessageCommand::Revise | MessageCommand::Tell)) => Some(c.words(&self.text)),
+            // Pictures alone say so, as a message of pictures alone does.
+            Some(c @ (MessageCommand::Revise | MessageCommand::Tell)) => {
+                match c.words(&self.text) {
+                    "" => Some(PICTURES_ONLY),
+                    words => Some(words),
+                }
+            }
             Some(_) => None,
         }
     }

@@ -4247,10 +4247,16 @@ mod tests {
             said("/watch ci", Some(MessageCommand::WatchCi)),
             said("/tell Keep the header", Some(MessageCommand::Tell)),
             said("/revise Also export JSON", Some(MessageCommand::Revise)),
+            said("/tell", Some(MessageCommand::Tell)),
         ];
         assert_eq!(
             developer_notes(&f, None, &HashSet::new()),
-            ["Use tabs", "Keep the header", "Also export JSON"]
+            [
+                "Use tabs",
+                "Keep the header",
+                "Also export JSON",
+                otter_core::task::PICTURES_ONLY
+            ]
         );
         let brief = brain::brief(&f);
         assert!(!brief.contains('/'), "{brief}");
