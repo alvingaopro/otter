@@ -72,7 +72,7 @@ A closed set, each decided by otterd without a model:
 
 | Kind | Slice | Probe | Fires when | Deadline (default, max) |
 |---|---|---|---|---|
-| `time` | 1 | none | the time comes: “look at where this stands in 30 minutes” | — (1 min to 7 days ahead) |
+| `time` | 1 | its `next_at`: no call out | the time comes: “look at where this stands in 30 minutes” | — (1 min to 7 days ahead) |
 | `ci` on the task's PR | 1 | `gh pr checks` and `gh pr view --json state,mergeable,headRefOid` | every check finished (passed or failed); or CI can't run (the PR conflicts); or no check started 10 min after the last push; or the PR was merged or closed | 2 h, 7 days |
 | `pr` | 2 | `gh pr view --json state,reviewDecision` | merged, closed, or reviewed | 24 h, 7 days |
 | `task` (host) | 2 | otterd's own state | reaches review, done or failed, or waits on the developer | 24 h, 7 days |
