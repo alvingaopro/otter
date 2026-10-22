@@ -228,6 +228,49 @@ pub fn tools() -> Vec<ToolSpec> {
             "Stop what the coding agent is doing now and give it the developer's messages (by id) instead.",
             message_ids(),
         ),
+        t(
+            "list_workspaces",
+            Observe,
+            "The workspaces on this host (where tasks do their work): id, name, state, the repository it comes from, its brief, and the task holding it now (held_by_task: another task there would wait; the developer's own agent sessions aren't counted). query: only those whose name, repository or brief has these words.",
+            json!({
+                "type": "object",
+                "properties": {"query": {"type": "string"}},
+                "additionalProperties": false
+            }),
+        ),
+        t(
+            "list_repositories",
+            Observe,
+            "The repositories already on this host: the ones its workspaces come from. set_workspace can make the task a workspace of its own from one (new_workspace). query: only those with these words in them.",
+            json!({
+                "type": "object",
+                "properties": {"query": {"type": "string"}},
+                "additionalProperties": false
+            }),
+        ),
+        t(
+            "set_workspace",
+            DeveloperWord,
+            "Say where this task works, when it has no workspace yet: exactly one of workspace (name or id of one that exists), new_workspace (a repository the developer named or list_repositories gave: a workspace of its own is made from it, and is prepared before the work goes on), or scratch (an empty directory). A task that is blocked for want of a workspace goes on by itself; a draft still needs start_task.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "workspace": {"type": "string"},
+                    "new_workspace": {
+                        "type": "object",
+                        "properties": {
+                            "repository": {"type": "string"},
+                            "base": {"type": "string"},
+                            "branch": {"type": "string"}
+                        },
+                        "required": ["repository"],
+                        "additionalProperties": false
+                    },
+                    "scratch": {"type": "boolean"}
+                },
+                "additionalProperties": false
+            }),
+        ),
         t("start_task", DeveloperWord, "Start a draft task.", none()),
         t(
             "resume_task",
@@ -490,6 +533,8 @@ struct Inner {
     calls: AtomicUsize,
     /// What this turn changed, a line each.
     done: Mutex<Vec<String>>,
+    /// The only tools this turn may call, when it is for one thing (D-186).
+    only: Option<Vec<&'static str>>,
 }
 
 impl Gateway {
@@ -502,6 +547,29 @@ impl Gateway {
                 max_calls,
                 calls: AtomicUsize::new(0),
                 done: Mutex::new(Vec::new()),
+                only: None,
+            }),
+        }
+    }
+
+    /// A turn that may call only the tools it is given: the same gateway,
+    /// the same checks, for fewer.
+    pub fn restricted(
+        daemon: Arc<Daemon>,
+        scope: Scope,
+        origin: Origin,
+        max_calls: usize,
+        only: Vec<&'static str>,
+    ) -> Self {
+        Gateway {
+            inner: Arc::new(Inner {
+                daemon,
+                scope,
+                origin,
+                max_calls,
+                calls: AtomicUsize::new(0),
+                done: Mutex::new(Vec::new()),
+                only: Some(only),
             }),
         }
     }
@@ -544,6 +612,17 @@ impl Gateway {
         else {
             return Err(fail("not_found", format!("there is no tool `{name}`")));
         };
+        if let Some(only) = &self.inner.only
+            && !only.contains(&name)
+        {
+            let e = fail(
+                "not_allowed_in_this_turn",
+                format!("`{name}` isn't for this turn, which only looks for where the task works"),
+            )
+            .next("answer with where the task will work, or ask the developer");
+            self.record_done(name, Some(e.code)).await;
+            return Err(e);
+        }
         if spec.class == Class::DeveloperWord && self.inner.origin.authority().is_none() {
             let e = fail(
                 "not_allowed_in_this_turn",
@@ -639,8 +718,11 @@ impl Gateway {
         let r = |s: &str| redact(s);
         let short = |s: &str, n: usize| excerpt(&redact(s), n);
         match name {
+            "list_workspaces" => self.workspaces_listing(args).await,
+            "list_repositories" => self.repositories_listing(args).await,
             "get_task" => Ok(json!({
                 "id": f.id.as_str(),
+                "workspace": self.workspace_name(&f).await,
                 "title": r(&f.title),
                 "request": short(&f.request, 2000),
                 "status": f.status.as_str(),
@@ -866,6 +948,81 @@ impl Gateway {
             .ok_or_else(|| fail("invalid", "task_id names the task (list_tasks has them)"))
     }
 
+    /// The name of the workspace a task works in, if it has one.
+    async fn workspace_name(&self, f: &otter_core::task::Task) -> Option<String> {
+        let id = f.workspace_id.as_ref()?;
+        let store = self.inner.daemon.store.lock().await;
+        store.workspace(id.as_str()).map(|w| w.name.clone())
+    }
+
+    /// `list_workspaces`, in a task's conversation and the host's alike.
+    async fn workspaces_listing(&self, args: &Value) -> Result<Value, ToolError> {
+        let d = &self.inner.daemon;
+        let query = Self::query(args);
+        let all: Vec<otter_core::Workspace> = d.store.lock().await.state.workspaces.clone();
+        let mut ws: Vec<Value> = Vec::new();
+        for w in all {
+            // Who has it now: a run there, or work of another task
+            // there that is not done (D-079, D-156) — what would
+            // make a new task wait.
+            let held_by = match d.workspace_holder(&w.id) {
+                Some(t) => Some(t),
+                None => {
+                    let git = std::path::Path::new(&w.root)
+                        .ancestors()
+                        .any(|p| p.join(".git").exists());
+                    if git {
+                        d.work_holding(&w.id, None).await.map(|t| t.id)
+                    } else {
+                        None
+                    }
+                }
+            };
+            let w = w.shown();
+            let repository = repository_of(&w);
+            if !matches_query(
+                &query,
+                &[
+                    &w.name,
+                    repository.as_deref().unwrap_or(""),
+                    w.brief.title.as_deref().unwrap_or(""),
+                    w.brief.description.as_deref().unwrap_or(""),
+                ],
+            ) {
+                continue;
+            }
+            ws.push(json!({
+                "id": w.id.as_str(),
+                "name": w.name,
+                "state": format!("{:?}", w.state).to_lowercase(),
+                "repository": repository.as_deref().map(redact),
+                "brief": redact(w.brief.title.as_deref().unwrap_or("")),
+                "held_by_task": held_by.as_ref().map(|t| t.as_str()),
+                "made_for_task": w.task_id.as_ref().map(|t| t.as_str()),
+            }));
+        }
+        Ok(json!({"workspaces": ws}))
+    }
+
+    /// `list_repositories`, in a task's conversation and the host's alike.
+    async fn repositories_listing(&self, args: &Value) -> Result<Value, ToolError> {
+        let d = &self.inner.daemon;
+        let query = Self::query(args);
+        let store = d.store.lock().await;
+        let mut repos: Vec<String> = store
+            .state
+            .workspaces
+            .iter()
+            .cloned()
+            .map(otter_core::Workspace::shown)
+            .filter_map(|w| repository_of(&w))
+            .filter(|r| matches_query(&query, &[r]))
+            .collect();
+        repos.sort();
+        repos.dedup();
+        Ok(json!({"repositories": repos}))
+    }
+
     async fn host_observe(&self, name: &str, args: &Value) -> Result<Value, ToolError> {
         let d = &self.inner.daemon;
         match name {
@@ -909,68 +1066,8 @@ impl Gateway {
                 let chat = d.chat.lock().await;
                 messages_page(&chat.get().messages, args)
             }
-            "list_workspaces" => {
-                let query = Self::query(args);
-                let all: Vec<otter_core::Workspace> = d.store.lock().await.state.workspaces.clone();
-                let mut ws: Vec<Value> = Vec::new();
-                for w in all {
-                    // Who has it now: a run there, or work of another task
-                    // there that is not done (D-079, D-156) — what would
-                    // make a new task wait.
-                    let held_by = match d.workspace_holder(&w.id) {
-                        Some(t) => Some(t),
-                        None => {
-                            let git = std::path::Path::new(&w.root)
-                                .ancestors()
-                                .any(|p| p.join(".git").exists());
-                            if git {
-                                d.work_holding(&w.id, None).await.map(|t| t.id)
-                            } else {
-                                None
-                            }
-                        }
-                    };
-                    let w = w.shown();
-                    let repository = repository_of(&w);
-                    if !matches_query(
-                        &query,
-                        &[
-                            &w.name,
-                            repository.as_deref().unwrap_or(""),
-                            w.brief.title.as_deref().unwrap_or(""),
-                            w.brief.description.as_deref().unwrap_or(""),
-                        ],
-                    ) {
-                        continue;
-                    }
-                    ws.push(json!({
-                        "id": w.id.as_str(),
-                        "name": w.name,
-                        "state": format!("{:?}", w.state).to_lowercase(),
-                        "repository": repository.as_deref().map(redact),
-                        "brief": redact(w.brief.title.as_deref().unwrap_or("")),
-                        "held_by_task": held_by.as_ref().map(|t| t.as_str()),
-                        "made_for_task": w.task_id.as_ref().map(|t| t.as_str()),
-                    }));
-                }
-                Ok(json!({"workspaces": ws}))
-            }
-            "list_repositories" => {
-                let query = Self::query(args);
-                let store = d.store.lock().await;
-                let mut repos: Vec<String> = store
-                    .state
-                    .workspaces
-                    .iter()
-                    .cloned()
-                    .map(otter_core::Workspace::shown)
-                    .filter_map(|w| repository_of(&w))
-                    .filter(|r| matches_query(&query, &[r]))
-                    .collect();
-                repos.sort();
-                repos.dedup();
-                Ok(json!({"repositories": repos}))
-            }
+            "list_workspaces" => self.workspaces_listing(args).await,
+            "list_repositories" => self.repositories_listing(args).await,
             _ => {
                 let task = Self::named_task(args)?;
                 let mut rest = args.clone();
@@ -1287,6 +1384,108 @@ impl Gateway {
 
     /// Answer-only on or off, on the developer's word (D-092). On needs the
     /// SDK runtime, where the agent can be kept to reading.
+    /// Say where a task works (D-186): one the developer named, one made
+    /// from a repository they named, or an empty directory.
+    async fn set_workspace(&self, f: &Task, args: &Value) -> Result<Value, ToolError> {
+        let Some(choice) = Self::workspace_choice(args)? else {
+            return Err(fail(
+                "invalid",
+                "say where: workspace, new_workspace or scratch",
+            ));
+        };
+        let d = &self.inner.daemon;
+        // D-080: not once it has worked, and not over a workspace it has
+        // (the developer changes that in the app) — but the same choice
+        // again, or the workspace made for it, is already done.
+        if !f.runs.is_empty() {
+            return Err(fail(
+                "not_ready",
+                "the coding agent has worked in this task's workspace already, and its work is there",
+            ));
+        }
+        let placement = d.placement(&choice).await?;
+        if let Some(cur) = &f.workspace_id {
+            let (same, name, state) = {
+                let store = d.store.lock().await;
+                let ws = store.workspace(cur.as_str());
+                let same = match (&placement, ws) {
+                    (crate::tasks::Placement::Existing(id), _) => id == cur,
+                    // The one made for this task, from what is asked now.
+                    (crate::tasks::Placement::Make(source), Some(w)) => {
+                        w.task_id.as_ref() == Some(&f.id)
+                            && match (&w.source, source) {
+                                (
+                                    otter_core::WorkspaceSource::Git(g),
+                                    otter_protocol::SourceSpec::Git { repository, .. },
+                                ) => &g.repository == repository,
+                                (
+                                    otter_core::WorkspaceSource::Empty,
+                                    otter_protocol::SourceSpec::Empty,
+                                ) => true,
+                                _ => false,
+                            }
+                    }
+                    _ => false,
+                };
+                (
+                    same,
+                    ws.map(|w| w.name.clone()),
+                    ws.map(|w| format!("{:?}", w.state).to_lowercase()),
+                )
+            };
+            if !same {
+                return Err(fail("conflict", "this task has a workspace already")
+                    .next("the developer can give it another in the app"));
+            }
+            // Done already: nothing to do, nothing to record twice.
+            return Ok(json!({
+                "done": "workspace set",
+                "workspace": name,
+                "workspace_state": state,
+                "status": f.status.as_str(),
+            }));
+        }
+        let origin = &self.inner.origin;
+        let command = origin.command("set_workspace");
+        self.record(
+            TaskEvent::ToolCalled {
+                tool: "set_workspace".into(),
+                origin: origin.name().into(),
+                authority: origin.authority().map(|m| m.id.to_string()),
+            },
+            Some(&command),
+        )
+        .await;
+        let placed = d.place_task(f, placement, &command).await?;
+        let (name, state) = {
+            let store = d.store.lock().await;
+            placed
+                .workspace_id
+                .as_ref()
+                .and_then(|w| store.workspace(w.as_str()))
+                .map(|w| (w.name.clone(), format!("{:?}", w.state).to_lowercase()))
+                .unzip()
+        };
+        self.record(
+            TaskEvent::ToolDone {
+                tool: "set_workspace".into(),
+                error: None,
+            },
+            Some(&command),
+        )
+        .await;
+        self.inner.done.lock().unwrap().push(format!(
+            "set_workspace: {}",
+            name.as_deref().unwrap_or("none")
+        ));
+        Ok(json!({
+            "done": "workspace set",
+            "workspace": name,
+            "workspace_state": state,
+            "status": placed.status.as_str(),
+        }))
+    }
+
     async fn set_answer_only(&self, f: &Task, args: &Value) -> Result<Value, ToolError> {
         let Some(on) = args.get("on").and_then(Value::as_bool) else {
             return Err(fail("invalid", "on is true or false"));
@@ -1353,6 +1552,12 @@ impl Gateway {
         }
         if name == "ask_agent" {
             return match self.ask(&f, args).await {
+                Err(e) => refused(e).await,
+                ok => ok,
+            };
+        }
+        if name == "set_workspace" {
+            return match self.set_workspace(&f, args).await {
                 Err(e) => refused(e).await,
                 ok => ok,
             };

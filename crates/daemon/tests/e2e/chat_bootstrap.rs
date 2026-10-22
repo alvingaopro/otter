@@ -5,7 +5,7 @@
 
 use super::host_chat::say;
 use super::*;
-use otter_core::task::{TaskAction, TaskStatus};
+use otter_core::task::{Task, TaskAction, TaskStatus};
 use otter_protocol::task::{NewWorkspace, Scratch, TaskCreate, WorkspaceChoice};
 
 fn create(command_id: &str, title: &str, workspace: WorkspaceChoice) -> TaskCreate {
@@ -368,5 +368,339 @@ async fn otter_sees_what_holds_a_workspace_and_a_refused_request_makes_nothing()
     assert_eq!(
         host.conn().await.workspace_list().await.unwrap().len(),
         workspaces
+    );
+}
+
+// --- Otter in a task's conversation places the task (D-186) ---
+
+use super::otter_turn::{code, run};
+use otter_core::task::MessageRole;
+use serde_json::Value;
+
+/// A host whose Otter is scripted, with a Git workspace `billing`.
+async fn host_with_billing() -> (FakeCodex, std::path::PathBuf) {
+    let fake =
+        fake_agent_host_with("ok", "scripted", |_| vec![("OTTER_BRAIN_V2", "1".into())]).await;
+    let repo = make_repo(
+        &fake.host,
+        "billing-src",
+        &[("Makefile", "test:\n\t@true\n")],
+    );
+    let mut conn = fake.host.conn().await;
+    conn.workspace_create(git_ws("billing", &repo, None, vec![]))
+        .await
+        .unwrap();
+    wait_prepared(&fake.host, "billing").await;
+    (fake, repo)
+}
+
+/// A task with no workspace, in the developer's words.
+async fn unplaced(host: &TestHost, command_id: &str, request: &str) -> Task {
+    host.conn()
+        .await
+        .task_create(TaskCreate {
+            command_id: command_id.into(),
+            title: "Retries".into(),
+            request: request.into(),
+            workspace: None,
+            answer_only: false,
+        })
+        .await
+        .unwrap()
+}
+
+/// Otter's reply to the task's request, if it gave one.
+fn reply_to_request(f: &Task) -> Option<String> {
+    let request = f.request_message()?.to_string();
+    f.messages
+        .iter()
+        .find(|m| {
+            m.role == MessageRole::Controller && m.correlation_id.as_deref() == Some(&request)
+        })
+        .map(|m| m.text.clone())
+}
+
+/// The point of D-186: the developer writes where, once, in the request; the
+/// task is started with no workspace; Otter finds it from the request and the
+/// work begins — nobody chooses a workspace.
+#[tokio::test]
+async fn a_started_task_is_placed_from_its_request() {
+    let (fake, _) = host_with_billing().await;
+    let host = &fake.host;
+    let f = unplaced(
+        host,
+        "c-1",
+        "Add retries in billing.\nCALL: list_workspaces {\"query\": \"billing\"}\nCALL: set_workspace {\"workspace\": \"billing\"}",
+    )
+    .await;
+    assert!(f.workspace_id.is_none());
+    let id = f.id.to_string();
+    host.conn()
+        .await
+        .task_act("start-1", &id, TaskAction::Start)
+        .await
+        .unwrap();
+    let f = wait_task(host, &id, "it goes to work in billing", |f| {
+        !f.runs.is_empty()
+    })
+    .await;
+    let ws = host
+        .conn()
+        .await
+        .workspace_get(f.workspace_id.clone().unwrap().as_str())
+        .await
+        .unwrap();
+    assert_eq!(ws.name, "billing");
+    let reply = reply_to_request(&f).expect("Otter answered the request");
+    assert!(reply.contains("set_workspace"), "{reply}");
+}
+
+/// …and from a repository the request names: a workspace of its own is
+/// made, marked as made for the task, and the work waits for it.
+#[tokio::test]
+async fn a_started_task_gets_a_workspace_made_from_the_repository_it_names() {
+    let (fake, repo) = host_with_billing().await;
+    let host = &fake.host;
+    let other = make_repo(host, "ledger-src", &[("Makefile", "test:\n\t@true\n")]);
+    let _ = repo;
+    let request = format!(
+        "Add retries to the ledger.\nCALL: set_workspace {{\"new_workspace\": {{\"repository\": \"{}\"}}}}",
+        other.display()
+    );
+    let f = unplaced(host, "c-1", &request).await;
+    let id = f.id.to_string();
+    host.conn()
+        .await
+        .task_act("start-1", &id, TaskAction::Start)
+        .await
+        .unwrap();
+    let f = wait_task(host, &id, "it goes to work", |f| !f.runs.is_empty()).await;
+    let ws = host
+        .conn()
+        .await
+        .workspace_get(f.workspace_id.unwrap().as_str())
+        .await
+        .unwrap();
+    assert_ne!(ws.name, "billing");
+    assert_eq!(ws.task_id.as_ref().map(|t| t.as_str()), Some(id.as_str()));
+    assert_eq!(ws.state, WorkspaceState::Ready, "{:?}", ws.state_message);
+}
+
+/// Not clear where: the task waits, Otter has said so, and the developer's
+/// answer in the conversation places it, and it goes on by itself. Only the
+/// developer's word does it, and not once the agent has worked.
+#[tokio::test]
+async fn a_task_without_a_clear_place_asks_and_goes_on_when_answered() {
+    let (fake, _) = host_with_billing().await;
+    let host = &fake.host;
+    let f = unplaced(host, "c-1", "Add retries.").await;
+    let id = f.id.to_string();
+    host.conn()
+        .await
+        .task_act("start-1", &id, TaskAction::Start)
+        .await
+        .unwrap();
+    let f = wait_task(host, &id, "it waits for a workspace", |f| {
+        f.status == TaskStatus::Blocked && reply_to_request(f).is_some()
+    })
+    .await;
+    assert!(f.workspace_id.is_none());
+
+    // An event's turn can't place it.
+    let (f, answers) = run(
+        host,
+        &id,
+        "ev-1",
+        "AS: event\nCALL: set_workspace {\"scratch\": true}",
+    )
+    .await;
+    assert_eq!(code(&answers[0]), "not_allowed_in_this_turn", "{answers:?}");
+    assert!(f.workspace_id.is_none());
+    assert_eq!(host.conn().await.workspace_list().await.unwrap().len(), 1);
+
+    // Both ways at once is refused; nothing is made.
+    let (_, answers) = run(
+        host,
+        &id,
+        "both-1",
+        "Both.\nCALL: set_workspace {\"workspace\": \"billing\", \"scratch\": true}",
+    )
+    .await;
+    assert_eq!(code(&answers[0]), "invalid", "{answers:?}");
+    assert_eq!(host.conn().await.workspace_list().await.unwrap().len(), 1);
+
+    // The developer answers.
+    let (_, answers) = run(
+        host,
+        &id,
+        "dev-1",
+        "In billing, please.\nCALL: set_workspace {\"workspace\": \"billing\"}",
+    )
+    .await;
+    assert_eq!(code(&answers[0]), "ok", "{answers:?}");
+    let f = wait_task(host, &id, "it goes to work", |f| !f.runs.is_empty()).await;
+    assert!(f.workspace_id.is_some());
+
+    // Worked in it: not moved.
+    let (_, answers) = run(
+        host,
+        &id,
+        "dev-2",
+        "Somewhere else.\nCALL: set_workspace {\"scratch\": true}",
+    )
+    .await;
+    assert_eq!(code(&answers[0]), "not_ready", "{answers:?}");
+}
+
+/// Otter looks at the request once: a task paused and started again doesn't
+/// have it asked again.
+#[tokio::test]
+async fn otter_reads_the_request_for_a_workspace_once() {
+    let (fake, _) = host_with_billing().await;
+    let host = &fake.host;
+    let f = unplaced(host, "c-1", "Add retries.").await;
+    let id = f.id.to_string();
+    let mut conn = host.conn().await;
+    conn.task_act("start-1", &id, TaskAction::Start)
+        .await
+        .unwrap();
+    wait_task(host, &id, "it waits", |f| {
+        f.status == TaskStatus::Blocked && reply_to_request(f).is_some()
+    })
+    .await;
+    conn.task_act("pause-1", &id, TaskAction::Pause)
+        .await
+        .unwrap();
+    conn.task_act("resume-1", &id, TaskAction::Resume)
+        .await
+        .ok();
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    let f = conn.task_get(&id).await.unwrap();
+    let said = f
+        .messages
+        .iter()
+        .filter(|m| m.role == MessageRole::Controller)
+        .count();
+    assert_eq!(
+        said,
+        1,
+        "{:?}",
+        f.messages.iter().map(|m| &m.text).collect::<Vec<_>>()
+    );
+}
+
+/// While Otter looks at the request, the developer adds something: it is
+/// answered, not taken for answered by the reply to the request.
+#[tokio::test]
+async fn a_message_sent_while_otter_reads_the_request_is_answered() {
+    let (fake, _) = host_with_billing().await;
+    let host = &fake.host;
+    let f = unplaced(host, "c-1", "Add retries.\nSLEEP: 1500").await;
+    let id = f.id.to_string();
+    let mut conn = host.conn().await;
+    conn.task_act("start-1", &id, TaskAction::Start)
+        .await
+        .unwrap();
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let f = conn
+        .task_send("m-1", &id, "And use the staging branch.")
+        .await
+        .unwrap();
+    let said = f
+        .messages
+        .iter()
+        .find(|m| m.role == MessageRole::User && m.text.starts_with("And use"))
+        .unwrap()
+        .id
+        .to_string();
+    wait_task(host, &id, "it is answered", |f| {
+        f.messages.iter().any(|m| {
+            m.role == MessageRole::Controller && m.correlation_id.as_deref() == Some(&said)
+        })
+    })
+    .await;
+}
+
+/// The turn on a request may look and say where the task works; it may not
+/// pause the task, change what it may do, or pass the request on.
+#[tokio::test]
+async fn the_turn_on_a_request_may_only_look_and_place() {
+    let (fake, _) = host_with_billing().await;
+    let host = &fake.host;
+    let f = unplaced(
+        host,
+        "c-1",
+        "Add retries in billing.\nCALL: pause_task {}\nCALL: set_answer_only {\"on\": true}\nCALL: forward_to_agent {\"message_ids\": $MSG}\nCALL: set_workspace {\"workspace\": \"billing\"}",
+    )
+    .await;
+    let id = f.id.to_string();
+    host.conn()
+        .await
+        .task_act("start-1", &id, TaskAction::Start)
+        .await
+        .unwrap();
+    let f = wait_task(host, &id, "it goes to work", |f| !f.runs.is_empty()).await;
+    assert!(!f.answer_only);
+    let reply = reply_to_request(&f).unwrap();
+    let answers: Vec<Value> = reply
+        .lines()
+        .filter_map(|l| {
+            l.split_once(": ")
+                .and_then(|(_, j)| serde_json::from_str(j).ok())
+        })
+        .collect();
+    let codes: Vec<&str> = answers.iter().map(code).collect();
+    assert_eq!(
+        codes,
+        [
+            "not_allowed_in_this_turn",
+            "not_allowed_in_this_turn",
+            "not_allowed_in_this_turn",
+            "ok"
+        ],
+        "{reply}"
+    );
+}
+
+/// A task with a workspace made from one repository isn't told it is placed
+/// when asked for another source; the same again is done, once.
+#[tokio::test]
+async fn set_workspace_says_when_the_workspace_it_has_is_not_what_was_asked() {
+    let (fake, _) = host_with_billing().await;
+    let host = &fake.host;
+    let ledger = make_repo(host, "ledger-src", &[("Makefile", "test:\n\t@true\n")]);
+    let f = unplaced(host, "c-1", "Add retries.").await;
+    let id = f.id.to_string();
+    let new = format!(
+        "In the ledger.\nCALL: set_workspace {{\"new_workspace\": {{\"repository\": \"{}\"}}}}",
+        ledger.display()
+    );
+    let (_, answers) = run(host, &id, "d-1", &new).await;
+    assert_eq!(code(&answers[0]), "ok", "{answers:?}");
+    let made = host.conn().await.workspace_list().await.unwrap().len();
+
+    let (_, answers) = run(
+        host,
+        &id,
+        "d-2",
+        "Empty.\nCALL: set_workspace {\"scratch\": true}",
+    )
+    .await;
+    assert_eq!(code(&answers[0]), "conflict", "{answers:?}");
+    let (_, answers) = run(
+        host,
+        &id,
+        "d-3",
+        "Billing.\nCALL: set_workspace {\"workspace\": \"billing\"}",
+    )
+    .await;
+    assert_eq!(code(&answers[0]), "conflict", "{answers:?}");
+    // The same again: done, and nothing more is made.
+    let new = new.replace("In the ledger.", "Again, the ledger.");
+    let (_, answers) = run(host, &id, "d-4", &new).await;
+    assert_eq!(code(&answers[0]), "ok", "{answers:?}");
+    assert_eq!(
+        host.conn().await.workspace_list().await.unwrap().len(),
+        made
     );
 }
