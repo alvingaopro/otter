@@ -185,7 +185,12 @@ pub async fn pick_host(config: &Config, explicit: Option<String>, text: &str) ->
     }
     let mut jobs = JoinSet::new();
     for host in config.hosts.clone() {
-        let transport = config.transport(&host);
+        let mut transport = config.transport(&host);
+        // Asking is not worth a prompt: a host whose key or passphrase
+        // needs one is left out, not waited for.
+        if let otter_client::Transport::Ssh { ssh_args, .. } = &mut transport {
+            ssh_args.extend(["-o".to_owned(), "BatchMode=yes".to_owned()]);
+        }
         jobs.spawn(async move {
             let list = tokio::time::timeout(ROUTE_WAIT, async {
                 let mut conn = Connection::connect(&transport).await.ok()?;
@@ -197,13 +202,23 @@ pub async fn pick_host(config: &Config, explicit: Option<String>, text: &str) ->
             (host.name, list)
         });
     }
-    let mut asked: Vec<(String, Vec<Workspace>)> = jobs
-        .join_all()
-        .await
-        .into_iter()
-        .filter_map(|(h, l)| l.map(|l| (h, l)))
-        .collect();
+    let mut asked: Vec<(String, Vec<Workspace>)> = Vec::new();
+    let mut unreached: Vec<String> = Vec::new();
+    for (host, list) in jobs.join_all().await {
+        match list {
+            // Put away (D-105) is not where a message is about.
+            Some(mut list) => {
+                list.retain(|w| w.state != otter_core::WorkspaceState::Archived);
+                asked.push((host, list));
+            }
+            None => unreached.push(host),
+        }
+    }
     asked.sort_by(|a, b| a.0.cmp(&b.0));
+    unreached.sort();
+    if !unreached.is_empty() {
+        eprintln!("(not asked, unreachable: {})", unreached.join(", "));
+    }
     match otter_client::route::route(text, &asked) {
         otter_client::route::Route::One(m) => {
             eprintln!("→ {} ({})", m.host, m.why);

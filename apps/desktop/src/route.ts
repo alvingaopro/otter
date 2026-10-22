@@ -18,8 +18,8 @@ export type Route =
 
 const STRONG = 2;
 const WEAK = 1;
-/** Shortest name taken for a word on its own: shorter ones are everywhere. */
-const MIN_NAME = 3;
+/** Shortest name taken for a word on its own: shorter ones (`api`, `web`, `add`) are in every sentence. */
+const MIN_NAME = 4;
 const MIN_REPOSITORY_WORD = 4;
 
 /** `acme/billing` for `git@github.com:acme/billing.git` and `https://token@github.com/acme/billing/`. */
@@ -35,22 +35,30 @@ export function repositoryIdentity(repository: string): { owner?: string; name: 
 
 /** `needle` in `hay` as a word: not inside a longer name. */
 function containsWord(hay: string, needle: string): boolean {
-  const nameChar = (c: string | undefined) => c !== undefined && /[\p{L}\p{N}_-]/u.test(c);
+  // Names are ASCII; any other character (a Chinese or Japanese sentence has
+  // no spaces) ends one.
+  const nameChar = (c: string | undefined) => c !== undefined && /[A-Za-z0-9_-]/.test(c);
+  // Whole characters either side, as the Rust side sees them.
+  const before = (i: number) => Array.from(hay.slice(0, i)).pop();
+  const after = (i: number) => Array.from(hay.slice(i))[0];
   for (let i = hay.indexOf(needle); i >= 0; i = hay.indexOf(needle, i + 1)) {
-    if (!nameChar(hay[i - 1]) && !nameChar(hay[i + needle.length])) return true;
+    if (!nameChar(before(i)) && !nameChar(after(i + needle.length))) return true;
   }
   return false;
 }
 
+/** Length in characters, as Rust's `chars().count()`. */
+const chars = (s: string) => Array.from(s).length;
+
 function matched(text: string, w: RoutedWorkspace): { score: number; why: string } | undefined {
   const name = w.name.toLowerCase();
-  if (name.length >= MIN_NAME && containsWord(text, name)) return { score: STRONG, why: `workspace ${w.name}` };
+  if (chars(name) >= MIN_NAME && containsWord(text, name)) return { score: STRONG, why: `workspace ${w.name}` };
   const id = w.repository ? repositoryIdentity(w.repository) : undefined;
   if (!id) return undefined;
   if (id.owner && containsWord(text, `${id.owner}/${id.name}`)) {
     return { score: STRONG, why: `repository ${id.owner}/${id.name}` };
   }
-  if (id.name.length >= MIN_REPOSITORY_WORD && containsWord(text, id.name)) {
+  if (chars(id.name) >= MIN_REPOSITORY_WORD && containsWord(text, id.name)) {
     return { score: WEAK, why: `repository ${id.name}` };
   }
   return undefined;

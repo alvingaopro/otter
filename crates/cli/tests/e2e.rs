@@ -937,6 +937,15 @@ fn a_message_goes_to_the_host_that_has_the_workspace_it_names() {
         err.contains("several hosts; choose one with --host"),
         "{err}"
     );
+
+    // Both have `billing` now: a tie is not a guess. Put away on a, it is b's.
+    cli.ok(&["new", "billing", "--host", "b", "--no-agent"]);
+    let err = cli.fails(&["chat", "Retry billing."]);
+    assert!(err.contains("workspaces on a and b"), "{err}");
+    cli.ok(&["ws", "archive", "a:billing"]);
+    let out = cli.run(&["chat", "Retry billing."]);
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("→ b (workspace `billing`)"), "{err}");
 }
 
 /// `otter attach --scrollback` in a terminal (a PTY): the session's history

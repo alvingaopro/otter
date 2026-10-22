@@ -855,15 +855,30 @@ describe("Tasks view", () => {
       mac: [{ id: "ws_a", name: "billing", repository: "git@github.com:acme/billing.git" }],
       gpu: [{ id: "ws_b", name: "trainer", repository: "git@github.com:acme/trainer.git" }],
     });
-    expect(dialog.querySelector('[role="status"]')?.textContent).toContain("Nothing written names a host; using mac");
+    expect(dialog.querySelector("#new-task-host-hint")?.textContent).toContain("Nothing written names a host; using mac");
     type(dialog.querySelector("input")!, "Speed up trainer");
     await act(async () => {});
-    expect(dialog.querySelector('[role="status"]')?.textContent).toBe("Goes to gpu: it has workspace trainer.");
+    expect(dialog.querySelector("#new-task-host-hint")?.textContent).toBe("Goes to gpu: it has workspace trainer.");
     await act(async () => byText("button", "Create draft")!.click());
     expect(created).toEqual([["gpu", "Speed up trainer", "", undefined, false]]);
     // The next task starts from where this one went.
     await act(async () => q('[aria-label="New task"]')!.click());
-    expect(document.querySelector('[role="dialog"] [role="status"]')?.textContent).toContain("using gpu");
+    expect(document.querySelector('[role="dialog"] #new-task-host-hint')?.textContent).toContain("using gpu");
+    localStorage.removeItem("otter.new-task-host");
+  });
+
+  it("does not carry a workspace to another host when the text moves the task there", async () => {
+    localStorage.removeItem("otter.new-task-host");
+    const { created, dialog } = await newTaskOn(["mac", "gpu"], {
+      mac: [{ id: "ws_a", name: "billing" }],
+      gpu: [{ id: "ws_b", name: "trainer" }],
+    });
+    choose(dialog.querySelectorAll("select")[1], "ws_a");
+    await act(async () => {});
+    type(dialog.querySelector("input")!, "Speed up trainer");
+    await act(async () => {});
+    await act(async () => byText("button", "Create draft")!.click());
+    expect(created).toEqual([["gpu", "Speed up trainer", "", undefined, false]]);
     localStorage.removeItem("otter.new-task-host");
   });
 
@@ -872,7 +887,7 @@ describe("Tasks view", () => {
     type(dialog.querySelector("input")!, "Speed up trainer");
     choose(dialog.querySelectorAll("select")[0], "mac");
     await act(async () => {});
-    expect(dialog.querySelector('[role="status"]')).toBeNull();
+    expect(dialog.querySelector("#new-task-host-hint")).toBeNull();
     await act(async () => byText("button", "Create draft")!.click());
     expect(created[0][0]).toBe("mac");
     localStorage.removeItem("otter.new-task-host");

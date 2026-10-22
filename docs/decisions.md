@@ -6598,13 +6598,22 @@ pick one in a list, before saying what they wanted.
   name of a repository (four letters or more) counts less than a workspace's
   name or `owner/name`; a name inside a longer one (`billing-engine`) is not
   a match; a credential in a stored address is not a name. The host with the
-  best match wins; equals, or none, are not a match. No model is asked: a
-  wrong guess costs a switch of host, not a task.
+  best match wins; equals, or none, are not a match. Names are ASCII, so any
+  other character ends one: "在billing里加上重试" names `billing`. A workspace
+  name needs four characters to count on its own (`api`, `web` and `add` are
+  in every sentence). Workspaces put away (D-105) are left out. No model is
+  asked, but a message does go to the host it picked: a wrong guess costs a
+  switch of host, not a task.
 - **`otter chat <message>` and `otter task new`** with no `--host` ask every
   host for its workspaces at once (`workspace.list`, five seconds each; a
   host that is down is left out) and use the one the message names, saying so
   on stderr ("→ gpu (workspace `trainer`)"). Otherwise the default host; with
-  none, "several hosts; choose one with --host", naming the hosts that tied.
+  none, "several hosts; choose one with --host", naming the hosts that tied
+  (the CLI doesn't ask which). Asking is not worth a prompt: the connections
+  are made with `BatchMode=yes`, and a host that doesn't answer in five
+  seconds is left out and named on stderr ("not asked, unreachable").
+  This is a change: with a default host, a message used to go there without
+  dialling the others.
   `otter chat` with no message still needs a default or `--host`.
 - **The app's New task** has "From what I write" as its host, when there are
   several: what is typed in the title, the request and the repository

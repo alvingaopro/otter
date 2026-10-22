@@ -28,6 +28,24 @@ describe("routeHost (D-179, as route.rs)", () => {
     });
   });
 
+  it("does not take a short name from a sentence", () => {
+    const h = { a: [{ name: "api" }, { name: "web" }] };
+    expect(routeHost("add an api endpoint to the web page", h)).toEqual({ kind: "nowhere" });
+  });
+
+  it("finds a name in a sentence written without spaces", () => {
+    const h = { a: [{ name: "billing" }] };
+    expect(routeHost("在billing里加上重试", h)).toMatchObject({ kind: "one", host: "a" });
+    expect(routeHost("在billing2里加上重试", h)).toEqual({ kind: "nowhere" });
+  });
+
+  it("measures names in characters and finds them whole, as route.rs", () => {
+    const h = { a: [{ name: "日本語アプリ" }] };
+    expect(routeHost("日本語アプリを直して", h)).toMatchObject({ kind: "one", host: "a" });
+    expect(routeHost("x日本語アプリ", h)).toEqual({ kind: "nowhere" });
+    expect(routeHost("日本語", { a: [{ name: "日本語" }] })).toEqual({ kind: "nowhere" });
+  });
+
   it("does not find a short name inside a longer one", () => {
     expect(routeHost("rebuild the billing-engine", hosts)).toEqual({ kind: "nowhere" });
     expect(routeHost("subbilling", hosts)).toEqual({ kind: "nowhere" });

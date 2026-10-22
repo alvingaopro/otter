@@ -32,8 +32,9 @@ pub enum Route {
 
 const STRONG: u8 = 2;
 const WEAK: u8 = 1;
-/// Shortest name taken for a word on its own: shorter ones are everywhere.
-const MIN_NAME: usize = 3;
+/// Shortest name taken for a word on its own: shorter ones (`api`, `web`,
+/// `add`) are in every sentence.
+const MIN_NAME: usize = 4;
 const MIN_REPOSITORY_WORD: usize = 4;
 
 /// Route `text` among `hosts`, each with the workspaces it has.
@@ -65,7 +66,7 @@ pub fn route(text: &str, hosts: &[(String, Vec<Workspace>)]) -> Route {
 
 fn matched(text: &str, w: &Workspace) -> Option<(u8, String)> {
     let name = w.name.to_lowercase();
-    if name.len() >= MIN_NAME && contains_word(text, &name) {
+    if name.chars().count() >= MIN_NAME && contains_word(text, &name) {
         return Some((STRONG, format!("workspace `{}`", w.name)));
     }
     let WorkspaceSource::Git(g) = &w.source else {
@@ -77,7 +78,7 @@ fn matched(text: &str, w: &Workspace) -> Option<(u8, String)> {
     {
         return Some((STRONG, format!("repository {owner}/{repo}")));
     }
-    if repo.len() >= MIN_REPOSITORY_WORD && contains_word(text, &repo) {
+    if repo.chars().count() >= MIN_REPOSITORY_WORD && contains_word(text, &repo) {
         return Some((WEAK, format!("repository {repo}")));
     }
     None
@@ -97,9 +98,10 @@ fn identity(repository: &str) -> Option<(Option<String>, String)> {
     Some((owner, name))
 }
 
-/// `needle` in `hay` as a word: not inside a longer name.
+/// `needle` in `hay` as a word: not inside a longer name. Names are ASCII;
+/// any other character (a Chinese or Japanese sentence has no spaces) ends one.
 fn contains_word(hay: &str, needle: &str) -> bool {
-    let name_char = |c: char| c.is_alphanumeric() || c == '-' || c == '_';
+    let name_char = |c: char| c.is_ascii_alphanumeric() || c == '-' || c == '_';
     hay.match_indices(needle).any(|(i, _)| {
         let before = hay[..i].chars().next_back();
         let after = hay[i + needle.len()..].chars().next();
@@ -194,6 +196,32 @@ mod tests {
         // Matches a repository, not a workspace's name, on one host only.
         let (host, why) = one(route("the web-app login is slow", &hosts()));
         assert_eq!((host.as_str(), why.as_str()), ("dev", "repository web-app"));
+    }
+
+    #[test]
+    fn a_short_name_is_not_taken_from_a_sentence() {
+        let hosts = vec![("a".into(), vec![ws("api", None), ws("web", None)])];
+        assert_eq!(
+            route("add an api endpoint to the web page", &hosts),
+            Route::Nowhere
+        );
+    }
+
+    #[test]
+    fn a_name_in_a_sentence_without_spaces_is_found() {
+        let hosts = vec![("a".into(), vec![ws("billing", None)])];
+        assert_eq!(one(route("在billing里加上重试", &hosts)).0, "a");
+        assert_eq!(route("在billing2里加上重试", &hosts), Route::Nowhere);
+    }
+
+    #[test]
+    fn names_are_measured_in_characters_and_found_whole() {
+        let hosts = vec![("a".into(), vec![ws("日本語アプリ", None)])];
+        assert_eq!(one(route("日本語アプリを直して", &hosts)).0, "a");
+        assert_eq!(route("x日本語アプリ", &hosts), Route::Nowhere);
+        // Three characters, nine bytes: too short either way.
+        let hosts = vec![("a".into(), vec![ws("日本語", None)])];
+        assert_eq!(route("日本語", &hosts), Route::Nowhere);
     }
 
     #[test]

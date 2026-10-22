@@ -1774,6 +1774,7 @@ function NewTaskDialog({
             <span>Host</span>
             <select
               value={hostPick}
+              aria-describedby={hostPick === AUTO_HOST ? "new-task-host-hint" : undefined}
               onChange={(e) => {
                 setHostPick(e.target.value);
                 setWorkspace("");
@@ -1785,12 +1786,12 @@ function NewTaskDialog({
               ))}
             </select>
             {hostPick === AUTO_HOST && (
-              <small className="muted" role="status">
+              <small className="muted" id="new-task-host-hint">
                 {routed?.kind === "one"
                   ? `Goes to ${routed.host}: it has ${routed.why}.`
                   : routed?.kind === "several"
-                    ? `${routed.hosts.join(" and ")} both have it; using ${host}. Choose a host to change that.`
-                    : `Nothing written names a host; using ${host}, where the last task went.`}
+                    ? `${routed.hosts.join(", ")} all have it; using ${host}. Choose a host to change that.`
+                    : `Nothing written names a host; using ${host}.`}
               </small>
             )}
           </label>
