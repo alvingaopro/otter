@@ -236,11 +236,11 @@ where
                 Some("fatal") => {
                     break Err(anyhow!("the Claude worker: {}", text(&ev, &["message"])));
                 }
-                // A command it refused (pictures over its limits, say): the
-                // turn won't come, and why is said, not waited out.
+                // A command it refused (the turn's pictures over its limits,
+                // say): the answer won't come, and why is said, not waited out.
                 Some("nack") => {
                     break Err(anyhow!(
-                        "the Claude worker refused the turn: {}",
+                        "the Claude worker refused a command: {}",
                         text(&ev, &["error", "message"])
                     ));
                 }
@@ -436,7 +436,7 @@ mod tests {
         let (reply, calls) = turn(&env, dir.path(), "[msg_x] hi").await;
         let e = reply.unwrap_err().to_string();
         assert!(
-            e.contains("the Claude worker refused the turn: at most 4 images"),
+            e.contains("the Claude worker refused a command: at most 4 images"),
             "{e}"
         );
         assert!(calls.is_empty());

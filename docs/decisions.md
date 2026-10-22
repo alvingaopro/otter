@@ -6549,8 +6549,8 @@ got them; the one the developer was talking to didn't.
   worker (`otter` profile) they go on `send_turn` as `images`, as a coding
   run's do; on Anthropic's API, as image blocks before the prompt. A picture
   whose file is gone isn't shown, so the numbers in the prompt are the
-  pictures the model has. A turn the worker refuses (a `nack`) ends with
-  the worker's reason, not at the turn's deadline. A backend
+  pictures the model has. A command the worker refuses (a `nack`) ends the
+  turn with the worker's reason, not at the turn's deadline. A backend
   says whether it sees pictures (`TurnBackend::sees_pictures`): behind the
   OpenAI shape it doesn't — some of those models refuse a request that has
   one, which would lose the whole answer — and the host conversation and a
@@ -6568,8 +6568,9 @@ got them; the one the developer was talking to didn't.
   over the messages it answers, and a run's first turn over every message
   since the last (the worker refused such a turn whole, as `invalid_input`).
   The ones left out are said: in a run's prompt ("2 older pictures … are
-  left out") and to the developer, once, in a system message on the task
-  (they aren't offered again: send again what it still needs); in Otter's,
+  left out") and, once the run has started, to the developer in a system
+  message on the task (they aren't offered again: send again what it still
+  needs); in Otter's,
   as "you aren't shown".
 
 **Not done.** Pictures in the OpenAI-shaped providers (it would need to know

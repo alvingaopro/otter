@@ -194,22 +194,14 @@ impl Daemon {
         // The messages' pictures, if the agent can see them — as many as a
         // turn carries, the rest said (D-179); else each message they came
         // with is told so, once.
+        // The developer hears of the ones left out once the run has started.
         let mut prompt = prompt;
+        let mut left_out_of = None;
         let pictures: Vec<PathBuf> = if sees_pictures(&backend) {
             let (fit, left) = fitting(pictures);
             if left > 0 {
                 prompt.push_str(&format!("\n\n{}", left_out(left)));
-                self.tell_once(
-                    task_id,
-                    format!("pictures-left:{run_id}"),
-                    format!(
-                        "The coding agent was given the newest {} pictures you sent, not the {left} before them: one turn carries at most {}, {} MB in all. Send again any it still needs.",
-                        fit.len(),
-                        otter_protocol::task::MAX_IMAGES,
-                        otter_protocol::task::MAX_IMAGES_TOTAL >> 20
-                    ),
-                )
-                .await;
+                left_out_of = Some((fit.len(), left));
             }
             fit.into_iter().map(|(_, path)| path).collect()
         } else {
@@ -396,6 +388,18 @@ impl Daemon {
             }
         };
         self.task_changed(&applied);
+        if let Some((given, left)) = left_out_of {
+            self.tell_once(
+                task_id,
+                format!("pictures-left:{run_id}"),
+                format!(
+                    "The coding agent was given the newest {given} pictures you sent, not the {left} before them: one turn carries at most {}, {} MB in all. Send again any it still needs.",
+                    otter_protocol::task::MAX_IMAGES,
+                    otter_protocol::task::MAX_IMAGES_TOTAL >> 20
+                ),
+            )
+            .await;
+        }
 
         let (tx, mailbox) = mpsc::channel(32);
         let (out, events) = mpsc::channel(256);
@@ -1519,7 +1523,7 @@ impl Daemon {
 
     /// A system message on the task, once for `correlation`.
     async fn tell_once(&self, task_id: &TaskId, correlation: String, text: String) {
-        let _ = self
+        let applied = self
             .tasks
             .lock()
             .await
@@ -1528,6 +1532,9 @@ impl Daemon {
                 f.messages.push(m);
                 Ok(vec![c])
             });
+        if let Ok(applied) = applied {
+            self.task_changed(&applied);
+        }
     }
 
     /// Stop every run of a task and wait until each has ended. What it
