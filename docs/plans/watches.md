@@ -27,8 +27,8 @@ Two gaps, both verified:
 1. **Nothing makes Otter come back.** The engine steps a task that is
    active or in review, blocked with a workspace, or has a message to
    answer (`run_controller`); Otter's turn runs on a message (D-089), or on
-   the host for a status change of a task Otter made itself (D-094). A done
-   task with a question still open is never looked at again. Triggers
+   the host for a status change of a task Otter made itself (D-094). Once
+   its last message is answered, a done task is never looked at again. Triggers
    (D-083) start a new coding task on a schedule — the wrong weight for
    “look at CI in ten minutes”.
 2. **What Otter reported wasn't true.** #171 is `CONFLICTING` with no
@@ -117,20 +117,23 @@ developer's message ──watch──► waiting ──probe: not yet──► w
   a `ci` finding can't be re-derived the way D-094's `follow_key` can).
 - Made under `<message id>:watch:<kind>:<target>` — by content, not by the
   order of tool calls, which a replayed turn may change (as the memory
-  tools dedupe by the note). The same key answers “already watching #171”.
+  tools dedupe by the note). The target is the PR number for `ci`, and
+  `in_minutes` for `time`. The same key answers “already watching #171”.
 
 ### 5.2 Probes and turns: who runs what
 
 - **Probing** is its own loop, `run_watches`, beside `run_triggers`: every
   15 s it probes the `ci` watches whose `next_at` passed, and writes
-  `firing` with the finding when one is due. `ci` is probed every 60 s
+  `firing` with the finding when one is due. A `time` watch whose time
+  came is written `firing` the same way (the finding: it's time, and how
+  late), so everything goes through one state. `ci` is probed every 60 s
   (`OTTER_WATCH_POLL_MS`), ±10 % jitter. A probe that fails (network,
   `gh`) isn't a firing: it's tried again; three failures in a row fire as
   “can't read CI: why”. No model on a probe.
 - **The turn** is the controller's, not the loop's: the one-turn-per-task
   rule is `ControllerState.inflight` and lives in `run_controller`. Its
-  filter gains “has a watch firing, or a `time` watch due”, which also
-  brings a done task in; `step()` runs the watch's turn after the
+  filter gains “has a watch firing”, which also brings a done task in;
+  `step()` runs the watch's turn after the
   unanswered-messages branch, so the developer's messages come first.
   The host's watches (slice 2) go behind `host_turn`, exactly as
   `due_follow_up` does.
@@ -138,7 +141,9 @@ developer's message ──watch──► waiting ──probe: not yet──► w
 ### 5.3 Firing: one turn, said once
 
 - A turn no message started: `Origin::Event { event_id:
-  "watch:<id>:<finding>" }`, as D-094's follow-ups — the task's observe
+  "watch:<id>:<n>" }` (`n` counts the watch's findings; the finding's text
+  stays on the watch, out of command and correlation ids), as D-094's
+  follow-ups — the task's observe
   tools and pausing, nothing on the developer's word. `watch` is refused
   there already (`DeveloperWord` without an authority, `gateway.rs`), so a
   watch can't set another. The event prompt and the `scripted` backend's
@@ -146,9 +151,18 @@ developer's message ──watch──► waiting ──probe: not yet──► w
   today).
 - It's told what was asked, when, and what the probe found, with the time
   it was read. Its reply is posted in the task's conversation in the same
-  write that marks the watch reported (as `record_follow_up`). Without
-  Otter's tools, a line: “CI on #171 passed: 12 checks.”
-- **The reply's correlation id is the watch's** (`watch:<id>:<finding>`),
+  write that marks the watch reported (as `record_follow_up`), and only
+  if the watch is still `firing`: a `cancel_watch` that landed meanwhile
+  wins, and nothing is said. Without Otter's tools, a line: “CI on #171
+  passed: 12 checks.”
+- **A watch's turn never fails the task, and never stays `firing`.** It
+  runs `bounded`, as `follow_up` does: no answer, an error, or a panic
+  becomes a plain line about the finding, written with `reported` (as
+  `follow_up`'s PANICKED fallback). An error out of `step()` would
+  otherwise reach `run_controller`, which fails the task — a task in
+  review failed by a report — and a watch left `firing` would start a
+  model turn on every tick.
+- **The reply's correlation id is the watch's** (`watch:<id>:<n>`),
   never the developer's `msg_…`: `unanswered()` takes the last Otter
   message correlated to a `msg_` id as the point everything before is
   answered, so a report tied to `asked_in` would swallow every message the
@@ -269,6 +283,9 @@ turn backend (which gains a count of its turns):
 - No turn on a probe that found nothing.
 - A message the developer sends while a watch waits is still answered
   after the report (the report doesn't count as answering it).
+- A watch's turn that errors or panics posts a plain line and ends the
+  watch; the task's status is untouched. A watch cancelled while firing
+  says nothing.
 - A turn a watch started can't call `watch`; a fourth waiting watch is
   refused.
 - A done task's watch fires (the controller steps it for the watch).
