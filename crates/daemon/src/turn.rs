@@ -164,6 +164,15 @@ pub fn context(f: &Task, memories: &str) -> String {
     )
 }
 
+/// The tools of a turn on a task's request (D-186): to look, and to say
+/// where the task works.
+fn placing_tools() -> Vec<crate::gateway::ToolSpec> {
+    tools()
+        .into_iter()
+        .filter(|t| t.class == crate::gateway::Class::Observe || t.name == "set_workspace")
+        .collect()
+}
+
 /// What Otter is told while a task has no workspace (D-186): how to find
 /// or make one from what the developer wrote. Only then, so a task at work
 /// isn't told it.
@@ -236,16 +245,20 @@ impl Daemon {
         backend: Box<dyn TurnBackend>,
     ) -> RpcResult<()> {
         let open = unanswered(f);
-        self.otter_turn_on(f, backend, open).await
+        self.otter_turn_on(f, backend, open, false).await
     }
 
     /// As [`Self::otter_turn`], on the messages given: the developer's own,
-    /// so what they authorize is theirs. The task's request is one (D-186).
+    /// so what they authorize is theirs. The task's request is one (D-186),
+    /// and then (`placing`) the turn may only look at the host and say where
+    /// the task works: the request is the developer's word for that, not for
+    /// pausing the task or passing itself on to the coding agent.
     pub(crate) async fn otter_turn_on(
         self: &Arc<Self>,
         f: &Task,
         backend: Box<dyn TurnBackend>,
         open: Vec<otter_core::task::Message>,
+        placing: bool,
     ) -> RpcResult<()> {
         let Some(last) = open.last().cloned() else {
             return Ok(());
@@ -260,12 +273,23 @@ impl Daemon {
             }
         };
         let limits = Limits::from_env();
-        let gateway = Gateway::new(
-            self.clone(),
-            Scope::Task(f.id.clone()),
-            origin,
-            limits.max_calls,
-        );
+        let available = if placing { placing_tools() } else { tools() };
+        let gateway = if placing {
+            Gateway::restricted(
+                self.clone(),
+                Scope::Task(f.id.clone()),
+                origin,
+                limits.max_calls,
+                available.iter().map(|t| t.name).collect(),
+            )
+        } else {
+            Gateway::new(
+                self.clone(),
+                Scope::Task(f.id.clone()),
+                origin,
+                limits.max_calls,
+            )
+        };
         let stream_id = format!("reply-{}", last.id);
         let draft = std::sync::Mutex::new(crate::runs::Draft::new(stream_id.clone()));
         let say = |piece: &str| {
@@ -300,7 +324,7 @@ impl Daemon {
             messages: &open,
             pictures,
             context: context(f, &self.memories(Some(&f.id))),
-            tools: tools(),
+            tools: available,
             limits: &limits,
             say: &say,
         };

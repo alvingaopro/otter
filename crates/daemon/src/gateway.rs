@@ -533,6 +533,8 @@ struct Inner {
     calls: AtomicUsize,
     /// What this turn changed, a line each.
     done: Mutex<Vec<String>>,
+    /// The only tools this turn may call, when it is for one thing (D-186).
+    only: Option<Vec<&'static str>>,
 }
 
 impl Gateway {
@@ -545,6 +547,29 @@ impl Gateway {
                 max_calls,
                 calls: AtomicUsize::new(0),
                 done: Mutex::new(Vec::new()),
+                only: None,
+            }),
+        }
+    }
+
+    /// A turn that may call only the tools it is given: the same gateway,
+    /// the same checks, for fewer.
+    pub fn restricted(
+        daemon: Arc<Daemon>,
+        scope: Scope,
+        origin: Origin,
+        max_calls: usize,
+        only: Vec<&'static str>,
+    ) -> Self {
+        Gateway {
+            inner: Arc::new(Inner {
+                daemon,
+                scope,
+                origin,
+                max_calls,
+                calls: AtomicUsize::new(0),
+                done: Mutex::new(Vec::new()),
+                only: Some(only),
             }),
         }
     }
@@ -587,6 +612,17 @@ impl Gateway {
         else {
             return Err(fail("not_found", format!("there is no tool `{name}`")));
         };
+        if let Some(only) = &self.inner.only
+            && !only.contains(&name)
+        {
+            let e = fail(
+                "not_allowed_in_this_turn",
+                format!("`{name}` isn't for this turn, which only looks for where the task works"),
+            )
+            .next("answer with where the task will work, or ask the developer");
+            self.record_done(name, Some(e.code)).await;
+            return Err(e);
+        }
         if spec.class == Class::DeveloperWord && self.inner.origin.authority().is_none() {
             let e = fail(
                 "not_allowed_in_this_turn",
@@ -1369,19 +1405,45 @@ impl Gateway {
         }
         let placement = d.placement(&choice).await?;
         if let Some(cur) = &f.workspace_id {
-            let same = match &placement {
-                crate::tasks::Placement::Existing(id) => id == cur,
-                crate::tasks::Placement::Make(_) => d
-                    .store
-                    .lock()
-                    .await
-                    .workspace(cur.as_str())
-                    .is_some_and(|w| w.task_id.as_ref() == Some(&f.id)),
+            let (same, name, state) = {
+                let store = d.store.lock().await;
+                let ws = store.workspace(cur.as_str());
+                let same = match (&placement, ws) {
+                    (crate::tasks::Placement::Existing(id), _) => id == cur,
+                    // The one made for this task, from what is asked now.
+                    (crate::tasks::Placement::Make(source), Some(w)) => {
+                        w.task_id.as_ref() == Some(&f.id)
+                            && match (&w.source, source) {
+                                (
+                                    otter_core::WorkspaceSource::Git(g),
+                                    otter_protocol::SourceSpec::Git { repository, .. },
+                                ) => &g.repository == repository,
+                                (
+                                    otter_core::WorkspaceSource::Empty,
+                                    otter_protocol::SourceSpec::Empty,
+                                ) => true,
+                                _ => false,
+                            }
+                    }
+                    _ => false,
+                };
+                (
+                    same,
+                    ws.map(|w| w.name.clone()),
+                    ws.map(|w| format!("{:?}", w.state).to_lowercase()),
+                )
             };
             if !same {
                 return Err(fail("conflict", "this task has a workspace already")
                     .next("the developer can give it another in the app"));
             }
+            // Done already: nothing to do, nothing to record twice.
+            return Ok(json!({
+                "done": "workspace set",
+                "workspace": name,
+                "workspace_state": state,
+                "status": f.status.as_str(),
+            }));
         }
         let origin = &self.inner.origin;
         let command = origin.command("set_workspace");

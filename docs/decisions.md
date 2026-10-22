@@ -6728,6 +6728,15 @@ Otter finds where it works.
   task blocks as before ("Choose a workspace for this task") and Otter's reply
   is in the conversation, saying what it found or asking. Only when Otter
   answers with tools here (`turn_backend`); otherwise as before.
+  The exception is only for placing: this turn may look (the observing tools)
+  and `set_workspace`, nothing else — the request is the developer's word for
+  where, not for pausing the task, changing what it may do, or passing itself
+  on to the coding agent (the gateway refuses the rest, `Gateway::restricted`).
+  A triggered task (`started_by`) is never looked at this way: its workspace
+  comes from its trigger, and the text a trigger carries is not the
+  developer's word to place it. Otter's reply to the request doesn't count as
+  an answer to what the developer wrote while it looked (`unanswered`), so
+  that message is still answered.
 - **Tools in a task's conversation** (`gateway.rs`): `list_workspaces` and
   `list_repositories` (the host's own, one implementation), and
   `set_workspace` — a workspace by name, `new_workspace` or `scratch`, the
@@ -6736,7 +6745,9 @@ Otter finds where it works.
   validated alike). It is the developer's word (`DeveloperWord`): an event's
   turn is refused. It is refused once the coding agent has worked (D-080),
   and over a workspace the task has (the developer changes that in the app),
-  except the same one again. A task blocked for want of a workspace goes on
+  except the same one again: the same workspace, or the one made for the task
+  from the same repository (or an empty directory). That is done already, and
+  nothing is made or recorded twice. A task blocked for want of a workspace goes on
   by itself when it has one (`SetWorkspace`, as in the app); a draft still
   needs `start_task`. `get_task` says which workspace it has.
 - **How Otter chooses** is in the turn's context, only while the task has no
@@ -6760,5 +6771,8 @@ Tests (`chat_bootstrap.rs`): a started task is placed from its request (a
 named workspace; a repository, made, marked, ready); a task with no clear
 place asks, an event's turn and both-ways are refused, the developer's answer
 places it and it goes on, and a task that has worked isn't moved; the request
-is looked at once. Each fails with its piece taken out: the hook, the mark,
-the check for work done.
+is looked at once. Also: a message sent while Otter reads the request is answered; the turn on a
+request can't pause the task or change what it may do; a different source than
+the workspace it has is a conflict. Each fails with its piece taken out: the
+hook, the mark, the check for work done, the boundary, the restriction, the
+source check.

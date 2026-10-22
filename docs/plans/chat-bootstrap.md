@@ -119,5 +119,9 @@ surface; it is not in P1. In P1 Otter asks in text.
 
 ## 7. Not decided here
 
-- Whether Otter in a task's conversation gets the workspace tools (the app has no host conversation); whether the host-level question card should reuse `DecisionRequest`
-  or be its own type (P3).
+- Whether a host-level question card (a decision with no task) should reuse
+  `DecisionRequest` or be its own type. The app has no conversation with Otter
+  on a host, so for now the question is asked in the task's own conversation
+  (D-186).
+- Whether "Create draft" in the app should start the task when no workspace
+  is chosen, so Otter reads the request at once.

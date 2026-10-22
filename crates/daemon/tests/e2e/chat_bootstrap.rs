@@ -375,6 +375,7 @@ async fn otter_sees_what_holds_a_workspace_and_a_refused_request_makes_nothing()
 
 use super::otter_turn::{code, run};
 use otter_core::task::MessageRole;
+use serde_json::Value;
 
 /// A host whose Otter is scripted, with a Git workspace `billing`.
 async fn host_with_billing() -> (FakeCodex, std::path::PathBuf) {
@@ -567,7 +568,9 @@ async fn otter_reads_the_request_for_a_workspace_once() {
         f.status == TaskStatus::Blocked && reply_to_request(f).is_some()
     })
     .await;
-    conn.task_act("pause-1", &id, TaskAction::Pause).await.ok();
+    conn.task_act("pause-1", &id, TaskAction::Pause)
+        .await
+        .unwrap();
     conn.task_act("resume-1", &id, TaskAction::Resume)
         .await
         .ok();
@@ -583,5 +586,121 @@ async fn otter_reads_the_request_for_a_workspace_once() {
         1,
         "{:?}",
         f.messages.iter().map(|m| &m.text).collect::<Vec<_>>()
+    );
+}
+
+/// While Otter looks at the request, the developer adds something: it is
+/// answered, not taken for answered by the reply to the request.
+#[tokio::test]
+async fn a_message_sent_while_otter_reads_the_request_is_answered() {
+    let (fake, _) = host_with_billing().await;
+    let host = &fake.host;
+    let f = unplaced(host, "c-1", "Add retries.\nSLEEP: 1500").await;
+    let id = f.id.to_string();
+    let mut conn = host.conn().await;
+    conn.task_act("start-1", &id, TaskAction::Start)
+        .await
+        .unwrap();
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let f = conn
+        .task_send("m-1", &id, "And use the staging branch.")
+        .await
+        .unwrap();
+    let said = f
+        .messages
+        .iter()
+        .find(|m| m.role == MessageRole::User && m.text.starts_with("And use"))
+        .unwrap()
+        .id
+        .to_string();
+    wait_task(host, &id, "it is answered", |f| {
+        f.messages.iter().any(|m| {
+            m.role == MessageRole::Controller && m.correlation_id.as_deref() == Some(&said)
+        })
+    })
+    .await;
+}
+
+/// The turn on a request may look and say where the task works; it may not
+/// pause the task, change what it may do, or pass the request on.
+#[tokio::test]
+async fn the_turn_on_a_request_may_only_look_and_place() {
+    let (fake, _) = host_with_billing().await;
+    let host = &fake.host;
+    let f = unplaced(
+        host,
+        "c-1",
+        "Add retries in billing.\nCALL: pause_task {}\nCALL: set_answer_only {\"on\": true}\nCALL: forward_to_agent {\"message_ids\": $MSG}\nCALL: set_workspace {\"workspace\": \"billing\"}",
+    )
+    .await;
+    let id = f.id.to_string();
+    host.conn()
+        .await
+        .task_act("start-1", &id, TaskAction::Start)
+        .await
+        .unwrap();
+    let f = wait_task(host, &id, "it goes to work", |f| !f.runs.is_empty()).await;
+    assert!(!f.answer_only);
+    let reply = reply_to_request(&f).unwrap();
+    let answers: Vec<Value> = reply
+        .lines()
+        .filter_map(|l| {
+            l.split_once(": ")
+                .and_then(|(_, j)| serde_json::from_str(j).ok())
+        })
+        .collect();
+    let codes: Vec<&str> = answers.iter().map(code).collect();
+    assert_eq!(
+        codes,
+        [
+            "not_allowed_in_this_turn",
+            "not_allowed_in_this_turn",
+            "not_allowed_in_this_turn",
+            "ok"
+        ],
+        "{reply}"
+    );
+}
+
+/// A task with a workspace made from one repository isn't told it is placed
+/// when asked for another source; the same again is done, once.
+#[tokio::test]
+async fn set_workspace_says_when_the_workspace_it_has_is_not_what_was_asked() {
+    let (fake, _) = host_with_billing().await;
+    let host = &fake.host;
+    let ledger = make_repo(host, "ledger-src", &[("Makefile", "test:\n\t@true\n")]);
+    let f = unplaced(host, "c-1", "Add retries.").await;
+    let id = f.id.to_string();
+    let new = format!(
+        "In the ledger.\nCALL: set_workspace {{\"new_workspace\": {{\"repository\": \"{}\"}}}}",
+        ledger.display()
+    );
+    let (_, answers) = run(host, &id, "d-1", &new).await;
+    assert_eq!(code(&answers[0]), "ok", "{answers:?}");
+    let made = host.conn().await.workspace_list().await.unwrap().len();
+
+    let (_, answers) = run(
+        host,
+        &id,
+        "d-2",
+        "Empty.\nCALL: set_workspace {\"scratch\": true}",
+    )
+    .await;
+    assert_eq!(code(&answers[0]), "conflict", "{answers:?}");
+    let (_, answers) = run(
+        host,
+        &id,
+        "d-3",
+        "Billing.\nCALL: set_workspace {\"workspace\": \"billing\"}",
+    )
+    .await;
+    assert_eq!(code(&answers[0]), "conflict", "{answers:?}");
+    // The same again: done, and nothing more is made.
+    let new = new.replace("In the ledger.", "Again, the ledger.");
+    let (_, answers) = run(host, &id, "d-4", &new).await;
+    assert_eq!(code(&answers[0]), "ok", "{answers:?}");
+    assert_eq!(
+        host.conn().await.workspace_list().await.unwrap().len(),
+        made
     );
 }
