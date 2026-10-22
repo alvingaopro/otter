@@ -243,10 +243,9 @@ impl Daemon {
                 let daemon = self.clone();
                 tokio::spawn(async move { daemon.put_away_workspace(&id).await });
             }
-            // Off: tasks stay where they are until the developer acts.
-            if self.brain_choice().controller.as_deref() == Some("off") {
-                continue;
-            }
+            // Off: tasks stay where they are until the developer acts — and
+            // a command is the developer acting (D-190).
+            let off = self.brain_choice().controller.as_deref() == Some("off");
             let ids: Vec<TaskId> = self
                 .tasks
                 .lock()
@@ -254,7 +253,9 @@ impl Daemon {
                 .list()
                 .into_iter()
                 .filter(|f| {
-                    !unanswered(f).is_empty()
+                    !crate::commands::pending(f).is_empty()
+                        || (!off
+                            && (!unanswered(f).is_empty()
                         // A watch found something: Otter says so (D-183),
                         // whatever the task's status.
                         || f.firing_watch().is_some()
@@ -262,7 +263,7 @@ impl Daemon {
                         || f.status == TaskStatus::Review
                         // Blocked: on a decision the brain hasn't seen yet,
                         // or on nothing any more (see `unblock`).
-                        || (f.status == TaskStatus::Blocked && f.workspace_id.is_some())
+                        || (f.status == TaskStatus::Blocked && f.workspace_id.is_some())))
                 })
                 .map(|f| f.id)
                 .collect();
@@ -274,7 +275,14 @@ impl Daemon {
                 tokio::spawn(async move {
                     let stepped = {
                         let (daemon, id) = (daemon.clone(), id.clone());
-                        contained(async move { daemon.step(&id).await }).await
+                        contained(async move {
+                            if off {
+                                daemon.run_commands(&id).await
+                            } else {
+                                daemon.step(&id).await
+                            }
+                        })
+                        .await
                     };
                     if let Some(Err(e)) = stepped {
                         tracing::warn!(task = %id, "controller: {}", otter_core::redact::redact(&e.message));
@@ -347,6 +355,12 @@ impl Daemon {
     }
 
     async fn step(self: &Arc<Self>, id: &TaskId) -> RpcResult<()> {
+        // What the developer said to do, done first (D-190): it may pause,
+        // revise or go on. A command that can't be done says so; it never
+        // stops the task.
+        if let Err(e) = self.run_commands(id).await {
+            tracing::warn!(task = %id, "a command: {}", redact(&e.message));
+        }
         let mut f = self.task_get(id.as_str()).await?;
         // The developer said something: answer first (it may pause or go on)
         // — with Otter's tools where it has them (D-089).
@@ -3073,7 +3087,7 @@ fn pr_body(f: &Task) -> String {
 }
 
 /// The developer's messages since the Control Agent last answered one
-/// (the request that created the task isn't one).
+/// (the request that created the task isn't one, nor is a command).
 pub(crate) fn unanswered(f: &Task) -> Vec<otter_core::task::Message> {
     // The request isn't a message to answer (D-067).
     let request = f.request_message();
@@ -3089,7 +3103,10 @@ pub(crate) fn unanswered(f: &Task) -> Vec<otter_core::task::Message> {
         .iter()
         .enumerate()
         .skip(answered.map_or(0, |i| i + 1))
-        .filter(|(_, m)| m.role == MessageRole::User && Some(&m.id) != request)
+        // A command is done by otterd, not answered (D-190).
+        .filter(|(_, m)| {
+            m.role == MessageRole::User && Some(&m.id) != request && m.command.is_none()
+        })
         .map(|(_, m)| m.clone())
         .collect()
 }

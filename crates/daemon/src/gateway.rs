@@ -2105,6 +2105,7 @@ mod tests {
             at: chrono::Utc::now(),
             correlation_id: None,
             attachments: vec![],
+            command: None,
         }
     }
 
@@ -2199,6 +2200,7 @@ mod tests {
             at: chrono::Utc::now(),
             correlation_id: None,
             attachments: vec![],
+            command: None,
         };
         let dev = Origin::Developer { messages: vec![m] };
         assert_eq!(dev.command("accept_task"), "msg_1:accept_task");

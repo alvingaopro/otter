@@ -24,8 +24,8 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 use chrono::Utc;
 use otter_core::task::{
-    Decider, DecisionKind, DecisionStatus, Message, MessageRole, StepStatus, TASK_EVENT_SCHEMA,
-    TASK_SCHEMA, Task, TaskAction, TaskEvent, TaskEventRecord, TaskStatus,
+    Decider, DecisionKind, DecisionStatus, Message, MessageCommand, MessageRole, StepStatus,
+    TASK_EVENT_SCHEMA, TASK_SCHEMA, Task, TaskAction, TaskEvent, TaskEventRecord, TaskStatus,
 };
 use otter_core::{MessageId, TaskId, Timestamp, WorkspaceId};
 use otter_protocol::task::{
@@ -586,6 +586,7 @@ pub fn message_with_id(
         at: Utc::now(),
         correlation_id: correlation.clone(),
         attachments: vec![],
+        command: None,
     };
     let change = Change {
         event: TaskEvent::MessageAdded {
@@ -1126,10 +1127,36 @@ impl Daemon {
     pub(crate) async fn task_send(&self, p: TaskSend) -> RpcResult<Task> {
         check_command_id(&p.command_id)?;
         let text = p.text.trim().to_owned();
-        if text.is_empty() && p.images.is_empty() {
-            return Err(RpcError::invalid("the message is empty"));
+        match &p.command {
+            None if text.is_empty() && p.images.is_empty() => {
+                return Err(RpcError::invalid("the message is empty"));
+            }
+            // A note is words; the others may be pictures alone.
+            Some(c)
+                if c.needs_words()
+                    && text.is_empty()
+                    && (p.images.is_empty() || *c == MessageCommand::Remember) =>
+            {
+                return Err(RpcError::invalid(format!(
+                    "{} needs words after it",
+                    c.prefix()
+                )));
+            }
+            Some(MessageCommand::Remind { in_minutes })
+                if !(1..=otter_core::watch::MAX_MINUTES).contains(in_minutes) =>
+            {
+                return Err(RpcError::invalid(
+                    "a reminder is between a minute and a week away",
+                ));
+            }
+            _ => {}
         }
         check_text("message", &text, MAX_TEXT)?;
+        // The message is the line as written: the command, then its words.
+        let text = match &p.command {
+            Some(c) => c.line(&text),
+            None => text,
+        };
         let pictures = check_images(&p.images)?;
         let cmd = p.command_id.clone();
         let id = TaskId::from(p.task.as_str());
@@ -1182,6 +1209,7 @@ impl Daemon {
                 Some(cmd.clone()),
             );
             m.attachments = names.clone();
+            m.command = p.command.clone();
             f.messages.push(m);
             added = true;
             Ok(vec![c])
@@ -1197,7 +1225,7 @@ impl Daemon {
         };
         self.task_changed(&applied);
         // Otter reads it first and decides what reaches the coding agent
-        // (controller.rs, D-059).
+        // (controller.rs, D-059); a command, otterd does (D-190).
         Ok(applied.task)
     }
 

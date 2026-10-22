@@ -463,11 +463,89 @@ pub struct Message {
     /// Pictures that came with it, by name in the task's artifacts.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub attachments: Vec<String>,
+    /// The developer's slash command it carries (D-190): otterd does it, and
+    /// Otter's turn doesn't answer it. `text` is the line as written.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub command: Option<MessageCommand>,
 }
 
 /// What a message of pictures alone says, for whoever reads it as words
 /// (Otter's turn, the planner, the agent): never blank.
 pub const PICTURES_ONLY: &str = "(pictures, no words)";
+
+/// A slash command in a task's conversation (D-190): the developer said
+/// what to do, so otterd does it with the tool Otter would have chosen,
+/// and says what came of it. The words after the command go with it.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "name", rename_all = "snake_case")]
+pub enum MessageCommand {
+    /// `/ask`: a question for the coding agent, in a turn that only reads.
+    Ask,
+    /// `/tell`: passed to the coding agent as written, after its turn.
+    Tell,
+    /// `/revise`: the goal changed; plan again from where the work is.
+    Revise,
+    /// `/remember`: a line in this task's memory.
+    Remember,
+    /// `/watch ci`: watch the task's pull request's CI.
+    WatchCi,
+    /// `/remind <time>`: look at the task again in so many minutes.
+    Remind { in_minutes: u32 },
+    /// `/answer-only on|off`.
+    AnswerOnly { on: bool },
+}
+
+impl MessageCommand {
+    /// The command as typed, without the words after it.
+    pub fn prefix(&self) -> String {
+        match self {
+            MessageCommand::Ask => "/ask".into(),
+            MessageCommand::Tell => "/tell".into(),
+            MessageCommand::Revise => "/revise".into(),
+            MessageCommand::Remember => "/remember".into(),
+            MessageCommand::WatchCi => "/watch ci".into(),
+            MessageCommand::Remind { in_minutes } => format!("/remind {}", minutes(*in_minutes)),
+            MessageCommand::AnswerOnly { on } => {
+                format!("/answer-only {}", if *on { "on" } else { "off" })
+            }
+        }
+    }
+
+    /// Whether it means nothing without words after it.
+    pub fn needs_words(&self) -> bool {
+        matches!(
+            self,
+            MessageCommand::Ask
+                | MessageCommand::Tell
+                | MessageCommand::Revise
+                | MessageCommand::Remember
+        )
+    }
+
+    /// The message's text: the command and the words after it.
+    pub fn line(&self, words: &str) -> String {
+        let words = words.trim();
+        if words.is_empty() {
+            self.prefix()
+        } else {
+            format!("{} {words}", self.prefix())
+        }
+    }
+
+    /// The words after the command in a message's `text`.
+    pub fn words<'a>(&self, text: &'a str) -> &'a str {
+        text.strip_prefix(&self.prefix()).unwrap_or(text).trim()
+    }
+}
+
+/// Minutes as `/remind` writes them: `45m`, `2h`, `1h30m`.
+fn minutes(n: u32) -> String {
+    match (n / 60, n % 60) {
+        (0, m) => format!("{m}m"),
+        (h, 0) => format!("{h}h"),
+        (h, m) => format!("{h}h{m}m"),
+    }
+}
 
 /// Otter's conversation on a host (D-093): the developer and Otter about
 /// any task there, apart from each task's own conversation. Its messages
@@ -1755,6 +1833,7 @@ mod tests {
             at: now,
             correlation_id: None,
             attachments: vec![],
+            command: None,
         };
         let mut f = Task::new("t".into(), String::new(), now);
         f.messages

@@ -86,6 +86,12 @@ pub struct TaskSend {
     /// [`MAX_IMAGES`], [`MAX_IMAGE_BYTES`] each and [`MAX_IMAGES_TOTAL`] in all.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub images: Vec<TaskImage>,
+    /// A slash command (D-190): otterd does it rather than Otter's turn
+    /// reading it, and `text` is only the words after it (empty for one
+    /// that needs none). An otterd before it ignores this field; clients
+    /// send it only where `runtime.capabilities` says `message_commands`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub command: Option<otter_core::task::MessageCommand>,
 }
 
 /// Most pictures on one message.

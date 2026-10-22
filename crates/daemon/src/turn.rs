@@ -1058,6 +1058,7 @@ mod tests {
                 at: chrono::Utc::now(),
                 correlation_id: None,
                 attachments: vec![],
+                command: None,
             })
             .collect();
         let r = recent(&all);
@@ -1089,6 +1090,7 @@ mod tests {
             attachments: (0..pictures)
                 .map(|n| format!("attachment-{id}-{n}.png"))
                 .collect(),
+            command: None,
         };
         let messages = [
             message("msg_a", "Like this", 2),
