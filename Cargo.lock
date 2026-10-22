@@ -705,7 +705,7 @@ checksum = "384b8ab6d37215f3c5301a95a4accb5d64aa607f1fcb26a11b5303878451b4fe"
 
 [[package]]
 name = "otter"
-version = "0.7.75"
+version = "0.7.76"
 dependencies = [
  "anyhow",
  "chrono",
@@ -724,7 +724,7 @@ dependencies = [
 
 [[package]]
 name = "otter-client"
-version = "0.7.75"
+version = "0.7.76"
 dependencies = [
  "anyhow",
  "chrono",
@@ -741,7 +741,7 @@ dependencies = [
 
 [[package]]
 name = "otter-core"
-version = "0.7.75"
+version = "0.7.76"
 dependencies = [
  "chrono",
  "rand",
@@ -751,7 +751,7 @@ dependencies = [
 
 [[package]]
 name = "otter-protocol"
-version = "0.7.75"
+version = "0.7.76"
 dependencies = [
  "chrono",
  "otter-core",
@@ -763,7 +763,7 @@ dependencies = [
 
 [[package]]
 name = "otterd"
-version = "0.7.75"
+version = "0.7.76"
 dependencies = [
  "anyhow",
  "async-trait",
