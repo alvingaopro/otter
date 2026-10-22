@@ -43,6 +43,8 @@ const TOKEN_PREFIXES: &[(&str, usize)] = &[
     ("xoxp-", 10),
     ("xoxa-", 10),
     ("xoxs-", 10),
+    // A Slack app-level token (D-198).
+    ("xapp-", 10),
     ("AKIA", 16),
     ("ASIA", 16),
     ("AIza", 30),
@@ -285,6 +287,7 @@ mod tests {
             ),
             ("aws AKIAIOSFODNN7EXAMPLE used", "IOSFODNN7EXAMPLE"),
             ("xoxb-1234567890-abcdefghij", "1234567890-abcdefghij"),
+            ("xapp-1-A0CBG40MJN6-1234567890", "A0CBG40MJN6-1234567890"),
             (
                 // Split so secret scanners don't flag this fake key.
                 concat!("api key AIza", "SyA-1234567890abcdefghijklmnopqrstu here"),

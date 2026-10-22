@@ -353,6 +353,20 @@ The Control Agent's model and API keys on this host (D-048).
   level | null}}` sets them (`null`: back to the default); an unknown tool
   is `invalid_request`. `OTTER_TOOL_LEVELS` in otterd's environment
   (`name=level,…`) overrides them. Absent from older daemons.
+- The view also has `slack?: {users, state, detail?, team?, bot?}` (D-198):
+  Otter in Slack from this host. `users` are the Slack member IDs (`U…`)
+  whose direct messages to the app are the developer's; `state` is `off`
+  (`detail` says what is missing), `connecting`, `connected` (`team` and
+  `bot`: the Slack workspace and the app's bot there) or `failed` (`detail`
+  says why; otterd tries again); clients show an unknown one as it is.
+  `settings.set {slack: {users}}` sets the members (`[]`: none). The app's
+  two tokens are among `secrets`: `SLACK_BOT_TOKEN` (`xoxb-…`) and
+  `SLACK_APP_TOKEN` (`xapp-…`, with `connections:write`); anything else
+  for either is `invalid_request`. A direct message from one of `users`
+  is said in Otter's conversation on the host (`otter.send` with
+  `command_id` `slack:<channel>:<ts>[:<thread>]`, which is its message's
+  `correlation_id`), and Otter's messages after it go back to Slack. Absent
+  from older daemons.
 - `settings.models {controller}` → `[{id, name?}]`: the models that
   controller offers, as its provider lists them, asked by the host with the
   key set there (OpenRouter's list needs none); `claude` answers Claude

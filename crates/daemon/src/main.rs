@@ -35,6 +35,7 @@ mod runtime;
 mod server;
 mod sessions;
 mod settings;
+mod slack;
 mod store;
 mod tasks;
 mod triggers;
@@ -236,6 +237,8 @@ async fn serve(paths: Paths) -> Result<()> {
     tokio::spawn(daemon.clone().run_watches());
     // A task's own workspace goes once its work is merged (D-189).
     tokio::spawn(daemon.clone().run_merged());
+    // Otter in Slack, where it is set up (D-198).
+    tokio::spawn(daemon.clone().run_slack());
 
     // We hold the lock, so any socket file left behind is stale.
     let _ = std::fs::remove_file(&paths.socket);
