@@ -4,24 +4,12 @@
 use anyhow::{Result, bail};
 use otter_core::task::{MessageRole, OtterChat};
 
-use crate::config::{Config, HostEntry};
+use crate::config::Config;
 use crate::output;
 use crate::target::connect;
 
 /// How long `otter chat <text>` waits for Otter's answer.
 const WAIT: std::time::Duration = std::time::Duration::from_secs(180);
-
-fn host(config: &Config, host: Option<String>) -> Result<HostEntry> {
-    Ok(match host {
-        Some(h) => config.host(&h)?.clone(),
-        None => match (&config.default_host, config.hosts.as_slice()) {
-            (Some(d), _) => config.host(d)?.clone(),
-            (None, [only]) => only.clone(),
-            (None, []) => bail!("no hosts registered; add one with `otter host add <name>`"),
-            (None, _) => bail!("several hosts; choose one with --host"),
-        },
-    })
-}
 
 fn who(role: MessageRole) -> &'static str {
     match role {
@@ -40,9 +28,9 @@ pub async fn run(
     text: Vec<String>,
     json: bool,
 ) -> Result<()> {
-    let entry = host(config, host_name)?;
-    let mut conn = connect(config, &entry).await?;
     let text = text.join(" ");
+    let entry = crate::target::pick_host(config, host_name, &text).await?;
+    let mut conn = connect(config, &entry).await?;
     if text.trim().is_empty() {
         let chat = conn.otter_get().await.map_err(too_old)?;
         if json {

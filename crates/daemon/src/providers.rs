@@ -327,9 +327,30 @@ impl Provider {
         )
     }
 
-    /// A tool-using conversation's first message.
-    pub fn first_message(&self, prompt: &str) -> Value {
-        json!({"role": "user", "content": prompt})
+    /// Whether Otter's turn shows this provider the developer's pictures
+    /// (D-181): Anthropic's models all read them; behind the OpenAI shape,
+    /// some models do and some refuse a request that has them.
+    pub fn sees_pictures(&self) -> bool {
+        self.style == Style::Anthropic
+    }
+
+    /// A tool-using conversation's first message: the pictures first, as
+    /// Claude reads them best, then the prompt.
+    pub fn first_message(&self, prompt: &str, images: &[crate::runtime::TurnImage]) -> Value {
+        if images.is_empty() || !self.sees_pictures() {
+            return json!({"role": "user", "content": prompt});
+        }
+        let mut content: Vec<Value> = images
+            .iter()
+            .map(|i| {
+                json!({
+                    "type": "image",
+                    "source": {"type": "base64", "media_type": i.media_type, "data": i.data}
+                })
+            })
+            .collect();
+        content.push(json!({"type": "text", "text": prompt}));
+        json!({"role": "user", "content": content})
     }
 
     /// One round's request (exported for tests).
@@ -816,6 +837,38 @@ mod tests {
                 .read_round(&json!({"error": {"message": "overloaded"}}))
                 .is_err()
         );
+    }
+
+    /// The developer's pictures go to Anthropic as image blocks before the
+    /// prompt (D-181); behind the OpenAI shape they don't go at all.
+    #[test]
+    fn a_first_message_with_pictures() {
+        let png = crate::runtime::TurnImage {
+            media_type: "image/png".into(),
+            data: "AAAA".into(),
+        };
+        let anthropic = get("anthropic").unwrap();
+        assert!(anthropic.sees_pictures());
+        assert_eq!(
+            anthropic.first_message("What's this?", std::slice::from_ref(&png)),
+            json!({"role": "user", "content": [
+                {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "AAAA"}},
+                {"type": "text", "text": "What's this?"}
+            ]})
+        );
+        assert_eq!(
+            anthropic.first_message("What's this?", &[]),
+            json!({"role": "user", "content": "What's this?"})
+        );
+        for id in ["openrouter", "openai", "deepseek", "groq"] {
+            let p = get(id).unwrap();
+            assert!(!p.sees_pictures(), "{id}");
+            assert_eq!(
+                p.first_message("What's this?", std::slice::from_ref(&png)),
+                json!({"role": "user", "content": "What's this?"}),
+                "{id}"
+            );
+        }
     }
     use std::os::unix::fs::PermissionsExt;
 

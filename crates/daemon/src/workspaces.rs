@@ -50,6 +50,16 @@ impl Daemon {
         self: &Arc<Self>,
         p: WorkspaceCreate,
     ) -> RpcResult<Workspace> {
+        self.workspace_create_for(p, None).await
+    }
+
+    /// As `workspace_create`, for a task: marked as made for it in the same
+    /// write, so it is never left without the mark (D-105, D-179).
+    pub(crate) async fn workspace_create_for(
+        self: &Arc<Self>,
+        p: WorkspaceCreate,
+        task: Option<otter_core::TaskId>,
+    ) -> RpcResult<Workspace> {
         validate_name("workspace", &p.name).map_err(RpcError::invalid)?;
         let specs = p.sessions.unwrap_or_else(|| vec![SessionSpec::shell()]);
         for spec in &specs {
@@ -119,7 +129,7 @@ impl Daemon {
                 updated_at: now,
                 sessions: Vec::new(),
                 attention: Vec::new(),
-                task_id: None,
+                task_id: task,
             });
             save(&store)?;
             self.events.emit(Event::WorkspaceCreated {

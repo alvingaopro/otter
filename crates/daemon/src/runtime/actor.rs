@@ -86,7 +86,7 @@ pub fn input_blocks(text: String, pictures: Vec<String>) -> Vec<InputBlock> {
 /// A turn's input as the runtime takes it: the text, and the pictures read
 /// from the files the turn names. One that can't be read is said in the
 /// text, never left out without a word.
-async fn turn_input(input: &[InputBlock]) -> (String, Vec<TurnImage>) {
+pub(crate) async fn turn_input(input: &[InputBlock]) -> (String, Vec<TurnImage>) {
     use base64::Engine;
     let mut parts = vec![];
     let mut images = vec![];

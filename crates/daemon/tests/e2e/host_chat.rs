@@ -15,7 +15,11 @@ async fn chat_host(v2: bool) -> FakeCodex {
 
 /// Say `text` to Otter on the host; wait for its one reply. The chat then,
 /// the reply, and each tool call's answer in order.
-async fn say(host: &TestHost, command_id: &str, text: &str) -> (OtterChat, String, Vec<Value>) {
+pub(super) async fn say(
+    host: &TestHost,
+    command_id: &str,
+    text: &str,
+) -> (OtterChat, String, Vec<Value>) {
     let chat = host
         .conn()
         .await

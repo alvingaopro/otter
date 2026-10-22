@@ -380,14 +380,21 @@ Product work owned by the daemon (D-043); see `otter_core::task`.
 
 - `task.list` → every task, newest first; `task.get {task}` → one.
 - `task.create {command_id, title, request?, workspace?}` → a `draft`
-  task; the request becomes the first message.
+  task; the request becomes the first message. `workspace` is a workspace by
+  id or name (a string, as always), `{"new": {"repository", "base"?,
+  "branch"?}}` (a workspace made for the task from that repository, on a
+  branch of its own) or `{"scratch": {}}` (an empty directory made for it)
+  (D-179). The task is returned with the workspace set; a Git one is still
+  being prepared, and the task waits for it. An older otterd answers the
+  object forms `invalid_request`.
 - `task.send {command_id, task, text, images?}` → the task, with the
   developer's message added. `images`: up to 4 pictures, each a `TaskImage`
   `{media_type, data}` (`image/png`, `image/jpeg` or `image/webp`; `data`
   base64, at most 700 KB decoded, 2 MB in all); `text` may then be empty. The
   daemon keeps each in the task's artifacts (`task.artifact`) and lists the
   names on the message's `attachments` (D-171). The pictures reach the coding
-  agent's turn as the worker's `send_turn {turn_id, text, images?}`, where
+  agent's turn, and Otter's (D-181), as the worker's
+  `send_turn {turn_id, text, images?}`, where
   `images` is the same list of `{media_type, data}` (the worker checks the
   same limits); worker frames, both ways, are at most 4 MiB (`MAX_FRAME`,
   was 1 MiB) so a turn with its pictures fits one.

@@ -10,7 +10,8 @@ import { Menu } from "./Menu";
 import { ago } from "./model";
 import { PanelGrip, TASK_DETAIL, usePanelWidth } from "./panelResize";
 import type { CodingConversation, Interaction, RuntimeCapabilities } from "./conversation";
-import type { TaskSource } from "./taskSource";
+import type { TaskSource, WorkspaceRequest } from "./taskSource";
+import { routeHost } from "./route";
 import { QuestionForm, Turn, WorkHead } from "./Work";
 import { useComposition } from "./composing";
 import { MAX_IMAGES, PICTURES_ONLY, pastedFiles, prepareImage, type PastedImage } from "./pastedImage";
@@ -51,14 +52,12 @@ interface Props {
   focus?: { key: string; at: number };
   /** Show a workspace (and session) in the Workspaces view. */
   onOpenWorkspace: (host: string, workspaceId: string, sessionId?: string) => void;
-  /** Open a preview port of a host in the browser (forwarding it if remote). */
-  onOpenPreview: (host: string, port: number, path: string) => Promise<void>;
   /** The list's resize handle (D-097): the same width as the Workspaces list. */
   grip?: ReactNode;
 }
 
 /** The tasks, under Chat in the Activity Bar (D-041, D-042, D-178): product work, independent of the Workspace view. */
-export function TasksView({ source, hosts, workspaces, now, focus, onOpenWorkspace, onOpenPreview, grip }: Props) {
+export function TasksView({ source, hosts, workspaces, now, focus, onOpenWorkspace, grip }: Props) {
   const [list, setList] = useState<PlacedTask[]>(() => source.list());
   const [find, setFind] = useState("");
   const [selected, setSelected] = useState<string | undefined>();
@@ -169,7 +168,6 @@ export function TasksView({ source, hosts, workspaces, now, focus, onOpenWorkspa
           now={now}
           workspaces={workspaces[current.host] ?? []}
           onOpenWorkspace={onOpenWorkspace}
-          onOpenPreview={onOpenPreview}
         />
       ) : (
         <main className="pane empty">
@@ -248,14 +246,12 @@ function TaskPane({
   now,
   workspaces,
   onOpenWorkspace,
-  onOpenPreview,
 }: {
   placed: PlacedTask;
   source: TaskSource;
   now: number;
   workspaces: WorkspaceChoice[];
   onOpenWorkspace: Props["onOpenWorkspace"];
-  onOpenPreview: Props["onOpenPreview"];
 }) {
   const f = placed.task;
   const ws = workspaces.find((w) => w.id === f.workspace_id);
@@ -320,25 +316,7 @@ function TaskPane({
           )}
         </span>
         <span className="spacer" />
-        {f.workspace_id && !ENDED.includes(f.status) && (
-          <button
-            className="btn"
-            title={f.preview ? `Port ${f.preview.port} on ${placed.host}` : "Start the app's preview in its workspace"}
-            onClick={async () => {
-              setError(null);
-              try {
-                if (!f.preview) await source.act(placed.key, { action: "preview" });
-                const p = source.list().find((x) => x.key === placed.key)?.task.preview ?? f.preview;
-                if (p) await onOpenPreview(placed.host, p.port, p.path);
-              } catch (e) {
-                setError(String(e));
-              }
-            }}
-          >
-            {f.preview ? "Open preview" : "Preview"}
-          </button>
-        )}
-        <TaskActions f={f} act={act} caps={caps} />
+        <TaskActions f={f} act={act} />
         <Menu
           label="More actions"
           items={[
@@ -527,37 +505,16 @@ function DeleteTaskDialog({
   );
 }
 
-/** What the task can be told to do now; cancelling and deleting are in the ⋯ menu. */
-function TaskActions({
-  f,
-  act,
-  caps,
-}: {
-  f: Task;
-  act: (a: TaskAction) => void;
-  caps?: RuntimeCapabilities | null;
-}) {
-  const live = ["planning", "implementing", "verifying", "blocked"].includes(f.status);
-  const running = f.runs.some((r) => ["starting", "running", "waiting"].includes(r.state));
+/**
+ * What the task can be told to do next; stopping it is beside the message
+ * box, cancelling and deleting are in the ⋯ menu.
+ */
+function TaskActions({ f, act }: { f: Task; act: (a: TaskAction) => void }) {
   return (
     <span className="task-actions">
-      {running && caps?.features.interrupt_turn && (
-        <button
-          className="btn"
-          title="Stop what the coding agent is doing now, and wait for you"
-          onClick={() => act({ action: "interrupt" })}
-        >
-          Interrupt
-        </button>
-      )}
       {f.status === "draft" && (
         <button className="btn primary" onClick={() => act({ action: "start" })}>
           Start
-        </button>
-      )}
-      {live && (
-        <button className="btn" onClick={() => act({ action: "pause" })}>
-          Pause
         </button>
       )}
       {f.status === "paused" && (
@@ -1037,10 +994,30 @@ function Conversation({
                   }
                 }}
               />
+              {["planning", "implementing", "verifying", "blocked"].includes(placed.task.status) && (
+                <button
+                  type="button"
+                  className="btn outline composer-btn"
+                  title="Stop the work and wait until you resume it"
+                  disabled={busy}
+                  onClick={async () => {
+                    setBusy(true);
+                    try {
+                      await source.act(placed.key, { action: "pause" });
+                    } catch (e) {
+                      onError?.(String(e));
+                    } finally {
+                      setBusy(false);
+                    }
+                  }}
+                >
+                  Pause
+                </button>
+              )}
               {live && caps?.features.redirect && (
                 <button
                   type="button"
-                  className="btn outline composer-redirect"
+                  className="btn outline composer-btn"
                   title="Stop what the coding agent is doing and have it do this next"
                   disabled={busy || !text.trim()}
                   onClick={async () => {
@@ -1057,7 +1034,7 @@ function Conversation({
                     }
                   }}
                 >
-                  Redirect now
+                  Stop & send
                 </button>
               )}
               <button
@@ -1679,6 +1656,22 @@ function ActivityFeed({
   );
 }
 
+/** The host the last task went to, to start from when the text names none (D-179). */
+const LAST_HOST = "otter.new-task-host";
+const AUTO_HOST = "";
+const FROM_REPOSITORY = "@repository";
+const EMPTY_DIRECTORY = "@empty";
+
+function lastHost(hosts: string[]): string {
+  try {
+    const h = localStorage.getItem(LAST_HOST);
+    if (h && hosts.includes(h)) return h;
+  } catch {
+    // Without it, the first host.
+  }
+  return hosts[0];
+}
+
 function NewTaskDialog({
   hosts,
   workspaces,
@@ -1687,25 +1680,54 @@ function NewTaskDialog({
 }: {
   hosts: string[];
   workspaces: Record<string, WorkspaceChoice[]>;
-  onCreate: (host: string, title: string, request: string, workspace?: string, answerOnly?: boolean) => Promise<void>;
+  onCreate: (host: string, title: string, request: string, workspace?: string | WorkspaceRequest, answerOnly?: boolean) => Promise<void>;
   onClose: () => void;
 }) {
-  const [host, setHost] = useState(hosts[0]);
-  const choices = workspaces[host] ?? [];
+  const [hostPick, setHostPick] = useState(AUTO_HOST);
   const [workspace, setWorkspace] = useState<string>("");
+  const [repository, setRepository] = useState("");
   const [answerOnly, setAnswerOnly] = useState(false);
   const [title, setTitle] = useState("");
   const [request, setRequest] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
+  // With several hosts, what is written says which: a workspace or a
+  // repository it names belongs to the host that has it (D-179).
+  const routed = useMemo(
+    () =>
+      hosts.length > 1 && hostPick === AUTO_HOST
+        ? routeHost([title, request, repository].join(" "), workspaces)
+        : undefined,
+    [hosts, hostPick, title, request, repository, workspaces],
+  );
+  const host =
+    hostPick !== AUTO_HOST ? hostPick : routed?.kind === "one" ? routed.host : lastHost(hosts);
+  const choices = workspaces[host] ?? [];
+  const existing = choices.some((w) => w.id === workspace);
+  const placing = workspace === FROM_REPOSITORY || workspace === EMPTY_DIRECTORY || existing;
+  const needsRepository = workspace === FROM_REPOSITORY && !repository.trim();
+
   async function submit(e: FormEvent) {
     e.preventDefault();
-    if (!title.trim() || busy) return;
+    if (!title.trim() || needsRepository || busy) return;
     setBusy(true);
     setError(null);
+    const where: string | WorkspaceRequest | undefined =
+      workspace === FROM_REPOSITORY
+        ? { new: { repository: repository.trim() } }
+        : workspace === EMPTY_DIRECTORY
+          ? { scratch: {} }
+          : existing
+            ? workspace
+            : undefined;
     try {
-      await onCreate(host, title.trim(), request.trim(), workspace || undefined, answerOnly);
+      await onCreate(host, title.trim(), request.trim(), where, answerOnly);
+      try {
+        localStorage.setItem(LAST_HOST, host);
+      } catch {
+        // Only a convenience.
+      }
     } catch (err) {
       setError(String(err));
       setBusy(false);
@@ -1727,29 +1749,56 @@ function NewTaskDialog({
           <label className="field">
             <span>Host</span>
             <select
-              value={host}
+              value={hostPick}
+              aria-describedby={hostPick === AUTO_HOST ? "new-task-host-hint" : undefined}
               onChange={(e) => {
-                setHost(e.target.value);
+                setHostPick(e.target.value);
                 setWorkspace("");
               }}
             >
+              <option value={AUTO_HOST}>From what I write</option>
               {hosts.map((h) => (
                 <option key={h}>{h}</option>
               ))}
             </select>
+            {hostPick === AUTO_HOST && (
+              <small className="muted" id="new-task-host-hint">
+                {routed?.kind === "one"
+                  ? `Goes to ${routed.host}: it has ${routed.why}.`
+                  : routed?.kind === "several"
+                    ? `${routed.hosts.join(", ")} all have it; using ${host}. Choose a host to change that.`
+                    : `Nothing written names a host; using ${host}.`}
+              </small>
+            )}
           </label>
         )}
         <label className="field">
           <span>Workspace (where the work happens)</span>
-          <select value={workspace} onChange={(e) => setWorkspace(e.target.value)}>
+          <select value={placing ? workspace : ""} onChange={(e) => setWorkspace(e.target.value)}>
             <option value="">Choose later</option>
             {choices.map((w) => (
               <option key={w.id} value={w.id}>
                 {w.name}
               </option>
             ))}
+            <option value={FROM_REPOSITORY}>A new one, from a repository…</option>
+            <option value={EMPTY_DIRECTORY}>A new one, an empty directory</option>
           </select>
         </label>
+        {workspace === FROM_REPOSITORY && (
+          <label className="field">
+            <span>Repository</span>
+            <input
+              aria-label="Repository"
+              value={repository}
+              onChange={(e) => setRepository(e.target.value)}
+              placeholder="git@github.com:acme/billing.git"
+            />
+            <small className="muted">
+              The task gets a workspace of its own, on a branch of its own, prepared before the work starts.
+            </small>
+          </label>
+        )}
         <label className="check">
           <input
             type="checkbox"
@@ -1765,7 +1814,7 @@ function NewTaskDialog({
           <button type="button" className="btn outline" onClick={onClose}>
             Cancel
           </button>
-          <button type="submit" className="btn primary" disabled={!title.trim() || busy}>
+          <button type="submit" className="btn primary" disabled={!title.trim() || needsRepository || busy}>
             Create draft
           </button>
         </div>
@@ -1773,4 +1822,3 @@ function NewTaskDialog({
     </Dialog>
   );
 }
-

@@ -782,6 +782,16 @@ pub fn repo_id(repository: &str) -> String {
     format!("{name}-{:08x}", fnv1a(normalized.as_bytes()) as u32)
 }
 
+/// The readable part of a repository's name: `suger-api` for
+/// `git@github.com:sugerio/suger-api.git` (`repo_id` without its hash).
+pub fn repo_name(repository: &str) -> String {
+    let id = repo_id(repository);
+    match id.rsplit_once('-') {
+        Some((name, _)) => name.to_owned(),
+        None => id,
+    }
+}
+
 /// A branch-name-friendly version of a workspace name.
 pub fn slug(name: &str) -> String {
     let mut out = String::new();
@@ -826,6 +836,15 @@ mod tests {
         assert!(a.starts_with("suger-api-"), "{a}");
         assert_ne!(a, repo_id("git@github.com:other/suger-api.git"));
         assert!(repo_id("/srv/git/thing/").starts_with("thing-"));
+    }
+
+    #[test]
+    fn repo_names_are_the_readable_part() {
+        assert_eq!(
+            repo_name("git@github.com:sugerio/suger-api.git"),
+            "suger-api"
+        );
+        assert_eq!(repo_name("https://github.com/acme/billing/"), "billing");
     }
 
     #[test]

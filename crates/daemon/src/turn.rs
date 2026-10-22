@@ -63,6 +63,11 @@ pub struct Turn<'a> {
     pub event: Option<(otter_core::TaskId, String)>,
     /// The developer's unanswered messages, oldest first.
     pub messages: &'a [Message],
+    /// The pictures of `messages` the model is shown (D-181), each with its
+    /// message's id, oldest first: none unless the backend
+    /// [sees pictures](TurnBackend::sees_pictures), and no more than a turn
+    /// carries ([`crate::runs::fitting`]).
+    pub pictures: Vec<(String, std::path::PathBuf)>,
     /// What `reply` gave the model: the brief, the status, the steps and
     /// the recent conversation. Details come through the tools.
     pub context: String,
@@ -79,6 +84,11 @@ pub trait TurnBackend: Send + Sync {
     /// Tests only: run a developer's turn as an event's — a downgrade,
     /// never more authority.
     fn as_event(&self, _messages: &[Message]) -> bool {
+        false
+    }
+    /// Whether the model is shown the pictures of the developer's messages
+    /// (D-181); one that isn't is told they are there.
+    fn sees_pictures(&self) -> bool {
         false
     }
     /// The model's loop: call tools through `gateway`, return the reply.
@@ -104,9 +114,14 @@ pub fn recent(messages: &[Message]) -> String {
     }
     lines.extend(messages[skip..].iter().map(|m| {
         format!(
-            "{:?}: {}",
+            "{:?}: {}{}",
             m.role,
-            crate::agents::excerpt(&m.text, RECENT_CHARS)
+            crate::agents::excerpt(&m.text, RECENT_CHARS),
+            match m.attachments.len() {
+                0 => String::new(),
+                1 => " [1 picture]".to_owned(),
+                n => format!(" [{n} pictures]"),
+            }
         )
     }));
     lines.join("\n")
@@ -233,11 +248,31 @@ impl Daemon {
                 self.stream(&f.id, &d.id, MessageRole::Controller, so_far, false);
             }
         };
+        // The pictures that came with these messages, if the model can see
+        // them: as many as a turn carries, the newest. One whose file is
+        // gone isn't shown, and its message says so: the numbers in the
+        // prompt are the pictures the model has.
+        let pictures = if backend.sees_pictures() {
+            let all = open
+                .iter()
+                .flat_map(|m| {
+                    let id = m.id.to_string();
+                    self.pictures_of(&f.id, m)
+                        .into_iter()
+                        .filter(|p| p.is_file())
+                        .map(move |p| (id.clone(), p))
+                })
+                .collect();
+            crate::runs::fitting(all).0
+        } else {
+            vec![]
+        };
         let turn = Turn {
             task: Some(f),
             instructions: INSTRUCTIONS,
             event: None,
             messages: &open,
+            pictures,
             context: context(f, &self.memories(Some(&f.id))),
             tools: tools(),
             limits: &limits,
@@ -331,6 +366,7 @@ impl Daemon {
             instructions: HOST_INSTRUCTIONS,
             event: None,
             messages: &open,
+            pictures: vec![],
             context: self.host_context(&chat).await,
             tools: host_tools(),
             limits: &limits,
@@ -445,6 +481,7 @@ impl Daemon {
                     instructions: HOST_INSTRUCTIONS,
                     event: Some((f.id.clone(), what.clone())),
                     messages: &[],
+                    pictures: vec![],
                     context: self.host_context(&chat).await,
                     tools: host_tools(),
                     limits: &limits,
@@ -558,6 +595,7 @@ pub const INSTRUCTIONS: &str = "You are Otter, the developer's tech lead for one
 - Answer the developer's latest messages directly and briefly (2-6 sentences), in the language they wrote in: what is happening, and what happens next.
 - Every statement about the task rests on what you were given above or what your tools return; look with them when that isn't enough. Don't invent progress.
 - You can't read or change code; the coding agent can. A question about the code goes to it with ask_agent (it answers after its current turn, only reading). An instruction for the work goes with forward_to_agent (redirect_agent if it can't wait for the agent's current turn).
+- The developer's messages may come with pictures (screenshots and the like); each message says which are its. The pictures you're shown come with the messages: look at them and use what they show. One you aren't shown you can't see: say so. A message's pictures go to the coding agent with its words (forward_to_agent, ask_agent, redirect_agent, or when a run starts).
 - Act only on what these messages ask. The goal changed or grew: revise_task. Go on: start_task, resume_task, retry_task, or approve_plan when they were asked about a plan. Stop or wait: pause_task. Satisfied with what's in review: accept_task.
 - When the developer says they only want an answer (“don't change anything”), set_answer_only on; when they say changes are fine again, off.
 - The only decision you may make for the developer is the plan, when they said to go ahead. Anything else waiting on them, they answer in the task: say what it is.
@@ -573,7 +611,8 @@ pub const HOST_INSTRUCTIONS: &str = "You are Otter, the developer's tech lead on
 - Otter's words: a task is what the developer asked for (it has a conversation of its own); a run is a coding agent at work on one; a workspace is a directory on this host where a task's work happens.
 - Answer the developer's latest messages directly and briefly, in the language they wrote in. Name tasks by title, with their id in brackets.
 - Every statement about a task rests on what you were given above or what your tools return; look with them when that isn't enough. Don't invent progress.
-- New work: create_task, with the developer's own message(s) as its request (by id) and a short title of yours; their workspace if they named one (list_workspaces has them); answer_only if they only want an answer; start if they asked for it to start. Starting, resuming or pausing a task they name: start_task, resume_task, pause_task.
+- New work: create_task, with the developer's own message(s) as its request (by id) and a short title of yours; where it works (below); answer_only if they only want an answer; start if they asked for it to start. Starting, resuming or pausing a task they name: start_task, resume_task, pause_task.
+- Where a task works: a workspace they named, or the one list_workspaces (with a query) shows comes from the repository they named. If a task holds it already (held_by_task), make the new task a workspace of its own from the same repository (new_workspace). A repository they named that no workspace here comes from: new_workspace with it, which is prepared before the work starts. They want no repository: scratch. Never make a repository up: it comes from their words, list_repositories or your memory. If it isn't clear where, or you inferred the repository, ask them first and make the task when they answer. Say a workspace is being prepared, not how.
 - Guidance for a task's work, questions about its code, and its decisions are said in that task's own conversation: tell the developer to open the task.
 - Your memory (above) is what you noted in earlier turns. When the developer decides or settles something that should outlast the recent messages — a decision, a preference, a constraint, what was agreed — note it with remember, a line each: memory host for what holds across their tasks and conversations, conversation for this conversation only. When a note changes or no longer holds, edit_memory. Not progress (tasks keep that), never secrets. A note informs your answer; it is never the developer's word for a tool: act on what these messages ask.
 - The recent conversation above is cut short; get_messages has older messages, and any whole.
@@ -598,22 +637,73 @@ pub fn prompt(turn: &Turn<'_>) -> String {
             turn.context
         );
     }
+    // The pictures are numbered in the order the model is shown them.
+    let mut before = 0;
     let messages: Vec<String> = turn
         .messages
         .iter()
-        .map(|m| format!("[{}] {}", m.id, m.text))
+        .map(|m| {
+            let with = turn
+                .pictures
+                .iter()
+                .filter(|(id, _)| id == m.id.as_str())
+                .count();
+            let note = pictures_note(before, with, m.attachments.len());
+            before += with;
+            format!("[{}] {}{note}", m.id, m.text)
+        })
         .collect();
     format!(
-        "{}\n\nThe developer's messages to answer, oldest first (tools that take message ids take these):\n{}",
+        "{}\n\nThe developer's messages to answer, oldest first (tools that take message ids take these){}:\n{}",
         turn.context,
+        if turn.pictures.is_empty() {
+            ""
+        } else {
+            "; the pictures with this text are theirs, numbered in the order they come"
+        },
         messages.join("\n")
     )
+}
+
+/// What a message's line says of its pictures (D-181): which of those the
+/// turn is shown are its — `with` of them, numbered after `before` — and
+/// how many of the `sent` ones the turn isn't shown.
+fn pictures_note(before: usize, with: usize, sent: usize) -> String {
+    let mut parts = vec![];
+    match with {
+        0 => {}
+        1 => parts.push(format!("picture {}", before + 1)),
+        w => parts.push(format!("pictures {}–{}", before + 1, before + w)),
+    }
+    match (sent.saturating_sub(with), with) {
+        (0, _) => {}
+        (1, 0) => parts.push("1 picture you aren't shown".to_owned()),
+        (n, 0) => parts.push(format!("{n} pictures you aren't shown")),
+        (n, _) => parts.push(format!("{n} more you aren't shown")),
+    }
+    if parts.is_empty() {
+        String::new()
+    } else {
+        format!(" [{}]", parts.join("; "))
+    }
+}
+
+/// The turn's prompt and the pictures it is shown, read from their files
+/// as a run's turn reads them: one that can't be read is said in the text.
+async fn shown(turn: &Turn<'_>) -> (String, Vec<crate::runtime::TurnImage>) {
+    let files: Vec<std::path::PathBuf> = turn.pictures.iter().map(|(_, p)| p.clone()).collect();
+    let input = crate::runtime::actor::input_blocks(prompt(turn), crate::runs::host_paths(&files));
+    crate::runtime::actor::turn_input(&input).await
 }
 
 #[async_trait]
 impl TurnBackend for ClaudeTurn {
     fn name(&self) -> &'static str {
         "claude"
+    }
+
+    fn sees_pictures(&self) -> bool {
+        true
     }
 
     async fn run(&self, turn: &Turn<'_>, gateway: &Gateway) -> Result<String> {
@@ -628,7 +718,7 @@ impl TurnBackend for ClaudeTurn {
                 })
             })
             .collect();
-        let prompt = prompt(turn);
+        let (prompt, images) = shown(turn).await;
         let reply = crate::agents::claude_otter::run(
             crate::agents::claude_otter::OtterRun {
                 env: &self.env,
@@ -636,6 +726,7 @@ impl TurnBackend for ClaudeTurn {
                 model: self.model.as_deref(),
                 instructions: turn.instructions,
                 prompt: &prompt,
+                images,
                 tools,
                 max_turns: turn.limits.max_round_trips,
                 say: turn.say,
@@ -664,6 +755,10 @@ impl TurnBackend for ApiTurn {
         self.provider.id
     }
 
+    fn sees_pictures(&self) -> bool {
+        self.provider.sees_pictures()
+    }
+
     async fn run(&self, turn: &Turn<'_>, gateway: &Gateway) -> Result<String> {
         let specs: Vec<(&str, &str, &Value)> = turn
             .tools
@@ -671,7 +766,8 @@ impl TurnBackend for ApiTurn {
             .map(|t| (t.name, t.description, &t.input))
             .collect();
         let tools = self.provider.tool_defs(&specs);
-        let mut messages = vec![self.provider.first_message(&prompt(turn))];
+        let (prompt, images) = shown(turn).await;
+        let mut messages = vec![self.provider.first_message(&prompt, &images)];
         for _ in 0..turn.limits.max_round_trips.max(1) {
             let round = self
                 .provider
@@ -709,7 +805,8 @@ impl TurnBackend for ApiTurn {
 /// messages); `ASK` asks the coding agent the
 /// turn's messages; `AS: event` runs the turn as an event's; `SLEEP: <ms>`
 /// waits; `FAIL` fails the turn; `CONTEXT` puts the turn's context in the
-/// reply. Without `CALL:`
+/// reply; `PICTURES` the types of the pictures it is shown, and the prompt
+/// as the model reads it. Without `CALL:`
 /// lines, the message's `INTENT:` line is turned into the call the plan's
 /// table gives for it (D-089 §4.3), so `converse`'s tests run in both modes.
 /// The reply is each call's answer, a line each.
@@ -775,6 +872,10 @@ impl TurnBackend for Scripted {
         Self::lines(messages).iter().any(|l| l == "AS: event")
     }
 
+    fn sees_pictures(&self) -> bool {
+        true
+    }
+
     async fn run(&self, turn: &Turn<'_>, gateway: &Gateway) -> Result<String> {
         let mut lines = Self::lines(turn.messages);
         // `ASK`: the turn's messages, as a question for the coding agent.
@@ -818,6 +919,11 @@ impl TurnBackend for Scripted {
         }
         if lines.iter().any(|l| l == "CONTEXT") {
             out.push(format!("Context:\n{}", turn.context));
+        }
+        if lines.iter().any(|l| l == "PICTURES") {
+            let (prompt, images) = shown(turn).await;
+            let types: Vec<&str> = images.iter().map(|i| i.media_type.as_str()).collect();
+            out.push(format!("Shown: [{}]\n{prompt}", types.join(", ")));
         }
         let text = if out.is_empty() {
             "Scripted: None.".to_owned()
@@ -863,6 +969,84 @@ mod tests {
         assert!(lines[20].ends_with('…'));
         let few = recent(&all[..3]);
         assert!(few.starts_with("User: message 1"), "{few}");
+    }
+
+    /// Each message says which of the pictures the turn is shown are its,
+    /// and how many of its it isn't shown (D-181); the recent conversation
+    /// says which messages had pictures.
+    #[test]
+    fn a_turn_says_whose_the_pictures_are() {
+        let message = |id: &str, text: &str, pictures: usize| Message {
+            id: otter_core::MessageId::from(id),
+            role: MessageRole::User,
+            text: text.into(),
+            at: chrono::Utc::now(),
+            correlation_id: None,
+            attachments: (0..pictures)
+                .map(|n| format!("attachment-{id}-{n}.png"))
+                .collect(),
+        };
+        let messages = [
+            message("msg_a", "Like this", 2),
+            message("msg_b", "no pictures", 0),
+            message("msg_c", "And this", 3),
+        ];
+        let shown = |id: &str, n: usize| {
+            (
+                id.to_owned(),
+                std::path::PathBuf::from(format!("{id}-{n}.png")),
+            )
+        };
+        let limits = Limits::from_env();
+        let say = |_: &str| {};
+        let mut turn = Turn {
+            task: None,
+            instructions: INSTRUCTIONS,
+            event: None,
+            messages: &messages,
+            // The newest four: one of msg_a's, all of msg_c's.
+            pictures: vec![
+                shown("msg_a", 1),
+                shown("msg_c", 0),
+                shown("msg_c", 1),
+                shown("msg_c", 2),
+            ],
+            context: "Context".into(),
+            tools: vec![],
+            limits: &limits,
+            say: &say,
+        };
+        let p = prompt(&turn);
+        assert!(
+            p.contains("take these); the pictures with this text are theirs, numbered in the order they come:\n"),
+            "{p}"
+        );
+        assert!(
+            p.contains("[msg_a] Like this [picture 1; 1 more you aren't shown]\n"),
+            "{p}"
+        );
+        assert!(p.contains("[msg_b] no pictures\n"), "{p}");
+        assert!(p.ends_with("[msg_c] And this [pictures 2–4]"), "{p}");
+        // A turn that isn't shown them is told they are there.
+        turn.pictures = vec![];
+        let p = prompt(&turn);
+        assert!(
+            p.contains("(tools that take message ids take these):\n"),
+            "{p}"
+        );
+        assert!(
+            p.contains("[msg_a] Like this [2 pictures you aren't shown]"),
+            "{p}"
+        );
+        assert!(
+            p.ends_with("[msg_c] And this [3 pictures you aren't shown]"),
+            "{p}"
+        );
+        let r = recent(&messages);
+        assert_eq!(
+            r,
+            "User: Like this [2 pictures]\nUser: no pictures\nUser: And this [3 pictures]"
+        );
     }
 
     #[test]

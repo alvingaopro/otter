@@ -12,7 +12,7 @@ use otter_client::Connection;
 use otter_core::conversation::{Delivery, Turn, TurnState};
 use otter_core::task::{DecisionRequest, DecisionStatus, Task, TaskAction};
 use otter_protocol::conversation::{ConversationView, HistoryCursor, HistoryQuery};
-use otter_protocol::task::TaskCreate;
+use otter_protocol::task::{NewWorkspace, Scratch, TaskCreate, WorkspaceChoice};
 use tokio::task::JoinSet;
 
 use crate::config::{Config, HostEntry};
@@ -33,8 +33,17 @@ pub enum TaskCommand {
         #[arg(long)]
         request: Option<String>,
         /// The workspace to do the work in.
-        #[arg(long)]
+        #[arg(long, conflicts_with_all = ["repo", "scratch"])]
         workspace: Option<String>,
+        /// Make a workspace for the task from this repository.
+        #[arg(long, conflicts_with = "scratch")]
+        repo: Option<String>,
+        /// With --repo: the revision to start from (default: the repository's).
+        #[arg(long, requires = "repo")]
+        base: Option<String>,
+        /// Make an empty directory for the task to work in.
+        #[arg(long)]
+        scratch: bool,
         /// Only an answer is wanted: the coding agent reads and changes
         /// nothing, and a plan to change things comes to you first (needs
         /// the coding agent on the SDK runtime).
@@ -379,32 +388,56 @@ pub async fn task_command(config: &Config, cmd: TaskCommand, json: bool) -> Resu
             title,
             request,
             workspace,
+            repo,
+            base,
+            scratch,
             answer_only,
             host,
         } => {
-            let entry = match host {
-                Some(h) => config.host(&h)?.clone(),
-                None => match (&config.default_host, config.hosts.as_slice()) {
-                    (Some(d), _) => config.host(d)?.clone(),
-                    (None, [only]) => only.clone(),
-                    (None, []) => {
-                        bail!("no hosts registered; add one with `otter host add <name>`")
-                    }
-                    (None, _) => bail!("several hosts; choose one with --host"),
-                },
-            };
+            // Said about a workspace or a repository, the task goes to the
+            // host that has it (D-179).
+            let said = [
+                title.as_str(),
+                request.as_deref().unwrap_or(""),
+                workspace.as_deref().unwrap_or(""),
+                repo.as_deref().unwrap_or(""),
+            ]
+            .join(" ");
+            let entry = crate::target::pick_host(config, host, &said).await?;
+            let repo_given = repo.is_some();
             let mut conn = connect(config, &entry).await?;
             let f = conn
                 .task_create(TaskCreate {
                     command_id: command_id(),
                     request: request.unwrap_or_else(|| title.clone()),
                     title,
-                    workspace,
+                    workspace: if let Some(repository) = repo {
+                        Some(WorkspaceChoice::New {
+                            new: NewWorkspace {
+                                repository,
+                                base,
+                                branch: None,
+                            },
+                        })
+                    } else if scratch {
+                        Some(WorkspaceChoice::Scratch {
+                            scratch: Scratch {},
+                        })
+                    } else {
+                        workspace.map(Into::into)
+                    },
                     answer_only,
                 })
                 .await?;
             if json {
                 return output::print_json(&f);
+            }
+            if f.workspace_id.is_none() && (repo_given || scratch) {
+                println!(
+                    "task {} ({}) on {} — made, but its workspace could not be: `otter task show {}` says why",
+                    f.title, f.id, entry.name, f.id
+                );
+                return Ok(());
             }
             println!(
                 "task {} ({}) on {} — a draft; `otter task start {}` hands it to Otter",

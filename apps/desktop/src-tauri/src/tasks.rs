@@ -52,7 +52,7 @@ pub async fn task_create(
     command_id: String,
     title: String,
     request: String,
-    workspace: Option<String>,
+    workspace: Option<otter_protocol::task::WorkspaceChoice>,
     answer_only: Option<bool>,
 ) -> Result<TaskView, String> {
     rpc(&app, &host)

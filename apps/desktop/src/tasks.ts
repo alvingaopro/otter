@@ -225,6 +225,8 @@ export interface Delivery {
 export interface WorkspaceChoice {
   id: string;
   name: string;
+  /** A Git workspace's repository, without credentials. */
+  repository?: string;
   /** Its sessions, to open the one a task waits for. */
   sessions?: { id: string; name: string }[];
 }

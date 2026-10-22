@@ -696,7 +696,7 @@ body.resizing-col { cursor: col-resize; user-select: none; }
 .composer-send { background: var(--you-bg); color: var(--text); }
 .composer-send:hover:not(:disabled) { background: var(--you-bg-hover); }
 .composer-send:disabled { background: var(--raised); color: var(--faint); opacity: 1; }
-.composer-redirect { flex: none; height: 34px; border-radius: 17px; }
+.composer-btn { flex: none; height: 34px; border-radius: 17px; }
 .pasted-images { display: flex; flex-wrap: wrap; gap: 6px; margin: 0; padding: 6px 8px 0; }
 .pasted-image { position: relative; }
 .pasted-image img { display: block; height: 56px; max-width: 120px; object-fit: cover; border-radius: 6px; border: 1px solid var(--line-strong); }
