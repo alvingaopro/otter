@@ -6934,3 +6934,7 @@ yet. A start that fails leaves the task a draft with its Start button; the task
 is never lost. The start is a second command after `task.create`, not a new
 protocol field: each is applied once and either can be repeated safely.
 
+
+The Chat page with no task selected is Otter and a chat box: what is written
+there starts a task at once, on the host it names (D-182), else the last one
+used. The Workspace view's title bar says "Workspace" and carries no mark.
