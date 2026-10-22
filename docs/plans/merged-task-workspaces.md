@@ -141,6 +141,14 @@ conversation says why, once, and the sweep leaves that workspace alone
 from then on: an additive `Workspace.kept` with the reason, cleared when
 the workspace is unarchived. It never retries with force.
 
+"Uncommitted changes" includes untracked files that aren't ignored
+(`git.rs:614`, `status --porcelain --untracked-files=normal`). A scratch
+script or a log a coding agent left in the tree is enough to keep the
+workspace. That is the safe way to fail, but it may well be the usual
+one. It is the first thing to watch in dogfooding, and `kept`'s reason
+says which it was: untracked files, changed files, or commits on no
+remote.
+
 ### 4.4 The task afterwards
 
 On success the task's `workspace_id` is cleared, and an additive
@@ -168,8 +176,8 @@ D-105 tells the developer they can unarchive the workspace to look at the
 work. Once the pull request is merged, the work is on the base branch and
 the pull request keeps the diff and the review, so little is lost. A short
 wait still covers looking right after merging. Proposed: 24 hours after
-`mergedAt`. During it nothing changes. Unarchiving takes the workspace out
-of the sweep for good.
+`mergedAt`. During it nothing changes. An unarchived workspace is out of
+the sweep while it is unarchived. Archived again, it qualifies again.
 
 ### 4.6 Setting and surfaces
 
