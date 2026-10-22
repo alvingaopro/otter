@@ -11,7 +11,9 @@ The design as a page: https://claude.ai/artifact/2cMjnbdYyXCo4bWhbQbuTW.
 > looks for what it waits on with deterministic code and no model, and only
 > when that happens — or its deadline comes — runs one turn of Otter's
 > that says so, in the conversation that asked. A watch is one-shot and
-> bounded, and it only looks and says. It is D-094's follow-up, made for
+> bounded, and it only looks and says. One engine serves every kind of
+> thing watched; a kind is only how to read its state (§4), so a pull
+> request's CI is the first kind, not the design. It is D-094's follow-up, made for
 > what the developer asks to be told about. Recurring *work* stays a
 > trigger (D-083).
 
@@ -66,9 +68,52 @@ Two gaps, both verified:
   it makes. Slice 1 is built in their shape, for a task's conversation;
   slice 2 makes them one thing.
 
-## 4. What can be watched
+## 4. What can be watched: one engine, many kinds
 
-A closed set, each decided by otterd without a model:
+A watch is general. Everything in §5 — storage, the lifecycle, the key,
+the caps and the deadline, `firing` before the turn, the controller's
+slot, the bounded turn, the report said once, cancelling, restarts,
+redaction, the protocol — is the same for every kind, in one engine
+(`watches/mod.rs`). What a kind brings is only how to read its state:
+one file each (`watches/ci.rs`, `watches/time.rs`, …), behind a trait, as
+agents are behind `AgentProvider` and Codex lives in `codex.rs`.
+
+```rust
+#[async_trait]
+trait WatchKind: Send + Sync {
+    fn name(&self) -> &'static str;               // "ci"
+    fn describe(&self) -> &'static str;           // one line, for the tool's schema
+    /// Check and resolve what the model asked to watch (a task's `ci`:
+    /// its own PR), or say why not.
+    fn target(&self, args: &Value, scope: &Scope) -> Result<Target, ToolError>;
+    fn defaults(&self) -> Defaults;               // probe interval, deadline, its maximum
+    /// Read the state once: deterministic, read-only, no model.
+    async fn probe(&self, target: &Target, cx: &ProbeContext) -> Probe;
+    /// What's said without Otter's tools.
+    fn line(&self, finding: &Finding) -> String;
+}
+
+enum Probe {
+    NotYet { seen: String },                       // a short key, to tell a change
+    Found(Finding),                                // → firing
+    Unreadable(String),                            // three in a row → firing, said
+}
+```
+
+- `Target` is the kind's own JSON plus a line to show (“CI on #171”), so
+  the task document and the protocol carry any kind without changing.
+- **Adding a kind** is that file, a probe test against a fake, and the
+  kind's name in `watch`'s schema. The engine, the controller, the
+  protocol and the app don't change.
+- **What a kind may be:** its probe is deterministic, cheap and read-only,
+  runs without a model and without asking the developer anything, and
+  reads outside the workspace only with Otter's own credentials. A kind
+  that would run a command in a workspace is the policy's business (D-066,
+  D-173): a `command` kind is a decision of its own, not a file.
+- A kind on otterd's own state (`task`, a session) may be woken by
+  otterd's changes instead of a clock; the engine takes either.
+
+The kinds, first those in this plan:
 
 | Kind | Slice | Probe | Fires when | Deadline (default, max) |
 |---|---|---|---|---|
@@ -88,6 +133,14 @@ A closed set, each decided by otterd without a model:
   error.
 - Not a kind: an arbitrary command as the condition. A command run
   unattended is the policy's business (D-066, D-173).
+
+Kinds that fit later, each a small decision of its own when there's a
+use for it: `run` (a GitHub Actions run, say the nightly, finishes),
+`release` (a tag or release is published), `url` (an endpoint answers, a
+deploy is healthy), `branch` (a ref moves), `session` (a workspace
+session's agent finishes its turn), `file` (a file appears in a
+workspace, a bench's results), and `command` (a read-only command's
+answer, under policy).
 
 ## 5. How it works
 
@@ -184,7 +237,7 @@ developer's message ──watch──► waiting ──probe: not yet──► w
 
 | Tool | Class | What |
 |---|---|---|
-| `watch` | on the developer's word | `{what, kind: time\|ci, in_minutes?, for_minutes?}`; `ci` watches the task's own PR |
+| `watch` | on the developer's word | `{what, kind, target?, in_minutes?, for_minutes?}`; `kind` is one of the kinds built (`time`, `ci` in slice 1), `target` that kind's own arguments; `ci` watches the task's own PR |
 | `cancel_watch` | routine (the safe direction, as pausing) | `{watch_id}` |
 
 - The task's watches, waiting and lately reported, are in `get_task`'s
@@ -251,7 +304,8 @@ instead wherever the repository allows auto-merge.
    - the CI gate says when it was read, and `get_task` returns that;
    - `fake_gh.sh`'s `pr view` learns `mergeable` and `headRefOid`; a test
      with a conflicting PR and no checks.
-1. **Watches in a task's conversation:** `time` and `ci`; `watch`,
+1. **The engine, with two kinds, in a task's conversation:** the
+   `WatchKind` trait and `time` and `ci` behind it; `watch`,
    `cancel_watch`, the watches in `get_task`; `run_watches`, the
    controller's filter and `step()`; the report. An *Accept anyway* while
    CI hasn't finished sets a `ci` watch (a default to confirm, §9): Otter's
