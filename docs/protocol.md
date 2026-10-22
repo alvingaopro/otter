@@ -547,7 +547,13 @@ the latest logged `seq` (so it doesn't advance a cursor and may repeat one),
 and outside the `seq` order. A client may drop any of them; with `done` the
 message is complete. The coding agent's text along the way isn't stored in
 the task: only each turn's result is (D-069); the rest is in its
-conversation.
+conversation. Otter (role `controller`) begins with an empty `text` as
+soon as it starts on a message — a reply, its look at a request for a
+workspace, a watch's report — before its first word (D-196). An empty
+`text` with `done` means it ended with nothing to say there (the message,
+if any, is in the task); a client drops that draft. After a stream is
+picked up again (a reconnect), what was being written may never get its
+`done`: a client forgets those drafts and takes what comes next.
 
 **What the agent did** (D-069): `TaskActivity {task_id, run_id, line}`
 — one line per tool the coding agent used (`$ cargo test`, `✎ src/a.rs`).

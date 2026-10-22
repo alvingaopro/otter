@@ -74,6 +74,39 @@ describe("daemonSource", () => {
     expect(s.drafts!("mac/ft_a")).toEqual([]);
   });
 
+  it("drops a draft begun and ended with no words, and what was streaming when the host comes back (D-196)", async () => {
+    const s = daemonSource();
+    s.setHosts!(["mac"]);
+    await flush();
+    const stream = (stream_id: string, text: string, done: boolean) =>
+      handlers.get("host-event")!({
+        payload: { host: "mac", record: { type: "TaskStream", task_id: "ft_a", stream_id, role: "controller", text, done } },
+      });
+    stream("watch-w1", "", false);
+    expect(s.drafts!("mac/ft_a")).toEqual([{ stream_id: "watch-w1", role: "controller", text: "", done: false }]);
+    stream("watch-w1", "", true);
+    expect(s.drafts!("mac/ft_a")).toEqual([]);
+    // Begun before the connection dropped: it may never end.
+    stream("reply-2", "", false);
+    handlers.get("host-resync")!({ payload: { host: "mac" } });
+    expect(s.drafts!("mac/ft_a")).toEqual([]);
+    // Its end missed, but Otter's message is here: the draft goes with the load.
+    stream("reply-msg_3", "", false);
+    stream("watch-w9:1", "", false);
+    served.mac = [
+      {
+        id: "ft_a",
+        title: "A",
+        status: "review",
+        updated_at: "2026-10-09T00:00:00Z",
+        messages: [{ id: "msg_4", role: "controller", text: "Here.", at: "2026-10-09T00:00:00Z", correlation_id: "msg_3" }],
+      },
+    ];
+    handlers.get("host-event")!({ payload: { host: "mac", record: { type: "TaskChanged" } } });
+    await flush();
+    expect(s.drafts!("mac/ft_a").map((d) => d.stream_id)).toEqual(["watch-w9:1"]);
+  });
+
   it("puts the agent's activity on its live run without reloading", async () => {
     served.mac = [
       {
