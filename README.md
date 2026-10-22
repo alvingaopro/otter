@@ -22,8 +22,9 @@ yours.
   built. A change gets a plan — steps, acceptance criteria, the check that
   proves them — which Otter reviews. The agent then works through the steps
   in one conversation; Otter runs the check, judges each criterion from the
-  diff, pushes the branch, opens the pull request and follows CI. You accept
-  it; Otter never merges or deploys.
+  diff, pushes the branch, opens the pull request and follows CI — back to
+  work if CI fails or the branch conflicts — and tells you the result: done,
+  or stopped and why. Merging is yours; Otter never merges or deploys.
 - **You stay in charge.** Talk to Otter in the task's conversation at any
   time: it passes on what the agent should know, stops it to redirect it,
   pauses, or plans again when the goal changes. What runs on its own is
@@ -34,7 +35,7 @@ yours.
 - **What needs you, first.** Chat lists your tasks on every host, the
   ones waiting on you first, longest-waiting first; the sidebar does the
   same for workspaces, and a dot on each in the Activity Bar says something
-  waits. Approve, answer, accept or retry on the task's page.
+  waits. Approve, answer or retry on the task's page.
 - **Agents side by side.** When another task's agent is busy in a
   workspace, a task can get a worktree of its own. **Pause all tasks**
   holds everything at once.
@@ -135,9 +136,11 @@ usual). Restarting an agent session resumes its conversation.
    have it built. Otherwise Otter posts the plan and the agent gets to work.
 3. Say what you like in the conversation along the way. What's yours to
    decide shows up first in **Chat** (⌘1) and as a notification.
-4. Once the work checks out, Otter asks to push the branch and open the pull
-   request, and follows CI (the host's `gh` does the GitHub part). Look it
-   over and **Accept**.
+4. Once the work checks out, Otter pushes the branch and opens the pull
+   request (asking first where Settings says so), and follows CI (the
+   host's `gh` does the GitHub part). When
+   every check has passed the task is done, with its report; merge the
+   pull request when you're happy with it.
 
 ### From the command line
 
@@ -152,7 +155,6 @@ otter task new "CSV export" --request "Export the timeline as CSV" --workspace b
 otter task start csv                               # a task: its id, title, or the start of one
 otter task show csv                                # where it stands, what waits on you
 otter task decide csv dec_…                        # approve (or --deny, --answer A)
-otter task accept csv
 ```
 
 <details>
@@ -187,7 +189,6 @@ otter task interrupt|cancel <task>
 otter task pause|resume <task> | --all [--host H]
 otter task own-workspace <task>               # a worktree of its own, when another agent has the workspace
 otter task decide <task> <decision> [--deny | --answer A | --answer-for "Q=A" …]
-otter task accept <task> [--anyway]           # done; --anyway past a gate that hasn't passed
 otter trigger add <name> --workspace WS --request R [--every 6h | --daily HH:MM] [--publish]
                   [--wait-limit 30m] [--max-attempts N] [--max-minutes N]
 otter trigger ls | rm <name> | run <name> [--occurrence T]
