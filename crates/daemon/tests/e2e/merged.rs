@@ -191,7 +191,11 @@ async fn a_tasks_workspace_goes_once_its_pull_request_is_merged() {
         )
         .await
         .unwrap();
-    let f = wait_task(host, &id, "a new workspace", |f| f.workspace_id.is_some()).await;
+    // Set, then said: both, whatever the order they're read in.
+    let f = wait_task(host, &id, "a new workspace, said", |f| {
+        f.workspace_id.is_some() && said(f, "the work goes on in a new one") > 0
+    })
+    .await;
     let again = host
         .conn()
         .await
