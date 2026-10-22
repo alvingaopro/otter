@@ -394,17 +394,16 @@ pub async fn task_command(config: &Config, cmd: TaskCommand, json: bool) -> Resu
             answer_only,
             host,
         } => {
-            let entry = match host {
-                Some(h) => config.host(&h)?.clone(),
-                None => match (&config.default_host, config.hosts.as_slice()) {
-                    (Some(d), _) => config.host(d)?.clone(),
-                    (None, [only]) => only.clone(),
-                    (None, []) => {
-                        bail!("no hosts registered; add one with `otter host add <name>`")
-                    }
-                    (None, _) => bail!("several hosts; choose one with --host"),
-                },
-            };
+            // Said about a workspace or a repository, the task goes to the
+            // host that has it (D-179).
+            let said = [
+                title.as_str(),
+                request.as_deref().unwrap_or(""),
+                workspace.as_deref().unwrap_or(""),
+                repo.as_deref().unwrap_or(""),
+            ]
+            .join(" ");
+            let entry = crate::target::pick_host(config, host, &said).await?;
             let repo_given = repo.is_some();
             let mut conn = connect(config, &entry).await?;
             let f = conn

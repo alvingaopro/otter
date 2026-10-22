@@ -1,6 +1,6 @@
 # Chat bootstrap: say what to do, Otter finds or makes the workspace
 
-**Status:** P1 done (D-179); P2 (cross-host choice in the CLI and app) next. **Branch:** `chat-bootstrap`.
+**Status:** P1 done (D-179); P2 done (D-181); P3 (Otter choosing inside a task's conversation) next. **Branch:** `chat-bootstrap`.
 
 ## 1. The problem
 
@@ -119,5 +119,5 @@ surface; it is not in P1. In P1 Otter asks in text.
 
 ## 7. Not decided here
 
-- Whether the host-level question card should reuse `DecisionRequest`
+- Whether Otter in a task's conversation gets the workspace tools (the app has no host conversation); whether the host-level question card should reuse `DecisionRequest`
   or be its own type (P3).

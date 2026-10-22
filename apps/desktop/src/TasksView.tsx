@@ -10,7 +10,8 @@ import { Menu } from "./Menu";
 import { ago } from "./model";
 import { PanelGrip, TASK_DETAIL, usePanelWidth } from "./panelResize";
 import type { CodingConversation, Interaction, RuntimeCapabilities } from "./conversation";
-import type { TaskSource } from "./taskSource";
+import type { TaskSource, WorkspaceRequest } from "./taskSource";
+import { routeHost } from "./route";
 import { QuestionForm, Turn, WorkHead } from "./Work";
 import { useComposition } from "./composing";
 import { MAX_IMAGES, PICTURES_ONLY, pastedFiles, prepareImage, type PastedImage } from "./pastedImage";
@@ -1679,6 +1680,22 @@ function ActivityFeed({
   );
 }
 
+/** The host the last task went to, to start from when the text names none (D-179). */
+const LAST_HOST = "otter.new-task-host";
+const AUTO_HOST = "";
+const FROM_REPOSITORY = "@repository";
+const EMPTY_DIRECTORY = "@empty";
+
+function lastHost(hosts: string[]): string {
+  try {
+    const h = localStorage.getItem(LAST_HOST);
+    if (h && hosts.includes(h)) return h;
+  } catch {
+    // Without it, the first host.
+  }
+  return hosts[0];
+}
+
 function NewTaskDialog({
   hosts,
   workspaces,
@@ -1687,25 +1704,54 @@ function NewTaskDialog({
 }: {
   hosts: string[];
   workspaces: Record<string, WorkspaceChoice[]>;
-  onCreate: (host: string, title: string, request: string, workspace?: string, answerOnly?: boolean) => Promise<void>;
+  onCreate: (host: string, title: string, request: string, workspace?: string | WorkspaceRequest, answerOnly?: boolean) => Promise<void>;
   onClose: () => void;
 }) {
-  const [host, setHost] = useState(hosts[0]);
-  const choices = workspaces[host] ?? [];
+  const [hostPick, setHostPick] = useState(AUTO_HOST);
   const [workspace, setWorkspace] = useState<string>("");
+  const [repository, setRepository] = useState("");
   const [answerOnly, setAnswerOnly] = useState(false);
   const [title, setTitle] = useState("");
   const [request, setRequest] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
+  // With several hosts, what is written says which: a workspace or a
+  // repository it names belongs to the host that has it (D-179).
+  const routed = useMemo(
+    () =>
+      hosts.length > 1 && hostPick === AUTO_HOST
+        ? routeHost([title, request, repository].join(" "), workspaces)
+        : undefined,
+    [hosts, hostPick, title, request, repository, workspaces],
+  );
+  const host =
+    hostPick !== AUTO_HOST ? hostPick : routed?.kind === "one" ? routed.host : lastHost(hosts);
+  const choices = workspaces[host] ?? [];
+  const existing = choices.some((w) => w.id === workspace);
+  const placing = workspace === FROM_REPOSITORY || workspace === EMPTY_DIRECTORY || existing;
+  const needsRepository = workspace === FROM_REPOSITORY && !repository.trim();
+
   async function submit(e: FormEvent) {
     e.preventDefault();
-    if (!title.trim() || busy) return;
+    if (!title.trim() || needsRepository || busy) return;
     setBusy(true);
     setError(null);
+    const where: string | WorkspaceRequest | undefined =
+      workspace === FROM_REPOSITORY
+        ? { new: { repository: repository.trim() } }
+        : workspace === EMPTY_DIRECTORY
+          ? { scratch: {} }
+          : existing
+            ? workspace
+            : undefined;
     try {
-      await onCreate(host, title.trim(), request.trim(), workspace || undefined, answerOnly);
+      await onCreate(host, title.trim(), request.trim(), where, answerOnly);
+      try {
+        localStorage.setItem(LAST_HOST, host);
+      } catch {
+        // Only a convenience.
+      }
     } catch (err) {
       setError(String(err));
       setBusy(false);
@@ -1727,29 +1773,55 @@ function NewTaskDialog({
           <label className="field">
             <span>Host</span>
             <select
-              value={host}
+              value={hostPick}
               onChange={(e) => {
-                setHost(e.target.value);
+                setHostPick(e.target.value);
                 setWorkspace("");
               }}
             >
+              <option value={AUTO_HOST}>From what I write</option>
               {hosts.map((h) => (
                 <option key={h}>{h}</option>
               ))}
             </select>
+            {hostPick === AUTO_HOST && (
+              <small className="muted" role="status">
+                {routed?.kind === "one"
+                  ? `Goes to ${routed.host}: it has ${routed.why}.`
+                  : routed?.kind === "several"
+                    ? `${routed.hosts.join(" and ")} both have it; using ${host}. Choose a host to change that.`
+                    : `Nothing written names a host; using ${host}, where the last task went.`}
+              </small>
+            )}
           </label>
         )}
         <label className="field">
           <span>Workspace (where the work happens)</span>
-          <select value={workspace} onChange={(e) => setWorkspace(e.target.value)}>
+          <select value={placing ? workspace : ""} onChange={(e) => setWorkspace(e.target.value)}>
             <option value="">Choose later</option>
             {choices.map((w) => (
               <option key={w.id} value={w.id}>
                 {w.name}
               </option>
             ))}
+            <option value={FROM_REPOSITORY}>A new one, from a repository…</option>
+            <option value={EMPTY_DIRECTORY}>A new one, an empty directory</option>
           </select>
         </label>
+        {workspace === FROM_REPOSITORY && (
+          <label className="field">
+            <span>Repository</span>
+            <input
+              aria-label="Repository"
+              value={repository}
+              onChange={(e) => setRepository(e.target.value)}
+              placeholder="git@github.com:acme/billing.git"
+            />
+            <small className="muted">
+              The task gets a workspace of its own, on a branch of its own, prepared before the work starts.
+            </small>
+          </label>
+        )}
         <label className="check">
           <input
             type="checkbox"
@@ -1765,7 +1837,7 @@ function NewTaskDialog({
           <button type="button" className="btn outline" onClick={onClose}>
             Cancel
           </button>
-          <button type="submit" className="btn primary" disabled={!title.trim() || busy}>
+          <button type="submit" className="btn primary" disabled={!title.trim() || needsRepository || busy}>
             Create draft
           </button>
         </div>
@@ -1773,4 +1845,3 @@ function NewTaskDialog({
     </Dialog>
   );
 }
-
