@@ -250,14 +250,24 @@ impl Daemon {
             if self.brain_choice().controller.as_deref() == Some("off") {
                 continue;
             }
-            let ids: Vec<TaskId> = self
-                .tasks
-                .lock()
-                .await
-                .list()
+            let all = self.tasks.lock().await.list();
+            // Parents whose sub-task came to something they haven't heard
+            // (D-193).
+            let told: HashSet<TaskId> = all
+                .iter()
+                .filter_map(|c| {
+                    let parent = all.iter().find(|p| Some(&p.id) == c.parent.as_ref())?;
+                    let key = c.follow_key()?;
+                    (parent.children_seen.get(c.id.as_str()) != Some(&key)
+                        && parent.status != TaskStatus::Cancelled)
+                        .then(|| parent.id.clone())
+                })
+                .collect();
+            let ids: Vec<TaskId> = all
                 .into_iter()
                 .filter(|f| {
                     !unanswered(f).is_empty()
+                        || told.contains(&f.id)
                         // A watch found something: Otter says so (D-183),
                         // whatever the task's status.
                         || f.firing_watch().is_some()
@@ -363,6 +373,11 @@ impl Daemon {
         // Then a watch that fired (D-183): its turn never fails the task.
         if let Some(w) = f.firing_watch().cloned() {
             self.watch_turn(&f, &w).await;
+            f = self.task_get(id.as_str()).await?;
+        }
+        // Then a sub-task that came to something (D-193): Otter hears it here.
+        if let Some((child, key)) = self.child_change(&f).await {
+            self.child_turn(&f, &child, &key).await;
             f = self.task_get(id.as_str()).await?;
         }
         // Unattended work doesn't wait for ever on the developer (D-083).
@@ -746,8 +761,26 @@ impl Daemon {
             // Otter watches something for it (D-192): it waits on that, not
             // on the developer; when the watch comes to something, Otter's
             // turn answers it or says where it works.
-            if let Some(w) = f.open_watches().next() {
-                let why = format!("Waiting for what Otter watches: {}", w.label);
+            let unfinished = self
+                .tasks
+                .lock()
+                .await
+                .list()
+                .iter()
+                .filter(|c| {
+                    c.parent.as_ref() == Some(&f.id)
+                        && !matches!(c.status, TaskStatus::Done | TaskStatus::Cancelled)
+                })
+                .count();
+            let waits_on = match f.open_watches().next() {
+                Some(w) => Some(format!("Waiting for what Otter watches: {}", w.label)),
+                // Its work is in its sub-tasks (D-193): it waits on them.
+                None if unfinished > 0 => {
+                    Some(format!("Waiting for its sub-tasks: {unfinished} not done"))
+                }
+                None => None,
+            };
+            if let Some(why) = waits_on {
                 if f.status_reason.as_deref() != Some(why.as_str()) {
                     self.controller_apply(&f.id, TaskStatus::Planning, move |f, _| {
                         let event = f.reason(why.clone());
@@ -1915,6 +1948,89 @@ impl Daemon {
         })
         .await?;
         Ok(true)
+    }
+
+    /// A sub-task of `f` that came to something its Otter hasn't heard
+    /// (D-193): done, failed, in review, or waiting on the developer — and
+    /// that change's key.
+    async fn child_change(&self, f: &Task) -> Option<(Task, String)> {
+        self.tasks
+            .lock()
+            .await
+            .list()
+            .into_iter()
+            .filter(|c| c.parent.as_ref() == Some(&f.id))
+            .find_map(|c| {
+                let key = c.follow_key()?;
+                (f.children_seen.get(c.id.as_str()) != Some(&key)).then_some((c, key))
+            })
+    }
+
+    /// Otter's turn on a sub-task's change (D-193), in the parent's
+    /// conversation: no message started it, so it may do what is
+    /// automatic. Said once, with the change it is about, in one write.
+    async fn child_turn(self: &Arc<Self>, f: &Task, c: &Task, key: &str) {
+        let reason = c
+            .status_reason
+            .as_deref()
+            .map(|r| format!(": {r}"))
+            .unwrap_or_default();
+        let report = c
+            .report
+            .as_deref()
+            .map(|r| format!(" Its report: {}", crate::agents::excerpt(r, 1_500)))
+            .unwrap_or_default();
+        let pr = c
+            .delivery
+            .as_ref()
+            .and_then(|d| d.pr_url.as_deref())
+            .map(|u| format!(" Its pull request: {u}."))
+            .unwrap_or_default();
+        let what = format!(
+            "your sub-task “{}” [{}] is now {}{reason}.{pr}{report}",
+            c.title,
+            c.id,
+            c.status.as_str()
+        );
+        let line = format!(
+            "Sub-task “{}” is now {}{reason}.{pr}",
+            c.title,
+            c.status.as_str()
+        );
+        let text = match self.turn_backend() {
+            None => line,
+            Some(backend) => {
+                let (daemon, parent, event_id) =
+                    (self.clone(), f.clone(), format!("child:{}:{key}", c.id));
+                // Apart: a panic in the turn is said, not the task's failure.
+                let turn = tokio::spawn(async move {
+                    daemon.event_turn(&*backend, &parent, event_id, what).await
+                });
+                match turn.await {
+                    Ok(Some(text)) => text,
+                    Ok(None) => line,
+                    Err(_) => format!("{line} (I couldn't look further: my turn stopped.)"),
+                }
+            }
+        };
+        let (child, key) = (c.id.to_string(), key.to_owned());
+        let applied = self.tasks.lock().await.apply(&f.id, None, |f, _| {
+            if f.children_seen.get(&child) == Some(&key) {
+                return Ok(vec![]);
+            }
+            f.children_seen.insert(child.clone(), key.clone());
+            let (m, ch) = message(
+                MessageRole::Controller,
+                text,
+                Some(format!("child:{child}:{key}")),
+            );
+            f.messages.push(m);
+            Ok(vec![ch])
+        });
+        match applied {
+            Ok(a) => self.task_changed(&a),
+            Err(e) => tracing::warn!(task = %f.id, "a sub-task's report: {}", e.message),
+        }
     }
 
     /// The task's request, if Otter hasn't read it yet (D-186): the reply

@@ -675,3 +675,124 @@ async fn otter_approves_the_plan_after_one_send_back() {
             .any(|a| a.tool == "approve_plan" && a.origin == "auto")
     );
 }
+
+/// A task Otter splits into sub-tasks (D-193): each works on its own, the
+/// request said as Otter's; at most three unfinished; the task waits on
+/// them, not on the developer; each one's change is heard once in the
+/// task's conversation, whose turn may act on it (here: finish the task);
+/// and a sub-task can be undone from the ledger.
+#[tokio::test]
+async fn a_task_splits_into_sub_tasks_and_hears_from_them() {
+    let fake = coord_host(crate::HARNESS_LEVELS, vec![]).await;
+    let host = &fake.host;
+    let sub = |title: &str| {
+        format!(
+            "CALL: create_task {{\"title\": \"{title}\", \"request\": \"Write {title}\", \"scratch\": true}}"
+        )
+    };
+    let request = [
+        "Do it in parts.".to_owned(),
+        sub("Part A CALL: finish_with_answer {}"),
+        sub("Part B"),
+        sub("Part C"),
+        sub("Part D"),
+        "CALL: list_tasks {}".to_owned(),
+    ]
+    .join("\n");
+    let mut conn = host.conn().await;
+    let f = conn
+        .task_create(otter_protocol::task::TaskCreate {
+            command_id: "parent".into(),
+            title: "In parts".into(),
+            request,
+            workspace: None,
+            answer_only: false,
+        })
+        .await
+        .unwrap();
+    let id = f.id.to_string();
+    conn.task_act("parent-start", &id, otter_core::task::TaskAction::Start)
+        .await
+        .unwrap();
+    let f = wait_task(host, &id, "waiting on its sub-tasks", |f| {
+        f.status_reason
+            .as_deref()
+            .is_some_and(|r| r.starts_with("Waiting for its sub-tasks"))
+            || f.status == TaskStatus::Done
+    })
+    .await;
+    assert!(
+        f.needs().is_none(),
+        "not on the developer: {:?}",
+        f.status_reason
+    );
+    let reply = reply_to_request(&f).unwrap();
+    let answers = answers_in(&reply);
+    assert_eq!(
+        answers.iter().map(code).collect::<Vec<_>>(),
+        ["ok", "ok", "ok", "conflict", "ok"],
+        "{reply}"
+    );
+    assert_eq!(answers[4]["data"]["sub_tasks"].as_array().unwrap().len(), 3);
+    let children: Vec<Task> = host
+        .conn()
+        .await
+        .task_list()
+        .await
+        .unwrap()
+        .into_iter()
+        .filter(|c| c.parent.as_ref().map(|p| p.as_str()) == Some(id.as_str()))
+        .collect();
+    assert_eq!(children.len(), 3);
+    for c in &children {
+        let r = c.request.as_str();
+        assert!(
+            r.starts_with(
+                "From Otter, your tech lead (not the developer), for the task “In parts”:"
+            ),
+            "{r}"
+        );
+        assert!(c.workspace_id.is_some(), "each works somewhere of its own");
+    }
+    // Each comes to review (accepting is the developer's here): heard once
+    // each; the first one's turn finishes the task.
+    let f = wait_task(host, &id, "heard from all three", |f| {
+        f.children_seen.len() == 3
+    })
+    .await;
+    assert_eq!(f.status, TaskStatus::Done, "{:?}", f.status_reason);
+    let heard: Vec<&str> = f
+        .messages
+        .iter()
+        .filter_map(|m| m.correlation_id.as_deref())
+        .filter(|c| c.starts_with("child:"))
+        .collect();
+    assert_eq!(heard.len(), 3, "once each: {heard:?}");
+    let finished = f
+        .messages
+        .iter()
+        .find(|m| m.text.contains("finish_with_answer: {\"data\""))
+        .expect("a sub-task's turn finished it");
+    assert!(finished.text.contains("Part A"), "{}", finished.text);
+    // The ledger: each sub-task made, and undone by cancelling it.
+    let actions = host.conn().await.otter_actions(None).await.unwrap();
+    let made: Vec<_> = actions.iter().filter(|a| a.tool == "create_task").collect();
+    assert_eq!(made.len(), 3, "the refused one did nothing");
+    let undo = made
+        .iter()
+        .find_map(|a| a.undo.clone())
+        .expect("a sub-task can be undone");
+    assert_ne!(undo.task_id.as_str(), id, "on the sub-task");
+    host.conn()
+        .await
+        .task_act("undo-sub", undo.task_id.as_str(), undo.action)
+        .await
+        .unwrap();
+    let c = host
+        .conn()
+        .await
+        .task_get(undo.task_id.as_str())
+        .await
+        .unwrap();
+    assert_eq!(c.status, TaskStatus::Cancelled);
+}

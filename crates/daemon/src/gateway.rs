@@ -178,7 +178,17 @@ pub fn tools() -> Vec<ToolSpec> {
         t(
             "get_task",
             Observe,
-            "Where the task stands: status and why, its steps, criteria, gates, attempts, the report.",
+            "Where the task stands: status and why, its steps, criteria, gates, attempts, the report. task_id: one of its sub-tasks instead.",
+            json!({
+                "type": "object",
+                "properties": {"task_id": {"type": "string"}},
+                "additionalProperties": false
+            }),
+        ),
+        t(
+            "list_tasks",
+            Observe,
+            "This task's sub-tasks (the ones you made with create_task): id, title, status and why, where each works, its pull request, the start of its report.",
             none(),
         ),
         t(
@@ -330,6 +340,33 @@ pub fn tools() -> Vec<ToolSpec> {
             DeveloperWord,
             "Accept the task in review; its gates still apply.",
             none(),
+        ),
+        t(
+            "create_task",
+            DeveloperWord,
+            "Make a sub-task of this task (D-193): part of the work, done by a coding agent of its own, at once and side by side with the rest. title: short; request: what it is to do, in your words, whole (it is told they are yours); where it works: workspace, new_workspace or scratch, else a workspace of its own from this task's repository; answer_only if it only answers. It starts at once. When it is done, fails, waits in review or waits on the developer, a turn of its own here tells you. At most 3 unfinished at once.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "title": {"type": "string"},
+                    "request": {"type": "string"},
+                    "workspace": {"type": "string"},
+                    "new_workspace": {
+                        "type": "object",
+                        "properties": {
+                            "repository": {"type": "string"},
+                            "base": {"type": "string"},
+                            "branch": {"type": "string"}
+                        },
+                        "required": ["repository"],
+                        "additionalProperties": false
+                    },
+                    "scratch": {"type": "boolean"},
+                    "answer_only": {"type": "boolean"}
+                },
+                "required": ["title", "request"],
+                "additionalProperties": false
+            }),
         ),
         t(
             "publish",
@@ -897,6 +934,30 @@ impl Gateway {
                     .ok_or_else(|| fail("invalid", format!("limit is a number from 1 to {max}"))),
             }
         };
+        // One of its sub-tasks, when named (D-193); nothing else.
+        let sub;
+        let task =
+            match args.get("task_id").and_then(Value::as_str) {
+                Some(child) if name == "get_task" => {
+                    let c =
+                        self.inner.daemon.task_get(child).await.map_err(|_| {
+                            fail("not_found", format!("there is no task `{child}`"))
+                        })?;
+                    if c.parent.as_ref() != Some(task) {
+                        return Err(fail(
+                            "not_found",
+                            format!("`{child}` isn't one of this task's sub-tasks"),
+                        )
+                        .next("list_tasks has them"));
+                    }
+                    sub = c.id;
+                    &sub
+                }
+                _ => task,
+            };
+        if name == "list_tasks" {
+            return self.subtasks_listing(task).await;
+        }
         // A live run's activity isn't in the task until it ends.
         let f = self
             .inner
@@ -1314,6 +1375,37 @@ impl Gateway {
                 }))
             }
         }
+    }
+
+    /// A task's sub-tasks (D-193), oldest first.
+    async fn subtasks_listing(&self, parent: &TaskId) -> Result<Value, ToolError> {
+        let d = &self.inner.daemon;
+        let mut children: Vec<Task> = d
+            .tasks
+            .lock()
+            .await
+            .list()
+            .into_iter()
+            .filter(|c| c.parent.as_ref() == Some(parent))
+            .collect();
+        children.sort_by_key(|c| c.created_at);
+        let store = d.store.lock().await;
+        let listed: Vec<Value> = children
+            .iter()
+            .map(|c| {
+                json!({
+                    "id": c.id.as_str(),
+                    "title": redact(&c.title),
+                    "status": c.status.as_str(),
+                    "status_reason": c.status_reason.as_deref().map(redact),
+                    "waits_on_developer": c.needs().map(|n| redact(&n.summary)),
+                    "workspace": c.workspace_id.as_ref().and_then(|w| store.workspace(w.as_str())).map(|w| w.name.clone()),
+                    "pull_request": c.delivery.as_ref().and_then(|d| d.pr_url.clone()),
+                    "report": c.report.as_deref().map(|r| excerpt(&redact(r), 600)),
+                })
+            })
+            .collect();
+        Ok(json!({"sub_tasks": listed}))
     }
 
     /// `list_repositories`, in a task's conversation and the host's alike.
@@ -1835,6 +1927,167 @@ impl Gateway {
         Ok(json!({"done": "publishing", "status": f.status.as_str()}))
     }
 
+    /// A sub-task of `f` (D-193): its request is Otter's words, said so; it
+    /// works where it is told, else in a workspace of its own from `f`'s
+    /// repository; it starts at once. Made once per title and request in a
+    /// turn; at most [`MAX_SUBTASKS`] unfinished.
+    async fn create_subtask(&self, f: &Task, args: &Value) -> Result<Value, ToolError> {
+        use otter_core::task::TaskAction;
+        use otter_protocol::task::{TaskAct, TaskCreate, WorkspaceChoice};
+        let text = |k: &str, max: usize| {
+            args.get(k)
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|t| !t.is_empty() && t.len() <= max)
+                .map(str::to_owned)
+        };
+        let title = text("title", 200).ok_or_else(|| {
+            fail(
+                "invalid",
+                "title is the sub-task's name, at most 200 characters",
+            )
+        })?;
+        let request = text("request", 20_000).ok_or_else(|| {
+            fail(
+                "invalid",
+                "request is what the sub-task is to do, in your words",
+            )
+        })?;
+        let d = &self.inner.daemon;
+        let open = d
+            .tasks
+            .lock()
+            .await
+            .list()
+            .into_iter()
+            .filter(|c| {
+                c.parent.as_ref() == Some(&f.id)
+                    && !matches!(c.status, TaskStatus::Done | TaskStatus::Cancelled)
+            })
+            .count();
+        if open >= MAX_SUBTASKS {
+            return Err(fail(
+                "conflict",
+                format!("this task has {open} sub-tasks not done yet, the most at once"),
+            )
+            .next("wait for one to finish, or do it in this task"));
+        }
+        let choice = Self::workspace_choice(args)?;
+        let answer_only = args
+            .get("answer_only")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        if answer_only {
+            d.can_answer_only()
+                .map_err(|e| fail("not_allowed_in_this_turn", e.message))?;
+        }
+        let origin = &self.inner.origin;
+        let hash = format!("{title}\n{request}")
+            .bytes()
+            .fold(0xcbf2_9ce4_8422_2325_u64, |h, b| {
+                (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3)
+            });
+        let command = format!("{}:{:08x}", origin.command("create_task"), hash as u32);
+        // Its own unless told otherwise: in this task's workspace first, then
+        // one of its own made from there (D-080, D-191).
+        let (workspace, own) = match choice {
+            Some(c) => (Some(c), false),
+            None => (
+                f.workspace_id
+                    .as_ref()
+                    .map(|w| WorkspaceChoice::Named(w.to_string())),
+                f.workspace_id.is_some(),
+            ),
+        };
+        let c = d
+            .task_create(TaskCreate {
+                command_id: command.clone(),
+                title: title.clone(),
+                request: format!(
+                    "{}, for the task “{}”:\n{request}",
+                    crate::runs::OTTER_SAYS,
+                    f.title
+                ),
+                workspace,
+                answer_only,
+            })
+            .await?;
+        // Its parent, and where the parent's Otter starts hearing from it.
+        let parent = f.id.clone();
+        let applied = d.tasks.lock().await.apply(&c.id, None, |c, _| {
+            if c.parent.is_none() {
+                c.parent = Some(parent.clone());
+            }
+            Ok(vec![])
+        })?;
+        d.task_changed(&applied);
+        self.record(
+            TaskEvent::ToolCalled {
+                tool: "create_task".into(),
+                origin: origin.name().into(),
+                authority: origin.authority().map(|m| m.id.to_string()),
+                detail: Some(format!("{} [{}]", redact(&title), c.id)),
+            },
+            Some(&command),
+        )
+        .await;
+        if own && c.runs.is_empty() {
+            if let Err(e) = d
+                .clone()
+                .task_act(TaskAct {
+                    command_id: format!("{command}:own"),
+                    task: c.id.to_string(),
+                    action: TaskAction::OwnWorkspace,
+                })
+                .await
+            {
+                // It shares this task's workspace instead (one run at a time
+                // there, D-079).
+                tracing::info!(task = %c.id, "a sub-task's own workspace: {}", e.message);
+            }
+        }
+        let started = d
+            .clone()
+            .task_act(TaskAct {
+                command_id: format!("{command}:start"),
+                task: c.id.to_string(),
+                action: TaskAction::Start,
+            })
+            .await;
+        self.record(
+            TaskEvent::ToolDone {
+                tool: "create_task".into(),
+                error: started.as_ref().err().map(|_| "not_ready".into()),
+            },
+            Some(&command),
+        )
+        .await;
+        self.undoable("create_task", &c.id, TaskAction::Cancel)
+            .await;
+        self.inner
+            .done
+            .lock()
+            .unwrap()
+            .push(format!("create_task: {title} ({})", c.id));
+        let now = d.task_get(c.id.as_str()).await?;
+        let ws = match &now.workspace_id {
+            Some(w) => d
+                .store
+                .lock()
+                .await
+                .workspace(w.as_str())
+                .map(|w| w.name.clone()),
+            None => None,
+        };
+        Ok(json!({
+            "done": "created",
+            "task_id": c.id.as_str(),
+            "title": now.title,
+            "status": now.status.as_str(),
+            "workspace": ws,
+        }))
+    }
+
     /// What undoes a change just made (D-192), on record for the developer.
     async fn undoable(&self, tool: &str, task: &TaskId, action: otter_core::task::TaskAction) {
         self.record(
@@ -1853,6 +2106,9 @@ impl Gateway {
     /// only while the agent hasn't worked on it (what it did goes through
     /// review).
     async fn finish_with_answer(&self, f: &Task) -> Result<Value, ToolError> {
+        if f.status == TaskStatus::Done {
+            return Ok(json!({"done": "already", "status": "done"}));
+        }
         if !f.runs.is_empty() {
             return Err(fail(
                 "not_ready",
@@ -2341,6 +2597,12 @@ impl Gateway {
                 ok => ok,
             };
         }
+        if name == "create_task" {
+            return match self.create_subtask(&f, args).await {
+                Err(e) => refused(e).await,
+                ok => ok,
+            };
+        }
         if name == "watch" || name == "cancel_watch" {
             let done = if name == "watch" {
                 self.set_watch(&f, args).await
@@ -2516,6 +2778,9 @@ impl Gateway {
         Ok(json!({"done": did, "status": status.as_str()}))
     }
 }
+
+/// The most sub-tasks a task has unfinished at once (D-193).
+pub(crate) const MAX_SUBTASKS: usize = 3;
 
 /// Why a task Otter answered itself is done (D-192).
 pub(crate) const ANSWERED_BY_OTTER: &str =
