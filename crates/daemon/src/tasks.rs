@@ -1151,12 +1151,12 @@ impl Daemon {
             }
             _ => {}
         }
-        check_text("message", &text, MAX_TEXT)?;
         // The message is the line as written: the command, then its words.
         let text = match &p.command {
             Some(c) => c.line(&text),
             None => text,
         };
+        check_text("message", &text, MAX_TEXT)?;
         let pictures = check_images(&p.images)?;
         let cmd = p.command_id.clone();
         let id = TaskId::from(p.task.as_str());

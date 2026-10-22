@@ -7120,20 +7120,26 @@ has it.
   written and `Message.command`; otterd does it with the tool Otter's turn
   would have called, through the same gateway (`Gateway::restricted`, one
   call, the message as the developer's word), so the checks, the history
-  and doing it once are the tools' own. The words after the command are
-  what is passed on, never the command. Otter's line says what came of it,
+  and doing it once are the tools' own. What reaches the planner and the
+  coding agent is the words, never the command: `Message::for_the_work` is
+  a message's text, or the words of `/revise` and `/tell`; the other
+  commands are about the conversation, and no prompt, plan or goal takes
+  them (`developer_notes`, the brief, the plan made without a model, a
+  task's goal from its first message). Otter's line says what came of it,
   in words for the developer (a refusal says why and what to do), under
   `command:<message id>`: not the message's own id, which would count as
   answering every message before it. `unanswered` leaves out a command, so
   Otter's turn doesn't answer it. A crash between the change and the line
-  writes the line once after the restart and makes the change once.
+  writes the line once after the restart and makes the change once. A
+  task's commands are done first in its step, before Otter's turn answers
+  what was said before them: a `/pause` doesn't wait on a model.
 - **Commands run with the controller off.** Off leaves tasks where they are
   until the developer acts; a command is the developer acting.
 - **Compatible, no version bump**: an optional request field. An otterd
   before it would ignore `command` and take the words as a plain message,
   so the app offers the Tell commands only where `runtime.capabilities`
   says `message_commands`; elsewhere they are dimmed, "Update otterd on this
-  host to use this".
+  host to use this" (or, until the host has said, that it hasn't).
 - **The empty Chat page's box** takes `/in <workspace>` (any host's;
   `name@host` where a name is on several), `/repo <repository>`, `/scratch`,
   `/host <name>`, `/answer-only` and `/draft` as conditions on the new task,
@@ -7146,16 +7152,25 @@ has it.
 Design page: https://claude.ai/artifact/3sDw9Z11fYXJdmGwK6Scbd.
 
 Tests: `commands::tests` (the line as written and read back, the
-developer's words for a refusal, what a CI watch read, what is pending) and
-e2e `commands::*` (`/tell` passes the words on and no turn answers it; a
-message before a command is still answered; `/revise`; `/remember` once;
-a refused `/ask` and a `/remind` watch; words missing; the controller off;
-a crash after the change). App: `chatCommands.test.ts` (parsing, each
-command's availability and why, effects, the menu's order, the new task's
-conditions) and `slashCommands.test.tsx` (the menu, Enter and an input
-method's Enter, Pinyin's `、`, the hint and the button, `/cancel` twice, a
-Tell command and its bubble, a non-command sent as a message, `/workspace`
-and Show, the empty page's chips). Watched failing: with `unanswered`
-counting commands, Otter's turn answers `/tell`; with the menu's Enter not
-asking the input method, an IME Enter runs `/pause`. Checked with the app's
-tests and a production build, not in the macOS app itself.
+developer's words for a refusal, what a CI watch read, what is pending),
+`the_agent_gets_a_commands_words_or_nothing`, and e2e `commands::*`
+(`/tell` passes the words on and no turn answers it; a message before a
+command is still answered; `/remember` once and `/revise` replanning from
+its words alone; a refused `/ask` and a `/remind` watch; words missing; the
+controller off; a crash after the change). App: `chatCommands.test.ts`
+(parsing, each command's availability and why, effects, the menu's order,
+the new task's conditions) and `slashCommands.test.tsx` (the menu, Enter
+and an input method's Enter, Pinyin's `、`, the hint and the button,
+`/cancel` twice, a Tell command and its bubble, one command for two Enters,
+a non-command sent as a message, `/workspace` and Show, the empty page's
+chips). Watched failing: with `unanswered` counting commands, Otter's turn
+answers `/tell`; with the menu's Enter not asking the input method, an IME
+Enter runs `/pause`; with the plan made without a model reading the
+message's text, the replanned step says "/remember …" and "/revise …";
+without the app's guard, two Enters send `/tell` twice. Checked with the
+app's tests and a production build, not in the macOS app itself.
+
+Reviewed against the code (Fable) before merging. The review found the
+commands' lines reaching the planner and the coding agent through every
+reader of the developer's messages but the two tools, and a command done
+twice by a second Enter while the first was away. Both are fixed above.

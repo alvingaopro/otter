@@ -469,6 +469,21 @@ pub struct Message {
     pub command: Option<MessageCommand>,
 }
 
+impl Message {
+    /// What the developer said for the work itself (D-190): a message's
+    /// text, or the words after `/revise` or `/tell`. The other commands are
+    /// about the conversation — a question for the agent's reading-only
+    /// turn, a watch, a note, answer-only — and are no instruction for the
+    /// planner or the coding agent.
+    pub fn for_the_work(&self) -> Option<&str> {
+        match &self.command {
+            None => Some(&self.text),
+            Some(c @ (MessageCommand::Revise | MessageCommand::Tell)) => Some(c.words(&self.text)),
+            Some(_) => None,
+        }
+    }
+}
+
 /// What a message of pictures alone says, for whoever reads it as words
 /// (Otter's turn, the planner, the agent): never blank.
 pub const PICTURES_ONLY: &str = "(pictures, no words)";

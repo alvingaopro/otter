@@ -165,8 +165,9 @@ export function waitingForWorkspace(f: Task): boolean {
   );
 }
 
-/** A message command needs an otterd that takes it. */
-const otterdTakes = (ctx: TaskCtx) => ok(!!ctx.caps?.message_commands, "Update otterd on this host to use this");
+/** A message command needs an otterd that takes it; until the host says, it isn't known. */
+const otterdTakes = (ctx: TaskCtx) =>
+  ok(!!ctx.caps?.message_commands, ctx.caps ? "Update otterd on this host to use this" : "This host hasn't said yet whether it takes this");
 
 const both = (...checks: (true | string)[]) => checks.find((c) => c !== true) ?? true;
 

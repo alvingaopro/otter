@@ -188,6 +188,26 @@ describe("slash commands (D-190)", () => {
     expect(sent[sent.length - 1]).toEqual(["", { name: "remind", in_minutes: 30 }]);
   });
 
+  it("does a command once, whatever is pressed while it is away", async () => {
+    const waiting: (() => void)[] = [];
+    const asked: unknown[][] = [];
+    const { s } = recording();
+    const slow: TaskSource = {
+      ...s,
+      send: (key, text, images, command) => {
+        asked.push([text, command]);
+        return new Promise<void>((done) => waiting.push(() => void s.send(key, text, images, command).then(done)));
+      },
+    };
+    await render(slow);
+    await open("Export workspace timeline as CSV");
+    await write("/tell use tabs");
+    await press("Enter");
+    await press("Enter");
+    await act(async () => waiting.forEach((go) => go()));
+    expect(asked).toEqual([["use tabs", { name: "tell" }]]);
+  });
+
   it("sends what isn't a command as a message", async () => {
     const { s, sent } = recording();
     await render(s);

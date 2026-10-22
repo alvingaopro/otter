@@ -89,6 +89,7 @@ describe("slash commands (D-190)", () => {
     expect(why("ask", ctx(active, { live: true, caps: caps({ backend: "legacy_cli" }) }))).toBe("Needs the coding agent on the SDK runtime (Settings)");
     // An otterd before D-190 can't take a message command.
     expect(why("remember", ctx(active, { caps: caps({ message_commands: undefined }) }))).toBe("Update otterd on this host to use this");
+    expect(why("remember", ctx(active, { caps: null }))).toBe("This host hasn't said yet whether it takes this");
     expect(why("stop", ctx(active, { live: true, caps: caps({ features: { ...caps().features, redirect: false } }) }))).toBe(
       "This host's coding agent can't be stopped mid-turn",
     );

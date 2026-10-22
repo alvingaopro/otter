@@ -276,11 +276,15 @@ impl Daemon {
                     let stepped = {
                         let (daemon, id) = (daemon.clone(), id.clone());
                         contained(async move {
-                            if off {
-                                daemon.run_commands(&id).await
-                            } else {
-                                daemon.step(&id).await
+                            if !off {
+                                return daemon.step(&id).await;
                             }
+                            // As in a step: a command that can't be done
+                            // never stops the task.
+                            if let Err(e) = daemon.run_commands(&id).await {
+                                tracing::warn!(task = %id, "a command: {}", redact(&e.message));
+                            }
+                            Ok(())
                         })
                         .await
                     };
@@ -1350,8 +1354,8 @@ impl Daemon {
         let said = f
             .messages
             .iter()
-            .find(|m| m.role == MessageRole::User)
-            .map(|m| m.text.clone());
+            .filter(|m| m.role == MessageRole::User)
+            .find_map(|m| m.for_the_work().map(str::to_owned));
         let answered = f
             .decisions
             .iter()
@@ -1424,12 +1428,13 @@ impl Daemon {
     async fn decide_open(self: &Arc<Self>, f: &Task) -> RpcResult<()> {
         // Asked what the task should do: a message is an answer too.
         if let Some(d) = f.pending_decisions().find(|d| d.summary == GOAL_QUESTION)
-            && let Some(m) = f
+            && let Some(text) = f
                 .messages
                 .iter()
-                .find(|m| m.role == MessageRole::User && m.at > d.created_at)
+                .filter(|m| m.role == MessageRole::User && m.at > d.created_at)
+                .find_map(|m| m.for_the_work().map(str::to_owned))
         {
-            let (did, text) = (d.id.clone(), m.text.clone());
+            let did = d.id.clone();
             self.decide(&f.id, &did, true, Some(text), Decider::User, None)
                 .await?;
             return Ok(());
@@ -3451,7 +3456,7 @@ fn developer_notes(
 ) -> Vec<String> {
     developer_messages(f, since, carried)
         .into_iter()
-        .map(|m| m.text.clone())
+        .filter_map(|m| m.for_the_work().map(str::to_owned))
         .collect()
 }
 
@@ -3467,6 +3472,8 @@ fn developer_messages<'a>(
         .filter(|m| Some(&m.id) != request)
         .filter(|m| m.role == MessageRole::User && since.is_none_or(|s| m.at > s))
         .filter(|m| !carried.contains(m.id.as_str()))
+        // A command's words go with it, or not at all (D-190).
+        .filter(|m| m.for_the_work().is_some())
         .collect()
 }
 
@@ -4214,5 +4221,39 @@ mod tests {
             warm.contains("has a header") && warm.contains("1 of 1"),
             "{warm}"
         );
+    }
+
+    /// The coding agent is told what the developer said for the work: a
+    /// message, or the words of `/revise` and `/tell`; never a command's
+    /// line, nor a command about the conversation (D-190).
+    #[test]
+    fn the_agent_gets_a_commands_words_or_nothing() {
+        use otter_core::task::{Message, MessageCommand};
+        let now = Utc::now();
+        let mut f = Task::new("t".into(), "Export it".into(), now);
+        let said = |text: &str, command: Option<MessageCommand>| Message {
+            id: otter_core::MessageId::generate(),
+            role: MessageRole::User,
+            text: text.into(),
+            at: now,
+            correlation_id: None,
+            attachments: vec![],
+            command,
+        };
+        f.messages = vec![
+            said("Use tabs", None),
+            said("/remember Tabs, not commas", Some(MessageCommand::Remember)),
+            said("/ask Where is it?", Some(MessageCommand::Ask)),
+            said("/watch ci", Some(MessageCommand::WatchCi)),
+            said("/tell Keep the header", Some(MessageCommand::Tell)),
+            said("/revise Also export JSON", Some(MessageCommand::Revise)),
+        ];
+        assert_eq!(
+            developer_notes(&f, None, &HashSet::new()),
+            ["Use tabs", "Keep the header", "Also export JSON"]
+        );
+        let brief = brain::brief(&f);
+        assert!(!brief.contains('/'), "{brief}");
+        assert!(brief.contains("- Also export JSON"), "{brief}");
     }
 }

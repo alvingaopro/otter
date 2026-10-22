@@ -914,12 +914,16 @@ function Conversation({
 
   // Slash commands (D-190): the buttons beside the box ask the same rules.
   const ctx: TaskCtx = { task: placed.task, live: !!live, caps, workspaces, memory: !!source.memory, details };
+  // One command at a time: a second Enter while one is away would do it twice.
+  const running = useRef(false);
   async function command(effect: TaskEffect) {
     if (effect.kind === "show") {
       onShow(effect.show);
       setText("");
       return;
     }
+    if (running.current || preparing > 0) return;
+    running.current = true;
     setBusy(true);
     try {
       if (effect.kind === "act") {
@@ -934,6 +938,7 @@ function Conversation({
       // What was written stays, to try again.
       onError?.(String(e));
     } finally {
+      running.current = false;
       setBusy(false);
     }
   }

@@ -159,28 +159,14 @@ async fn a_message_before_a_command_is_still_answered() {
     .await;
 }
 
-/// `/revise` on a task in review plans again; `/remember` notes a line once.
+/// `/remember` notes a line once; `/revise` plans again from its words
+/// alone: no command's line reaches the plan or the agent.
 #[tokio::test]
 async fn revise_plans_again_and_remember_notes_once() {
     let fake = host_with(vec![]).await;
     let host = &fake.host;
     let id = started_task(host, "Add CSV export").await;
     wait_task(host, &id, "in review", |f| f.status == TaskStatus::Review).await;
-    let (_, _, line) = run(
-        host,
-        &id,
-        "revise-1",
-        MessageCommand::Revise,
-        "Also export JSON",
-    )
-    .await;
-    assert_eq!(line, "Planning again from where the work is.");
-    assert_eq!(tool_records(host, &id, "revise_task").await, (1, 1));
-    // Planned again (the fake agent is quick: it may be in review again).
-    wait_task(host, &id, "planned again", |f| {
-        f.rationale.iter().any(|r| r.contains("The goal changed"))
-    })
-    .await;
 
     let (_, _, line) = run(
         host,
@@ -202,6 +188,30 @@ async fn revise_plans_again_and_remember_notes_once() {
     assert_eq!(line, "That's in this task's memory already.");
     let m = host.conn().await.memory_get(Some(&id)).await.unwrap();
     assert_eq!(m.conversation, "- Tabs, not commas\n");
+
+    let (_, _, line) = run(
+        host,
+        &id,
+        "revise-1",
+        MessageCommand::Revise,
+        "Also export JSON",
+    )
+    .await;
+    assert_eq!(line, "Planning again from where the work is.");
+    assert_eq!(tool_records(host, &id, "revise_task").await, (1, 1));
+    // Planned again (the fake agent is quick: it may be in review again).
+    let f = wait_task(host, &id, "planned again", |f| {
+        f.steps
+            .iter()
+            .any(|s| s.title == "Apply the developer's changes")
+    })
+    .await;
+    let step = f
+        .steps
+        .iter()
+        .find(|s| s.title == "Apply the developer's changes")
+        .unwrap();
+    assert_eq!(step.detail.as_deref(), Some("Also export JSON"));
 }
 
 /// A command that can't be done says why, in words for the developer, and
