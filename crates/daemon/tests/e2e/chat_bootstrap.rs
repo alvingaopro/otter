@@ -194,7 +194,7 @@ async fn otter_finds_a_workspace_and_makes_one_for_a_task() {
     let found = answers[0]["data"]["workspaces"].as_array().unwrap();
     assert_eq!(found.len(), 1, "{answers:?}");
     assert_eq!(found[0]["name"], "billing");
-    assert!(found[0]["task_working_in_it"].is_null());
+    assert!(found[0]["held_by_task"].is_null());
     assert_eq!(
         answers[1]["data"]["repositories"].as_array().unwrap().len(),
         2,
@@ -217,4 +217,133 @@ async fn otter_finds_a_workspace_and_makes_one_for_a_task() {
     let text = "Both.\nCALL: create_task {\"title\": \"x\", \"message_ids\": $MSG, \"workspace\": \"web\", \"scratch\": true}";
     let (_, _, answers) = say(host, "h-2", text).await;
     assert_eq!(answers[0]["error"]["code"], "invalid", "{answers:?}");
+}
+
+/// What Otter reads in a listing can be handed back: a repository shown
+/// without its credentials names the stored one, so the task's workspace is
+/// of the same backing repository (and authenticates), not a second one.
+#[tokio::test]
+async fn a_repository_as_listed_names_the_stored_one() {
+    let fake =
+        fake_agent_host_with("ok", "scripted", |_| vec![("OTTER_BRAIN_V2", "1".into())]).await;
+    let host = &fake.host;
+    let mut conn = host.conn().await;
+    let url = "https://user:s3cr3t-token@127.0.0.1:9/acme/billing.git";
+    conn.workspace_create(WorkspaceCreate {
+        name: "billing".into(),
+        source: SourceSpec::Git {
+            repository: url.into(),
+            branch: None,
+            base: None,
+        },
+        sessions: Some(vec![]),
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+    let (_, reply, answers) = say(
+        host,
+        "h-1",
+        "What is here?\nCALL: list_repositories {}\nCALL: list_workspaces {\"query\": \"acme\"}",
+    )
+    .await;
+    assert!(!reply.contains("s3cr3t"), "{reply}");
+    let listed = answers[0]["data"]["repositories"][0]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert!(!listed.contains("s3cr3t"), "{listed}");
+    assert_eq!(
+        answers[1]["data"]["workspaces"].as_array().unwrap().len(),
+        1,
+        "{answers:?}"
+    );
+
+    let f = conn
+        .task_create(create(
+            "c-1",
+            "Retries",
+            WorkspaceChoice::New {
+                new: NewWorkspace {
+                    repository: listed,
+                    base: None,
+                    branch: None,
+                },
+            },
+        ))
+        .await
+        .unwrap();
+    let all = conn.workspace_list().await.unwrap();
+    let git = |w: &Workspace| match &w.source {
+        otter_core::WorkspaceSource::Git(g) => g.repo_id.clone(),
+        other => panic!("{other:?}"),
+    };
+    let made = all
+        .iter()
+        .find(|w| w.id == f.workspace_id.clone().unwrap())
+        .unwrap();
+    let old = all.iter().find(|w| w.name == "billing").unwrap();
+    assert_eq!(git(made), git(old));
+}
+
+/// A branch or base that Git would take for an option is refused.
+#[tokio::test]
+async fn a_branch_that_looks_like_an_option_is_refused() {
+    let fake = fake_agent_host("ok", "rules").await;
+    let mut conn = fake.host.conn().await;
+    for (base, branch) in [(Some("--upload-pack=x"), None), (None, Some("a b"))] {
+        let err = conn
+            .task_create(create(
+                "c-1",
+                "x",
+                WorkspaceChoice::New {
+                    new: NewWorkspace {
+                        repository: "/r".into(),
+                        base: base.map(Into::into),
+                        branch: branch.map(Into::into),
+                    },
+                },
+            ))
+            .await
+            .unwrap_err();
+        assert!(format!("{err:#}").contains("one word"), "{err:#}");
+    }
+    assert!(conn.task_list().await.unwrap().is_empty());
+    assert!(conn.workspace_list().await.unwrap().is_empty());
+}
+
+/// Otter is shown which task holds a workspace — a run there, or work of
+/// another task there that isn't done — so it makes the next task a
+/// workspace of its own instead of one that would wait; and a refused
+/// request makes nothing.
+#[tokio::test]
+async fn otter_sees_what_holds_a_workspace_and_a_refused_request_makes_nothing() {
+    let fake =
+        fake_agent_host_with("ok", "scripted", |_| vec![("OTTER_BRAIN_V2", "1".into())]).await;
+    let host = &fake.host;
+    let first = started_task(host, "Add CSV export HANG").await;
+    wait_task(host, &first, "at work", |f| {
+        f.status == TaskStatus::Implementing
+    })
+    .await;
+    let (_, _, answers) = say(
+        host,
+        "h-1",
+        "Who has proj?\nCALL: list_workspaces {\"query\": \"proj\"}",
+    )
+    .await;
+    let found = answers[0]["data"]["workspaces"].as_array().unwrap();
+    assert_eq!(found.len(), 1, "{answers:?}");
+    assert_eq!(found[0]["held_by_task"], first.as_str(), "{answers:?}");
+
+    let tasks = host.conn().await.task_list().await.unwrap().len();
+    let workspaces = host.conn().await.workspace_list().await.unwrap().len();
+    let text = "Both.\nCALL: create_task {\"title\": \"x\", \"message_ids\": $MSG, \"workspace\": \"proj\", \"scratch\": true}";
+    let (_, _, answers) = say(host, "h-2", text).await;
+    assert_eq!(answers[0]["error"]["code"], "invalid", "{answers:?}");
+    assert_eq!(host.conn().await.task_list().await.unwrap().len(), tasks);
+    assert_eq!(
+        host.conn().await.workspace_list().await.unwrap().len(),
+        workspaces
+    );
 }

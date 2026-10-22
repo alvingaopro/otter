@@ -39,6 +39,8 @@ use crate::daemon::{Daemon, RpcResult, workspace_not_found};
 
 /// Command ids remembered per task (a retry comes soon after the original).
 const REMEMBERED_COMMANDS: usize = 256;
+/// A repository's address, at most.
+const MAX_REPOSITORY: usize = 1024;
 const MAX_TITLE: usize = 200;
 pub(crate) const MAX_TEXT: usize = 20_000;
 const DEFAULT_HISTORY_LIMIT: usize = 1000;
@@ -481,6 +483,19 @@ pub(crate) fn check_text(what: &str, text: &str, max: usize) -> RpcResult<()> {
     Ok(())
 }
 
+/// A branch or revision the model or a client gave: short, one word, and not
+/// an option for Git (D-179).
+fn check_revision(what: &str, v: &str) -> RpcResult<()> {
+    check_text(what, v, 200)?;
+    if v.is_empty() || v.starts_with('-') || v.chars().any(|c| c.is_whitespace() || c.is_control())
+    {
+        return Err(RpcError::invalid(format!(
+            "{what} must be one word and not start with `-`"
+        )));
+    }
+    Ok(())
+}
+
 /// Where a paused, failed or unblocked task picks up: planning until
 /// there is a plan, verifying once every step is done, else implementing.
 pub fn resume_status(f: &Task) -> TaskStatus {
@@ -885,11 +900,18 @@ impl Daemon {
         // nothing here makes a workspace before the applied check.
         let made = match &p.workspace {
             Some(WorkspaceChoice::New { new }) => {
-                if new.repository.trim().is_empty() {
+                let repository = new.repository.trim();
+                if repository.is_empty() {
                     return Err(RpcError::invalid("a repository must not be empty"));
                 }
+                check_text("repository", repository, MAX_REPOSITORY)?;
+                for (what, v) in [("base", &new.base), ("branch", &new.branch)] {
+                    if let Some(v) = v {
+                        check_revision(what, v)?;
+                    }
+                }
                 Some(SourceSpec::Git {
-                    repository: new.repository.trim().to_owned(),
+                    repository: self.stored_repository(repository).await,
                     branch: new.branch.clone(),
                     base: new.base.clone(),
                 })
@@ -944,16 +966,60 @@ impl Daemon {
         if created.workspace_id.is_some() {
             return Ok(created);
         }
-        let ws = self.workspace_for_task(&created, source).await?;
-        self.clone()
-            .task_act(TaskAct {
-                command_id: format!("{}:workspace", p.command_id),
-                task: created.id.to_string(),
-                action: TaskAction::SetWorkspace {
-                    workspace: ws.id.to_string(),
-                },
+        // The task is made; if its workspace can't be, it stays a task
+        // without one, with the reason on it, rather than an error that a
+        // retry would answer with a second task (D-179).
+        let set = async {
+            let ws = self.workspace_for_task(&created, source).await?;
+            self.clone()
+                .task_act(TaskAct {
+                    command_id: format!("{:.100}:workspace", p.command_id),
+                    task: created.id.to_string(),
+                    action: TaskAction::SetWorkspace {
+                        workspace: ws.id.to_string(),
+                    },
+                })
+                .await
+        };
+        match set.await {
+            Ok(f) => Ok(f),
+            Err(e) => {
+                let said = format!(
+                    "I couldn't make a workspace for this task ({}). Choose one to go on.",
+                    e.message.lines().next().unwrap_or("no reason given")
+                );
+                let applied = self.tasks.lock().await.apply(&created.id, None, |f, _| {
+                    let (m, c) = message(MessageRole::Controller, said.clone(), None);
+                    f.messages.push(m);
+                    Ok(vec![c])
+                });
+                if let Ok(a) = applied {
+                    self.task_changed(&a);
+                }
+                self.task_get(created.id.as_str()).await
+            }
+        }
+    }
+
+    /// A repository as stored, when `given` is a stored one as it is shown
+    /// (without its credentials, D-075): what Otter reads in a listing, put
+    /// back, names the same backing repository (D-108) and authenticates.
+    async fn stored_repository(&self, given: &str) -> String {
+        let store = self.store.lock().await;
+        store
+            .state
+            .workspaces
+            .iter()
+            .find_map(|w| match &w.source {
+                otter_core::WorkspaceSource::Git(g)
+                    if g.repository != given
+                        && otter_core::redact::url_credentials(&g.repository) == given =>
+                {
+                    Some(g.repository.clone())
+                }
+                _ => None,
             })
-            .await
+            .unwrap_or_else(|| given.to_owned())
     }
 
     /// Whether a task here can be answer-only (D-092): its coding agent
@@ -1124,15 +1190,6 @@ impl Daemon {
         prefix: &str,
         source: SourceSpec,
     ) -> RpcResult<otter_core::Workspace> {
-        let taken: Vec<String> = self
-            .store
-            .lock()
-            .await
-            .state
-            .workspaces
-            .iter()
-            .map(|w| w.name.clone())
-            .collect();
         let slug = crate::git::slug(&f.title);
         let short: String =
             f.id.as_str()
@@ -1143,12 +1200,7 @@ impl Daemon {
                 .into_iter()
                 .rev()
                 .collect();
-        let mut new_name = format!("{prefix}-{slug}");
-        let mut n = 2;
-        while taken.contains(&new_name) {
-            new_name = format!("{prefix}-{slug}-{n}");
-            n += 1;
-        }
+        let prefix: String = prefix.chars().take(40).collect();
         let source = match source {
             SourceSpec::Git {
                 repository,
@@ -1161,25 +1213,49 @@ impl Daemon {
             },
             other => other,
         };
-        let ws = self
-            .workspace_create(otter_protocol::WorkspaceCreate {
-                name: new_name,
-                brief: Some(otter_core::Brief {
-                    title: Some(f.title.clone()),
-                    description: Some(format!("The task “{}”, in a workspace of its own", f.title)),
-                    ..Default::default()
-                }),
-                source,
-                sessions: Some(vec![]),
-            })
-            .await?;
-        // Made for it: put away when it ends (D-105).
-        let mut store = self.store.lock().await;
-        let w = store.workspace_mut(ws.id.as_str()).expect("just made");
-        w.task_id = Some(f.id.clone());
-        let ws = w.clone();
-        crate::daemon::save(&store)?;
-        Ok(ws)
+        // A name taken meanwhile (two at once with the same title) is
+        // looked for again.
+        let mut last = None;
+        for _ in 0..5 {
+            let taken: Vec<String> = self
+                .store
+                .lock()
+                .await
+                .state
+                .workspaces
+                .iter()
+                .map(|w| w.name.clone())
+                .collect();
+            let mut name = format!("{prefix}-{slug}");
+            let mut n = 2;
+            while taken.contains(&name) {
+                name = format!("{prefix}-{slug}-{n}");
+                n += 1;
+            }
+            let made = self
+                .workspace_create_for(
+                    otter_protocol::WorkspaceCreate {
+                        name,
+                        brief: Some(otter_core::Brief {
+                            title: Some(f.title.clone()),
+                            description: Some(format!(
+                                "The task “{}”, in a workspace of its own",
+                                f.title
+                            )),
+                            ..Default::default()
+                        }),
+                        source: source.clone(),
+                        sessions: Some(vec![]),
+                    },
+                    Some(f.id.clone()),
+                )
+                .await;
+            match made {
+                Err(e) if e.code == otter_protocol::ErrorCode::AlreadyExists => last = Some(e),
+                other => return other,
+            }
+        }
+        Err(last.expect("tried at least once"))
     }
 
     /// When a task ends (done or cancelled), the workspace made for it

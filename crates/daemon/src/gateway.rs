@@ -311,7 +311,7 @@ pub fn host_tools() -> Vec<ToolSpec> {
         t(
             "list_workspaces",
             Observe,
-            "The workspaces on this host (where tasks do their work): id, name, state, the repository it comes from, its brief, and the task working in it now. query: only those whose name, repository or brief has these words.",
+            "The workspaces on this host (where tasks do their work): id, name, state, the repository it comes from, its brief, and the task holding it now (held_by_task: a new task there would wait). query: only those whose name, repository or brief has these words.",
             json!({
                 "type": "object",
                 "properties": {"query": {"type": "string"}},
@@ -911,43 +911,48 @@ impl Gateway {
             }
             "list_workspaces" => {
                 let query = Self::query(args);
-                let busy: std::collections::HashMap<_, _> = d
-                    .runs
-                    .lock()
-                    .unwrap()
-                    .values()
-                    .map(|r| (r.workspace.clone(), r.task.to_string()))
-                    .collect();
-                let store = d.store.lock().await;
-                let ws: Vec<Value> = store
-                    .state
-                    .workspaces
-                    .iter()
-                    .cloned()
-                    .map(otter_core::Workspace::shown)
-                    .filter(|w| {
-                        matches_query(
-                            &query,
-                            &[
-                                &w.name,
-                                &repository_of(w).unwrap_or_default(),
-                                w.brief.title.as_deref().unwrap_or(""),
-                                w.brief.description.as_deref().unwrap_or(""),
-                            ],
-                        )
-                    })
-                    .map(|w| {
-                        json!({
-                            "id": w.id.as_str(),
-                            "name": w.name,
-                            "state": format!("{:?}", w.state).to_lowercase(),
-                            "repository": repository_of(&w),
-                            "brief": redact(w.brief.title.as_deref().unwrap_or("")),
-                            "task_working_in_it": busy.get(&w.id),
-                            "made_for_task": w.task_id.as_ref().map(|t| t.as_str()),
-                        })
-                    })
-                    .collect();
+                let all: Vec<otter_core::Workspace> = d.store.lock().await.state.workspaces.clone();
+                let mut ws: Vec<Value> = Vec::new();
+                for w in all {
+                    // Who has it now: a run there, or work of another task
+                    // there that is not done (D-079, D-156) — what would
+                    // make a new task wait.
+                    let held_by = match d.workspace_holder(&w.id) {
+                        Some(t) => Some(t),
+                        None => {
+                            let git = std::path::Path::new(&w.root)
+                                .ancestors()
+                                .any(|p| p.join(".git").exists());
+                            if git {
+                                d.work_holding(&w.id, None).await.map(|t| t.id)
+                            } else {
+                                None
+                            }
+                        }
+                    };
+                    let w = w.shown();
+                    let repository = repository_of(&w);
+                    if !matches_query(
+                        &query,
+                        &[
+                            &w.name,
+                            repository.as_deref().unwrap_or(""),
+                            w.brief.title.as_deref().unwrap_or(""),
+                            w.brief.description.as_deref().unwrap_or(""),
+                        ],
+                    ) {
+                        continue;
+                    }
+                    ws.push(json!({
+                        "id": w.id.as_str(),
+                        "name": w.name,
+                        "state": format!("{:?}", w.state).to_lowercase(),
+                        "repository": repository.as_deref().map(redact),
+                        "brief": redact(w.brief.title.as_deref().unwrap_or("")),
+                        "held_by_task": held_by.as_ref().map(|t| t.as_str()),
+                        "made_for_task": w.task_id.as_ref().map(|t| t.as_str()),
+                    }));
+                }
                 Ok(json!({"workspaces": ws}))
             }
             "list_repositories" => {

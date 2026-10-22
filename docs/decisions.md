@@ -6548,13 +6548,24 @@ already existed.
   so D-105 puts it away when it ends — the code is `own_workspace`'s (D-080),
   now one function. The old string form is unchanged on the wire, so no
   protocol version bump; an older otterd refuses the object forms.
-- **Made once.** The applied check comes before anything is made. If otterd
-  stops after the workspace is made but before it is chosen, a repeat of the
-  command finds the workspace already made for the task and uses it. (Not
-  tested: the window between the two can't be reached from outside.)
+- **Made once, and never an error after the task.** The applied check comes
+  before anything is made, and the workspace is marked for its task in the
+  same write that makes it. If making or choosing it fails (a name taken
+  meanwhile is looked for again), the task stays, with Otter's message saying
+  why and no workspace ("Choose one to go on"), instead of an error that a
+  retry — a new command — would answer with a second task. If otterd stops
+  after the workspace is made but before it is chosen, a repeat of the command
+  finds the workspace made for the task and uses it. (Neither failure path is
+  tested: they can't be reached from outside.)
+- **A repository Otter read is one it can hand back.** Listings show it
+  without its credentials (D-075); `task.create` takes a repository equal to
+  a stored one as shown to mean the stored one, so the same backing
+  repository is used (D-108) and it authenticates. A branch or base must be
+  one word and not start with `-`.
 - **Otter's tools.** `create_task` takes `workspace`, `new_workspace` or
   `scratch` (at most one); `list_workspaces` gains the repository, the brief,
-  the task working in it and a `query`; `list_repositories` is new — the
+  `held_by_task` (a run there, or another task's unfinished work in a Git
+  workspace, D-156 — what would make a new task wait) and a `query`; `list_repositories` is new — the
   repositories this host's workspaces come from, no network. It is the
   developer's word that lets Otter make a task; the instructions tell it to
   ask when it is unsure or the repository is its own inference, never to make
