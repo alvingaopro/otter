@@ -7317,11 +7317,16 @@ Plan `docs/plans/agent-coordination.md` M2–M3.
   (`run view|list`, `pr view|list|checks|diff`, `search`, `api` with GET
   only, …), `curl` fetching an `http(s)` address, `git ls-remote`, or a
   text filter (`grep`, `jq` away from the environment and modules, `head`,
-  `sort`, …) on what it is piped; every option is one its entry lists,
-  written on its own; no word is a path or another kind of address. Nothing
-  writes, so Otter's directory stays empty and no command has a file to
-  read; `sleep` is at most 60 s; nothing watches, follows or opens a
-  browser. Its `gh` is Otter's own sign-in when it has one (D-133), as
+  `sort`, …) on what it is piped, with its pattern and no files; every
+  option is one its entry lists, written on its own; no word or value is a
+  path, an `@file`, a glob outside quotes, or another kind of address;
+  `gh --jq` is out (gh's jq reads the environment: pipe into `jq`), `-R` is
+  `owner/name` on github.com, and `curl` reaches no loopback, private or
+  link-local address (a cloud's metadata). A third review found the `--jq`,
+  `-H @file` and `-R host/…` ways through; this is the list after it.
+  Nothing writes, so Otter's directory stays empty and no command has a
+  file to read; sleeping is at most 60 s a line; nothing watches, follows
+  or opens a browser. Its `gh` is Otter's own sign-in when it has one (D-133), as
   `read_github`'s is.
 - **Watches on any GitHub target**: kind `run` (an Actions run by its
   link, until it finishes) and `ci` with a pull request's `url`.
