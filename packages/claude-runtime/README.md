@@ -32,12 +32,18 @@ fits one.
   settings. It asks for Glob and Grep, which the native Claude Code leaves
   out unless asked (D-091).
 - **`otter`** — Otter's own turn (D-089): `otter_tools` (each a name, a
-  description and a JSON schema) served from an in-process MCP server and
-  nothing else — no Claude Code tools (`tools: []`), no settings, no other
-  MCP servers; anything else the model asks for is denied. Each call goes to
-  otterd as `tool_call {call_id, tool, input}`, and its answer comes back as
-  `tool_result {call_id, output}`; otterd's gateway decides what a call may
-  do. `instructions` is the whole system prompt.
+  description and a JSON schema) served from an in-process MCP server, and
+  of Claude Code's own tools only the `otter_builtins` otterd names (some of
+  `WebSearch`, `WebFetch`, `Bash`, D-191; absent: none) — no settings, no
+  other MCP servers; anything else the model asks for is denied. Each call
+  of Otter's tools goes to otterd as `tool_call {call_id, tool, input}`, and
+  its answer comes back as `tool_result {call_id, output}`; otterd's gateway
+  decides what a call may do. A built-in's call is put to otterd first the
+  same way, as `tool_call` with `tool: "@<name>"` from a `PreToolUse` hook:
+  `{"ok": true, "data": {"allow": true}}` lets it run, anything else denies
+  it (with `data.why` or the error's message). A worker before this ignores
+  `otter_builtins`, and the turn has none. `instructions` is the whole
+  system prompt.
 
 A worker lists the profiles it has in `ready` and `--check` (`profiles`);
 otterd uses one for Otter's turn only if it says `otter` — a worker from
