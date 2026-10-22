@@ -624,9 +624,9 @@ fn ssh_host_normal_flow() {
 /// The M2 golden path from the terminal (D-068): a task written and
 /// started with `otter`, worked on by a coding agent (a fake one), checked,
 /// published as a pull request (a real Git remote, a fake `gh`), followed
-/// through CI and accepted — in a disposable repository.
+/// through CI and done by itself (D-198) — in a disposable repository.
 #[test]
-fn a_task_goes_from_the_terminal_to_an_accepted_pull_request() {
+fn a_task_goes_from_the_terminal_to_a_delivered_pull_request() {
     use std::os::unix::fs::PermissionsExt;
     let scratch = tempfile::Builder::new().prefix("wg").tempdir().unwrap();
     let dir = scratch.path();
@@ -697,9 +697,12 @@ fn a_task_goes_from_the_terminal_to_an_accepted_pull_request() {
         ("FAKE_CODEX_LOG".into(), p(&dir.join("agent.log"))),
         ("FAKE_GH_DIR".into(), p(&gh)),
         ("OTTER_CONTROLLER".into(), "rules".into()),
-        // The developer moves, publishes and accepts here, as these tests
-        // were written (D-191).
-        ("OTTER_TOOL_LEVELS".into(), "set_workspace=developer,publish=developer,approve_plan=developer,accept_task=developer".into()),
+        // The developer moves and publishes here, as these tests were
+        // written (D-191).
+        (
+            "OTTER_TOOL_LEVELS".into(),
+            "set_workspace=developer,publish=developer,approve_plan=developer".into(),
+        ),
         ("OTTER_CONTROLLER_TICK_MS".into(), "200".into()),
         ("OTTER_PLAN_TURN".into(), "0".into()),
         ("OTTER_CI_POLL_MS".into(), "0".into()),
@@ -774,9 +777,9 @@ fn a_task_goes_from_the_terminal_to_an_accepted_pull_request() {
         r#"[{"name":"test","bucket":"pass","link":"","description":""}]"#,
     )
     .unwrap();
-    wait("the report", &|f| f["report"].is_string());
-    let out = cli.ok(&["task", "accept", "csv export"]);
-    assert!(out.contains(": done"), "{out}");
+    // No acceptance (D-198): every gate passed, so it's done, with the report.
+    let f = wait("done by itself", &|f| f["status"] == "done");
+    assert!(f["report"].is_string(), "{f:#}");
     // On the remote: the branch, with the work.
     let pushed = git(&["show", "--stat", "--format=%s", "feature/csv"]);
     assert!(pushed.contains("export.sh"), "{pushed}");
@@ -897,9 +900,12 @@ fn otter_chat_talks_to_otter_on_a_host() {
     let mut cli = Cli::new();
     cli.env = vec![
         ("OTTER_CONTROLLER".into(), "scripted".into()),
-        // The developer moves, publishes and accepts here, as these tests
-        // were written (D-191).
-        ("OTTER_TOOL_LEVELS".into(), "set_workspace=developer,publish=developer,approve_plan=developer,accept_task=developer".into()),
+        // The developer moves and publishes here, as these tests were
+        // written (D-191).
+        (
+            "OTTER_TOOL_LEVELS".into(),
+            "set_workspace=developer,publish=developer,approve_plan=developer".into(),
+        ),
         ("OTTER_BRAIN_V2".into(), "1".into()),
         ("OTTER_CONTROLLER_TICK_MS".into(), "200".into()),
     ];
@@ -921,9 +927,12 @@ fn a_message_goes_to_the_host_that_has_the_workspace_it_names() {
     let mut cli = Cli::new();
     cli.env = vec![
         ("OTTER_CONTROLLER".into(), "scripted".into()),
-        // The developer moves, publishes and accepts here, as these tests
-        // were written (D-191).
-        ("OTTER_TOOL_LEVELS".into(), "set_workspace=developer,publish=developer,approve_plan=developer,accept_task=developer".into()),
+        // The developer moves and publishes here, as these tests were
+        // written (D-191).
+        (
+            "OTTER_TOOL_LEVELS".into(),
+            "set_workspace=developer,publish=developer,approve_plan=developer".into(),
+        ),
         ("OTTER_BRAIN_V2".into(), "1".into()),
         ("OTTER_CONTROLLER_TICK_MS".into(), "200".into()),
     ];

@@ -104,11 +104,7 @@ fn code(answer: &Value) -> &str {
 /// has (D-192). The directory itself is left as it was.
 #[tokio::test]
 async fn a_task_whose_directory_is_taken_gets_a_workspace_of_its_own() {
-    let fake = coord_host(
-        "publish=developer,approve_plan=developer,accept_task=developer",
-        vec![],
-    )
-    .await;
+    let fake = coord_host("publish=developer,approve_plan=developer", vec![]).await;
     let host = &fake.host;
     let origin = make_repo(
         host,
@@ -222,11 +218,7 @@ async fn where_moving_is_the_developers_word_the_task_waits() {
 /// isn't held up either.
 #[tokio::test]
 async fn an_answer_only_task_reads_alongside_the_work() {
-    let fake = coord_sdk_host(
-        "publish=developer,approve_plan=developer,accept_task=developer",
-        "hang",
-    )
-    .await;
+    let fake = coord_sdk_host("publish=developer,approve_plan=developer", "hang").await;
     let host = &fake.host;
     let dir = host.home().join("shared");
     std::fs::create_dir_all(&dir).unwrap();
@@ -579,11 +571,12 @@ async fn otter_tells_the_agent_in_its_own_words() {
     assert!(!turn.text().contains("From the developer"));
 }
 
-/// Publishing and accepting are automatic by default (D-193): the task
-/// publishes without asking, Otter accepts it once CI passed, says so, and
-/// the ledger has both with what undoes the acceptance — which works.
+/// Publishing is automatic by default (D-193): the task publishes without
+/// asking, the ledger has it, and once CI passed the task is done by itself
+/// with the report (D-198) — there is no acceptance, Otter's or the
+/// developer's.
 #[tokio::test]
-async fn otter_publishes_and_accepts_on_its_own_and_it_can_be_undone() {
+async fn otter_publishes_on_its_own_and_the_task_ends_when_ci_passes() {
     let fake = coord_host("set_workspace=developer,approve_plan=developer", vec![]).await;
     let host = &fake.host;
     let (id, _) = git_task(&fake).await;
@@ -601,18 +594,24 @@ async fn otter_publishes_and_accepts_on_its_own_and_it_can_be_undone() {
         r#"[{"name":"test","bucket":"pass","link":"https://github.com/o/r/actions/runs/1/job/2"}]"#,
     )
     .unwrap();
-    let f = wait_task(host, &id, "accepted by Otter", |f| {
+    // No acceptance to wait for (D-198): every gate passed, so it's done,
+    // with the report.
+    let f = wait_task(host, &id, "done by itself", |f| {
         f.status == TaskStatus::Done
     })
     .await;
-    assert_eq!(
-        f.status_reason.as_deref(),
-        Some("Accepted by Otter: every gate passed (accepting is automatic in Settings)")
-    );
+    assert_eq!(f.status_reason.as_deref(), Some("Done: every gate passed"));
     assert!(
         f.messages
             .iter()
-            .any(|m| m.text.contains("I'm accepting it"))
+            .any(|m| m.text.starts_with("Done: every gate passed")),
+        "{:#?}",
+        f.messages.iter().map(|m| &m.text).collect::<Vec<_>>()
+    );
+    assert!(
+        f.gates.iter().all(|g| g.name != "Your acceptance"),
+        "{:?}",
+        f.gates
     );
     let actions = host.conn().await.otter_actions(None).await.unwrap();
     let publish = actions
@@ -621,21 +620,10 @@ async fn otter_publishes_and_accepts_on_its_own_and_it_can_be_undone() {
         .expect("publish on record");
     assert_eq!(publish.origin, "auto");
     assert_eq!(publish.detail.as_deref(), Some("feature/csv"));
-    let accept = actions
-        .iter()
-        .find(|a| a.tool == "accept_task")
-        .expect("acceptance on record");
-    assert_eq!(accept.origin, "auto");
-    assert_eq!(accept.error, None);
-    let undo = accept.undo.clone().expect("it can be undone");
-    assert_eq!(undo.task_id.as_str(), id);
-    host.conn()
-        .await
-        .task_act("undo-accept", &id, undo.action)
-        .await
-        .unwrap();
-    let f = host.conn().await.task_get(&id).await.unwrap();
-    assert_ne!(f.status, TaskStatus::Done);
+    assert!(
+        !actions.iter().any(|a| a.tool == "accept_task"),
+        "{actions:?}"
+    );
 }
 
 /// Approving plans is automatic by default (D-193): the plan the review
@@ -644,7 +632,7 @@ async fn otter_publishes_and_accepts_on_its_own_and_it_can_be_undone() {
 #[tokio::test]
 async fn otter_approves_the_plan_after_one_send_back() {
     let fake = coord_host(
-        "set_workspace=developer,publish=developer,accept_task=developer",
+        "set_workspace=developer,publish=developer",
         vec![("OTTER_PLAN_TURN", "1".into())],
     )
     .await;
@@ -693,8 +681,8 @@ async fn a_task_splits_into_sub_tasks_and_hears_from_them() {
     let request = [
         "Do it in parts.".to_owned(),
         sub("Part A CALL: finish_with_answer {}"),
-        sub("Part B"),
-        sub("Part C"),
+        sub("Part B CALL: finish_with_answer {}"),
+        sub("Part C CALL: finish_with_answer {}"),
         sub("Part D"),
         "CALL: list_tasks {}".to_owned(),
     ]
@@ -754,18 +742,15 @@ async fn a_task_splits_into_sub_tasks_and_hears_from_them() {
         );
         assert!(c.workspace_id.is_some(), "each works somewhere of its own");
     }
-    // Each comes to review (accepting is the developer's here): heard once
-    // each. The first one's turn tries to finish the task, and can't while
-    // its sub-tasks aren't done.
-    let f = wait_task(host, &id, "heard from all three", |f| {
-        f.children_seen.len() == 3
+    // Each comes to something by itself — no acceptance to wait for
+    // (D-198); here, with nothing to do in an empty directory, each stops
+    // unverified — heard once each. A turn that hears one while others are
+    // still at work can't finish the task; the one that hears the last
+    // does, saying how many failed.
+    let f = wait_task(host, &id, "heard from all three, and done", |f| {
+        f.children_seen.len() == 3 && f.status == TaskStatus::Done
     })
     .await;
-    assert_ne!(f.status, TaskStatus::Done, "{:?}", f.status_reason);
-    assert!(
-        f.needs().is_none(),
-        "waiting on its sub-tasks, not on the developer"
-    );
     let heard: Vec<&str> = f
         .messages
         .iter()
@@ -773,16 +758,12 @@ async fn a_task_splits_into_sub_tasks_and_hears_from_them() {
         .filter(|c| c.starts_with("child:"))
         .collect();
     assert_eq!(heard.len(), 3, "once each: {heard:?}");
-    let tried = f
-        .messages
-        .iter()
-        .find(|m| m.text.contains("finish_with_answer: {"))
-        .expect("a sub-task's turn tried to finish it");
-    assert!(tried.text.contains("Part A"), "{}", tried.text);
     assert!(
-        tried.text.contains("sub-tasks aren't done"),
-        "{}",
-        tried.text
+        f.messages.iter().any(|m| m
+            .text
+            .contains("finish_with_answer: {\"data\":{\"done\":\"answered\"")),
+        "{:#?}",
+        f.messages.iter().map(|m| &m.text).collect::<Vec<_>>()
     );
     // The ledger: each sub-task made, and undone by cancelling it.
     let actions = host.conn().await.otter_actions(None).await.unwrap();

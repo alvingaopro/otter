@@ -32,9 +32,12 @@ describe("task contract helpers", () => {
   it("knows which tasks need the developer", () => {
     expect(needsYou(blocked)).toBe(true);
     expect(needsYou(active)).toBe(false);
-    // Review needs you once it's ready to accept, not while CI runs (D-071).
-    expect(needsYou({ ...done, status: "review", report: "## Report" })).toBe(true);
-    expect(needsYou({ ...done, status: "review", report: undefined })).toBe(false);
+    // Review is delivery under way: never yours, a failed gate included —
+    // it ends by itself, done or stopped with the result (D-198).
+    const review: Task = { ...done, status: "review", gates: [{ name: "CI", status: "pending" }] };
+    expect(needsYou(review)).toBe(false);
+    expect(needsYou({ ...review, report: "## Report", gates: [{ name: "CI", status: "passed" }] })).toBe(false);
+    expect(needsYou({ ...review, gates: [{ name: "CI", status: "failed" }] })).toBe(false);
     // A stopped task waits on your retry.
     expect(needsYou(failed)).toBe(true);
     // What otter-core served wins.
@@ -101,7 +104,15 @@ describe("task contract helpers", () => {
   it("shows Otter's loop as one state, with what it's doing", () => {
     // Planning, implementing and verifying are all just "Working" (D-050).
     expect([STATUS_LABEL.planning, STATUS_LABEL.implementing, STATUS_LABEL.verifying]).toEqual(["Working", "Working", "Working"]);
-    expect(STATUS_LABEL.review).toBe("Ready to check");
+    expect(STATUS_LABEL.review).toBe("Delivering");
+    // Delivery says what it waits on, or the gate that failed (D-198).
+    const review: Task = { ...done, status: "review", status_reason: "Ready for your review", gates: [{ name: "CI", status: "pending" }] };
+    expect(statusDetail(review)).toBe("waiting on CI");
+    expect(statusDetail({ ...review, gates: [{ name: "CI", status: "passed" }] })).toBeUndefined();
+    expect(statusDetail({ ...review, gates: [{ name: "Pull request", status: "passed" }, { name: "CI", status: "failed" }] })).toBe("CI didn't pass");
+    expect(statusDetail({ ...review, gates: [{ name: "Requirements met", status: "failed" }, { name: "CI", status: "pending" }] })).toBe(
+      "Requirements met didn't pass; waiting on CI",
+    );
     expect(statusDetail(active)).toBe("step 2 of 2: Wire Export button into Timeline panel");
     expect(statusDetail(blocked)).toContain("Waiting for your approval");
     expect(statusDetail(draft)).toBeUndefined();
@@ -764,38 +775,79 @@ describe("Tasks view", () => {
     expect(reasons.textContent).toContain("Answered. ×3");
   });
 
-  it("shows the gates and only offers a plain Accept when they pass", async () => {
-    const base = mockSource("mac");
+  it("shows a task in review as delivery under way, with nothing to accept (D-198)", async () => {
+    const [done] = sampleTasks().filter((f) => f.status === "done");
+    const review: Task = {
+      ...done,
+      status: "review",
+      // What an older otterd said; the gates say where it stands.
+      status_reason: "Ready for your review",
+      next: "Then: once CI is settled, done with the report, or stopped with it if a gate didn't pass; a fix step if CI fails on the code or the branch conflicts.",
+      gates: [
+        { name: "Requirements met", status: "passed" },
+        { name: "CI", status: "pending", detail: "running" },
+        // An older task's: no longer a gate.
+        { name: "Your acceptance", status: "pending" },
+      ],
+      delivery: { branch: "feature/x", pr_url: "https://github.com/o/r/pull/7", pr_number: 7, ci: [{ name: "test", state: "pending" }], reruns: 0, declined: false },
+      report: undefined,
+    };
+    await single(review);
+    const buttons = [...host.querySelectorAll("button")].map((b) => b.textContent);
+    expect(buttons.some((t) => t?.includes("Accept"))).toBe(false);
+    expect(q(".status-pill")?.textContent).toBe("Delivering");
+    expect(q(".banner.needs")).toBeNull();
+    expect(groupOf(review)).toBe("active");
+    // What it waits on, then what comes of it; the checks and the delivery next.
+    expect(q(".ws-summary")?.textContent).toBe("Delivering · waiting on CI");
+    expect(sections().slice(0, 3)).toEqual(["Now", "Checks", "Delivery"]);
+    const now = q('.ov-section[aria-label="Now"]')!;
+    expect(now.querySelector(".ov-text")?.textContent).toBe("Delivering: waiting on CI");
+    expect(now.querySelector(".ov-next")?.textContent).toContain("done with the report");
+    expect(host.textContent).not.toContain("Ready for your review");
+    expect([...host.querySelectorAll(".gates .step-text > span:first-child")].map((n) => n.textContent)).toEqual([
+      "Requirements met",
+      "CI",
+    ]);
+    expect(host.textContent).toContain("https://github.com/o/r/pull/7");
+    expect(host.querySelector('textarea[aria-label="Message to Otter"]')?.getAttribute("placeholder")).toBe("Tell Otter what you want… (/ for commands)");
+  });
+
+  it("says a gate that failed in delivery, without asking you: the task stops by itself (D-198)", async () => {
     const [done] = sampleTasks().filter((f) => f.status === "done");
     const review: Task = {
       ...done,
       status: "review",
       gates: [
         { name: "Requirements met", status: "passed" },
-        { name: "CI", status: "pending", detail: "running" },
-        { name: "Your acceptance", status: "pending" },
+        { name: "CI", status: "failed", detail: "test failed" },
       ],
-      delivery: { branch: "feature/x", pr_url: "https://github.com/o/r/pull/7", pr_number: 7, ci: [{ name: "test", state: "pending" }], reruns: 0, declined: false },
-      report: undefined,
     };
-    let list: PlacedTask[] = [{ host: "mac", task: review, key: "mac/" + review.id }];
-    const acts: unknown[] = [];
-    const s: TaskSource = { ...base, list: () => list, subscribe: () => () => {}, act: async (_k, a) => void acts.push(a) };
-    await render(s);
-    expect(byText("button", "Accept anyway")).toBeTruthy();
-    // Under review the checks and the delivery come first.
-    expect(sections().slice(0, 2)).toEqual(["Checks", "Delivery"]);
-    expect(host.textContent).toContain("https://github.com/o/r/pull/7");
-    expect(host.textContent).toContain("running");
-    await act(async () => byText("button", "Accept anyway")!.click());
-    expect(acts).toEqual([{ action: "accept", override_gates: true }]);
+    expect(needsYou(review)).toBe(false);
+    await single(review);
+    expect(q(".status-pill")?.textContent).toBe("Delivering");
+    expect(q(".banner.needs")).toBeNull();
+    expect([...host.querySelectorAll("button")].some((b) => b.textContent?.includes("Accept"))).toBe(false);
+    expect(q('.ov-section[aria-label="Now"] .ov-text')?.textContent).toBe("Delivering: CI didn't pass");
+    expect(q(".otter-chip-state")?.textContent).not.toBe("needs you");
+  });
 
-    list = [{ ...list[0], task: { ...review, gates: review.gates!.map((g) => ({ ...g, status: g.name === "Your acceptance" ? g.status : "passed" })) } }];
-    act(() => root.unmount());
-    root = createRoot(host);
-    await render(s);
-    expect(byText("button", "Accept anyway")).toBeUndefined();
-    expect([...host.querySelectorAll("button")].some((b) => b.textContent === "Accept")).toBe(true);
+  it("shows a delivered task's report once it's done", async () => {
+    const [done] = sampleTasks().filter((f) => f.status === "done");
+    await single({
+      ...done,
+      status_reason: "Done: every gate passed",
+      report: "## Report\n\nThe host page shows uptime.",
+      gates: [{ name: "CI", status: "passed" }],
+      delivery: { branch: "feature/uptime", pr_url: "https://github.com/o/r/pull/31", pr_number: 31, ci: [{ name: "test", state: "pass" }], reruns: 0, declined: false },
+    });
+    expect(q(".status-pill")?.textContent).toBe("Done");
+    expect(sections().slice(0, 2)).toEqual(["Outcome", "Report"]);
+    expect(q(".ov-outcome")?.textContent).toBe("Done: every gate passed");
+    const report = q('.ov-section[aria-label="Report"] .report')!;
+    expect(report.querySelector("h2")?.textContent).toBe("Report");
+    expect(report.textContent).toContain("The host page shows uptime.");
+    expect([...host.querySelectorAll("button")].some((b) => b.textContent?.includes("Accept"))).toBe(false);
   });
 
   it("shows what the task changed in its workspace, and a file's diff", async () => {

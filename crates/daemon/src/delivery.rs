@@ -541,19 +541,8 @@ pub fn gates(f: &Task, cx: &GateContext) -> Vec<Gate> {
         _ if cx.nothing_to_publish => gate("CI", GateStatus::NotApplicable, NOTHING_TO_PUBLISH),
         _ => gate("CI", GateStatus::Pending, "after the pull request"),
     });
-    let accepted = f
-        .gates
-        .iter()
-        .any(|g| g.name == ACCEPTANCE_GATE && g.status == GateStatus::Passed);
-    out.push(gate(
-        ACCEPTANCE_GATE,
-        if accepted {
-            GateStatus::Passed
-        } else {
-            GateStatus::Pending
-        },
-        "",
-    ));
+    // No gate for the developer's acceptance any more (D-198): the task
+    // ends when these pass.
     out
 }
 
@@ -565,8 +554,9 @@ fn base_of(d: &otter_core::task::Delivery) -> String {
         .unwrap_or_else(|| "its base".into())
 }
 
-/// Every gate but the developer's acceptance is clear.
-pub fn ready_for_acceptance(gates: &[Gate]) -> bool {
+/// Every gate is clear: the work is delivered (D-198). An older task's
+/// acceptance gate doesn't count.
+pub fn all_clear(gates: &[Gate]) -> bool {
     gates
         .iter()
         .filter(|g| g.name != ACCEPTANCE_GATE)
@@ -1575,8 +1565,9 @@ mod tests {
         assert_eq!(status(&g, "Local tests"), GateStatus::Passed);
         assert_eq!(status(&g, "Pull request"), GateStatus::NotApplicable);
         assert_eq!(status(&g, "CI"), GateStatus::NotApplicable);
-        assert_eq!(status(&g, ACCEPTANCE_GATE), GateStatus::Pending);
-        assert!(ready_for_acceptance(&g));
+        // No acceptance gate (D-198): delivered is done.
+        assert!(!g.iter().any(|x| x.name == ACCEPTANCE_GATE));
+        assert!(all_clear(&g));
     }
 
     #[test]
@@ -1593,7 +1584,7 @@ mod tests {
         let g = gates(&f, &cx);
         assert_eq!(status(&g, "Pull request"), GateStatus::Pending);
         assert_eq!(status(&g, "Browser evidence"), GateStatus::Pending);
-        assert!(!ready_for_acceptance(&g));
+        assert!(!all_clear(&g));
 
         f.delivery = Some(delivery(&[]));
         assert_eq!(

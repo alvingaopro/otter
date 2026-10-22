@@ -43,7 +43,8 @@ import {
   taskGlyph,
   commandPrefix,
   deletable,
-  gatesClear,
+  deliveryLine,
+  gatesOf,
   pendingDecisions,
   sortTasks,
   statusDetail,
@@ -322,6 +323,7 @@ function WatchStrip({ task, now, act }: { task: Task; now: number; act: (a: Task
 function rowSummary(f: Task): string {
   const pending = pendingDecisions(f).length;
   if (pending > 0) return `${pending} decision${pending > 1 ? "s" : ""} waiting`;
+  if (f.status === "review") return [STATUS_LABEL.review, deliveryLine(f)].filter(Boolean).join(" · ");
   if (f.status_reason) return f.status_reason;
   const work = f.steps.filter((t) => !t.planning);
   const done = work.filter((t) => t.status === "done").length;
@@ -653,33 +655,21 @@ function TaskActions({ f, act }: { f: Task; act: (a: TaskAction) => void }) {
           Retry
         </button>
       )}
-      {can("accept", ctx) &&
-        (gatesClear(f) ? (
-          <button className="btn primary" onClick={() => act({ action: "accept" })}>
-            Accept
-          </button>
-        ) : (
-          <button
-            className="btn outline"
-            title="Some gates haven't passed; accepting anyway is recorded in the report"
-            onClick={() => act({ action: "accept", override_gates: true })}
-          >
-            Accept anyway
-          </button>
-        ))}
     </span>
   );
 }
 
-/** The header's status: Otter's loop is "Working", unless it waits on the developer (D-134). */
+/** The header's status: Otter's loop is "Working" and delivery "Delivering",
+ * unless it waits on the developer (D-134, D-198). */
 function pillLabel(f: Task): string {
-  const looping = f.status === "planning" || f.status === "implementing" || f.status === "verifying";
+  const looping = ["planning", "implementing", "verifying", "review"].includes(f.status);
   return looping && needsYou(f) ? "Needs you" : STATUS_LABEL[f.status];
 }
 
 /**
  * Only what has no other place: a stop, a block without a decision to
- * answer, waiting for a workspace. A decision waits above the message box.
+ * answer, a gate that failed in delivery, waiting for a workspace. A
+ * decision waits above the message box.
  */
 function StatusBanner({
   f,
@@ -1170,8 +1160,8 @@ function Conversation({
                 rows={1}
                 aria-label="Message to Otter"
                 placeholder={
-                  placed.task.status === "review" || placed.task.status === "done"
-                    ? "Happy with it? Or say what to change… (/ for commands)"
+                  placed.task.status === "done"
+                    ? "More to do? Say what to change… (/ for commands)"
                     : "Tell Otter what you want… (/ for commands)"
                 }
                 value={text}
@@ -1496,14 +1486,21 @@ function TaskChanges({ placed, source }: { placed: PlacedTask; source: TaskSourc
 }
 
 /**
- * Where it stands, when the coding agent was last heard from, and what
- * comes next (D-141); the budget only once it constrains the work. A stop
- * or a block is in the banner.
+ * Where it stands (in review, what delivery waits on, D-198), when the
+ * coding agent was last heard from, and what comes next (D-141); the
+ * budget only once it constrains the work. A stop or a block is in the
+ * banner.
  */
 function Now({ f, now }: { f: Task; now: number }) {
   if (ENDED.includes(f.status)) return null;
-  const detail = f.status === "failed" || f.status === "blocked" ? undefined : statusDetail(f);
-  const line = f.status === "draft" ? "Not started: Start when the request says what you want." : detail;
+  const banner = f.status === "failed" || f.status === "blocked";
+  const detail = banner ? undefined : statusDetail(f);
+  const line =
+    f.status === "draft"
+      ? "Not started: Start when the request says what you want."
+      : f.status === "review" && !banner
+        ? [STATUS_LABEL.review, detail].filter(Boolean).join(": ")
+        : detail;
   const heard = heardLine(f, now);
   const budget = budgetBinds(f);
   if (!line && !heard && !f.next && !budget) return null;
@@ -1601,13 +1598,12 @@ function Subtasks({ subtasks, onOpenTask }: { subtasks: PlacedTask[]; onOpenTask
 
 const GATE_GLYPH = { passed: "done", failed: "failed", pending: "working", not_applicable: "idle" } as const;
 
-/** Every gate but the developer's own acceptance passed (or doesn't apply). */
 /**
  * What says the work is right: each acceptance criterion with the evidence
  * behind it, the gates (D-047), and evidence that backs no criterion.
  */
 function Checks({ f, now, shot }: { f: Task; now: number; shot: (name: string) => Promise<string> }) {
-  const gates = f.gates ?? [];
+  const gates = gatesOf(f);
   const backing = (id: string, ids: string[]) => f.evidence.filter((e) => ids.includes(e.id) || e.criterion_id === id);
   const used = new Set(f.acceptance.flatMap((c) => backing(c.id, c.evidence).map((e) => e.id)));
   const rest = f.evidence.filter((e) => !used.has(e.id));

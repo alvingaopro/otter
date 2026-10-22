@@ -57,7 +57,7 @@ both!(
     pausing_stops_the_agent,
     a_changed_goal_plans_again,
     finishing_work_in_progress_pauses_it,
-    ship_it_accepts_what_is_in_review_and_more_plans_again,
+    a_delivered_task_is_done_and_more_plans_again,
     going_on_approves_the_plan_on_the_developers_word,
     guidance_on_a_plan_question_plans_again_with_it,
     a_question_is_answered_and_goes_nowhere,
@@ -320,29 +320,22 @@ async fn finishing_work_in_progress_pauses_it(v2: bool) {
     assert_eq!(f.status_reason.as_deref(), Some(reason));
 }
 
-async fn ship_it_accepts_what_is_in_review_and_more_plans_again(v2: bool) {
+async fn a_delivered_task_is_done_and_more_plans_again(v2: bool) {
     let fake = scripted(v2).await;
     let host = &fake.host;
     let id = started_task(host, "Add CSV export").await;
-    // In review with its gates checked: accepting before they are is refused
-    // ("try again in a moment"), which isn't what this test is about.
-    wait_task(host, &id, "in review, gates checked", |f| {
-        f.status == TaskStatus::Review && !f.gates.is_empty()
-    })
-    .await;
-    tell(
-        v2,
-        host,
-        &id,
-        "say-ship",
-        "Looks good, ship it\nINTENT: finish",
-    )
-    .await;
-    wait_task(host, &id, "done", |f| f.status == TaskStatus::Done).await;
-    // Done, more guidance moves the goal (D-050): it plans again.
+    // Delivered, it is done by itself (D-198): nothing to accept.
+    let f = wait_task(host, &id, "done", |f| f.status == TaskStatus::Done).await;
+    assert_eq!(f.status_reason.as_deref(), Some("Done: every gate passed"));
+    assert!(
+        f.messages
+            .iter()
+            .any(|m| m.text.starts_with("Done: every gate passed"))
+    );
+    // Done, more guidance moves the goal (D-050): it plans again (and,
+    // the fake agent being quick, may be done again by the next look).
     tell(v2, host, &id, "say-more", "Now add JSON too\nINTENT: guide").await;
     has_history(host, &id, "You changed the goal: planning again").await;
-    wait_task(host, &id, "working again", |f| f.status != TaskStatus::Done).await;
 }
 
 async fn going_on_approves_the_plan_on_the_developers_word(v2: bool) {

@@ -384,7 +384,6 @@ export function mockSource(host = "preview", now = Date.now()): TaskSource {
         resume: "implementing",
         cancel: "cancelled",
         retry: "implementing",
-        accept: "done",
         request_changes: "implementing",
         set_workspace: "planning",
       };

@@ -2352,11 +2352,20 @@ async fn fake_agent_host(mode: &str, controller: &str) -> FakeCodex {
 }
 
 /// Like [`fake_agent_host`], with more variables (given the scratch dir).
+/// Through review (D-198): still delivering (publishing, CI), or done
+/// once every gate passed — a task no longer waits there for acceptance.
+fn delivered(f: &otter_core::task::Task) -> bool {
+    matches!(
+        f.status,
+        otter_core::task::TaskStatus::Review | otter_core::task::TaskStatus::Done
+    )
+}
+
 /// The tool levels most tests run with (D-191): moving, publishing,
 /// approving plans and accepting stay the developer's, so a test's flow is
 /// the one it was written for.
 pub(crate) const HARNESS_LEVELS: &str =
-    "set_workspace=developer,publish=developer,approve_plan=developer,accept_task=developer";
+    "set_workspace=developer,publish=developer,approve_plan=developer";
 
 /// Set Otter's tools' levels on `host` (D-191), through Settings.
 pub(crate) async fn set_levels(host: &TestHost, levels: &[(&str, &str)]) {
@@ -3169,10 +3178,7 @@ async fn a_second_task_waits_for_the_workspace() {
     conn.task_act("pause-first", &first, TaskAction::Pause)
         .await
         .unwrap();
-    let f = wait_task(host, &second, "the second done", |f| {
-        f.status == TaskStatus::Review
-    })
-    .await;
+    let f = wait_task(host, &second, "the second done", |f| delivered(f)).await;
     let a = conn.task_get(&first).await.unwrap();
     assert!(
         f.runs[0].started_at >= a.runs[0].ended_at.unwrap(),
@@ -3194,7 +3200,7 @@ async fn a_task_waiting_to_publish_keeps_its_workspace() {
     let host = &fake.host;
     let (first, _) = git_task(&fake).await;
     wait_task(host, &first, "asked to publish", |f| {
-        f.status == TaskStatus::Review
+        delivered(f)
             && f.pending_decisions()
                 .any(|d| d.summary.contains("git push"))
     })
@@ -3311,10 +3317,7 @@ async fn a_waiting_task_gets_a_worktree_of_its_own() {
         .unwrap();
     let own = f.workspace_id.clone().unwrap();
     assert_ne!(own, app.id);
-    let f = wait_task(host, &second, "the second done", |f| {
-        f.status == TaskStatus::Review
-    })
-    .await;
+    let f = wait_task(host, &second, "the second done", |f| delivered(f)).await;
     assert_eq!(f.workspace_id.as_ref(), Some(&own));
     // In parallel: the first is still at work, in its own directory.
     let a = conn.task_get(&first).await.unwrap();
@@ -3336,21 +3339,17 @@ async fn a_waiting_task_gets_a_worktree_of_its_own() {
         "{err:#}"
     );
 
-    // Accepted, it's over: the workspace made for it is put away (D-105),
-    // and its conversation says so. The one it was given stays.
+    // Done by itself, it's over (D-198): the workspace made for it is put
+    // away (D-105), and its conversation says so. The one it was given
+    // stays.
     assert_eq!(
         ws.task_id.as_ref().map(|f| f.as_str()),
         Some(second.as_str())
     );
-    conn.task_act(
-        "accept-second",
-        &second,
-        TaskAction::Accept {
-            override_gates: true,
-        },
-    )
-    .await
-    .unwrap();
+    wait_task(host, &second, "done by itself", |f| {
+        f.status == TaskStatus::Done
+    })
+    .await;
     // A push it still asks to be allowed (raised as review ended) holds the
     // workspace until it's answered.
     let pending = eventually("archived, or held by a question", || async {
@@ -5252,11 +5251,11 @@ async fn started_with(
 /// its report, as finished work does.
 #[tokio::test]
 async fn a_task_that_changes_nothing_has_nothing_to_publish() {
-    use otter_core::task::{GateStatus, MessageRole, TaskAction, TaskStatus};
+    use otter_core::task::{GateStatus, MessageRole, TaskStatus};
     let fake = fake_agent_host("ok", "rules").await;
     let (id, origin) = git_task_asking(&fake, "Check the export is already there").await;
     let f = wait_task(&fake.host, &id, "the report", |f| f.report.is_some()).await;
-    assert_eq!(f.status, TaskStatus::Review, "{:?}", f.status_reason);
+    assert!(delivered(&f), "{:?}", f.status_reason);
     assert!(
         !f.decisions.iter().any(|d| d.summary.contains("git push")),
         "not asked to publish: {:?}",
@@ -5297,20 +5296,11 @@ async fn a_task_that_changes_nothing_has_nothing_to_publish() {
     );
     let calls = std::fs::read_to_string(fake.gh.join("calls.log")).unwrap_or_default();
     assert!(!calls.contains("pr create"), "{calls}");
-    let f = fake
-        .host
-        .conn()
-        .await
-        .task_act(
-            "accept",
-            &id,
-            TaskAction::Accept {
-                override_gates: false,
-            },
-        )
-        .await
-        .unwrap();
-    assert_eq!(f.status, TaskStatus::Done);
+    // Delivered, it is done by itself (D-198).
+    wait_task(&fake.host, &id, "done by itself", |f| {
+        f.status == TaskStatus::Done
+    })
+    .await;
 }
 
 /// The second task on a branch the first published to (B09, B11): the
@@ -5320,7 +5310,7 @@ async fn a_task_that_changes_nothing_has_nothing_to_publish() {
 /// tree has no changes, and it has nothing of its own to publish (D-166).
 #[tokio::test]
 async fn a_second_task_on_the_branch_is_measured_from_where_it_started() {
-    use otter_core::task::{EvidenceKind, TaskAction, TaskStatus};
+    use otter_core::task::{EvidenceKind, TaskAction};
     let fake = fake_agent_host("ok", "rules").await;
     let host = &fake.host;
     let (first, origin) = git_task(&fake).await;
@@ -5356,7 +5346,7 @@ async fn a_second_task_on_the_branch_is_measured_from_where_it_started() {
         .await
         .unwrap();
     let f = wait_task(host, &second, "the report", |f| f.report.is_some()).await;
-    assert_eq!(f.status, TaskStatus::Review, "{:?}", f.status_reason);
+    assert!(delivered(&f), "{:?}", f.status_reason);
     assert_eq!(
         f.started_from.as_ref().map(|s| s.revision.as_str()),
         Some(pushed.as_str())
@@ -5395,7 +5385,7 @@ async fn no_commits_between_is_nothing_to_publish() {
     let (id, origin) = git_task(&fake).await;
     allow_publish(&fake.host, &id).await;
     let f = wait_task(&fake.host, &id, "the report", |f| f.report.is_some()).await;
-    assert_eq!(f.status, TaskStatus::Review, "{:?}", f.status_reason);
+    assert!(delivered(&f), "{:?}", f.status_reason);
     for name in ["Pull request", "CI"] {
         let g = f.gates.iter().find(|g| g.name == name).unwrap();
         assert_eq!(g.status, GateStatus::NotApplicable, "{g:?}");
@@ -5409,7 +5399,8 @@ async fn no_commits_between_is_nothing_to_publish() {
     );
     tokio::time::sleep(Duration::from_millis(1000)).await;
     let f = fake.host.conn().await.task_get(&id).await.unwrap();
-    assert_eq!(f.status, TaskStatus::Review);
+    // Nothing more to deliver: done by itself (D-198), no second try.
+    assert_eq!(f.status, TaskStatus::Done);
     let calls = std::fs::read_to_string(fake.gh.join("calls.log")).unwrap();
     assert_eq!(calls.matches("gh pr create").count(), 1, "{calls}");
     // The push happened: the branch is on the remote, and kept with it.
@@ -5446,11 +5437,11 @@ async fn no_commits_between_is_nothing_to_publish() {
 /// than that nothing did (D-166).
 #[tokio::test]
 async fn only_secrets_changed_is_nothing_to_publish_and_says_so() {
-    use otter_core::task::{MessageRole, TaskStatus};
+    use otter_core::task::MessageRole;
     let fake = fake_agent_host("ok", "rules").await;
     let (id, _) = git_task_asking(&fake, "Set the local settings WRITE:.env").await;
     let f = wait_task(&fake.host, &id, "the report", |f| f.report.is_some()).await;
-    assert_eq!(f.status, TaskStatus::Review, "{:?}", f.status_reason);
+    assert!(delivered(&f), "{:?}", f.status_reason);
     assert!(!f.decisions.iter().any(|d| d.summary.contains("git push")));
     let said: Vec<&str> = f
         .messages
@@ -5471,7 +5462,7 @@ async fn only_secrets_changed_is_nothing_to_publish_and_says_so() {
 /// (D-166).
 #[tokio::test]
 async fn a_status_git_cant_read_is_not_nothing_to_publish() {
-    use otter_core::task::{MessageRole, TaskStatus};
+    use otter_core::task::MessageRole;
     let fake = fake_agent_host("ok", "rules").await;
     let (id, _) = git_task_asking(&fake, "Check the export is already there").await;
     let ws = fake.host.conn().await.workspace_get("csv").await.unwrap();
@@ -5479,7 +5470,7 @@ async fn a_status_git_cant_read_is_not_nothing_to_publish() {
     let index = root.join(git(&root, &["rev-parse", "--git-path", "index"]).trim());
     std::fs::write(&index, "not an index").unwrap();
     let f = wait_task(&fake.host, &id, "asked to publish", |f| {
-        f.status == TaskStatus::Review
+        delivered(f)
             && f.pending_decisions()
                 .any(|d| d.summary.contains("git push"))
     })
@@ -5532,7 +5523,7 @@ async fn a_task_goes_from_request_to_review_with_evidence() {
     let fake = fake_agent_host("ok", "rules").await;
     let id = started_task(&fake.host, "Export the timeline as CSV").await;
     let f = wait_task(&fake.host, &id, "review, with the report", |f| {
-        f.status == TaskStatus::Review && f.report.is_some()
+        delivered(f) && f.report.is_some()
     })
     .await;
     // Not a Git workspace: no pull request or CI to wait for.
@@ -5630,21 +5621,11 @@ async fn a_task_goes_from_request_to_review_with_evidence() {
     };
     assert!(pos("PlanSet") < pos("RunStarted"));
     assert!(pos("RunStarted") < pos("EvidenceAdded"));
-    // Done only when the developer accepts.
-    let f = fake
-        .host
-        .conn()
-        .await
-        .task_act(
-            "accept",
-            &id,
-            TaskAction::Accept {
-                override_gates: false,
-            },
-        )
-        .await
-        .unwrap();
-    assert_eq!(f.status, TaskStatus::Done);
+    // Delivered, it is done by itself (D-198).
+    wait_task(&fake.host, &id, "done by itself", |f| {
+        f.status == TaskStatus::Done
+    })
+    .await;
 
     // Done isn't final (D-050): a new ask plans again, keeps what is done,
     // and comes back for review.
@@ -5661,7 +5642,7 @@ async fn a_task_goes_from_request_to_review_with_evidence() {
         .await
         .unwrap();
     let f = wait_task(&fake.host, &id, "back in review", |f| {
-        f.status == TaskStatus::Review && f.steps.len() == 2 && f.report.is_some()
+        delivered(f) && f.steps.len() == 2 && f.report.is_some()
     })
     .await;
     assert_eq!(f.steps[0].status, otter_core::task::StepStatus::Done);
@@ -5710,7 +5691,7 @@ async fn an_approval_is_answered_and_the_run_continues() {
         .await
         .unwrap();
     let f = wait_task(&fake.host, &id, "review after the approval", |f| {
-        f.status == TaskStatus::Review
+        delivered(f)
     })
     .await;
     let d = f.decisions.iter().find(|x| x.id == d.id).unwrap();
@@ -5722,15 +5703,11 @@ async fn an_approval_is_answered_and_the_run_continues() {
 
 #[tokio::test]
 async fn ordinary_work_runs_without_asking() {
-    use otter_core::task::TaskStatus;
     let fake = fake_agent_host("ok", "rules").await;
     // Installing a dependency, then editing a file: no one is asked (D-049).
     for request in ["Add a dependency ASK_INSTALL", "Write a file ASK_EDIT"] {
         let id = started_task_named(&fake.host, request).await;
-        let f = wait_task(&fake.host, &id, "review", |f| {
-            f.status == TaskStatus::Review
-        })
-        .await;
+        let f = wait_task(&fake.host, &id, "review", |f| delivered(f)).await;
         assert!(
             !f.rationale
                 .iter()
@@ -5808,13 +5785,10 @@ async fn a_model_cannot_approve_what_only_the_developer_may() {
 /// is Otter's model's to judge, not the developer's.
 #[tokio::test]
 async fn otters_model_judges_what_comes_back_from_the_reflog() {
-    use otter_core::task::{Decider, DecisionStatus, Risk, TaskStatus};
+    use otter_core::task::{Decider, DecisionStatus, Risk};
     let fake = fake_agent_host("ok", "yes").await;
     let id = started_task(&fake.host, "Rebase onto main ASK_REBASE").await;
-    let f = wait_task(&fake.host, &id, "review", |f| {
-        f.status == TaskStatus::Review
-    })
-    .await;
+    let f = wait_task(&fake.host, &id, "review", |f| delivered(f)).await;
     let d = &f.decisions[0];
     assert_eq!(d.summary, "Run `git rebase main`");
     assert!(!d.user_only);
@@ -5905,7 +5879,7 @@ async fn a_model_denial_is_not_final_a_repeat_goes_to_the_developer() {
         &fake.host,
         &id,
         "review after the developer allowed it",
-        |f| f.status == TaskStatus::Review,
+        |f| delivered(f),
     )
     .await;
     assert_eq!(f.runs[0].summary.as_deref(), Some("allowed and done"));
@@ -6101,7 +6075,7 @@ async fn an_approval_is_remembered_for_the_task() {
         )
         .await
         .unwrap();
-    let f = wait_task(host, &id, "review", |f| f.status == TaskStatus::Review).await;
+    let f = wait_task(host, &id, "review", |f| delivered(f)).await;
     assert_eq!(f.grants, ["cmd:cargo build > /opt/build.log"]);
     assert_eq!(f.decisions.len(), 2, "{:?}", f.decisions);
     let again = &f.decisions[1];
@@ -6118,14 +6092,11 @@ async fn an_approval_is_remembered_for_the_task() {
 
 #[tokio::test]
 async fn the_control_agent_decides_what_policy_leaves_open() {
-    use otter_core::task::{Decider, DecisionStatus, TaskStatus};
+    use otter_core::task::{Decider, DecisionStatus};
     let fake = fake_agent_host("ok", "yes").await;
     // The coding agent's question: the Control Agent answers it.
     let id = started_task(&fake.host, "Pick a colour ASK_QUESTION").await;
-    let f = wait_task(&fake.host, &id, "review", |f| {
-        f.status == TaskStatus::Review
-    })
-    .await;
+    let f = wait_task(&fake.host, &id, "review", |f| delivered(f)).await;
     let d = &f.decisions[0];
     assert_eq!(
         (d.status, d.decided_by),
@@ -6391,7 +6362,7 @@ async fn a_check_that_cant_run_blocks_on_the_developer_once() {
         )
         .await
         .unwrap();
-    let f = wait_task(host, &id, "verified", |f| f.status == TaskStatus::Review).await;
+    let f = wait_task(host, &id, "verified", |f| delivered(f)).await;
     assert_eq!(f.runs.len(), 1);
     assert!(f.acceptance.iter().all(|c| c.met == Some(true)));
     let last = f
@@ -6438,7 +6409,7 @@ async fn waiting_on_an_approval_doesnt_use_up_the_runs_time() {
         )
         .await
         .unwrap();
-    let f = wait_task(host, &id, "review", |f| f.status == TaskStatus::Review).await;
+    let f = wait_task(host, &id, "review", |f| delivered(f)).await;
     assert_eq!(f.runs.len(), 1, "{:?}", f.runs);
     assert_eq!(f.runs[0].state, RunState::Completed);
     assert_eq!(f.runs[0].summary.as_deref(), Some("allowed and done"));
@@ -6454,14 +6425,14 @@ async fn waiting_on_an_approval_doesnt_use_up_the_runs_time() {
 /// word on why — not failed and started over (D-063).
 #[tokio::test]
 async fn a_run_out_of_time_resumes_its_conversation() {
-    use otter_core::task::{RunState, TaskStatus};
+    use otter_core::task::RunState;
     let fake = fake_agent_host_with("ok", "rules", |_| {
         vec![("OTTER_RUN_TIMEOUT_MS", "1500".into())]
     })
     .await;
     let host = &fake.host;
     let id = started_task(host, "A slow job SLOW").await;
-    let f = wait_task(host, &id, "review", |f| f.status == TaskStatus::Review).await;
+    let f = wait_task(host, &id, "review", |f| delivered(f)).await;
     assert_eq!(f.runs.len(), 2, "{:?}", f.runs);
     assert_eq!(f.runs[0].state, RunState::Cancelled);
     assert_eq!(
@@ -6494,14 +6465,14 @@ async fn a_run_out_of_time_resumes_its_conversation() {
 /// resumed the same way (D-063).
 #[tokio::test]
 async fn a_silent_run_is_cut_off_and_resumed() {
-    use otter_core::task::{RunState, TaskStatus};
+    use otter_core::task::RunState;
     let fake = fake_agent_host_with("ok", "rules", |_| {
         vec![("OTTER_RUN_IDLE_MS", "1000".into())]
     })
     .await;
     let host = &fake.host;
     let id = started_task(host, "A slow job SLOW").await;
-    let f = wait_task(host, &id, "review", |f| f.status == TaskStatus::Review).await;
+    let f = wait_task(host, &id, "review", |f| delivered(f)).await;
     assert_eq!(f.runs.len(), 2, "{:?}", f.runs);
     assert!(
         f.runs[0]
@@ -6517,11 +6488,13 @@ async fn a_silent_run_is_cut_off_and_resumed() {
 }
 
 /// A judge that is never satisfied, a check that passes and a fix that
-/// changes nothing: the second identical verdict on identical work goes to
-/// review, unverified — no third run (D-062).
+/// changes nothing: the second identical verdict on identical work ends
+/// the rounds — no third run (D-062) — and, delivered as it is, the task
+/// stops with the result, saying which gate didn't pass: no review to
+/// accept (D-198).
 #[tokio::test]
 async fn verification_stops_when_a_fix_changes_nothing() {
-    use otter_core::task::{EvidenceKind, GateStatus, MessageRole, Proof, TaskStatus};
+    use otter_core::task::{EvidenceKind, MessageRole, Proof, TaskStatus};
     let fake = fake_agent_host("ok", "skeptic").await;
     let host = &fake.host;
     let id = started_with(
@@ -6532,8 +6505,8 @@ async fn verification_stops_when_a_fix_changes_nothing() {
         true,
     )
     .await;
-    let f = wait_task(host, &id, "in review, gates checked", |f| {
-        f.status == TaskStatus::Review && !f.gates.is_empty()
+    let f = wait_task(host, &id, "stopped, unverified", |f| {
+        f.status == TaskStatus::Failed
     })
     .await;
     assert_eq!(f.runs.len(), 2, "the step, and one fix");
@@ -6557,15 +6530,19 @@ async fn verification_stops_when_a_fix_changes_nothing() {
             .count(),
         1
     );
-    assert_eq!(
-        f.status_reason.as_deref(),
-        Some("Not verified: nothing changed after a fix")
+    assert!(
+        f.status_reason.as_deref().is_some_and(|r| r
+            .starts_with("Stopped: not passed: Requirements met (not met: ")
+            && r.ends_with("Tell me what to change, or retry.")),
+        "{:?}",
+        f.status_reason
     );
     assert!(f.messages.iter().any(|m| {
         m.role == MessageRole::Controller
             && m.text
                 .starts_with("Not verified, and nothing changed after the last fix")
     }));
+    assert!(f.report.is_some(), "the result has its report");
     // The check decided its own criterion; the judge only the other.
     let by = |how| f.acceptance.iter().find(|c| c.how == how).unwrap();
     assert_eq!(by(Proof::Check).met, Some(true));
@@ -6579,12 +6556,9 @@ async fn verification_stops_when_a_fix_changes_nothing() {
     assert_eq!(tree.len(), 2, "one snapshot per verification");
     assert_eq!(tree[1].title, "Working tree: no changes");
     assert!(tree[1].detail.as_deref().unwrap().contains("(clean)"));
-    // The developer sees what isn't proven.
-    let gate = f.gates.iter().find(|g| g.name == "Requirements met");
-    assert_eq!(gate.map(|g| g.status), Some(GateStatus::Failed));
     tokio::time::sleep(Duration::from_millis(1500)).await;
     let f = host.conn().await.task_get(&id).await.unwrap();
-    assert_eq!((f.status, f.runs.len()), (TaskStatus::Review, 2));
+    assert_eq!((f.status, f.runs.len()), (TaskStatus::Failed, 2));
 }
 
 /// A task started without a request (D-067): the developer's first
@@ -6627,7 +6601,7 @@ async fn a_task_without_a_request_takes_the_developers_word() {
     conn.task_act("start", &id, TaskAction::Start)
         .await
         .unwrap();
-    let f = wait_task(host, &id, "review", |f| f.status == TaskStatus::Review).await;
+    let f = wait_task(host, &id, "review", |f| delivered(f)).await;
     assert_eq!(f.request, "Add CSV export of the orders");
     assert!(f.steps[0].detail.as_deref().unwrap().contains("orders"));
     let c = conn
@@ -6675,7 +6649,7 @@ async fn a_task_without_a_request_takes_the_developers_word() {
     conn.task_send("msg-late", &id, "Export the orders as CSV")
         .await
         .unwrap();
-    let f = wait_task(host, &id, "review", |f| f.status == TaskStatus::Review).await;
+    let f = wait_task(host, &id, "review", |f| delivered(f)).await;
     assert_eq!(f.request, "Export the orders as CSV");
     assert_eq!(asked(&f), 1);
 }
@@ -6684,11 +6658,11 @@ async fn a_task_without_a_request_takes_the_developers_word() {
 /// of the run (D-065): what it does when the work is done is part of it.
 #[tokio::test]
 async fn a_run_waits_for_the_agents_background_work() {
-    use otter_core::task::{RunState, TaskStatus};
+    use otter_core::task::RunState;
     let fake = fake_agent_host("ok", "rules").await;
     let host = &fake.host;
     let id = started_task(host, "Build it in the background BGWAIT").await;
-    let f = wait_task(host, &id, "review", |f| f.status == TaskStatus::Review).await;
+    let f = wait_task(host, &id, "review", |f| delivered(f)).await;
     assert_eq!(f.runs.len(), 1, "{:?}", f.runs);
     assert_eq!(f.runs[0].state, RunState::Completed);
     assert_eq!(f.runs[0].summary.as_deref(), Some("done after waiting"));
@@ -6712,11 +6686,11 @@ async fn a_run_waits_for_the_agents_background_work() {
 /// turns in the same conversation after it.
 #[tokio::test]
 async fn the_coding_agent_plans_first_in_the_tasks_conversation() {
-    use otter_core::task::{MessageRole, Proof, StepStatus, TaskStatus};
+    use otter_core::task::{MessageRole, Proof, StepStatus};
     let fake = fake_agent_host_with("ok", "rules", |_| vec![("OTTER_PLAN_TURN", "1".into())]).await;
     let host = &fake.host;
     let id = started_task(host, "Add CSV export").await;
-    let f = wait_task(host, &id, "review", |f| f.status == TaskStatus::Review).await;
+    let f = wait_task(host, &id, "review", |f| delivered(f)).await;
     let titles: Vec<&str> = f.steps.iter().map(|t| t.title.as_str()).collect();
     assert_eq!(
         titles,
@@ -6844,7 +6818,7 @@ async fn a_question_is_answered_and_a_change_after_it_is_planned() {
         .task_send("cmd-change", &id, "Then write it, please")
         .await
         .unwrap();
-    let f = wait_task(host, &id, "review", |f| f.status == TaskStatus::Review).await;
+    let f = wait_task(host, &id, "review", |f| delivered(f)).await;
     let titles: Vec<&str> = f.steps.iter().map(|t| t.title.as_str()).collect();
     assert_eq!(
         titles,
@@ -7001,7 +6975,7 @@ async fn a_failed_look_at_the_code_stops_planning() {
 /// once: the next turn's prompt (here, a fix) doesn't say it again (D-064).
 #[tokio::test]
 async fn a_message_reaches_the_agent_once_across_turns() {
-    use otter_core::task::{TaskAction, TaskStatus};
+    use otter_core::task::TaskAction;
     let fake = fake_agent_host("ok", "skeptic").await;
     let host = &fake.host;
     let id = started_task(host, "Pick a colour ASK_QUESTION").await;
@@ -7043,9 +7017,10 @@ async fn a_message_reaches_the_agent_once_across_turns() {
     )
     .await
     .unwrap();
-    // Never satisfied: a fix, in the same conversation, then review.
+    // Never satisfied: a fix, in the same conversation, then delivered
+    // as it is (it may already have stopped with the result, D-198).
     let f = wait_task(host, &id, "review after a fix", |f| {
-        f.status == TaskStatus::Review && f.runs.len() == 2
+        (delivered(f) || f.status == otter_core::task::TaskStatus::Failed) && f.runs.len() == 2
     })
     .await;
     assert_eq!(f.runs[1].conversation_id.as_ref(), Some(&cid));
@@ -7087,13 +7062,10 @@ fn agent_starts(log: &Path) -> (usize, usize) {
 #[tokio::test]
 async fn a_run_lost_mid_tool_resumes_without_claiming_the_step() {
     use otter_core::conversation::{ErrorCategory, ToolStatus, TurnOutcome};
-    use otter_core::task::{RunState, TaskStatus};
+    use otter_core::task::RunState;
     let fake = fake_agent_host("ok", "rules").await;
     let id = started_task(&fake.host, "Ship the preview DIE_MIDTOOL").await;
-    let f = wait_task(&fake.host, &id, "resumed and finished", |f| {
-        f.status == TaskStatus::Review
-    })
-    .await;
+    let f = wait_task(&fake.host, &id, "resumed and finished", |f| delivered(f)).await;
     assert_eq!(f.runs.len(), 2, "{:?}", f.runs);
     let (lost, resumed) = (&f.runs[0], &f.runs[1]);
     assert_eq!(lost.state, RunState::Interrupted, "{:?}", lost.summary);
@@ -7213,7 +7185,7 @@ async fn a_run_that_keeps_getting_lost_waits_for_the_developer() {
 
 #[tokio::test]
 async fn a_run_lost_before_its_conversation_was_kept_starts_over_only_when_allowed() {
-    use otter_core::task::{DecisionKind, RunState, TaskAction, TaskStatus};
+    use otter_core::task::{DecisionKind, RunState, TaskAction};
     let fake = fake_agent_host("ok", "rules").await;
     // The agent dies mid-tool before it says its session id: nothing to resume.
     let skip = fake.log.parent().unwrap().join("skip-init");
@@ -7260,10 +7232,7 @@ async fn a_run_lost_before_its_conversation_was_kept_starts_over_only_when_allow
         )
         .await
         .unwrap();
-    let f = wait_task(&fake.host, &id, "review", |f| {
-        f.status == TaskStatus::Review
-    })
-    .await;
+    let f = wait_task(&fake.host, &id, "review", |f| delivered(f)).await;
     let states: Vec<RunState> = f.runs.iter().map(|r| r.state).collect();
     assert_eq!(
         states,
@@ -7371,16 +7340,13 @@ async fn web_task(host: &TestHost, expect: &str) -> String {
 
 #[tokio::test]
 async fn a_browser_check_verifies_the_ui_with_evidence() {
-    use otter_core::task::{EvidenceKind, TaskStatus};
+    use otter_core::task::EvidenceKind;
     if !browser_available() {
         return;
     }
     let fake = fake_agent_host("ok", "rules").await;
     let id = web_task(&fake.host, "Hello, Ada").await;
-    let f = wait_task(&fake.host, &id, "review", |f| {
-        f.status == TaskStatus::Review
-    })
-    .await;
+    let f = wait_task(&fake.host, &id, "review", |f| delivered(f)).await;
     let browser = f
         .evidence
         .iter()
@@ -7469,17 +7435,14 @@ async fn a_broken_ui_fails_verification() {
 
 #[tokio::test]
 async fn a_preview_runs_as_a_session_on_one_port() {
-    use otter_core::task::{TaskAction, TaskStatus};
+    use otter_core::task::TaskAction;
     if !browser_available() {
         return;
     }
     let fake = fake_agent_host("ok", "rules").await;
     let id = web_task(&fake.host, "Hello, Ada").await;
     let mut conn = fake.host.conn().await;
-    wait_task(&fake.host, &id, "review", |f| {
-        f.status == TaskStatus::Review
-    })
-    .await;
+    wait_task(&fake.host, &id, "review", |f| delivered(f)).await;
 
     let f = conn
         .task_act("pv-2", &id, TaskAction::Preview)
@@ -7564,9 +7527,9 @@ async fn git_task_asking(fake: &FakeCodex, request: &str) -> (String, std::path:
 
 /// The developer allows publishing (pushing the branch and opening the PR).
 async fn allow_publish(host: &TestHost, id: &str) {
-    use otter_core::task::{Risk, TaskAction, TaskStatus};
+    use otter_core::task::{Risk, TaskAction};
     let f = wait_task(host, id, "asked to publish", |f| {
-        f.status == TaskStatus::Review
+        delivered(f)
             && f.pending_decisions()
                 .any(|d| d.summary.contains("git push"))
     })
@@ -7690,7 +7653,7 @@ async fn a_task_ships_as_a_pull_request_once_ci_is_green() {
         ]),
     );
     let f = wait_task(&fake.host, &id, "ready to accept", |f| {
-        f.status == TaskStatus::Review && f.report.is_some()
+        delivered(f) && f.report.is_some()
     })
     .await;
     assert!(
@@ -7709,20 +7672,11 @@ async fn a_task_ships_as_a_pull_request_once_ci_is_green() {
             .filter(|c| c.contains("## Gates"))
     })
     .await;
-    let f = fake
-        .host
-        .conn()
-        .await
-        .task_act(
-            "accept",
-            &id,
-            TaskAction::Accept {
-                override_gates: false,
-            },
-        )
-        .await
-        .unwrap();
-    assert_eq!(f.status, TaskStatus::Done);
+    // Delivered, it is done by itself (D-198).
+    wait_task(&fake.host, &id, "done by itself", |f| {
+        f.status == TaskStatus::Done
+    })
+    .await;
     // Never merged, never anything gh wasn't meant to do; no token on a command line.
     let calls = std::fs::read_to_string(fake.gh.join("calls.log")).unwrap();
     assert!(!calls.contains("pr merge"), "{calls}");
@@ -7761,11 +7715,11 @@ async fn publishing_commits_the_work_but_not_its_secrets() {
         && m.text.contains("leaving out what may hold secrets: .env")));
 }
 
-/// CI failing the same way after a fix goes to the developer, once — not
-/// round after round of fixes (D-068).
+/// CI failing the same way after a fix stops the task with the result
+/// (D-068, D-198) — not round after round of fixes, not a wait to accept.
 #[tokio::test]
-async fn the_same_ci_failure_after_a_fix_goes_to_the_developer() {
-    use otter_core::task::{EvidenceKind, GateStatus, MessageRole, TaskStatus};
+async fn the_same_ci_failure_after_a_fix_stops_with_the_result() {
+    use otter_core::task::{EvidenceKind, GateStatus, TaskStatus};
     let fake = fake_agent_host("ok", "rules").await;
     let (id, _) = git_task(&fake).await;
     allow_publish(&fake.host, &id).await;
@@ -7783,23 +7737,23 @@ async fn the_same_ci_failure_after_a_fix_goes_to_the_developer() {
             {"name": "test", "bucket": "fail", "link": "https://github.com/o/r/actions/runs/99/job/1", "description": "exit code 101"}
         ]),
     );
-    let over = |f: &otter_core::task::Task| {
-        f.messages
-            .iter()
-            .filter(|m| {
-                m.role == MessageRole::Controller && m.text.starts_with("CI failed the same way")
-            })
-            .count()
-    };
-    let f = wait_task(&fake.host, &id, "handed to the developer", |f| {
-        f.status == TaskStatus::Review && over(f) == 1
+    // Another attempt won't help: stopped, with the result (D-198) — not
+    // left in review for the developer to accept.
+    let f = wait_task(&fake.host, &id, "stopped with the result", |f| {
+        f.status == TaskStatus::Failed
     })
     .await;
-    // Some polls later, still once, and no second fix.
+    assert!(
+        f.status_reason.as_deref().is_some_and(|r| r.starts_with(
+            "Stopped: CI failed the same way after the fix (test), so another attempt won't help."
+        )),
+        "{:?}",
+        f.status_reason
+    );
+    // Some polls later, still stopped, and no second fix.
     tokio::time::sleep(Duration::from_millis(1000)).await;
     let f2 = fake.host.conn().await.task_get(&id).await.unwrap();
-    assert_eq!(over(&f2), 1);
-    assert_eq!(f2.status, TaskStatus::Review);
+    assert_eq!(f2.status, TaskStatus::Failed);
     assert_eq!(
         f2.steps
             .iter()
@@ -7827,7 +7781,7 @@ async fn the_same_ci_failure_after_a_fix_goes_to_the_developer() {
 /// nothing twice: one run, one pull request, one branch (D-068).
 #[tokio::test]
 async fn delivery_resumes_at_each_checkpoint_without_repeating_itself() {
-    use otter_core::task::{EvidenceKind, TaskAction, TaskStatus};
+    use otter_core::task::{EvidenceKind, TaskStatus};
     let mut fake = fake_agent_host("ok", "rules").await;
     let (id, origin) = git_task(&fake).await;
     // Asked to publish.
@@ -7849,23 +7803,14 @@ async fn delivery_resumes_at_each_checkpoint_without_repeating_itself() {
         "checks.json",
         serde_json::json!([{"name": "test", "bucket": "pass", "link": "", "description": ""}]),
     );
-    // Ready for acceptance.
+    // Delivered.
     wait_task(&fake.host, &id, "ready", |f| f.report.is_some()).await;
     fake.host.restart().await;
-    let f = fake
-        .host
-        .conn()
-        .await
-        .task_act(
-            "accept",
-            &id,
-            TaskAction::Accept {
-                override_gates: false,
-            },
-        )
-        .await
-        .unwrap();
-    assert_eq!(f.status, TaskStatus::Done);
+    // Delivered, it is done by itself (D-198).
+    let f = wait_task(&fake.host, &id, "done by itself", |f| {
+        f.status == TaskStatus::Done
+    })
+    .await;
     assert_eq!(f.runs.len(), 1, "{:?}", f.runs);
     assert_eq!(
         f.evidence
@@ -7935,7 +7880,6 @@ async fn an_open_pull_request_is_adopted_and_cancelling_keeps_the_work() {
 
 #[tokio::test]
 async fn flaky_ci_is_rerun_not_blamed_on_the_code() {
-    use otter_core::task::TaskStatus;
     let fake = fake_agent_host("ok", "rules").await;
     let (id, _) = git_task(&fake).await;
     // The runner dies; a rerun passes.
@@ -7958,7 +7902,7 @@ async fn flaky_ci_is_rerun_not_blamed_on_the_code() {
         f.report.is_some()
     })
     .await;
-    assert_eq!(f.status, TaskStatus::Review);
+    assert!(delivered(&f), "{:?}", f.status_reason);
     assert!(
         !f.steps.iter().any(|t| t.title == "Fix what CI found"),
         "no remediation for a flake"
@@ -8020,20 +7964,11 @@ async fn declining_to_publish_keeps_delivery_local() {
                 .unwrap()
                 .contains("pr create")
     );
-    let f = fake
-        .host
-        .conn()
-        .await
-        .task_act(
-            "accept",
-            &id,
-            TaskAction::Accept {
-                override_gates: false,
-            },
-        )
-        .await
-        .unwrap();
-    assert_eq!(f.status, TaskStatus::Done);
+    // Delivered, it is done by itself (D-198).
+    wait_task(&fake.host, &id, "done by itself", |f| {
+        f.status == TaskStatus::Done
+    })
+    .await;
 }
 
 #[tokio::test]
@@ -8351,7 +8286,7 @@ async fn a_run_takes_the_developers_message_as_a_turn_of_its_own() {
     use otter_core::conversation::{
         Delivery, InteractionKind, InteractionStatus, MessageLifecycle, ToolStatus, TurnOutcome,
     };
-    use otter_core::task::{RunState, TaskAction, TaskStatus};
+    use otter_core::task::{RunState, TaskAction};
     let fake = fake_agent_host("ok", "rules").await;
     let mut conn = fake.host.conn().await;
     let caps = conn.runtime_capabilities().await.unwrap();
@@ -8380,10 +8315,7 @@ async fn a_run_takes_the_developers_message_as_a_turn_of_its_own() {
     )
     .await
     .unwrap();
-    let f = wait_task(&fake.host, &id, "review", |f| {
-        f.status == TaskStatus::Review
-    })
-    .await;
+    let f = wait_task(&fake.host, &id, "review", |f| delivered(f)).await;
     assert_eq!(f.runs.len(), 1, "one run, two turns");
     assert_eq!(f.runs[0].state, RunState::Completed);
 
@@ -8840,7 +8772,7 @@ async fn the_coding_agent_is_tested_with_one_short_reply() {
 #[tokio::test]
 async fn a_task_runs_through_the_sdk_worker_with_policy_checks_and_a_form() {
     use otter_core::conversation::{InteractionKind, InteractionResponse, ToolStatus, TurnOutcome};
-    use otter_core::task::{DecisionStatus, TaskAction, TaskStatus};
+    use otter_core::task::{DecisionStatus, TaskAction};
     let (fake, worker_log) = fake_sdk_host().await;
     let mut conn = fake.host.conn().await;
     let caps = conn.runtime_capabilities().await.unwrap();
@@ -8876,10 +8808,7 @@ async fn a_task_runs_through_the_sdk_worker_with_policy_checks_and_a_form() {
     )
     .await
     .unwrap();
-    let f = wait_task(&fake.host, &id, "review", |f| {
-        f.status == TaskStatus::Review
-    })
-    .await;
+    let f = wait_task(&fake.host, &id, "review", |f| delivered(f)).await;
     let d = f.decisions.iter().find(|x| x.id == d.id).unwrap();
     assert_eq!(d.status, DecisionStatus::Answered);
     assert_eq!(
@@ -9192,10 +9121,7 @@ async fn interrupting_stops_the_turn_and_waits_and_redirecting_goes_next() {
     )
     .await
     .unwrap();
-    let f = wait_task(&fake.host, &id, "review", |f| {
-        f.status == TaskStatus::Review
-    })
-    .await;
+    let f = wait_task(&fake.host, &id, "review", |f| delivered(f)).await;
     assert_eq!(f.runs.len(), 1, "the same run went on");
     assert_eq!(f.runs[0].state, RunState::Completed);
     assert!(f.messages.iter().any(|m| m.text == "Do the other thing"));
@@ -9436,7 +9362,7 @@ async fn live_sdk_controls() {
         );
         tokio::time::sleep(Duration::from_millis(500)).await;
     };
-    assert_eq!(f.status, TaskStatus::Review, "{:?}", f.status_reason);
+    assert!(delivered(&f), "{:?}", f.status_reason);
     assert_eq!(f.runs.len(), 2, "the redirect ran in the same run");
     assert_eq!(f.runs[1].state, RunState::Completed);
     assert!(host.home().join(ws).join("redirected.txt").exists());
@@ -9575,7 +9501,6 @@ async fn triggered(
 /// an occurrence whose last task is still at work is skipped (D-083).
 #[tokio::test]
 async fn a_trigger_starts_one_task_per_occurrence_and_doesnt_overlap() {
-    use otter_core::task::TaskStatus;
     let fake = fake_agent_host("ok", "rules").await;
     let host = &fake.host;
     plain_workspace(host, "tidy").await;
@@ -9602,10 +9527,7 @@ async fn a_trigger_starts_one_task_per_occurrence_and_doesnt_overlap() {
     assert_eq!((started.trigger.as_str(), started.occurrence), ("tidy", at));
     assert_eq!((f.budget.max_iterations, f.budget.max_minutes), (2, 30));
     assert_eq!(f.request, "Tidy up");
-    let f = wait_task(host, f.id.as_str(), "worked unattended", |f| {
-        f.status == TaskStatus::Review
-    })
-    .await;
+    let f = wait_task(host, f.id.as_str(), "worked unattended", |f| delivered(f)).await;
     assert!(f.decisions.is_empty());
 
     // A long one: the next occurrence, while it works, is skipped.
@@ -9810,7 +9732,7 @@ async fn missed_occurrences_fire_once_after_a_restart() {
 #[tokio::test]
 #[ignore]
 async fn capture_v2_state() {
-    use otter_core::task::{TaskAction, TaskStatus};
+    use otter_core::task::TaskAction;
     let out =
         std::path::PathBuf::from(std::env::var("OTTER_CAPTURE_DIR").expect("OTTER_CAPTURE_DIR"));
     let fake = fake_agent_host("ok", "rules").await;
@@ -9852,10 +9774,7 @@ async fn capture_v2_state() {
     conn.task_act("start-first", &first, TaskAction::Start)
         .await
         .unwrap();
-    wait_task(host, &first, "in review", |f| {
-        f.status == TaskStatus::Review
-    })
-    .await;
+    wait_task(host, &first, "in review", |f| delivered(f)).await;
     // One given a workspace of its own (`task_id` on the workspace).
     let own = conn
         .task_create(new("Own", "Add a LICENSE"))

@@ -276,7 +276,9 @@ async fn otter_follows_up_the_tasks_it_made_once_per_change() {
         host.conn().await.otter_get().await.unwrap().follows.len(),
         1
     );
-    let chat = eventually("a follow-up on review", || async {
+    // Delivered, the task is done by itself (D-198): that's the change
+    // followed up (review isn't one any more).
+    let chat = eventually("a follow-up on done", || async {
         let c = host.conn().await.otter_get().await.unwrap();
         (!follow_ups(&c).is_empty()).then_some(c)
     })
@@ -284,7 +286,7 @@ async fn otter_follows_up_the_tasks_it_made_once_per_change() {
     let first = follow_ups(&chat);
     assert_eq!(first.len(), 1, "{first:#?}");
     assert!(
-        first[0].starts_with(&format!("Follow-up: [{made}] CSV export is now review")),
+        first[0].starts_with(&format!("Follow-up: [{made}] CSV export is now done")),
         "{}",
         first[0]
     );
@@ -296,20 +298,19 @@ async fn otter_follows_up_the_tasks_it_made_once_per_change() {
         follow_ups(&host.conn().await.otter_get().await.unwrap()).len(),
         1
     );
-    // The next change has its own.
-    wait_task(host, &made, "gates checked", |f| !f.gates.is_empty()).await;
+    // The next change has its own: more asked of it, done again.
     host.conn()
         .await
         .task_act(
-            "accept-made",
+            "more-made",
             &made,
-            TaskAction::Accept {
-                override_gates: false,
+            TaskAction::RequestChanges {
+                note: Some("And JSON".into()),
             },
         )
         .await
         .unwrap();
-    let chat = eventually("a follow-up on done", || async {
+    let chat = eventually("a follow-up on done again", || async {
         let c = host.conn().await.otter_get().await.unwrap();
         (follow_ups(&c).len() == 2).then_some(c)
     })
@@ -319,11 +320,8 @@ async fn otter_follows_up_the_tasks_it_made_once_per_change() {
         "{:#?}",
         follow_ups(&chat)
     );
-    // The task it didn't make reached review too, unremarked.
-    wait_task(host, &other, "in review", |f| {
-        f.status == TaskStatus::Review
-    })
-    .await;
+    // The task it didn't make was delivered too, unremarked.
+    wait_task(host, &other, "in review", |f| delivered(f)).await;
     tokio::time::sleep(Duration::from_millis(800)).await;
     let chat = host.conn().await.otter_get().await.unwrap();
     assert!(

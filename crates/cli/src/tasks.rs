@@ -113,14 +113,6 @@ pub enum TaskCommand {
         #[arg(short = 'n', long)]
         limit: Option<usize>,
     },
-    /// Accept a task in review: it's done. Refused while a gate (the
-    /// pull request, CI, the checks) hasn't passed, unless `--anyway`.
-    Accept {
-        task: String,
-        /// Accept with gates not met (on record in the report).
-        #[arg(long)]
-        anyway: bool,
-    },
     /// Answer what a task waits on you for: approve (default) or deny, or
     /// answer a question.
     Decide {
@@ -581,18 +573,6 @@ pub async fn task_command(config: &Config, cmd: TaskCommand, json: bool) -> Resu
                 );
             }
             Ok(())
-        }
-        TaskCommand::Accept { task, anyway } => {
-            act(
-                config,
-                &task,
-                TaskAction::Accept {
-                    override_gates: anyway,
-                },
-                json,
-                |f| format!("{}: {}", f.title, word(&f.status)),
-            )
-            .await
         }
         TaskCommand::Decide {
             task,

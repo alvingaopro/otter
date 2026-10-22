@@ -6,8 +6,7 @@
 //!   everything they return is redacted (D-075) and bounded.
 //! - **Routine**: pausing — the safe direction — in any turn.
 //! - **On the developer's word**: forwarding their messages, redirecting,
-//!   starting, resuming, retrying, approving the plan, accepting, a changed
-//!   goal. Only in a turn the developer's message started; each change is
+//!   starting, resuming, retrying, approving the plan, a changed goal. Only in a turn the developer's message started; each change is
 //!   applied once under `<that message>:<tool>` (forwarding keeps each
 //!   message's own id, D-059). Noting something in Otter's memory (D-113)
 //!   too: what Otter keeps comes from talking with the developer, never
@@ -334,12 +333,6 @@ pub fn tools() -> Vec<ToolSpec> {
                 "required": ["on"],
                 "additionalProperties": false
             }),
-        ),
-        t(
-            "accept_task",
-            DeveloperWord,
-            "Accept the task in review; its gates still apply.",
-            none(),
         ),
         t(
             "create_task",
@@ -2728,8 +2721,6 @@ impl Gateway {
             }
             ("pause_task", _) => Err(fail("not_ready", "nothing is at work")),
             ("revise_task", _) => Ok((Intent::Revise, vec![])),
-            ("accept_task", S::Review) => Ok((Intent::Finish, vec![])),
-            ("accept_task", _) => Err(fail("not_ready", "it isn't in review")),
             _ => Err(fail("not_found", format!("there is no tool `{name}`"))),
         };
         let (intent, messages) = match checked {
@@ -2768,30 +2759,15 @@ impl Gateway {
         crash_point("called", name);
         let d = &self.inner.daemon;
         let mut stop = false;
-        let mut not_done: Option<String> = None;
         let applied = d.tasks.lock().await.apply(&f.id, Some(&command), |f, now| {
             // Without the developer's word (an event's turn, D-193), it is
             // Otter's own doing, and the record says so.
-            let (mut changes, stops) = intent_step(
-                f,
-                effective,
-                authority.as_deref().unwrap_or(&command),
-                by_otter,
-                now,
-            );
+            let (mut changes, stops) = intent_step(f, effective, by_otter, now);
             stop = stops;
-            if effective == Intent::Finish && f.status != TaskStatus::Done {
-                not_done = Some(
-                    f.rationale
-                        .last()
-                        .cloned()
-                        .unwrap_or_else(|| "it wasn't accepted".into()),
-                );
-            }
             changes.push(
                 Change::new(TaskEvent::ToolDone {
                     tool: name.into(),
-                    error: not_done.as_ref().map(|_| "not_ready".into()),
+                    error: None,
                 })
                 .because(&command),
             );
@@ -2824,17 +2800,10 @@ impl Gateway {
         let approve = (name == "approve_plan").then_some(plan).flatten();
         d.after_intent(&f, effective, &messages, &redirect, stop, approve)
             .await?;
-        if let Some(why) = not_done {
-            return Err(fail("not_ready", why).next("say what is missing"));
-        }
-        // What undoes it (D-193): going on and stopping undo each other; an
-        // acceptance is undone by changing the goal again.
+        // What undoes it (D-193): going on and stopping undo each other.
         let undo = match (name, effective) {
             ("pause_task", Intent::Pause) => Some(otter_core::task::TaskAction::Resume),
             ("resume_task", Intent::Continue) => Some(otter_core::task::TaskAction::Pause),
-            ("accept_task", Intent::Finish) => Some(otter_core::task::TaskAction::RequestChanges {
-                note: Some("Otter's acceptance undone".into()),
-            }),
             _ => None,
         };
         if let Some(undo) = undo {
@@ -2847,7 +2816,7 @@ impl Gateway {
             Intent::Continue => "going on",
             Intent::Pause => "paused",
             Intent::Revise => "planning again",
-            Intent::Finish => "accepted",
+            Intent::Finish => "stopped",
             Intent::None => "nothing",
         };
         self.inner
@@ -3010,7 +2979,6 @@ mod tests {
             "approve_plan",
             "revise_task",
             "set_answer_only",
-            "accept_task",
         ] {
             assert_eq!(class(n), Class::DeveloperWord, "{n}");
         }

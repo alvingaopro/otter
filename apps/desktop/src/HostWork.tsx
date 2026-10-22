@@ -338,8 +338,8 @@ export function HostWork({
 }
 
 function tone(s: TaskStatus): string {
-  if (["planning", "implementing", "verifying"].includes(s)) return "run";
-  if (s === "done" || s === "review") return "ok";
+  if (["planning", "implementing", "verifying", "review"].includes(s)) return "run";
+  if (s === "done") return "ok";
   if (s === "failed") return "bad";
   if (s === "blocked") return "warn";
   return "";

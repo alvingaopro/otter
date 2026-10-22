@@ -11,7 +11,6 @@ import type { WorkspaceRequest } from "./taskSource";
 import {
   HELD,
   deletable,
-  gatesClear,
   pendingDecisions,
   type MessageCommand,
   type Task,
@@ -200,16 +199,6 @@ export const TASK_COMMANDS: TaskCommand[] = [
     button: "Retry",
     available: ({ task }) => ok(task.status === "failed", "Hasn't failed"),
     effect: () => act({ action: "retry" }),
-  },
-  {
-    name: "accept",
-    group: "Task",
-    what: "Accept the work in review",
-    does: () => "Enter accepts the work",
-    button: "Accept",
-    available: ({ task }) => ok(task.status === "review", "Not in review yet"),
-    confirm: ({ task }) => (gatesClear(task) ? undefined : "Some gates haven't passed: Enter again accepts anyway, and the report says so"),
-    effect: (_, { task }) => act(gatesClear(task) ? { action: "accept" } : { action: "accept", override_gates: true }),
   },
   {
     name: "pause",
