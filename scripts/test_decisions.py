@@ -134,6 +134,9 @@ class Claims(unittest.TestCase):
         # duplicate; a bad name and title; a number mentioned that none has.
         (a / "docs/decisions.md").write_text(ARCHIVE + "\n## D-198 — Late (2026-10-23)\n")
         (d / "D-205-unclaimed.md").write_text("# D-205 — Unclaimed (2026-10-23)\n")
+        # Claimed by b, written without its claim line (before there was one).
+        _, b_obj = decisions.claim("b's other", b)
+        (d / "D-200-no-mark.md").write_text("# D-200 — No mark (2026-10-23)\n")
         (d / "notes.md").write_text("# Notes\n")
         (d / "D-206-wrong-title.md").write_text("# D-207 — Wrong (2026-10-23)\n")
         (a / "code.rs").write_text("// as D-300 says\n")
@@ -144,6 +147,7 @@ class Claims(unittest.TestCase):
             "D-198 is in docs/decisions.md and in docs/decisions/D-198-claimed.md",
             "docs/decisions/D-199-not-ours.md: D-199 was claimed by another",
             "docs/decisions/D-205-unclaimed.md: D-205 wasn't claimed",
+            f"docs/decisions/D-200-no-mark.md: say whose claim it is — if D-200 is yours, make its second line `<!-- claim: {b_obj} -->`",
             "docs/decisions/notes.md: name it D-NNN-<slug>.md",
             "docs/decisions/D-206-wrong-title.md: its first line is `# D-206",
             "D-300 is mentioned but no decision has that number",

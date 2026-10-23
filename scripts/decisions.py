@@ -172,6 +172,11 @@ def check(cwd: Path = ROOT, offline: bool = False) -> list[str]:
             continue
         if n not in claims:
             problems.append(f"{where}: D-{n:03d} wasn't claimed; make the decision with scripts/decisions.py new")
+        elif marks.get(n) is None:
+            problems.append(
+                f"{where}: say whose claim it is — if D-{n:03d} is yours, make its second line"
+                f" `<!-- claim: {claims[n]} -->`"
+            )
         elif marks.get(n) != claims[n]:
             problems.append(
                 f"{where}: D-{n:03d} was claimed by another (the file's `<!-- claim: … -->` isn't origin's);"
