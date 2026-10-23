@@ -149,6 +149,9 @@ struct Stored {
     /// own (D-206).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     slack_hub: Option<bool>,
+    /// The name otterhub knows this host by (D-207).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    slack_name: Option<String>,
 }
 
 #[derive(Debug, Default)]
@@ -268,6 +271,11 @@ impl HostSettings {
         self.stored.slack_hub.unwrap_or(false)
     }
 
+    /// The name otterhub knows this host by (D-207).
+    pub fn slack_name(&self) -> Option<&str> {
+        self.stored.slack_name.as_deref()
+    }
+
     /// The coding agent's model (`None`: the provider's default).
     pub fn coding_model(&self) -> Option<String> {
         self.stored.coding_model.clone()
@@ -378,6 +386,15 @@ impl HostSettings {
             }
             if let Some(on) = slack.hub {
                 stored.slack_hub = on.then_some(true);
+            }
+            if let Some(name) = slack.name {
+                let name = name.trim();
+                if name.chars().count() > 64 || name.chars().any(char::is_control) {
+                    return Err(
+                        "a host's name for otterhub is one line, at most 64 characters".into(),
+                    );
+                }
+                stored.slack_name = (!name.is_empty()).then(|| name.to_owned());
             }
         }
         let mut secrets = self.secrets.clone();
@@ -491,7 +508,7 @@ impl Daemon {
         let slack = u
             .slack
             .as_ref()
-            .is_some_and(|s| s.users.is_some() || s.hub.is_some())
+            .is_some_and(|s| s.users.is_some() || s.hub.is_some() || s.name.is_some())
             || u.secrets
                 .keys()
                 .any(|k| k == SLACK_BOT_TOKEN || k == SLACK_APP_TOKEN);

@@ -527,7 +527,9 @@ impl Hub {
                 missing.join(", ")
             ));
         }
-        if !give_token && !slack.users.is_empty() {
+        // Its messages at the top say which host they are from (D-207).
+        let named = slack.name.as_deref() == Some(link.name.as_str());
+        if !give_token && !slack.users.is_empty() && named {
             return Ok(line);
         }
         let mut update = SettingsUpdate {
@@ -535,6 +537,7 @@ impl Hub {
                 // Members the host lists already stay its own.
                 users: slack.users.is_empty().then(|| self.users.clone()),
                 hub: Some(true),
+                name: Some(link.name.clone()),
                 ..Default::default()
             }),
             ..Default::default()
