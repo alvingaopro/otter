@@ -3065,15 +3065,20 @@ impl Daemon {
                 if dl.mergeable.is_none() || self.pr_due(&f.id) {
                     match gh.pr_state(n).await {
                         Ok(p) => {
-                            pr_read = true;
                             if p.mergeable == "MERGEABLE" || p.mergeable == delivery::CONFLICTING {
+                                pr_read = true;
                                 dl.mergeable = Some(p.mergeable);
                             }
                             if dl.base.as_deref().is_none_or(str::is_empty) && !p.base.is_empty() {
                                 dl.base = Some(p.base);
                             }
                         }
-                        Err(e) => tracing::warn!(task = %f.id, "reading the pull request: {e:#}"),
+                        Err(e) => {
+                            // It can't be read now: the last reading stands
+                            // rather than waiting on one that may not come.
+                            pr_read = true;
+                            tracing::warn!(task = %f.id, "reading the pull request: {e:#}");
+                        }
                     }
                 }
                 self.controller
@@ -3170,20 +3175,19 @@ impl Daemon {
                             .steps
                             .iter()
                             .any(|t| t.title == CI_FIX && t.status == StepStatus::Done);
-                        if same && fixed {
-                            let marker = format!(
-                                "{SAME_CI} ({})",
-                                last.map(|e| e.id.as_str()).unwrap_or_default()
-                            );
-                            // Stopped with the result (D-199): another
-                            // attempt won't help.
-                            if fixed && !f.rationale.iter().any(|r| r == &marker) {
-                                rationale.push(marker);
-                                stuck = Some(format!(
-                                    "Stopped: {SAME_CI} ({}), so another attempt won't help. The pull request is open: look at the CI log, then tell me what to change.",
-                                    names.join(", ")
-                                ));
-                            }
+                        let marker = format!(
+                            "{SAME_CI} ({})",
+                            last.map(|e| e.id.as_str()).unwrap_or_default()
+                        );
+                        // Stopped with the result (D-199): another attempt
+                        // won't help. Once it stopped on this failure, coming
+                        // back to it (a retry, a new goal) is another attempt.
+                        if same && fixed && !f.rationale.iter().any(|r| r == &marker) {
+                            rationale.push(marker);
+                            stuck = Some(format!(
+                                "Stopped: {SAME_CI} ({}), so another attempt won't help. The pull request is open: look at the CI log, then tell me what to change.",
+                                names.join(", ")
+                            ));
                         } else {
                             remediation = Some(format!(
                                 "CI failed ({}):\n{}",
@@ -3227,6 +3231,7 @@ impl Daemon {
         // ends by itself (D-199): done when every gate passed, else stopped
         // with the result, saying which didn't pass.
         let stale_conflict = !pr_read
+            && cx.publishable
             && d.as_ref()
                 .is_some_and(|d| d.mergeable.as_deref() == Some(delivery::CONFLICTING));
         let settled = remediation.is_none()
@@ -3475,7 +3480,12 @@ impl Daemon {
             Ok(changes)
         });
         match applied {
-            Ok(a) if a.from != Some(a.task.status) => self.task_changed(&a),
+            // Why, in the log too: the task's history goes when it's
+            // deleted (D-134).
+            Ok(a) if a.from != Some(a.task.status) => {
+                tracing::warn!(task = %id, "task stopped: {why}");
+                self.task_changed(&a);
+            }
             Ok(_) => {}
             Err(e) => tracing::warn!(task = %id, "stopping: {e:?}"),
         }

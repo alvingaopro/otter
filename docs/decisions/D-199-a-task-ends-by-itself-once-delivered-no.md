@@ -26,10 +26,12 @@ decide by merging: say the result, and where more work is needed, do it.
   *Bring the branch up to date*: merge `origin/<base>`, resolve keeping
   what both sides meant, keep the checks passing; Otter publishes. Once
   per head that conflicts, within the attempts budget; a conflict read
-  before the step isn't the answer until the pull request is read again.
+  before the step isn't the answer until the pull request is read again
+  (GitHub's `UNKNOWN` isn't a reading; an error is: the last one stands).
   CI failing the same way after a fix stops and says so (it waited for
   *Accept anyway*); the same way means as CI's latest word, so a failure
-  CI has passed since is a new one, and gets a fix.
+  CI has passed since is a new one, and gets a fix, and coming back to a
+  failure it stopped on (a retry, a new goal) is another attempt.
 - **Unverified work is delivered as it is** (D-165): its pull request
   opens and CI runs, then it stops with the result, *Requirements met*
   not passed. Before, it waited in review.
@@ -66,5 +68,8 @@ that could land after the goal had changed (or in the step that went back
 to work), a conflict read before the step stopping the task when the pull
 request no longer conflicted, a retry that only stopped again, and a CI
 failure like one fixed in an earlier round stopping without a fix; all are
-fixed above, and "or retry" is no longer offered. The race isn't covered by
-a test.
+fixed above, and "or retry" is no longer offered. Its second look found
+`UNKNOWN` taken for a reading, a reading that can't come keeping a task
+delivering for ever, a retry after the same CI failure stopping again
+with no fix, and the stop missing from otterd's log; fixed too. The race
+isn't covered by a test.
