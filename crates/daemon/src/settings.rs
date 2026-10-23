@@ -145,6 +145,10 @@ struct Stored {
     /// turned off.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     slack_notify: Option<bool>,
+    /// Slack's events come from otterhub, not a connection of this host's
+    /// own (D-206).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    slack_hub: Option<bool>,
 }
 
 #[derive(Debug, Default)]
@@ -259,6 +263,11 @@ impl HostSettings {
         self.stored.slack_notify.unwrap_or(true)
     }
 
+    /// Whether Slack's events come from otterhub (D-206).
+    pub fn slack_hub(&self) -> bool {
+        self.stored.slack_hub.unwrap_or(false)
+    }
+
     /// The coding agent's model (`None`: the provider's default).
     pub fn coding_model(&self) -> Option<String> {
         self.stored.coding_model.clone()
@@ -366,6 +375,9 @@ impl HostSettings {
             }
             if let Some(on) = slack.notify {
                 stored.slack_notify = Some(on);
+            }
+            if let Some(on) = slack.hub {
+                stored.slack_hub = on.then_some(true);
             }
         }
         let mut secrets = self.secrets.clone();
@@ -476,7 +488,10 @@ impl Daemon {
     pub(crate) fn settings_set(&self, mut u: SettingsUpdate) -> RpcResult<Settings> {
         // Slack connects again with what is set now (D-200).
         // (Telling about needs is read as it is used: no new connection.)
-        let slack = u.slack.as_ref().is_some_and(|s| s.users.is_some())
+        let slack = u
+            .slack
+            .as_ref()
+            .is_some_and(|s| s.users.is_some() || s.hub.is_some())
             || u.secrets
                 .keys()
                 .any(|k| k == SLACK_BOT_TOKEN || k == SLACK_APP_TOKEN);

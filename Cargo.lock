@@ -816,14 +816,18 @@ dependencies = [
  "chrono",
  "clap",
  "crossterm",
+ "futures-util",
  "otter-client",
  "otter-core",
  "otter-protocol",
+ "otter-slack",
  "portable-pty",
+ "rustls",
  "serde",
  "serde_json",
  "tempfile",
  "tokio",
+ "tokio-tungstenite",
  "toml",
 ]
 
@@ -867,6 +871,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "otter-slack"
+version = "0.7.95"
+dependencies = [
+ "otter-core",
+ "otter-protocol",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "url",
+]
+
+[[package]]
 name = "otterd"
 version = "0.7.95"
 dependencies = [
@@ -880,6 +896,7 @@ dependencies = [
  "otter-client",
  "otter-core",
  "otter-protocol",
+ "otter-slack",
  "portable-pty",
  "rand 0.9.5",
  "rustls",

@@ -505,6 +505,26 @@ impl Connection {
         .await
     }
 
+    /// Give the host what Slack sent otterhub for it (D-206).
+    pub async fn slack_deliver(
+        &mut self,
+        envelope: serde_json::Value,
+    ) -> Result<otter_protocol::host::SlackDelivered> {
+        self.call(Request::SlackDeliver(otter_protocol::host::SlackDeliver {
+            envelope,
+        }))
+        .await
+    }
+
+    /// Whether the message at `ts` in `channel` is the host's (D-206).
+    pub async fn slack_owns(&mut self, channel: &str, ts: &str) -> Result<bool> {
+        self.call(Request::SlackOwns(otter_protocol::host::SlackOwns {
+            channel: channel.to_owned(),
+            ts: ts.to_owned(),
+        }))
+        .await
+    }
+
     pub async fn task_list(&mut self) -> Result<Vec<otter_core::task::Task>> {
         self.call(Request::TaskList).await
     }

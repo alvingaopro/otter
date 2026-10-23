@@ -185,9 +185,15 @@ pub struct SlackView {
     pub notify: Option<bool>,
     /// The app's bot there (`B…`), once connected (D-203): two hosts with
     /// the same one share a Slack app, and Slack splits its messages between
-    /// them.
+    /// them — unless both take its events from otterhub (D-206).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bot_id: Option<String>,
+    /// Slack's events come to this host from otterhub, which holds the
+    /// app's one connection for several hosts (`state` `hub`, D-206); this
+    /// host still says Otter's messages in Slack itself. Absent from an
+    /// otterd before it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hub: Option<bool>,
 }
 
 /// `settings.set {slack}`: fields left out stay as they are.
@@ -200,6 +206,36 @@ pub struct SlackUpdate {
     /// Tell Slack when a task needs the developer (D-201).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub notify: Option<bool>,
+    /// Take Slack's events from otterhub (`slack.deliver`) instead of a
+    /// connection of this host's own, which then needs no app token (D-206).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hub: Option<bool>,
+}
+
+/// `slack.deliver` (D-206): what Slack sent down otterhub's connection, as
+/// it sent it (`type`, `envelope_id`, `payload`), for this host to take as
+/// if its own connection had heard it. otterhub has acked it already, but
+/// for a slash command, whose ack carries the answer.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct SlackDeliver {
+    pub envelope: serde_json::Value,
+}
+
+/// What came of `slack.deliver`.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+pub struct SlackDelivered {
+    /// A slash command's answer, for otterhub's ack of it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ack: Option<serde_json::Value>,
+}
+
+/// `slack.owns` (D-206): whether a message in Slack is this host's — one it
+/// posted lately, or one whose thread is a task's here — so that a reply in
+/// its thread, or a button on it, comes here. Result: `bool`.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SlackOwns {
+    pub channel: String,
+    pub ts: String,
 }
 
 /// One of Otter's tools as Settings shows it (D-191).

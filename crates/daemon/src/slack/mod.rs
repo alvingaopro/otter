@@ -19,12 +19,16 @@
 //!                    task, and the messages that told them
 //! ```
 //!
-//! One host per Slack app: Slack shares a connection's events among every
-//! connection the app has open, so two hosts would each hear some of them.
+//! One connection per Slack app: Slack shares a connection's events among
+//! every connection the app has open, so two hosts would each hear some of
+//! them. Several hosts share one app through otterhub (`otter hub serve`,
+//! D-206): it holds the app's one connection and gives each host what is
+//! its own (`slack.deliver`); the host says Otter's messages itself, as
+//! here, and opens no connection of its own.
 
-mod api;
 mod needs;
-mod socket;
+
+use otter_slack::{api, socket};
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
@@ -37,7 +41,8 @@ use otter_core::TaskId;
 use otter_core::conversation::{InteractionKind, Question};
 use otter_core::task::{Message, MessageRole, TaskAction};
 use otter_protocol::Event;
-use otter_protocol::host::SlackView;
+use otter_protocol::RpcError;
+use otter_protocol::host::{SlackDeliver, SlackDelivered, SlackOwns, SlackView};
 use otter_protocol::otter::OtterSend;
 use otter_protocol::task::{TaskAct, TaskImage, TaskSend};
 use serde::{Deserialize, Serialize};
@@ -74,6 +79,8 @@ const STREAM_EVERY: Duration = Duration::from_millis(1500);
 const PIECE_EVERY: Duration = Duration::from_millis(400);
 /// How long the sync waits for an answer's first words to be posted.
 const STREAM_WAIT: Duration = Duration::from_secs(3);
+/// Settings' word on a host that takes Slack's events from otterhub (D-206).
+const HUB: &str = "Slack's events come from otterhub (otter hub serve), which holds this app's one connection; Otter answers in Slack from here.";
 /// Said under a need whose buttons Slack refused: told in its words alone.
 const UNSHOWN: &str = "Slack didn't take this message's buttons: answer in the app, or reply in this thread to tell the task.";
 
@@ -171,55 +178,42 @@ impl Slack {
 /// What connecting takes, as set in Settings.
 struct Config {
     bot: String,
-    app: String,
+    /// The app token, for a connection of this host's own; `None`: Slack's
+    /// events come from otterhub (D-206).
+    app: Option<String>,
     users: Vec<String>,
 }
 
 /// The config, or what is missing from it.
 fn config(s: &HostSettings) -> Result<Config, String> {
     let (bot, app) = (s.secret(SLACK_BOT_TOKEN), s.secret(SLACK_APP_TOKEN));
+    // otterhub holds the app's connection: its token isn't this host's.
+    let app = match s.slack_hub() {
+        true => None,
+        false => Some(app),
+    };
     let users = s.slack_users().to_vec();
     let mut missing = Vec::new();
     if bot.is_none() {
         missing.push("the bot token (xoxb-…)");
     }
-    if app.is_none() {
+    if app.as_ref().is_some_and(Option::is_none) {
         missing.push("the app token (xapp-…)");
     }
     if users.is_empty() {
         missing.push("your Slack member ID");
     }
-    match (bot, app, missing.is_empty()) {
-        (Some(bot), Some(app), true) => Ok(Config { bot, app, users }),
+    match (bot, missing.is_empty()) {
+        (Some(bot), true) => Ok(Config {
+            bot,
+            app: app.flatten(),
+            users,
+        }),
         _ => Err(format!("Add {}.", missing.join(", "))),
     }
 }
 
-/// Slack members as Settings takes them: member IDs (`U…`, `W…`), each once.
-pub fn members(users: &[String]) -> Result<Vec<String>, String> {
-    let mut out: Vec<String> = Vec::new();
-    for u in users.iter().map(|u| u.trim()).filter(|u| !u.is_empty()) {
-        let id = u.trim_start_matches('@');
-        let ok = id.len() >= 3
-            && id.len() <= 32
-            && (id.starts_with('U') || id.starts_with('W'))
-            && id
-                .chars()
-                .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit());
-        if !ok {
-            return Err(format!(
-                "`{u}` isn't a Slack member ID (U…: in Slack, your profile › ⋯ › Copy member ID)"
-            ));
-        }
-        if !out.iter().any(|o| o == id) {
-            out.push(id.to_owned());
-        }
-    }
-    if out.len() > 20 {
-        return Err("at most 20 Slack members".into());
-    }
-    Ok(out)
-}
+pub use otter_slack::members;
 
 /// What was sent to Slack, kept across restarts (`state/slack.json`).
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -307,12 +301,14 @@ impl Daemon {
         let s = self.settings.read().unwrap();
         let users = s.slack_users().to_vec();
         let notify = Some(s.slack_notify());
+        let hub = s.slack_hub().then_some(true);
         if let Err(missing) = config(&s) {
             return SlackView {
                 users,
                 state: "off".into(),
                 detail: Some(missing),
                 notify,
+                hub,
                 ..Default::default()
             };
         }
@@ -325,11 +321,61 @@ impl Daemon {
             bot: st.bot,
             bot_id: st.bot_id,
             notify,
+            hub,
         }
     }
 
     fn slack_status(&self, status: Status) {
         *self.slack.status.lock().unwrap() = status;
+    }
+
+    /// What Slack sent otterhub for this host (D-206), taken as a connection
+    /// of this host's own takes it: a message said where it belongs, a press
+    /// done, `/otter` answered — its answer for otterhub's ack. Only while
+    /// Slack is set up here to take its events from otterhub.
+    pub(crate) async fn slack_deliver(
+        self: &Arc<Self>,
+        p: SlackDeliver,
+    ) -> RpcResult<SlackDelivered> {
+        let c = {
+            let s = self.settings.read().unwrap();
+            if !s.slack_hub() {
+                return Err(RpcError::conflict(
+                    "this host doesn't take Slack's events from otterhub (its Settings › Slack has a connection of its own)",
+                ));
+            }
+            config(&s).map_err(|missing| {
+                RpcError::invalid(format!("Slack isn't set up on this host: {missing}"))
+            })?
+        };
+        let env = self.environments.base().clone();
+        let ack = match socket::envelope(&p.envelope.to_string()) {
+            Envelope::Event { event, .. } => {
+                self.slack_heard(&c, &env, &event).await;
+                None
+            }
+            Envelope::Interactive { payload, .. } => {
+                self.slack_pressed(&c, &env, &payload);
+                None
+            }
+            Envelope::Command { payload, .. } => Some(self.slack_command(&c, &env, &payload).await),
+            _ => None,
+        };
+        Ok(SlackDelivered { ack })
+    }
+
+    /// Whether the message at `ts` in `channel` is this host's (D-206): one
+    /// that told a need or began a task's thread here, or one posted from
+    /// here lately — so a reply in its thread, or a press on it, is too.
+    pub(crate) fn slack_owns(&self, p: &SlackOwns) -> bool {
+        let on = Origin {
+            channel: p.channel.clone(),
+            thread: Some(p.ts.clone()),
+        };
+        let path = self.paths.state_dir.join("slack.json");
+        State::load(&path).and_then(|s| s.post_of(&on)).is_some()
+            || self.slack.pending_post(&on).is_some()
+            || api::posted_lately(&p.channel, &p.ts)
     }
 
     /// Keep Slack connected while it is set up here: again after Slack
@@ -376,10 +422,18 @@ impl Daemon {
                             }
                             let why = otter_core::redact::redact(&format!("{e:#}"));
                             tracing::warn!("slack: {why}");
+                            let next = match c.app {
+                                Some(_) => {
+                                    "Check the Slack app's two tokens and Socket Mode in Settings › Slack; Otter tries again meanwhile."
+                                }
+                                None => {
+                                    "Check the Slack app's bot token otterhub set here (`otter hub serve`); Otter tries again meanwhile."
+                                }
+                            };
                             self.note_problem(
                                 "slack",
                                 format!("Otter isn't connected to Slack: {why}."),
-                                "Check the Slack app's two tokens and Socket Mode in Settings › Slack; Otter tries again meanwhile.".into(),
+                                next.into(),
                             );
                             self.slack_status(Status {
                                 state: Some("failed"),
@@ -400,23 +454,30 @@ impl Daemon {
         }
     }
 
-    /// One connection, until Slack closes it (`Ok`) or it fails.
+    /// One connection, until Slack closes it (`Ok`) or it fails. Taking
+    /// Slack's events from otterhub (D-206), none is opened: what Slack says
+    /// comes through `slack.deliver`, and the rest is the same.
     async fn slack_session(self: &Arc<Self>, c: &Config) -> anyhow::Result<()> {
         let env = self.environments.base().clone();
         let me = api::call(&env, &c.bot, "auth.test", &json!({}))
             .await
             .map_err(|e| anyhow::anyhow!("{e} (the bot token)"))?;
-        let open = api::call(&env, &c.app, "apps.connections.open", &json!({}))
-            .await
-            .map_err(|e| anyhow::anyhow!("{e} (the app token)"))?;
-        // Its address carries a ticket: never logged.
-        let url = open["url"]
-            .as_str()
-            .ok_or_else(|| anyhow::anyhow!("Slack gave no address to connect to"))?;
-        let (ws, _) = tokio_tungstenite::connect_async(url)
-            .await
-            .map_err(|e| anyhow::anyhow!("connecting to Slack: {e}"))?;
-        let (mut sink, mut stream) = ws.split();
+        let socket = match &c.app {
+            Some(app) => {
+                let open = api::call(&env, app, "apps.connections.open", &json!({}))
+                    .await
+                    .map_err(|e| anyhow::anyhow!("{e} (the app token)"))?;
+                // Its address carries a ticket: never logged.
+                let url = open["url"]
+                    .as_str()
+                    .ok_or_else(|| anyhow::anyhow!("Slack gave no address to connect to"))?;
+                let (ws, _) = tokio_tungstenite::connect_async(url)
+                    .await
+                    .map_err(|e| anyhow::anyhow!("connecting to Slack: {e}"))?;
+                Some(ws.split())
+            }
+            None => None,
+        };
         let (_, mut events) = self.events.subscribe();
         let mut writing = self.events.subscribe_transient();
         // Otter's answers as they are written (D-202).
@@ -449,6 +510,27 @@ impl Daemon {
             }
         };
         let read = async {
+            let Some((mut sink, mut stream)) = socket else {
+                // The host can't tell whether otterhub is there: it says
+                // only that Slack's events are its to give.
+                tracing::info!("slack: Slack's events come from otterhub");
+                self.clear_problem("slack");
+                self.slack_status(Status {
+                    state: Some("hub"),
+                    detail: Some(HUB.into()),
+                    team: me["team"].as_str().map(String::from),
+                    bot: me["user"].as_str().map(String::from),
+                    bot_id: me["bot_id"].as_str().map(String::from),
+                });
+                wake.notify_one();
+                loop {
+                    match worth_a_look(events.recv().await) {
+                        Some(true) => wake.notify_one(),
+                        Some(false) => {}
+                        None => return Ok(()),
+                    }
+                }
+            };
             // Silence is measured from Slack's last frame, whatever else
             // happens on the host meanwhile.
             let quiet = tokio::time::sleep(QUIET);
@@ -503,11 +585,10 @@ impl Daemon {
                             Envelope::Unknown => {}
                         }
                     }
-                    ev = events.recv() => match ev {
-                        Ok(r) if matches!(r.event, Event::OtterChanged { .. } | Event::TaskChanged { .. } | Event::TaskDeleted { .. }) => wake.notify_one(),
-                        Ok(_) => {}
-                        Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => wake.notify_one(),
-                        Err(tokio::sync::broadcast::error::RecvError::Closed) => return Ok(()),
+                    ev = events.recv() => match worth_a_look(ev) {
+                        Some(true) => wake.notify_one(),
+                        Some(false) => {}
+                        None => return Ok(()),
                     },
                 }
             }
@@ -1670,6 +1751,23 @@ async fn mark(env: &EnvMap, bot: &str, m: &socket::Inbound, sent: RpcResult<()>)
     }
 }
 
+/// What an event on the host is to Slack: something to look at
+/// (`Some(true)`, also when some were missed), nothing (`Some(false)`), or
+/// the end of the host's events (`None`).
+fn worth_a_look(
+    ev: Result<otter_protocol::events::EventRecord, tokio::sync::broadcast::error::RecvError>,
+) -> Option<bool> {
+    use tokio::sync::broadcast::error::RecvError;
+    match ev {
+        Ok(r) => Some(matches!(
+            r.event,
+            Event::OtterChanged { .. } | Event::TaskChanged { .. } | Event::TaskDeleted { .. }
+        )),
+        Err(RecvError::Lagged(_)) => Some(true),
+        Err(RecvError::Closed) => None,
+    }
+}
+
 /// The needs that wait now, as already told: not news.
 fn baseline(look: &Look) -> BTreeMap<String, String> {
     look.needs
@@ -1863,20 +1961,6 @@ mod tests {
     }
 
     #[test]
-    fn member_ids_are_taken_as_slack_writes_them() {
-        let ids = |v: &[&str]| members(&v.iter().map(|s| s.to_string()).collect::<Vec<_>>());
-        assert_eq!(
-            ids(&[" U06MPBPRX7C ", "@W012ABC", "U06MPBPRX7C", ""]).unwrap(),
-            vec!["U06MPBPRX7C", "W012ABC"]
-        );
-        for bad in ["alvin", "u06mpbprx7c", "C123", "U1-2"] {
-            let err = ids(&[bad]).unwrap_err();
-            assert!(err.contains("Copy member ID"), "{bad}: {err}");
-        }
-        assert!(ids(&[]).unwrap().is_empty());
-    }
-
-    #[test]
     fn settings_say_what_slack_still_needs() {
         let dir = tempfile::tempdir().unwrap();
         let mut s = HostSettings::load(dir.path()).unwrap();
@@ -1903,7 +1987,10 @@ mod tests {
         })
         .unwrap();
         let c = config(&s).unwrap();
-        assert_eq!((c.bot.as_str(), c.app.as_str()), ("xoxb-1", "xapp-1"));
+        assert_eq!(
+            (c.bot.as_str(), c.app.as_deref()),
+            ("xoxb-1", Some("xapp-1"))
+        );
         assert_eq!(c.users, vec!["U1A"]);
         // The two tokens aren't each other's, nor anything else.
         for (name, v) in [(SLACK_BOT_TOKEN, "xapp-1"), (SLACK_APP_TOKEN, "xoxb-1")] {
@@ -1915,6 +2002,32 @@ mod tests {
                 .unwrap_err();
             assert!(err.contains(name), "{err}");
         }
+        // Taking its events from otterhub (D-206), the app token isn't
+        // this host's: none is needed, and one set isn't used.
+        s.update(otter_protocol::host::SettingsUpdate {
+            slack: Some(otter_protocol::host::SlackUpdate {
+                hub: Some(true),
+                ..Default::default()
+            }),
+            ..Default::default()
+        })
+        .unwrap();
+        assert_eq!(config(&s).unwrap().app, None);
+        s.update(otter_protocol::host::SettingsUpdate {
+            secrets: [(SLACK_APP_TOKEN.to_owned(), None)].into(),
+            ..Default::default()
+        })
+        .unwrap();
+        assert_eq!(config(&s).unwrap().bot, "xoxb-1");
+        s.update(otter_protocol::host::SettingsUpdate {
+            slack: Some(otter_protocol::host::SlackUpdate {
+                hub: Some(false),
+                ..Default::default()
+            }),
+            ..Default::default()
+        })
+        .unwrap();
+        assert_eq!(config(&s).err().unwrap(), "Add the app token (xapp-…).");
         // Kept with the other secrets, never in the view.
         let view = serde_json::to_string(&s.view()).unwrap();
         assert!(!view.contains("xoxb-1") && !view.contains("xapp-1"));

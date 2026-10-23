@@ -25,4 +25,14 @@ describe("A Slack app per host (D-203)", () => {
     expect(sharing(me, others)).toEqual(["gpu"]);
     expect(sharing({ team: "Suger Inc" }, others)).toEqual([]);
   });
+
+  it("doesn't count hosts that share the app through otterhub (D-206), but one on its own beside them", () => {
+    const me = { team: "Suger Inc", bot_id: "B1", hub: true };
+    const others = [
+      { host: "gpu", slack: { team: "Suger Inc", bot_id: "B1", state: "hub", hub: true } },
+      { host: "mac", slack: { team: "Suger Inc", bot_id: "B1", state: "connected" } },
+    ];
+    expect(sharing(me, others)).toEqual(["mac"]);
+    expect(sharing({ team: "Suger Inc", bot_id: "B1" }, others)).toEqual(["gpu", "mac"]);
+  });
 });

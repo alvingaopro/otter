@@ -166,5 +166,6 @@ record it in [`decisions.md`](decisions.md) first.
   `a_tools_failure_says_no_secret` (delivery's Git and gh errors, D-166),
   `settings_take_keys_write_only_and_keep_them` (keys),
   `the_developer_reads_and_edits_otters_memory` (Otter's memory, D-113),
-  and `a_direct_message_in_slack_is_answered_there` (the Slack app's
-  tokens, D-200).
+  `a_direct_message_in_slack_is_answered_there` (the Slack app's
+  tokens, D-200), and `one_slack_app_serves_two_hosts_through_the_hub`
+  (otterhub's tokens reach no host's environment, D-206).

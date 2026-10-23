@@ -1408,3 +1408,243 @@ async fn the_coding_agents_words_are_shown_as_it_says_them() {
         .any(|c| c.2["thread_ts"] == on.as_str() && c.2["blocks"][0]["text"] == "Done.");
     assert!(!again, "the agent's message was posted again");
 }
+
+/// What a hub gives a host (`slack.deliver`), as Socket Mode sent it.
+fn given(frame: String) -> Value {
+    serde_json::from_str(&frame).unwrap()
+}
+
+/// Taking Slack's events from otterhub (D-206): the host opens no
+/// connection of its own and needs no app token; what the hub gives it is
+/// taken as its own connection takes it — a message said and answered in
+/// Slack, `/otter` answered for the hub's ack — and what it posted is its
+/// own (`slack.owns`) until it starts again. A host not set so refuses what
+/// a hub gives, also once it is back on its own (`otter hub leave`).
+#[tokio::test]
+async fn a_host_takes_slack_from_otterhub() {
+    let mut slack = FakeSlack::start().await;
+    let mut fake = slack_host(&slack).await;
+    let question = || {
+        given(dm(
+            "e1",
+            "U01DEV",
+            "1700000000.000100",
+            "What is going on?",
+            json!({}),
+        ))
+    };
+    let err = fake
+        .host
+        .conn()
+        .await
+        .slack_deliver(question())
+        .await
+        .unwrap_err();
+    assert!(
+        err.to_string()
+            .contains("doesn't take Slack's events from otterhub"),
+        "{err}"
+    );
+    let hub = SettingsUpdate {
+        secrets: [(
+            "SLACK_BOT_TOKEN".to_owned(),
+            Some("xoxb-1-SLACKTESTTOKEN".to_owned()),
+        )]
+        .into(),
+        slack: Some(SlackUpdate {
+            users: Some(vec!["U01DEV".into()]),
+            hub: Some(true),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let s = fake
+        .host
+        .conn()
+        .await
+        .settings_set(hub)
+        .await
+        .unwrap()
+        .slack
+        .unwrap();
+    // No app token, and nothing missing.
+    assert_ne!(s.state, "off", "{s:?}");
+    assert_eq!(s.hub, Some(true));
+    let host = &fake.host;
+    let s = eventually("taking Slack's events from the hub", || async {
+        let s = host.conn().await.settings_get().await.unwrap().slack?;
+        (s.state == "hub").then_some(s)
+    })
+    .await;
+    assert_eq!(s.bot_id.as_deref(), Some("B01OTTER"));
+    assert!(s.detail.unwrap().contains("otterhub"));
+
+    // A message the hub gives: in Otter's conversation once, seen,
+    // answered in Slack by this host.
+    let d = host.conn().await.slack_deliver(question()).await.unwrap();
+    assert_eq!(d.ack, None);
+    // Given again (the hub tried again): nothing more.
+    host.conn().await.slack_deliver(question()).await.unwrap();
+    eventually("the message in Otter's conversation", || async {
+        let c = host.conn().await.otter_get().await.unwrap();
+        (said(&c, "What is going on?") == 1).then_some(())
+    })
+    .await;
+    eventually("Otter's answer in Slack", || async {
+        let p = slack.calls("chat.postMessage");
+        (!p.is_empty()).then_some(p)
+    })
+    .await;
+    eventually("seen", || async {
+        (!slack.calls("reactions.add").is_empty()).then_some(())
+    })
+    .await;
+    let c = host.conn().await.otter_get().await.unwrap();
+    assert_eq!(said(&c, "What is going on?"), 1);
+    // Its answer is its own: a reply under it comes here.
+    let owns = |channel: &'static str, ts: &'static str| async move {
+        host.conn().await.slack_owns(channel, ts).await.unwrap()
+    };
+    assert!(owns("D1", "1800000000.000001").await);
+    assert!(!owns("D1", "1700000000.999999").await);
+    assert!(!owns("D2", "1800000000.000001").await);
+
+    // `/otter status`, answered in what comes back, for the hub's ack.
+    let payload = json!({
+        "command": "/otter", "text": "status", "user_id": "U01DEV",
+        "channel_id": "D1", "trigger_id": "t-status",
+    });
+    let d = host
+        .conn()
+        .await
+        .slack_deliver(json!({"type": "slash_commands", "envelope_id": "s1", "payload": payload}))
+        .await
+        .unwrap();
+    let ack = d.ack.expect("the answer for the ack");
+    assert_eq!(ack["response_type"], "ephemeral");
+    assert!(!ack["blocks"][0]["text"].as_str().unwrap().is_empty());
+
+    // It opened no connection of its own.
+    assert!(slack.calls("apps.connections.open").is_empty());
+    assert!(slack.sockets.try_recv().is_err());
+
+    // Started again, what it posted before is the hub's to place.
+    fake.host.restart().await;
+    let host = &fake.host;
+    assert!(
+        !host
+            .conn()
+            .await
+            .slack_owns("D1", "1800000000.000001")
+            .await
+            .unwrap()
+    );
+
+    // Back on its own: it needs its app token again, and takes nothing a
+    // hub gives.
+    let s = host
+        .conn()
+        .await
+        .settings_set(SettingsUpdate {
+            slack: Some(SlackUpdate {
+                hub: Some(false),
+                ..Default::default()
+            }),
+            ..Default::default()
+        })
+        .await
+        .unwrap()
+        .slack
+        .unwrap();
+    assert_eq!(s.state, "off");
+    assert!(s.detail.unwrap().contains("app token"));
+    assert_eq!(s.hub, None);
+    let err = host
+        .conn()
+        .await
+        .slack_deliver(question())
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(&err, otter_client::ClientError::Rpc(e) if e.code == otter_protocol::ErrorCode::Conflict),
+        "{err}"
+    );
+}
+
+/// A need through otterhub (D-206): told by the host itself, with its
+/// buttons, the message the host's own (`slack.owns`); a press the hub
+/// gives decides it, as a press on the host's own connection does.
+#[tokio::test]
+async fn a_need_is_told_and_pressed_through_otterhub() {
+    use otter_core::task::{DecisionKind, DecisionStatus, Task};
+    let slack = FakeSlack::start().await;
+    let api = slack.api.clone();
+    let fake = fake_agent_host_with("ok", "scripted", move |_| {
+        vec![
+            ("OTTER_BRAIN_V2", "1".into()),
+            ("OTTER_SLACK_API", api),
+            ("OTTER_PLAN_TURN", "1".into()),
+        ]
+    })
+    .await;
+    let host = &fake.host;
+    host.conn()
+        .await
+        .settings_set(SettingsUpdate {
+            secrets: [(
+                "SLACK_BOT_TOKEN".to_owned(),
+                Some("xoxb-1-SLACKTESTTOKEN".to_owned()),
+            )]
+            .into(),
+            slack: Some(SlackUpdate {
+                users: Some(vec!["U01DEV".into()]),
+                hub: Some(true),
+                ..Default::default()
+            }),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    let state = host.home().join("state/slack.json");
+    eventually("the needs looked at", || async {
+        std::fs::read_to_string(&state)
+            .ok()
+            .filter(|s| s.contains("\"needs\""))
+    })
+    .await;
+    let asks = |f: &Task| {
+        f.pending_decisions()
+            .any(|d| d.kind == DecisionKind::PlanApproval)
+    };
+    let id = started_task_named(host, "Add JSON export").await;
+    let f = wait_task(host, &id, "asking about its plan", asks).await;
+    let decision = f.pending_decisions().next().unwrap().id.clone();
+    let need = eventually("the need told in Slack", || async {
+        let t = told(&slack);
+        (t.len() == 1).then(|| t[0].clone())
+    })
+    .await;
+    let value = need["blocks"][1]["elements"][0]["value"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let on = "1800000000.000001";
+    kept(host, on).await;
+    assert!(host.conn().await.slack_owns("D1", on).await.unwrap());
+
+    let pressed = json!({"type": "interactive", "envelope_id": "p1", "payload": {
+        "type": "block_actions",
+        "user": {"id": "U01DEV"},
+        "container": {"type": "message", "message_ts": on, "channel_id": "D1"},
+        "actions": [{"action_id": "approve", "value": value, "action_ts": "1700000007.1"}],
+    }});
+    let d = host.conn().await.slack_deliver(pressed).await.unwrap();
+    assert_eq!(d.ack, None);
+    wait_task(host, &id, "approved", |f| {
+        f.decisions
+            .iter()
+            .any(|d| d.id == decision && d.status == DecisionStatus::Approved)
+    })
+    .await;
+    assert!(slack.calls("apps.connections.open").is_empty());
+}
