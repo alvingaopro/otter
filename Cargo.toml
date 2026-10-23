@@ -5,7 +5,7 @@ members = ["crates/core", "crates/protocol", "crates/client", "crates/daemon", "
 exclude = ["apps/desktop/src-tauri"]
 
 [workspace.package]
-version = "0.7.86"
+version = "0.7.87"
 edition = "2024"
 license = "UNLICENSED"
 publish = false
@@ -29,6 +29,11 @@ serde_json = "1"
 tempfile = "3"
 thiserror = "2"
 tokio = { version = "1", features = ["full"] }
+# Slack's Socket Mode (slack/): a WebSocket over rustls, with ring and
+# the bundled roots, so no cmake and no system store.
+tokio-tungstenite = { version = "0.30", default-features = false, features = ["connect", "rustls-tls-webpki-roots"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
 toml = "0.9"
 url = "2"
 tracing = "0.1"
