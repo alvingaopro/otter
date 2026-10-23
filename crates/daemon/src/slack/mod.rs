@@ -39,7 +39,7 @@ use futures_util::{SinkExt, StreamExt};
 use otter_core::DecisionId;
 use otter_core::TaskId;
 use otter_core::conversation::{InteractionKind, Question};
-use otter_core::task::{Message, MessageRole, TaskAction};
+use otter_core::task::{Message, MessageRole, RunState, TaskAction};
 use otter_protocol::Event;
 use otter_protocol::RpcError;
 use otter_protocol::host::{SlackDeliver, SlackDelivered, SlackOwns, SlackView};
@@ -79,6 +79,9 @@ const STREAM_EVERY: Duration = Duration::from_millis(1500);
 const PIECE_EVERY: Duration = Duration::from_millis(400);
 /// How long the sync waits for an answer's first words to be posted.
 const STREAM_WAIT: Duration = Duration::from_secs(3);
+/// What a quiet coding agent's thread says of it is shown again at most
+/// this often (D-211).
+const BUSY_EVERY: Duration = Duration::from_secs(10);
 /// A task made from Slack within this long has what it said since its
 /// request sent to its thread (D-207); one older, from then on.
 const FRESH: chrono::TimeDelta = chrono::TimeDelta::minutes(2);
@@ -134,6 +137,13 @@ struct Stream {
     /// When words for it last came: an answer being written, however long,
     /// is kept while they come.
     seen: std::time::Instant,
+    /// When the coding agent last said anything for it, or it began: how
+    /// long the agent has been quiet (D-211). Kept apart from `seen`, which
+    /// a run going on keeps fresh.
+    heard: std::time::Instant,
+    /// What Slack shows of the coding agent at work while it is quiet
+    /// (D-211), under its words or in their place; `None`: nothing.
+    busy: Option<String>,
 }
 
 /// A thread for a task, made outside the sync loop.
@@ -393,6 +403,9 @@ struct Look {
     messages: BTreeMap<String, Vec<Message>>,
     /// The tasks whose coding agent is between turns: no run going (D-203).
     quiet: std::collections::HashSet<String>,
+    /// The tasks whose coding agent is at work and waits on no one, with
+    /// the thread its words go to, and what it did last (D-211).
+    working: HashMap<String, (Origin, Option<String>)>,
     /// When it was read: words that came after are a turn it didn't see.
     at: Option<std::time::Instant>,
 }
@@ -602,9 +615,12 @@ impl Daemon {
         let wake = tokio::sync::Notify::new();
         // What goes to Slack goes apart from reading, so an ack never waits
         // on a post.
+        // Also looked at now and then without news: a coding agent at
+        // work that says nothing is shown so (D-211).
+        let tick = (agent_quiet() / 4).clamp(Duration::from_millis(100), Duration::from_secs(30));
         let sync = async {
             loop {
-                wake.notified().await;
+                let _ = tokio::time::timeout(tick, wake.notified()).await;
                 tokio::time::sleep(SETTLE).await;
                 match self.slack_sync(c, &env).await {
                     Ok(()) => {}
@@ -1171,6 +1187,8 @@ impl Daemon {
                 shown: None,
                 whole: false,
                 seen: std::time::Instant::now(),
+                heard: std::time::Instant::now(),
+                busy: None,
             });
         }
         // What to do now, decided under the lock; done without it.
@@ -1185,6 +1203,10 @@ impl Daemon {
             };
             s.text = text.clone();
             s.seen = std::time::Instant::now();
+            // Heard from: what it was shown at goes with these words, at
+            // once (D-211).
+            s.heard = s.seen;
+            let was_busy = !s.posting && s.busy.take().is_some();
             match (&s.to, &s.ts) {
                 _ if s.over || s.posting => None,
                 (None, _) => None,
@@ -1194,9 +1216,10 @@ impl Daemon {
                     Some(Next::Post(to.clone()))
                 }
                 (Some(to), Some(ts))
-                    if s.shown.is_none_or(|t| {
-                        t.elapsed() >= STREAM_EVERY || (done && t.elapsed() >= PIECE_EVERY)
-                    }) =>
+                    if was_busy
+                        || s.shown.is_none_or(|t| {
+                            t.elapsed() >= STREAM_EVERY || (done && t.elapsed() >= PIECE_EVERY)
+                        }) =>
                 {
                     s.shown = Some(std::time::Instant::now());
                     s.whole = done;
@@ -1322,6 +1345,8 @@ impl Daemon {
                                 shown: None,
                                 whole: false,
                                 seen: std::time::Instant::now(),
+                                heard: std::time::Instant::now(),
+                                busy: None,
                             },
                         );
                         break None;
@@ -1524,6 +1549,7 @@ impl Daemon {
         self.slack_needs(c, env, &look, &mut state, &path).await?;
         self.slack_threads(c, env, &look, &mut state, &path).await?;
         self.slack_turns_ended(env, &c.bot, &look).await;
+        self.slack_working(env, &c.bot, &look).await;
         Ok(())
     }
 
@@ -1678,6 +1704,20 @@ impl Daemon {
             }
             if t.runs.iter().all(|r| r.state.is_over()) {
                 look.quiet.insert(id.clone());
+            }
+            // At work, waiting on no one, its words going to a thread of
+            // the developer's in Slack (D-211).
+            if let Some(run) = t.live_run().filter(|r| {
+                matches!(r.state, RunState::Starting | RunState::Running) && t.needs().is_none()
+            }) && let Some(to) = spoke(&t.messages, chrono::Utc::now(), &state.heard(&id, None))
+                .filter(|to| to.thread.is_some())
+            {
+                // (A live run's activity is in it, not yet in the task.)
+                let last = self
+                    .live_activity(&run.id)
+                    .and_then(|(lines, _)| lines.last().cloned())
+                    .or_else(|| run.activity.last().cloned());
+                look.working.insert(id.clone(), (to, last));
             }
             look.last.insert(id.clone(), last);
             let form = need
@@ -2002,13 +2042,22 @@ impl Daemon {
             ended
         };
         for s in ended {
-            let (Some(to), Some(ts), false) = (s.to, s.ts, s.whole) else {
+            // (Shown at work, the words it has without that, D-211.)
+            let (Some(to), Some(ts), true) = (s.to, s.ts, !s.whole || s.busy.is_some()) else {
                 continue;
             };
             let text = socket::pieces(&s.text, MAX_PIECE)
                 .first()
                 .cloned()
                 .unwrap_or_default();
+            if text.is_empty() {
+                // Only ever shown at work: nothing of it is left.
+                let body = json!({ "channel": to.channel, "ts": ts });
+                if let Err(e) = api::call(env, bot, "chat.delete", &body).await {
+                    tracing::info!("slack: the agent shown at work wasn't taken away: {e}");
+                }
+                continue;
+            }
             let body = json!({
                 "channel": to.channel,
                 "ts": ts,
@@ -2017,6 +2066,128 @@ impl Daemon {
             });
             if let Err(e) = api::call(env, bot, "chat.update", &body).await {
                 tracing::info!("slack: the agent's last words weren't shown whole: {e}");
+            }
+        }
+    }
+
+    /// A coding agent at work that has said nothing for a while is shown at
+    /// it in its task's thread (D-211), so the developer knows it goes on:
+    /// under its words so far, or in a message of its own that its words
+    /// then take the place of — how long it has been quiet, and what it
+    /// did last. Its next words, its turn's message, waiting on someone or
+    /// its run's end (`slack_turns_ended`) take that away.
+    async fn slack_working(&self, env: &EnvMap, bot: &str, look: &Look) {
+        enum Next {
+            Post(Origin, String),
+            Update(Origin, String, String),
+            Delete(Origin, String),
+        }
+        let quiet = agent_quiet();
+        let mut todo = Vec::new();
+        {
+            let mut streams = self.slack.streams.lock().unwrap();
+            let now = std::time::Instant::now();
+            for (task, (to, last)) in &look.working {
+                let key = format!("agent:{task}");
+                let s = streams.entry(key.clone()).or_insert_with(|| Stream {
+                    to: Some(to.clone()),
+                    ts: None,
+                    posting: false,
+                    over: false,
+                    text: String::new(),
+                    shown: None,
+                    whole: false,
+                    seen: now,
+                    heard: now,
+                    busy: None,
+                });
+                let Some(to) = s.to.clone().filter(|_| !s.over && !s.posting) else {
+                    continue;
+                };
+                let still = now.duration_since(s.heard);
+                let busy = busy_line(still, last.as_deref());
+                if still < quiet
+                    || s.busy.as_ref() == Some(&busy)
+                    || s.busy.is_some() && s.shown.is_some_and(|t| t.elapsed() < BUSY_EVERY)
+                {
+                    continue;
+                }
+                let words = with_busy(&s.text, &busy);
+                s.busy = Some(busy);
+                s.posting = true;
+                s.shown = Some(now);
+                todo.push((
+                    key,
+                    match &s.ts {
+                        None => Next::Post(to, words),
+                        Some(ts) => Next::Update(to, ts.clone(), words),
+                    },
+                ));
+            }
+            // Shown at work, and now it waits on someone, or its words go
+            // elsewhere: taken away. (A run over is `slack_turns_ended`'s.)
+            for (key, s) in streams.iter_mut() {
+                let Some(task) = key.strip_prefix("agent:") else {
+                    continue;
+                };
+                if look.working.contains_key(task) || look.quiet.contains(task) || s.posting {
+                    continue;
+                }
+                let (Some(to), Some(ts), Some(_)) = (s.to.clone(), s.ts.clone(), s.busy.take())
+                else {
+                    continue;
+                };
+                s.posting = true;
+                todo.push((
+                    key.clone(),
+                    match socket::pieces(&s.text, MAX_PIECE).first() {
+                        None => {
+                            s.ts = None;
+                            Next::Delete(to, ts)
+                        }
+                        Some(words) => Next::Update(to, ts, words.clone()),
+                    },
+                ));
+            }
+        }
+        for (key, next) in todo {
+            let posted = match &next {
+                Next::Post(to, words) => {
+                    let mut body = json!({
+                        "channel": to.channel,
+                        "text": words.chars().take(280).collect::<String>(),
+                        "blocks": shown(words, to),
+                        "unfurl_links": false,
+                        "unfurl_media": false,
+                    });
+                    if let Some(t) = &to.thread {
+                        body["thread_ts"] = json!(t);
+                    }
+                    api::call(env, bot, "chat.postMessage", &body).await
+                }
+                Next::Update(to, ts, words) => {
+                    let body = json!({
+                        "channel": to.channel,
+                        "ts": ts,
+                        "text": words.chars().take(280).collect::<String>(),
+                        "blocks": shown(words, to),
+                    });
+                    api::call(env, bot, "chat.update", &body).await
+                }
+                Next::Delete(to, ts) => {
+                    let body = json!({ "channel": to.channel, "ts": ts });
+                    api::call(env, bot, "chat.delete", &body).await
+                }
+            };
+            if let Err(e) = &posted {
+                tracing::info!("slack: the coding agent wasn't shown at work: {e}");
+            }
+            let mut streams = self.slack.streams.lock().unwrap();
+            if let Some(s) = streams.get_mut(&key) {
+                s.posting = false;
+                if let (Next::Post(..), Ok(v)) = (&next, &posted) {
+                    s.ts = v["ts"].as_str().map(String::from);
+                }
             }
         }
     }
@@ -2178,6 +2349,41 @@ fn spoke(messages: &[Message], at: otter_core::Timestamp, heard: &Heard) -> Opti
     match &heard.pressed {
         Some(p) if p.at <= at && last.is_none_or(|m| m.at < p.at) => Some(p.origin()),
         _ => heard.origin(last?),
+    }
+}
+
+/// How long the coding agent says nothing before its task's thread says it
+/// is at work (D-211).
+fn agent_quiet() -> Duration {
+    crate::controller::env_ms("OTTER_SLACK_AGENT_QUIET_MS", 2 * 60 * 1000)
+}
+
+/// What a task's thread says of its coding agent at work, quiet (D-211):
+/// for how long, and what it did last.
+fn busy_line(still: Duration, last: Option<&str>) -> String {
+    let since = match still.as_secs() / 60 {
+        0 => "less than a minute".to_owned(),
+        1 => "a minute".to_owned(),
+        n => format!("{n} minutes"),
+    };
+    let mut line = format!("_The coding agent is working… nothing said for {since}._");
+    if let Some(last) = last.filter(|l| !l.trim().is_empty()) {
+        let last = otter_core::redact::redact(last);
+        if last.contains('`') {
+            line.push_str(&format!("\nLatest: {last}"));
+        } else {
+            line.push_str(&format!("\nLatest: `{last}`"));
+        }
+    }
+    line
+}
+
+/// The coding agent's words so far with what it is shown at under them, or
+/// that alone (D-211).
+fn with_busy(text: &str, busy: &str) -> String {
+    match socket::pieces(text, MAX_PIECE - busy.len() - 8).first() {
+        Some(words) => format!("{words} …\n\n{busy}"),
+        None => busy.to_owned(),
     }
 }
 
@@ -2345,6 +2551,28 @@ mod tests {
                 Some("D1Some(\"1.5\")".into()),
             ]
         );
+    }
+
+    /// A quiet coding agent is shown at work (D-211): for how long, what it
+    /// did last (as code, unless that has backticks of its own), under its
+    /// words so far.
+    #[test]
+    fn a_quiet_agent_is_shown_at_work() {
+        let secs = Duration::from_secs;
+        assert_eq!(
+            busy_line(secs(20), None),
+            "_The coding agent is working… nothing said for less than a minute._"
+        );
+        assert_eq!(
+            busy_line(secs(70), Some("$ cargo test")),
+            "_The coding agent is working… nothing said for a minute._\nLatest: `$ cargo test`"
+        );
+        assert_eq!(
+            busy_line(secs(185), Some("$ echo `date`")),
+            "_The coding agent is working… nothing said for 3 minutes._\nLatest: $ echo `date`"
+        );
+        assert_eq!(with_busy("", "B"), "B");
+        assert_eq!(with_busy("Looking at it", "B"), "Looking at it …\n\nB");
     }
 
     /// In a task's thread the coding agent's words go back too (D-086,

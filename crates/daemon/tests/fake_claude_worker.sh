@@ -18,7 +18,8 @@
 # A coding turn that is a question ("a question." in it, D-089 M2.5) tries
 # to write a file and to run a command, then answers, saying what Otter's
 # policy said to each. Modes for the work turn: slow (finishes after 2 s),
-# hang (never finishes). A planning turn ("plan the work") tries to write a
+# hang (never finishes), busy (as ok, but once the form is answered it runs
+# `make check` for 2 s before it says anything). A planning turn ("plan the work") tries to write a
 # file, then answers in prose (NOPLAN) or proposes a two-step plan as JSON,
 # saying what Otter's policy said to the write. Told its plan was turned
 # down on an answer-only task ("turned down changing the code", D-158), it
@@ -190,6 +191,11 @@ while IFS= read -r line; do
       ;;
     *'"type":"resolve_interaction"'*)
       out '{"type":"ack","request_id":"x"}'
+      if [ "$mode" = busy ]; then
+        out '{"type":"tool_started","call":"tu_3","parent":null,"tool":"Bash","input":{"command":"make check"}}'
+        sleep 2
+        out '{"type":"tool_finished","call":"tu_3","ok":true,"output":"all good"}'
+      fi
       out '{"type":"text_delta","message":"m1","block":0,"text":"Do"}'
       out '{"type":"text","message":"m1","block":0,"text":"Done."}'
       out '{"type":"turn_finished","turn_id":"'"$turn"'","outcome":"completed","summary":"Done.","error":null,"session_cost_usd":0.02}'
