@@ -6,7 +6,7 @@
  */
 export function slackManifest(host: string): string {
   // Slack takes 35 characters for an app's name; its bot's name is plainer.
-  const name = `Otter (${host})`.slice(0, 35);
+  const name = `Otter (${host.slice(0, 26)})`;
   const bot = `Otter-${host.replace(/[^A-Za-z0-9._-]+/g, "-")}`.slice(0, 80);
   return JSON.stringify(
     {

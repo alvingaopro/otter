@@ -17,20 +17,25 @@ the others over SSH.
   - The view says which bot a host is connected as (`bot_id`, from
     `auth.test`). Where another connected host reports the same one in the
     same workspace, Settings says so: Slack is splitting messages between
-    them.
+    them. The other hosts are asked when the Slack tab is shown, and again
+    only when the hosts connected change.
   - The hub is not built: it would make otterd a client of other otterds
     over SSH. That is a new role, with keys from one host to the others, and
     it goes against "otterd knows one host" (D-182).
 - **The coding agent's words as it says them.** In a task's thread, while
   the developer last spoke there (D-200's rule), the coding agent's words
   are shown in one message per task. What it says goes in as it says it,
-  at most every 1.5 s, and each piece is shown whole once said. When its
+  at most every 1.5 s, and each piece is shown whole once said (at most
+  every 0.4 s, so a chatty agent stays within Slack's limit). When its
   turn's message lands, it takes that message's place, as the app shows
   the agent's words and then keeps one message per turn (D-069). The next
   turn starts a message of its own. Words that come after the turn's
-  message (within 30 s, a beginning of it) are dropped. A turn that ends
-  with no message of its own (a plan, or the same words again) leaves its
-  last piece shown, whole.
+  message (within 30 s, a beginning of it) are dropped — so a new turn
+  whose first words begin the last message waits until they differ. A turn
+  that ends with no message of its own (the same words again) leaves its
+  last piece shown, whole, and the next turn starts a message of its own,
+  where the developer is then. A turn's message is kept as long as words
+  keep coming, however long the turn.
 - Compatible, no version bump: `SlackView.bot_id` is optional.
 
 **Not done:** a hub host for several (see above), other IMs.
@@ -45,3 +50,11 @@ app) and the Slack tab's test (another host on the same app is said, the
 manifest copied, named after the host; watched failing with the hosts
 never compared). Checked with the app's tests and a production build, not
 in the macOS app, and not yet against Slack itself.
+
+Reviewed against the code (Fable) before merging. The review found a long
+turn's message split in two (its entry let go ten minutes after it began,
+words or not), the other hosts asked again on every render of the app,
+a turn that ends with no message keeping its message for the next one (and
+where it went), and pieces said whole shown with no interval at all. All
+are fixed above; the app's test now re-renders and checks the other hosts
+were asked once.

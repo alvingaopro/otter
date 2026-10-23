@@ -69,6 +69,9 @@ const MAX_POSTS: usize = 200;
 /// An answer being written is shown again at most this often (Slack's
 /// `chat.update` is rate-limited, D-202).
 const STREAM_EVERY: Duration = Duration::from_millis(1500);
+/// A piece of the coding agent's said whole is shown at most this often
+/// (D-203): a chatty agent mustn't run into Slack's limit.
+const PIECE_EVERY: Duration = Duration::from_millis(400);
 /// How long the sync waits for an answer's first words to be posted.
 const STREAM_WAIT: Duration = Duration::from_secs(3);
 
@@ -111,7 +114,11 @@ struct Stream {
     /// The words so far, and when Slack was last shown them.
     text: String,
     shown: Option<std::time::Instant>,
-    born: std::time::Instant,
+    /// What Slack shows is a piece said whole (D-203).
+    whole: bool,
+    /// When words for it last came: an answer being written, however long,
+    /// is kept while they come.
+    seen: std::time::Instant,
 }
 
 /// A thread for a task, made outside the sync loop.
@@ -285,6 +292,8 @@ struct Look {
     /// The conversations of the tasks with a thread, where they have
     /// something Slack hasn't looked at.
     messages: BTreeMap<String, Vec<Message>>,
+    /// The tasks whose coding agent is between turns: no run going (D-203).
+    quiet: std::collections::HashSet<String>,
 }
 
 impl Daemon {
@@ -915,7 +924,7 @@ impl Daemon {
                     .and_then(|m| m.correlation_id.clone()),
             };
             let mut streams = self.slack.streams.lock().unwrap();
-            streams.retain(|_, s| s.born.elapsed() < Duration::from_secs(600));
+            streams.retain(|_, s| s.seen.elapsed() < Duration::from_secs(600));
             streams.entry(answered.to_owned()).or_insert(Stream {
                 to: Origin::of(from.as_deref()),
                 ts: None,
@@ -923,7 +932,8 @@ impl Daemon {
                 over: false,
                 text: String::new(),
                 shown: None,
-                born: std::time::Instant::now(),
+                whole: false,
+                seen: std::time::Instant::now(),
             });
         }
         // What to do now, decided under the lock; done without it.
@@ -937,17 +947,22 @@ impl Daemon {
                 return;
             };
             s.text = text.clone();
+            s.seen = std::time::Instant::now();
             match (&s.to, &s.ts) {
                 _ if s.over || s.posting => None,
                 (None, _) => None,
                 (Some(to), None) => {
                     s.posting = true;
+                    s.whole = done;
                     Some(Next::Post(to.clone()))
                 }
                 (Some(to), Some(ts))
-                    if done || s.shown.is_none_or(|t| t.elapsed() >= STREAM_EVERY) =>
+                    if s.shown.is_none_or(|t| {
+                        t.elapsed() >= STREAM_EVERY || (done && t.elapsed() >= PIECE_EVERY)
+                    }) =>
                 {
                     s.shown = Some(std::time::Instant::now());
+                    s.whole = done;
                     s.posting = true;
                     Some(Next::Update(to.clone(), ts.clone()))
                 }
@@ -1040,7 +1055,7 @@ impl Daemon {
         let shown = loop {
             {
                 let mut streams = self.slack.streams.lock().unwrap();
-                streams.retain(|_, s| s.born.elapsed() < Duration::from_secs(600));
+                streams.retain(|_, s| s.seen.elapsed() < Duration::from_secs(600));
                 match streams.get_mut(&answered) {
                     Some(s) if s.posting && waited.elapsed() < STREAM_WAIT => {}
                     Some(s) => {
@@ -1065,7 +1080,8 @@ impl Daemon {
                                 over: true,
                                 text: String::new(),
                                 shown: None,
-                                born: std::time::Instant::now(),
+                                whole: false,
+                                seen: std::time::Instant::now(),
                             },
                         );
                         break None;
@@ -1241,7 +1257,9 @@ impl Daemon {
         self.slack_host(c, env, &chat.messages, &mut state, &look.titles, &path)
             .await?;
         self.slack_needs(c, env, &look, &mut state, &path).await?;
-        self.slack_threads(c, env, &look, &mut state, &path).await
+        self.slack_threads(c, env, &look, &mut state, &path).await?;
+        self.slack_turns_ended(env, &c.bot, &look).await;
+        Ok(())
     }
 
     /// The tasks as Slack needs them, read at once.
@@ -1262,6 +1280,9 @@ impl Daemon {
             let looked = state.tasks.get(&id);
             if state.posts.iter().any(|p| p.task == id) && looked != Some(&last) {
                 look.messages.insert(id.clone(), t.messages.clone());
+            }
+            if t.runs.iter().all(|r| r.state.is_over()) {
+                look.quiet.insert(id.clone());
             }
             look.last.insert(id.clone(), last);
             let form = need
@@ -1490,6 +1511,41 @@ impl Daemon {
             .tasks
             .retain(|t, _| state.posts.iter().any(|p| &p.task == t));
         Ok(())
+    }
+
+    /// The coding agent's words shown for a turn that ended with no message
+    /// of its own (the same words again): left as last said, whole, and
+    /// the next turn shown afresh, where the developer is then (D-203).
+    async fn slack_turns_ended(&self, env: &EnvMap, bot: &str, look: &Look) {
+        let ended: Vec<Stream> = {
+            let mut streams = self.slack.streams.lock().unwrap();
+            look.quiet
+                .iter()
+                .filter_map(|task| {
+                    let key = format!("agent:{task}");
+                    let s = streams.get(&key)?;
+                    (!s.posting).then(|| streams.remove(&key)).flatten()
+                })
+                .collect()
+        };
+        for s in ended {
+            let (Some(to), Some(ts), false) = (s.to, s.ts, s.whole) else {
+                continue;
+            };
+            let text = socket::pieces(&s.text, MAX_PIECE)
+                .first()
+                .cloned()
+                .unwrap_or_default();
+            let body = json!({
+                "channel": to.channel,
+                "ts": ts,
+                "text": text.chars().take(280).collect::<String>(),
+                "blocks": [{ "type": "markdown", "text": text }],
+            });
+            if let Err(e) = api::call(env, bot, "chat.update", &body).await {
+                tracing::info!("slack: the agent's last words weren't shown whole: {e}");
+            }
+        }
     }
 
     /// The direct messages between `user` and the app.

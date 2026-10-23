@@ -499,14 +499,17 @@ export function SettingsDialog({
 
   // Other hosts connected as the same Slack app share its messages (D-203):
   // asked of each when this host's Slack tab is shown.
+  // (By the hosts' names: the list itself is made anew on each render.)
+  const hostsKey = hosts.join("\n");
   useEffect(() => {
     setTwins([]);
     if (!host || shown !== "slack" || !slack?.bot_id) return;
     let live = true;
     const me = { team: slack.team, bot_id: slack.bot_id };
     Promise.all(
-      hosts
-        .filter((h) => h !== host)
+      hostsKey
+        .split("\n")
+        .filter((h) => h && h !== host)
         .map((h) =>
           invoke<HostSettings>("settings_get", { host: h })
             .then((s) => ({ host: h, slack: s.slack }))
@@ -516,7 +519,7 @@ export function SettingsDialog({
     return () => {
       live = false;
     };
-  }, [host, hosts, shown, slack?.bot_id, slack?.team]);
+  }, [host, hostsKey, shown, slack?.bot_id, slack?.team]);
   useEffect(() => setCopied(false), [host]);
 
   // While Slack connects, or after it failed (the host tries again), ask

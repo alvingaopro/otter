@@ -515,6 +515,15 @@ describe("Settings", () => {
     await flush();
     expect(dialog().querySelector('[role="alert"]')?.textContent).toContain("pc is connected as this Slack app too");
     expect(calls.some((c) => c.cmd === "settings_get" && c.args.host === "pc")).toBe(true);
+    // Asked once, not again on each render of what holds the dialog.
+    const asked = calls.filter((c) => c.cmd === "settings_get" && c.args.host === "pc").length;
+    await act(async () =>
+      root.render(
+        <SettingsDialog hosts={["mac", "pc"]} defaultHost="mac" theme="system" onTheme={(t) => themes.push(t)} onClose={() => closed++} />,
+      ),
+    );
+    await flush();
+    expect(calls.filter((c) => c.cmd === "settings_get" && c.args.host === "pc").length).toBe(asked);
     copied.length = 0;
     await act(async () => button("Copy manifest").click());
     await flush();

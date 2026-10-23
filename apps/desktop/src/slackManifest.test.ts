@@ -11,6 +11,7 @@ describe("A Slack app per host (D-203)", () => {
     expect(m.features.slash_commands[0].command).toBe("/otter");
     const long = JSON.parse(slackManifest("a very long host name indeed, with spaces"));
     expect(long.display_information.name.length).toBeLessThanOrEqual(35);
+    expect(long.display_information.name).toMatch(/\)$/);
     expect(long.features.bot_user.display_name).toMatch(/^[A-Za-z0-9._-]+$/);
   });
 
