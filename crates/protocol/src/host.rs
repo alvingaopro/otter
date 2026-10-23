@@ -275,6 +275,11 @@ pub struct SlackView {
     /// otterd before it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hub: Option<bool>,
+    /// The name otterhub knows this host by (D-207): under what the host
+    /// posts at the top of the conversation while the hub serves it.
+    /// Absent from an otterd before it, or none set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
 }
 
 /// `settings.set {slack}`: fields left out stay as they are.
@@ -291,6 +296,10 @@ pub struct SlackUpdate {
     /// connection of this host's own, which then needs no app token (D-206).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hub: Option<bool>,
+    /// The name otterhub knows this host by (D-207), shown under what it
+    /// posts at the top of the conversation; `""` takes it off.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
 }
 
 /// `slack.deliver` (D-206): what Slack sent down otterhub's connection, as

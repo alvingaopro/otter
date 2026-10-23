@@ -1400,6 +1400,9 @@ fn one_slack_app_serves_two_hosts_through_the_hub() {
     let head = slack.wait_call("chat.postMessage", "the task's thread", |b| {
         b["text"] == "Add XML export"
     });
+    // Said at the top by one of several hosts: under its name (D-207).
+    let label = head["blocks"].as_array().unwrap().last().unwrap().clone();
+    assert_eq!(label["elements"][0]["text"], "from *b*", "{head}");
     let n = slack
         .calls("chat.postMessage")
         .iter()

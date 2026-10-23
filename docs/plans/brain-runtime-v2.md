@@ -64,7 +64,8 @@ backend compatibility, and each milestone's acceptance criteria.
 - a new scheduler, store or database;
 - cross-host tools or orchestration;
 - running several tasks in parallel to compare them;
-- `cancel_task` or `delete_task` as model tools;
+- `cancel_task` or `delete_task` as model tools (D-207 adds both, on the
+  developer's word only);
 - the model approving anything on its own word;
 - general shell or file access for Otter.
 
@@ -249,8 +250,9 @@ tests:
 **Excluded tools:**
 
 - `cancel_task`: today's chat never cancels, and cancelled is the one state
-  that can't come back (D-050). It stays a button.
-- `delete_task`.
+  that can't come back (D-050). It stays a button. (D-207: also a tool, only
+  in a turn the developer's message started, whatever its level.)
+- `delete_task`. (D-207: in the host's conversation, the same way.)
 - Any decision other than plan approval (§3.2 rule 2).
 - `override_gates`.
 - Publish, merge or deploy.

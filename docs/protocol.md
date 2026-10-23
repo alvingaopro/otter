@@ -373,7 +373,14 @@ The Control Agent's model and API keys on this host (D-048).
   (`command_id` `slack:act:<action_ts>`); a reply in that message's thread
   is said in the task (`task.send`, or `decide` with the reply as the
   answer to a question with no options); `settings.set {slack: {notify}}`
-  turns it on or off. The view's `bot_id?` (D-203) is the app's bot there
+  turns it on or off. A task Otter on the host makes from a Slack message
+  has a message of its own at the top of that conversation, as
+  `/otter new`'s does (D-207): its thread is the task's; it says how the
+  task stands, with the buttons `stop` (`task.act cancel`) and, once
+  nothing is at work in it, `delete` (`task.delete`), each confirmed in
+  Slack first; a need's message has `stop` too (or `delete`, after Retry,
+  for a task that stopped). What a task says after a press goes to the
+  thread of the message pressed on. The view's `bot_id?` (D-203) is the app's bot there
   once connected: two hosts with the same one share a Slack app, which
   Slack splits its messages between; each host is meant to have its own —
   or all of them take its events from otterhub (D-206).
@@ -386,7 +393,12 @@ The Control Agent's model and API keys on this host (D-048).
   before.
   The host still says Otter's messages in Slack itself, with its bot token.
   `{hub: false}` (`otter hub leave`) gives it its own connection again.
-  Absent from older daemons, which ignore the field.
+  Absent from older daemons, which ignore the field. `{name}` (D-207) is
+  the name otterhub knows the host by, which the hub sets as it takes the
+  host in; while the hub serves it, what the host posts at the top of the
+  conversation says it under it (`""` takes it off). The view's `name?`
+  says it. An optional field: older daemons ignore it, older hubs don't
+  set it.
   - `slack.deliver {envelope}` → `{ack?}`: what Slack sent down the hub's
     connection, as it sent it (`type`, `envelope_id`, `payload`), taken as
     the host's own connection would take it: a direct message said where it

@@ -98,7 +98,7 @@ pub fn told(task: &Task, n: &Need, form: Option<&[Question]>) -> Told {
         b
     };
     if let (NeedKind::Question, Some(questions)) = (n.kind, form) {
-        return asked(&text, questions, &value(None));
+        return asked(&text, questions, &value(None), task);
     }
     let mut buttons = Vec::new();
     let hint = match (n.kind, d) {
@@ -121,6 +121,8 @@ pub fn told(task: &Task, n: &Need, form: Option<&[Question]>) -> Told {
         }
         _ => "Reply in this thread to tell the task.",
     };
+    // No longer wanted: stopped, or — stopped already — deleted (D-207).
+    buttons.extend(ending(task, n.kind != NeedKind::Failed));
     let mut blocks = vec![json!({ "type": "markdown", "text": format!("{text}\n\n_{hint}_") })];
     if !buttons.is_empty() {
         blocks.push(json!({ "type": "actions", "elements": buttons }));
@@ -136,7 +138,7 @@ pub fn told(task: &Task, n: &Need, form: Option<&[Question]>) -> Told {
 /// and Submit. Slack refuses a message whose actions hold a multi-select
 /// (`unsupported element: multiselect`, seen live), whatever its documents
 /// say.
-fn asked(text: &str, questions: &[Question], value: &str) -> Told {
+fn asked(text: &str, questions: &[Question], value: &str, task: &Task) -> Told {
     let plain = |t: &str| json!({ "type": "plain_text", "text": cut(t, MAX_LABEL) });
     let mut blocks = vec![json!({ "type": "markdown", "text": text })];
     for (i, q) in questions.iter().take(MAX_QUESTIONS).enumerate() {
@@ -182,20 +184,116 @@ fn asked(text: &str, questions: &[Question], value: &str) -> Told {
             "elements": [element],
         }));
     }
-    blocks.push(json!({
-        "type": "actions",
-        "elements": [{
-            "type": "button",
-            "text": plain("Submit"),
-            "action_id": "form",
-            "value": value,
-            "style": "primary",
-        }],
-    }));
+    let mut elements = vec![json!({
+        "type": "button",
+        "text": plain("Submit"),
+        "action_id": "form",
+        "value": value,
+        "style": "primary",
+    })];
+    elements.extend(ending(task, true));
+    blocks.push(json!({ "type": "actions", "elements": elements }));
     blocks.push(json!({ "type": "markdown", "text": "_Answer every question, then Submit. Or reply in this thread to tell the task._" }));
     Told {
         text: text.to_owned(),
         blocks: Value::Array(blocks),
+    }
+}
+
+/// The buttons that end a task from Slack (D-207), each asked again before
+/// it is done: Stop (`stop`) while it isn't over, when `stop`; Delete
+/// (`delete`) once nothing is at work in it.
+fn ending(task: &Task, stop: bool) -> Vec<Value> {
+    let plain = |t: &str| json!({ "type": "plain_text", "text": t });
+    let value = json!({ "task": task.id.as_str() }).to_string();
+    let button = |label: &str, action: &str, title: &str, text: &str| {
+        json!({
+            "type": "button",
+            "text": plain(label),
+            "action_id": action,
+            "value": value,
+            "style": "danger",
+            "confirm": {
+                "title": plain(title),
+                "text": plain(text),
+                "confirm": plain(label),
+                "deny": plain("Keep it"),
+                "style": "danger",
+            },
+        })
+    };
+    let mut out = Vec::new();
+    if stop && !matches!(task.status, TaskStatus::Done | TaskStatus::Cancelled) {
+        out.push(button(
+            "Stop task",
+            "stop",
+            "Stop this task?",
+            "It stops for good: it can't be resumed. Nothing of its work is removed.",
+        ));
+    } else if crate::tasks::deletable(task) {
+        out.push(button(
+            "Delete task",
+            "delete",
+            "Delete this task?",
+            "It goes for good, with its conversation and history. Nothing of its work is removed.",
+        ));
+    }
+    out
+}
+
+/// A task's own message in Slack (D-207, `/otter new`'s since D-202): its
+/// title, how it stands, and what ends it — Stop while it isn't over,
+/// Delete once it is. Its thread is the task's conversation.
+pub fn card(task: &Task) -> Told {
+    let reason = |fallback: &str| {
+        let r = task.status_reason.as_deref().unwrap_or(fallback);
+        cut(&otter_core::redact::redact(r), 300)
+    };
+    let stands = match task.status {
+        TaskStatus::Draft => "Not started yet.".to_owned(),
+        TaskStatus::Planning => "Planning.".to_owned(),
+        TaskStatus::Implementing => "At work.".to_owned(),
+        TaskStatus::Verifying => "Checking the work.".to_owned(),
+        TaskStatus::Review => "In review.".to_owned(),
+        TaskStatus::Done => "✅ Done.".to_owned(),
+        TaskStatus::Blocked => format!("⏳ Waiting on you: {}", reason("Waiting on you")),
+        TaskStatus::Paused => "⏸ Paused.".to_owned(),
+        TaskStatus::Failed => format!("⚠️ {}", reason("Stopped")),
+        TaskStatus::Cancelled => "Stopped for good.".to_owned(),
+    };
+    let text = format!("**{}**\n{stands}", task.title);
+    let mut blocks = vec![json!({
+        "type": "markdown",
+        "text": format!("{text}\n\n_Reply in this thread to talk to it._"),
+    })];
+    let buttons = ending(task, true);
+    if !buttons.is_empty() {
+        blocks.push(json!({ "type": "actions", "elements": buttons }));
+    }
+    Told {
+        text,
+        blocks: Value::Array(blocks),
+    }
+}
+
+/// What a task's own message shows of it (`card`): shown again when this
+/// changes.
+pub fn card_key(task: &Task) -> String {
+    format!(
+        "{}:{}:{}",
+        task.status.as_str(),
+        crate::tasks::deletable(task),
+        task.status_reason.as_deref().unwrap_or_default()
+    )
+}
+
+/// A deleted task's own message: what it was, and that it went.
+pub fn gone(text: &str) -> Told {
+    let title = text.lines().next().unwrap_or_default();
+    let text = format!("{title}\n🗑 Deleted.");
+    Told {
+        blocks: json!([{ "type": "markdown", "text": text }]),
+        text,
     }
 }
 
@@ -222,13 +320,17 @@ pub fn over(task: &Task, key: &str) -> String {
                 ),
                 None => format!("✅ Answered{by}."),
             },
+            // Stopped from Slack or the app (D-207): said so, not its run.
+            DecisionStatus::Cancelled if task.status == TaskStatus::Cancelled => {
+                "No longer waiting: the task was stopped.".into()
+            }
             DecisionStatus::Cancelled => "No longer asked: its run ended.".into(),
             DecisionStatus::Pending => "Asked again below.".into(),
         };
     }
     match task.status {
         TaskStatus::Done => "No longer waiting: the task is done.".into(),
-        TaskStatus::Cancelled => "No longer waiting: the task was cancelled.".into(),
+        TaskStatus::Cancelled => "No longer waiting: the task was stopped.".into(),
         s => format!("No longer waiting: the task is {}.", s.as_str()),
     }
 }
@@ -245,8 +347,19 @@ pub fn open_question(task: &Task) -> Option<DecisionId> {
 }
 
 /// `text` with each task named by its title rather than its id
-/// (`[ft_…]` → “title”).
+/// (`[ft_…]` → “title”). An id beside its title, before or after it, is
+/// left out instead: the task is named once (D-209).
 pub fn titled(text: &str, titles: &HashMap<String, String>) -> String {
+    let set_off = |title: &str| {
+        [
+            format!("“{title}”"),
+            format!("\"{title}\""),
+            format!("**{title}**"),
+            format!("*{title}*"),
+            format!("「{title}」"),
+            title.to_owned(),
+        ]
+    };
     let mut out = String::with_capacity(text.len());
     let mut rest = text;
     while let Some(open) = rest.find("[ft_") {
@@ -257,8 +370,30 @@ pub fn titled(text: &str, titles: &HashMap<String, String>) -> String {
             .unwrap_or(after.len());
         match (titles.get(&after[..end]), after[end..].starts_with(']')) {
             (Some(title), true) => {
-                out.push_str(&format!("“{title}”"));
                 rest = &after[end + 1..];
+                // Only spaces apart: a line break stays.
+                let before = out.trim_end_matches([' ', '\t']);
+                let next = rest.trim_start_matches([' ', '\t']);
+                // A bare title is a word of its own: "schema" doesn't end
+                // with the title "a".
+                let word = |c: Option<char>| c.is_none_or(|c| !c.is_alphanumeric());
+                let ends = |n: &String| {
+                    before.ends_with(n.as_str())
+                        && (n != title
+                            || word(before[..before.len() - n.len()].chars().next_back()))
+                };
+                let starts = |n: &String| {
+                    next.starts_with(n.as_str())
+                        && (n != title || word(next[n.len()..].chars().next()))
+                };
+                let named = set_off(title);
+                if named.iter().any(ends) {
+                    out.truncate(before.len());
+                } else if named.iter().any(starts) {
+                    rest = next;
+                } else {
+                    out.push_str(&format!("“{title}”"));
+                }
             }
             _ => {
                 out.push('[');
@@ -417,10 +552,12 @@ mod tests {
         assert!(told.text.contains("```\nrm -rf build\n```"));
         assert!(told.text.contains("1 more decision after this one"));
         let a = actions(&told);
-        assert_eq!(a.len(), 2);
+        assert_eq!(a.len(), 3);
         assert_eq!(a[0].0, "approve");
         assert_eq!(a[0].1, json!({"task": "ft_abc", "decision": "dec_1"}));
         assert_eq!(a[1].0, "deny");
+        // No longer wanted: stopped from here (D-207).
+        assert_eq!(a[2], ("stop".to_owned(), json!({"task": "ft_abc"})));
     }
 
     #[test]
@@ -436,9 +573,13 @@ mod tests {
         let a = actions(&told(&with, &with.needs().unwrap(), None));
         assert_eq!(
             a.iter()
-                .map(|(id, v)| (id.as_str(), v["answer"].as_str().unwrap()))
+                .map(|(id, v)| (id.as_str(), v["answer"].as_str().unwrap_or_default()))
                 .collect::<Vec<_>>(),
-            vec![("answer:0", "Postgres"), ("answer:1", "SQLite")]
+            vec![
+                ("answer:0", "Postgres"),
+                ("answer:1", "SQLite"),
+                ("stop", "")
+            ]
         );
         assert_eq!(open_question(&with), None);
         let without = task(
@@ -446,7 +587,11 @@ mod tests {
             TaskStatus::Implementing,
         );
         let told = told(&without, &without.needs().unwrap(), None);
-        assert!(actions(&told).is_empty());
+        let a = actions(&told);
+        assert_eq!(
+            a.iter().map(|(id, _)| id.as_str()).collect::<Vec<_>>(),
+            ["stop"]
+        );
         assert!(
             told.blocks[0]["text"]
                 .as_str()
@@ -517,8 +662,49 @@ mod tests {
             told.text,
             "**Export CSV** stopped: Tests failed three times"
         );
-        assert_eq!(actions(&told)[0].0, "retry");
+        let a = actions(&told);
+        assert_eq!(
+            a.iter().map(|(id, _)| id.as_str()).collect::<Vec<_>>(),
+            ["retry", "delete"]
+        );
         assert_eq!(open_question(&t), None);
+    }
+
+    /// A task's own message (D-207): its title and how it stands, Stop
+    /// (asked again first) while it isn't over, Delete once nothing is at
+    /// work in it; shown again only when what it shows changes.
+    #[test]
+    fn a_tasks_own_message_says_how_it_stands_and_ends_it() {
+        let ids = |t: &Task| {
+            actions(&card(t))
+                .into_iter()
+                .map(|(id, _)| id)
+                .collect::<Vec<_>>()
+        };
+        let working = task(vec![], TaskStatus::Implementing);
+        let c = card(&working);
+        assert_eq!(c.text, "**Export CSV**\nAt work.");
+        assert_eq!(ids(&working), ["stop"]);
+        let stop = &c.blocks[1]["elements"][0];
+        assert_eq!(stop["confirm"]["confirm"]["text"], "Stop task");
+        assert_eq!(stop["style"], "danger");
+        let mut waiting = task(vec![], TaskStatus::Blocked);
+        waiting.status_reason = Some("Which repository?".into());
+        assert_eq!(
+            card(&waiting).text,
+            "**Export CSV**\n⏳ Waiting on you: Which repository?"
+        );
+        assert_ne!(card_key(&waiting), card_key(&working));
+        for over in [TaskStatus::Done, TaskStatus::Cancelled] {
+            assert_eq!(ids(&task(vec![], over)), ["delete"], "{over:?}");
+        }
+        assert_eq!(
+            card_key(&working),
+            card_key(&task(vec![], TaskStatus::Implementing))
+        );
+        let g = gone(&c.text);
+        assert_eq!(g.text, "**Export CSV**\n🗑 Deleted.");
+        assert!(actions(&g).is_empty());
     }
 
     #[test]
@@ -595,5 +781,50 @@ mod tests {
         );
         assert_eq!(titled("[ft_abc", &titles), "[ft_abc");
         assert_eq!(titled("no ids", &titles), "no ids");
+    }
+
+    /// A task already named by its title beside its id is named once
+    /// (D-209), whichever comes first and however the title is set off.
+    #[test]
+    fn a_title_beside_its_id_is_not_said_twice() {
+        let titles = HashMap::from([
+            ("ft_abc".to_owned(), "Export CSV".to_owned()),
+            (
+                "ft_arj3135qj8".to_owned(),
+                "在 scratch 工作区里创建文件 a".to_owned(),
+            ),
+        ]);
+        assert_eq!(
+            titled(
+                "“在 scratch 工作区里创建文件 a” [ft_arj3135qj8] 已经做完了。",
+                &titles
+            ),
+            "“在 scratch 工作区里创建文件 a” 已经做完了。"
+        );
+        assert_eq!(
+            titled("Follow-up: [ft_abc] Export CSV is now done.", &titles),
+            "Follow-up: Export CSV is now done."
+        );
+        assert_eq!(
+            titled(
+                "**Export CSV** [ft_abc]，and \"Export CSV\" [ft_abc].",
+                &titles
+            ),
+            "**Export CSV**，and \"Export CSV\"."
+        );
+        // Not beside it: named by its title, as before.
+        assert_eq!(
+            titled("Export CSV is one thing; [ft_abc] is another.", &titles),
+            "Export CSV is one thing; “Export CSV” is another."
+        );
+        // A bare title only as a word of its own; a line break stays.
+        let short = HashMap::from([("ft_a".to_owned(), "a".to_owned())]);
+        assert_eq!(titled("Rename schema [ft_a]", &short), "Rename schema “a”");
+        assert_eq!(titled("[ft_a] and more", &short), "“a” and more");
+        assert_eq!(titled("Task a [ft_a] is done", &short), "Task a is done");
+        assert_eq!(
+            titled("**Export CSV**\n[ft_abc]\nmore", &titles),
+            "**Export CSV**\n“Export CSV”\nmore"
+        );
     }
 }

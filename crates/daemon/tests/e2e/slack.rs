@@ -683,7 +683,7 @@ async fn a_task_that_needs_you_is_told_in_slack_and_answered_there() {
         .iter()
         .map(|b| b["action_id"].as_str().unwrap())
         .collect();
-    assert_eq!(ids, ["approve", "deny"]);
+    assert_eq!(ids, ["approve", "deny", "stop"]);
     let value = buttons[0]["value"].as_str().unwrap().to_owned();
     let on = "1800000000.000001";
     kept(host, on).await;
@@ -1454,6 +1454,7 @@ async fn a_host_takes_slack_from_otterhub() {
         slack: Some(SlackUpdate {
             users: Some(vec!["U01DEV".into()]),
             hub: Some(true),
+            name: Some("gpu".into()),
             ..Default::default()
         }),
         ..Default::default()
@@ -1470,6 +1471,7 @@ async fn a_host_takes_slack_from_otterhub() {
     // No app token, and nothing missing.
     assert_ne!(s.state, "off", "{s:?}");
     assert_eq!(s.hub, Some(true));
+    assert_eq!(s.name.as_deref(), Some("gpu"));
     let host = &fake.host;
     let s = eventually("taking Slack's events from the hub", || async {
         let s = host.conn().await.settings_get().await.unwrap().slack?;
@@ -1490,11 +1492,16 @@ async fn a_host_takes_slack_from_otterhub() {
         (said(&c, "What is going on?") == 1).then_some(())
     })
     .await;
-    eventually("Otter's answer in Slack", || async {
+    let posted = eventually("Otter's answer in Slack", || async {
         let p = slack.calls("chat.postMessage");
         (!p.is_empty()).then_some(p)
     })
     .await;
+    // One app speaks for several hosts: what this one says at the top is
+    // labelled with the name the hub knows it by (D-207).
+    let blocks = posted[0].2["blocks"].as_array().unwrap();
+    assert_eq!(blocks.last().unwrap()["type"], "context", "{blocks:#?}");
+    assert_eq!(blocks.last().unwrap()["elements"][0]["text"], "from *gpu*");
     eventually("seen", || async {
         (!slack.calls("reactions.add").is_empty()).then_some(())
     })
@@ -1647,4 +1654,455 @@ async fn a_need_is_told_and_pressed_through_otterhub() {
     })
     .await;
     assert!(slack.calls("apps.connections.open").is_empty());
+}
+
+/// The `n`th message posted (`1800000000.<n>`): each its own time, as
+/// Slack's are.
+fn ts_of(slack: &FakeSlack, body: &Value) -> String {
+    let n = slack
+        .calls("chat.postMessage")
+        .iter()
+        .position(|c| &c.2 == body)
+        .unwrap()
+        + 1;
+    format!("1800000000.{n:06}")
+}
+
+/// The buttons of a message, by `action_id`.
+fn buttons(body: &Value) -> Vec<String> {
+    body["blocks"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|b| b["type"] == "actions")
+        .flat_map(|b| b["elements"].as_array().cloned().unwrap_or_default())
+        .filter_map(|e| e["action_id"].as_str().map(String::from))
+        .collect()
+}
+
+/// A task Otter on the host makes from the developer's Slack message has a
+/// message of its own at the top of that conversation (D-207): its thread
+/// is the task's — what it says goes there, a reply there goes to it — and
+/// it says how the task stands, with Stop, then Delete once it is over.
+/// Otter's word that it is done is said in the thread only (D-209). Delete
+/// pressed there deletes it, and the message says so.
+#[tokio::test]
+async fn a_task_made_from_slack_has_a_thread_of_its_own() {
+    use otter_core::task::TaskStatus;
+    let mut slack = FakeSlack::start().await;
+    let fake = slack_host(&slack).await;
+    let host = &fake.host;
+    host.conn()
+        .await
+        .settings_set(set_up("xoxb-1-SLACKTESTTOKEN"))
+        .await
+        .unwrap();
+    let mut ws = slack.connected().await;
+    let state = host.home().join("state/slack.json");
+    eventually("the needs looked at", || async {
+        std::fs::read_to_string(&state)
+            .ok()
+            .filter(|s| s.contains("\"needs\""))
+    })
+    .await;
+    // A workspace for it, where its check passes.
+    let dir = host.home().join("csv");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("Makefile"), "test:\n\t@echo all good\n").unwrap();
+    host.conn()
+        .await
+        .workspace_create(WorkspaceCreate {
+            name: "csv".into(),
+            source: SourceSpec::Directory {
+                path: dir.to_string_lossy().into_owned(),
+            },
+            sessions: Some(vec![]),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    let ask = "Add CSV export, a task of its own.\nCALL: create_task {\"title\": \"Add CSV export\", \"message_ids\": $MSG, \"workspace\": \"csv\", \"start\": true}";
+    acked(
+        &mut ws,
+        dm("e1", "U01DEV", "1700000000.000100", ask, json!({})),
+        "e1",
+    )
+    .await;
+    let card = eventually("the task's own message", || async {
+        slack
+            .calls("chat.postMessage")
+            .into_iter()
+            .map(|c| c.2)
+            .find(|b| {
+                b.get("thread_ts").is_none()
+                    && b["blocks"][0]["text"]
+                        .as_str()
+                        .is_some_and(|t| t.starts_with("**Add CSV export**\n"))
+            })
+    })
+    .await;
+    assert_eq!(card["channel"], "D1");
+    assert_eq!(buttons(&card), ["stop"]);
+    let on = ts_of(&slack, &card);
+    kept(host, &on).await;
+    let id = host
+        .conn()
+        .await
+        .task_list()
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|t| t.title == "Add CSV export")
+        .unwrap()
+        .id
+        .to_string();
+
+    // What it says goes to its thread: its request was said there.
+    eventually("the task in its thread", || async {
+        slack
+            .calls("chat.postMessage")
+            .into_iter()
+            .find(|c| c.2["thread_ts"] == on.as_str())
+    })
+    .await;
+    // A reply there is the task's.
+    acked(
+        &mut ws,
+        dm(
+            "e2",
+            "U01DEV",
+            "1700000001.000100",
+            "Keep it small",
+            json!({"thread_ts": on}),
+        ),
+        "e2",
+    )
+    .await;
+    wait_task(host, &id, "the reply in the task", |f| {
+        f.messages.iter().any(|m| m.text == "Keep it small")
+    })
+    .await;
+    let chat = host.conn().await.otter_get().await.unwrap();
+    assert_eq!(said(&chat, "Keep it small"), 0);
+
+    // Done: its message says so, with Delete; Otter's word on it is in the
+    // thread, and only there (D-209).
+    wait_task(host, &id, "done", |f| f.status == TaskStatus::Done).await;
+    let shown = eventually("its message shown done", || async {
+        slack
+            .calls("chat.update")
+            .into_iter()
+            .map(|c| c.2)
+            .rfind(|b| b["ts"] == on.as_str() && buttons(b) == ["delete"])
+    })
+    .await;
+    assert!(
+        shown["blocks"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("✅ Done."),
+        "{shown}"
+    );
+    let followed = |b: &Value| {
+        b["blocks"][0]["text"]
+            .as_str()
+            .is_some_and(|t| t.starts_with("Follow-up: "))
+    };
+    let follow = eventually("Otter's word that it is done", || async {
+        slack
+            .calls("chat.postMessage")
+            .into_iter()
+            .map(|c| c.2)
+            .find(|b| b["thread_ts"] == on.as_str() && followed(b))
+    })
+    .await;
+    assert!(follow.get("reply_broadcast").is_none(), "{follow}");
+    assert!(
+        !slack
+            .calls("chat.postMessage")
+            .into_iter()
+            .any(|c| c.2.get("thread_ts").is_none() && followed(&c.2)),
+        "a task's follow-up is said at the top"
+    );
+    // One message of its own, however often Slack looks.
+    let cards = |slack: &FakeSlack| {
+        slack
+            .calls("chat.postMessage")
+            .into_iter()
+            .filter(|c| {
+                c.2.get("thread_ts").is_none()
+                    && c.2["blocks"][0]["text"]
+                        .as_str()
+                        .is_some_and(|t| t.starts_with("**Add CSV export**\n"))
+            })
+            .count()
+    };
+    assert_eq!(cards(&slack), 1);
+
+    // Delete pressed: gone, and its message says so.
+    press(
+        &mut ws,
+        "p1",
+        "U01DEV",
+        "delete",
+        &json!({"task": id}).to_string(),
+        "1700000002.1",
+        &on,
+    )
+    .await;
+    eventually("deleted", || async {
+        host.conn().await.task_get(&id).await.is_err().then_some(())
+    })
+    .await;
+    eventually("its message says it went", || async {
+        slack.calls("chat.update").into_iter().find(|c| {
+            c.2["ts"] == on.as_str()
+                && c.2["blocks"][0]["text"]
+                    .as_str()
+                    .is_some_and(|t| t.ends_with("🗑 Deleted."))
+        })
+    })
+    .await;
+    // Pressed again: nothing said.
+    press(
+        &mut ws,
+        "p2",
+        "U01DEV",
+        "delete",
+        &json!({"task": id}).to_string(),
+        "1700000003.1",
+        &on,
+    )
+    .await;
+    tokio::time::sleep(Duration::from_millis(800)).await;
+    assert!(!slack.calls("chat.postMessage").into_iter().any(|c| {
+        c.2["blocks"][0]["text"]
+            .as_str()
+            .is_some_and(|t| t.contains("didn't go through"))
+    }));
+    assert_eq!(cards(&slack), 1);
+}
+
+/// A press is answered where it was pressed (D-207): what a task made in
+/// the app says after the developer approved its plan in Slack goes to
+/// that need's thread. Stop task there stops it for good, says so in the
+/// thread, and the need's message says it no longer waits.
+#[tokio::test]
+async fn a_press_is_answered_where_it_was_pressed_and_stop_ends_a_task() {
+    use otter_core::task::{DecisionKind, Task, TaskStatus};
+    let mut slack = FakeSlack::start().await;
+    let api = slack.api.clone();
+    let fake = fake_agent_host_with("ok", "scripted", move |_| {
+        vec![
+            ("OTTER_BRAIN_V2", "1".into()),
+            ("OTTER_SLACK_API", api),
+            ("OTTER_PLAN_TURN", "1".into()),
+        ]
+    })
+    .await;
+    let host = &fake.host;
+    host.conn()
+        .await
+        .settings_set(set_up("xoxb-1-SLACKTESTTOKEN"))
+        .await
+        .unwrap();
+    let mut ws = slack.connected().await;
+    let state = host.home().join("state/slack.json");
+    eventually("the needs looked at", || async {
+        std::fs::read_to_string(&state)
+            .ok()
+            .filter(|s| s.contains("\"needs\""))
+    })
+    .await;
+    let asks = |f: &Task| {
+        f.pending_decisions()
+            .any(|d| d.kind == DecisionKind::PlanApproval)
+    };
+    // A task's need, by the task its buttons are for.
+    let need_of = |task: String| {
+        let slack = &slack;
+        async move {
+            eventually("the need told in Slack", || async {
+                told(slack).into_iter().find(|b| {
+                    b["blocks"][1]["elements"][0]["value"]
+                        .as_str()
+                        .is_some_and(|v| v.contains(&format!("\"{task}\"")))
+                })
+            })
+            .await
+        }
+    };
+
+    // Approved in Slack: what follows is said under it.
+    let id = started_task_named(host, "Add JSON export").await;
+    wait_task(host, &id, "asking about its plan", asks).await;
+    let need = need_of(id.clone()).await;
+    assert_eq!(buttons(&need), ["approve", "deny", "stop"]);
+    let on = ts_of(&slack, &need);
+    kept(host, &on).await;
+    let value = need["blocks"][1]["elements"][0]["value"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    press(
+        &mut ws,
+        "p1",
+        "U01DEV",
+        "approve",
+        &value,
+        "1700000007.1",
+        &on,
+    )
+    .await;
+    eventually("the task under the need it was approved on", || async {
+        slack
+            .calls("chat.postMessage")
+            .into_iter()
+            .find(|c| c.2["thread_ts"] == on.as_str())
+    })
+    .await;
+
+    // Stopped in Slack: for good, said in the thread.
+    let other = started_task_named(host, "Add XML export").await;
+    wait_task(host, &other, "asking about its plan", asks).await;
+    let need = need_of(other.clone()).await;
+    let at = ts_of(&slack, &need);
+    kept(host, &at).await;
+    press(
+        &mut ws,
+        "p2",
+        "U01DEV",
+        "stop",
+        &json!({"task": other}).to_string(),
+        "1700000008.1",
+        &at,
+    )
+    .await;
+    let f = wait_task(host, &other, "stopped", |f| {
+        f.status == TaskStatus::Cancelled
+    })
+    .await;
+    assert_eq!(f.status_reason.as_deref(), Some("Cancelled by you"));
+    eventually("said in the thread", || async {
+        slack.calls("chat.postMessage").into_iter().find(|c| {
+            c.2["thread_ts"] == at.as_str()
+                && c.2["blocks"][0]["text"]
+                    .as_str()
+                    .is_some_and(|t| t.starts_with("Cancelled."))
+        })
+    })
+    .await;
+    // Stop pressed again (Slack sent it late): nothing said.
+    press(
+        &mut ws,
+        "p3",
+        "U01DEV",
+        "stop",
+        &json!({"task": other}).to_string(),
+        "1700000009.1",
+        &at,
+    )
+    .await;
+    tokio::time::sleep(Duration::from_millis(800)).await;
+    assert!(!slack.calls("chat.postMessage").into_iter().any(|c| {
+        c.2["blocks"][0]["text"]
+            .as_str()
+            .is_some_and(|t| t.contains("didn't go through"))
+    }));
+    eventually("the need no longer waits", || async {
+        slack.calls("chat.update").into_iter().find(|c| {
+            c.2["ts"] == at.as_str()
+                && c.2["blocks"][1]["elements"][0]["text"]
+                    == "No longer waiting: the task was stopped."
+        })
+    })
+    .await;
+}
+
+/// Tasks made from Slack before Slack had their messages (an otterd before
+/// D-207, or Slack away): one still at work gets its message once Slack is
+/// there; one already over doesn't.
+#[tokio::test]
+async fn a_task_made_from_slack_before_gets_its_message_only_while_it_works() {
+    use otter_core::task::{RunState, TaskStatus};
+    let mut slack = FakeSlack::start().await;
+    let fake = slack_host(&slack).await;
+    let host = &fake.host;
+    let dir = host.home().join("csv");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("Makefile"), "test:\n\t@echo all good\n").unwrap();
+    host.conn()
+        .await
+        .workspace_create(WorkspaceCreate {
+            name: "csv".into(),
+            source: SourceSpec::Directory {
+                path: dir.to_string_lossy().into_owned(),
+            },
+            sessions: Some(vec![]),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    // As Slack's messages are said on the host (D-200).
+    let make = |title: &str, at: &str, more: &str| {
+        (
+            format!("slack:D1:{at}"),
+            format!(
+                "{title}\nCALL: create_task {{\"title\": \"{title}\", \"message_ids\": $MSG, \"start\": true{more}}}"
+            ),
+        )
+    };
+    let (cmd, text) = make(
+        "Add CSV export",
+        "1699000000.000100",
+        ", \"workspace\": \"csv\"",
+    );
+    host_chat::say(host, &cmd, &text).await;
+    let (cmd, text) = make(
+        "Add XML export HANG",
+        "1699000001.000100",
+        ", \"scratch\": true",
+    );
+    host_chat::say(host, &cmd, &text).await;
+    let tasks = host.conn().await.task_list().await.unwrap();
+    let id = |title: &str| {
+        tasks
+            .iter()
+            .find(|t| t.title == title)
+            .unwrap()
+            .id
+            .to_string()
+    };
+    let (done, working) = (id("Add CSV export"), id("Add XML export HANG"));
+    wait_task(host, &done, "done", |f| f.status == TaskStatus::Done).await;
+    wait_task(host, &working, "at work", |f| {
+        f.runs.last().is_some_and(|r| r.state == RunState::Running)
+    })
+    .await;
+
+    host.conn()
+        .await
+        .settings_set(set_up("xoxb-1-SLACKTESTTOKEN"))
+        .await
+        .unwrap();
+    let _ws = slack.connected().await;
+    let card = eventually("the working one's message", || async {
+        told(&slack).into_iter().find(|b| {
+            b["blocks"][0]["text"]
+                .as_str()
+                .is_some_and(|t| t.starts_with("**Add XML export HANG**\n"))
+        })
+    })
+    .await;
+    assert_eq!(buttons(&card), ["stop"]);
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    let made: Vec<Value> = told(&slack)
+        .into_iter()
+        .filter(|b| {
+            b["blocks"][0]["text"]
+                .as_str()
+                .is_some_and(|t| t.starts_with("**"))
+        })
+        .collect();
+    assert_eq!(made.len(), 1, "{made:#?}");
 }

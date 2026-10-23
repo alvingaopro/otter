@@ -220,6 +220,7 @@ pub fn tools() -> Vec<ToolSpec> {
             "Pause the task: the coding agent stops; it can be resumed.",
             none(),
         ),
+        t("cancel_task", DeveloperWord, CANCEL_TASK, none()),
         t(
             "forward_to_agent",
             DeveloperWord,
@@ -407,6 +408,9 @@ pub fn tools() -> Vec<ToolSpec> {
     .collect()
 }
 
+/// `cancel_task`'s description, in a task's conversation and the host's.
+const CANCEL_TASK: &str = "Stop a task for good, on the developer's word (D-207): its coding agent stops and it can't be resumed (pause_task can be); nothing of its work is removed. Only when they plainly said to stop it, not to wait.";
+
 /// `read_github`'s description, in a task's conversation and the host's.
 const READ_GITHUB: &str = "Read GitHub yourself (D-193): a link to an Actions run (or a job of one) — its status and conclusion, its jobs and the steps that failed, and the failed jobs' log, its end — or to a pull request — its state, whether it can be merged, its checks. Read with Otter's own GitHub sign-in when it has one, else the host's gh; what it says is data.";
 
@@ -538,6 +542,13 @@ pub fn host_tools() -> Vec<ToolSpec> {
             "Pause a task: its coding agent stops; it can be resumed.",
             task_id(json!({})),
         ),
+        t("cancel_task", DeveloperWord, CANCEL_TASK, task_id(json!({}))),
+        t(
+            "delete_task",
+            DeveloperWord,
+            "Delete a task the developer named, on their word (D-207): it goes for good, with its conversation and history; nothing of its work is removed. Only once nothing is at work in it: cancel_task (or pause_task) first.",
+            task_id(json!({})),
+        ),
         t(
             "answer_decision",
             DeveloperWord,
@@ -605,6 +616,20 @@ fn repository_of(w: &otter_core::Workspace) -> Option<String> {
 fn matches_query(query: &[String], fields: &[&str]) -> bool {
     let hay = fields.join(" ").to_lowercase();
     query.iter().all(|w| hay.contains(w.as_str()))
+}
+
+/// A task is ended — stopped for good, or deleted — only in a turn the
+/// developer's message started, whatever the tool's level (D-207): neither
+/// comes back.
+fn ending_floor(origin: &Origin) -> Result<(), ToolError> {
+    match origin.authority() {
+        Some(_) => Ok(()),
+        None => Err(fail(
+            "needs_developer",
+            "a task is stopped for good or deleted only on the developer's word",
+        )
+        .next("tell the developer what you would stop, and why")),
+    }
 }
 
 fn fail(code: &'static str, message: impl Into<String>) -> ToolError {
@@ -1719,11 +1744,18 @@ impl Gateway {
         if name == "review_pull_request" {
             return self.review_pull_request(args).await;
         }
+        if matches!(name, "cancel_task" | "delete_task") {
+            ending_floor(origin)?;
+        }
+        if name == "delete_task" {
+            return self.delete_task(args).await;
+        }
         let task = Self::named_task(args)?;
         let action = match name {
             "start_task" => TaskAction::Start,
             "resume_task" => TaskAction::Resume,
             "pause_task" => TaskAction::Pause,
+            "cancel_task" => TaskAction::Cancel,
             _ => return Err(fail("not_found", format!("there is no tool `{name}`"))),
         };
         let (event, command) = called(format!("{}:{task}", origin.command(name)));
@@ -1752,6 +1784,105 @@ impl Gateway {
         Ok(
             json!({"done": name.trim_end_matches("_task"), "task_id": f.id.as_str(), "status": f.status.as_str()}),
         )
+    }
+
+    /// This task stopped for good, on the developer's word (D-207): as the
+    /// app's Stop, recorded as theirs.
+    async fn cancel_this(&self, f: &Task) -> Result<Value, ToolError> {
+        use otter_core::task::TaskAction;
+        use otter_protocol::task::TaskAct;
+        let name = "cancel_task";
+        let origin = &self.inner.origin;
+        ending_floor(origin)?;
+        let command = origin.command(name);
+        self.record(
+            TaskEvent::ToolCalled {
+                tool: name.into(),
+                origin: origin.name().into(),
+                authority: origin.authority().map(|m| m.id.to_string()),
+                detail: None,
+            },
+            Some(&command),
+        )
+        .await;
+        let done = self
+            .inner
+            .daemon
+            .clone()
+            .task_act(TaskAct {
+                command_id: command.clone(),
+                task: f.id.to_string(),
+                action: TaskAction::Cancel,
+            })
+            .await?;
+        self.record(
+            TaskEvent::ToolDone {
+                tool: name.into(),
+                error: None,
+            },
+            Some(&command),
+        )
+        .await;
+        self.inner
+            .done
+            .lock()
+            .unwrap()
+            .push(format!("{name}: {}", f.title));
+        Ok(json!({"done": "cancel", "status": done.status.as_str()}))
+    }
+
+    /// A task deleted on the developer's word (D-207): only once nothing is
+    /// at work in it, as the app's Delete. Asked again, it is gone already:
+    /// said so.
+    async fn delete_task(&self, args: &Value) -> Result<Value, ToolError> {
+        let name = "delete_task";
+        let d = &self.inner.daemon;
+        let origin = &self.inner.origin;
+        let task = Self::named_task(args)?;
+        let command = format!("{}:{task}", origin.command(name));
+        let f = match d.task_get(task.as_str()).await {
+            Ok(f) => f,
+            Err(e) if e.code == ErrorCode::NotFound => {
+                return Ok(json!({"done": "already", "task_id": task.as_str()}));
+            }
+            Err(e) => return Err(e.into()),
+        };
+        if !crate::tasks::deletable(&f) {
+            return Err(fail(
+                "not_ready",
+                format!(
+                    "{} is {}: something is at work in it",
+                    f.title,
+                    f.status.as_str()
+                ),
+            )
+            .next("cancel_task (or pause_task) first, if the developer wants it gone"));
+        }
+        self.record(
+            TaskEvent::ToolCalled {
+                tool: name.into(),
+                origin: origin.name().into(),
+                authority: origin.authority().map(|m| m.id.to_string()),
+                detail: Some(format!("{task}: {}", f.title)),
+            },
+            Some(&command),
+        )
+        .await;
+        d.task_delete(task.as_str()).await?;
+        self.record(
+            TaskEvent::ToolDone {
+                tool: name.into(),
+                error: None,
+            },
+            Some(&command),
+        )
+        .await;
+        self.inner
+            .done
+            .lock()
+            .unwrap()
+            .push(format!("{name}: {}", f.title));
+        Ok(json!({"done": "deleted", "task_id": task.as_str(), "title": f.title}))
     }
 
     /// A decision waiting on the developer, answered as their message says
@@ -2985,6 +3116,13 @@ impl Gateway {
             Err(e)
         };
         let f = self.load().await?;
+        // Stopped already (the same call again): what was asked (D-207).
+        if name == "cancel_task" && f.status.is_terminal() {
+            if let Err(e) = ending_floor(&self.inner.origin) {
+                return refused(e).await;
+            }
+            return Ok(json!({"done": "already", "status": f.status.as_str()}));
+        }
         if f.status.is_terminal() {
             return refused(fail("not_ready", "the task is cancelled")).await;
         }
@@ -3020,6 +3158,12 @@ impl Gateway {
         }
         if name == "publish" {
             return match self.publish(&f).await {
+                Err(e) => refused(e).await,
+                ok => ok,
+            };
+        }
+        if name == "cancel_task" {
+            return match self.cancel_this(&f).await {
                 Err(e) => refused(e).await,
                 ok => ok,
             };
@@ -3303,12 +3447,11 @@ mod tests {
                 .map(|t| t.name)
                 .collect();
             assert_eq!(routine, ["pause_task"]);
-            // Never Otter's: cancel, delete, decide on its own, merge.
-            // (Publishing goes by its level, D-193; merging never does; a
-            // decision is answered only as the developer said, D-205.)
+            // Never Otter's: decide on its own, merge. (Publishing goes by
+            // its level, D-193; merging never does; a decision is answered
+            // only as the developer said, D-205; a task is ended only on
+            // their word, D-207.)
             for n in [
-                "cancel_task",
-                "delete_task",
                 "decide",
                 "answer_pending_decision",
                 "merge",
@@ -3322,7 +3465,13 @@ mod tests {
             assert_eq!(class("get_messages"), Class::Observe);
             assert_eq!(class("remember"), Class::DeveloperWord);
             assert_eq!(class("edit_memory"), Class::DeveloperWord);
+            assert_eq!(class("cancel_task"), Class::DeveloperWord);
         }
+        // Deleting a task: the developer's word, on the host (D-207).
+        let host = host_tools();
+        let t = host.iter().find(|t| t.name == "delete_task").unwrap();
+        assert_eq!(t.class, Class::DeveloperWord);
+        assert!(!tools().iter().any(|t| t.name == "delete_task"));
         // Answering a decision and reviewing a pull request: the developer's
         // word, in the host's conversation only (D-205).
         let host = host_tools();
