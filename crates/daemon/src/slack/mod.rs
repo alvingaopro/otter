@@ -65,6 +65,11 @@ const STALE: chrono::TimeDelta = chrono::TimeDelta::hours(6);
 const SETTLE: Duration = Duration::from_millis(300);
 /// The messages that told a need kept, at most: the newest.
 const MAX_POSTS: usize = 200;
+/// An answer being written is shown again at most this often (Slack's
+/// `chat.update` is rate-limited, D-202).
+const STREAM_EVERY: Duration = Duration::from_millis(1500);
+/// How long the sync waits for an answer's first words to be posted.
+const STREAM_WAIT: Duration = Duration::from_secs(3);
 
 /// The connection's state, for Settings.
 #[derive(Default)]
@@ -79,6 +84,26 @@ pub struct Slack {
     /// What each form's selects chose, by its message and question, as
     /// they are chosen (D-202): Submit reads the message's state too.
     picks: std::sync::Mutex<HashMap<(String, String), String>>,
+    /// Otter's answers being written, by the developer's message they
+    /// answer (D-202).
+    streams: std::sync::Mutex<HashMap<String, Stream>>,
+}
+
+/// An answer of Otter's being written, shown in Slack as it is (D-202).
+#[derive(Clone, Debug)]
+struct Stream {
+    /// Where it goes; `None`: not Slack's (the developer spoke elsewhere).
+    to: Option<Origin>,
+    /// The message it is written in, once posted.
+    ts: Option<String>,
+    /// That message is being posted: the sync waits for it.
+    posting: bool,
+    /// The answer itself was sent: nothing more is shown.
+    over: bool,
+    /// The words so far, and when Slack was last shown them.
+    text: String,
+    shown: Option<std::time::Instant>,
+    born: std::time::Instant,
 }
 
 /// A thread for a task, made outside the sync loop.
@@ -370,6 +395,17 @@ impl Daemon {
             .map_err(|e| anyhow::anyhow!("connecting to Slack: {e}"))?;
         let (mut sink, mut stream) = ws.split();
         let (_, mut events) = self.events.subscribe();
+        let mut writing = self.events.subscribe_transient();
+        // Otter's answers as they are written (D-202).
+        let written = async {
+            loop {
+                match writing.recv().await {
+                    Ok(r) => self.slack_writing(c, &env, &r.event).await,
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
+                }
+            }
+        };
         // Where Slack starts, taken now: what happens from here on is news.
         self.slack_begin().await;
         let wake = tokio::sync::Notify::new();
@@ -455,6 +491,7 @@ impl Daemon {
         tokio::select! {
             r = read => r,
             _ = sync => Ok(()),
+            () = written => Ok(()),
         }
     }
 
@@ -758,6 +795,206 @@ impl Daemon {
         Ok(())
     }
 
+    /// Otter's answer being written (D-202): its first words posted where it
+    /// will go, then shown again as more come, at most every 1.5 s. Only
+    /// Otter's answers: the coding agent's words along the way aren't the
+    /// message it ends with (D-069). The answer itself takes that message's
+    /// place when the sync sends it.
+    async fn slack_writing(&self, c: &Config, env: &EnvMap, event: &Event) {
+        let (answered, text, task) = match event {
+            Event::OtterStream {
+                stream_id,
+                text,
+                done: false,
+            } => (stream_id, text, None),
+            Event::TaskStream {
+                task_id,
+                stream_id,
+                role: MessageRole::Controller,
+                text,
+                done: false,
+            } => (stream_id, text, Some(task_id)),
+            _ => return,
+        };
+        let Some(answered) = answered.strip_prefix("reply-") else {
+            return;
+        };
+        let known = self.slack.streams.lock().unwrap().contains_key(answered);
+        if !known {
+            // Where the developer's message came from, once.
+            let from = match task {
+                None => self
+                    .chat
+                    .lock()
+                    .await
+                    .get()
+                    .messages
+                    .iter()
+                    .find(|m| m.id.as_str() == answered)
+                    .and_then(|m| m.correlation_id.clone()),
+                Some(task) => self
+                    .tasks
+                    .lock()
+                    .await
+                    .get(task.as_str())
+                    .and_then(|t| t.messages.iter().find(|m| m.id.as_str() == answered))
+                    .and_then(|m| m.correlation_id.clone()),
+            };
+            let mut streams = self.slack.streams.lock().unwrap();
+            streams.retain(|_, s| s.born.elapsed() < Duration::from_secs(600));
+            streams.entry(answered.to_owned()).or_insert(Stream {
+                to: Origin::of(from.as_deref()),
+                ts: None,
+                posting: false,
+                over: false,
+                text: String::new(),
+                shown: None,
+                born: std::time::Instant::now(),
+            });
+        }
+        // What to do now, decided under the lock; done without it.
+        enum Next {
+            Post(Origin),
+            Update(Origin, String),
+        }
+        let next = {
+            let mut streams = self.slack.streams.lock().unwrap();
+            let Some(s) = streams.get_mut(answered) else {
+                return;
+            };
+            s.text = text.clone();
+            match (&s.to, &s.ts) {
+                _ if s.over || s.posting => None,
+                (None, _) => None,
+                (Some(to), None) => {
+                    s.posting = true;
+                    Some(Next::Post(to.clone()))
+                }
+                (Some(to), Some(ts)) if s.shown.is_none_or(|t| t.elapsed() >= STREAM_EVERY) => {
+                    s.shown = Some(std::time::Instant::now());
+                    Some(Next::Update(to.clone(), ts.clone()))
+                }
+                _ => None,
+            }
+        };
+        // Nothing written yet is Otter starting to write (D-196).
+        let shown = match socket::pieces(text, MAX_PIECE - 2).first() {
+            Some(so_far) => format!("{so_far} …"),
+            None => "_Otter is writing…_".to_owned(),
+        };
+        match next {
+            None => {}
+            Some(Next::Post(to)) => {
+                let mut body = json!({
+                    "channel": to.channel,
+                    "text": shown.chars().take(280).collect::<String>(),
+                    "blocks": [{ "type": "markdown", "text": shown }],
+                    "unfurl_links": false,
+                    "unfurl_media": false,
+                });
+                if let Some(t) = &to.thread {
+                    body["thread_ts"] = json!(t);
+                }
+                let posted = api::call(env, &c.bot, "chat.postMessage", &body).await;
+                let mut streams = self.slack.streams.lock().unwrap();
+                if let Some(s) = streams.get_mut(answered) {
+                    s.posting = false;
+                    match posted {
+                        Ok(v) => {
+                            s.ts = v["ts"].as_str().map(String::from);
+                            s.shown = Some(std::time::Instant::now());
+                        }
+                        // Shown once it is sent, then.
+                        Err(e) => {
+                            tracing::info!("slack: an answer being written wasn't shown: {e}");
+                            s.over = true;
+                        }
+                    }
+                }
+            }
+            Some(Next::Update(to, ts)) => {
+                let body = json!({
+                    "channel": to.channel,
+                    "ts": ts,
+                    "text": shown.chars().take(280).collect::<String>(),
+                    "blocks": [{ "type": "markdown", "text": shown }],
+                });
+                if let Err(e) = api::call(env, &c.bot, "chat.update", &body).await {
+                    tracing::info!("slack: an answer being written wasn't shown again: {e}");
+                }
+            }
+        }
+    }
+
+    /// Send one of Otter's (or the coding agent's) messages to `to`: in
+    /// place of the words shown while it was written, if they were (D-202);
+    /// else as a message of its own. Either way, nothing written for it is
+    /// shown after.
+    async fn slack_answer(
+        &self,
+        env: &EnvMap,
+        bot: &str,
+        to: &Origin,
+        m: &Message,
+        titles: &HashMap<String, String>,
+    ) -> Result<(), CallError> {
+        let answered = m
+            .correlation_id
+            .clone()
+            .filter(|_| m.role == MessageRole::Controller);
+        let Some(answered) = answered else {
+            return post(env, bot, to, &m.text, titles).await;
+        };
+        // Its first words may still be on their way: wait for them.
+        let waited = std::time::Instant::now();
+        let ts = loop {
+            {
+                let mut streams = self.slack.streams.lock().unwrap();
+                match streams.get_mut(&answered) {
+                    Some(s) if s.posting && waited.elapsed() < STREAM_WAIT => {}
+                    Some(s) => {
+                        s.over = true;
+                        break s.ts.clone().filter(|_| s.to.as_ref() == Some(to));
+                    }
+                    None => {
+                        // Words that come late are for an answer already sent.
+                        streams.insert(
+                            answered.clone(),
+                            Stream {
+                                to: None,
+                                ts: None,
+                                posting: false,
+                                over: true,
+                                text: String::new(),
+                                shown: None,
+                                born: std::time::Instant::now(),
+                            },
+                        );
+                        break None;
+                    }
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        };
+        let Some(ts) = ts else {
+            return post(env, bot, to, &m.text, titles).await;
+        };
+        let text = needs::titled(&otter_core::redact::redact(&m.text), titles);
+        let pieces = socket::pieces(&text, MAX_PIECE);
+        let first = pieces.first().cloned().unwrap_or_default();
+        let body = json!({
+            "channel": to.channel,
+            "ts": ts,
+            "text": first.chars().take(280).collect::<String>(),
+            "blocks": [{ "type": "markdown", "text": first }],
+        });
+        api::call(env, bot, "chat.update", &body).await?;
+        for piece in pieces.iter().skip(1) {
+            post(env, bot, to, piece, titles).await?;
+        }
+        Ok(())
+    }
+
     /// The first time Slack connects (or after its file was lost): what is
     /// there already — Otter's messages, the tasks' needs — isn't sent.
     async fn slack_begin(&self) {
@@ -953,7 +1190,7 @@ impl Daemon {
                 .then(|| destination(messages, i))
                 .flatten();
             if let Some(to) = to {
-                match post(env, &c.bot, &to, &m.text, titles).await {
+                match self.slack_answer(env, &c.bot, &to, m, titles).await {
                     Ok(()) => {}
                     Err(e @ CallError::Unreachable(_)) => return Err(e),
                     // Never sent: said, and not tried again for ever.
@@ -1109,7 +1346,7 @@ impl Daemon {
                     .then(|| destination(messages, i))
                     .flatten();
                 if let Some(to) = to {
-                    match post(env, &c.bot, &to, &m.text, &look.titles).await {
+                    match self.slack_answer(env, &c.bot, &to, m, &look.titles).await {
                         Ok(()) => {}
                         Err(e @ CallError::Unreachable(_)) => return Err(e),
                         Err(e) => tracing::warn!("slack: a message of {task} wasn't sent: {e}"),

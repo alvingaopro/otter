@@ -305,8 +305,23 @@ async fn a_direct_message_in_slack_is_answered_there() {
     assert_eq!(auth, "Bearer xoxb-1-SLACKTESTTOKEN");
     assert_eq!(body["channel"], "D1");
     assert_eq!(body["blocks"][0]["type"], "markdown");
-    assert_eq!(body["blocks"][0]["text"], reply.text.as_str());
     assert!(body.get("thread_ts").is_none(), "{body}");
+    // Shown as it is written, then the answer in its place: one message
+    // (D-202).
+    assert_eq!(
+        body["blocks"][0]["text"],
+        format!("{} …", reply.text).as_str()
+    );
+    let update = eventually("the answer in its place", || async {
+        slack
+            .calls("chat.update")
+            .into_iter()
+            .find(|c| c.2["ts"] == "1800000000.000001")
+    })
+    .await;
+    assert_eq!(update.2["blocks"][0]["text"], reply.text.as_str());
+    tokio::time::sleep(Duration::from_millis(600)).await;
+    assert_eq!(slack.calls("chat.postMessage").len(), 1);
     let seen = slack.calls("reactions.add");
     assert_eq!(seen[0].2["timestamp"], "1700000000.000100");
     assert_eq!(seen[0].2["name"], "eyes");
@@ -600,11 +615,26 @@ async fn a_task_that_needs_you_is_told_in_slack_and_answered_there() {
         .unwrap()
         .text
         .clone();
-    eventually("Otter's answer in the thread", || async {
+    // In the thread as it is written, then the answer in its place.
+    let shown = eventually("Otter writing in the thread", || async {
         slack
             .calls("chat.postMessage")
             .into_iter()
-            .find(|c| c.2["thread_ts"] == on && c.2["blocks"][0]["text"] == answer.as_str())
+            .find(|c| c.2["thread_ts"] == on)
+    })
+    .await;
+    let n = slack
+        .calls("chat.postMessage")
+        .iter()
+        .position(|c| c.2 == shown.2)
+        .unwrap()
+        + 1;
+    let at = format!("1800000000.{n:06}");
+    eventually("the answer in its place", || async {
+        slack
+            .calls("chat.update")
+            .into_iter()
+            .find(|c| c.2["ts"] == at.as_str() && c.2["blocks"][0]["text"] == answer.as_str())
     })
     .await;
 
