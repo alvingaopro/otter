@@ -4,6 +4,7 @@ import { Dialog } from "./Dialog";
 import type { RuntimeCapabilities, RuntimeTest } from "./conversation";
 import { explain as needsNewer } from "./newer";
 import { GitSettings } from "./GitSettings";
+import { HubSettings, type HubView } from "./HubSettings";
 import { SignInSites } from "./SignIn";
 import { FONT_SUGGESTIONS, fontChoice, fontFamily, fontSize, onFontSize, setFontFamily, setFontSize } from "./terminalFont";
 import { onPerfOverlay, perfOverlay, setPerfOverlay } from "./perf";
@@ -64,6 +65,8 @@ export interface HostSettings {
   tools?: ToolInfo[];
   /** Otter in Slack from the host (D-200); absent from older daemons. */
   slack?: SlackView;
+  /** otterhub run by the host's otterd (D-208); absent from older daemons. */
+  hub?: HubView;
 }
 
 /** Mirrors `otter_protocol::host::SlackView` (D-200). */
@@ -127,8 +130,8 @@ type Test = { state: "running" } | { state: "done"; result: RuntimeTest } | { st
 type Install = { state: "running" } | { state: "done"; output: string } | { state: "error"; error: string };
 
 /** The tabs (D-127): this Mac's, then the chosen host's. */
-export type SettingsTab = "appearance" | "signin" | "developer" | "git" | "otter" | "tools" | "coding" | "slack" | "keys";
-const TABS: SettingsTab[] = ["appearance", "signin", "developer", "git", "otter", "tools", "coding", "slack", "keys"];
+export type SettingsTab = "appearance" | "signin" | "developer" | "git" | "hub" | "otter" | "tools" | "coding" | "slack" | "keys";
+const TABS: SettingsTab[] = ["appearance", "signin", "developer", "git", "hub", "otter", "tools", "coding", "slack", "keys"];
 const HOST_TABS: SettingsTab[] = ["otter", "tools", "coding", "slack", "keys"];
 const TAB_KEY = "otter.settings-tab";
 
@@ -491,10 +494,11 @@ export function SettingsDialog({
     signin: ["Sign-in pages", "Pages that tools on your hosts open in this Mac's browser. Kept on this Mac, for every host."],
     developer: ["Developer", "On this Mac. For working on the app itself; changes apply right away."],
     git: ["Git & GitHub", "For every host, in the repositories Otter manages there; each host's own git stays as it is."],
+    hub: ["Slack", "One Slack app for all your hosts: one of them runs otterhub, which holds the app's connection for all of them."],
     otter: ["Otter", host ? `On ${host}. Plans each task, decides, and checks the work, also while this app is closed.` : "Kept on each host."],
     tools: ["Otter's tools", host ? `On ${host}. What Otter may do, tool by tool.` : "Kept on each host."],
     coding: ["Coding agent", host ? `On ${host}. Claude Code, which writes the code.` : "Kept on each host."],
-    slack: ["Slack", host ? `On ${host}. Write to Otter in Slack; it answers there.` : "Kept on each host."],
+    slack: ["Slack here", host ? `On ${host}. Write to Otter in Slack; it answers there.` : "Kept on each host."],
     keys: ["API keys", host ? `On ${host}. Kept there, never read back.` : "Kept on each host."],
   };
   const [title, caption] = heads[shown];
@@ -564,6 +568,7 @@ export function SettingsDialog({
         {nav("developer", "Developer", <Icon d="developer" />)}
         <div className="settings-nav-group">All hosts</div>
         {nav("git", "Git & GitHub", <Icon d="git" />)}
+        {nav("hub", "Slack", <Icon d="slack" />)}
         <div className="settings-nav-group">Host</div>
         <div className="settings-host">
           <span className={host ? "status-dot ok" : "status-dot"} aria-hidden="true" />
@@ -580,7 +585,7 @@ export function SettingsDialog({
         {nav("otter", "Otter", <Icon d="otter" />)}
         {(!settings || toolsKept) && nav("tools", "Otter's tools", <Icon d="tools" />)}
         {(!settings || codingSaved) && nav("coding", "Coding agent", <Icon d="coding" />)}
-        {(!settings || slack) && nav("slack", "Slack", <Icon d="slack" />)}
+        {(!settings || slack) && nav("slack", "Slack here", <Icon d="slack" />)}
         {nav(
           "keys",
           "API keys",
@@ -609,6 +614,7 @@ export function SettingsDialog({
           {shown === "signin" && <SignInSites />}
           {shown === "developer" && <Developer />}
           {shown === "git" && <GitSettings hosts={hosts} onUnsaved={setGitUnsaved} />}
+          {shown === "hub" && <HubSettings hosts={hosts} />}
           {hostTab && !host && (
             <div className="settings-empty">
               <strong>No host connected</strong>

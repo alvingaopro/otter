@@ -9,8 +9,9 @@ developer asked for it to be chosen in Settings and configured once
 settled the four choices the design left open: otterd runs the hub, a
 confined key for other machines, host keys pushed from the Mac, and the
 tokens pasted again when the hub moves. The plan is
-`docs/plans/otterhub-managed.md`. This decision is its first milestone: the
-hub otterd runs, for the hosts on its own machine.
+`docs/plans/otterhub-managed.md`. This decision is its first two
+milestones: the hub otterd runs, for the hosts on its own machine, and
+Settings › All hosts › Slack to set it up.
 
 - **otterd runs the hub.** `settings.set {hub: {enabled, name, users,
   default_host, hosts}}` on a host has its otterd run `otter hub serve`.
@@ -68,11 +69,22 @@ hub otterd runs, for the hosts on its own machine.
     status`** says where it runs, how, and how otterd starts there.
   - An otterd before this has no `hub` view; one that can run a hub always
     has it (`off` where never set), so setup can tell the two apart.
+- **Settings › All hosts › Slack** in the app does what `setup` does.
+  - Choose the host to run it on; only hosts whose otterd can are offered.
+  - Paste the tokens and the member ID once; a token the host has already
+    may be left empty.
+  - It then shows where the hub runs, how (running, starting, or failed and
+    why), what it says of Slack, how otterd starts with that machine, and a
+    line per host: served, too old, not reached, or not served yet.
+  - Stop turns it off there; moving it is Stop, then Set up elsewhere with
+    the tokens again.
+  - The host's own Slack page is now "Slack here". The app needs nothing
+    new from Tauri: it is `settings.set` and `settings.get`.
 - Compatible additions only: no protocol bump.
 
-**Not done** (the plan's next steps): Settings in the app (B), hosts on
-other machines (A2: the confined key, host keys from the Mac, a claim that
-tells two hubs apart), and saying which host a message is from.
+**Not done** (the plan's next steps): hosts on other machines (A2: the
+confined key, host keys from the Mac, a claim that tells two hubs apart),
+and saying which host a message is from.
 
 **Revisit** if the hub needs to run where otterd can't, or a host's boot
 start needs root and lingering is refused there.
@@ -86,6 +98,12 @@ otterds, the stand-in Slack):
 - killed, the hub is started again (watched failing with otterd not
   starting it again);
 - stopped, it is gone, and set up again it needs no tokens.
+
+The app's tests cover setting up with the tokens and member a host has, and
+asking for the tokens it doesn't have. The tokens are sent once and never
+shown. Only hosts able to run the hub are offered (watched failing with
+every host offered), and a hub that runs, or failed, is said with no other
+offered.
 
 Unit tests: the settings as kept, the hub's `hosts.toml` (this host first,
 local), the unit and the agent (`KillMode=process`, one per home), paths a

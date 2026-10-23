@@ -39,7 +39,7 @@ by itself.
 
 ## Milestones
 
-- **A1: the managed hub, for the hosts on its own machine** (this change).
+- **A1: the managed hub, for the hosts on its own machine** (D-208, done).
   - `settings.hub` and the view's `hub`.
   - otterd running `otter hub serve --here <name>` with the tokens in its
     environment, the hub's `hosts.toml` (this host local, with its home),
@@ -49,7 +49,7 @@ by itself.
   - The hub warns when Slack's hello counts more than one connection to its
     app.
   - This replaces code-server's hand-made unit.
-- **B: Settings › All hosts › Slack.** Choose the host, paste the tokens and
+- **B: Settings › All hosts › Slack** (D-208, done). Choose the host, paste the tokens and
   the member ID once, see each host's state, Set up, Stop. These are thin
   calls over `settings.set` and `settings.get`; the Tauri side stays as it is.
 - **A2: hosts on other machines.**
