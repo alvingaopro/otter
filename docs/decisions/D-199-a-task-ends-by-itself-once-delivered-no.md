@@ -1,4 +1,5 @@
 # D-199 — A task ends by itself once delivered: no acceptance (2026-10-22)
+<!-- claim: 8b426b2ec58534fc20faa718871b599f5f9978b8 -->
 
 The developer asked Otter to resolve a pull request's conflicts; once the
 branch had main merged in, the task waited for them to accept it. Accepting

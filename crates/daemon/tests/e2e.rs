@@ -3480,7 +3480,9 @@ async fn a_waiting_task_gets_a_worktree_of_its_own() {
         conn.workspace_get("app").await.unwrap().state,
         WorkspaceState::Ready
     );
-    // More asked of it: its workspace comes back, and the work goes on there.
+    // More asked of it: its workspace comes back, and the work goes on
+    // there (a run can't work in an archived one). Done again by itself
+    // (D-199), it's put away again.
     let runs = f.runs.len();
     conn.task_act(
         "more-second",
@@ -3491,15 +3493,23 @@ async fn a_waiting_task_gets_a_worktree_of_its_own() {
     )
     .await
     .unwrap();
-    wait_task(host, &second, "it works again", |f| {
+    let f = wait_task(host, &second, "it works again, and is done again", |f| {
         f.runs.len() > runs
             && f.runs
                 .last()
                 .is_some_and(|r| r.state == RunState::Completed)
+            && f.status == TaskStatus::Done
     })
     .await;
-    let ws = conn.workspace_get(own.as_str()).await.unwrap();
-    assert_eq!(ws.state, WorkspaceState::Ready);
+    assert_eq!(
+        f.workspace_id.as_ref().map(|w| w.as_str()),
+        Some(own.as_str())
+    );
+    eventually("put away again", || async {
+        let ws = host.conn().await.workspace_get(own.as_str()).await.unwrap();
+        (ws.state == WorkspaceState::Archived).then_some(())
+    })
+    .await;
 }
 
 /// Workspaces and sessions take another name (D-101): the id, the directory
