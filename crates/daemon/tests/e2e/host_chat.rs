@@ -454,3 +454,266 @@ async fn live_otter_follows_up_a_task_it_made() {
         "the work was done"
     );
 }
+
+/// One message that asks for several things done apart is a task each
+/// (D-205): each made once, its request the developer's words, its part of
+/// them told to its coding agent as Otter's — the same call again is the
+/// same task.
+#[tokio::test]
+async fn one_message_makes_a_task_for_each_part_it_asks_for() {
+    use otter_core::task::RunState;
+    let fake = chat_host(true).await;
+    let host = &fake.host;
+    let call = |title: &str, scope: &str| {
+        format!(
+            "CALL: create_task {{\"title\": \"{title}\", \"message_ids\": $MSG, \"scratch\": true, \"scope\": \"{scope}\", \"start\": true}}"
+        )
+    };
+    let text = format!(
+        "Review pull requests A and B HANG, a task each.\n{}\n{}\n{}",
+        call("Review A", "Only A; don't approve it."),
+        call("Review B", "Only B; don't approve it."),
+        call("Review A", "Only A; don't approve it."),
+    );
+    let (_, _, answers) = say(host, "h-split", &text).await;
+    let done: Vec<&str> = answers
+        .iter()
+        .map(|a| a["data"]["done"].as_str().unwrap_or_default())
+        .collect();
+    assert_eq!(done, ["created", "created", "already"], "{answers:#?}");
+    let id = |i: usize| answers[i]["data"]["task_id"].as_str().unwrap().to_owned();
+    let (a, b) = (id(0), id(1));
+    assert_ne!(a, b);
+    assert_eq!(id(2), a, "the same call, the same task");
+    assert_eq!(host.conn().await.task_list().await.unwrap().len(), 2);
+    for (task, mine, other) in [(&a, "Only A", "Only B"), (&b, "Only B", "Only A")] {
+        let f = wait_task(host, task, "its coding agent at work", |f| {
+            f.runs.last().is_some_and(|r| r.state == RunState::Running)
+        })
+        .await;
+        // The request is the developer's words; the part is Otter's.
+        assert_eq!(f.request, text);
+        let told: Vec<&str> = f
+            .messages
+            .iter()
+            .filter(|m| {
+                m.role == MessageRole::Controller
+                    && m.correlation_id
+                        .as_deref()
+                        .is_some_and(|c| c.starts_with("tell:"))
+            })
+            .map(|m| m.text.as_str())
+            .collect();
+        assert_eq!(
+            told,
+            [format!("To the coding agent: {mine}; don't approve it.")]
+        );
+        // Its coding agent is told it, as Otter's, from its first turn.
+        let conv = host
+            .conn()
+            .await
+            .conversation_get(
+                f.runs
+                    .last()
+                    .unwrap()
+                    .conversation_id
+                    .as_ref()
+                    .unwrap()
+                    .as_str(),
+            )
+            .await
+            .unwrap();
+        let first = conv
+            .conversation
+            .turns
+            .first()
+            .expect("a first turn")
+            .text();
+        let (_, otters) = first
+            .split_once("From Otter, your tech lead (not the developer):\n")
+            .expect(&first);
+        assert!(otters.starts_with(&format!("- {mine}")), "{first}");
+        assert!(!otters.contains(other), "{first}");
+    }
+}
+
+/// A pull request reviewed on the developer's word (D-205): approved once
+/// per message, a comment with what it says, never from a turn no message
+/// started; GitHub's refusal is said, and asked again it is tried again.
+#[tokio::test]
+async fn otter_reviews_a_pull_request_on_the_developers_word() {
+    let fake = chat_host(true).await;
+    let host = &fake.host;
+    const PR: &str = "https://github.com/o/r/pull/7";
+    let review = |event: &str, body: Option<&str>| {
+        let body = body
+            .map(|b| format!(", \"body\": \"{b}\""))
+            .unwrap_or_default();
+        format!("CALL: review_pull_request {{\"url\": \"{PR}\", \"event\": \"{event}\"{body}}}")
+    };
+    let text = [
+        format!("Approve {PR}, and say it is small."),
+        review("approve", None),
+        review("approve", None),
+        review("comment", None),
+        review("comment", Some("Nice and small.")),
+        "CALL: review_pull_request {\"url\": \"https://github.com/o/r/actions/runs/1\", \"event\": \"approve\"}".into(),
+    ]
+    .join("\n");
+    let (_, _, answers) = say(host, "h-review", &text).await;
+    assert_eq!(answers[0]["data"]["done"], "approved", "{answers:#?}");
+    assert_eq!(answers[0]["data"]["pull_request"]["repo"], "o/r");
+    assert_eq!(answers[0]["data"]["pull_request"]["number"], 7);
+    assert_eq!(answers[1]["data"]["done"], "already", "{answers:#?}");
+    assert_eq!(code(&answers[2]), "invalid", "a comment says something");
+    assert_eq!(answers[3]["data"]["done"], "commented", "{answers:#?}");
+    assert_eq!(code(&answers[4]), "invalid", "not a pull request");
+    let reviews = std::fs::read_to_string(fake.gh.join("reviews")).unwrap();
+    assert_eq!(
+        reviews.lines().collect::<Vec<_>>(),
+        [
+            "pr review 7 --approve --repo o/r",
+            "pr review 7 --comment --body-file - --repo o/r"
+        ]
+    );
+    assert_eq!(
+        std::fs::read_to_string(fake.gh.join("review-body")).unwrap(),
+        "Nice and small."
+    );
+    // Not on Otter's own.
+    let (_, _, answers) = say(
+        host,
+        "h-review-ev",
+        &format!("AS: event\n{}", review("approve", None)),
+    )
+    .await;
+    assert_eq!(
+        code(&answers[0]),
+        "not_allowed_in_this_turn",
+        "{answers:#?}"
+    );
+    // GitHub's no is said, and nothing is kept as done.
+    std::fs::write(fake.gh.join("own-pr"), "").unwrap();
+    let text = format!(
+        "Approve it again.\n{}\n{}",
+        review("approve", None),
+        review("approve", None)
+    );
+    let (_, _, answers) = say(host, "h-review-own", &text).await;
+    for a in &answers {
+        assert_eq!(code(a), "conflict", "{answers:#?}");
+        assert!(
+            a["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("Can not approve your own pull request"),
+            "{a}"
+        );
+    }
+    assert_eq!(
+        std::fs::read_to_string(fake.gh.join("reviews"))
+            .unwrap()
+            .lines()
+            .count(),
+        2
+    );
+}
+
+/// What a task asks the developer, answered from the host's conversation as
+/// their message says (D-205): a plan approved once, in their name; never
+/// from a turn no message started, whatever the level.
+#[tokio::test]
+async fn otter_answers_a_tasks_decision_as_the_developer_said() {
+    use otter_core::task::{Decider, DecisionKind, DecisionStatus};
+    let fake = fake_agent_host_with("ok", "scripted", |_| {
+        vec![
+            ("OTTER_BRAIN_V2", "1".into()),
+            // Planning asks the developer to approve the plan.
+            ("OTTER_PLAN_TURN", "1".into()),
+        ]
+    })
+    .await;
+    let host = &fake.host;
+    let id = started_task_named(host, "Add JSON export").await;
+    let f = wait_task(host, &id, "asking about its plan", |f| {
+        f.pending_decisions()
+            .any(|d| d.kind == DecisionKind::PlanApproval)
+    })
+    .await;
+    let dec = f.pending_decisions().next().unwrap().id.to_string();
+    let answer = |more: &str| {
+        format!("CALL: answer_decision {{\"task_id\": \"{id}\", \"decision_id\": \"{dec}\"{more}}}")
+    };
+    let (_, _, answers) = say(
+        host,
+        "h-dec-ev",
+        &format!("AS: event\n{}", answer(", \"approve\": true")),
+    )
+    .await;
+    assert_eq!(
+        code(&answers[0]),
+        "not_allowed_in_this_turn",
+        "{answers:#?}"
+    );
+    // Whatever its level: only a message of the developer's answers.
+    set_levels(host, &[("answer_decision", "auto")]).await;
+    let (_, _, answers) = say(
+        host,
+        "h-dec-ev-auto",
+        &format!("AS: event\n{}", answer(", \"approve\": true")),
+    )
+    .await;
+    assert_eq!(code(&answers[0]), "needs_developer", "{answers:#?}");
+    let text = format!(
+        "Go ahead with that plan.\n{}\n{}\n{}",
+        answer(", \"answer\": \"yes\""),
+        answer(", \"approve\": true"),
+        answer(", \"approve\": true"),
+    );
+    let (_, _, answers) = say(host, "h-dec", &text).await;
+    assert_eq!(code(&answers[0]), "invalid", "a plan takes no answer");
+    assert_eq!(answers[1]["data"]["done"], "approved", "{answers:#?}");
+    assert_eq!(answers[2]["data"]["done"], "already", "{answers:#?}");
+    let f = host.conn().await.task_get(&id).await.unwrap();
+    let d = f.decisions.iter().find(|d| d.id.as_str() == dec).unwrap();
+    assert_eq!(d.status, DecisionStatus::Approved);
+    assert_eq!(d.decided_by, Some(Decider::User));
+    // Decided: said so.
+    let (_, _, answers) = say(
+        host,
+        "h-dec-2",
+        &format!("No, deny it.\n{}", answer(", \"approve\": false")),
+    )
+    .await;
+    assert_eq!(code(&answers[0]), "conflict", "{answers:#?}");
+}
+
+/// A command only the developer may allow is answered by their own press,
+/// not by a message to Otter (D-205, D-089 §3.2).
+#[tokio::test]
+async fn a_command_only_the_developer_may_allow_takes_their_press() {
+    use otter_core::task::DecisionKind;
+    let fake = chat_host(true).await;
+    let host = &fake.host;
+    let rm = started_task(host, "Clean up ASK_RM").await;
+    let mine = |d: &&otter_core::task::DecisionRequest| {
+        d.kind == DecisionKind::ToolPermission && d.user_only
+    };
+    let f = wait_task(host, &rm, "asking about rm", |f| {
+        f.pending_decisions().any(|d| mine(&d))
+    })
+    .await;
+    let d = f.pending_decisions().find(mine).unwrap();
+    let (_, _, answers) = say(
+        host,
+        "h-dec-rm",
+        &format!(
+            "Yes, allow it.\nCALL: answer_decision {{\"task_id\": \"{rm}\", \"decision_id\": \"{}\", \"approve\": true}}",
+            d.id
+        ),
+    )
+    .await;
+    assert_eq!(code(&answers[0]), "needs_developer", "{answers:#?}");
+    let f = host.conn().await.task_get(&rm).await.unwrap();
+    assert!(f.pending_decisions().any(|x| x.id == d.id), "still waits");
+}

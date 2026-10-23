@@ -713,3 +713,43 @@ async fn set_workspace_moves_a_task_that_hasnt_worked_and_makes_nothing_twice() 
         "the ledger's and the empty one's, once each"
     );
 }
+
+/// Several tasks from one message, each in a workspace of its own made from
+/// the same repository at once (D-205, the shared repository's lock D-204):
+/// each gets its own, prepared, and its coding agent starts there.
+#[tokio::test]
+async fn several_tasks_from_one_message_each_make_a_workspace_from_one_repository() {
+    let fake =
+        fake_agent_host_with("ok", "scripted", |_| vec![("OTTER_BRAIN_V2", "1".into())]).await;
+    let host = &fake.host;
+    let repo = make_repo(host, "service", &[("Makefile", "test:\n\t@true\n")]);
+    let call = |n: u32| {
+        format!(
+            "CALL: create_task {{\"title\": \"Review #{n}\", \"message_ids\": $MSG, \"new_workspace\": {{\"repository\": \"{}\"}}, \"scope\": \"Only pull request #{n}.\", \"start\": true}}",
+            repo.display()
+        )
+    };
+    let text = format!(
+        "Review pull requests 1, 2 and 3 HANG, a task each.\n{}\n{}\n{}",
+        call(1),
+        call(2),
+        call(3)
+    );
+    let (_, _, answers) = say(host, "h-three", &text).await;
+    let made: Vec<String> = answers
+        .iter()
+        .map(|a| {
+            assert_eq!(a["data"]["done"], "created", "{answers:#?}");
+            a["data"]["task_id"].as_str().unwrap().to_owned()
+        })
+        .collect();
+    let mut workspaces = std::collections::HashSet::new();
+    for id in &made {
+        let f = wait_task(host, id, "its coding agent started", |f| !f.runs.is_empty()).await;
+        let ws = f.workspace_id.expect("a workspace of its own");
+        let w = host.conn().await.workspace_get(ws.as_str()).await.unwrap();
+        assert_eq!(w.task_id.as_ref().map(|t| t.as_str()), Some(id.as_str()));
+        workspaces.insert(ws);
+    }
+    assert_eq!(workspaces.len(), 3, "three workspaces");
+}

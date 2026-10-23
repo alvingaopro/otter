@@ -88,6 +88,11 @@ impl ChatStore {
         &self.doc.chat
     }
 
+    /// Whether `command_id` was applied already.
+    pub fn applied(&self, command_id: &str) -> bool {
+        self.doc.commands.iter().any(|c| c == command_id)
+    }
+
     /// Change the conversation: `step` works on a copy; an error leaves it as
     /// it was. A `command_id` already applied returns it unchanged.
     pub fn apply(

@@ -1395,6 +1395,17 @@ impl<'a> GitHub<'a> {
         .await
         .map(|_| ())
     }
+
+    /// Review pull request `pr` (D-205): `event` is `--approve`,
+    /// `--comment` or `--request-changes`; the body, if any, on stdin.
+    pub async fn review(&self, pr: u64, event: &str, body: Option<&str>) -> Result<()> {
+        let n = pr.to_string();
+        let mut args = vec!["pr", "review", &n, event];
+        if body.is_some() {
+            args.extend(["--body-file", "-"]);
+        }
+        self.gh(&args, body).await.map(|_| ())
+    }
 }
 
 #[cfg(test)]

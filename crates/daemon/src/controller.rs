@@ -4896,4 +4896,42 @@ mod tests {
         assert!(!brief.contains('/'), "{brief}");
         assert!(brief.contains("- Also export JSON"), "{brief}");
     }
+
+    /// A task's part of a request that asked for several (D-205): the
+    /// planning turn and Otter's own review are told it, as Otter's, and
+    /// the request stays the developer's words.
+    #[test]
+    fn a_tasks_part_of_the_request_is_said_as_otters() {
+        use otter_core::task::Message;
+        let now = Utc::now();
+        let request = "Review these: https://github.com/o/r/pull/1 https://github.com/o/r/pull/2";
+        let mut f = Task::new("Review #1".into(), request.into(), now);
+        f.messages.push(Message {
+            id: otter_core::MessageId::generate(),
+            role: MessageRole::Controller,
+            text: format!("{TO_THE_AGENT}Only pull request #1; don't approve it."),
+            at: now,
+            correlation_id: Some("tell:msg_1:create_task:0a1b2c3d".into()),
+            attachments: vec![],
+            command: None,
+        });
+        let look = step(PLANNING, StepStatus::Pending, true);
+        let p = planning_prompt(&f, &look, developer_notes(&f, None, &HashSet::new()), false);
+        assert!(p.contains(request), "{p}");
+        assert!(
+            p.contains("From Otter, your tech lead (not the developer):\n- Only pull request #1"),
+            "{p}"
+        );
+        assert!(!p.contains("From the developer"), "{p}");
+        let brief = brain::brief(&f);
+        let (before, otters) = brief
+            .split_once("Otter's own instructions for this work")
+            .expect(&brief);
+        assert!(otters.contains("- Only pull request #1"), "{brief}");
+        assert!(!before.contains("Only pull request #1"), "{brief}");
+        assert!(
+            !brief.contains("Other messages from the developer"),
+            "{brief}"
+        );
+    }
 }
