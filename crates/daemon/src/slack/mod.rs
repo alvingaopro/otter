@@ -21,7 +21,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use futures_util::{SinkExt, StreamExt};
-use otter_core::task::MessageRole;
+use otter_core::task::{Message, MessageRole};
 use otter_protocol::Event;
 use otter_protocol::host::SlackView;
 use otter_protocol::otter::OtterSend;
@@ -65,8 +65,14 @@ struct Status {
 }
 
 impl Slack {
-    /// The settings changed: connect again with them.
+    /// The settings changed: connect again with them. Said at once, so
+    /// Settings' answer to the change doesn't show the last connection's
+    /// failure.
     pub fn restart(&self) {
+        *self.status.lock().unwrap() = Status {
+            state: Some("connecting"),
+            ..Default::default()
+        };
         self.restart.notify_one();
     }
 }
@@ -197,6 +203,12 @@ impl Daemon {
                         // Slack closed it: open another.
                         Ok(()) => wait = Duration::from_secs(1),
                         Err(e) => {
+                            // A connection that worked starts the waiting over.
+                            let worked =
+                                self.slack.status.lock().unwrap().state == Some("connected");
+                            if worked {
+                                wait = Duration::ZERO;
+                            }
                             let why = otter_core::redact::redact(&format!("{e:#}"));
                             tracing::warn!("slack: {why}");
                             self.note_problem(
@@ -228,10 +240,10 @@ impl Daemon {
         let env = self.environments.base().clone();
         let me = api::call(&env, &c.bot, "auth.test", &json!({}))
             .await
-            .map_err(|e| anyhow::anyhow!("the bot token: {e}"))?;
+            .map_err(|e| anyhow::anyhow!("{e} (the bot token)"))?;
         let open = api::call(&env, &c.app, "apps.connections.open", &json!({}))
             .await
-            .map_err(|e| anyhow::anyhow!("the app token: {e}"))?;
+            .map_err(|e| anyhow::anyhow!("{e} (the app token)"))?;
         // Its address carries a ticket: never logged.
         let url = open["url"]
             .as_str()
@@ -258,15 +270,20 @@ impl Daemon {
             }
         };
         let read = async {
+            // Silence is measured from Slack's last frame, whatever else
+            // happens on the host meanwhile.
+            let quiet = tokio::time::sleep(QUIET);
+            tokio::pin!(quiet);
             loop {
                 tokio::select! {
-                    frame = tokio::time::timeout(QUIET, stream.next()) => {
+                    () = &mut quiet => anyhow::bail!("Slack went quiet"),
+                    frame = stream.next() => {
+                        quiet.as_mut().reset(tokio::time::Instant::now() + QUIET);
                         let text = match frame {
-                            Err(_) => anyhow::bail!("Slack went quiet"),
-                            Ok(None) | Ok(Some(Ok(Frame::Close(_)))) => return Ok(()),
-                            Ok(Some(Err(e))) => anyhow::bail!("the connection to Slack: {e}"),
-                            Ok(Some(Ok(Frame::Text(t)))) => t,
-                            Ok(Some(Ok(_))) => continue,
+                            None | Some(Ok(Frame::Close(_))) => return Ok(()),
+                            Some(Err(e)) => anyhow::bail!("the connection to Slack: {e}"),
+                            Some(Ok(Frame::Text(t))) => t,
+                            Some(Ok(_)) => continue,
                         };
                         match socket::envelope(text.as_str()) {
                             Envelope::Hello => {
@@ -312,7 +329,8 @@ impl Daemon {
     }
 
     /// An event from Slack: the developer's direct message is said in
-    /// Otter's conversation, and marked seen (👀) once it is.
+    /// Otter's conversation, and marked seen (👀) once it is. What goes back
+    /// to Slack goes apart from reading, so the next frame isn't held up.
     async fn slack_heard(&self, c: &Config, env: &EnvMap, event: &Value) {
         let m = match socket::inbound(event, &c.users) {
             Ok(m) => m,
@@ -328,21 +346,25 @@ impl Daemon {
                 text: m.text.clone(),
             })
             .await;
-        match sent {
-            Ok(_) => {
-                let seen = json!({ "channel": m.to.channel, "timestamp": m.ts, "name": "eyes" });
-                match api::call(env, &c.bot, "reactions.add", &seen).await {
-                    Ok(_) | Err(CallError::Refused(_)) => {}
-                    Err(e) => tracing::warn!("slack: marking a message seen: {e}"),
+        let (env, bot) = (env.clone(), c.bot.clone());
+        tokio::spawn(async move {
+            match sent {
+                Ok(_) => {
+                    let seen =
+                        json!({ "channel": m.to.channel, "timestamp": m.ts, "name": "eyes" });
+                    match api::call(&env, &bot, "reactions.add", &seen).await {
+                        Ok(_) | Err(CallError::Refused(_)) => {}
+                        Err(e) => tracing::warn!("slack: marking a message seen: {e}"),
+                    }
+                }
+                Err(e) => {
+                    let line = format!("Otter didn't take that: {}", e.message);
+                    if let Err(e) = post(&env, &bot, &m.to, &line).await {
+                        tracing::warn!("slack: {e}");
+                    }
                 }
             }
-            Err(e) => {
-                let line = format!("Otter didn't take that: {}", e.message);
-                if let Err(e) = self.slack_post(c, env, &m.to, &line).await {
-                    tracing::warn!("slack: {e}");
-                }
-            }
-        }
+        });
     }
 
     /// Send Otter's messages that Slack hasn't had: each that comes after
@@ -368,27 +390,20 @@ impl Daemon {
                 sent
             }
         };
-        let from = match &sent.after {
-            None => 0,
-            Some(id) => chat
-                .messages
-                .iter()
-                .position(|m| m.id.as_str() == id)
-                .map_or(chat.messages.len(), |i| i + 1),
+        let Some(from) = resume_at(&chat.messages, sent.after.as_deref()) else {
+            // Gone from the conversation (it started over): from its end.
+            save(&Sent {
+                after: chat.messages.last().map(|m| m.id.to_string()),
+            });
+            return Ok(());
         };
         let now = chrono::Utc::now();
         for (i, m) in chat.messages.iter().enumerate().skip(from) {
-            let to = (m.role == MessageRole::Controller && now - m.at < STALE)
-                .then(|| {
-                    let last = chat.messages[..i]
-                        .iter()
-                        .rev()
-                        .find(|u| u.role == MessageRole::User)?;
-                    Origin::of(last.correlation_id.as_deref())
-                })
+            let to = (now - m.at < STALE)
+                .then(|| destination(&chat.messages, i))
                 .flatten();
             if let Some(to) = to {
-                match self.slack_post(c, env, &to, &m.text).await {
+                match post(env, &c.bot, &to, &m.text).await {
                     Ok(()) => {}
                     Err(e @ CallError::Unreachable(_)) => return Err(e),
                     // Never sent: said, and not tried again for ever.
@@ -400,37 +415,117 @@ impl Daemon {
         }
         Ok(())
     }
+}
 
-    /// Post `text` (Markdown) to `to`, in as many messages as it takes.
-    async fn slack_post(
-        &self,
-        c: &Config,
-        env: &EnvMap,
-        to: &Origin,
-        text: &str,
-    ) -> Result<(), CallError> {
-        let text = otter_core::redact::redact(text);
-        for piece in socket::pieces(&text, MAX_PIECE) {
-            let mut body = json!({
-                "channel": to.channel,
-                // What a notification shows.
-                "text": piece.chars().take(280).collect::<String>(),
-                "blocks": [{ "type": "markdown", "text": piece }],
-                "unfurl_links": false,
-                "unfurl_media": false,
-            });
-            if let Some(t) = &to.thread {
-                body["thread_ts"] = json!(t);
-            }
-            api::call(env, &c.bot, "chat.postMessage", &body).await?;
-        }
-        Ok(())
+/// Where sending to Slack picks up in the conversation: after `after`, or
+/// from the start with none; `None` when `after` is gone from it.
+fn resume_at(messages: &[Message], after: Option<&str>) -> Option<usize> {
+    match after {
+        None => Some(0),
+        Some(id) => messages
+            .iter()
+            .position(|m| m.id.as_str() == id)
+            .map(|i| i + 1),
     }
+}
+
+/// Where the conversation's `i`th message goes in Slack: one of Otter's,
+/// when the developer's latest message before it came from Slack.
+fn destination(messages: &[Message], i: usize) -> Option<Origin> {
+    if messages[i].role != MessageRole::Controller {
+        return None;
+    }
+    let last = messages[..i]
+        .iter()
+        .rev()
+        .find(|m| m.role == MessageRole::User)?;
+    Origin::of(last.correlation_id.as_deref())
+}
+
+/// Post `text` (Markdown) to `to`, in as many messages as it takes.
+async fn post(env: &EnvMap, bot: &str, to: &Origin, text: &str) -> Result<(), CallError> {
+    let text = otter_core::redact::redact(text);
+    for piece in socket::pieces(&text, MAX_PIECE) {
+        let mut body = json!({
+            "channel": to.channel,
+            // What a notification shows.
+            "text": piece.chars().take(280).collect::<String>(),
+            "blocks": [{ "type": "markdown", "text": piece }],
+            "unfurl_links": false,
+            "unfurl_media": false,
+        });
+        if let Some(t) = &to.thread {
+            body["thread_ts"] = json!(t);
+        }
+        api::call(env, bot, "chat.postMessage", &body).await?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn msg(id: &str, role: MessageRole, from: Option<&str>) -> Message {
+        Message {
+            id: id.into(),
+            role,
+            text: id.into(),
+            at: chrono::Utc::now(),
+            correlation_id: from.map(String::from),
+            attachments: vec![],
+            command: None,
+        }
+    }
+
+    /// Otter's messages go to Slack while the developer last spoke from
+    /// it: an answer, and a follow-up after it; not once they speak from
+    /// the terminal, and never the developer's own words.
+    #[test]
+    fn otters_messages_go_where_the_developer_last_spoke() {
+        use MessageRole::{Controller, User};
+        let m = vec![
+            msg("m0", Controller, Some("follow:t1")),
+            msg("m1", User, Some("slack:D1:1.0")),
+            msg("m2", Controller, Some("m1")),
+            msg("m3", Controller, Some("follow:t1")),
+            msg("m4", User, Some("cli-1")),
+            msg("m5", Controller, Some("m4")),
+            msg("m6", User, Some("slack:D1:2.0:1.5")),
+            msg("m7", Controller, Some("m6")),
+        ];
+        let to: Vec<Option<String>> = (0..m.len())
+            .map(|i| destination(&m, i).map(|o| format!("{}{:?}", o.channel, o.thread)))
+            .collect();
+        assert_eq!(
+            to,
+            vec![
+                None,
+                None,
+                Some("D1None".into()),
+                Some("D1None".into()),
+                None,
+                None,
+                None,
+                Some("D1Some(\"1.5\")".into()),
+            ]
+        );
+    }
+
+    /// Where sending picks up: after the last message looked at, from the
+    /// start with none, and nowhere when that message is gone (the
+    /// conversation started over), so the caller starts from its end.
+    #[test]
+    fn sending_picks_up_after_the_last_message_looked_at() {
+        let m = vec![
+            msg("m0", MessageRole::User, None),
+            msg("m1", MessageRole::Controller, None),
+        ];
+        assert_eq!(resume_at(&m, None), Some(0));
+        assert_eq!(resume_at(&m, Some("m0")), Some(1));
+        assert_eq!(resume_at(&m, Some("m1")), Some(2));
+        assert_eq!(resume_at(&m, Some("gone")), None);
+    }
 
     #[test]
     fn member_ids_are_taken_as_slack_writes_them() {

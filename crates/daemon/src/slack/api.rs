@@ -87,16 +87,61 @@ pub async fn call(
     }
     let stdout = String::from_utf8_lossy(&out.stdout);
     let (answer, status) = stdout.rsplit_once('\n').unwrap_or(("", &stdout));
-    if status.trim() == "429" {
-        return Err(unreachable(&"it asked to slow down"));
+    read(status.trim(), answer)
+}
+
+/// Slack's answer, by its HTTP status and body: `ok`, refused for good, or
+/// worth trying again (asked to slow down, or Slack's own trouble).
+fn read(status: &str, body: &str) -> Result<Value, CallError> {
+    let again = |why: String| Err(CallError::Unreachable(why));
+    if status == "429" {
+        return again("it asked to slow down".into());
     }
-    let v: Value = serde_json::from_str(answer)
-        .map_err(|_| unreachable(&format!("it answered HTTP {}", status.trim())))?;
+    let Ok(v) = serde_json::from_str::<Value>(body) else {
+        return again(format!("it answered HTTP {status}"));
+    };
     if v["ok"] == true {
         return Ok(v);
     }
-    match v["error"].as_str().unwrap_or("unknown_error") {
-        "ratelimited" => Err(unreachable(&"it asked to slow down")),
-        code => Err(CallError::Refused(code.to_owned())),
+    let code = v["error"].as_str().unwrap_or("unknown_error");
+    let theirs = status.starts_with('5')
+        || matches!(
+            code,
+            "ratelimited"
+                | "service_unavailable"
+                | "internal_error"
+                | "fatal_error"
+                | "request_timeout"
+        );
+    if theirs {
+        return again(format!("it said `{code}`"));
+    }
+    Err(CallError::Refused(code.to_owned()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn slacks_own_trouble_is_tried_again_and_a_refusal_is_not() {
+        assert!(read("200", r#"{"ok":true,"ts":"1.2"}"#).is_ok());
+        for (status, body) in [
+            ("429", r#"{"ok":false,"error":"ratelimited"}"#),
+            ("200", r#"{"ok":false,"error":"ratelimited"}"#),
+            ("503", r#"{"ok":false,"error":"service_unavailable"}"#),
+            ("500", r#"{"ok":false,"error":"something_new"}"#),
+            ("200", r#"{"ok":false,"error":"fatal_error"}"#),
+            ("502", "<html>bad gateway</html>"),
+        ] {
+            assert!(
+                matches!(read(status, body), Err(CallError::Unreachable(_))),
+                "{status} {body}"
+            );
+        }
+        match read("200", r#"{"ok":false,"error":"channel_not_found"}"#) {
+            Err(CallError::Refused(code)) => assert_eq!(code, "channel_not_found"),
+            other => panic!("{other:?}"),
+        }
     }
 }

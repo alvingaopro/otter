@@ -160,7 +160,9 @@ pub fn plain(text: &str) -> String {
         } else if let Some(channel) = target.strip_prefix('#') {
             format!("#{}", label.unwrap_or(channel))
         } else if let Some(special) = target.strip_prefix('!') {
-            format!("@{}", label.unwrap_or(special))
+            // `<!subteam^S1|@eng>` is labelled with its `@` already.
+            let name = label.unwrap_or(special);
+            format!("@{}", name.trim_start_matches('@'))
         } else {
             let address = target.strip_prefix("mailto:").unwrap_or(target);
             match label {
@@ -325,6 +327,7 @@ mod tests {
             plain("ask <@U9> in <#C1|eng> <!here>"),
             "ask @U9 in #eng @here"
         );
+        assert_eq!(plain("cc <!subteam^S1|@eng>"), "cc @eng");
         assert_eq!(plain("mail <mailto:a@b.c|a@b.c>"), "mail a@b.c");
         assert_eq!(plain("a &lt;b&gt; c <unclosed"), "a <b> c <unclosed");
     }

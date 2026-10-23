@@ -147,8 +147,18 @@ fn main() -> Result<()> {
 }
 
 fn init_logging() {
-    let filter = tracing_subscriber::EnvFilter::try_from_env("OTTER_LOG")
-        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
+    let spec = std::env::var("OTTER_LOG").unwrap_or_default();
+    let mut filter = tracing_subscriber::EnvFilter::try_new(&spec)
+        .ok()
+        .filter(|_| !spec.trim().is_empty())
+        .unwrap_or_else(|| tracing_subscriber::EnvFilter::new("info"));
+    // The WebSocket library traces the address it connects to, which
+    // carries Slack's ticket (D-198): never below info, unless named.
+    if !spec.contains("tungstenite") {
+        for quiet in ["tungstenite=info", "tokio_tungstenite=info"] {
+            filter = filter.add_directive(quiet.parse().expect("a directive"));
+        }
+    }
     tracing_subscriber::fmt()
         .with_env_filter(filter)
         .with_writer(std::io::stderr)

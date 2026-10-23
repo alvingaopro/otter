@@ -495,7 +495,8 @@ describe("Settings", () => {
     const app = dialog().querySelector<HTMLInputElement>('input[aria-label="SLACK_APP_TOKEN"]')!;
     expect(app.placeholder).toContain("xapp-");
     type(app, "xapp-1-def");
-    type(dialog().querySelector<HTMLInputElement>('input[aria-label="Slack member ID"]')!, "U06MPBPRX7C, ");
+    // As Slack copies it, with an `@`, or twice: kept once, as the host keeps it.
+    type(dialog().querySelector<HTMLInputElement>('input[aria-label="Slack member ID"]')!, "@U06MPBPRX7C, U06MPBPRX7C ");
     await flush();
     expect(dialog().textContent).toContain("Unsaved changes on mac");
     await act(async () => button("Save").click());

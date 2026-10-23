@@ -357,11 +357,12 @@ async fn a_direct_message_in_slack_is_answered_there() {
     assert!(found.is_empty(), "{found:?}");
 }
 
-/// Settings say what Slack still needs, refuse the tokens swapped, and say
-/// why a connection failed.
+/// Settings say what Slack still needs, refuse the tokens swapped, say why
+/// a connection failed, and — the token fixed — that it is connecting, not
+/// the old failure, until it is connected.
 #[tokio::test]
 async fn slack_says_what_it_needs_and_why_it_failed() {
-    let slack = FakeSlack::start().await;
+    let mut slack = FakeSlack::start().await;
     let fake = slack_host(&slack).await;
     let mut conn = fake.host.conn().await;
     let view = conn
@@ -402,5 +403,23 @@ async fn slack_says_what_it_needs_and_why_it_failed() {
         (s.state == "failed").then_some(s)
     })
     .await;
-    assert!(s.detail.unwrap().contains("invalid_auth"));
+    assert_eq!(
+        s.detail.as_deref(),
+        Some("Slack said `invalid_auth` (the bot token)")
+    );
+
+    let fixed = conn
+        .settings_set(set_up("xoxb-1-SLACKTESTTOKEN"))
+        .await
+        .unwrap()
+        .slack
+        .unwrap();
+    assert_eq!(fixed.state, "connecting", "{fixed:?}");
+    assert_eq!(fixed.detail, None);
+    let _ws = slack.connected().await;
+    eventually("connected once the token is fixed", || async {
+        let s = fake.host.conn().await.settings_get().await.unwrap().slack?;
+        (s.state == "connected").then_some(())
+    })
+    .await;
 }

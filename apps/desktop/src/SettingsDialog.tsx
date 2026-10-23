@@ -89,9 +89,10 @@ const PLACEHOLDERS: Record<string, string> = {
   [SLACK_APP]: "xapp-… an app-level token, under Basic Information",
 };
 
-/** Slack member IDs as typed: separated by commas or spaces. */
+/** Slack member IDs as typed (commas or spaces between), as the host keeps them: without `@`, each once. */
 function memberIds(text: string): string[] {
-  return text.split(/[\s,]+/).map((u) => u.trim()).filter(Boolean);
+  const ids = text.split(/[\s,]+/).map((u) => u.replace(/^@/, "")).filter(Boolean);
+  return [...new Set(ids)];
 }
 
 const BACKENDS: { id: string; name: string; hint: string }[] = [
@@ -475,15 +476,19 @@ export function SettingsDialog({
   };
   const [title, caption] = heads[shown];
 
-  // While Slack connects, ask the host again (D-198); the form stays as typed.
+  // While Slack connects, or after it failed (the host tries again), ask
+  // the host again (D-198); the form stays as typed.
   useEffect(() => {
-    if (!host || shown !== "slack" || slack?.state !== "connecting") return;
+    if (!host || shown !== "slack" || (slack?.state !== "connecting" && slack?.state !== "failed")) return;
     const at = host;
-    const t = setTimeout(() => {
-      invoke<HostSettings>("settings_get", { host: at })
-        .then((s) => now.current.host === at && setSettings(s))
-        .catch(() => {});
-    }, 2000);
+    const t = setTimeout(
+      () => {
+        invoke<HostSettings>("settings_get", { host: at })
+          .then((s) => now.current.host === at && setSettings(s))
+          .catch(() => {});
+      },
+      slack.state === "connecting" ? 2000 : 10_000,
+    );
     return () => clearTimeout(t);
   }, [host, shown, slack]);
 
