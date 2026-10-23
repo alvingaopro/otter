@@ -682,6 +682,8 @@ impl GitManager {
         cmd.args(args)
             .env_clear()
             .envs(&self.env)
+            // Reading takes no lock on a worktree's index (as in delivery).
+            .env("GIT_OPTIONAL_LOCKS", "0")
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())

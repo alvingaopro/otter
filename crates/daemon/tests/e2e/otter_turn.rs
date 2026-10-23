@@ -873,7 +873,7 @@ async fn a_crash_after_a_forward_still_delivers_it_once() {
             .filter(|t| t.text().contains("Use tabs, not commas"))
             .count()
     };
-    eventually("the message reaches the agent", || async {
+    eventually_on(host, "the message reaches the agent", || async {
         let c = host
             .conn()
             .await

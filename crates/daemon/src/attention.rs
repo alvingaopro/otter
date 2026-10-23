@@ -202,8 +202,22 @@ pub(crate) enum Engaged {
     /// Attached, or its terminal came on screen (D-137): they saw it. That
     /// settles what was only to be seen.
     Looked,
-    /// Sent it text: whatever it asked, they answered.
-    Answered,
+    /// Sent it text: whatever it asked by then, they answered. What it
+    /// raises after (the turn their answer let finish) is new.
+    Answered(otter_core::Timestamp),
+}
+
+/// The developer answered session `session_id` at `at`: what it asked until
+/// then is settled; what it raised after (the turn the answer let finish,
+/// already) is news, and stays.
+pub fn answered(
+    ws: &mut Workspace,
+    session_id: &SessionId,
+    at: otter_core::Timestamp,
+) -> Vec<Event> {
+    resolve(ws, |a| {
+        a.session_id.as_ref() == Some(session_id) && a.created_at <= at
+    })
 }
 
 /// Seeing it is all it asks (D-099): a finished turn, a completed command.
@@ -253,7 +267,7 @@ impl Daemon {
             return;
         };
         let events = match how {
-            Engaged::Answered => resolve_session(ws, session_id),
+            Engaged::Answered(at) => answered(ws, session_id, at),
             Engaged::Looked => resolve(ws, |a| {
                 a.session_id.as_ref() == Some(session_id) && settled_by_looking(a.kind)
             }),
@@ -352,6 +366,53 @@ impl Drop for OnScreen {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// An answer settles what the session asked until then, not what the
+    /// agent said after it, already done with the turn the answer let go
+    /// on (the race `quiet_agent_mid_turn_is_flagged_and_answering_clears_it`
+    /// lost now and then).
+    #[test]
+    fn an_answer_settles_what_was_asked_before_it_not_after() {
+        let now = Utc::now();
+        let session = SessionId::generate();
+        let mut ws = Workspace {
+            id: otter_core::WorkspaceId::from("ws_1"),
+            name: "ask".into(),
+            root: "/tmp/ws_1".into(),
+            brief: Default::default(),
+            source: otter_core::WorkspaceSource::Empty,
+            environment: Default::default(),
+            state: WorkspaceState::Ready,
+            state_message: None,
+            created_at: now,
+            updated_at: now,
+            sessions: vec![],
+            attention: vec![],
+            task_id: None,
+            kept: None,
+        };
+        raise(
+            &mut ws,
+            Some(&session),
+            AttentionKind::Approval,
+            "codex needs your approval".into(),
+        );
+        let answered_at = Utc::now();
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        raise(
+            &mut ws,
+            Some(&session),
+            AttentionKind::Review,
+            "codex finished".into(),
+        );
+        // The Review replaced the Approval; the answer leaves the Review.
+        assert!(answered(&mut ws, &session, answered_at).is_empty());
+        assert_eq!(ws.attention.len(), 1);
+        assert_eq!(ws.attention[0].kind, AttentionKind::Review);
+        // Answered after it: settled too.
+        assert_eq!(answered(&mut ws, &session, Utc::now()).len(), 1);
+        assert!(ws.attention.is_empty());
+    }
 
     #[test]
     fn a_terminal_counts_as_on_screen_while_its_client_says_so() {

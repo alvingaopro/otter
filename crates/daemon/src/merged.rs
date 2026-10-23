@@ -188,6 +188,11 @@ impl Daemon {
     /// `c`'s pull request is merged: delete its workspace, or keep it and
     /// say why.
     async fn delete_merged(&self, c: &Candidate, pr: &PrState) {
+        // The setting as it is now: turned off while this pass asked GitHub,
+        // nothing is done (D-204).
+        if !self.settings.read().unwrap().delete_merged_workspaces() {
+            return;
+        }
         // As it is now: unarchived or kept meanwhile, it stays.
         let Ok(ws) = self.workspace_get(c.workspace.as_str()).await else {
             return;
