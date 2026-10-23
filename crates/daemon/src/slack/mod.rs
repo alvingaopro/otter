@@ -33,6 +33,7 @@ use std::time::Duration;
 
 use futures_util::{SinkExt, StreamExt};
 use otter_core::DecisionId;
+use otter_core::TaskId;
 use otter_core::conversation::{InteractionKind, Question};
 use otter_core::task::{Message, MessageRole, TaskAction};
 use otter_protocol::Event;
@@ -88,8 +89,11 @@ pub struct Slack {
     /// they are chosen (D-202): Submit reads the message's state too.
     picks: std::sync::Mutex<HashMap<(String, String), String>>,
     /// Otter's answers being written, by the developer's message they
-    /// answer (D-202).
+    /// answer (D-202); the coding agent's, by `agent:<task>` (D-203).
     streams: std::sync::Mutex<HashMap<String, Stream>>,
+    /// The coding agent's last message per task, and when: its turn's
+    /// words that come after it are dropped (D-203).
+    settled: std::sync::Mutex<HashMap<String, (String, std::time::Instant)>>,
 }
 
 /// An answer of Otter's being written, shown in Slack as it is (D-202).
@@ -821,48 +825,90 @@ impl Daemon {
     }
 
     /// Otter's answer being written (D-202): its first words posted where it
-    /// will go, then shown again as more come, at most every 1.5 s. Only
-    /// Otter's answers: the coding agent's words along the way aren't the
-    /// message it ends with (D-069). The answer itself takes that message's
-    /// place when the sync sends it.
+    /// will go, then shown again as more come, at most every 1.5 s. The
+    /// answer itself takes that message's place when the sync sends it.
+    /// The coding agent's words too (D-203): one message per task, showing
+    /// what it says as it says it, each piece whole once said, until the
+    /// message its turn ends with takes its place — as the app shows them
+    /// (D-069).
     async fn slack_writing(&self, c: &Config, env: &EnvMap, event: &Event) {
-        let (answered, text, task) = match event {
+        enum From<'a> {
+            /// The developer's message on the host, by id.
+            Host(&'a str),
+            /// A task's message by id; `None`: its latest from the developer.
+            Task(&'a TaskId, Option<&'a str>),
+        }
+        let (key, text, done, from) = match event {
             Event::OtterStream {
                 stream_id,
                 text,
                 done: false,
-            } => (stream_id, text, None),
+            } => {
+                let Some(id) = stream_id.strip_prefix("reply-") else {
+                    return;
+                };
+                (id.to_owned(), text, false, From::Host(id))
+            }
             Event::TaskStream {
                 task_id,
                 stream_id,
                 role: MessageRole::Controller,
                 text,
                 done: false,
-            } => (stream_id, text, Some(task_id)),
+            } => {
+                let Some(id) = stream_id.strip_prefix("reply-") else {
+                    return;
+                };
+                (id.to_owned(), text, false, From::Task(task_id, Some(id)))
+            }
+            Event::TaskStream {
+                task_id,
+                role: MessageRole::Agent,
+                text,
+                done,
+                ..
+            } => (
+                format!("agent:{task_id}"),
+                text,
+                *done,
+                From::Task(task_id, None),
+            ),
             _ => return,
         };
-        let Some(answered) = answered.strip_prefix("reply-") else {
+        // Words of a turn whose message was sent already, come late.
+        if let Some((said, at)) = self.slack.settled.lock().unwrap().get(&key)
+            && at.elapsed() < Duration::from_secs(30)
+            && said.starts_with(text.as_str())
+        {
             return;
-        };
+        }
+        let answered = key.as_str();
         let known = self.slack.streams.lock().unwrap().contains_key(answered);
         if !known {
             // Where the developer's message came from, once.
-            let from = match task {
-                None => self
+            let from = match from {
+                From::Host(id) => self
                     .chat
                     .lock()
                     .await
                     .get()
                     .messages
                     .iter()
-                    .find(|m| m.id.as_str() == answered)
+                    .find(|m| m.id.as_str() == id)
                     .and_then(|m| m.correlation_id.clone()),
-                Some(task) => self
+                From::Task(task, id) => self
                     .tasks
                     .lock()
                     .await
                     .get(task.as_str())
-                    .and_then(|t| t.messages.iter().find(|m| m.id.as_str() == answered))
+                    .and_then(|t| match id {
+                        Some(id) => t.messages.iter().find(|m| m.id.as_str() == id),
+                        None => t
+                            .messages
+                            .iter()
+                            .rev()
+                            .find(|m| m.role == MessageRole::User),
+                    })
                     .and_then(|m| m.correlation_id.clone()),
             };
             let mut streams = self.slack.streams.lock().unwrap();
@@ -895,7 +941,9 @@ impl Daemon {
                     s.posting = true;
                     Some(Next::Post(to.clone()))
                 }
-                (Some(to), Some(ts)) if s.shown.is_none_or(|t| t.elapsed() >= STREAM_EVERY) => {
+                (Some(to), Some(ts))
+                    if done || s.shown.is_none_or(|t| t.elapsed() >= STREAM_EVERY) =>
+                {
                     s.shown = Some(std::time::Instant::now());
                     s.posting = true;
                     Some(Next::Update(to.clone(), ts.clone()))
@@ -903,8 +951,10 @@ impl Daemon {
                 _ => None,
             }
         };
-        // Nothing written yet is Otter starting to write (D-196).
+        // Nothing written yet is Otter starting to write (D-196); a piece
+        // said whole has no "…".
         let shown = match socket::pieces(text, MAX_PIECE - 2).first() {
+            Some(said) if done => said.clone(),
             Some(so_far) => format!("{so_far} …"),
             None => "_Otter is writing…_".to_owned(),
         };
@@ -964,14 +1014,18 @@ impl Daemon {
         &self,
         env: &EnvMap,
         bot: &str,
+        task: Option<&str>,
         to: Option<&Origin>,
         m: &Message,
         titles: &HashMap<String, String>,
     ) -> Result<(), CallError> {
-        let answered = m
-            .correlation_id
-            .clone()
-            .filter(|_| m.role == MessageRole::Controller);
+        let agent = m.role == MessageRole::Agent;
+        let answered = match (m.role, task) {
+            (MessageRole::Controller, _) => m.correlation_id.clone(),
+            // The coding agent's: its turn's words, shown in its task (D-203).
+            (MessageRole::Agent, Some(task)) => Some(format!("agent:{task}")),
+            _ => None,
+        };
         let Some(answered) = answered else {
             return match to {
                 Some(to) => post(env, bot, to, &m.text, titles).await,
@@ -988,8 +1042,15 @@ impl Daemon {
                     Some(s) if s.posting && waited.elapsed() < STREAM_WAIT => {}
                     Some(s) => {
                         s.over = true;
-                        break s.to.clone().zip(s.ts.clone());
+                        let shown = s.to.clone().zip(s.ts.clone());
+                        // The agent's next turn is shown afresh.
+                        if agent {
+                            streams.remove(&answered);
+                        }
+                        break shown;
                     }
+                    // The agent's words come per turn; nothing to stop.
+                    None if agent => break None,
                     None => {
                         // Words that come late are for an answer already sent.
                         streams.insert(
@@ -1010,6 +1071,13 @@ impl Daemon {
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
         };
+        if agent {
+            // Its turn's words that come late are dropped.
+            self.slack.settled.lock().unwrap().insert(
+                answered.clone(),
+                (m.text.clone(), std::time::Instant::now()),
+            );
+        }
         let Some((there, ts)) = shown else {
             return match to {
                 Some(to) => post(env, bot, to, &m.text, titles).await,
@@ -1236,7 +1304,10 @@ impl Daemon {
                 .then(|| destination(messages, i))
                 .flatten();
             if to.is_some() || m.role == MessageRole::Controller {
-                match self.slack_answer(env, &c.bot, to.as_ref(), m, titles).await {
+                match self
+                    .slack_answer(env, &c.bot, None, to.as_ref(), m, titles)
+                    .await
+                {
                     Ok(()) => {}
                     Err(e @ CallError::Unreachable(_)) => return Err(e),
                     // Never sent: said, and not tried again for ever.
@@ -1397,9 +1468,9 @@ impl Daemon {
                 let to = (now - m.at < STALE)
                     .then(|| destination(messages, i))
                     .flatten();
-                if to.is_some() || m.role == MessageRole::Controller {
+                if to.is_some() || m.role != MessageRole::User {
                     match self
-                        .slack_answer(env, &c.bot, to.as_ref(), m, &look.titles)
+                        .slack_answer(env, &c.bot, Some(task), to.as_ref(), m, &look.titles)
                         .await
                     {
                         Ok(()) => {}

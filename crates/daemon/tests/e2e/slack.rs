@@ -1152,3 +1152,148 @@ async fn an_answer_shown_as_it_is_written_is_finished_where_it_is() {
     })
     .await;
 }
+
+/// The coding agent's words as it says them (D-203): in its task's thread,
+/// while the developer last spoke there, one message for its turn — what it
+/// says as it says it, then the message its turn ends with in its place.
+#[tokio::test]
+async fn the_coding_agents_words_are_shown_as_it_says_them() {
+    use otter_core::task::TaskStatus;
+    let mut slack = FakeSlack::start().await;
+    let api = slack.api.clone();
+    let fake = fake_agent_host_with("ok", "rules", move |scratch| {
+        let worker = scratch.join("worker.sh");
+        std::fs::write(&worker, include_str!("../fake_claude_worker.sh")).unwrap();
+        vec![
+            ("OTTER_CODING_BACKEND", "sdk".into()),
+            ("OTTER_NODE", "/bin/sh".into()),
+            ("OTTER_CLAUDE_WORKER", worker.to_string_lossy().into_owned()),
+            (
+                "FAKE_WORKER_LOG",
+                scratch.join("worker.log").to_string_lossy().into_owned(),
+            ),
+            ("FAKE_WORKER_MODE", "ok".into()),
+            ("OTTER_SLACK_API", api),
+        ]
+    })
+    .await;
+    let host = &fake.host;
+    host.conn()
+        .await
+        .settings_set(set_up("xoxb-1-SLACKTESTTOKEN"))
+        .await
+        .unwrap();
+    let mut ws = slack.connected().await;
+    let state = host.home().join("state/slack.json");
+    eventually("the needs looked at", || async {
+        std::fs::read_to_string(&state)
+            .ok()
+            .filter(|s| s.contains("\"needs\""))
+    })
+    .await;
+
+    // The agent asks its questions: told in Slack, as a form.
+    let id = started_task_named(host, "Add an export").await;
+    wait_task(host, &id, "asking", |f| {
+        f.status == TaskStatus::Blocked && f.pending_decisions().next().is_some()
+    })
+    .await;
+    let need = eventually("the form told in Slack", || async {
+        told(&slack).into_iter().find(|b| {
+            b["blocks"].as_array().is_some_and(|bs| {
+                bs.iter()
+                    .any(|x| x["block_id"].as_str().is_some_and(|i| i.starts_with("q:")))
+            })
+        })
+    })
+    .await;
+    let on = format!(
+        "1800000000.{:06}",
+        slack
+            .calls("chat.postMessage")
+            .iter()
+            .position(|c| c.2 == need)
+            .unwrap()
+            + 1
+    );
+    // The developer speaks in its thread, then answers the form.
+    acked(
+        &mut ws,
+        dm(
+            "e1",
+            "U01DEV",
+            "1700000050.000100",
+            "Keep going",
+            json!({"thread_ts": on}),
+        ),
+        "e1",
+    )
+    .await;
+    wait_task(host, &id, "the reply in the task", |f| {
+        f.messages.iter().any(|m| m.text == "Keep going")
+    })
+    .await;
+    let blocks = need["blocks"].as_array().unwrap();
+    let mut values = serde_json::Map::new();
+    for q in blocks
+        .iter()
+        .filter(|b| b["block_id"].as_str().is_some_and(|i| i.starts_with("q:")))
+    {
+        let first = q["elements"][0]["options"][0]["value"].clone();
+        values.insert(
+            q["block_id"].as_str().unwrap().to_owned(),
+            json!({"pick": {"selected_option": {"value": first}, "selected_options": [{"value": first}]}}),
+        );
+    }
+    let value = blocks
+        .iter()
+        .flat_map(|b| b["elements"].as_array().cloned().unwrap_or_default())
+        .find(|e| e["action_id"] == "form")
+        .unwrap()["value"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let submit = json!({"type": "interactive", "envelope_id": "f1", "payload": {
+        "type": "block_actions", "user": {"id": "U01DEV"},
+        "container": {"type": "message", "message_ts": on, "channel_id": "D1"},
+        "actions": [{"action_id": "form", "value": value, "action_ts": "1700000051.1"}],
+        "state": {"values": values},
+    }});
+    acked(&mut ws, submit.to_string(), "f1").await;
+
+    // What it says as it says it, in the thread; then its turn's message in
+    // that message's place.
+    let shown = eventually("the agent's words in the thread", || async {
+        slack
+            .calls("chat.postMessage")
+            .into_iter()
+            .find(|c| c.2["thread_ts"] == on.as_str() && c.2["blocks"][0]["text"] == "Do …")
+    })
+    .await;
+    let n = slack
+        .calls("chat.postMessage")
+        .iter()
+        .position(|c| c.2 == shown.2)
+        .unwrap()
+        + 1;
+    let at = format!("1800000000.{n:06}");
+    wait_task(host, &id, "the agent's message", |f| {
+        f.messages
+            .iter()
+            .any(|m| m.role == MessageRole::Agent && m.text == "Done.")
+    })
+    .await;
+    eventually("its message in their place", || async {
+        slack
+            .calls("chat.update")
+            .into_iter()
+            .find(|c| c.2["ts"] == at.as_str() && c.2["blocks"][0]["text"] == "Done.")
+    })
+    .await;
+    tokio::time::sleep(Duration::from_millis(800)).await;
+    let again = slack
+        .calls("chat.postMessage")
+        .into_iter()
+        .any(|c| c.2["thread_ts"] == on.as_str() && c.2["blocks"][0]["text"] == "Done.");
+    assert!(!again, "the agent's message was posted again");
+}
