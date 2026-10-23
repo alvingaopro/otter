@@ -30,6 +30,8 @@ export interface SessionView {
   name: string;
   kind: SessionKind;
   status: SessionStatus;
+  /** Its current execution: a restart is a new one, though the session may never be seen not running. */
+  execution?: string;
   agent?: AgentView;
   exitCode?: number;
   launchError?: string;

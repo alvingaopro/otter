@@ -176,7 +176,7 @@ pub fn dump_env() {
 }
 
 fn clean(mut vars: EnvMap) -> EnvMap {
-    for k in STRIP {
+    for k in STRIP.iter().chain(crate::agents::claude::SESSION_MARKERS) {
         vars.remove(*k);
     }
     vars
@@ -231,5 +231,29 @@ pub async fn spawn_tokio(
             }
             r => return r,
         }
+    }
+}
+
+#[cfg(test)]
+mod clean_tests {
+    use super::*;
+
+    #[test]
+    fn a_daemon_started_inside_claude_code_does_not_pass_its_session_on() {
+        let vars: EnvMap = [
+            ("PATH", "/usr/bin"),
+            ("CLAUDECODE", "1"),
+            ("CLAUDE_CODE_CHILD_SESSION", "1"),
+            ("CLAUDE_CODE_SESSION_ID", "d111fba9"),
+            ("CLAUDE_CODE_OAUTH_TOKEN", "sk-ant-oat01-x"),
+        ]
+        .into_iter()
+        .map(|(k, v)| (k.to_owned(), v.to_owned()))
+        .collect();
+        let vars = clean(vars);
+        assert_eq!(
+            vars.keys().map(String::as_str).collect::<Vec<_>>(),
+            ["CLAUDE_CODE_OAUTH_TOKEN", "PATH"]
+        );
     }
 }
