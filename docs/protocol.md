@@ -353,7 +353,7 @@ The Control Agent's model and API keys on this host (D-048).
   level | null}}` sets them (`null`: back to the default); an unknown tool
   is `invalid_request`. `OTTER_TOOL_LEVELS` in otterd's environment
   (`name=level,…`) overrides them. Absent from older daemons.
-- The view also has `slack?: {users, state, detail?, team?, bot?}` (D-198):
+- The view also has `slack?: {users, state, detail?, team?, bot?}` (D-200):
   Otter in Slack from this host. `users` are the Slack member IDs (`U…`)
   whose direct messages to the app are the developer's; `state` is `off`
   (`detail` says what is missing), `connecting`, `connected` (`team` and

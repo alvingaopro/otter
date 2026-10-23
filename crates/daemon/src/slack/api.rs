@@ -1,4 +1,4 @@
-//! Slack's Web API (D-198), through curl as the model providers' are
+//! Slack's Web API (D-200), through curl as the model providers' are
 //! (D-095): the token in curl's config on stdin, never on a command line;
 //! the body from a private temporary file.
 

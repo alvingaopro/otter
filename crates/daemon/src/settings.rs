@@ -138,7 +138,7 @@ struct Stored {
     /// default.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     tool_levels: BTreeMap<String, otter_core::tools::ToolLevel>,
-    /// The Slack members whose direct messages are the developer's (D-198).
+    /// The Slack members whose direct messages are the developer's (D-200).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     slack_users: Vec<String>,
 }
@@ -245,7 +245,7 @@ impl HostSettings {
             .unwrap_or_default()
     }
 
-    /// The Slack members whose direct messages are the developer's (D-198).
+    /// The Slack members whose direct messages are the developer's (D-200).
     pub fn slack_users(&self) -> &[String] {
         &self.stored.slack_users
     }
@@ -371,7 +371,7 @@ impl HostSettings {
                         "{name} is the token `claude setup-token` prints (sk-ant-oat01-…)"
                     ));
                 }
-                // The Slack app's two tokens are easy to swap (D-198).
+                // The Slack app's two tokens are easy to swap (D-200).
                 Some(v) if name == SLACK_BOT_TOKEN && !v.starts_with("xoxb-") => {
                     return Err(format!(
                         "{name} is the app's Bot User OAuth Token (xoxb-…), under Install App"
@@ -462,7 +462,7 @@ impl Daemon {
     }
 
     pub(crate) fn settings_set(&self, mut u: SettingsUpdate) -> RpcResult<Settings> {
-        // Slack connects again with what is set now (D-198).
+        // Slack connects again with what is set now (D-200).
         let slack = u.slack.is_some()
             || u.secrets
                 .keys()

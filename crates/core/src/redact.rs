@@ -43,7 +43,7 @@ const TOKEN_PREFIXES: &[(&str, usize)] = &[
     ("xoxp-", 10),
     ("xoxa-", 10),
     ("xoxs-", 10),
-    // A Slack app-level token (D-198).
+    // A Slack app-level token (D-200).
     ("xapp-", 10),
     ("AKIA", 16),
     ("ASIA", 16),

@@ -1,4 +1,4 @@
-//! Otter in Slack (D-198): a direct message to the Slack app is said in
+//! Otter in Slack (D-200): a direct message to the Slack app is said in
 //! Otter's conversation on the host and answered in Slack — against a
 //! stand-in Slack: its Web API over HTTP, its Socket Mode over a WebSocket.
 

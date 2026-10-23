@@ -167,4 +167,4 @@ record it in [`decisions.md`](decisions.md) first.
   `settings_take_keys_write_only_and_keep_them` (keys),
   `the_developer_reads_and_edits_otters_memory` (Otter's memory, D-113),
   and `a_direct_message_in_slack_is_answered_there` (the Slack app's
-  tokens, D-198).
+  tokens, D-200).

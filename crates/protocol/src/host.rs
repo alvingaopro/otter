@@ -154,12 +154,12 @@ pub struct Settings {
     /// from an otterd before it.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tools: Vec<ToolInfo>,
-    /// Otter in Slack from this host (D-198); absent from older daemons.
+    /// Otter in Slack from this host (D-200); absent from older daemons.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub slack: Option<SlackView>,
 }
 
-/// Otter in Slack (D-198): the developer's direct messages to the Slack app
+/// Otter in Slack (D-200): the developer's direct messages to the Slack app
 /// set here are said in Otter's conversation on this host, and its answers
 /// go back. Its two tokens are secrets (`SLACK_BOT_TOKEN`,
 /// `SLACK_APP_TOKEN`), never shown.
@@ -378,7 +378,7 @@ pub struct SettingsUpdate {
     /// again. Left out: stays.
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub tool_levels: std::collections::BTreeMap<String, Option<otter_core::tools::ToolLevel>>,
-    /// Otter in Slack (D-198); left out: stays.
+    /// Otter in Slack (D-200); left out: stays.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub slack: Option<SlackUpdate>,
 }

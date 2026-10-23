@@ -60,11 +60,11 @@ export interface HostSettings {
   delete_merged_workspaces?: boolean;
   /** Otter's tools and how far each may go on the host (D-191); absent from older daemons. */
   tools?: ToolInfo[];
-  /** Otter in Slack from the host (D-198); absent from older daemons. */
+  /** Otter in Slack from the host (D-200); absent from older daemons. */
   slack?: SlackView;
 }
 
-/** Mirrors `otter_protocol::host::SlackView` (D-198). */
+/** Mirrors `otter_protocol::host::SlackView` (D-200). */
 export interface SlackView {
   /** The Slack members whose direct messages are yours (`U…`). */
   users: string[];
@@ -78,7 +78,7 @@ export interface SlackView {
 /** How the coding agent can run on a host (D-057): the SDK first, the default (D-124). */
 /** Claude Code's sign-in, a secret on the host (D-142). */
 const CLAUDE_TOKEN = "CLAUDE_CODE_OAUTH_TOKEN";
-/** The Slack app's two tokens, secrets on the host (D-198). */
+/** The Slack app's two tokens, secrets on the host (D-200). */
 const SLACK_BOT = "SLACK_BOT_TOKEN";
 const SLACK_APP = "SLACK_APP_TOKEN";
 /** Secrets with a tab of their own, not among the providers' keys. */
@@ -188,7 +188,7 @@ export function SettingsDialog({
   const [deleteMerged, setDeleteMerged] = useState(false);
   // A tool's level as just chosen, until the host's answer has it (D-191).
   const [levels, setLevels] = useState<Record<string, ToolLevel>>({});
-  // Whose Slack messages are yours (D-198), as typed.
+  // Whose Slack messages are yours (D-200), as typed.
   const [slackUsers, setSlackUsers] = useState("");
 
   function go(t: SettingsTab) {
@@ -477,7 +477,7 @@ export function SettingsDialog({
   const [title, caption] = heads[shown];
 
   // While Slack connects, or after it failed (the host tries again), ask
-  // the host again (D-198); the form stays as typed.
+  // the host again (D-200); the form stays as typed.
   useEffect(() => {
     if (!host || shown !== "slack" || (slack?.state !== "connecting" && slack?.state !== "failed")) return;
     const at = host;

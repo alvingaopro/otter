@@ -22,7 +22,7 @@ const state = vi.hoisted(() => ({
   token: undefined as boolean | undefined,
   // Otter's tools and their levels (D-191): `undefined` from an otterd before them.
   tools: undefined as { name: string; description: string; group: string; level: string; default_level: string }[] | undefined,
-  // Otter in Slack (D-198): `undefined` from an otterd before it.
+  // Otter in Slack (D-200): `undefined` from an otterd before it.
   slack: undefined as { users: string[]; state: string; detail?: string; team?: string; bot?: string } | undefined,
   slackBot: false,
   slackApp: false,
@@ -479,7 +479,7 @@ describe("Settings", () => {
     expect(dialog().textContent).toContain("Claude Code's own sign-in on mac");
   });
 
-  it("sets Slack up with its two tokens, kept on the host and never shown, and whose messages are yours (D-198)", async () => {
+  it("sets Slack up with its two tokens, kept on the host and never shown, and whose messages are yours (D-200)", async () => {
     expect(tabs().map((b) => b.textContent)).toContain("Slack");
     await tab("Slack");
     expect(dialog().querySelector("h2")?.textContent).toBe("Slack");

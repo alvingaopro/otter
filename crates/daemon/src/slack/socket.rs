@@ -1,4 +1,4 @@
-//! What Slack sends down the socket, and what of it Otter takes (D-198):
+//! What Slack sends down the socket, and what of it Otter takes (D-200):
 //! pure functions, so the rules are tested without a connection.
 
 use serde_json::Value;
@@ -84,7 +84,7 @@ pub fn inbound(event: &Value, users: &[String]) -> Result<Inbound, Skip> {
     if !event["bot_id"].is_null() || event["subtype"] == "bot_message" {
         return Err(Skip::FromABot);
     }
-    // A picture's message is written too; its words are taken (D-198).
+    // A picture's message is written too; its words are taken (D-200).
     match event["subtype"].as_str() {
         None | Some("file_share") => {}
         Some(_) => return Err(Skip::NotWritten),

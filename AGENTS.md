@@ -81,7 +81,7 @@ Inside the daemon (`crates/daemon/src`):
   `codex.rs` holds everything Codex-specific, `claude.rs` everything Claude Code-specific,
   and `mod.rs` the shared quiet-turn heuristic (`settle`)
 - `backend/` — execution backends; tmux is the only one and nothing else may know about tmux
-- `slack/` — Otter in Slack (D-198): the developer's direct messages to the
+- `slack/` — Otter in Slack (D-200): the developer's direct messages to the
   Slack app, over Socket Mode (a WebSocket otterd opens; nothing listens),
   said in Otter's conversation on the host, and its answers sent back
 - `git.rs` (shared repos + worktrees), `git_account.rs` (Otter's own git identity, key and

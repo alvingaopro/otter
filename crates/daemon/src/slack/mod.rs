@@ -1,4 +1,4 @@
-//! Otter in Slack (D-198): the developer's direct messages to the Slack app
+//! Otter in Slack (D-200): the developer's direct messages to the Slack app
 //! set on this host are said in Otter's conversation here (D-093), and
 //! Otter's messages there go back to Slack while the developer last spoke
 //! from it.
