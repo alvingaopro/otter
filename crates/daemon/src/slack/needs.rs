@@ -132,8 +132,10 @@ pub fn told(task: &Task, n: &Need, form: Option<&[Question]>) -> Told {
 }
 
 /// A form in Slack (D-202), as the app's: each question's choices in a
-/// select (several where it takes several), a box for one with none, and
-/// Submit.
+/// select, or checkboxes where it takes several, a box for one with none,
+/// and Submit. Slack refuses a message whose actions hold a multi-select
+/// (`unsupported element: multiselect`, seen live), whatever its documents
+/// say.
 fn asked(text: &str, questions: &[Question], value: &str) -> Told {
     let plain = |t: &str| json!({ "type": "plain_text", "text": cut(t, MAX_LABEL) });
     let mut blocks = vec![json!({ "type": "markdown", "text": text })];
@@ -153,34 +155,31 @@ fn asked(text: &str, questions: &[Question], value: &str) -> Told {
             }));
             continue;
         }
+        // Checkboxes take ten choices at most, as the buttons do.
+        let most = if q.multi_select { MAX_OPTIONS } else { 100 };
         let options: Vec<Value> = q
             .options
             .iter()
-            .take(100)
+            .take(most)
             .map(|o| {
                 let label = otter_core::redact::redact(&o.label);
                 json!({ "text": plain(&label), "value": cut(&label, MAX_VALUE) })
             })
             .collect();
-        let kind = if q.multi_select {
-            "multi_static_select"
+        let element = if q.multi_select {
+            json!({ "type": "checkboxes", "action_id": "pick", "options": options })
         } else {
-            "static_select"
-        };
-        let placeholder = if q.multi_select {
-            "Choose any"
-        } else {
-            "Choose one"
+            json!({
+                "type": "static_select",
+                "action_id": "pick",
+                "placeholder": plain("Choose one"),
+                "options": options,
+            })
         };
         blocks.push(json!({
             "type": "actions",
             "block_id": block_id,
-            "elements": [{
-                "type": kind,
-                "action_id": "pick",
-                "placeholder": plain(placeholder),
-                "options": options,
-            }],
+            "elements": [element],
         }));
     }
     blocks.push(json!({
@@ -458,7 +457,7 @@ mod tests {
     }
 
     /// A form (D-202): each question in its own block, choices in a select
-    /// (several where it takes several), a box where there are none, and
+    /// (checkboxes where it takes several), a box where there are none, and
     /// Submit carrying the task and the decision.
     #[test]
     fn a_form_is_asked_question_by_question() {
@@ -493,10 +492,9 @@ mod tests {
             by_id("q:db")["elements"][0]["options"][1]["value"],
             "SQLite"
         );
-        assert_eq!(
-            by_id("q:langs")["elements"][0]["type"],
-            "multi_static_select"
-        );
+        assert_eq!(by_id("q:langs")["elements"][0]["type"], "checkboxes");
+        // Slack refuses a multi-select in a message's actions.
+        assert!(!told.blocks.to_string().contains("multi_static_select"));
         assert_eq!(by_id("q:name")["type"], "input");
         assert_eq!(by_id("q:name")["element"]["type"], "plain_text_input");
         let submit = blocks

@@ -13,8 +13,8 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio_tungstenite::WebSocketStream;
 use tokio_tungstenite::tungstenite::Message as Frame;
 
-/// A Web API call the stand-in got: the method, the `Authorization`
-/// header, the body.
+/// A Web API call the stand-in got: the method (`refused:<method>` for a
+/// message Slack wouldn't take), the `Authorization` header, the body.
 type Call = (String, String, Value);
 
 struct FakeSlack {
@@ -22,6 +22,8 @@ struct FakeSlack {
     api: String,
     calls: Arc<Mutex<Vec<Call>>>,
     sockets: tokio::sync::mpsc::UnboundedReceiver<WebSocketStream<TcpStream>>,
+    /// Refuse every message with buttons, to see what otterd does then.
+    refuse: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl FakeSlack {
@@ -33,9 +35,12 @@ impl FakeSlack {
         let calls: Arc<Mutex<Vec<Call>>> = Default::default();
         let kept = calls.clone();
         let posted: Arc<std::sync::atomic::AtomicU64> = Default::default();
+        let refuse: Arc<std::sync::atomic::AtomicBool> = Default::default();
+        let refusing = refuse.clone();
         tokio::spawn(async move {
             while let Ok((s, _)) = http.accept().await {
-                tokio::spawn(answer(s, link.clone(), kept.clone(), posted.clone()));
+                let (link, kept, posted) = (link.clone(), kept.clone(), posted.clone());
+                tokio::spawn(answer(s, link, kept, posted, refusing.clone()));
             }
         });
         let (tx, sockets) = tokio::sync::mpsc::unbounded_channel();
@@ -50,6 +55,7 @@ impl FakeSlack {
             api,
             calls,
             sockets,
+            refuse,
         }
     }
 
@@ -82,6 +88,7 @@ async fn answer(
     link: String,
     calls: Arc<Mutex<Vec<Call>>>,
     posted: Arc<std::sync::atomic::AtomicU64>,
+    refuse: Arc<std::sync::atomic::AtomicBool>,
 ) {
     let mut buf = Vec::new();
     let mut chunk = [0u8; 4096];
@@ -153,6 +160,11 @@ async fn answer(
             json!({"ok": true, "team": "Test Team", "user": "otter", "user_id": "UBOT", "bot_id": "B01OTTER"})
         }
         "apps.connections.open" => json!({"ok": true, "url": link}),
+        "chat.postMessage" | "chat.update" if refused(&body, &refuse).is_some() => {
+            let why = refused(&body, &refuse).unwrap();
+            json!({"ok": false, "error": "invalid_blocks", "errors": [why],
+                "response_metadata": {"messages": [format!("[ERROR] {why}")]}})
+        }
         "chat.postMessage" => {
             // Each message its own time, as Slack's are.
             let n = posted.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
@@ -162,6 +174,10 @@ async fn answer(
         "conversations.open" => json!({"ok": true, "channel": {"id": "D1"}}),
         _ => json!({"ok": false, "error": "unknown_method"}),
     };
+    let method = match reply["error"] == "invalid_blocks" {
+        true => format!("refused:{method}"),
+        false => method,
+    };
     calls.lock().unwrap().push((method, auth, body));
     let reply = reply.to_string();
     let response = format!(
@@ -169,6 +185,28 @@ async fn answer(
         reply.len()
     );
     let _ = s.write_all(response.as_bytes()).await;
+}
+
+/// Why Slack refuses a message's blocks, as it does: a multi-select in its
+/// actions (seen against Slack itself, 2026-10-23, whatever its documents
+/// say); and, while `refuse` is set, any buttons.
+fn refused(body: &Value, refuse: &std::sync::atomic::AtomicBool) -> Option<String> {
+    let blocks = body["blocks"].as_array()?;
+    for (i, b) in blocks.iter().enumerate() {
+        if b["type"] != "actions" {
+            continue;
+        }
+        let elements = b["elements"].as_array().cloned().unwrap_or_default();
+        if elements.iter().any(|e| e["type"] == "multi_static_select") {
+            return Some(format!(
+                "unsupported element: multiselect [json-pointer:/blocks/{i}]"
+            ));
+        }
+        if refuse.load(std::sync::atomic::Ordering::SeqCst) {
+            return Some(format!("refused [json-pointer:/blocks/{i}]"));
+        }
+    }
+    None
 }
 
 /// A direct message as Socket Mode sends it.
@@ -520,6 +558,61 @@ fn told(slack: &FakeSlack) -> Vec<Value> {
         .map(|c| c.2)
         .filter(|b| b.get("thread_ts").is_none())
         .collect()
+}
+
+/// A need whose buttons Slack won't take is told anyway (D-202): in its
+/// words alone, saying to answer in the app, and kept, so its thread is
+/// its task's.
+#[tokio::test]
+async fn a_need_slack_wont_show_is_told_in_its_words() {
+    use otter_core::task::{DecisionKind, Task};
+    let mut slack = FakeSlack::start().await;
+    let api = slack.api.clone();
+    let fake = fake_agent_host_with("ok", "scripted", move |_| {
+        vec![
+            ("OTTER_BRAIN_V2", "1".into()),
+            ("OTTER_SLACK_API", api),
+            ("OTTER_PLAN_TURN", "1".into()),
+        ]
+    })
+    .await;
+    let host = &fake.host;
+    host.conn()
+        .await
+        .settings_set(set_up("xoxb-1-SLACKTESTTOKEN"))
+        .await
+        .unwrap();
+    let _ws = slack.connected().await;
+    slack
+        .refuse
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    let state = host.home().join("state/slack.json");
+    eventually("the needs looked at", || async {
+        std::fs::read_to_string(&state)
+            .ok()
+            .filter(|s| s.contains("\"needs\""))
+    })
+    .await;
+    let id = started_task_named(host, "Add JSON export").await;
+    wait_task(host, &id, "asking about its plan", |f: &Task| {
+        f.pending_decisions()
+            .any(|d| d.kind == DecisionKind::PlanApproval)
+    })
+    .await;
+    let words = eventually("the need told in its words", || async {
+        told(&slack).first().cloned()
+    })
+    .await;
+    // Its buttons were tried first.
+    let tried = slack.calls("refused:chat.postMessage");
+    assert_eq!(tried.len(), 1, "{tried:#?}");
+    assert_eq!(tried[0].2["blocks"][1]["type"], "actions");
+    let blocks = words["blocks"].as_array().unwrap();
+    assert_eq!(blocks.len(), 1, "{blocks:#?}");
+    let text = blocks[0]["text"].as_str().unwrap();
+    assert!(text.contains("asks you to decide"), "{text}");
+    assert!(text.contains("answer in the app"), "{text}");
+    kept(host, "1800000000.000001").await;
 }
 
 /// A task that needs the developer is told in Slack, once, with the app's
@@ -964,7 +1057,7 @@ async fn a_form_is_answered_in_slack() {
         .collect();
     assert_eq!(questions.len(), 2, "{blocks:#?}");
     assert_eq!(questions[0]["elements"][0]["type"], "static_select");
-    assert_eq!(questions[1]["elements"][0]["type"], "multi_static_select");
+    assert_eq!(questions[1]["elements"][0]["type"], "checkboxes");
     let (first, second) = (
         questions[0]["block_id"].as_str().unwrap().to_owned(),
         questions[1]["block_id"].as_str().unwrap().to_owned(),
@@ -1017,7 +1110,7 @@ async fn a_form_is_answered_in_slack() {
     assert!(f.pending_decisions().any(|d| d.id == decision));
 
     // Submit with the second in the message's state: answered.
-    let state_values = json!({ second.clone(): {"pick": {"type": "multi_static_select",
+    let state_values = json!({ second.clone(): {"pick": {"type": "checkboxes",
         "selected_options": [{"value": "Rust"}, {"value": "Go"}]}} });
     let submit = json!({
         "type": "block_actions", "user": {"id": "U01DEV"}, "container": container,

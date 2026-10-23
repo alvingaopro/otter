@@ -28,7 +28,8 @@ interactivity.
 - **A form.** A decision asked as a form — several questions, or one whose
   choices may be several (its interaction, D-059) — is asked as the app
   asks it. Each question gets its own block: its choices in a select
-  (several where it takes several), a box where it has none, then Submit.
+  (checkboxes where it takes several, ten at most), a box where it has
+  none, then Submit.
   Submit takes each question's answer from two places: what the message
   holds (`state.values`), and what each select chose as it was chosen.
   Slack's documents don't say plainly that a message's `state` comes with
@@ -107,3 +108,21 @@ two maps that only grew, a title cut by characters where its limit is in
 bytes, a download bounded only when Slack says the length (and the token
 sent wherever a message's address pointed), and `/otter new`'s failure
 said nowhere. All are fixed above.
+
+**Found against Slack itself (2026-10-23).** The first form tried live was
+never shown: Slack refused the whole message (`invalid_blocks`, "unsupported
+element: multiselect"), for the multi-select of a question that takes
+several, in its actions block — though Slack's documents list it there. The
+stand-in Slack took anything. Posted to the developer's direct messages (and
+deleted) at their word: the same form with a single select, checkboxes in
+actions, a multi-select beside a section's words, and one in an input block
+were all taken. A question that takes several now gets checkboxes (its
+picks read as a select's are); the stand-in refuses what Slack refuses. A
+need whose message Slack refuses is no longer left untold: it is posted
+again in its words alone, saying to answer in the app (kept as any need's
+message, so its thread is its task's), and what Slack said is wrong — which
+block, and why — is in the log, where only `invalid_blocks` was. Tests:
+`a_form_is_answered_in_slack` (watched failing without checkboxes: the form
+never told), `a_need_slack_wont_show_is_told_in_its_words` (watched failing
+without the words alone), `slacks_own_trouble_is_tried_again_and_a_refusal_is_not`
+(Slack's reason kept).

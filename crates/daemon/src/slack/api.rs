@@ -116,7 +116,17 @@ fn read(status: &str, body: &str) -> Result<Value, CallError> {
     if theirs {
         return again(format!("it said `{code}`"));
     }
-    Err(CallError::Refused(code.to_owned()))
+    // What Slack says is wrong, where it says (`invalid_blocks`: which
+    // block, and why).
+    let why: Vec<&str> = v["response_metadata"]["messages"]
+        .as_array()
+        .map(|m| m.iter().filter_map(Value::as_str).collect())
+        .unwrap_or_default();
+    if why.is_empty() {
+        return Err(CallError::Refused(code.to_owned()));
+    }
+    let why = otter_core::redact::redact(&why.join("; "));
+    Err(CallError::Refused(format!("{code}: {why}")))
 }
 
 /// Whether `url` is Slack's, where its files are: the bot's token goes
@@ -270,6 +280,15 @@ mod tests {
         }
         match read("200", r#"{"ok":false,"error":"channel_not_found"}"#) {
             Err(CallError::Refused(code)) => assert_eq!(code, "channel_not_found"),
+            other => panic!("{other:?}"),
+        }
+        // Which block, as Slack said it of a multi-select in a message.
+        let blocks = r#"{"ok":false,"error":"invalid_blocks","errors":["unsupported element: multiselect [json-pointer:/blocks/4]"],"response_metadata":{"messages":["[ERROR] unsupported element: multiselect [json-pointer:/blocks/4]"]}}"#;
+        match read("200", blocks) {
+            Err(CallError::Refused(why)) => assert_eq!(
+                why,
+                "invalid_blocks: [ERROR] unsupported element: multiselect [json-pointer:/blocks/4]"
+            ),
             other => panic!("{other:?}"),
         }
     }
