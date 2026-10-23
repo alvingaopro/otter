@@ -10,6 +10,7 @@
 //! state/otterhub/hosts.toml         the hub's hosts: this one first (local)
 //! state/otterhub/hub/state.json     whose each message is (the hub's)
 //! state/otterhub/hub/status.json    what the hub says of itself, lately
+//! state/otterhub/hub.pid            the hub's process, while it runs
 //! ```
 //!
 //! The tokens reach the hub in its environment, never on its command line
@@ -44,7 +45,9 @@ struct Run {
     /// `starting` (its process runs) or `failed`; `None`: not started.
     state: Option<&'static str>,
     detail: Option<String>,
-    /// How otterd starts with this machine (`boot.rs`).
+    /// When its process was started: only what it said since is its.
+    began: Option<chrono::DateTime<chrono::Utc>>,
+    /// How otterd starts with this machine (`boot.rs`), set up once.
     boot: Option<String>,
 }
 
@@ -90,6 +93,16 @@ pub fn checked(mut h: HubSettings) -> Result<HubSettings, String> {
     Ok(h)
 }
 
+/// Whether the hub said what it said `at` lately, and since its process
+/// `began`: what one before it said isn't this one's.
+fn lately(
+    at: chrono::DateTime<chrono::Utc>,
+    began: Option<chrono::DateTime<chrono::Utc>>,
+    now: chrono::DateTime<chrono::Utc>,
+) -> bool {
+    now - at < FRESH && began.is_some_and(|b| at >= b)
+}
+
 /// What the hub runs with.
 struct Plan {
     hub: HubSettings,
@@ -123,7 +136,9 @@ impl Daemon {
             .ok()
             .and_then(|b| serde_json::from_slice::<Said>(&b).ok())
             .unwrap_or_default();
-        let lately = said.at.is_some_and(|at| chrono::Utc::now() - at < FRESH);
+        let lately = said
+            .at
+            .is_some_and(|at| lately(at, run.began, chrono::Utc::now()));
         let state = match (hub.enabled, run.state) {
             (false, _) => "off",
             (true, Some("starting")) if lately => "running",
@@ -232,11 +247,17 @@ impl Daemon {
                 .mode(0o700)
                 .create(&dir)?;
         }
+        // A hub a previous otterd left running (it was killed, and couldn't
+        // stop it) is stopped: two would split the app's events.
+        stop_left_over(&dir.join("hub.pid")).await;
+        let _ = std::fs::remove_file(dir.join("hub/status.json"));
         let otterd = crate::env::self_exe()?;
         hosts_file(&dir, &plan.hub, &otterd, &self.paths.home)?;
         let env = self.environments.base().clone();
-        let boot = crate::boot::ensure(&otterd, &self.paths.home, &env).await;
-        self.hub.run.lock().unwrap().boot = Some(boot);
+        if self.hub.run.lock().unwrap().boot.is_none() {
+            let boot = crate::boot::ensure(&otterd, &self.paths.home, &env).await;
+            self.hub.run.lock().unwrap().boot = Some(boot);
+        }
         let otter = otter_beside(&otterd, &env).ok_or_else(|| {
             anyhow::anyhow!(
                 "`otter` isn't installed beside otterd (`otter host install` puts it there)"
@@ -247,8 +268,9 @@ impl Daemon {
         for u in &plan.hub.users {
             cmd.arg("--user").arg(u);
         }
-        // otterd's own environment, as a daemon it starts has it, with the
-        // hub's directory and, apart from any command line, the tokens.
+        // otterd's own process environment (the CLI's, which started it, or
+        // its unit's), with the hub's directory and, apart from any command
+        // line, the tokens.
         cmd.env("OTTER_CONFIG_DIR", &dir)
             .env(SLACK_BOT_TOKEN, &plan.bot)
             .env(SLACK_APP_TOKEN, &plan.app)
@@ -256,9 +278,18 @@ impl Daemon {
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
             .kill_on_drop(true);
+        let began = chrono::Utc::now();
         let mut child = crate::env::spawn_tokio(&mut cmd).await?;
+        if let Some(pid) = child.id() {
+            let _ = std::fs::write(dir.join("hub.pid"), format!("{pid}\n"));
+        }
         tracing::info!("otterhub: started ({})", otter.display());
-        self.hub_status(Some("starting"), None);
+        {
+            let mut run = self.hub.run.lock().unwrap();
+            run.state = Some("starting");
+            run.detail = None;
+            run.began = Some(began);
+        }
         // What it says goes to otterd's log, as otterd's own does.
         let mut said = Vec::new();
         for pipe in [
@@ -282,11 +313,51 @@ impl Daemon {
             }));
         }
         let status = child.wait().await?;
+        let _ = std::fs::remove_file(dir.join("hub.pid"));
         for s in said {
             let _ = s.await;
         }
         Ok(format!("the hub stopped ({status})"))
     }
+}
+
+/// Stop the hub whose process `pidfile` names, if it is one still running:
+/// asked to stop, then made to, waiting for it to go. A process by that
+/// number that isn't a hub (its number used again) is left alone.
+async fn stop_left_over(pidfile: &Path) {
+    let Some(pid) = std::fs::read_to_string(pidfile)
+        .ok()
+        .and_then(|s| s.trim().parse::<libc::pid_t>().ok())
+        .filter(|p| *p > 0)
+    else {
+        return;
+    };
+    let is_hub = || async move {
+        let out = tokio::process::Command::new("ps")
+            .args(["-o", "command=", "-p", &pid.to_string()])
+            .output()
+            .await;
+        out.is_ok_and(|o| {
+            let c = String::from_utf8_lossy(&o.stdout);
+            c.contains("hub") && c.contains("serve")
+        })
+    };
+    for signal in [libc::SIGTERM, libc::SIGKILL] {
+        if !is_hub().await {
+            break;
+        }
+        tracing::info!("otterhub: stopping the hub left running ({pid})");
+        // SAFETY: kill has no memory preconditions; the number is checked
+        // to be a hub's just before.
+        unsafe { libc::kill(pid, signal) };
+        for _ in 0..30 {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            if !is_hub().await {
+                break;
+            }
+        }
+    }
+    let _ = std::fs::remove_file(pidfile);
 }
 
 /// `otter` beside otterd, as `otter host install` puts them; else on `PATH`.
@@ -378,6 +449,18 @@ mod tests {
         d.default_host = Some("b".into());
         assert!(checked(d).is_ok());
         assert!(checked(hub("a:b", &["U1A"], &[])).is_err());
+    }
+
+    /// What the hub said counts while it is fresh and its own: not what a
+    /// process before it said, however lately.
+    #[test]
+    fn only_what_this_hub_said_lately_counts() {
+        let now = chrono::Utc::now();
+        let s = chrono::TimeDelta::seconds;
+        assert!(lately(now - s(5), Some(now - s(10)), now));
+        assert!(!lately(now - s(5), Some(now - s(2)), now));
+        assert!(!lately(now - s(100), Some(now - s(200)), now));
+        assert!(!lately(now - s(5), None, now));
     }
 
     /// The hub's hosts as the CLI reads them: this one first, local to this

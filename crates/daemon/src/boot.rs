@@ -73,7 +73,6 @@ fn unit(exe: &str, home: &str) -> String {
         "# Written by otterd (D-208): otterd for {home} starts with this machine.\n\
          [Unit]\n\
          Description=Otter's host daemon (otterd) for {home}\n\
-         After=network-online.target\n\
          \n\
          [Service]\n\
          ExecStart={exe} --home {home} serve\n\
@@ -140,7 +139,16 @@ async fn systemd(
     run(&["--user", "enable"], Some(&name))
         .await
         .map_err(|e| format!("systemd didn't enable {name} ({e})"))?;
-    let user = std::env::var("USER").unwrap_or_default();
+    let user = match std::env::var("USER").or_else(|_| std::env::var("LOGNAME")) {
+        Ok(u) if !u.is_empty() => u,
+        // A unit's otterd may have neither.
+        _ => tokio::process::Command::new("id")
+            .arg("-un")
+            .output()
+            .await
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_owned())
+            .unwrap_or_default(),
+    };
     Ok(match linger(&user, env).await {
         Ok(()) => format!("Starts with this machine: systemd user unit {name}."),
         Err(why) => format!(

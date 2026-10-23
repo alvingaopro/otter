@@ -1479,19 +1479,29 @@ fn one_slack_app_serves_two_hosts_through_the_hub() {
     assert_eq!(b["state"], "off", "{status}");
 }
 
-/// The hub's own process for the otterd with `home` (D-208): the one whose
+/// The hub processes for the otterd with `home` (D-208): those whose
 /// environment names that otterd's hub directory. Linux only (`/proc`).
-fn managed_hub_pid(home: &Home) -> Option<u32> {
+fn managed_hub_pids(home: &Home) -> Vec<u32> {
     let dir = format!("OTTER_CONFIG_DIR={}/state/otterhub", home.path());
-    std::fs::read_dir("/proc").ok()?.flatten().find_map(|e| {
-        let pid: u32 = e.file_name().to_str()?.parse().ok()?;
-        let cmdline = std::fs::read(format!("/proc/{pid}/cmdline")).ok()?;
-        let environ = std::fs::read(format!("/proc/{pid}/environ")).ok()?;
-        let serves =
-            cmdline.windows(5).any(|w| w == b"serve") && cmdline.windows(3).any(|w| w == b"hub");
-        let ours = environ.split(|b| *b == 0).any(|v| v == dir.as_bytes());
-        (serves && ours).then_some(pid)
-    })
+    let Ok(procs) = std::fs::read_dir("/proc") else {
+        return vec![];
+    };
+    procs
+        .flatten()
+        .filter_map(|e| {
+            let pid: u32 = e.file_name().to_str()?.parse().ok()?;
+            let cmdline = std::fs::read(format!("/proc/{pid}/cmdline")).ok()?;
+            let environ = std::fs::read(format!("/proc/{pid}/environ")).ok()?;
+            let serves = cmdline.windows(5).any(|w| w == b"serve")
+                && cmdline.windows(3).any(|w| w == b"hub");
+            let ours = environ.split(|b| *b == 0).any(|v| v == dir.as_bytes());
+            (serves && ours).then_some(pid)
+        })
+        .collect()
+}
+
+fn managed_hub_pid(home: &Home) -> Option<u32> {
+    managed_hub_pids(home).into_iter().next()
 }
 
 /// otterd runs the hub where it is set up (D-208): `otter hub setup --on a`
@@ -1547,6 +1557,27 @@ fn otterd_runs_the_hub_where_it_is_set_up() {
         .unwrap();
         ws
     };
+    // Connected but not said hello to, `setup` is still waiting: it is done
+    // only once the hub (this one, not one before it) is connected.
+    let waits = |child: &mut std::process::Child, what: &str| {
+        let ws = SlackSocket(
+            slack
+                .sockets
+                .recv_timeout(Duration::from_secs(30))
+                .unwrap_or_else(|_| panic!("{what}: the hub connects")),
+        );
+        std::thread::sleep(Duration::from_millis(1500));
+        assert!(
+            child.try_wait().unwrap().is_none(),
+            "{what}: setup waits for Slack"
+        );
+        let mut ws = ws;
+        ws.0.send(tokio_tungstenite::tungstenite::Message::text(
+            r#"{"type":"hello","num_connections":1}"#,
+        ))
+        .unwrap();
+        ws
+    };
     let finished = |child: std::process::Child| {
         let out = child.wait_with_output().unwrap();
         let said = String::from_utf8_lossy(&out.stdout).into_owned();
@@ -1558,8 +1589,8 @@ fn otterd_runs_the_hub_where_it_is_set_up() {
         said
     };
 
-    let child = setup(true);
-    let mut ws = hello("set up");
+    let mut child = setup(true);
+    let mut ws = waits(&mut child, "set up");
     let said = finished(child);
     assert!(said.contains("The hub runs on a: running"), "{said}");
     assert!(said.contains("Slack: connected"), "{said}");
@@ -1618,6 +1649,28 @@ fn otterd_runs_the_hub_where_it_is_set_up() {
         wait_until("b hears it again", || {
             heard_on(&cli, "b").contains("And log how long")
         });
+
+        // otterd itself killed: the hub it leaves is stopped by the next
+        // otterd, which runs its own; never two on the app.
+        let left = managed_hub_pid(&a).expect("the hub");
+        let otterd = std::fs::read_to_string(Path::new(a.path()).join("run/workd.pid")).unwrap();
+        let _ = Command::new("kill").arg("-9").arg(otterd.trim()).status();
+        std::thread::sleep(Duration::from_millis(300));
+        assert_eq!(
+            managed_hub_pids(&a),
+            vec![left],
+            "the hub outlives a killed otterd"
+        );
+        cli.ok(&["hub", "status"]);
+        let mut ws = hello("after otterd was killed");
+        wait_until("one hub, a new one", || {
+            let now = managed_hub_pids(&a);
+            now.len() == 1 && now[0] != left
+        });
+        ws.dm("e3", "1700000003.000100", "trainer: and the memory", None);
+        wait_until("b hears it after", || {
+            heard_on(&cli, "b").contains("and the memory")
+        });
     }
 
     // Stopped: gone, and said so; set up again, with the tokens it has.
@@ -1638,8 +1691,8 @@ fn otterd_runs_the_hub_where_it_is_set_up() {
         cli.fails(&["hub", "stop"])
             .contains("runs on none of your hosts")
     );
-    let child = setup(false);
-    let _ws = hello("set up again");
+    let mut child = setup(false);
+    let _ws = waits(&mut child, "set up again");
     let said = finished(child);
     assert!(said.contains("The hub runs on a: running"), "{said}");
     cli.ok(&["hub", "stop"]);

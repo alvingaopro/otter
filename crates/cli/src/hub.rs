@@ -601,7 +601,7 @@ impl Hub {
                 missing.join(", ")
             ));
         }
-        if !give_token && !slack.users.is_empty() {
+        if !needs_setting(&slack, give_token) {
             return Ok(line);
         }
         let mut update = SettingsUpdate {
@@ -1124,6 +1124,13 @@ impl Turn {
     }
 }
 
+/// Whether a host taken in needs anything set: the bot's token, its taking
+/// Slack's events from a hub (not yet so, on the hub's own host too), or
+/// the members it has none of.
+fn needs_setting(slack: &otter_protocol::host::SlackView, give_token: bool) -> bool {
+    give_token || slack.hub != Some(true) || slack.users.is_empty()
+}
+
 /// Whether a host may be taken in by the hub on bot `bot_id`, and whether
 /// it needs the bot's token: when nothing of Slack is set on it, or it is on
 /// this app already (its own connection must stop, or it would hear part of
@@ -1429,6 +1436,19 @@ async fn setup(config: &Config, on: &str, users: Vec<String>, json: bool) -> Res
             "the hub runs on {there} already: `otter hub stop` first (Slack's tokens are given again where it runs next)"
         );
     }
+    // A host not reached may run a hub of its own: said, since two on one
+    // app split its events (the hub says so too, once connected).
+    let unasked: Vec<&str> = all
+        .iter()
+        .filter(|(h, r)| h != on && r.is_err())
+        .map(|(h, _)| h.as_str())
+        .collect();
+    if !unasked.is_empty() && !json {
+        eprintln!(
+            "(not reached, so not known not to run a hub: {})",
+            unasked.join(", ")
+        );
+    }
     let mine = match all.iter().find(|(h, _)| h == on).map(|(_, r)| r) {
         Some(Ok(s)) => s.clone(),
         Some(Err(e)) => bail!("{on}: {e}"),
@@ -1508,7 +1528,11 @@ async fn setup(config: &Config, on: &str, users: Vec<String>, json: bool) -> Res
     let deadline = Instant::now() + SETUP_WAIT;
     let view = loop {
         let view = conn.settings_get().await?.hub.unwrap_or_default();
-        let ready = view.state == "running" && view.slack.is_some();
+        let ready = view.state == "running"
+            && view
+                .slack
+                .as_deref()
+                .is_some_and(|s| s.starts_with("connected"));
         if ready || view.state == "failed" || Instant::now() > deadline {
             break view;
         }
@@ -1814,6 +1838,23 @@ mod tests {
         assert!(!third.is_finished());
         drop(second);
         tokio::time::timeout(short, third).await.unwrap().unwrap();
+    }
+
+    /// A host taken in is set to take its events from the hub unless it
+    /// does already, with members, and needs no token: the hub's own host
+    /// with members of its own and a connection of its own is switched too.
+    #[test]
+    fn a_host_taken_in_is_switched_unless_it_is_already() {
+        use otter_protocol::host::SlackView;
+        let view = |hub: bool, users: &[&str]| SlackView {
+            hub: hub.then_some(true),
+            users: users.iter().map(|u| u.to_string()).collect(),
+            ..Default::default()
+        };
+        assert!(needs_setting(&view(false, &["U1A"]), false));
+        assert!(needs_setting(&view(true, &[]), false));
+        assert!(needs_setting(&view(true, &["U1A"]), true));
+        assert!(!needs_setting(&view(true, &["U1A"]), false));
     }
 
     /// What the hub keeps of whose each message is: the newest says, and

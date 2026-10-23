@@ -27,10 +27,16 @@ Settings › All hosts › Slack to set it up.
     soon (up to a minute). It starts it again at once when its settings or
     the tokens change, and stops it with `enabled: false`, or when otterd
     stops.
-  - Its output goes to otterd's log. It is the Claude worker's pattern.
+  - Its output goes to otterd's log. It is the Claude worker's pattern. It
+    runs with otterd's own process environment (the CLI's that started it,
+    or its unit's), not a login environment.
+  - Its process is kept in `state/otterhub/hub.pid`. An otterd killed
+    outright can't stop its hub, so the next one stops the hub left running
+    before it starts its own: never two on the app.
   - otterd keeps the hub's list of hosts for it. It is a deviation from
     "otterd knows one host" (D-182): otterd still dials no one.
-- **otterd starts with its machine, on the hub's host** (`boot.rs`). On
+- **otterd starts with its machine, on the hub's host** (`boot.rs`), set up
+  once per otterd, not on every start of the hub. On
   Linux that is a systemd user unit `otterd[-<home>].service`, enabled and
   not started, since this otterd runs already, with lingering. On macOS it
   is a LaunchAgent, loaded at the next login.
@@ -46,7 +52,9 @@ Settings › All hosts › Slack to set it up.
 - **The hub says how it is** in `state/otterhub/hub/status.json`: Slack's
   connection and each host's line, as they change and every 30 s.
   - The view's `hub.state` is `running` only while the hub has said so in
-    the last 90 s. A process that runs and says nothing is `starting`.
+    the last 90 s, since its process started. The file is removed before
+    each start, so what a hub before it said never counts. A process that
+    runs and says nothing is `starting`.
   - Slack's hello counts the app's open connections. With more than one,
     the hub says so: another hub, or a host on its own connection, hears
     part of what is said. Telling two hubs apart across machines is A2's
@@ -55,12 +63,16 @@ Settings › All hosts › Slack to set it up.
   that host connects, it reads `off`, but with tokens set, and D-206's
   `take_in` leaves a host like that alone. So otterd tells the hub its name
   (`--here`), and the hub takes it in with nothing to give. The e2e test
-  found that.
+  found that. A host taken in is always switched to take its events from
+  the hub unless it does already, the hub's own host too: one with members
+  and a connection of its own (D-200) would otherwise keep that connection
+  beside the hub's.
 - **`otter hub setup --on <host> [--user U…]`** gives the host the hub's
   settings. It takes the tokens from its environment (`SLACK_BOT_TOKEN`,
   `SLACK_APP_TOKEN`, taken out before anything starts, as `serve` does), or
   uses those the host has. Members default to those the host lists. It
-  then waits to see the hub connected.
+  then waits until the hub says it is connected to Slack, not merely
+  running. A host it can't reach is named: it may run a hub of its own.
   - It serves the host and those its machine reaches as local. The others
     are named "not served yet" until A2 reaches other machines.
   - It is refused while the hub runs on another host: stop it there first,
@@ -91,12 +103,16 @@ start needs root and lingering is refused there.
 
 Tests: e2e `otterd_runs_the_hub_where_it_is_set_up` (CLI, two real
 otterds, the stand-in Slack):
-- setup gives the hub, and otterd runs it;
+- setup gives the hub, and otterd runs it; setup is still waiting while
+  Slack hasn't said hello (watched failing with "running" taken for
+  connected);
 - both hosts are taken in, and a message goes to the host it names;
 - the ledger is in `state/otterhub/`;
 - setup elsewhere is refused;
 - killed, the hub is started again (watched failing with otterd not
   starting it again);
+- otterd itself killed, the next otterd stops the hub left running and runs
+  its own, one only (watched failing with the hub left running);
 - stopped, it is gone, and set up again it needs no tokens.
 
 The app's tests cover setting up with the tokens and member a host has, and
@@ -105,7 +121,18 @@ shown. Only hosts able to run the hub are offered (watched failing with
 every host offered), and a hub that runs, or failed, is said with no other
 offered.
 
-Unit tests: the settings as kept, the hub's `hosts.toml` (this host first,
+Unit tests: only what this hub said lately counts, not what one before it
+said; a host taken in is switched unless it is already; the settings as kept, the hub's `hosts.toml` (this host first,
 local), the unit and the agent (`KillMode=process`, one per home), paths a
 unit can't take, and the hub's own host taken in. Not tried on macOS (the
 LaunchAgent) nor against Slack itself yet.
+
+Reviewed by Fable before merging. The review found:
+- the hub's own host kept its own connection when it had members;
+- setup took "running" for connected;
+- a restarted hub was shown running from what the one before it said;
+- an otterd killed outright left its hub running beside the next one's;
+- the boot unit set up on every start;
+- an empty `$USER` in the linger hint.
+
+All are fixed above.
