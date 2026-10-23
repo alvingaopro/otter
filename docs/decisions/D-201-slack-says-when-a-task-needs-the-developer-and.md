@@ -62,10 +62,11 @@ needs them, to answer from Slack, and to talk to that task there.
   interactivity, `im:write` and `chat:write`.
 
 **Not done:** a form of several questions in one decision (a reply would
-answer it with one string; the app has the form), buttons on a review from
-an otterd before D-199, a need told to a channel rather than direct
-messages, threads for tasks that never needed the developer, a
-`/remind`-style snooze, pictures.
+answer it with one string; the app has the form; since D-202), buttons on a
+review from an otterd before D-199, a need told to a channel rather than
+direct messages, threads for tasks that never needed the developer (since
+D-202 for one made with `/otter new`), a `/remind`-style snooze, pictures
+(since D-202).
 
 Tests: `slack::needs::tests` (a decision's buttons and command, a
 question's options or its reply, Retry, what came of a need and who
