@@ -17,7 +17,7 @@ each was a real race in otterd, not in the test.
     too, and `GitManager::git`), so its reading never stands in the way of
     a commit, its own or anyone's;
   - delivery's git (`delivery::Git::output`) waits when one of git's locks
-    is held (the index, `HEAD`, a branch: the quoted `….lock'` path, which
+    is held (the index, `HEAD`, a branch: the `….lock` file's name, which
     git says in every language) and tries again, about 8 s in all (100 ms
     doubling to 1.6 s). A git that found the lock did nothing, so trying
     again is safe.

@@ -745,10 +745,10 @@ fn tail(s: &str, n: usize) -> String {
 const INDEX_WAITS: [u64; 8] = [100, 200, 400, 800, 1600, 1600, 1600, 1600];
 
 /// Whether git gave up because another git holds one of its locks: the
-/// index, `HEAD`, a branch. The quoted `….lock'` path is what git says in
-/// every language; the rest of the message is translated.
-fn index_locked(stderr: &str) -> bool {
-    stderr.contains(".lock'")
+/// index, `HEAD`, a branch. The `….lock` file's name is what git says in
+/// every language; the words around it, and the quotes, are translated.
+fn git_locked(stderr: &str) -> bool {
+    stderr.contains(".lock")
 }
 
 /// Git in a workspace.
@@ -816,7 +816,7 @@ impl Git<'_> {
                 return Ok(out);
             }
             match waits.next() {
-                Some(ms) if index_locked(&err) => {
+                Some(ms) if git_locked(&err) => {
                     tokio::time::sleep(std::time::Duration::from_millis(*ms)).await
                 }
                 _ => bail!(failed("git", args, &err, 500)),
@@ -1427,7 +1427,7 @@ mod tests {
         // Held: git alone gives up.
         let git = which("git", &env).unwrap();
         let (ok, _, err) = run(&git, &["add", "-A"], root, &env, None).await.unwrap();
-        assert!(!ok && index_locked(&err), "{err}");
+        assert!(!ok && git_locked(&err), "{err}");
         // Let go of a moment later: Otter's add goes through.
         let release = lock.clone();
         tokio::spawn(async move {
