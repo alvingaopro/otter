@@ -457,7 +457,7 @@ pub(crate) fn task_not_found(r: &str) -> RpcError {
 
 /// The pictures of a message, checked: each one's file extension and bytes.
 /// Their type must be one we know and the bytes must be that type.
-fn check_images(images: &[TaskImage]) -> RpcResult<Vec<(&'static str, Vec<u8>)>> {
+pub(crate) fn check_images(images: &[TaskImage]) -> RpcResult<Vec<(&'static str, Vec<u8>)>> {
     use base64::Engine;
     if images.len() > MAX_IMAGES {
         return Err(RpcError::invalid(format!(

@@ -523,12 +523,32 @@ impl Daemon {
                     });
             }
         };
+        // The pictures that came with these messages, as a task's turn
+        // has them (D-181, D-202).
+        let pictures = if backend.sees_pictures() {
+            let dir = self.chat_artifacts();
+            let all = open
+                .iter()
+                .flat_map(|m| {
+                    let id = m.id.to_string();
+                    m.attachments
+                        .iter()
+                        .map(|name| dir.join(name))
+                        .filter(|p| p.is_file())
+                        .map(move |p| (id.clone(), p))
+                        .collect::<Vec<_>>()
+                })
+                .collect();
+            crate::runs::fitting(all).0
+        } else {
+            vec![]
+        };
         let turn = Turn {
             task: None,
             instructions: HOST_INSTRUCTIONS,
             event: None,
             messages: &open,
-            pictures: vec![],
+            pictures,
             context: self.host_context(&chat).await,
             tools: self.offered(None, host_tools()),
             builtins: self.builtins_offered(None),

@@ -620,9 +620,13 @@ turn them on.
 
 - `otter.get` → `OtterChat {messages, history_seq}` (the newest 200
   messages; the same `Message` as a task's).
-- `otter.send {command_id, text}` → the same. The same `command_id` again
-  adds nothing. Otter's reply is a `Controller` message whose
-  `correlation_id` is the developer's message's id.
+- `otter.send {command_id, text, images?}` → the same. The same `command_id`
+  again adds nothing. Otter's reply is a `Controller` message whose
+  `correlation_id` is the developer's message's id. `images` (D-202) are
+  pictures as `task.send` takes them (`TaskImage`, the same limits); `text`
+  may then be empty. They are kept with the conversation
+  (`state/otter/artifacts/`, named on the message's `attachments`) and shown
+  to Otter's turn. An older otterd ignores them.
 - `otter.events {after?, limit?}` → `TaskEventRecord[]`: the history of
   Otter's tool calls there (`ToolCalled`, `ToolDone`).
 - `otter.actions {limit?}` → `OtterAction[]` (D-193): what Otter did across

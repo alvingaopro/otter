@@ -115,6 +115,30 @@ async fn answer(
         }
         buf.extend_from_slice(&chunk[..n]);
     }
+    let path = head
+        .split_whitespace()
+        .nth(1)
+        .unwrap_or_default()
+        .to_owned();
+    // A file Slack keeps (D-202): a picture too large, its thumbnail, a PDF.
+    if let Some(name) = path.strip_prefix("/files/") {
+        let bytes: Vec<u8> = match name {
+            "big.png" => [&b"\x89PNG\r\n\x1a\n"[..], &vec![0u8; 800 * 1024]].concat(),
+            "small.png" => b"\x89PNG\r\n\x1a\nsmall".to_vec(),
+            _ => b"%PDF-1.7".to_vec(),
+        };
+        calls
+            .lock()
+            .unwrap()
+            .push(("file".into(), header("authorization"), json!(name)));
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            bytes.len()
+        );
+        let _ = s.write_all(response.as_bytes()).await;
+        let _ = s.write_all(&bytes).await;
+        return;
+    }
     let body: Value = serde_json::from_slice(&buf[head_end..]).unwrap_or(Value::Null);
     let method = head
         .split_whitespace()
@@ -281,8 +305,23 @@ async fn a_direct_message_in_slack_is_answered_there() {
     assert_eq!(auth, "Bearer xoxb-1-SLACKTESTTOKEN");
     assert_eq!(body["channel"], "D1");
     assert_eq!(body["blocks"][0]["type"], "markdown");
-    assert_eq!(body["blocks"][0]["text"], reply.text.as_str());
     assert!(body.get("thread_ts").is_none(), "{body}");
+    // Shown as it is written, then the answer in its place: one message
+    // (D-202).
+    assert_eq!(
+        body["blocks"][0]["text"],
+        format!("{} …", reply.text).as_str()
+    );
+    let update = eventually("the answer in its place", || async {
+        slack
+            .calls("chat.update")
+            .into_iter()
+            .find(|c| c.2["ts"] == "1800000000.000001")
+    })
+    .await;
+    assert_eq!(update.2["blocks"][0]["text"], reply.text.as_str());
+    tokio::time::sleep(Duration::from_millis(600)).await;
+    assert_eq!(slack.calls("chat.postMessage").len(), 1);
     let seen = slack.calls("reactions.add");
     assert_eq!(seen[0].2["timestamp"], "1700000000.000100");
     assert_eq!(seen[0].2["name"], "eyes");
@@ -576,11 +615,26 @@ async fn a_task_that_needs_you_is_told_in_slack_and_answered_there() {
         .unwrap()
         .text
         .clone();
-    eventually("Otter's answer in the thread", || async {
+    // In the thread as it is written, then the answer in its place.
+    let shown = eventually("Otter writing in the thread", || async {
         slack
             .calls("chat.postMessage")
             .into_iter()
-            .find(|c| c.2["thread_ts"] == on && c.2["blocks"][0]["text"] == answer.as_str())
+            .find(|c| c.2["thread_ts"] == on)
+    })
+    .await;
+    let n = slack
+        .calls("chat.postMessage")
+        .iter()
+        .position(|c| c.2 == shown.2)
+        .unwrap()
+        + 1;
+    let at = format!("1800000000.{n:06}");
+    eventually("the answer in its place", || async {
+        slack
+            .calls("chat.update")
+            .into_iter()
+            .find(|c| c.2["ts"] == at.as_str() && c.2["blocks"][0]["text"] == answer.as_str())
     })
     .await;
 
@@ -687,4 +741,414 @@ async fn a_task_that_needs_you_is_told_in_slack_and_answered_there() {
         .collect();
     assert!(posted.iter().all(|t| *t == id), "{posted:?}");
     assert!(kept["needs"][&quiet].is_string(), "{kept}");
+}
+
+/// `/otter` as Socket Mode sends it; otterd's ack, which carries the answer.
+async fn slash(
+    ws: &mut WebSocketStream<TcpStream>,
+    envelope: &str,
+    user: &str,
+    text: &str,
+) -> Value {
+    let payload = json!({
+        "command": "/otter", "text": text, "user_id": user, "channel_id": "D1",
+        // One typing of it: Slack sends it again, the same, if the ack is late.
+        "trigger_id": format!("trigger-{text}"),
+    });
+    let frame = json!({"type": "slash_commands", "envelope_id": envelope, "payload": payload});
+    ws.send(Frame::text(frame.to_string())).await.unwrap();
+    let ack = tokio::time::timeout(Duration::from_secs(10), ws.next())
+        .await
+        .expect("an ack")
+        .unwrap()
+        .unwrap();
+    let ack: Value = serde_json::from_str(ack.to_text().unwrap()).unwrap();
+    assert_eq!(ack["envelope_id"], envelope);
+    ack["payload"].clone()
+}
+
+/// `/otter` (D-202): `status` lists what needs the developer; someone not
+/// listed is refused; anything unknown gets the help; `new` makes a task
+/// of its words and starts it, with a thread of its own whose first word is
+/// the request, so what Otter says about it comes back there, and a reply
+/// in it goes to the task.
+#[tokio::test]
+async fn otter_in_slack_says_what_needs_you_and_starts_a_task() {
+    use otter_core::task::{DecisionKind, Task, TaskStatus};
+    let mut slack = FakeSlack::start().await;
+    let api = slack.api.clone();
+    let fake = fake_agent_host_with("ok", "scripted", move |_| {
+        vec![
+            ("OTTER_BRAIN_V2", "1".into()),
+            ("OTTER_SLACK_API", api),
+            ("OTTER_PLAN_TURN", "1".into()),
+        ]
+    })
+    .await;
+    let host = &fake.host;
+    let asks = |f: &Task| {
+        f.pending_decisions()
+            .any(|d| d.kind == DecisionKind::PlanApproval)
+    };
+    let waiting = started_task_named(host, "Add CSV export").await;
+    let f = wait_task(host, &waiting, "asking about its plan", asks).await;
+    host.conn()
+        .await
+        .settings_set(set_up("xoxb-1-SLACKTESTTOKEN"))
+        .await
+        .unwrap();
+    let mut ws = slack.connected().await;
+
+    let status = slash(&mut ws, "s1", "U01DEV", "status").await;
+    assert_eq!(status["response_type"], "ephemeral");
+    let text = status["blocks"][0]["text"].as_str().unwrap();
+    assert!(text.starts_with("**Needs you** (1)"), "{text}");
+    assert!(text.contains(&format!("**{}**", f.title)), "{text}");
+    let refused = slash(&mut ws, "s2", "U02OTHER", "status").await;
+    assert!(
+        refused["text"]
+            .as_str()
+            .unwrap()
+            .contains("only the developer"),
+        "{refused}"
+    );
+    let help = slash(&mut ws, "s3", "U01DEV", "deploy it").await;
+    assert!(
+        help["blocks"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("/otter new")
+    );
+
+    // A new task, started, in a thread of its own.
+    let started = slash(&mut ws, "s4", "U01DEV", "new Add XML export\nwith tests").await;
+    assert!(
+        started["text"]
+            .as_str()
+            .unwrap()
+            .starts_with("Starting **Add XML export**"),
+        "{started}"
+    );
+    let head = eventually("the task's message", || async {
+        slack
+            .calls("chat.postMessage")
+            .into_iter()
+            .map(|c| c.2)
+            .find(|b| b["text"] == "Add XML export")
+    })
+    .await;
+    // Its time: each message's is its place among those posted.
+    let n = slack
+        .calls("chat.postMessage")
+        .iter()
+        .position(|c| c.2["text"] == "Add XML export")
+        .unwrap()
+        + 1;
+    let ts = format!("1800000000.{n:06}");
+    assert!(head.get("thread_ts").is_none());
+    // Sent again (its ack was late): answered, not done again.
+    slash(&mut ws, "s5", "U01DEV", "new Add XML export\nwith tests").await;
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let tasks = host.conn().await.task_list().await.unwrap();
+    let made: Vec<_> = tasks
+        .iter()
+        .filter(|t| t.title == "Add XML export")
+        .collect();
+    assert_eq!(made.len(), 1, "{made:#?}");
+    let task = made[0].clone();
+    let request = task
+        .messages
+        .iter()
+        .find(|m| m.role == otter_core::task::MessageRole::User)
+        .unwrap();
+    assert_eq!(request.text, "Add XML export\nwith tests");
+    assert_eq!(
+        request.correlation_id.as_deref(),
+        Some(format!("slack:D1:{ts}:{ts}").as_str())
+    );
+    wait_task(host, &task.id.to_string(), "started", |f| {
+        f.status != TaskStatus::Draft
+    })
+    .await;
+    // What Otter says about it comes back into its thread.
+    eventually("Otter in the task's thread", || async {
+        slack
+            .calls("chat.postMessage")
+            .into_iter()
+            .find(|c| c.2["thread_ts"] == ts.as_str())
+    })
+    .await;
+    // And a reply there is the task's.
+    acked(
+        &mut ws,
+        dm(
+            "e1",
+            "U01DEV",
+            "1700000010.000100",
+            "Use the xml crate",
+            json!({"thread_ts": ts}),
+        ),
+        "e1",
+    )
+    .await;
+    wait_task(host, &task.id.to_string(), "the reply in the task", |f| {
+        f.messages.iter().any(|m| m.text == "Use the xml crate")
+    })
+    .await;
+}
+
+/// A form (D-202): a decision of several questions is asked with a select
+/// per question; what a select chose as it was chosen and what the message
+/// holds at Submit are its answers, done as the app's form does it. A
+/// Submit with a question unanswered says so and decides nothing.
+#[tokio::test]
+async fn a_form_is_answered_in_slack() {
+    use otter_core::task::{Decider, DecisionStatus, TaskStatus};
+    let mut slack = FakeSlack::start().await;
+    let api = slack.api.clone();
+    let fake = fake_agent_host_with("ok", "rules", move |_| {
+        vec![("OTTER_BRAIN_V2", "1".into()), ("OTTER_SLACK_API", api)]
+    })
+    .await;
+    let host = &fake.host;
+    host.conn()
+        .await
+        .settings_set(set_up("xoxb-1-SLACKTESTTOKEN"))
+        .await
+        .unwrap();
+    let mut ws = slack.connected().await;
+    let state = host.home().join("state/slack.json");
+    eventually("the needs looked at", || async {
+        std::fs::read_to_string(&state)
+            .ok()
+            .filter(|s| s.contains("\"needs\""))
+    })
+    .await;
+
+    let id = started_task_named(host, "Set up ASK_FORM").await;
+    let f = wait_task(host, &id, "asking its questions", |f| {
+        f.status == TaskStatus::Blocked && f.pending_decisions().next().is_some()
+    })
+    .await;
+    let decision = f.pending_decisions().next().unwrap().id.clone();
+    let need = eventually("the form told in Slack", || async {
+        told(&slack).into_iter().find(|b| {
+            b["blocks"].as_array().is_some_and(|bs| {
+                bs.iter()
+                    .any(|x| x["block_id"].as_str().is_some_and(|i| i.starts_with("q:")))
+            })
+        })
+    })
+    .await;
+    let blocks = need["blocks"].as_array().unwrap();
+    let questions: Vec<&Value> = blocks
+        .iter()
+        .filter(|b| b["block_id"].as_str().is_some_and(|i| i.starts_with("q:")))
+        .collect();
+    assert_eq!(questions.len(), 2, "{blocks:#?}");
+    assert_eq!(questions[0]["elements"][0]["type"], "static_select");
+    assert_eq!(questions[1]["elements"][0]["type"], "multi_static_select");
+    let (first, second) = (
+        questions[0]["block_id"].as_str().unwrap().to_owned(),
+        questions[1]["block_id"].as_str().unwrap().to_owned(),
+    );
+    let submit = blocks
+        .iter()
+        .flat_map(|b| b["elements"].as_array().cloned().unwrap_or_default())
+        .find(|e| e["action_id"] == "form")
+        .unwrap();
+    let value = submit["value"].as_str().unwrap().to_owned();
+    let on = format!(
+        "1800000000.{:06}",
+        slack
+            .calls("chat.postMessage")
+            .iter()
+            .position(|c| c.2 == need)
+            .unwrap()
+            + 1
+    );
+    let send = |envelope: &str, payload: Value| {
+        json!({"type": "interactive", "envelope_id": envelope, "payload": payload}).to_string()
+    };
+    let container = json!({"type": "message", "message_ts": on, "channel_id": "D1"});
+
+    // The first question chosen as it is chosen.
+    let pick = json!({
+        "type": "block_actions", "user": {"id": "U01DEV"}, "container": container,
+        "actions": [{"action_id": "pick", "block_id": first, "action_ts": "1700000020.1",
+            "type": "static_select", "selected_option": {"value": "SQLite"}}],
+    });
+    acked(&mut ws, send("f1", pick), "f1").await;
+
+    // Submit with the second unanswered: said, nothing decided.
+    let early = json!({
+        "type": "block_actions", "user": {"id": "U01DEV"}, "container": container,
+        "actions": [{"action_id": "form", "value": value, "action_ts": "1700000021.1"}],
+        "state": {"values": {}},
+    });
+    acked(&mut ws, send("f2", early), "f2").await;
+    eventually("what's still to answer", || async {
+        slack.calls("chat.postMessage").into_iter().find(|c| {
+            c.2["thread_ts"] == on.as_str()
+                && c.2["blocks"][0]["text"]
+                    .as_str()
+                    .is_some_and(|t| t.contains("Still to answer"))
+        })
+    })
+    .await;
+    let f = host.conn().await.task_get(&id).await.unwrap();
+    assert!(f.pending_decisions().any(|d| d.id == decision));
+
+    // Submit with the second in the message's state: answered.
+    let state_values = json!({ second.clone(): {"pick": {"type": "multi_static_select",
+        "selected_options": [{"value": "Rust"}, {"value": "Go"}]}} });
+    let submit = json!({
+        "type": "block_actions", "user": {"id": "U01DEV"}, "container": container,
+        "actions": [{"action_id": "form", "value": value, "action_ts": "1700000022.1"}],
+        "state": {"values": state_values},
+    });
+    acked(&mut ws, send("f3", submit), "f3").await;
+    let f = wait_task(host, &id, "answered", |f| {
+        f.decisions
+            .iter()
+            .any(|d| d.id == decision && d.status == DecisionStatus::Answered)
+    })
+    .await;
+    let d = f.decisions.iter().find(|d| d.id == decision).unwrap();
+    assert_eq!(d.decided_by, Some(Decider::User));
+    let answer = d.answer.clone().unwrap();
+    let (q1, q2) = (&first["q:".len()..], &second["q:".len()..]);
+    assert_eq!(answer, format!("{q1} SQLite; {q2} Rust, Go"), "{answer}");
+}
+
+/// Pictures (D-202): a picture sent to the app reaches Otter's turn — a
+/// thumbnail where the picture itself is too large — and a file that isn't
+/// one is said to be left out.
+#[tokio::test]
+async fn a_picture_in_slack_reaches_otter() {
+    let mut slack = FakeSlack::start().await;
+    let api = slack.api.clone();
+    let fake = fake_agent_host_with("ok", "scripted", move |_| {
+        vec![("OTTER_BRAIN_V2", "1".into()), ("OTTER_SLACK_API", api)]
+    })
+    .await;
+    let host = &fake.host;
+    host.conn()
+        .await
+        .settings_set(set_up("xoxb-1-SLACKTESTTOKEN"))
+        .await
+        .unwrap();
+    let mut ws = slack.connected().await;
+    let base = slack.api.trim_end_matches("/api").to_owned();
+    let files = json!([
+        {"mimetype": "image/png", "size": 2_000_000,
+         "url_private_download": format!("{base}/files/big.png"),
+         "thumb_720": format!("{base}/files/small.png")},
+        {"mimetype": "application/pdf", "size": 10,
+         "url_private_download": format!("{base}/files/doc.pdf")},
+    ]);
+    let event = dm(
+        "e1",
+        "U01DEV",
+        "1700000030.000100",
+        "PICTURES",
+        json!({"subtype": "file_share", "files": files}),
+    );
+    acked(&mut ws, event, "e1").await;
+    let chat = eventually("the message with its picture", || async {
+        let c = host.conn().await.otter_get().await.unwrap();
+        c.messages
+            .iter()
+            .any(|m| m.text == "PICTURES" && m.attachments.len() == 1)
+            .then_some(c)
+    })
+    .await;
+    assert_eq!(said(&chat, "PICTURES"), 1);
+    // The thumbnail, with the bot's token; never the picture too large.
+    let fetched: Vec<Value> = slack.calls("file").into_iter().map(|c| c.2).collect();
+    assert_eq!(fetched, vec![json!("small.png")], "{fetched:?}");
+    assert_eq!(slack.calls("file")[0].1, "Bearer xoxb-1-SLACKTESTTOKEN");
+    let said_what = |what: &'static str| {
+        let slack = &slack;
+        async move {
+            slack.calls("chat.postMessage").into_iter().find(|c| {
+                c.2["blocks"][0]["text"]
+                    .as_str()
+                    .is_some_and(|t| t.contains(what))
+            })
+        }
+    };
+    eventually("the PDF said to be left out", || {
+        said_what("wasn't passed on")
+    })
+    .await;
+    eventually("Otter shown the picture", || {
+        said_what("Shown: [image/png]")
+    })
+    .await;
+}
+
+/// An answer shown as it is written is finished where it is (D-202), even
+/// when the developer wrote elsewhere meanwhile, so the answer itself goes
+/// nowhere in Slack: its words aren't left half written.
+#[tokio::test]
+async fn an_answer_shown_as_it_is_written_is_finished_where_it_is() {
+    let mut slack = FakeSlack::start().await;
+    let api = slack.api.clone();
+    let fake = fake_agent_host_with("ok", "scripted", move |_| {
+        vec![("OTTER_BRAIN_V2", "1".into()), ("OTTER_SLACK_API", api)]
+    })
+    .await;
+    let host = &fake.host;
+    host.conn()
+        .await
+        .settings_set(set_up("xoxb-1-SLACKTESTTOKEN"))
+        .await
+        .unwrap();
+    let mut ws = slack.connected().await;
+    // Otter takes a while over it; meanwhile the developer writes from the
+    // terminal.
+    acked(
+        &mut ws,
+        dm(
+            "e1",
+            "U01DEV",
+            "1700000040.000100",
+            "SLEEP: 1500",
+            json!({}),
+        ),
+        "e1",
+    )
+    .await;
+    eventually("Otter at it", || async {
+        let c = host.conn().await.otter_get().await.unwrap();
+        (said(&c, "SLEEP: 1500") == 1).then_some(())
+    })
+    .await;
+    host.conn()
+        .await
+        .otter_send("cli-1", "and meanwhile")
+        .await
+        .unwrap();
+    let shown = eventually("the answer shown as it is written", || async {
+        slack
+            .calls("chat.postMessage")
+            .into_iter()
+            .find(|c| c.2["blocks"][0]["text"] == "Scripted: None. …")
+    })
+    .await;
+    let n = slack
+        .calls("chat.postMessage")
+        .iter()
+        .position(|c| c.2 == shown.2)
+        .unwrap()
+        + 1;
+    let at = format!("1800000000.{n:06}");
+    eventually("finished where it is", || async {
+        slack
+            .calls("chat.update")
+            .into_iter()
+            .find(|c| c.2["ts"] == at.as_str() && c.2["blocks"][0]["text"] == "Scripted: None.")
+    })
+    .await;
 }

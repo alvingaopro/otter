@@ -21,7 +21,12 @@ pub enum Envelope {
         envelope_id: String,
         payload: Value,
     },
-    /// Anything else Slack wants acked (a slash command): not taken yet.
+    /// `/otter` (D-202): its ack carries the answer.
+    Command {
+        envelope_id: String,
+        payload: Value,
+    },
+    /// Anything else Slack wants acked: not taken.
     Other {
         envelope_id: String,
     },
@@ -46,6 +51,10 @@ pub fn envelope(text: &str) -> Envelope {
             envelope_id,
             payload: v["payload"].clone(),
         },
+        (Some("slash_commands"), Some(envelope_id)) => Envelope::Command {
+            envelope_id,
+            payload: v["payload"].clone(),
+        },
         (_, Some(envelope_id)) => Envelope::Other { envelope_id },
         _ => Envelope::Unknown,
     }
@@ -64,6 +73,12 @@ pub struct Press {
     pub at: String,
     /// The message it is on: its thread is its task's.
     pub on: Origin,
+    /// The block it is in: a form's question is `q:<id>` (D-202).
+    pub block: String,
+    /// What a select chose.
+    pub picked: Vec<String>,
+    /// What the message's selects and inputs hold now (`state.values`).
+    pub state: Value,
 }
 
 /// The press in an interactive payload; `None` for anything else.
@@ -84,6 +99,103 @@ pub fn press(payload: &Value) -> Option<Press> {
             channel: channel.to_owned(),
             thread: Some(payload["container"]["message_ts"].as_str()?.to_owned()),
         },
+        block: action["block_id"].as_str().unwrap_or_default().to_owned(),
+        picked: picked(action),
+        state: payload["state"]["values"].clone(),
+    })
+}
+
+/// What a select (one or several) chose.
+fn picked(element: &Value) -> Vec<String> {
+    if let Some(one) = element["selected_option"]["value"].as_str() {
+        return vec![one.to_owned()];
+    }
+    element["selected_options"]
+        .as_array()
+        .map(|many| {
+            many.iter()
+                .filter_map(|o| o["value"].as_str().map(String::from))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// What an input holds, trimmed.
+fn typed(element: &Value) -> Vec<String> {
+    element["value"]
+        .as_str()
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .map(|v| vec![v.to_owned()])
+        .unwrap_or_default()
+}
+
+/// A form's answers as its message holds them (`state.values`), by
+/// question: several choices joined with ", ", as the app joins them.
+pub fn form_answers(values: &Value) -> std::collections::BTreeMap<String, String> {
+    let Some(blocks) = values.as_object() else {
+        return Default::default();
+    };
+    blocks
+        .iter()
+        .filter_map(|(block, actions)| {
+            let question = block.strip_prefix("q:")?;
+            let element = actions.as_object()?.values().next()?;
+            let chosen = match picked(element) {
+                none if none.is_empty() => typed(element),
+                some => some,
+            };
+            (!chosen.is_empty()).then(|| (question.to_owned(), chosen.join(", ")))
+        })
+        .collect()
+}
+
+/// `/otter` as the developer typed it (D-202).
+#[derive(Debug, PartialEq)]
+pub struct Command {
+    /// Who typed it: only a listed member is answered.
+    pub user: String,
+    pub verb: Verb,
+    /// This one typing of it: Slack sends a command again when its ack is
+    /// late, and it is done once.
+    pub trigger: String,
+    /// Where a later word about it goes.
+    pub respond: Option<String>,
+}
+
+/// What `/otter` is asked to do.
+#[derive(Debug, PartialEq)]
+pub enum Verb {
+    /// What needs the developer, and what is at work: `/otter`,
+    /// `/otter status`.
+    Status,
+    /// A task, made and started from these words: `/otter new <words>`.
+    New(String),
+    /// What `/otter` does: `/otter help`, or anything it doesn't know.
+    Help,
+}
+
+/// The command in a slash command's payload; `None` for another command.
+pub fn command(payload: &Value) -> Option<Command> {
+    if payload["command"] != "/otter" {
+        return None;
+    }
+    let text = plain(payload["text"].as_str().unwrap_or_default());
+    let text = text.trim();
+    let (word, rest) = text.split_once(char::is_whitespace).unwrap_or((text, ""));
+    let verb = match word.to_lowercase().as_str() {
+        "" | "status" => Verb::Status,
+        "new" if !rest.trim().is_empty() => Verb::New(rest.trim().to_owned()),
+        _ => Verb::Help,
+    };
+    Some(Command {
+        user: payload["user_id"].as_str()?.to_owned(),
+        verb,
+        trigger: payload["trigger_id"]
+            .as_str()
+            .unwrap_or_default()
+            .to_owned(),
+        respond: payload["response_url"].as_str().map(String::from),
     })
 }
 
@@ -93,6 +205,9 @@ pub struct Inbound {
     pub to: Origin,
     pub ts: String,
     pub text: String,
+    /// The files that came with it (D-202): each a picture to fetch, by the
+    /// addresses to try in turn, or none to try (not a picture).
+    pub files: Vec<Vec<String>>,
 }
 
 /// Where a message came from in Slack, and so where Otter answers it.
@@ -142,7 +257,11 @@ pub fn inbound(event: &Value, users: &[String]) -> Result<Inbound, Skip> {
         return Err(Skip::NotAMessage);
     };
     let text = plain(event["text"].as_str().unwrap_or_default());
-    if text.trim().is_empty() {
+    let files: Vec<Vec<String>> = event["files"]
+        .as_array()
+        .map(|files| files.iter().map(picture_addresses).collect())
+        .unwrap_or_default();
+    if text.trim().is_empty() && files.is_empty() {
         return Err(Skip::Empty);
     }
     Ok(Inbound {
@@ -152,7 +271,46 @@ pub fn inbound(event: &Value, users: &[String]) -> Result<Inbound, Skip> {
         },
         ts: ts.to_owned(),
         text: text.trim().to_owned(),
+        files,
     })
+}
+
+/// Where a file in a message can be fetched as a picture Otter takes, best
+/// first: the file itself while it fits, then Slack's thumbnails, largest
+/// first. None for a file that isn't a picture.
+fn picture_addresses(file: &Value) -> Vec<String> {
+    if !file["mimetype"]
+        .as_str()
+        .is_some_and(|m| m.starts_with("image/"))
+    {
+        return vec![];
+    }
+    let mut out = Vec::new();
+    let fits = file["size"]
+        .as_u64()
+        .is_some_and(|n| n as usize <= otter_protocol::task::MAX_IMAGE_BYTES);
+    if fits && let Some(u) = file["url_private_download"].as_str() {
+        out.push(u.to_owned());
+    }
+    for size in ["1024", "960", "800", "720", "480", "360"] {
+        if let Some(u) = file[format!("thumb_{size}")].as_str() {
+            out.push(u.to_owned());
+        }
+    }
+    out
+}
+
+/// A picture's type by its first bytes, among those Otter takes (D-171).
+pub fn picture_type(bytes: &[u8]) -> Option<&'static str> {
+    if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+        Some("image/png")
+    } else if bytes.starts_with(&[0xff, 0xd8, 0xff]) {
+        Some("image/jpeg")
+    } else if bytes.len() > 12 && &bytes[..4] == b"RIFF" && &bytes[8..12] == b"WEBP" {
+        Some("image/webp")
+    } else {
+        None
+    }
 }
 
 impl Inbound {
@@ -288,7 +446,7 @@ mod tests {
             }
         );
         assert_eq!(
-            envelope(r#"{"type":"slash_commands","envelope_id":"e2","payload":{}}"#),
+            envelope(r#"{"type":"app_rate_limited","envelope_id":"e2","payload":{}}"#),
             Envelope::Other {
                 envelope_id: "e2".into()
             }
@@ -302,7 +460,72 @@ mod tests {
                 payload: json!({"type": "block_actions"})
             }
         );
+        assert_eq!(
+            envelope(
+                r#"{"type":"slash_commands","envelope_id":"e4","payload":{"command":"/otter"}}"#
+            ),
+            Envelope::Command {
+                envelope_id: "e4".into(),
+                payload: json!({"command": "/otter"})
+            }
+        );
         assert_eq!(envelope("not json"), Envelope::Unknown);
+    }
+
+    /// A form's answers (D-202): a select's choice, several joined, an
+    /// input's words; what wasn't answered isn't there.
+    #[test]
+    fn a_forms_answers_are_read_from_its_message() {
+        let values = json!({
+            "q:db": {"pick": {"type": "static_select", "selected_option": {"value": "Postgres"}}},
+            "q:langs": {"pick": {"type": "multi_static_select",
+                "selected_options": [{"value": "Rust"}, {"value": "Go"}]}},
+            "q:name": {"text": {"type": "plain_text_input", "value": "  exporter "}},
+            "q:empty": {"text": {"type": "plain_text_input", "value": ""}},
+            "q:none": {"pick": {"type": "static_select", "selected_option": null}},
+            "other": {"x": {"value": "not a question"}},
+        });
+        assert_eq!(
+            form_answers(&values),
+            std::collections::BTreeMap::from([
+                ("db".to_owned(), "Postgres".to_owned()),
+                ("langs".to_owned(), "Rust, Go".to_owned()),
+                ("name".to_owned(), "exporter".to_owned()),
+            ])
+        );
+        let pick = json!({
+            "type": "block_actions", "user": {"id": "U1"},
+            "container": {"message_ts": "1.5", "channel_id": "D1"},
+            "actions": [{"action_id": "pick", "block_id": "q:db", "action_ts": "2.0",
+                "selected_option": {"value": "SQLite"}}],
+        });
+        let p = press(&pick).unwrap();
+        assert_eq!(
+            (p.block.as_str(), p.picked.as_slice()),
+            ("q:db", &["SQLite".to_owned()][..])
+        );
+    }
+
+    #[test]
+    fn otter_is_told_what_to_do_in_a_word() {
+        let cmd = |text: &str| {
+            command(&json!({"command": "/otter", "text": text, "user_id": "U1"}))
+                .unwrap()
+                .verb
+        };
+        assert_eq!(cmd(""), Verb::Status);
+        assert_eq!(cmd(" Status "), Verb::Status);
+        assert_eq!(
+            cmd("new  Add <https://x.dev|x.dev> export\nwith tests"),
+            Verb::New("Add https://x.dev export\nwith tests".into())
+        );
+        assert_eq!(cmd("new"), Verb::Help);
+        assert_eq!(cmd("help"), Verb::Help);
+        assert_eq!(cmd("deploy it"), Verb::Help);
+        assert_eq!(
+            command(&json!({"command": "/other", "user_id": "U1"})),
+            None
+        );
     }
 
     #[test]
@@ -324,6 +547,9 @@ mod tests {
                     channel: "D1".into(),
                     thread: Some("1.5".into())
                 },
+                block: String::new(),
+                picked: vec![],
+                state: Value::Null,
             })
         );
         assert_eq!(press(&json!({"type": "view_submission"})), None);
@@ -361,6 +587,34 @@ mod tests {
         // Words that came with a picture are taken.
         let pic = inbound(&dm(json!({"subtype": "file_share"})), &users()).unwrap();
         assert_eq!(pic.text, "hello");
+    }
+
+    /// Pictures (D-202): the file while it fits, then its thumbnails,
+    /// largest first; a file that isn't a picture has nowhere to be fetched
+    /// from; words may be left out when a file came.
+    #[test]
+    fn a_messages_pictures_are_fetched_best_first() {
+        let max = otter_protocol::task::MAX_IMAGE_BYTES;
+        let event = dm(json!({"text": "", "subtype": "file_share", "files": [
+            {"mimetype": "image/png", "size": 1000, "url_private_download": "u/a.png", "thumb_360": "t/a360"},
+            {"mimetype": "image/heic", "size": max + 1, "url_private_download": "u/b.heic",
+             "thumb_480": "t/b480", "thumb_1024": "t/b1024"},
+            {"mimetype": "application/pdf", "size": 10, "url_private_download": "u/c.pdf"},
+        ]}));
+        let m = inbound(&event, &users()).unwrap();
+        assert_eq!(m.text, "");
+        assert_eq!(
+            m.files,
+            vec![
+                vec!["u/a.png".to_owned(), "t/a360".to_owned()],
+                vec!["t/b1024".to_owned(), "t/b480".to_owned()],
+                vec![],
+            ]
+        );
+        assert_eq!(picture_type(b"\x89PNG\r\n\x1a\nrest"), Some("image/png"));
+        assert_eq!(picture_type(&[0xff, 0xd8, 0xff, 0xe0]), Some("image/jpeg"));
+        assert_eq!(picture_type(b"RIFF\0\0\0\0WEBPVP8 "), Some("image/webp"));
+        assert_eq!(picture_type(b"%PDF-1.7"), None);
     }
 
     #[test]

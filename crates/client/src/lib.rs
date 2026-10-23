@@ -656,6 +656,7 @@ impl Connection {
         text: &str,
     ) -> Result<otter_core::task::OtterChat> {
         self.call(Request::OtterSend(otter_protocol::otter::OtterSend {
+            images: vec![],
             command_id: command_id.to_owned(),
             text: text.to_owned(),
         }))

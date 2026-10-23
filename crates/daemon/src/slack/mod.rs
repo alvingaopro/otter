@@ -33,11 +33,12 @@ use std::time::Duration;
 
 use futures_util::{SinkExt, StreamExt};
 use otter_core::DecisionId;
+use otter_core::conversation::{InteractionKind, Question};
 use otter_core::task::{Message, MessageRole, TaskAction};
 use otter_protocol::Event;
 use otter_protocol::host::SlackView;
 use otter_protocol::otter::OtterSend;
-use otter_protocol::task::{TaskAct, TaskSend};
+use otter_protocol::task::{TaskAct, TaskImage, TaskSend};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tokio_tungstenite::tungstenite::Message as Frame;
@@ -64,6 +65,11 @@ const STALE: chrono::TimeDelta = chrono::TimeDelta::hours(6);
 const SETTLE: Duration = Duration::from_millis(300);
 /// The messages that told a need kept, at most: the newest.
 const MAX_POSTS: usize = 200;
+/// An answer being written is shown again at most this often (Slack's
+/// `chat.update` is rate-limited, D-202).
+const STREAM_EVERY: Duration = Duration::from_millis(1500);
+/// How long the sync waits for an answer's first words to be posted.
+const STREAM_WAIT: Duration = Duration::from_secs(3);
 
 /// The connection's state, for Settings.
 #[derive(Default)]
@@ -72,6 +78,58 @@ pub struct Slack {
     restart: tokio::sync::Notify,
     /// Each listed member's direct messages with the app, once opened.
     channels: std::sync::Mutex<HashMap<String, String>>,
+    /// Threads made outside the sync loop (`/otter new`, D-202), for it to
+    /// keep: it alone writes `state/slack.json`.
+    pending: std::sync::Mutex<Vec<Pending>>,
+    /// The `/otter` commands done lately, by their trigger: one sent again
+    /// (its ack was late) is answered, not done again (D-202).
+    commands: std::sync::Mutex<std::collections::VecDeque<String>>,
+    /// What each form's selects chose, by its message and question, as
+    /// they are chosen (D-202): Submit reads the message's state too.
+    picks: std::sync::Mutex<HashMap<(String, String), String>>,
+    /// Otter's answers being written, by the developer's message they
+    /// answer (D-202).
+    streams: std::sync::Mutex<HashMap<String, Stream>>,
+}
+
+/// An answer of Otter's being written, shown in Slack as it is (D-202).
+#[derive(Clone, Debug)]
+struct Stream {
+    /// Where it goes; `None`: not Slack's (the developer spoke elsewhere).
+    to: Option<Origin>,
+    /// The message it is written in, once posted.
+    ts: Option<String>,
+    /// That message is being posted, or shown again: the sync waits for
+    /// it, so the answer is never overwritten by words before it.
+    posting: bool,
+    /// The answer itself was sent: nothing more is shown.
+    over: bool,
+    /// The words so far, and when Slack was last shown them.
+    text: String,
+    shown: Option<std::time::Instant>,
+    born: std::time::Instant,
+}
+
+/// A thread for a task, made outside the sync loop.
+#[derive(Clone, Debug, PartialEq)]
+struct Pending {
+    post: Post,
+    /// Its conversation's last message when the thread began.
+    after: Option<String>,
+}
+
+impl Slack {
+    /// The need's (or task's) message whose thread `on` is, among those not
+    /// kept yet.
+    fn pending_post(&self, on: &Origin) -> Option<Post> {
+        let thread = on.thread.as_deref()?;
+        self.pending
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|p| p.post.ts == thread && p.post.channel == on.channel)
+            .map(|p| p.post.clone())
+    }
 }
 
 #[derive(Clone, Debug, Default)]
@@ -341,6 +399,17 @@ impl Daemon {
             .map_err(|e| anyhow::anyhow!("connecting to Slack: {e}"))?;
         let (mut sink, mut stream) = ws.split();
         let (_, mut events) = self.events.subscribe();
+        let mut writing = self.events.subscribe_transient();
+        // Otter's answers as they are written (D-202).
+        let written = async {
+            loop {
+                match writing.recv().await {
+                    Ok(r) => self.slack_writing(c, &env, &r.event).await,
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
+                }
+            }
+        };
         // Where Slack starts, taken now: what happens from here on is news.
         self.slack_begin().await;
         let wake = tokio::sync::Notify::new();
@@ -402,6 +471,11 @@ impl Daemon {
                                 sink.send(Frame::text(ack)).await?;
                                 self.slack_pressed(c, &env, &payload);
                             }
+                            Envelope::Command { envelope_id, payload } => {
+                                let answer = self.slack_command(c, &env, &payload).await;
+                                let ack = json!({ "envelope_id": envelope_id, "payload": answer });
+                                sink.send(Frame::text(ack.to_string())).await?;
+                            }
                             Envelope::Other { envelope_id } => {
                                 let ack = json!({ "envelope_id": envelope_id }).to_string();
                                 sink.send(Frame::text(ack)).await?;
@@ -421,6 +495,7 @@ impl Daemon {
         tokio::select! {
             r = read => r,
             _ = sync => Ok(()),
+            () = written => Ok(()),
         }
     }
 
@@ -429,7 +504,8 @@ impl Daemon {
     /// the answer to that question, D-201); else in Otter's on the host —
     /// and marked seen (👀) once it is. An answer, like a press, is done
     /// apart from reading: it goes on to the coding agent, and a restart
-    /// mustn't cut it short.
+    /// mustn't cut it short. So is a message with pictures, which are
+    /// fetched first (D-202).
     async fn slack_heard(self: &Arc<Self>, c: &Config, env: &EnvMap, event: &Value) {
         let m = match socket::inbound(event, &c.users) {
             Ok(m) => m,
@@ -440,12 +516,49 @@ impl Daemon {
             Err(_) => return,
         };
         let (env, bot) = (env.clone(), c.bot.clone());
+        if m.files.is_empty() {
+            self.slack_say(&env, &bot, m, vec![]).await;
+            return;
+        }
+        let daemon = self.clone();
+        tokio::spawn(async move {
+            let (images, left) = pictures(&env, &bot, &m.files).await;
+            if left > 0 {
+                let line = match left {
+                    1 => "A file wasn't passed on: Otter takes pictures (png, jpeg or webp, up to 700 KB, four at most).".to_owned(),
+                    n => format!("{n} files weren't passed on: Otter takes pictures (png, jpeg or webp, up to 700 KB, four at most)."),
+                };
+                if let Err(e) = post(&env, &bot, &m.to, &line, &HashMap::new()).await {
+                    tracing::warn!("slack: {e}");
+                }
+            }
+            if m.text.is_empty() && images.is_empty() {
+                return;
+            }
+            daemon.slack_say(&env, &bot, m, images).await;
+        });
+    }
+
+    /// Say the developer's message (and its pictures) where it belongs, and
+    /// mark it.
+    async fn slack_say(
+        self: &Arc<Self>,
+        env: &EnvMap,
+        bot: &str,
+        m: socket::Inbound,
+        images: Vec<TaskImage>,
+    ) {
+        let (env, bot) = (env.clone(), bot.to_owned());
         let path = self.paths.state_dir.join("slack.json");
-        let Some(under) = State::load(&path).and_then(|s| s.post_of(&m.to)) else {
+        let under = State::load(&path)
+            .and_then(|s| s.post_of(&m.to))
+            .or_else(|| self.slack.pending_post(&m.to));
+        let Some(under) = under else {
             let sent = self
                 .otter_send(OtterSend {
                     command_id: m.command_id(),
                     text: m.text.clone(),
+                    images,
                 })
                 .await
                 .map(|_| ());
@@ -458,7 +571,9 @@ impl Daemon {
             .await
             .get(&under.task)
             .and_then(needs::open_question);
-        match answers(&under, question) {
+        // Words alone answer a question; with pictures they are said.
+        let answer = answers(&under, question).filter(|_| images.is_empty() && !m.text.is_empty());
+        match answer {
             Some(decision_id) => {
                 let act = TaskAct {
                     command_id: m.command_id(),
@@ -482,7 +597,7 @@ impl Daemon {
                         command_id: m.command_id(),
                         task: under.task,
                         text: m.text.clone(),
-                        images: vec![],
+                        images,
                         command: None,
                     })
                     .await
@@ -504,10 +619,38 @@ impl Daemon {
             tracing::info!("slack: a button pressed by a Slack member Settings doesn't list");
             return;
         }
+        // A form's select, as it is chosen: kept for its Submit (D-202).
+        if p.action == "pick" {
+            if let (Some(ts), Some(question)) = (p.on.thread.clone(), p.block.strip_prefix("q:")) {
+                self.slack
+                    .picks
+                    .lock()
+                    .unwrap()
+                    .insert((ts, question.to_owned()), p.picked.join(", "));
+            }
+            return;
+        }
         let v: Value = serde_json::from_str(&p.value).unwrap_or_default();
         let (Some(task), decision) = (v["task"].as_str(), v["decision"].as_str()) else {
             return;
         };
+        if p.action == "form" {
+            let Some(decision) = decision else {
+                return;
+            };
+            let (daemon, env, bot) = (self.clone(), env.clone(), c.bot.clone());
+            let (task, decision) = (task.to_owned(), DecisionId::from(decision));
+            tokio::spawn(async move {
+                let line = match daemon.slack_submit(&p, &task, &decision).await {
+                    Ok(()) => return,
+                    Err(line) => line,
+                };
+                if let Err(e) = post(&env, &bot, &p.on, &line, &HashMap::new()).await {
+                    tracing::warn!("slack: {e}");
+                }
+            });
+            return;
+        }
         let decide = |approve: bool, answer: Option<String>| {
             decision.map(|d| TaskAction::Decide {
                 decision_id: d.into(),
@@ -542,6 +685,356 @@ impl Daemon {
         });
     }
 
+    /// `/otter` (D-202): answered in its ack, seen only by who typed it.
+    /// `status` says what needs the developer and what is at work; `new`
+    /// makes a task of its words and starts it, in a thread of its own in
+    /// their direct messages; anything else, what `/otter` does.
+    async fn slack_command(self: &Arc<Self>, c: &Config, env: &EnvMap, payload: &Value) -> Value {
+        let answer = |text: String| {
+            json!({
+                "response_type": "ephemeral",
+                "text": text.chars().take(280).collect::<String>(),
+                "blocks": [{ "type": "markdown", "text": text }],
+            })
+        };
+        let Some(cmd) = socket::command(payload) else {
+            return answer("Otter only knows `/otter`.".into());
+        };
+        if !c.users.contains(&cmd.user) {
+            tracing::info!("slack: /otter from a Slack member Settings doesn't list");
+            return answer("This Otter answers only the developer it is set up for.".into());
+        }
+        match cmd.verb {
+            socket::Verb::Status => {
+                // Answered within Slack's three seconds, or not at all.
+                match tokio::time::timeout(Duration::from_secs(1), self.tasks.lock()).await {
+                    Ok(store) => answer(needs::status(store.iter())),
+                    Err(_) => answer("Otter is busy; ask again in a moment.".into()),
+                }
+            }
+            socket::Verb::Help => answer(needs::HELP.into()),
+            socket::Verb::New(request) => {
+                let title = needs::title_of(&request);
+                let (daemon, env, bot) = (self.clone(), env.clone(), c.bot.clone());
+                let reply = format!(
+                    "Starting **{title}**: its thread is in your direct messages with Otter."
+                );
+                {
+                    let mut done = self.slack.commands.lock().unwrap();
+                    if !cmd.trigger.is_empty() {
+                        if done.contains(&cmd.trigger) {
+                            return answer(reply);
+                        }
+                        done.push_back(cmd.trigger.clone());
+                        while done.len() > 64 {
+                            done.pop_front();
+                        }
+                    }
+                }
+                tokio::spawn(async move {
+                    if let Err(e) = daemon
+                        .slack_new(&env, &bot, &cmd.user, &title, request)
+                        .await
+                    {
+                        tracing::warn!("slack: /otter new: {e}");
+                        if let Some(url) = &cmd.respond {
+                            let line = format!("Otter didn't start **{title}**: {e}");
+                            if let Err(e) = api::respond(&env, url, &line).await {
+                                tracing::warn!("slack: {e}");
+                            }
+                        }
+                    }
+                });
+                answer(reply)
+            }
+        }
+    }
+
+    /// Make a task of `request` and start it, from Slack (D-202): first the
+    /// message whose thread is the task's, then the task, its request said
+    /// as if written in that thread (`command_id` `slack:<dm>:<ts>:<ts>`, so
+    /// D-200's rule sends what follows it there).
+    async fn slack_new(
+        self: &Arc<Self>,
+        env: &EnvMap,
+        bot: &str,
+        user: &str,
+        title: &str,
+        request: String,
+    ) -> Result<(), CallError> {
+        let channel = self.slack_dm(env, bot, user).await?;
+        let text = format!("**{title}**\n\n_Starting. Reply in this thread to talk to it._");
+        let started = api::call(
+            env,
+            bot,
+            "chat.postMessage",
+            &json!({
+                "channel": channel,
+                "text": title,
+                "blocks": [{ "type": "markdown", "text": text }],
+                "unfurl_links": false,
+            }),
+        )
+        .await?;
+        let ts = started["ts"].as_str().unwrap_or_default().to_owned();
+        let to = Origin {
+            channel: channel.clone(),
+            thread: Some(ts.clone()),
+        };
+        let created = self
+            .task_create(otter_protocol::task::TaskCreate {
+                command_id: format!("slack:{channel}:{ts}:{ts}"),
+                title: title.to_owned(),
+                request,
+                workspace: None,
+                answer_only: false,
+            })
+            .await;
+        let task = match created {
+            Ok(task) => task,
+            Err(e) => {
+                let line = format!("Otter didn't make that task: {}", e.message);
+                return post(env, bot, &to, &line, &HashMap::new()).await;
+            }
+        };
+        self.slack.pending.lock().unwrap().push(Pending {
+            post: Post {
+                task: task.id.to_string(),
+                key: "started".into(),
+                channel,
+                ts: ts.clone(),
+                text,
+                open: false,
+            },
+            after: task.messages.last().map(|m| m.id.to_string()),
+        });
+        let start = TaskAct {
+            command_id: format!("slack:start:{ts}"),
+            task: task.id.to_string(),
+            action: TaskAction::Start,
+        };
+        if let Err(e) = self.clone().task_act(start).await {
+            let line = format!("Otter made the task but didn't start it: {}", e.message);
+            post(env, bot, &to, &line, &HashMap::new()).await?;
+        }
+        Ok(())
+    }
+
+    /// Otter's answer being written (D-202): its first words posted where it
+    /// will go, then shown again as more come, at most every 1.5 s. Only
+    /// Otter's answers: the coding agent's words along the way aren't the
+    /// message it ends with (D-069). The answer itself takes that message's
+    /// place when the sync sends it.
+    async fn slack_writing(&self, c: &Config, env: &EnvMap, event: &Event) {
+        let (answered, text, task) = match event {
+            Event::OtterStream {
+                stream_id,
+                text,
+                done: false,
+            } => (stream_id, text, None),
+            Event::TaskStream {
+                task_id,
+                stream_id,
+                role: MessageRole::Controller,
+                text,
+                done: false,
+            } => (stream_id, text, Some(task_id)),
+            _ => return,
+        };
+        let Some(answered) = answered.strip_prefix("reply-") else {
+            return;
+        };
+        let known = self.slack.streams.lock().unwrap().contains_key(answered);
+        if !known {
+            // Where the developer's message came from, once.
+            let from = match task {
+                None => self
+                    .chat
+                    .lock()
+                    .await
+                    .get()
+                    .messages
+                    .iter()
+                    .find(|m| m.id.as_str() == answered)
+                    .and_then(|m| m.correlation_id.clone()),
+                Some(task) => self
+                    .tasks
+                    .lock()
+                    .await
+                    .get(task.as_str())
+                    .and_then(|t| t.messages.iter().find(|m| m.id.as_str() == answered))
+                    .and_then(|m| m.correlation_id.clone()),
+            };
+            let mut streams = self.slack.streams.lock().unwrap();
+            streams.retain(|_, s| s.born.elapsed() < Duration::from_secs(600));
+            streams.entry(answered.to_owned()).or_insert(Stream {
+                to: Origin::of(from.as_deref()),
+                ts: None,
+                posting: false,
+                over: false,
+                text: String::new(),
+                shown: None,
+                born: std::time::Instant::now(),
+            });
+        }
+        // What to do now, decided under the lock; done without it.
+        enum Next {
+            Post(Origin),
+            Update(Origin, String),
+        }
+        let next = {
+            let mut streams = self.slack.streams.lock().unwrap();
+            let Some(s) = streams.get_mut(answered) else {
+                return;
+            };
+            s.text = text.clone();
+            match (&s.to, &s.ts) {
+                _ if s.over || s.posting => None,
+                (None, _) => None,
+                (Some(to), None) => {
+                    s.posting = true;
+                    Some(Next::Post(to.clone()))
+                }
+                (Some(to), Some(ts)) if s.shown.is_none_or(|t| t.elapsed() >= STREAM_EVERY) => {
+                    s.shown = Some(std::time::Instant::now());
+                    s.posting = true;
+                    Some(Next::Update(to.clone(), ts.clone()))
+                }
+                _ => None,
+            }
+        };
+        // Nothing written yet is Otter starting to write (D-196).
+        let shown = match socket::pieces(text, MAX_PIECE - 2).first() {
+            Some(so_far) => format!("{so_far} …"),
+            None => "_Otter is writing…_".to_owned(),
+        };
+        match next {
+            None => {}
+            Some(Next::Post(to)) => {
+                let mut body = json!({
+                    "channel": to.channel,
+                    "text": shown.chars().take(280).collect::<String>(),
+                    "blocks": [{ "type": "markdown", "text": shown }],
+                    "unfurl_links": false,
+                    "unfurl_media": false,
+                });
+                if let Some(t) = &to.thread {
+                    body["thread_ts"] = json!(t);
+                }
+                let posted = api::call(env, &c.bot, "chat.postMessage", &body).await;
+                let mut streams = self.slack.streams.lock().unwrap();
+                if let Some(s) = streams.get_mut(answered) {
+                    s.posting = false;
+                    match posted {
+                        Ok(v) => {
+                            s.ts = v["ts"].as_str().map(String::from);
+                            s.shown = Some(std::time::Instant::now());
+                        }
+                        // Shown once it is sent, then.
+                        Err(e) => {
+                            tracing::info!("slack: an answer being written wasn't shown: {e}");
+                            s.over = true;
+                        }
+                    }
+                }
+            }
+            Some(Next::Update(to, ts)) => {
+                let body = json!({
+                    "channel": to.channel,
+                    "ts": ts,
+                    "text": shown.chars().take(280).collect::<String>(),
+                    "blocks": [{ "type": "markdown", "text": shown }],
+                });
+                if let Err(e) = api::call(env, &c.bot, "chat.update", &body).await {
+                    tracing::info!("slack: an answer being written wasn't shown again: {e}");
+                }
+                if let Some(s) = self.slack.streams.lock().unwrap().get_mut(answered) {
+                    s.posting = false;
+                }
+            }
+        }
+    }
+
+    /// Send one of Otter's (or the coding agent's) messages to `to`, where
+    /// it goes (`None`: nowhere in Slack). Words shown while one of Otter's
+    /// answers was written are replaced by it where they are (D-202) —
+    /// also when the answer itself goes elsewhere now, or nowhere — so none
+    /// is left half written; and nothing written for it is shown after.
+    async fn slack_answer(
+        &self,
+        env: &EnvMap,
+        bot: &str,
+        to: Option<&Origin>,
+        m: &Message,
+        titles: &HashMap<String, String>,
+    ) -> Result<(), CallError> {
+        let answered = m
+            .correlation_id
+            .clone()
+            .filter(|_| m.role == MessageRole::Controller);
+        let Some(answered) = answered else {
+            return match to {
+                Some(to) => post(env, bot, to, &m.text, titles).await,
+                None => Ok(()),
+            };
+        };
+        // Words shown for it may still be on their way: wait for them.
+        let waited = std::time::Instant::now();
+        let shown = loop {
+            {
+                let mut streams = self.slack.streams.lock().unwrap();
+                streams.retain(|_, s| s.born.elapsed() < Duration::from_secs(600));
+                match streams.get_mut(&answered) {
+                    Some(s) if s.posting && waited.elapsed() < STREAM_WAIT => {}
+                    Some(s) => {
+                        s.over = true;
+                        break s.to.clone().zip(s.ts.clone());
+                    }
+                    None => {
+                        // Words that come late are for an answer already sent.
+                        streams.insert(
+                            answered.clone(),
+                            Stream {
+                                to: None,
+                                ts: None,
+                                posting: false,
+                                over: true,
+                                text: String::new(),
+                                shown: None,
+                                born: std::time::Instant::now(),
+                            },
+                        );
+                        break None;
+                    }
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        };
+        let Some((there, ts)) = shown else {
+            return match to {
+                Some(to) => post(env, bot, to, &m.text, titles).await,
+                None => Ok(()),
+            };
+        };
+        let text = needs::titled(&otter_core::redact::redact(&m.text), titles);
+        let pieces = socket::pieces(&text, MAX_PIECE);
+        let first = pieces.first().cloned().unwrap_or_default();
+        let body = json!({
+            "channel": there.channel,
+            "ts": ts,
+            "text": first.chars().take(280).collect::<String>(),
+            "blocks": [{ "type": "markdown", "text": first }],
+        });
+        api::call(env, bot, "chat.update", &body).await?;
+        for piece in pieces.iter().skip(1) {
+            post(env, bot, &there, piece, titles).await?;
+        }
+        match to {
+            Some(to) if *to != there => post(env, bot, to, &m.text, titles).await,
+            _ => Ok(()),
+        }
+    }
+
     /// The first time Slack connects (or after its file was lost): what is
     /// there already — Otter's messages, the tasks' needs — isn't sent.
     async fn slack_begin(&self) {
@@ -566,6 +1059,83 @@ impl Daemon {
         state.save(&path);
     }
 
+    /// The questions of `decision`, when it was asked as a form (D-202):
+    /// several questions, or one whose choices may be several. One with a
+    /// single choice is asked with buttons, and one with none takes a reply.
+    fn form_of(&self, task: &str, decision: &DecisionId) -> Option<Vec<Question>> {
+        let questions = self
+            .conversations
+            .list(Some(task))
+            .into_iter()
+            .flat_map(|c| c.interactions)
+            .find(|i| &i.id == decision)
+            .and_then(|i| match i.kind {
+                InteractionKind::Questions { questions } => Some(questions),
+                _ => None,
+            })?;
+        (questions.len() > 1 || questions.iter().any(|q| q.multi_select)).then_some(questions)
+    }
+
+    /// A form's Submit (D-202): every question's answer, from what its
+    /// selects chose as they were chosen and what the message holds now,
+    /// done as the app's form does it. What isn't answered yet is said
+    /// instead.
+    async fn slack_submit(
+        self: &Arc<Self>,
+        p: &socket::Press,
+        task: &str,
+        decision: &DecisionId,
+    ) -> Result<(), String> {
+        let Some(questions) = self.form_of(task, decision) else {
+            return Err("That form isn't asked any more.".into());
+        };
+        let ts = p.on.thread.clone().unwrap_or_default();
+        let mut answers: std::collections::BTreeMap<String, String> = {
+            let picks = self.slack.picks.lock().unwrap();
+            questions
+                .iter()
+                .filter_map(|q| {
+                    let a = picks.get(&(ts.clone(), q.id.clone()))?;
+                    (!a.is_empty()).then(|| (q.id.clone(), a.clone()))
+                })
+                .collect()
+        };
+        answers.extend(socket::form_answers(&p.state));
+        answers.retain(|q, _| questions.iter().any(|x| &x.id == q));
+        let missing: Vec<&str> = questions
+            .iter()
+            .filter(|q| !answers.contains_key(&q.id))
+            .map(|q| q.header.as_deref().unwrap_or(q.prompt.as_str()))
+            .collect();
+        if !missing.is_empty() {
+            return Err(format!(
+                "Answer every question, then Submit. Still to answer: {}.",
+                missing.join("; ")
+            ));
+        }
+        let act = TaskAct {
+            command_id: format!("slack:act:{}", p.at),
+            task: task.to_owned(),
+            action: TaskAction::Decide {
+                decision_id: decision.clone(),
+                approve: true,
+                answer: None,
+                answers: Some(answers),
+            },
+        };
+        self.clone()
+            .task_act(act)
+            .await
+            .map(|_| {
+                self.slack
+                    .picks
+                    .lock()
+                    .unwrap()
+                    .retain(|(m, _), _| m != &ts);
+            })
+            .map_err(|e| format!("That didn't go through: {}", e.message))
+    }
+
     /// Bring Slack up to date: Otter's messages on the host, each task's
     /// need, and the messages in the tasks' threads.
     async fn slack_sync(&self, c: &Config, env: &EnvMap) -> Result<(), CallError> {
@@ -581,6 +1151,21 @@ impl Daemon {
             state.save(&path);
             state
         });
+        // Threads made meanwhile (`/otter new`) are kept now.
+        // Taken from memory only once kept, so a reply meanwhile finds it.
+        let made: Vec<Pending> = self.slack.pending.lock().unwrap().clone();
+        if !made.is_empty() {
+            for p in &made {
+                state.tasks.insert(p.post.task.clone(), p.after.clone());
+                state.posts.push(p.post.clone());
+            }
+            state.save(&path);
+            self.slack
+                .pending
+                .lock()
+                .unwrap()
+                .retain(|p| !made.contains(p));
+        }
         let look = self.slack_look(&state).await;
         self.slack_host(c, env, &chat.messages, &mut state, &look.titles, &path)
             .await?;
@@ -608,8 +1193,15 @@ impl Daemon {
                 look.messages.insert(id.clone(), t.messages.clone());
             }
             look.last.insert(id.clone(), last);
-            look.needs
-                .insert(id, need.map(|n| (needs::key(&n), needs::told(t, &n))));
+            let form = need
+                .as_ref()
+                .filter(|n| n.kind == otter_core::task::NeedKind::Question)
+                .and_then(|n| n.decision_id.as_ref())
+                .and_then(|d| self.form_of(t.id.as_str(), d));
+            look.needs.insert(
+                id,
+                need.map(|n| (needs::key(&n), needs::told(t, &n, form.as_deref()))),
+            );
         }
         for (i, p) in state.posts.iter().enumerate() {
             if p.open && !look.titles.contains_key(&p.task) {
@@ -643,8 +1235,8 @@ impl Daemon {
             let to = (now - m.at < STALE)
                 .then(|| destination(messages, i))
                 .flatten();
-            if let Some(to) = to {
-                match post(env, &c.bot, &to, &m.text, titles).await {
+            if to.is_some() || m.role == MessageRole::Controller {
+                match self.slack_answer(env, &c.bot, to.as_ref(), m, titles).await {
                     Ok(()) => {}
                     Err(e @ CallError::Unreachable(_)) => return Err(e),
                     // Never sent: said, and not tried again for ever.
@@ -692,6 +1284,12 @@ impl Daemon {
             }
             state.posts[*i].open = false;
             state.save(path);
+            // A form there has nothing more to submit.
+            self.slack
+                .picks
+                .lock()
+                .unwrap()
+                .retain(|(m, _), _| m != &p.ts);
         }
         // Read now: turning it on or off needs no new connection.
         let notify = self.settings.read().unwrap().slack_notify();
@@ -799,8 +1397,11 @@ impl Daemon {
                 let to = (now - m.at < STALE)
                     .then(|| destination(messages, i))
                     .flatten();
-                if let Some(to) = to {
-                    match post(env, &c.bot, &to, &m.text, &look.titles).await {
+                if to.is_some() || m.role == MessageRole::Controller {
+                    match self
+                        .slack_answer(env, &c.bot, to.as_ref(), m, &look.titles)
+                        .await
+                    {
                         Ok(()) => {}
                         Err(e @ CallError::Unreachable(_)) => return Err(e),
                         Err(e) => tracing::warn!("slack: a message of {task} wasn't sent: {e}"),
@@ -834,6 +1435,43 @@ impl Daemon {
             .insert(user.to_owned(), channel.clone());
         Ok(channel)
     }
+}
+
+/// The pictures of a message, fetched (D-202): each file's first address
+/// that gives a picture Otter takes, within a message's bounds (D-171); and
+/// how many files were left out.
+async fn pictures(env: &EnvMap, bot: &str, files: &[Vec<String>]) -> (Vec<TaskImage>, usize) {
+    use base64::Engine;
+    use otter_protocol::task::{MAX_IMAGE_BYTES, MAX_IMAGES, MAX_IMAGES_TOTAL};
+    let (mut out, mut total, mut left) = (Vec::new(), 0, 0);
+    for addresses in files {
+        let mut got = None;
+        if out.len() < MAX_IMAGES {
+            for url in addresses {
+                match api::download(env, bot, url, MAX_IMAGE_BYTES).await {
+                    Ok(bytes) if bytes.len() <= MAX_IMAGE_BYTES => {
+                        if let Some(kind) = socket::picture_type(&bytes) {
+                            got = Some((kind, bytes));
+                            break;
+                        }
+                    }
+                    Ok(_) => {}
+                    Err(e) => tracing::info!("slack: a picture wasn't fetched: {e}"),
+                }
+            }
+        }
+        match got {
+            Some((kind, bytes)) if total + bytes.len() <= MAX_IMAGES_TOTAL => {
+                total += bytes.len();
+                out.push(TaskImage {
+                    media_type: kind.into(),
+                    data: base64::engine::general_purpose::STANDARD.encode(&bytes),
+                });
+            }
+            _ => left += 1,
+        }
+    }
+    (out, left)
 }
 
 /// The question a reply under `under` answers: the one that message asked,

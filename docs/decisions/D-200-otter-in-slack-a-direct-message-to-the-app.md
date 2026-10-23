@@ -70,7 +70,7 @@ scopes `chat:write`, `im:write`, `im:history`, `groups:history`,
 **Not done:** a task's conversation as a thread, a notification when a task
 needs the developer, buttons for decisions (all three since D-201), `/otter`, pictures (the words
 sent with one are taken, the picture isn't), the answer streamed as it is
-written, several hosts from one app, other IMs.
+written (these three since D-202), several hosts from one app, other IMs.
 
 Tests: `slack::socket::tests` (envelopes, what is taken, where an answer
 goes, the markup, cutting), `slack::tests` (member IDs; what Settings says

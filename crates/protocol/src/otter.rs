@@ -7,7 +7,13 @@ use serde::{Deserialize, Serialize};
 pub struct OtterSend {
     /// Chosen by the client: the same command again adds nothing.
     pub command_id: String,
+    /// What the developer said; may be empty when `images` has something.
     pub text: String,
+    /// Pictures that go with it, as `task.send` takes them (D-202): kept
+    /// with the conversation and shown to Otter's turn. An otterd before it
+    /// ignores them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub images: Vec<crate::task::TaskImage>,
 }
 
 /// The conversation's history (Otter's tool calls) after a cursor.
