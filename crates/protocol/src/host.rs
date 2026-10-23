@@ -179,6 +179,10 @@ pub struct SlackView {
     pub team: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bot: Option<String>,
+    /// Slack is told when a task needs the developer (D-201); absent from
+    /// an otterd before it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notify: Option<bool>,
 }
 
 /// `settings.set {slack}`: fields left out stay as they are.
@@ -188,6 +192,9 @@ pub struct SlackUpdate {
     /// takes everyone off.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub users: Option<Vec<String>>,
+    /// Tell Slack when a task needs the developer (D-201).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notify: Option<bool>,
 }
 
 /// One of Otter's tools as Settings shows it (D-191).

@@ -87,7 +87,9 @@ Inside the daemon (`crates/daemon/src`):
 - `backend/` — execution backends; tmux is the only one and nothing else may know about tmux
 - `slack/` — Otter in Slack (D-200): the developer's direct messages to the
   Slack app, over Socket Mode (a WebSocket otterd opens; nothing listens),
-  said in Otter's conversation on the host, and its answers sent back
+  said in Otter's conversation on the host, and its answers sent back;
+  `needs.rs` tells Slack when a task needs the developer, with buttons, and
+  a reply in its thread goes to that task (D-201)
 - `git.rs` (shared repos + worktrees), `git_account.rs` (Otter's own git identity, key and
   GitHub sign-in, which its repositories include, D-133), `environment.rs` (direnv), `env.rs` (login env, exec shim)
 - `attach.rs` (PTY bridge, or a stream whose client keeps the history:

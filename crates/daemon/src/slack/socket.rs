@@ -15,8 +15,13 @@ pub enum Envelope {
         envelope_id: String,
         event: Value,
     },
-    /// Anything else Slack wants acked (a slash command, a button): not taken
-    /// yet.
+    /// A button pressed on one of Otter's messages (D-201), acked the same
+    /// way.
+    Interactive {
+        envelope_id: String,
+        payload: Value,
+    },
+    /// Anything else Slack wants acked (a slash command): not taken yet.
     Other {
         envelope_id: String,
     },
@@ -37,9 +42,49 @@ pub fn envelope(text: &str) -> Envelope {
             envelope_id,
             event: v["payload"]["event"].clone(),
         },
+        (Some("interactive"), Some(envelope_id)) => Envelope::Interactive {
+            envelope_id,
+            payload: v["payload"].clone(),
+        },
         (_, Some(envelope_id)) => Envelope::Other { envelope_id },
         _ => Envelope::Unknown,
     }
+}
+
+/// A button pressed on one of Otter's messages (D-201).
+#[derive(Debug, PartialEq)]
+pub struct Press {
+    /// Who pressed it: anyone who sees the message can.
+    pub user: String,
+    /// The button's `action_id`: what to do.
+    pub action: String,
+    /// The button's `value`: on what.
+    pub value: String,
+    /// When: one press, one command.
+    pub at: String,
+    /// The message it is on: its thread is its task's.
+    pub on: Origin,
+}
+
+/// The press in an interactive payload; `None` for anything else.
+pub fn press(payload: &Value) -> Option<Press> {
+    if payload["type"] != "block_actions" {
+        return None;
+    }
+    let action = &payload["actions"][0];
+    let channel = payload["container"]["channel_id"]
+        .as_str()
+        .or_else(|| payload["channel"]["id"].as_str())?;
+    Some(Press {
+        user: payload["user"]["id"].as_str()?.to_owned(),
+        action: action["action_id"].as_str()?.to_owned(),
+        value: action["value"].as_str().unwrap_or_default().to_owned(),
+        at: action["action_ts"].as_str()?.to_owned(),
+        on: Origin {
+            channel: channel.to_owned(),
+            thread: Some(payload["container"]["message_ts"].as_str()?.to_owned()),
+        },
+    })
 }
 
 /// A direct message from the developer, as Otter takes it.
@@ -248,7 +293,40 @@ mod tests {
                 envelope_id: "e2".into()
             }
         );
+        assert_eq!(
+            envelope(
+                r#"{"type":"interactive","envelope_id":"e3","payload":{"type":"block_actions"}}"#
+            ),
+            Envelope::Interactive {
+                envelope_id: "e3".into(),
+                payload: json!({"type": "block_actions"})
+            }
+        );
         assert_eq!(envelope("not json"), Envelope::Unknown);
+    }
+
+    #[test]
+    fn a_press_says_who_pressed_what_and_where() {
+        let payload = json!({
+            "type": "block_actions",
+            "user": {"id": "U1"},
+            "container": {"type": "message", "message_ts": "1.5", "channel_id": "D1"},
+            "actions": [{"action_id": "approve", "value": "{\"task\":\"ft_a\"}", "action_ts": "1.9"}],
+        });
+        assert_eq!(
+            press(&payload),
+            Some(Press {
+                user: "U1".into(),
+                action: "approve".into(),
+                value: r#"{"task":"ft_a"}"#.into(),
+                at: "1.9".into(),
+                on: Origin {
+                    channel: "D1".into(),
+                    thread: Some("1.5".into())
+                },
+            })
+        );
+        assert_eq!(press(&json!({"type": "view_submission"})), None);
     }
 
     #[test]

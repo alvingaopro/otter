@@ -366,7 +366,13 @@ The Control Agent's model and API keys on this host (D-048).
   is said in Otter's conversation on the host (`otter.send` with
   `command_id` `slack:<channel>:<ts>[:<thread>]`, which is its message's
   `correlation_id`), and Otter's messages after it go back to Slack. Absent
-  from older daemons.
+  from older daemons. The view's `notify?` (D-201; absent from older
+  daemons) says whether Slack is told when a task needs the developer —
+  a direct message with the app's decision buttons, done as `task.act`
+  (`command_id` `slack:act:<action_ts>`); a reply in that message's thread
+  is said in the task (`task.send`, or `decide` with the reply as the
+  answer to a question with no options); `settings.set {slack: {notify}}`
+  turns it on or off.
 - `settings.models {controller}` → `[{id, name?}]`: the models that
   controller offers, as its provider lists them, asked by the host with the
   key set there (OpenRouter's list needs none); `claude` answers Claude

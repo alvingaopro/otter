@@ -23,7 +23,7 @@ const state = vi.hoisted(() => ({
   // Otter's tools and their levels (D-191): `undefined` from an otterd before them.
   tools: undefined as { name: string; description: string; group: string; level: string; default_level: string }[] | undefined,
   // Otter in Slack (D-200): `undefined` from an otterd before it.
-  slack: undefined as { users: string[]; state: string; detail?: string; team?: string; bot?: string } | undefined,
+  slack: undefined as { users: string[]; state: string; detail?: string; team?: string; bot?: string; notify?: boolean } | undefined,
   slackBot: false,
   slackApp: false,
 }));
@@ -112,12 +112,13 @@ vi.mock("@tauri-apps/api/core", () => ({
       if (state.slack) {
         if (u.secrets && "SLACK_BOT_TOKEN" in u.secrets) state.slackBot = u.secrets.SLACK_BOT_TOKEN !== null;
         if (u.secrets && "SLACK_APP_TOKEN" in u.secrets) state.slackApp = u.secrets.SLACK_APP_TOKEN !== null;
-        const users = (args.update as { slack?: { users?: string[] } }).slack?.users;
-        if (users) state.slack.users = users;
+        const sent = (args.update as { slack?: { users?: string[]; notify?: boolean } }).slack;
+        if (sent?.users) state.slack.users = sent.users;
+        const notify = sent?.notify ?? state.slack.notify;
         state.slack =
           state.slackBot && state.slackApp && state.slack.users.length
-            ? { users: state.slack.users, state: "connected", team: "Suger Inc", bot: "otter" }
-            : { users: state.slack.users, state: "off", detail: "Add your Slack member ID." };
+            ? { users: state.slack.users, state: "connected", team: "Suger Inc", bot: "otter", notify }
+            : { users: state.slack.users, state: "off", detail: "Add your Slack member ID.", notify };
       }
     }
     return {
@@ -217,7 +218,7 @@ describe("Settings", () => {
     state.token = name.includes("sign-in") ? false : undefined;
     state.tools = name.includes("D-191") ? TOOLS() : undefined;
     state.slack = name.includes("Slack")
-      ? { users: [], state: "off", detail: "Add the bot token (xoxb-…), the app token (xapp-…), your Slack member ID." }
+      ? { users: [], state: "off", detail: "Add the bot token (xoxb-…), the app token (xapp-…), your Slack member ID.", notify: true }
       : undefined;
     state.slackBot = false;
     state.slackApp = false;
@@ -515,6 +516,16 @@ describe("Settings", () => {
     expect(dialog().textContent).not.toContain("Slack messages");
     // Nor counted with them.
     expect(tabs().find((b) => b.textContent?.startsWith("API keys"))?.textContent).toBe("API keys0 set");
+    // Telling you when a task needs you (D-201): on, turned off with Save; only that is sent.
+    await tab("Slack");
+    const notify = dialog().querySelector<HTMLInputElement>('input[aria-label="Tell me in Slack when a task needs me"]')!;
+    expect(notify.checked).toBe(true);
+    await act(async () => notify.click());
+    await act(async () => button("Save").click());
+    await flush();
+    expect(calls.filter((c) => c.cmd === "settings_set").pop()!.args.update).toMatchObject({ slack: { notify: false } });
+    expect((calls.filter((c) => c.cmd === "settings_set").pop()!.args.update as { slack: object }).slack).toEqual({ notify: false });
+    expect(dialog().textContent).not.toContain("Unsaved changes");
   });
 
   it("says why the coding agent can't run where it's not installed", async () => {
