@@ -43,13 +43,17 @@ cost is accepted, not avoided (see the end).
   set isn't used. The Slack sync runs as before. At start, `otter hub serve`
   takes in every host it serves, or only those named with `--host`. For
   each, it sets hub mode and the bot token, plus the hub's members if the
-  host lists none; a host's own members stay its own. It takes in a host
-  only in three cases: Slack is set up nowhere on it, it is on this app
-  already (its own connection must stop, or it would hear part of what is
-  said), or it takes its events from a hub already. A host on another app
-  is left as it is, and the hub says so. Every host is taken in before the
-  hub connects to Slack. A host the hub couldn't reach is tried again every
-  minute.
+  host lists none; a host's own members stay its own (the hub says when a
+  member of its own isn't among them). It takes in a host only in three
+  cases. One: neither Slack token is set there. A host that isn't connected
+  says `off` whatever is missing, so `off` alone doesn't mean nothing is
+  set. Two: it is connected on this app already; its own connection must
+  stop, or it would hear part of what is said. Three: it takes its events
+  from a hub on this app. A host on another app, or with tokens of an app
+  the hub can't tell is this one, is left as it is, and the hub says why.
+  An otterd before the hub is found by asking `slack.owns` first, so
+  nothing is set on it. Every host is taken in before the hub connects to
+  Slack. A host the hub couldn't reach is tried again every minute.
 - **Where things go.**
   - A message at the top goes to the host it begins with (`gpu: …`,
     `@gpu …`; the host hears it without the name). Else to the host whose
@@ -70,6 +74,15 @@ cost is accepted, not avoided (see the end).
     back together, each under its host's name, within Slack's three seconds.
     `/otter new` is routed like a message at the top, by what the hosts
     said last (no time to ask them again).
+  - One event at a time in each conversation, as a host's own connection
+    took them: a message is placed, and given its first try, before the
+    next one is placed, so a reply said at once goes where the message
+    before it went. A reply in a thread whose host the hub knows goes to
+    that host even while it can't be reached; the developer is told so.
+    `/otter new` is given in a task of its own, never cut short by Slack's
+    three seconds. A task the host may be making is not asked for again;
+    after the deadline the answer says it is starting, and a failure later
+    is said through the command's `response_url`.
   - The hub keeps only this: whose each message is, and each
     conversation's last host (`$OTTER_CONFIG_DIR/hub/state.json`, owner
     only). No task state: `(host, task)` is a task wherever it is seen.
@@ -116,13 +129,29 @@ Tests: e2e `a_host_takes_slack_from_otterhub` (otterd: no connection of
 its own and no app token, a message given twice said once and answered
 in Slack, `/otter status` answered for the ack, what it posted its own
 until a restart, `conflict` once it left).
+`a_need_is_told_and_pressed_through_otterhub` (the host tells a need in
+hub mode, owns its message, and a press given by the hub decides it).
 `one_slack_app_serves_two_hosts_through_the_hub` (CLI, three real
-otterds, a stand-in Slack). Covered: routing by workspace, by
-conversation, and by name; a reply in a thread under the developer's
-message (recorded), and under a host's `/otter new` thread (`slack.owns`;
-watched failing with the hosts not asked); `/otter status` from every
-host; no token in any host's environment, one daemon started by the hub
-(watched failing with the tokens left in); `leave`. Unit tests cover the
-routing rules, names, the ledger and the merged answer. The app's tests
-cover the Slack tab through otterhub and the twin check (watched failing
-without it). Not tried against Slack itself or on the dev VM.
+otterds, a stand-in Slack). Covered:
+- routing by workspace, by conversation and by name;
+- two messages said at once, the second following the first (watched
+  failing three times of three with no turns);
+- a reply in a thread under the developer's message, recorded, also after
+  the hub restarts (watched failing with the ledger not read);
+- a reply under a host's `/otter new` thread, found by `slack.owns`
+  (watched failing with the hosts not asked);
+- `/otter status` from every host;
+- no token in any host's environment, including a daemon the hub started
+  (watched failing with the tokens left in);
+- `leave`.
+
+Unit tests cover the enrollment rule (a host on another app, or with
+tokens but not connected, is left), the routing rules, names, the ledger
+and the merged answer. The app's tests cover the Slack tab through
+otterhub and the twin check (watched failing without it). Reviewed by
+Fable before merging. The review found a host with another app's tokens
+taken in, a ledger write race, a reply said at once routed before the
+message before it, a cut-short call leaving its connection half used,
+`/otter new` answered "busy" while its task was being made, and a known
+thread's host passed over while it was down. All are fixed above. Not
+tried against Slack itself or on the dev VM.

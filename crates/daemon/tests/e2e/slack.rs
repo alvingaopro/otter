@@ -1570,3 +1570,81 @@ async fn a_host_takes_slack_from_otterhub() {
         "{err}"
     );
 }
+
+/// A need through otterhub (D-206): told by the host itself, with its
+/// buttons, the message the host's own (`slack.owns`); a press the hub
+/// gives decides it, as a press on the host's own connection does.
+#[tokio::test]
+async fn a_need_is_told_and_pressed_through_otterhub() {
+    use otter_core::task::{DecisionKind, DecisionStatus, Task};
+    let slack = FakeSlack::start().await;
+    let api = slack.api.clone();
+    let fake = fake_agent_host_with("ok", "scripted", move |_| {
+        vec![
+            ("OTTER_BRAIN_V2", "1".into()),
+            ("OTTER_SLACK_API", api),
+            ("OTTER_PLAN_TURN", "1".into()),
+        ]
+    })
+    .await;
+    let host = &fake.host;
+    host.conn()
+        .await
+        .settings_set(SettingsUpdate {
+            secrets: [(
+                "SLACK_BOT_TOKEN".to_owned(),
+                Some("xoxb-1-SLACKTESTTOKEN".to_owned()),
+            )]
+            .into(),
+            slack: Some(SlackUpdate {
+                users: Some(vec!["U01DEV".into()]),
+                hub: Some(true),
+                ..Default::default()
+            }),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    let state = host.home().join("state/slack.json");
+    eventually("the needs looked at", || async {
+        std::fs::read_to_string(&state)
+            .ok()
+            .filter(|s| s.contains("\"needs\""))
+    })
+    .await;
+    let asks = |f: &Task| {
+        f.pending_decisions()
+            .any(|d| d.kind == DecisionKind::PlanApproval)
+    };
+    let id = started_task_named(host, "Add JSON export").await;
+    let f = wait_task(host, &id, "asking about its plan", asks).await;
+    let decision = f.pending_decisions().next().unwrap().id.clone();
+    let need = eventually("the need told in Slack", || async {
+        let t = told(&slack);
+        (t.len() == 1).then(|| t[0].clone())
+    })
+    .await;
+    let value = need["blocks"][1]["elements"][0]["value"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let on = "1800000000.000001";
+    kept(host, on).await;
+    assert!(host.conn().await.slack_owns("D1", on).await.unwrap());
+
+    let pressed = json!({"type": "interactive", "envelope_id": "p1", "payload": {
+        "type": "block_actions",
+        "user": {"id": "U01DEV"},
+        "container": {"type": "message", "message_ts": on, "channel_id": "D1"},
+        "actions": [{"action_id": "approve", "value": value, "action_ts": "1700000007.1"}],
+    }});
+    let d = host.conn().await.slack_deliver(pressed).await.unwrap();
+    assert_eq!(d.ack, None);
+    wait_task(host, &id, "approved", |f| {
+        f.decisions
+            .iter()
+            .any(|d| d.id == decision && d.status == DecisionStatus::Approved)
+    })
+    .await;
+    assert!(slack.calls("apps.connections.open").is_empty());
+}

@@ -1297,17 +1297,6 @@ fn one_slack_app_serves_two_hosts_through_the_hub() {
     ]);
     assert!(!Path::new(c.path()).join("run/workd.pid").exists());
 
-    let log = cli.config.path().join("hub.log");
-    let mut hub = Command::new(env!("CARGO_BIN_EXE_otter"))
-        .args(["hub", "serve", "--user", "U01DEV"])
-        .env("OTTER_CONFIG_DIR", cli.config.path())
-        .envs(cli.env.iter().map(|(k, v)| (k, v)))
-        .env("SLACK_BOT_TOKEN", "xoxb-1-HUBTESTTOKEN")
-        .env("SLACK_APP_TOKEN", "xapp-1-HUBTESTTOKEN")
-        .stdin(Stdio::null())
-        .stderr(std::fs::File::create(&log).unwrap())
-        .spawn()
-        .unwrap();
     struct Stop(std::process::Child);
     impl Drop for Stop {
         fn drop(&mut self) {
@@ -1315,47 +1304,64 @@ fn one_slack_app_serves_two_hosts_through_the_hub() {
             let _ = self.0.wait();
         }
     }
-    let ws = slack
-        .sockets
-        .recv_timeout(Duration::from_secs(30))
-        .unwrap_or_else(|_| {
-            let _ = hub.kill();
-            panic!(
-                "the hub connects: {}",
-                std::fs::read_to_string(&log).unwrap_or_default()
-            )
-        });
-    let _hub = Stop(hub);
-    let mut ws = SlackSocket(ws);
-    ws.0.send(tokio_tungstenite::tungstenite::Message::text(
-        r#"{"type":"hello","num_connections":1}"#,
-    ))
-    .unwrap();
+    // The hub, with Slack's tokens in its environment, and its connection
+    // to Slack said hello to.
+    let start_hub = |log: &Path| {
+        let mut hub = Command::new(env!("CARGO_BIN_EXE_otter"))
+            .args(["hub", "serve", "--user", "U01DEV"])
+            .env("OTTER_CONFIG_DIR", cli.config.path())
+            .envs(cli.env.iter().map(|(k, v)| (k, v)))
+            .env("SLACK_BOT_TOKEN", "xoxb-1-HUBTESTTOKEN")
+            .env("SLACK_APP_TOKEN", "xapp-1-HUBTESTTOKEN")
+            .stdin(Stdio::null())
+            .stderr(std::fs::File::create(log).unwrap())
+            .spawn()
+            .unwrap();
+        let ws = slack
+            .sockets
+            .recv_timeout(Duration::from_secs(30))
+            .unwrap_or_else(|_| {
+                let _ = hub.kill();
+                panic!(
+                    "the hub connects: {}",
+                    std::fs::read_to_string(log).unwrap_or_default()
+                )
+            });
+        let mut ws = SlackSocket(ws);
+        ws.0.send(tokio_tungstenite::tungstenite::Message::text(
+            r#"{"type":"hello","num_connections":1}"#,
+        ))
+        .unwrap();
+        (Stop(hub), ws)
+    };
+    let log = cli.config.path().join("hub.log");
+    let (hub, mut ws) = start_hub(&log);
 
-    // Both took in before Slack: through the hub, on the hub's bot.
-    let status: serde_json::Value =
-        serde_json::from_str(&cli.ok(&["hub", "status", "--json"])).unwrap();
-    for h in status.as_array().unwrap() {
-        assert_eq!(h["hub"], true, "{status}");
-        assert_eq!(h["state"], "hub", "{status}");
-        assert_eq!(h["bot_id"], "B01OTTER", "{status}");
-    }
+    // All taken in before Slack: through the hub, on the hub's bot (`hub`
+    // once each has checked the bot's token with Slack).
+    let hubbed = || {
+        let status: serde_json::Value =
+            serde_json::from_str(&cli.ok(&["hub", "status", "--json"])).unwrap();
+        status.as_array().unwrap().iter().all(|h| {
+            assert_eq!(h["hub"], true, "{status}");
+            h["state"] == "hub" && h["bot_id"] == "B01OTTER"
+        })
+    };
+    wait_until("every host through the hub", hubbed);
 
-    // Naming b's workspace: b's, and the change of host said.
+    // Naming b's workspace: b's, and the change of host said. Naming
+    // nothing, said at once after: where the conversation is by then.
     ws.dm("e1", "1700000001.000100", "Speed up trainer", None);
-    wait_until("b hears it", || {
-        heard_on(&cli, "b").contains("Speed up trainer")
+    ws.dm("e2", "1700000002.000100", "And log how long it takes", None);
+    wait_until("b hears both", || {
+        let b = heard_on(&cli, "b");
+        b.contains("Speed up trainer") && b.contains("And log how long")
     });
     slack.wait_call("chat.postMessage", "the change of host said", |b| {
         b["text"]
             .as_str()
             .unwrap_or_default()
             .starts_with("→ **b**")
-    });
-    // Naming nothing: where the conversation is.
-    ws.dm("e2", "1700000002.000100", "And log how long it takes", None);
-    wait_until("b hears that too", || {
-        heard_on(&cli, "b").contains("And log how long")
     });
     // Beginning with a host's name: that host's, without the name.
     ws.dm("e3", "1700000003.000100", "a: what is here?", None);
@@ -1427,13 +1433,28 @@ fn one_slack_app_serves_two_hosts_through_the_hub() {
         .unwrap();
     assert!(task.to_string().contains("\"b\""), "{task}");
 
+    // Started again, the hub still knows whose message began a thread: a
+    // reply under b's first goes to b, though the conversation is a's.
+    drop(hub);
+    let (hub, mut ws) = start_hub(&cli.config.path().join("hub-2.log"));
+    ws.dm(
+        "e7",
+        "1700000007.000100",
+        "and after the restart",
+        Some("1700000001.000100"),
+    );
+    wait_until("b hears it after the restart", || {
+        heard_on(&cli, "b").contains("and after the restart")
+    });
+    assert!(!heard_on(&cli, "a").contains("and after the restart"));
+
     // The tokens are in no host's environment — c's daemon was started by
     // the hub — only the bot's, in the secrets Settings keep. (The hub's
     // own shows them still, as it was started with them: what is looked for
     // is there to be found.)
     let environ = |pid: &str| std::fs::read(format!("/proc/{}/environ", pid.trim())).ok();
     let has_token = |e: &[u8]| e.windows(12).any(|w| w == b"HUBTESTTOKEN");
-    if let Some(own) = environ(&_hub.0.id().to_string()) {
+    if let Some(own) = environ(&hub.0.id().to_string()) {
         assert!(has_token(&own), "the hub's environment as it started");
         for home in [&a, &b, &c] {
             let pid =

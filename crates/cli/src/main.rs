@@ -403,7 +403,9 @@ struct SessionCreateArgs {
 }
 
 fn main() {
-    // Before any thread: Slack's tokens leave the environment (D-206).
+    // Before any thread, whatever the command: Slack's tokens leave the
+    // environment, kept for `otter hub serve` only, so nothing `otter`
+    // starts (ssh, `otterd dial`, a daemon) has them (D-206).
     hub::take_tokens();
     let cli = Cli::parse();
     let runtime = tokio::runtime::Runtime::new().expect("a runtime");

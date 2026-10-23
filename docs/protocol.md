@@ -381,7 +381,9 @@ The Control Agent's model and API keys on this host (D-048).
   host take Slack's events from `otter hub serve`, which holds the app's
   one connection for several hosts, instead of opening one of its own; no
   app token is needed then (one set isn't used), and the view's `hub?` is
-  `true` and its `state` `hub` (`team`, `bot`, `bot_id` as when connected).
+  `true`; its `state` is `hub` once the bot token is checked with Slack
+  (`team`, `bot`, `bot_id` as when connected), `connecting` or `failed`
+  before.
   The host still says Otter's messages in Slack itself, with its bot token.
   `{hub: false}` (`otter hub leave`) gives it its own connection again.
   Absent from older daemons, which ignore the field.

@@ -176,53 +176,60 @@ impl Link {
         }
     }
 
-    /// One call, connecting first when there is no connection; one that
-    /// broke is made again once. A connection whose call didn't finish is
-    /// never used again: its answers come in order.
+    /// One call within `wait` (waiting for the connection too), connecting
+    /// first when there is no connection; one that broke is made again once.
+    /// The connection is out of its place while it is used and put back only
+    /// once its call is over: a call cut short anyhow — `wait`, or whoever
+    /// awaits this dropping it — drops it, since its answers come in order.
     async fn call<T: DeserializeOwned>(
         &self,
         request: Request,
         wait: Duration,
     ) -> Result<T, Failure> {
-        let mut conn = self.conn.lock().await;
         let done = tokio::time::timeout(wait, async {
+            let mut slot = self.conn.lock().await;
             for again in [false, true] {
-                let fresh = conn.is_none();
-                if fresh {
-                    let made = Connection::connect(&self.transport)
-                        .await
-                        .map_err(|e| Failure::Unreachable(e.to_string()))?;
-                    *conn = Some(made);
-                }
-                match conn
-                    .as_mut()
-                    .expect("connected")
-                    .call(request.clone())
-                    .await
-                {
-                    Ok(v) => return Ok(v),
-                    Err(ClientError::Rpc(e)) => return Err(Failure::Refused(e.code, e.message)),
-                    Err(e) => {
-                        *conn = None;
-                        if fresh || again {
-                            return Err(Failure::Unreachable(e.to_string()));
-                        }
+                let (mut conn, fresh) = match slot.take() {
+                    Some(conn) => (conn, false),
+                    None => {
+                        let made = Connection::connect(&self.transport).await.map_err(|e| {
+                            match e {
+                                // Not to be tried again as it is.
+                                ClientError::ProtocolMismatch { .. } => Failure::Refused(
+                                    otter_protocol::ErrorCode::Unsupported,
+                                    format!(
+                                        "{e}: update otter or this host (`otter host install`)"
+                                    ),
+                                ),
+                                e => Failure::Unreachable(e.to_string()),
+                            }
+                        })?;
+                        (made, true)
                     }
+                };
+                match conn.call(request.clone()).await {
+                    Ok(v) => {
+                        *slot = Some(conn);
+                        return Ok(v);
+                    }
+                    Err(ClientError::Rpc(e)) => {
+                        *slot = Some(conn);
+                        return Err(Failure::Refused(e.code, e.message));
+                    }
+                    Err(e) if fresh || again => return Err(Failure::Unreachable(e.to_string())),
+                    // Broken since its last call: made again.
+                    Err(_) => {}
                 }
             }
             unreachable!("the second try returns")
         })
         .await;
-        match done {
-            Ok(r) => r,
-            Err(_) => {
-                *conn = None;
-                Err(Failure::Unreachable(format!(
-                    "no answer in {}s",
-                    wait.as_secs_f32()
-                )))
-            }
-        }
+        done.unwrap_or_else(|_| {
+            Err(Failure::Unreachable(format!(
+                "no answer in {}s",
+                wait.as_secs_f32()
+            )))
+        })
     }
 }
 
@@ -318,6 +325,10 @@ struct Hub {
     env: EnvMap,
     ledger: std::sync::Mutex<Ledger>,
     path: PathBuf,
+    /// One at a time in each conversation, as a host's own connection takes
+    /// them: a message is placed, and given a first try, before the next
+    /// (which may go where it went).
+    turns: std::sync::Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
 }
 
 async fn serve(config: &Config, users: Vec<String>, only: Vec<String>) -> Result<()> {
@@ -382,6 +393,7 @@ async fn serve(config: &Config, users: Vec<String>, only: Vec<String>) -> Result
         env,
         ledger: std::sync::Mutex::new(Ledger::load(&path)),
         path,
+        turns: Default::default(),
     });
     // Every host first, then Slack: a host still connected on its own would
     // hear some of what is said.
@@ -429,8 +441,11 @@ impl Hub {
             .collect()
     }
 
+    /// Keep the ledger: written under its lock, so one write at a time, the
+    /// newest last.
     fn save(&self) {
-        let bytes = serde_json::to_vec(&*self.ledger.lock().unwrap()).expect("serializes");
+        let ledger = self.ledger.lock().unwrap();
+        let bytes = serde_json::to_vec(&*ledger).expect("serializes");
         if let Err(e) = write_private(&self.path, &bytes) {
             eprintln!("otter hub: saving {}: {e}", self.path.display());
         }
@@ -454,8 +469,7 @@ impl Hub {
         }
         for (host, r) in jobs.join_all().await {
             let line = match &r {
-                Ok(()) => "takes Slack's events from the hub".to_owned(),
-                Err(why) => why.clone(),
+                Ok(line) | Err(line) => line.clone(),
             };
             if r.is_ok() {
                 self.enrolled.lock().unwrap().insert(host.clone());
@@ -468,31 +482,51 @@ impl Hub {
     }
 
     /// Set `link`'s host to take Slack's events from here, with this app's
-    /// bot to answer as. A host on an app of its own is left as it is: only
-    /// one that has nothing set up, or is on this app already (and so must
-    /// stop its own connection, which would hear some of what is said), or
-    /// takes its events from a hub already.
-    async fn enroll(&self, link: &Link) -> Result<(), String> {
+    /// bot to answer as, when `take_in` says it may; what is said of it.
+    async fn enroll(&self, link: &Link) -> Result<String, String> {
         let settings: Settings = link
             .call(Request::SettingsGet, SETTINGS_WAIT)
             .await
-            .map_err(|e| format!("not reached ({e}); tried again in a minute"))?;
+            .map_err(|e| match e {
+                Failure::Unreachable(e) => format!("not reached ({e}); tried again in a minute"),
+                e => e.to_string(),
+            })?;
         let Some(slack) = settings.slack else {
             return Err("its otterd is older than Slack: update it (`otter host install`)".into());
         };
-        let ours = slack.bot_id.as_deref() == Some(self.bot_id.as_str());
-        let hubbed = slack.hub == Some(true);
-        if !(hubbed || ours || slack.state == "off") {
-            return Err(match slack.bot_id {
-                Some(b) => format!("left as it is: it is on a Slack app of its own (bot {b})"),
-                None => format!(
-                    "left as it is: its Slack is set up but `{}`, so which app is unknown; tried again in a minute",
-                    slack.state
-                ),
+        // An otterd before the hub ignores `hub`: asked first, so nothing
+        // is set on it.
+        let probe = SlackOwns {
+            channel: String::new(),
+            ts: String::new(),
+        };
+        if let Err(e) = link
+            .call::<bool>(Request::SlackOwns(probe), SETTINGS_WAIT)
+            .await
+        {
+            return Err(match e {
+                Failure::Refused(..) => {
+                    "its otterd is too old for the hub: update it (`otter host install`)".into()
+                }
+                Failure::Unreachable(e) => format!("not reached ({e}); tried again in a minute"),
             });
         }
-        if hubbed && ours && !slack.users.is_empty() {
-            return Ok(());
+        let give_token = take_in(&slack, &settings.secrets, &self.bot_id)?;
+        let mut line = "takes Slack's events from the hub".to_owned();
+        let missing: Vec<&str> = self
+            .users
+            .iter()
+            .filter(|u| !slack.users.is_empty() && !slack.users.contains(u))
+            .map(String::as_str)
+            .collect();
+        if !missing.is_empty() {
+            line.push_str(&format!(
+                " (it answers its own members only: not {})",
+                missing.join(", ")
+            ));
+        }
+        if !give_token && !slack.users.is_empty() {
+            return Ok(line);
         }
         let mut update = SettingsUpdate {
             slack: Some(SlackUpdate {
@@ -503,9 +537,8 @@ impl Hub {
             }),
             ..Default::default()
         };
-        // A new token starts its Slack over: given only when it may not
-        // have this one.
-        if !(hubbed && ours) {
+        // A new token starts its Slack over: given only when needed.
+        if give_token {
             update
                 .secrets
                 .insert("SLACK_BOT_TOKEN".into(), Some(self.bot.clone()));
@@ -515,7 +548,7 @@ impl Hub {
             .await
             .map_err(|e| format!("not set up: {e}"))?;
         match after.slack.and_then(|s| s.hub) {
-            Some(true) => Ok(()),
+            Some(true) => Ok(line),
             _ => Err("its otterd is too old for the hub: update it (`otter host install`)".into()),
         }
     }
@@ -619,8 +652,9 @@ impl Hub {
     /// says (every host asked at once).
     async fn owner(&self, channel: &str, ts: &str) -> Option<String> {
         let serving = self.serving();
+        // Kept: its host's, reachable or not (then the developer is told).
         let kept = self.ledger.lock().unwrap().owner(channel, ts);
-        if let Some(host) = kept.filter(|h| serving.iter().any(|l| &l.name == h)) {
+        if let Some(host) = kept.filter(|h| self.link(h).is_some()) {
             return Some(host);
         }
         let mut jobs = JoinSet::new();
@@ -704,9 +738,27 @@ impl Hub {
         decide(routed, &serving, last, self.default_host.clone())
     }
 
+    /// The turn of `channel`'s conversation (`turns`).
+    fn turn(&self, channel: &str) -> Arc<tokio::sync::Mutex<()>> {
+        self.turns
+            .lock()
+            .unwrap()
+            .entry(channel.to_owned())
+            .or_default()
+            .clone()
+    }
+
     /// Give `host` what Slack said, trying again a while if it can't be
     /// reached; the developer is told, at `to`, when it can't be given.
-    async fn deliver(&self, host: &str, envelope: &Value, to: &Origin) {
+    /// `turn` is held until the first try is over: what comes next in the
+    /// conversation waits for it, not for the tries after.
+    async fn deliver(
+        &self,
+        host: &str,
+        envelope: &Value,
+        to: &Origin,
+        mut turn: Option<tokio::sync::OwnedMutexGuard<()>>,
+    ) {
         let Some(link) = self.link(host) else {
             return;
         };
@@ -732,6 +784,7 @@ impl Hub {
                     return;
                 }
                 Err(Failure::Unreachable(why)) => {
+                    turn.take();
                     let Some(wait) = tries.next() else {
                         eprintln!("otter hub: {host}: {why}; a Slack event wasn't given");
                         break;
@@ -759,6 +812,7 @@ impl Hub {
             Err(_) => return,
         };
         let channel = m.to.channel.clone();
+        let turn = self.turn(&channel).lock_owned().await;
         let host = match &m.to.thread {
             // A reply goes where its thread began; one under a message no
             // host knows, where the conversation was.
@@ -803,7 +857,7 @@ impl Hub {
         };
         self.ledger.lock().unwrap().own(&channel, &m.ts, &host);
         self.save();
-        self.deliver(&host, &envelope, &m.to).await;
+        self.deliver(&host, &envelope, &m.to, Some(turn)).await;
     }
 
     /// The only host served, else the default one.
@@ -845,8 +899,9 @@ impl Hub {
             return;
         }
         let ts = p.on.thread.clone().unwrap_or_default();
+        let turn = self.turn(&p.on.channel).lock_owned().await;
         match self.owner(&p.on.channel, &ts).await {
-            Some(host) => self.deliver(&host, &envelope, &p.on).await,
+            Some(host) => self.deliver(&host, &envelope, &p.on, Some(turn)).await,
             None => {
                 self.post(
                     &p.on,
@@ -886,6 +941,12 @@ impl Hub {
                 }
                 let mut said = jobs.join_all().await;
                 said.sort_by(|a, b| a.0.cmp(&b.0));
+                for (host, r) in &said {
+                    if let Err(Failure::Refused(otter_protocol::ErrorCode::Conflict, _)) = r {
+                        self.enrolled.lock().unwrap().remove(host);
+                        self.left.lock().unwrap().insert(host.clone());
+                    }
+                }
                 return together(said);
             }
         };
@@ -915,12 +976,64 @@ impl Hub {
             .last
             .insert(channel, host.clone());
         self.save();
-        let link = self.link(&host).expect("served");
+        // Given whatever comes of the ack, never cut short: a task the host
+        // may be making then is not asked for again (D-202 keeps one typing
+        // of `/otter new` to one task; a second typing is another).
+        let link = self.link(&host).expect("served").clone();
         let give = Request::SlackDeliver(SlackDeliver { envelope });
-        match link.call::<SlackDelivered>(give, HOST_COMMAND_WAIT).await {
-            Ok(d) => d.ack.unwrap_or_else(|| answer("")),
-            Err(e) => answer(&format!("**{host}** didn't take that: {e}")),
+        let mut given =
+            tokio::spawn(async move { link.call::<SlackDelivered>(give, DELIVER_WAIT).await });
+        match tokio::time::timeout(HOST_COMMAND_WAIT, &mut given).await {
+            Ok(Ok(Ok(d))) => d.ack.unwrap_or_else(|| answer("")),
+            Ok(Ok(Err(e))) => answer(&format!("**{host}** didn't take that: {e}")),
+            Ok(Err(_)) => answer(&format!("**{host}** didn't take that.")),
+            Err(_) => {
+                // What comes of it later is said where Slack said to.
+                let (env, url, at) = (self.env.clone(), cmd.respond.clone(), host.clone());
+                tokio::spawn(async move {
+                    if let (Ok(Err(e)), Some(url)) = (given.await, url) {
+                        let line = format!("**{at}** didn't take that: {e}");
+                        if let Err(e) = api::respond(&env, &url, &line).await {
+                            eprintln!("otter hub: {e}");
+                        }
+                    }
+                });
+                answer(&format!(
+                    "Starting it on **{host}**: its thread will be in your direct messages with Otter."
+                ))
+            }
         }
+    }
+}
+
+/// Whether a host may be taken in by the hub on bot `bot_id`, and whether
+/// it needs the bot's token: when nothing of Slack is set on it, or it is on
+/// this app already (its own connection must stop, or it would hear part of
+/// what is said), or it takes its events from a hub on this app. A host on
+/// another app, or with tokens of an app the hub can't tell is this one, is
+/// left as it is; why, if so.
+fn take_in(
+    slack: &otter_protocol::host::SlackView,
+    secrets: &[otter_protocol::host::SecretState],
+    bot_id: &str,
+) -> Result<bool, String> {
+    let set = |name: &str| secrets.iter().any(|k| k.name == name && k.set);
+    let hubbed = slack.hub == Some(true);
+    match slack.bot_id.as_deref() {
+        Some(b) if b == bot_id => Ok(!hubbed),
+        Some(b) if hubbed => Err(format!(
+            "left as it is: it takes its events from a hub on another Slack app (bot {b})"
+        )),
+        Some(b) => Err(format!(
+            "left as it is: it is on a Slack app of its own (bot {b})"
+        )),
+        // Not connected: which app is known only by what is set.
+        None if hubbed => Ok(true),
+        None if !set("SLACK_BOT_TOKEN") && !set("SLACK_APP_TOKEN") => Ok(true),
+        None => Err(format!(
+            "left as it is: Slack is set up there (`{}`) for an app the hub can't tell is this one; clear its Slack tokens to have it taken in, or connect it",
+            slack.state
+        )),
     }
 }
 
@@ -1016,7 +1129,8 @@ fn together(said: Vec<(String, Result<SlackDelivered, Failure>)>) -> Value {
                     .and_then(|a| a["blocks"][0]["text"].as_str().or(a["text"].as_str()))
                     .unwrap_or_default()
                     .to_owned(),
-                Err(e) => format!("_Not reached: {e}_"),
+                Err(Failure::Unreachable(e)) => format!("_Not reached: {e}_"),
+                Err(Failure::Refused(_, e)) => format!("_Didn't answer: {e}_"),
             };
             format!("**{host}**\n{words}")
         })
@@ -1129,7 +1243,7 @@ async fn leave(config: &Config, host: &str, json: bool) -> Result<()> {
         slack.detail.map(|d| format!(" ({d})")).unwrap_or_default()
     );
     println!(
-        "A hub serving it stops at once; started again, it takes {host} back unless `--host` leaves it out."
+        "Stop a hub serving it first, or start it again with `--host` leaving {host} out: until the hub next gives {host} an event, both are connected as the app, and Slack splits its events between them."
     );
     Ok(())
 }
@@ -1244,6 +1358,77 @@ mod tests {
             attention: vec![],
             task_id: None,
             kept: None,
+        }
+    }
+
+    /// The hub takes in a host with nothing of Slack set, one on its own
+    /// app already, or one through a hub on it; never one on another app,
+    /// nor one with tokens of an app it can't tell is its own — that one
+    /// isn't connected, so `off` is no proof that nothing is set (D-206).
+    #[test]
+    fn a_host_on_another_app_is_left_as_it_is() {
+        use otter_protocol::host::{SecretState, SlackView};
+        let view = |state: &str, bot_id: Option<&str>, hub: bool| SlackView {
+            state: state.into(),
+            bot_id: bot_id.map(String::from),
+            hub: hub.then_some(true),
+            ..Default::default()
+        };
+        let secrets = |bot: bool, app: bool| {
+            vec![
+                SecretState {
+                    name: "SLACK_BOT_TOKEN".into(),
+                    purpose: String::new(),
+                    set: bot,
+                },
+                SecretState {
+                    name: "SLACK_APP_TOKEN".into(),
+                    purpose: String::new(),
+                    set: app,
+                },
+            ]
+        };
+        let none = secrets(false, false);
+        // Nothing set: taken in, with the bot's token.
+        assert_eq!(take_in(&view("off", None, false), &none, "B1"), Ok(true));
+        // On this app with a connection of its own: taken in, its own stops.
+        assert_eq!(
+            take_in(
+                &view("connected", Some("B1"), false),
+                &secrets(true, true),
+                "B1"
+            ),
+            Ok(true)
+        );
+        // Through the hub on this app already: nothing to give.
+        assert_eq!(
+            take_in(&view("hub", Some("B1"), true), &secrets(true, false), "B1"),
+            Ok(false)
+        );
+        // Through a hub, not yet connected: taken in, the token given again.
+        assert_eq!(
+            take_in(&view("connecting", None, true), &secrets(true, false), "B1"),
+            Ok(true)
+        );
+        // Another app, connected, or through another hub: left.
+        for v in [
+            view("connected", Some("B2"), false),
+            view("hub", Some("B2"), true),
+        ] {
+            let why = take_in(&v, &secrets(true, true), "B1").unwrap_err();
+            assert!(why.contains("B2"), "{why}");
+        }
+        // Tokens set, not connected (a member ID missing, a wrong app
+        // token): which app is unknown, so left.
+        for set in [
+            secrets(true, false),
+            secrets(false, true),
+            secrets(true, true),
+        ] {
+            for state in ["off", "failed", "connecting"] {
+                let why = take_in(&view(state, None, false), &set, "B1").unwrap_err();
+                assert!(why.contains("clear its Slack tokens"), "{why}");
+            }
         }
     }
 
