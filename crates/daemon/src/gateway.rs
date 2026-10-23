@@ -3118,7 +3118,9 @@ impl Gateway {
         let f = self.load().await?;
         // Stopped already (the same call again): what was asked (D-207).
         if name == "cancel_task" && f.status.is_terminal() {
-            ending_floor(&self.inner.origin)?;
+            if let Err(e) = ending_floor(&self.inner.origin) {
+                return refused(e).await;
+            }
             return Ok(json!({"done": "already", "status": f.status.as_str()}));
         }
         if f.status.is_terminal() {

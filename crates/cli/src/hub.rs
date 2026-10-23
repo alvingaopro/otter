@@ -532,7 +532,13 @@ impl Hub {
             ));
         }
         // Its messages at the top say which host they are from (D-207).
-        let named = slack.name.as_deref() == Some(link.name.as_str())
+        let given: String = link
+            .name
+            .chars()
+            .filter(|c| !c.is_control())
+            .take(64)
+            .collect();
+        let named = slack.name.as_deref() == Some(given.trim())
             || self.unnamed.lock().unwrap().contains(&link.name);
         if !give_token && !slack.users.is_empty() && named {
             return Ok(line);
@@ -542,7 +548,8 @@ impl Hub {
                 // Members the host lists already stay its own.
                 users: slack.users.is_empty().then(|| self.users.clone()),
                 hub: Some(true),
-                name: Some(link.name.clone()),
+                // As a host's name may be (one line, 64 characters).
+                name: Some(given),
                 ..Default::default()
             }),
             ..Default::default()
