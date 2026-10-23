@@ -60,7 +60,7 @@ const NOTHING_TO_PUBLISH: &str = "Nothing to publish";
 const RUN_AGAIN: &str = "Run it again";
 const WITHOUT_CHECK: &str = "Go on without it";
 
-fn env_ms(var: &str, default: u64) -> Duration {
+pub(crate) fn env_ms(var: &str, default: u64) -> Duration {
     Duration::from_millis(
         std::env::var(var)
             .ok()

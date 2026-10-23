@@ -1279,7 +1279,7 @@ impl Daemon {
 
     /// What a live run did lately, and when (its activity isn't written
     /// into the task until it ends).
-    fn live_activity(&self, run: &RunId) -> Option<(Vec<String>, Vec<Timestamp>)> {
+    pub(crate) fn live_activity(&self, run: &RunId) -> Option<(Vec<String>, Vec<Timestamp>)> {
         let runs = self.runs.lock().unwrap();
         let a = runs.get(run)?.activity.lock().unwrap();
         Some(a.iter().map(|(at, l)| (l.clone(), *at)).unzip())
