@@ -44,6 +44,12 @@ What changes:
     D-200's limit for Otter's messages), that Slack has no message of yet.
     An otterd before this one made tasks it never told: one still at work
     gets its message once this one runs, and one that is over doesn't.
+    What goes to the thread: what the task said since its request, for one
+    made in the last two minutes (`FRESH`); for one made earlier, only
+    what it says from then on, not its whole story at once.
+  - A task's own message stays kept while its task is there. When more
+    than 200 messages are kept, the oldest others go first, since this
+    message is what its thread's replies and otterhub's routing go by.
   - Each task's need is still told in a message of its own at the top:
     that is what notifies, and its buttons are there.
 - **A press counts as the developer speaking.** The last press on each
@@ -65,7 +71,9 @@ What changes:
   done (Slack's `confirm`). Stop is `task.act cancel`, as the app's. Delete
   is `task.delete`, refused while something is at work in the task. The
   rule is `tasks::deletable`, the same one `task.delete` checks. Delete
-  pressed twice finds the task gone, and that is what was asked. A stopped
+  pressed twice finds the task gone, and Stop pressed on a task already
+  over (stopped from the app, or pressed late) finds it so. Either way,
+  that is what was asked, and nothing is said. A stopped
   task's need now says "No longer waiting: the task was stopped." rather
   than that its run ended.
 - **Otter's `cancel_task` and `delete_task`**, a deliberate deviation from
@@ -80,7 +88,8 @@ What changes:
     developer's message started may call them (`ending_floor`), as
     `answer_decision` (D-205): cancelled and deleted don't come back.
   - `delete_task` refuses a task with something at work in it and says to
-    cancel it first. Deleted already, it answers `already`.
+    cancel it first. Deleted already, it answers `already`, as
+    `cancel_task` does for a task stopped already.
   - The gateway test that listed them as never Otter's now checks that
     they are the developer's word.
 - **Otter knows the developer is on Slack.** When their latest message on
@@ -143,4 +152,15 @@ not deleted, then cancelled, deleted, and deleted again (`already`).
 in a task's conversation. Unit tests: where a task made from Slack speaks
 and where a press sends it (`destination`), the host message a task came
 from (`made_from`), and the task's own message and the need messages'
-buttons (`needs`).
+buttons (`needs`), and where a new thread picks up and what the cap keeps.
+
+Reviewed against the code (Fable) before merging. The review found no
+blocking bug; its findings are fixed above. A task at work before this
+otterd would have had its whole story posted into its new thread at once.
+Stop on a task already over said it didn't go through. A task's own
+message could be dropped by the cap, which then made a second one. The
+first words of a task's first answer were lost when they came before its
+own message existed: they are now looked for again with the next words.
+And a hub gave its name again to an otterd too old to keep it on every
+enrolment, which restarted its Slack. A follow-up shown at the top now
+carries the host's name too.

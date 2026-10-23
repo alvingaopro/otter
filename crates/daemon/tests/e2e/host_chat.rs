@@ -904,10 +904,12 @@ async fn otter_stops_its_task_on_the_developers_word() {
         host,
         &id,
         "t-end",
-        "Stop it for good.\nCALL: cancel_task {}",
+        "Stop it for good.\nCALL: cancel_task {}\nCALL: cancel_task {}",
     )
     .await;
     assert_eq!(answers[0]["data"]["done"], "cancel", "{answers:#?}");
+    // The same call again: stopped already.
+    assert_eq!(answers[1]["data"]["done"], "already", "{answers:#?}");
     let f = wait_task(host, &id, "cancelled", |f| {
         f.status == TaskStatus::Cancelled
     })

@@ -79,6 +79,9 @@ const STREAM_EVERY: Duration = Duration::from_millis(1500);
 const PIECE_EVERY: Duration = Duration::from_millis(400);
 /// How long the sync waits for an answer's first words to be posted.
 const STREAM_WAIT: Duration = Duration::from_secs(3);
+/// A task made from Slack within this long has what it said since its
+/// request sent to its thread (D-207); one older, from then on.
+const FRESH: chrono::TimeDelta = chrono::TimeDelta::minutes(2);
 /// Settings' word on a host that takes Slack's events from otterhub (D-206).
 const HUB: &str = "Slack's events come from otterhub (otter hub serve), which holds this app's one connection; Otter answers in Slack from here.";
 /// Said under a need whose buttons Slack refused: told in its words alone.
@@ -895,6 +898,7 @@ impl Daemon {
         let Some(action) = action else {
             return;
         };
+        let stop = matches!(action, TaskAction::Cancel);
         let act = TaskAct {
             command_id: format!("slack:act:{}", p.at),
             task: task.to_owned(),
@@ -902,7 +906,16 @@ impl Daemon {
         };
         let (daemon, env, bot) = (self.clone(), env.clone(), c.bot.clone());
         tokio::spawn(async move {
-            if let Err(e) = daemon.task_act(act).await {
+            if let Err(e) = daemon.clone().task_act(act.clone()).await {
+                // Over already (stopped from the app, or pressed late):
+                // what was asked (D-207).
+                let over = |f: otter_core::task::Task| {
+                    use otter_core::task::TaskStatus;
+                    matches!(f.status, TaskStatus::Cancelled | TaskStatus::Done)
+                };
+                if stop && daemon.task_get(&act.task).await.is_ok_and(over) {
+                    return;
+                }
                 let line = format!("That didn't go through: {}", e.message);
                 if let Err(e) = post(&env, &bot, &p.on, &line, &HashMap::new()).await {
                     tracing::warn!("slack: {e}");
@@ -1122,19 +1135,26 @@ impl Daemon {
                     .and_then(|m| Origin::of(m.correlation_id.as_deref())),
                 From::Task(task, id) => {
                     let heard = self.slack_heard_by(task.as_str());
-                    self.tasks
-                        .lock()
-                        .await
-                        .get(task.as_str())
-                        .and_then(|t| match id {
-                            Some(id) => t
-                                .messages
-                                .iter()
-                                .find(|m| m.id.as_str() == id)
-                                .and_then(|m| heard.origin(m)),
-                            // The agent's: where the developer is now.
-                            None => spoke(&t.messages, chrono::Utc::now(), &heard),
-                        })
+                    let store = self.tasks.lock().await;
+                    let t = store.get(task.as_str());
+                    let m = t
+                        .zip(id)
+                        .and_then(|(t, id)| t.messages.iter().find(|m| m.id.as_str() == id));
+                    match (t, id) {
+                        (Some(_), Some(_)) => {
+                            let to = m.and_then(|m| heard.origin(m));
+                            // A task made from Slack a moment ago may not
+                            // have its own message yet (D-207): looked for
+                            // again with the next words.
+                            if to.is_none() && m.is_some_and(just_made) {
+                                return;
+                            }
+                            to
+                        }
+                        // The agent's: where the developer is now.
+                        (Some(t), None) => spoke(&t.messages, chrono::Utc::now(), &heard),
+                        (None, _) => None,
+                    }
                 }
             };
             let mut streams = self.slack.streams.lock().unwrap();
@@ -1524,7 +1544,7 @@ impl Daemon {
     ) -> Result<(), CallError> {
         use otter_core::task::TaskStatus;
         let now = chrono::Utc::now();
-        let begun: Vec<(String, Origin, String, needs::Told, String)> = {
+        let begun: Vec<(String, Origin, String, Option<String>, needs::Told, String)> = {
             let store = self.tasks.lock().await;
             store
                 .iter()
@@ -1544,13 +1564,14 @@ impl Daemon {
                         id,
                         from,
                         request.id.to_string(),
+                        thread_after(&t.messages, request, now),
                         needs::card(t),
                         needs::card_key(t),
                     ))
                 })
                 .collect()
         };
-        for (task, from, request, card, shows) in begun {
+        for (task, from, request, after, card, shows) in begun {
             let to = Origin {
                 channel: from.channel,
                 thread: None,
@@ -1585,7 +1606,7 @@ impl Daemon {
                         shows: Some(shows),
                     });
                     // What the task says after its request goes there.
-                    state.tasks.insert(task, Some(request));
+                    state.tasks.insert(task, after);
                     state.save(path);
                 }
                 Err(e @ CallError::Unreachable(_)) => return Err(e),
@@ -1871,8 +1892,7 @@ impl Daemon {
                         Err(e) => tracing::warn!("slack: a need wasn't told: {e}"),
                     }
                 }
-                let extra = state.posts.len().saturating_sub(MAX_POSTS);
-                state.posts.drain(..extra);
+                capped(&mut state.posts, |task| look.titles.contains_key(task));
             }
             state
                 .needs
@@ -2197,6 +2217,12 @@ async fn post_in(
             body["thread_ts"] = json!(t);
             if broadcast && i == 0 {
                 body["reply_broadcast"] = json!(true);
+                // Shown at the top too: labelled as what is posted there.
+                let top = Origin {
+                    channel: to.channel.clone(),
+                    thread: None,
+                };
+                body["blocks"] = shown(&piece, &top);
             }
         }
         api::call(env, bot, "chat.postMessage", &body).await?;
@@ -2242,6 +2268,44 @@ fn made_from(request: &Message, chat: &[Message]) -> Option<Origin> {
         .iter()
         .find(|m| m.id.as_str() == id && m.role == MessageRole::User)?;
     Origin::of(m.correlation_id.as_deref())
+}
+
+/// Where a task's new thread picks up (D-207): after its request, for a
+/// task made just now — what it said since goes there; else after its last
+/// message: one made a while ago (by an otterd before this one) isn't told
+/// its whole story.
+fn thread_after(
+    messages: &[Message],
+    request: &Message,
+    now: otter_core::Timestamp,
+) -> Option<String> {
+    match now - request.at < FRESH {
+        true => Some(request.id.to_string()),
+        false => messages.last().map(|m| m.id.to_string()),
+    }
+}
+
+/// The messages kept, at most `MAX_POSTS`: the oldest go, but a task's own
+/// message while its task is there (`live`) — its thread is the task's
+/// (D-207).
+fn capped(posts: &mut Vec<Post>, live: impl Fn(&str) -> bool) {
+    let mut extra = posts.len().saturating_sub(MAX_POSTS);
+    posts.retain(|p| {
+        if extra == 0 || (p.key == "started" && live(&p.task)) {
+            return true;
+        }
+        extra -= 1;
+        false
+    });
+}
+
+/// The request of a task Otter on the host made a moment ago (D-207).
+fn just_made(m: &Message) -> bool {
+    m.role == MessageRole::User
+        && m.correlation_id
+            .as_deref()
+            .is_some_and(|c| c.contains(":create_task"))
+        && chrono::Utc::now() - m.at < FRESH
 }
 
 /// A follow-up of Otter's on the host (D-094): its task and what changed.
@@ -2449,6 +2513,46 @@ mod tests {
         };
         assert_eq!(kept.heard("ft_a", Some(&press)).pressed.unwrap().ts, "2.5");
         assert_eq!(kept.heard("ft_a", None).pressed.unwrap().ts, "0.5");
+    }
+
+    /// A task's new thread: what it said since its request, made just now;
+    /// from its last message, made a while ago (D-207). A task's own
+    /// message outlasts the cap while its task is there.
+    #[test]
+    fn a_new_thread_starts_where_it_should_and_outlasts_the_cap() {
+        use MessageRole::{Agent, User};
+        let now = chrono::Utc::now();
+        let mut request = msg("req", User, Some("msg_h1:create_task:0a1b2c3d"));
+        let messages = vec![request.clone(), msg("m1", Agent, None)];
+        assert_eq!(
+            thread_after(&messages, &request, now).as_deref(),
+            Some("req")
+        );
+        request.at = now - chrono::TimeDelta::hours(3);
+        assert_eq!(
+            thread_after(&messages, &request, now).as_deref(),
+            Some("m1")
+        );
+        let post = |task: &str, key: &str| Post {
+            task: task.into(),
+            key: key.into(),
+            channel: "D1".into(),
+            ts: "1.5".into(),
+            text: String::new(),
+            open: false,
+            said: vec![],
+            shows: None,
+        };
+        let mut posts = vec![post("ft_live", "started"), post("ft_gone", "started")];
+        posts.extend((0..MAX_POSTS).map(|_| post("ft_x", "decision:d")));
+        capped(&mut posts, |t| t == "ft_live");
+        assert_eq!(posts.len(), MAX_POSTS);
+        assert_eq!(posts[0].task, "ft_live");
+        assert!(posts.iter().all(|p| p.task != "ft_gone"));
+        assert_eq!(
+            posts.iter().filter(|p| p.task == "ft_x").count(),
+            MAX_POSTS - 1
+        );
     }
 
     /// The developer's message a task was made from on the host, and where

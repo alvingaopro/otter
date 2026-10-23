@@ -1980,6 +1980,23 @@ async fn a_press_is_answered_where_it_was_pressed_and_stop_ends_a_task() {
         })
     })
     .await;
+    // Stop pressed again (Slack sent it late): nothing said.
+    press(
+        &mut ws,
+        "p3",
+        "U01DEV",
+        "stop",
+        &json!({"task": other}).to_string(),
+        "1700000009.1",
+        &at,
+    )
+    .await;
+    tokio::time::sleep(Duration::from_millis(800)).await;
+    assert!(!slack.calls("chat.postMessage").into_iter().any(|c| {
+        c.2["blocks"][0]["text"]
+            .as_str()
+            .is_some_and(|t| t.contains("didn't go through"))
+    }));
     eventually("the need no longer waits", || async {
         slack.calls("chat.update").into_iter().find(|c| {
             c.2["ts"] == at.as_str()
