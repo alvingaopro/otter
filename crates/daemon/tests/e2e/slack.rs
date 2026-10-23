@@ -477,6 +477,20 @@ async fn slack_says_what_it_needs_and_why_it_failed() {
     .await;
 }
 
+/// Wait until otterd keeps the need's message posted at `ts`: a reply under
+/// it finds its task from then on. (Slack's answer to the post comes before
+/// otterd keeps it; a person never replies within those milliseconds.)
+async fn kept(host: &TestHost, ts: &str) {
+    let state = host.home().join("state/slack.json");
+    let want = format!("\"ts\":\"{ts}\"");
+    eventually("the need's message kept", || async {
+        std::fs::read_to_string(&state)
+            .ok()
+            .filter(|s| s.contains(&want))
+    })
+    .await;
+}
+
 /// A button pressed on one of Otter's messages, as Socket Mode sends it,
 /// and otterd's ack.
 async fn press(
@@ -579,6 +593,7 @@ async fn a_task_that_needs_you_is_told_in_slack_and_answered_there() {
     assert_eq!(ids, ["approve", "deny"]);
     let value = buttons[0]["value"].as_str().unwrap().to_owned();
     let on = "1800000000.000001";
+    kept(host, on).await;
 
     // A reply in its thread: said in the task, answered in the thread.
     let reply = dm(
@@ -1219,6 +1234,7 @@ async fn the_coding_agents_words_are_shown_as_it_says_them() {
             + 1
     );
     // The developer speaks in its thread, then answers the form.
+    kept(host, &on).await;
     acked(
         &mut ws,
         dm(
