@@ -249,6 +249,61 @@ async fn a_watch_that_cant_read_yet_says_so_and_is_set() {
     );
 }
 
+/// D-199: a pull request that conflicts with its base sends the task back
+/// to work by itself — the coding agent brings the branch up to date — and
+/// once it no longer conflicts and CI passed, it is done. Nothing waits on
+/// the developer. The conflict read before the step isn't taken for the
+/// answer: the pull request is read again first (here the agent leaves the
+/// head as it was, so nothing is pushed to make it read at once, and it's
+/// read every 2 s).
+#[tokio::test]
+async fn a_conflicting_pull_request_goes_back_to_work_and_ends_done() {
+    let fake = host_with(vec![("OTTER_PR_POLL_MS", "2000".into())]).await;
+    let host = &fake.host;
+    std::fs::write(fake.gh.join("mergeable"), "MERGEABLE").unwrap();
+    let id = published(&fake).await;
+    // Its base moved on: now it conflicts.
+    std::fs::write(fake.gh.join("mergeable"), "CONFLICTING").unwrap();
+    let f = wait_task(host, &id, "back to work", |f| {
+        f.steps
+            .iter()
+            .any(|t| t.title == "Bring the branch up to date")
+    })
+    .await;
+    // Resolved meanwhile (here, by the forge), and CI passes.
+    std::fs::write(fake.gh.join("mergeable"), "MERGEABLE").unwrap();
+    checks(&fake, &[("test", "pass")]);
+    let step = f
+        .steps
+        .iter()
+        .find(|t| t.title == "Bring the branch up to date")
+        .unwrap();
+    assert!(
+        step.detail
+            .as_deref()
+            .is_some_and(|d| d.contains("Merge origin/main into this branch")),
+        "{step:?}"
+    );
+    let f = wait_task(host, &id, "done by itself", |f| {
+        f.status == TaskStatus::Done
+    })
+    .await;
+    assert_eq!(f.status_reason.as_deref(), Some("Done: every gate passed"));
+    assert!(
+        f.messages.iter().any(|m| m
+            .text
+            .contains("conflicts with main, so GitHub runs no CI on it: the coding agent brings")),
+        "{:#?}",
+        f.messages.iter().map(|m| &m.text).collect::<Vec<_>>()
+    );
+    let step = f
+        .steps
+        .iter()
+        .find(|t| t.title == "Bring the branch up to date")
+        .unwrap();
+    assert_eq!(step.status, otter_core::task::StepStatus::Done);
+}
+
 /// D-184: a pull request that conflicts gets no CI. That isn't "running":
 /// the gates say so, Otter says so once; asked to watch it, Otter reads it
 /// first and says so (W-1), and a watch that comes to it fires at once.
@@ -284,7 +339,7 @@ async fn a_conflicting_pull_request_is_said_at_once() {
         .iter()
         .filter(|m| {
             m.text
-                .contains("conflicts with main, so GitHub runs no CI on it until")
+                .contains("conflicts with main, so GitHub runs no CI on it: the coding agent brings the branch up to date")
         })
         .count();
     assert_eq!(said, 1, "once per head");

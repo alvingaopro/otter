@@ -902,10 +902,8 @@ impl Task {
     /// failed, in review, or waiting on the developer — with when it got
     /// there, so each change is its own.
     pub fn follow_key(&self) -> Option<String> {
-        let notable = matches!(
-            self.status,
-            TaskStatus::Done | TaskStatus::Failed | TaskStatus::Review
-        ) || (self.status == TaskStatus::Blocked && self.needs().is_some());
+        let notable = matches!(self.status, TaskStatus::Done | TaskStatus::Failed)
+            || (self.status == TaskStatus::Blocked && self.needs().is_some());
         notable.then(|| {
             format!(
                 "{}:{}",
@@ -949,12 +947,9 @@ impl Task {
             })
         };
         match self.status {
-            TaskStatus::Review
-                if self.report.is_some()
-                    || self.gates.iter().any(|g| g.status == GateStatus::Failed) =>
-            {
-                need(NeedKind::Review, reason("Ready for your review"))
-            }
+            // Review is delivery under way (D-199): never the developer's.
+            // It ends by itself — done, or stopped with the result — and
+            // goes back to work on a failure it can fix.
             TaskStatus::Blocked => need(NeedKind::Blocked, reason("Waiting on you")),
             // Unattended work that waited too long for the developer (D-083).
             TaskStatus::Paused
@@ -1122,11 +1117,12 @@ impl Task {
                     .map(|g| g.name.as_str())
                     .collect();
                 Some(if waiting.is_empty() {
-                    "Then: the report, for your acceptance.".into()
+                    "Then: done with the report, or stopped with it if a gate didn't pass.".into()
                 } else {
                     format!(
-                        "Then: the report, once {} {} settled; a fix step if CI fails on the \
-                         code.",
+                        "Then: once {} {} settled, done with the report, or stopped with it if \
+                         a gate didn't pass; a fix step if CI fails on the code or the branch \
+                         conflicts.",
                         waiting.join(", "),
                         if waiting.len() == 1 { "is" } else { "are" }
                     )
@@ -1161,7 +1157,8 @@ pub enum NeedKind {
     Decision,
     /// To answer.
     Question,
-    /// Ready for the developer to accept, or not.
+    /// Ready for the developer to accept, or not. No longer raised
+    /// (D-199: nothing is accepted); kept for what older otterds sent.
     Review,
     /// Waiting on something only the developer can do (no decision).
     Blocked,
@@ -1640,13 +1637,17 @@ mod tests {
                 detail: None,
             },
         ];
+        let next = "Then: once CI is settled, done with the report, or stopped with it if a gate didn't pass; a fix step if CI fails on the code or the branch conflicts.";
+        assert_eq!(f.what_next().as_deref(), Some(next));
+        // The report written, it still waits on nobody (D-199).
+        f.report = Some("## Report".into());
+        assert_eq!(f.what_next().as_deref(), Some(next));
+        f.gates.truncate(1);
+        f.gates[0].status = GateStatus::Passed;
         assert_eq!(
             f.what_next().as_deref(),
-            Some("Then: the report, once CI is settled; a fix step if CI fails on the code.")
+            Some("Then: done with the report, or stopped with it if a gate didn't pass.")
         );
-        // Ready for review: that's what it needs, not what comes next.
-        f.report = Some("## Report".into());
-        assert_eq!(f.what_next(), None);
         for s in [Blocked, Failed, Done, Cancelled] {
             f.status = s;
             f.report = None;
@@ -1972,22 +1973,21 @@ mod tests {
         f.decisions
             .iter_mut()
             .for_each(|d| d.status = DecisionStatus::Approved);
-        // Review waits on the developer once it's ready to accept, not
-        // while it publishes or CI runs.
+        // Review is delivery under way (D-199): never waiting on the
+        // developer, a gate that failed included (it ends by itself).
         f.transition(Verifying, None, t0).unwrap();
-        f.transition(Review, Some("Ready for your review".into()), later)
+        f.transition(Review, Some("Publishing".into()), later)
             .unwrap();
         assert_eq!((f.needs(), f.activity()), (None, Activity::Working));
         f.report = Some("## Report".into());
-        let n = f.needs().unwrap();
-        assert_eq!((n.kind, n.since), (NeedKind::Review, later));
+        assert_eq!(f.needs(), None);
         f.report = None;
         f.gates.push(Gate {
             name: "CI".into(),
             status: GateStatus::Failed,
             detail: None,
         });
-        assert_eq!(f.needs().unwrap().kind, NeedKind::Review);
+        assert_eq!(f.needs(), None);
         // Failed waits on a retry; blocked on the developer.
         f.transition(
             Failed,

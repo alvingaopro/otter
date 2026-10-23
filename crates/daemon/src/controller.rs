@@ -30,8 +30,8 @@ use std::time::Duration;
 use chrono::Utc;
 use otter_core::task::{
     ARCHIVED, Criterion, Decider, DecisionKind, DecisionRequest, DecisionStatus, Evidence,
-    EvidenceKind, HELD, MessageRole, Risk, RunState, Step, StepStatus, Task, TaskEvent, TaskStatus,
-    VerificationMark, WAITING, YOUR_AGENT,
+    EvidenceKind, Gate, GateStatus, HELD, MessageRole, Risk, RunState, Step, StepStatus, Task,
+    TaskEvent, TaskStatus, VerificationMark, WAITING, YOUR_AGENT,
 };
 use otter_core::{DecisionId, EvidenceId, RunId, StepId, TaskId};
 use otter_protocol::RpcError;
@@ -118,6 +118,10 @@ const CI_FIX: &str = "Fix what CI found";
 const SAME_CI: &str = "CI failed the same way after the fix";
 /// The rationale's mark of a pull request found conflicting, per head (D-184).
 const CONFLICTS: &str = "The pull request conflicts with";
+/// The step that brings a conflicting branch up to date (D-199).
+const BRING_UP_TO_DATE: &str = "Bring the branch up to date";
+/// Why a task whose work is delivered is done (D-199).
+pub(crate) const DELIVERED: &str = "Done: every gate passed";
 /// What Otter asks when a task starts with nothing to do (D-067).
 const GOAL_QUESTION: &str = "What should this task do?";
 /// Why a task is done when its request was a question (D-084).
@@ -537,7 +541,7 @@ impl Daemon {
             );
             f.messages.push(m);
             let mut changes = vec![c];
-            let (step, stops) = intent_step(f, intent, last.id.as_str(), false, now);
+            let (step, stops) = intent_step(f, intent, false, now);
             stop = stops;
             changes.extend(step);
             Ok(changes)
@@ -2393,15 +2397,16 @@ impl Daemon {
                 changes.push(Change::new(
                     f.transition(
                         TaskStatus::Review,
-                        Some("Ready for your review".into()),
+                        Some("Verified: delivering".into()),
                         now,
                     )
                     .map_err(RpcError::conflict)?,
                 ));
             } else if !another_round(f.last_verification.as_ref(), &mark) {
                 // The same work after a fix, and nothing more proven: another
-                // round won't change it, whatever the verdict's wording. The
-                // developer decides (D-062, D-165).
+                // round won't change it, whatever the verdict's wording. It
+                // is delivered as it is, and stops with the result once
+                // delivery settles (D-062, D-165, D-199).
                 let unproven = if mark.unmet.is_empty() {
                     "a check failed".to_owned()
                 } else {
@@ -2414,7 +2419,7 @@ impl Daemon {
                 let (m, c) = message(
                     MessageRole::Controller,
                     format!(
-                        "Not verified, and nothing changed after the last fix, so another attempt won't help.\n{summary}\nAccept it as it is, or tell me what to change."
+                        "Not verified, and nothing changed after the last fix, so another attempt won't help.\n{summary}\nDelivering it as it is: the result follows."
                     ),
                     None,
                 );
@@ -2789,6 +2794,13 @@ impl Daemon {
         let mut d = f.delivery.clone();
         let mut evidence = Vec::new();
         let mut remediation: Option<String> = None;
+        // A branch that conflicts with its base: brought up to date (D-199).
+        let mut up_to_date: Option<String> = None;
+        // A failure that another attempt won't change: stopped, said why.
+        let mut stuck: Option<String> = None;
+        // Whether the pull request's state was read in this step: a
+        // conflict read before may be resolved by now (D-199).
+        let mut pr_read = false;
         let mut notes: Vec<String> = Vec::new();
         // Lines for the record only.
         let mut rationale: Vec<String> = Vec::new();
@@ -3054,13 +3066,19 @@ impl Daemon {
                     match gh.pr_state(n).await {
                         Ok(p) => {
                             if p.mergeable == "MERGEABLE" || p.mergeable == delivery::CONFLICTING {
+                                pr_read = true;
                                 dl.mergeable = Some(p.mergeable);
                             }
                             if dl.base.as_deref().is_none_or(str::is_empty) && !p.base.is_empty() {
                                 dl.base = Some(p.base);
                             }
                         }
-                        Err(e) => tracing::warn!(task = %f.id, "reading the pull request: {e:#}"),
+                        Err(e) => {
+                            // It can't be read now: the last reading stands
+                            // rather than waiting on one that may not come.
+                            pr_read = true;
+                            tracing::warn!(task = %f.id, "reading the pull request: {e:#}");
+                        }
                     }
                 }
                 self.controller
@@ -3077,11 +3095,14 @@ impl Daemon {
                         "{CONFLICTS} {base} at {}",
                         dl.head.as_deref().unwrap_or("?")
                     );
+                    // Back to work, once for each head that conflicts
+                    // (D-199): the attempts budget bounds it.
                     if !f.rationale.iter().any(|r| r == &marker) {
                         notes.push(format!(
-                            "The pull request conflicts with {base}, so GitHub runs no CI on it until the branch is brought up to date. Say so and the coding agent will bring it up to date, or resolve it yourself."
+                            "The pull request conflicts with {base}, so GitHub runs no CI on it: the coding agent brings the branch up to date."
                         ));
                         rationale.push(marker);
+                        up_to_date = Some(base);
                     }
                 }
                 let mut failed: Vec<_> = dl
@@ -3135,12 +3156,15 @@ impl Daemon {
                         let names: Vec<&str> = failed.iter().map(|c| c.name.as_str()).collect();
                         let title = format!("CI failed: {}", names.join(", "));
                         // The same failure as last time, after a fix: another
-                        // fix won't help — the developer's call (D-068).
+                        // fix won't help (D-068). Last time is CI's latest
+                        // word: a failure it has passed since is a new one
+                        // (D-199).
                         let last = f
                             .evidence
                             .iter()
                             .rev()
-                            .find(|e| e.kind == EvidenceKind::Ci && e.ok == Some(false));
+                            .find(|e| e.kind == EvidenceKind::Ci)
+                            .filter(|e| e.ok == Some(false));
                         let same = last.is_some_and(|e| {
                             e.title == title
                                 && e.detail
@@ -3151,17 +3175,19 @@ impl Daemon {
                             .steps
                             .iter()
                             .any(|t| t.title == CI_FIX && t.status == StepStatus::Done);
-                        if same {
-                            let marker = format!(
-                                "{SAME_CI} ({})",
-                                last.map(|e| e.id.as_str()).unwrap_or_default()
-                            );
-                            if fixed && !f.rationale.iter().any(|r| r == &marker) {
-                                notes.push(format!(
-                                    "{SAME_CI}, so another attempt won't help: over to you. Look at the CI log, then accept it as it is or tell me what to change."
-                                ));
-                                rationale.push(marker);
-                            }
+                        let marker = format!(
+                            "{SAME_CI} ({})",
+                            last.map(|e| e.id.as_str()).unwrap_or_default()
+                        );
+                        // Stopped with the result (D-199): another attempt
+                        // won't help. Once it stopped on this failure, coming
+                        // back to it (a retry, a new goal) is another attempt.
+                        if same && fixed && !f.rationale.iter().any(|r| r == &marker) {
+                            rationale.push(marker);
+                            stuck = Some(format!(
+                                "Stopped: {SAME_CI} ({}), so another attempt won't help. The pull request is open: look at the CI log, then tell me what to change.",
+                                names.join(", ")
+                            ));
                         } else {
                             remediation = Some(format!(
                                 "CI failed ({}):\n{}",
@@ -3201,7 +3227,25 @@ impl Daemon {
         next.delivery = d.clone();
         next.evidence.extend(evidence.iter().cloned());
         let gates = delivery::gates(&next, &cx);
-        let ready = remediation.is_none() && delivery::ready_for_acceptance(&gates);
+        // Settled: nothing pending, nothing going back to work. Then it
+        // ends by itself (D-199): done when every gate passed, else stopped
+        // with the result, saying which didn't pass.
+        let stale_conflict = !pr_read
+            && cx.publishable
+            && d.as_ref()
+                .is_some_and(|d| d.mergeable.as_deref() == Some(delivery::CONFLICTING));
+        let settled = remediation.is_none()
+            && up_to_date.is_none()
+            && !stale_conflict
+            && f.pending_decisions().next().is_none()
+            && !gates.is_empty()
+            && gates.iter().all(|g| g.status != GateStatus::Pending);
+        let ready = settled && stuck.is_none() && delivery::all_clear(&gates);
+        let back_to_work = remediation.is_some() || up_to_date.is_some();
+        let stop = stuck.filter(|_| !back_to_work).or_else(|| {
+            (settled && !ready)
+                .then(|| not_passed(&gates, d.as_ref().and_then(|d| d.pr_url.as_deref())))
+        });
         // Delivery's stat of the branch (verification's working-tree diffs
         // are evidence for the judge, not the report).
         let is_stat =
@@ -3217,28 +3261,31 @@ impl Daemon {
                     .find(is_stat)
                     .and_then(|e| e.detail.clone())
             });
-        let write_report = ready && f.report.is_none();
-        // Accepting is automatic (D-193): once every gate passed and the
-        // report is written, Otter accepts; merging stays the developer's.
-        let accept = ready && self.auto(f, "accept_task");
+        let write_report = (ready || stop.is_some()) && f.report.is_none();
+        // Delivered, the task is done (D-199): no acceptance to wait for;
+        // merging stays the developer's.
         if d == f.delivery
             && evidence.is_empty()
             && gates == f.gates
             && remediation.is_none()
+            && up_to_date.is_none()
             && !write_report
             && notes.is_empty()
             && rationale.is_empty()
             && moot.is_empty()
         {
-            // Nothing new to write: the gates kept are these, so accepting
+            // Nothing new to write: the gates kept are these, so finishing
             // checks the ones just read.
-            if accept {
-                return self.accept_on_own(&f.id).await;
+            if ready {
+                return self.done_delivered(&f.id).await;
+            }
+            if let Some(why) = stop {
+                self.stop_in_review(&f.id, &why).await;
             }
             return Ok(());
         }
         let mut posted = None;
-        self.controller_apply(&f.id, TaskStatus::Review, |f, now| {
+        let applied = self.controller_apply(&f.id, TaskStatus::Review, |f, now| {
             let mut changes = Vec::new();
             f.delivery = d.clone();
             for e in evidence.clone() {
@@ -3295,16 +3342,57 @@ impl Daemon {
                 ));
                 return Ok(changes);
             }
+            // The branch conflicts with its base: back to work, bringing it
+            // up to date (D-199).
+            if let Some(base) = &up_to_date {
+                let id = StepId::generate();
+                f.steps.push(Step {
+                    id: id.clone(),
+                    title: BRING_UP_TO_DATE.into(),
+                    detail: Some(format!(
+                        "The pull request conflicts with {base}. Merge origin/{base} into this branch (fetch it first), resolve the conflicts keeping what both sides meant, and make sure the checks still pass. Don't push: Otter publishes."
+                    )),
+                    status: StepStatus::Pending,
+                    depends_on: vec![],
+                    workspace_id: f.workspace_id.clone(),
+                    session_id: None,
+                    attempts: 0,
+                    last_error: None,
+                    planning: false,
+                });
+                f.report = None;
+                changes.push(Change::new(TaskEvent::StepChanged {
+                    step_id: id,
+                    status: StepStatus::Pending,
+                }));
+                changes.push(Change::new(
+                    f.transition(
+                        TaskStatus::Implementing,
+                        Some(format!("The pull request conflicts with {base}")),
+                        now,
+                    )
+                    .map_err(RpcError::conflict)?,
+                ));
+                return Ok(changes);
+            }
             if write_report {
                 let r = delivery::report(f, diffstat.as_deref());
                 posted = Some(r.clone());
                 f.report = Some(r);
-                let said = if accept {
-                    "Every gate has passed; the report is ready, and I'm accepting it (accepting is automatic in Settings). Merging stays yours."
-                } else {
-                    "Every gate has passed; the report is ready. Accept when you're happy with it — I won't merge or deploy."
-                };
-                let (m, c) = message(MessageRole::Controller, said.into(), None);
+            }
+            // Stopped, the reason says the result; done, this does.
+            if write_report && ready {
+                let pr = f
+                    .delivery
+                    .as_ref()
+                    .and_then(|d| d.pr_url.as_deref())
+                    .map(|u| format!(" The pull request: {u}; merging it is yours."))
+                    .unwrap_or_default();
+                let (m, c) = message(
+                    MessageRole::Controller,
+                    format!("Done: every gate passed, and the report is below.{pr}"),
+                    None,
+                );
                 f.messages.push(m);
                 changes.push(c);
             }
@@ -3317,9 +3405,18 @@ impl Daemon {
         {
             tracing::warn!("posting the report: {e:#}");
         }
+        // Stopped with the result: nothing it can do will change it.
+        // The developer changed something meanwhile: theirs.
+        if !applied {
+            return Ok(());
+        }
+        if let Some(why) = stop {
+            self.stop_in_review(&f.id, &why).await;
+            return Ok(());
+        }
         // After the write, so the gates it checks are the ones just read.
-        if accept {
-            return self.accept_on_own(&f.id).await;
+        if ready {
+            return self.done_delivered(&f.id).await;
         }
         Ok(())
     }
@@ -3364,16 +3461,45 @@ impl Daemon {
         }
     }
 
-    /// Otter accepts a task whose gates all passed (D-193), on record, as
-    /// its own doing; what undoes it is changing the goal again.
-    async fn accept_on_own(self: &Arc<Self>, id: &TaskId) -> RpcResult<()> {
+    /// Stop a task whose delivery settled with the result (D-199): only
+    /// while it's still in review — a goal changed, a pause or a step back
+    /// to work meanwhile wins.
+    async fn stop_in_review(&self, id: &TaskId, why: &str) {
+        let why = redact(why);
+        let applied = self.tasks.lock().await.apply(id, None, |f, now| {
+            if f.status != TaskStatus::Review {
+                return Ok(vec![]);
+            }
+            let mut changes = vec![Change::new(
+                f.transition(TaskStatus::Failed, Some(why.clone()), now)
+                    .map_err(RpcError::conflict)?,
+            )];
+            let (m, c) = message(MessageRole::Controller, why.clone(), None);
+            f.messages.push(m);
+            changes.push(c);
+            Ok(changes)
+        });
+        match applied {
+            // Why, in the log too: the task's history goes when it's
+            // deleted (D-134).
+            Ok(a) if a.from != Some(a.task.status) => {
+                tracing::warn!(task = %id, "task stopped: {why}");
+                self.task_changed(&a);
+            }
+            Ok(_) => {}
+            Err(e) => tracing::warn!(task = %id, "stopping: {e:?}"),
+        }
+    }
+
+    /// A task whose work is delivered is done (D-199): every gate kept
+    /// clear and the report written; nothing waits on the developer. More
+    /// asked of it later plans again (D-050).
+    async fn done_delivered(self: &Arc<Self>, id: &TaskId) -> RpcResult<()> {
         let applied = self.tasks.lock().await.apply(id, None, |f, now| {
             if f.status != TaskStatus::Review || f.pending_decisions().next().is_some() {
                 return Ok(vec![]);
             }
-            // Only what would be accepted: every gate kept clear (the
-            // developer's acceptance aside) and the report written. Nothing
-            // written otherwise, so a step never loops on a refusal.
+            // Nothing written unless it's done, so a step never loops.
             let open = f.gates.is_empty()
                 || f.report.is_none()
                 || f.gates
@@ -3382,30 +3508,10 @@ impl Daemon {
             if open {
                 return Ok(vec![]);
             }
-            let mut v = vec![Change::new(TaskEvent::ToolCalled {
-                tool: "accept_task".into(),
-                origin: "auto".into(),
-                authority: None,
-                detail: None,
-            })];
-            let (changes, _) =
-                intent_step(f, crate::brain::Intent::Finish, "auto:accept", true, now);
-            v.extend(changes);
-            let done = f.status == TaskStatus::Done;
-            v.push(Change::new(TaskEvent::ToolDone {
-                tool: "accept_task".into(),
-                error: (!done).then(|| "not_ready".into()),
-            }));
-            if done {
-                v.push(Change::new(TaskEvent::ToolUndo {
-                    tool: "accept_task".into(),
-                    task_id: f.id.clone(),
-                    action: otter_core::task::TaskAction::RequestChanges {
-                        note: Some("Otter's acceptance undone".into()),
-                    },
-                }));
-            }
-            Ok(v)
+            Ok(vec![Change::new(
+                f.transition(TaskStatus::Done, Some(DELIVERED.into()), now)
+                    .map_err(RpcError::conflict)?,
+            )])
         })?;
         self.task_changed(&applied);
         Ok(())
@@ -3807,12 +3913,10 @@ pub(crate) fn effective_intent(
 }
 
 /// The change an intent makes to the task (`converse`, and Otter's tools,
-/// D-089), and whether the work in progress stops. `authority` is the
-/// developer's message that asked for it: accepting is recorded under it.
+/// D-089), and whether the work in progress stops.
 pub(crate) fn intent_step(
     f: &mut Task,
     intent: crate::brain::Intent,
-    authority: &str,
     by_otter: bool,
     now: otter_core::Timestamp,
 ) -> (Vec<Change>, bool) {
@@ -3882,26 +3986,8 @@ pub(crate) fn intent_step(
             ));
             None
         }
-        // Satisfied: accept what's in review (its gates still apply), or
-        // stop work in progress.
-        (Intent::Finish, TaskStatus::Review) => {
-            let accept = otter_core::task::TaskAction::Accept {
-                override_gates: false,
-            };
-            match crate::tasks::apply_action(f, &accept, authority, now) {
-                Ok(c) => {
-                    changes.extend(c);
-                    if by_otter {
-                        changes.push(Change::new(f.reason(ACCEPTED_BY_OTTER)));
-                        f.status_reason = Some(ACCEPTED_BY_OTTER.into());
-                    }
-                }
-                Err(e) => changes.push(Change::new(
-                    f.reason(format!("Not done yet: {}", e.message)),
-                )),
-            }
-            None
-        }
+        // Satisfied: stop work in progress. A task in review is delivering
+        // and ends by itself (D-199): there is nothing to accept.
         (Intent::Finish, s) if s.is_active() || s == TaskStatus::Blocked => {
             stop = true;
             move_to(
@@ -3916,9 +4002,25 @@ pub(crate) fn intent_step(
     (changes, stop)
 }
 
-/// The reason a task Otter accepted is done (D-193).
-pub(crate) const ACCEPTED_BY_OTTER: &str =
-    "Accepted by Otter: every gate passed (accepting is automatic in Settings)";
+/// Why a task whose delivery settled with a gate that didn't pass stopped
+/// (D-199): which, with the pull request if there is one.
+fn not_passed(gates: &[Gate], pr: Option<&str>) -> String {
+    let failed: Vec<String> = gates
+        .iter()
+        .filter(|g| g.status == GateStatus::Failed)
+        .map(|g| match &g.detail {
+            Some(d) => format!("{} ({d})", g.name),
+            None => g.name.clone(),
+        })
+        .collect();
+    let pr = pr
+        .map(|u| format!(" The pull request is open: {u}; merging it is yours."))
+        .unwrap_or_default();
+    format!(
+        "Stopped: not passed: {}.{pr} Tell me what to change.",
+        failed.join("; ")
+    )
+}
 
 /// Why a task's workspace can't be worked in now (D-079): the reason it
 /// says, and whether others hold it — another task's run or work, an agent

@@ -75,7 +75,7 @@ async fn in_review(host: &TestHost) -> String {
     let id = started_task(host, "Add CSV export").await;
     // Its gates checked too: accepting before they are is refused.
     wait_task(host, &id, "in review, gates checked", |f| {
-        f.status == TaskStatus::Review && !f.gates.is_empty()
+        delivered(f) && !f.gates.is_empty()
     })
     .await;
     id
@@ -104,19 +104,16 @@ async fn a_turn_an_event_started_cant_act_on_the_developers_word() {
     .await;
     let host = &fake.host;
     let id = in_review(host).await;
-    let script = "AS: event\nCALL: accept_task {}\nCALL: resume_task {}\nCALL: retry_task {}\nCALL: start_task {}\nCALL: revise_task {}";
-    let (f, answers) = run(host, &id, "ev-1", script).await;
-    assert_eq!(answers.len(), 5, "{answers:#?}");
+    let script = "AS: event\nCALL: resume_task {}\nCALL: retry_task {}\nCALL: start_task {}\nCALL: revise_task {}";
+    let (_, answers) = run(host, &id, "ev-1", script).await;
+    assert_eq!(answers.len(), 4, "{answers:#?}");
     for a in &answers {
         assert_eq!(code(a), "not_allowed_in_this_turn", "{a}");
         assert!(a["error"]["next"].is_string(), "{a}");
     }
-    assert_eq!(f.status, TaskStatus::Review);
     // The developer's own word does it.
-    let (f, answers) = run(host, &id, "dev-1", "Ship it\nCALL: accept_task {}").await;
+    let (_, answers) = run(host, &id, "dev-1", "Again\nCALL: revise_task {}").await;
     assert_eq!(code(&answers[0]), "ok", "{answers:#?}");
-    assert_eq!(answers[0]["data"]["done"], "accepted");
-    assert_eq!(f.status, TaskStatus::Done);
 }
 
 /// What is automatic, an event's turn does on its own, as Otter's doing on

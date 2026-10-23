@@ -166,7 +166,7 @@ async fn revise_plans_again_and_remember_notes_once() {
     let fake = host_with(vec![]).await;
     let host = &fake.host;
     let id = started_task(host, "Add CSV export").await;
-    wait_task(host, &id, "in review", |f| f.status == TaskStatus::Review).await;
+    wait_task(host, &id, "in review", delivered).await;
 
     let (_, _, line) = run(
         host,
@@ -221,13 +221,13 @@ async fn a_refused_command_says_why_and_a_reminder_is_a_watch() {
     let fake = host_with(vec![]).await;
     let host = &fake.host;
     let id = started_task(host, "Add CSV export").await;
-    wait_task(host, &id, "in review", |f| f.status == TaskStatus::Review).await;
+    wait_task(host, &id, "in review", delivered).await;
     let (f, _, line) = run(host, &id, "ask-1", MessageCommand::Ask, "Where is it?").await;
     assert_eq!(
         line,
         "I couldn't ask the coding agent: the coding agent isn't at work on this task. Ask while it works, or start a task for the question."
     );
-    assert_eq!(f.status, TaskStatus::Review);
+    assert!(delivered(&f), "the task goes on: {:?}", f.status);
 
     let (f, _, line) = run(
         host,
@@ -319,10 +319,7 @@ async fn a_command_is_done_with_the_controller_off() {
 async fn a_crash_after_the_change_says_it_once_after() {
     let mut fake = host_with(vec![("OTTER_TEST_CRASH", "applied:revise_task".into())]).await;
     let id = started_task(&fake.host, "Add CSV export").await;
-    wait_task(&fake.host, &id, "in review", |f| {
-        f.status == TaskStatus::Review
-    })
-    .await;
+    wait_task(&fake.host, &id, "in review", delivered).await;
     fake.host
         .conn()
         .await

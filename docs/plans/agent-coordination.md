@@ -117,6 +117,7 @@ alone; together Otter routes messages instead of coordinating.
    said not to change anything.
 5. **`accept_task` automatic**: a task whose gates all passed is accepted by
    Otter once its report is written. Merging stays the developer's.
+   *Superseded by D-199: there is no acceptance; a delivered task is done.*
 6. **What Otter did (the ledger).** Every tool call is already in the task's
    history (`ToolCalled` with its origin, `ToolDone`); the controller's own
    calls (§2.3, §4.3–4.5) are recorded the same way. `otter.actions` lists

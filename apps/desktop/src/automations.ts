@@ -275,6 +275,7 @@ const DID: Record<string, string> = {
   pause_task: "Paused the task",
   revise_task: "Planned it again",
   approve_plan: "Approved the plan",
+  // Gone (D-199): a delivered task is done by itself. Older histories have it.
   accept_task: "Accepted",
   finish_with_answer: "Answered and finished",
   create_task: "Made a sub-task",

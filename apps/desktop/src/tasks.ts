@@ -358,7 +358,8 @@ export type TaskAction =
   | { action: "cancel" }
   | { action: "retry" }
   | { action: "decide"; decision_id: string; approve: boolean; answer?: string; answers?: Record<string, string> }
-  | { action: "accept"; override_gates?: boolean }
+  // No `accept`: a task ends by itself once delivered (D-199); the
+  // protocol keeps it only for older clients.
   | { action: "request_changes"; note?: string }
   | { action: "set_workspace"; workspace: string }
   | { action: "own_workspace" }
@@ -383,10 +384,29 @@ export const GROUPS: { id: TaskGroup; label: string }[] = [
 
 const ACTIVE: TaskStatus[] = ["planning", "implementing", "verifying", "review"];
 
-/** Every gate passed or not for it, but the developer's own acceptance. */
-export function gatesClear(f: Task): boolean {
-  const gates = f.gates ?? [];
-  return gates.length > 0 && gates.filter((g) => g.name !== "Your acceptance").every((g) => g.status === "passed" || g.status === "not_applicable");
+/** An older task's gate for the developer's acceptance: there is none any more (D-199). */
+const ACCEPTANCE_GATE = "Your acceptance";
+
+/** The task's gates (D-047), without an older task's acceptance gate. */
+export function gatesOf(f: Task): Gate[] {
+  return (f.gates ?? []).filter((g) => g.name !== ACCEPTANCE_GATE);
+}
+
+/**
+ * Where a task in review stands (D-199): delivery is under way, waiting on
+ * its gates, and ends by itself — done, or stopped with the result when a
+ * gate didn't pass. Never the developer's to act on.
+ */
+export function deliveryLine(f: Task): string | undefined {
+  const names = (status: GateStatus) =>
+    gatesOf(f)
+      .filter((g) => g.status === status)
+      .map((g) => g.name)
+      .join(", ");
+  const failed = names("failed");
+  const waiting = names("pending");
+  const parts = [failed && `${failed} didn't pass`, waiting && `waiting on ${waiting}`].filter(Boolean);
+  return parts.length > 0 ? parts.join("; ") : undefined;
 }
 
 /** A task that can be deleted: nothing of it is at work. */
@@ -410,7 +430,6 @@ export function needOf(f: Task): Need | undefined {
   const d = pendingDecisions(f)[0];
   if (d) return { kind: d.kind === "question" ? "question" : "decision", summary: d.summary, since: d.created_at, decision_id: d.id, decisions: pendingDecisions(f).length };
   const since = f.status_since ?? f.updated_at;
-  if (f.status === "review" && f.report) return { kind: "review", summary: f.status_reason ?? "Ready for your review", since, decisions: 0 };
   if (f.status === "blocked") return { kind: "blocked", summary: f.status_reason ?? "Waiting on you", since, decisions: 0 };
   if (f.status === "failed") return { kind: "failed", summary: f.status_reason ?? "Stopped", since, decisions: 0 };
   return undefined;
@@ -427,7 +446,7 @@ export function taskActivity(f: Task): Activity {
   return "working";
 }
 
-/** The developer has to act: a decision, review, a block, a stop. */
+/** The developer has to act: a decision, a block, a stop. Never delivery (D-199). */
 export function needsYou(f: Task): boolean {
   return needOf(f) !== undefined;
 }
@@ -499,7 +518,7 @@ export const STATUS_LABEL: Record<TaskStatus, string> = {
   planning: "Working",
   implementing: "Working",
   verifying: "Working",
-  review: "Ready to check",
+  review: "Delivering",
   done: "Done",
   blocked: "Needs you",
   paused: "Paused",
@@ -510,6 +529,7 @@ export const STATUS_LABEL: Record<TaskStatus, string> = {
 /** One line on what is going on right now. */
 export function statusDetail(f: Task): string | undefined {
   if (f.status === "planning") return "planning";
+  if (f.status === "review") return deliveryLine(f);
   const i = f.steps.findIndex((t) => t.status === "running");
   if ((f.status === "implementing" || f.status === "verifying") && f.status_reason === undefined) {
     if (f.status === "verifying") return "checking the work";

@@ -81,7 +81,6 @@ describe("slash commands (D-190)", () => {
     expect(why("start", ctx(draft))).toBe(true);
     expect(why("revise", ctx(draft))).toBe("Start it first");
     expect(why("retry", ctx(failed))).toBe(true);
-    expect(why("accept", ctx({ ...done, status: "review" }))).toBe(true);
     expect(why("cancel", ctx(done))).toBe("Already over");
     expect(why("pause", ctx(blocked))).toBe(true);
     // Asking needs the agent at work, on the SDK runtime.
@@ -116,11 +115,6 @@ describe("slash commands (D-190)", () => {
     expect(effect("watch", "ci when it's green", ctx)).toEqual({ kind: "send", command: { name: "watch_ci" }, words: "when it's green" });
     expect(effect("answer-only", "on", ctx)).toEqual({ kind: "send", command: { name: "answer_only", on: true }, words: "" });
     expect(effect("answer-only", "off", ctx)).toEqual({ problem: "It isn't answer-only" });
-    expect(effect("accept", "", { task: { ...done, status: "review", gates: [{ name: "CI", status: "failed" }] } })).toEqual({
-      kind: "act",
-      action: { action: "accept", override_gates: true },
-    });
-    expect(find(TASK_COMMANDS, "accept")!.confirm!({ task: { ...done, status: "review", gates: [{ name: "CI", status: "passed" }] } })).toBeUndefined();
   });
 
   it("writes a command as otterd does", () => {

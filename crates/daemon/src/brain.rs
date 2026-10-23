@@ -253,7 +253,7 @@ pub enum Intent {
     Pause,
     /// The goal changed or grew: plan again from where the work stands.
     Revise,
-    /// They're satisfied: accept it (in review), or stop here.
+    /// They're satisfied: stop here (a task in review ends by itself, D-199).
     Finish,
 }
 

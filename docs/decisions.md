@@ -1366,7 +1366,8 @@ checked. In review the controller (`review_step`, `delivery.rs`):
   report when the repository has workflows), and the developer's
   acceptance. *Accept* is refused until every other gate passed or doesn't
   apply; *Accept anyway* is the developer's explicit override and goes into
-  the rationale and the report.
+  the rationale and the report. *Superseded 2026-10-22 (D-199):* there is
+  no acceptance gate; a task ends by itself once delivery settles.
 - **The report** (once every gate but acceptance is clear): changed files,
   criteria, gates, evidence (model judgments marked), decisions and who made
   them, and the unresolved risks. Kept on the feature and posted on the PR.
@@ -7377,7 +7378,8 @@ Plan `docs/plans/agent-coordination.md` M2–M3.
   the report is written ("I'm accepting it (accepting is automatic in
   Settings). Merging stays yours."), checked against the gates just written
   — nothing is written when they aren't clear, so a step never loops on a
-  refusal. Merging is never Otter's.
+  refusal. Merging is never Otter's. *Superseded the same day (D-199):*
+  nothing is accepted, by Otter or the developer; a delivered task is done.
 - **The ledger.** `otter.actions` lists what Otter did across the host's
   tasks, newest first, from the histories: each `ToolCalled` (now with
   `detail`, and origin `auto` for the controller's own), what came of it,

@@ -129,12 +129,6 @@ pub const CATALOG: &[Entry] = &[
         Auto,
     ),
     e(
-        "accept_task",
-        "task",
-        "Accept a task whose gates all passed",
-        Auto,
-    ),
-    e(
         "finish_with_answer",
         "task",
         "End a task Otter answered itself, with nothing to change",

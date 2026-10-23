@@ -345,7 +345,8 @@ The Control Agent's model and API keys on this host (D-048).
 - The view also has `tools?: [{name, description, group, level,
   default_level}]` (D-191): each of Otter's tools — its own, the Claude
   Agent SDK's `WebSearch`, `WebFetch` and `Bash` it may use, and what the
-  controller does on its own (`publish`, `approve_plan`, `accept_task`) —
+  controller does on its own (`publish`, `approve_plan`; `accept_task` is
+  gone, D-199: a delivered task is done by itself) —
   and how far it may go on this host: `auto` (Otter uses it on its own, in
   any turn), `developer` (only in a turn the developer's message started)
   or `off` (not offered). `group` is `look`, `place`, `task`, `delegate`,
@@ -480,7 +481,10 @@ Product work owned by the daemon (D-043); see `otter_core::task`.
   splits a directory workspace in a repository too: a workspace of its own
   from its `origin`, on the branch it has checked out. An
   action the lifecycle doesn't allow fails with `conflict`, and so does
-  `accept` while a gate (D-047) is open, unless `override_gates`.
+  `accept` while a gate (D-047) is open, unless `override_gates`. `accept`
+  is for older clients only: a task in review ends by itself once its
+  delivery settles — done, or failed saying which gate didn't pass — and
+  never waits on the developer (D-199).
 - `task.delete {task}` → `null`: removes a task with its history
   and artifacts; the workspace it used stays. A task being worked on
   (planning, implementing, verifying, or with a run going) fails with
