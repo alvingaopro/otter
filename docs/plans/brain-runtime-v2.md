@@ -157,6 +157,9 @@ Rules:
    is still resolved only through `feature.act(Decide)` from a button: delete,
    publish, credentials and recovery (D-061). "Yes, delete it" in chat
    doesn't resolve a deletion prompt. Otter points to the prompt instead.
+   (Since D-205, the host conversation's `answer_decision` also settles a
+   question to the developer, or an approval that isn't `user_only`, on
+   their message. Everything `user_only` still takes the button.)
 3. **One message, one effect.** A repeated turn or a retried call can't
    apply the same thing twice:
    - `forward_to_agent` and `redirect_agent` keep **each forwarded message's

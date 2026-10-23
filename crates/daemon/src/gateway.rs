@@ -433,9 +433,10 @@ fn task_id(more: Value) -> Value {
 }
 
 /// Otter's tools in its conversation on the host (D-093): looking across
-/// the host's tasks, and making, starting, resuming and pausing them. What
-/// belongs to one task — guidance, its questions, its decisions — is said in
-/// that task's own conversation.
+/// the host's tasks, and making, starting, resuming and pausing them; on
+/// the developer's word, answering what a task asks them and reviewing a
+/// pull request (D-205). Guidance for one task's work and questions about
+/// its code are said in that task's own conversation.
 pub fn host_tools() -> Vec<ToolSpec> {
     use Class::*;
     let t = |name, class, description, input| ToolSpec {
@@ -493,12 +494,13 @@ pub fn host_tools() -> Vec<ToolSpec> {
         t(
             "create_task",
             DeveloperWord,
-            "Make a task of what the developer asked for: their message(s) by id are its request, word for word; the title is yours; where it works is at most one of: workspace (name or id of one that exists), new_workspace (a repository the developer named or list_repositories gave: a workspace of its own is made from it, and is prepared before the work starts), or scratch (an empty directory); answer_only if they only want an answer; start if they asked for it to start. If it isn't clear where, ask the developer first.",
+            "Make a task of what the developer asked for: their message(s) by id are its request, word for word; the title is yours; where it works is at most one of: workspace (name or id of one that exists), new_workspace (a repository the developer named or list_repositories gave: a workspace of its own is made from it, and is prepared before the work starts), or scratch (an empty directory); answer_only if they only want an answer; start if they asked for it to start. If it isn't clear where, ask the developer first. A message that asks for several things done apart (each of these pull requests, say) is a task each: call it once per part, each with its own title and scope — that task's part of their request, in your words, said to its coding agent as yours. Without scope a task does all of the request.",
             json!({
                 "type": "object",
                 "properties": {
                     "title": {"type": "string"},
                     "message_ids": {"type": "array", "items": {"type": "string"}, "minItems": 1},
+                    "scope": {"type": "string"},
                     "workspace": {"type": "string"},
                     "new_workspace": {
                         "type": "object",
@@ -536,10 +538,43 @@ pub fn host_tools() -> Vec<ToolSpec> {
             "Pause a task: its coding agent stops; it can be resumed.",
             task_id(json!({})),
         ),
+        t(
+            "answer_decision",
+            DeveloperWord,
+            "Answer a decision that waits on the developer in one task, as their message says: one get_pending_decisions shows answerable_by_message (a plan to approve, a question, an ordinary ask). approve true or false; a question takes their answer (answer), or approve false to leave it unanswered. Only what they plainly said about that decision, never your own judgement. Any other — a command only they may allow, a recovery, a form of several questions — they answer themselves, in the app or on Slack's message about it: tell them so.",
+            task_id(json!({
+                "decision_id": {"type": "string"},
+                "approve": {"type": "boolean"},
+                "answer": {"type": "string"}
+            })),
+        ),
+        t(
+            "review_pull_request",
+            DeveloperWord,
+            "Review a pull request on GitHub as the developer asked: event approve, comment, or request_changes; body: what the review says (a comment or a request for changes needs one; an approval may have one). url: the pull request's link. It goes out with Otter's GitHub sign-in (as read_github reads), once per message, and can't be taken back. Only when they asked for it: reading one, or a review that found nothing wrong, is no approval.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "url": {"type": "string"},
+                    "event": {"type": "string", "enum": ["approve", "comment", "request_changes"]},
+                    "body": {"type": "string"}
+                },
+                "required": ["url", "event"],
+                "additionalProperties": false
+            }),
+        ),
     ]
     .into_iter()
     .chain(conversation_tools())
     .collect()
+}
+
+/// A short digest of `text` for a command id: FNV-1a, its low 32 bits.
+fn digest(text: &str) -> String {
+    let hash = text.bytes().fold(0xcbf2_9ce4_8422_2325_u64, |h, b| {
+        (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3)
+    });
+    format!("{:08x}", hash as u32)
 }
 
 /// The tools a turn in `scope` has.
@@ -1077,15 +1112,22 @@ impl Gateway {
                 }))
             }
             "get_pending_decisions" => Ok(json!({
-                "decisions": f.pending_decisions().map(|d| json!({
-                    "id": d.id.as_str(),
-                    "kind": format!("{:?}", d.kind).to_lowercase(),
-                    "risk": format!("{:?}", d.risk).to_lowercase(),
-                    "summary": r(&d.summary),
-                    "detail": d.detail.as_deref().map(|t| short(t, 1500)),
-                    "options": d.options.iter().map(|o| r(o)).collect::<Vec<_>>(),
-                    "developer_only": d.user_only,
-                })).collect::<Vec<_>>(),
+                "decisions": f.pending_decisions().map(|d| {
+                    let mut v = json!({
+                        "id": d.id.as_str(),
+                        "kind": format!("{:?}", d.kind).to_lowercase(),
+                        "risk": format!("{:?}", d.risk).to_lowercase(),
+                        "summary": r(&d.summary),
+                        "detail": d.detail.as_deref().map(|t| short(t, 1500)),
+                        "options": d.options.iter().map(|o| r(o)).collect::<Vec<_>>(),
+                        "developer_only": d.user_only,
+                    });
+                    // Where answer_decision may answer it (D-205).
+                    if matches!(self.inner.scope, Scope::Host) {
+                        v["answerable_by_message"] = json!(self.their_own(&f, d).is_none());
+                    }
+                    v
+                }).collect::<Vec<_>>(),
             })),
             "get_messages" => messages_page(&f.messages, args),
             "get_task_evidence" => {
@@ -1537,6 +1579,19 @@ impl Gateway {
                 .map(|m| m.text.as_str())
                 .collect::<Vec<_>>()
                 .join("\n\n");
+            // Its part of the request, in Otter's words (D-205).
+            let scope = args
+                .get("scope")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_owned);
+            if scope.as_ref().is_some_and(|s| s.len() > 4_000) {
+                return Err(fail(
+                    "invalid",
+                    "scope is this task's part of the request, at most 4000 characters",
+                ));
+            }
             let workspace = Self::workspace_choice(args)?;
             let made_one = matches!(
                 workspace,
@@ -1550,7 +1605,26 @@ impl Gateway {
                 .and_then(Value::as_bool)
                 .unwrap_or(false);
             let start = args.get("start").and_then(Value::as_bool).unwrap_or(false);
-            let (event, command) = called(origin.command(name));
+            // One message may ask for several tasks (D-205): each is made
+            // once, by what tells it apart — its title, its messages, its
+            // part of them, where it works. A turn run again makes the same.
+            let key = format!(
+                "{title}\n{}\n{}\n{}",
+                messages
+                    .iter()
+                    .map(|m| m.id.as_str())
+                    .collect::<Vec<_>>()
+                    .join(","),
+                scope.as_deref().unwrap_or_default(),
+                json!([
+                    args.get("workspace"),
+                    args.get("new_workspace"),
+                    args.get("scratch")
+                ]),
+            );
+            let command = format!("{}:{}", origin.command(name), digest(&key));
+            let again = d.tasks.lock().await.applied(&command).is_some();
+            let (event, command) = called(command);
             self.record(event, Some(&command)).await;
             let f = d
                 .task_create(TaskCreate {
@@ -1561,6 +1635,26 @@ impl Gateway {
                     answer_only,
                 })
                 .await?;
+            // Said to its coding agent as Otter's, before it starts: its
+            // request stays the developer's words (D-093).
+            if let Some(scope) = scope {
+                let said = format!("{}{scope}", crate::controller::TO_THE_AGENT);
+                let tell = format!("tell:{command}");
+                let applied = d.tasks.lock().await.apply(
+                    &f.id,
+                    Some(&format!("{command}:scope")),
+                    |f, _| {
+                        let (m, c) = crate::tasks::message(
+                            otter_core::task::MessageRole::Controller,
+                            said,
+                            Some(tell),
+                        );
+                        f.messages.push(m);
+                        Ok(vec![c])
+                    },
+                )?;
+                d.task_changed(&applied);
+            }
             let mut status = f.status;
             // A workspace that couldn't be made leaves a task without one:
             // not started, and said (D-179).
@@ -1596,14 +1690,18 @@ impl Gateway {
                 Some(&command),
             )
             .await;
-            self.inner
-                .done
-                .lock()
-                .unwrap()
-                .push(format!("create_task: {} ({})", f.title, f.id));
+            // Made already (the same call again): that one, said so.
+            let done = if again { "already" } else { "created" };
+            if !again {
+                self.inner
+                    .done
+                    .lock()
+                    .unwrap()
+                    .push(format!("create_task: {} ({})", f.title, f.id));
+            }
             if unplaced {
                 return Ok(json!({
-                    "done": "created",
+                    "done": done,
                     "task_id": f.id.as_str(),
                     "title": f.title,
                     "status": status.as_str(),
@@ -1612,8 +1710,14 @@ impl Gateway {
                 }));
             }
             return Ok(
-                json!({"done": "created", "task_id": f.id.as_str(), "title": f.title, "status": status.as_str()}),
+                json!({"done": done, "task_id": f.id.as_str(), "title": f.title, "status": status.as_str()}),
             );
+        }
+        if name == "answer_decision" {
+            return self.answer_decision(args).await;
+        }
+        if name == "review_pull_request" {
+            return self.review_pull_request(args).await;
         }
         let task = Self::named_task(args)?;
         let action = match name {
@@ -1648,6 +1752,261 @@ impl Gateway {
         Ok(
             json!({"done": name.trim_end_matches("_task"), "task_id": f.id.as_str(), "status": f.status.as_str()}),
         )
+    }
+
+    /// A decision waiting on the developer, answered as their message says
+    /// (D-205): approved, denied, or their answer to a question — done as
+    /// the app's card and Slack's buttons do it, in their name. Never in a
+    /// turn no message of theirs started, whatever the level; never one only
+    /// their own press answers (D-089 §3.2): a command only they may allow, a
+    /// recovery, merging, deploying, a form of several questions.
+    async fn answer_decision(&self, args: &Value) -> Result<Value, ToolError> {
+        use otter_core::task::{DecisionKind, DecisionStatus, TaskAction};
+        use otter_protocol::task::TaskAct;
+        let name = "answer_decision";
+        let origin = &self.inner.origin;
+        let Some(authority) = origin.authority() else {
+            return Err(fail(
+                "needs_developer",
+                "a decision waiting on the developer is answered only by their message",
+            )
+            .next("tell the developer what waits, and what you'd answer"));
+        };
+        let task = Self::named_task(args)?;
+        let decision_id = args
+            .get("decision_id")
+            .and_then(Value::as_str)
+            .filter(|s| !s.trim().is_empty())
+            .ok_or_else(|| {
+                fail(
+                    "invalid",
+                    "decision_id is the decision's id, as get_pending_decisions gives it",
+                )
+            })?;
+        let approve = args.get("approve").and_then(Value::as_bool);
+        let answer = args
+            .get("answer")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|a| !a.is_empty())
+            .map(str::to_owned);
+        if answer.as_ref().is_some_and(|a| a.len() > 4_000) {
+            return Err(fail("invalid", "answer is at most 4000 characters"));
+        }
+        let d = &self.inner.daemon;
+        let command = format!("{}:{decision_id}", origin.command(name));
+        // Answered for this message already (the same call again): said so.
+        if let Some(f) = d.tasks.lock().await.applied(&command) {
+            return Ok(
+                json!({"done": "already", "task_id": f.id.as_str(), "status": f.status.as_str()}),
+            );
+        }
+        let f = d.task_get(task.as_str()).await?;
+        let Some(decision) = f.decisions.iter().find(|x| x.id.as_str() == decision_id) else {
+            return Err(fail(
+                "not_found",
+                format!("{task} has no decision `{decision_id}`"),
+            )
+            .next("get_pending_decisions has what waits"));
+        };
+        if decision.status != DecisionStatus::Pending {
+            return Err(fail("conflict", "that decision has been made already"));
+        }
+        if let Some(why) = self.their_own(&f, decision) {
+            return Err(fail("needs_developer", why).next(
+                "tell them to answer it themselves: in the app, or on Slack's message about it (its buttons, or a reply in its thread)",
+            ));
+        }
+        let (approve, answer) = match (decision.kind, approve, answer) {
+            (DecisionKind::Question, _, Some(a)) => (true, Some(a)),
+            (DecisionKind::Question, Some(false), None) => (false, None),
+            (DecisionKind::Question, _, None) => {
+                return Err(fail(
+                    "invalid",
+                    "a question takes the developer's answer (answer), or approve false to leave it unanswered",
+                ));
+            }
+            (_, _, Some(_)) => {
+                return Err(fail(
+                    "invalid",
+                    "only a question takes an answer: approve true or false",
+                ));
+            }
+            (_, Some(a), None) => (a, None),
+            (_, None, None) => {
+                return Err(fail(
+                    "invalid",
+                    "approve: true or false, as the developer said",
+                ));
+            }
+        };
+        let did = match (&answer, approve) {
+            (Some(_), _) => "answered",
+            (None, true) => "approved",
+            (None, false) => "denied",
+        };
+        let said = match &answer {
+            Some(a) => format!("{did}: {}", excerpt(&redact(a), 200)),
+            None => did.to_owned(),
+        };
+        self.record(
+            TaskEvent::ToolCalled {
+                tool: name.into(),
+                origin: origin.name().into(),
+                authority: Some(authority.id.to_string()),
+                detail: Some(format!("{task} {decision_id}: {said}")),
+            },
+            Some(&command),
+        )
+        .await;
+        let f = d
+            .clone()
+            .task_act(TaskAct {
+                command_id: command.clone(),
+                task: task.to_string(),
+                action: TaskAction::Decide {
+                    decision_id: decision.id.clone(),
+                    approve,
+                    answer,
+                    answers: None,
+                },
+            })
+            .await?;
+        self.record(
+            TaskEvent::ToolDone {
+                tool: name.into(),
+                error: None,
+            },
+            Some(&command),
+        )
+        .await;
+        self.inner
+            .done
+            .lock()
+            .unwrap()
+            .push(format!("{name}: {said} ({})", f.title));
+        Ok(json!({"done": did, "task_id": f.id.as_str(), "status": f.status.as_str()}))
+    }
+
+    /// Why only the developer's own answer settles `d`, in the app or on
+    /// Slack's message about it — not their message to Otter (D-205, D-089
+    /// §3.2): a command only they may allow, a recovery, merging,
+    /// deploying, a form of several questions. `None`: answer_decision may.
+    fn their_own(&self, f: &Task, d: &otter_core::task::DecisionRequest) -> Option<&'static str> {
+        use otter_core::task::DecisionKind as K;
+        if matches!(d.kind, K::Recovery | K::Merge | K::Deploy)
+            || (d.user_only && d.kind != K::PlanApproval)
+        {
+            Some("only the developer's own answer settles this one, not a message to Otter")
+        } else if self.inner.daemon.form_of(f.id.as_str(), &d.id).is_some() {
+            Some("it is a form of several questions, answered in its own form")
+        } else {
+            None
+        }
+    }
+
+    /// A pull request reviewed as the developer asked (D-205): approved,
+    /// commented on, or changes asked for, with Otter's GitHub sign-in as
+    /// `read_github` reads. Once per message: it is kept as done only once
+    /// GitHub took it, so a refusal can be tried again.
+    async fn review_pull_request(&self, args: &Value) -> Result<Value, ToolError> {
+        use crate::delivery::{GitHub, GithubLink};
+        let name = "review_pull_request";
+        let url = args.get("url").and_then(Value::as_str).unwrap_or_default();
+        let Some(GithubLink::PullRequest { repo, number }) = GithubLink::parse(url) else {
+            return Err(fail("invalid", "that isn't a link to a pull request")
+                .next("a link like https://github.com/<owner>/<repo>/pull/<n>"));
+        };
+        let event = args
+            .get("event")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let (flag, did) = match event {
+            "approve" => ("--approve", "approved"),
+            "comment" => ("--comment", "commented"),
+            "request_changes" => ("--request-changes", "changes requested"),
+            _ => {
+                return Err(fail(
+                    "invalid",
+                    "event is approve, comment or request_changes",
+                ));
+            }
+        };
+        let body = args
+            .get("body")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|b| !b.is_empty());
+        if body.is_some_and(|b| b.len() > 16_000) {
+            return Err(fail("invalid", "body is at most 16000 characters"));
+        }
+        if body.is_none() && event != "approve" {
+            return Err(fail(
+                "invalid",
+                "a comment or a request for changes says something: body",
+            ));
+        }
+        let d = &self.inner.daemon;
+        let origin = &self.inner.origin;
+        let what = format!("{repo}#{number}");
+        let command = format!(
+            "{}:{}",
+            origin.command(name),
+            digest(&format!("{what}\n{event}\n{}", body.unwrap_or_default()))
+        );
+        let pr = json!({"repo": repo, "number": number});
+        // Done for this message already (the turn ran again): not twice.
+        if d.chat.lock().await.applied(&command) {
+            return Ok(json!({"done": "already", "pull_request": pr}));
+        }
+        self.record(
+            TaskEvent::ToolCalled {
+                tool: name.into(),
+                origin: origin.name().into(),
+                authority: origin.authority().map(|m| m.id.to_string()),
+                detail: Some(format!("{event} {what}")),
+            },
+            Some(&command),
+        )
+        .await;
+        let dir = d.otter_dir();
+        let env = d.environments.base().clone();
+        let gh_env = d.git_account.gh_env(&env);
+        let Some(mut gh) = GitHub::find(&dir, &gh_env) else {
+            return Err(fail("not_ready", "gh isn't installed on this host"));
+        };
+        gh.repo = Some(repo.clone());
+        gh.review(number, flag, body).await.map_err(|e| {
+            fail(
+                "conflict",
+                format!(
+                    "GitHub didn't take it: {}",
+                    excerpt(&redact(&format!("{e:#}")), 400)
+                ),
+            )
+            .next("tell the developer what GitHub said")
+        })?;
+        let done = TaskEvent::ToolDone {
+            tool: name.into(),
+            error: None,
+        };
+        let kept = d.chat.lock().await.apply(Some(&command), |_, _| {
+            Ok(vec![Change::new(done).because(&command)])
+        });
+        match kept {
+            Ok(a) => d.chat_changed(&a),
+            Err(e) => tracing::warn!("recording Otter's review: {}", e.message),
+        }
+        self.inner
+            .done
+            .lock()
+            .unwrap()
+            .push(format!("{name}: {did} {what}"));
+        Ok(json!({
+            "done": did,
+            "pull_request": pr,
+            "as": d.git_account.view().github,
+        }))
     }
 
     // --- Changes -----------------------------------------------------------
@@ -1817,10 +2176,7 @@ impl Gateway {
             .to_owned();
         let now = args.get("now").and_then(Value::as_bool).unwrap_or(false);
         let origin = &self.inner.origin;
-        let hash = text.bytes().fold(0xcbf2_9ce4_8422_2325_u64, |h, b| {
-            (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3)
-        });
-        let command = format!("{}:{:08x}", origin.command("tell_agent"), hash as u32);
+        let command = format!("{}:{}", origin.command("tell_agent"), digest(&text));
         self.record(
             TaskEvent::ToolCalled {
                 tool: "tell_agent".into(),
@@ -1965,12 +2321,11 @@ impl Gateway {
         })?;
         let d = &self.inner.daemon;
         let origin = &self.inner.origin;
-        let hash = format!("{title}\n{request}")
-            .bytes()
-            .fold(0xcbf2_9ce4_8422_2325_u64, |h, b| {
-                (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3)
-            });
-        let command = format!("{}:{:08x}", origin.command("create_task"), hash as u32);
+        let command = format!(
+            "{}:{}",
+            origin.command("create_task"),
+            digest(&format!("{title}\n{request}"))
+        );
         // Made already (the turn ran again): that one, nothing recorded twice.
         if let Some(c) = d.tasks.lock().await.applied(&command).cloned() {
             return Ok(json!({
@@ -2948,8 +3303,9 @@ mod tests {
                 .map(|t| t.name)
                 .collect();
             assert_eq!(routine, ["pause_task"]);
-            // Never Otter's: cancel, delete, decide anything else, merge.
-            // (Publishing goes by its level, D-193; merging never does.)
+            // Never Otter's: cancel, delete, decide on its own, merge.
+            // (Publishing goes by its level, D-193; merging never does; a
+            // decision is answered only as the developer said, D-205.)
             for n in [
                 "cancel_task",
                 "delete_task",
@@ -2966,6 +3322,14 @@ mod tests {
             assert_eq!(class("get_messages"), Class::Observe);
             assert_eq!(class("remember"), Class::DeveloperWord);
             assert_eq!(class("edit_memory"), Class::DeveloperWord);
+        }
+        // Answering a decision and reviewing a pull request: the developer's
+        // word, in the host's conversation only (D-205).
+        let host = host_tools();
+        for n in ["answer_decision", "review_pull_request"] {
+            let t = host.iter().find(|t| t.name == n).unwrap();
+            assert_eq!(t.class, Class::DeveloperWord, "{n}");
+            assert!(!tools().iter().any(|t| t.name == n), "{n}");
         }
         let all = tools();
         let class = |n: &str| all.iter().find(|t| t.name == n).unwrap().class;

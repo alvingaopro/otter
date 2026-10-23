@@ -30,6 +30,13 @@ case "$1 $2" in
     if [ -f "$dir/checks.json" ]; then cat "$dir/checks.json"; exit 8; fi
     echo "no checks reported on the branch" >&2; exit 1 ;;
   "pr comment") cat > "$dir/comment" ;;
+  "pr review")
+    # A review as GitHub takes it (D-205); own-pr: GitHub refuses.
+    if [ -f "$dir/own-pr" ]; then
+      echo "failed to create review: GraphQL: Can not approve your own pull request (addPullRequestReview)" >&2; exit 1
+    fi
+    echo "$*" >> "$dir/reviews"
+    case " $* " in *" --body-file "*) cat > "$dir/review-body" ;; esac ;;
   "run view")
     # A run's state (D-193): run-<id>.json, as a test writes it.
     case " $* " in

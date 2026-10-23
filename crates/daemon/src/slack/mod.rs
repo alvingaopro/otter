@@ -1159,7 +1159,7 @@ impl Daemon {
     /// The questions of `decision`, when it was asked as a form (D-202):
     /// several questions, or one whose choices may be several. One with a
     /// single choice is asked with buttons, and one with none takes a reply.
-    fn form_of(&self, task: &str, decision: &DecisionId) -> Option<Vec<Question>> {
+    pub(crate) fn form_of(&self, task: &str, decision: &DecisionId) -> Option<Vec<Question>> {
         let questions = self
             .conversations
             .list(Some(task))

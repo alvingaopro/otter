@@ -880,6 +880,27 @@ pub(crate) fn brief(f: &Task) -> String {
             s.push_str(&format!("- {m}\n"));
         }
     }
+    // Otter's own instructions to the coding agent (D-193), this task's
+    // part of the request among them (D-205): never as the developer's.
+    let otter: Vec<&str> = f
+        .messages
+        .iter()
+        .filter(|m| {
+            m.role == otter_core::task::MessageRole::Controller
+                && m.correlation_id
+                    .as_deref()
+                    .is_some_and(|c| c.starts_with("tell:"))
+        })
+        .filter_map(|m| m.text.strip_prefix(crate::controller::TO_THE_AGENT))
+        .collect();
+    if !otter.is_empty() {
+        s.push_str(
+            "\nOtter's own instructions for this work (not the developer's words; one may say which part of the request this task does, and then it does only that part):\n",
+        );
+        for m in &otter {
+            s.push_str(&format!("- {}\n", m.trim()));
+        }
+    }
     s
 }
 

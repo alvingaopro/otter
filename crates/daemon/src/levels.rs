@@ -134,6 +134,13 @@ pub const CATALOG: &[Entry] = &[
         "End a task Otter answered itself, with nothing to change",
         Auto,
     ),
+    // Only ever on the developer's word, whatever the level (D-205).
+    e(
+        "answer_decision",
+        "task",
+        "Answer what a task asks the developer, as they said",
+        Developer,
+    ),
     e(
         "create_task",
         "delegate",
@@ -178,6 +185,12 @@ pub const CATALOG: &[Entry] = &[
         "deliver",
         "Push a task's branch and open its pull request",
         Auto,
+    ),
+    e(
+        "review_pull_request",
+        "deliver",
+        "Approve, comment on or ask for changes on a pull request",
+        Developer,
     ),
     // Memory.
     e(
@@ -378,9 +391,13 @@ mod tests {
     }
 
     #[test]
-    fn everything_is_automatic_but_memory() {
+    fn everything_is_automatic_but_memory_decisions_and_reviews() {
         for e in CATALOG {
-            let want = if e.group == "remember" {
+            // A decision answered and a pull request reviewed are the
+            // developer's word (D-205).
+            let want = if e.group == "remember"
+                || ["answer_decision", "review_pull_request"].contains(&e.name)
+            {
                 Developer
             } else {
                 Auto
