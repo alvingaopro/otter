@@ -34,8 +34,9 @@ the others over SSH.
   whose first words begin the last message waits until they differ. A turn
   that ends with no message of its own (the same words again) leaves its
   last piece shown, whole, and the next turn starts a message of its own,
-  where the developer is then. A turn's message is kept as long as words
-  keep coming, however long the turn.
+  where the developer is then. A turn's message is kept while its run goes
+  on, however long and however silent (a long build); a turn is taken to
+  have ended only when no run is going, as read before any words since.
 - Compatible, no version bump: `SlackView.bot_id` is optional.
 
 **Not done:** a hub host for several (see above), other IMs.
@@ -55,6 +56,9 @@ Reviewed against the code (Fable) before merging. The review found a long
 turn's message split in two (its entry let go ten minutes after it began,
 words or not), the other hosts asked again on every render of the app,
 a turn that ends with no message keeping its message for the next one (and
-where it went), and pieces said whole shown with no interval at all. All
+where it went), and pieces said whole shown with no interval at all; its
+second look, a new turn's words ended as the old turn's when they came
+while the sync was sending, and a silent run's message let go. All are
+fixed above All
 are fixed above; the app's test now re-renders and checks the other hosts
 were asked once.

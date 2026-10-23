@@ -294,6 +294,8 @@ struct Look {
     messages: BTreeMap<String, Vec<Message>>,
     /// The tasks whose coding agent is between turns: no run going (D-203).
     quiet: std::collections::HashSet<String>,
+    /// When it was read: words that came after are a turn it didn't see.
+    at: Option<std::time::Instant>,
 }
 
 impl Daemon {
@@ -1265,7 +1267,10 @@ impl Daemon {
     /// The tasks as Slack needs them, read at once.
     async fn slack_look(&self, state: &State) -> Look {
         let store = self.tasks.lock().await;
-        let mut look = Look::default();
+        let mut look = Look {
+            at: Some(std::time::Instant::now()),
+            ..Default::default()
+        };
         for t in store.iter() {
             let id = t.id.to_string();
             look.titles.insert(id.clone(), t.title.clone());
@@ -1517,16 +1522,26 @@ impl Daemon {
     /// of its own (the same words again): left as last said, whole, and
     /// the next turn shown afresh, where the developer is then (D-203).
     async fn slack_turns_ended(&self, env: &EnvMap, bot: &str, look: &Look) {
+        let read = look.at.unwrap_or_else(std::time::Instant::now);
         let ended: Vec<Stream> = {
             let mut streams = self.slack.streams.lock().unwrap();
-            look.quiet
-                .iter()
-                .filter_map(|task| {
-                    let key = format!("agent:{task}");
-                    let s = streams.get(&key)?;
-                    (!s.posting).then(|| streams.remove(&key)).flatten()
-                })
-                .collect()
+            let now = std::time::Instant::now();
+            let mut ended = Vec::new();
+            for task in look.titles.keys() {
+                let key = format!("agent:{task}");
+                let Some(s) = streams.get_mut(&key) else {
+                    continue;
+                };
+                if !look.quiet.contains(task) {
+                    // A turn going on, however long silent (a long build):
+                    // its message is kept.
+                    s.seen = now;
+                } else if !s.posting && s.seen <= read {
+                    // (Words since the tasks were read are a new turn's.)
+                    ended.extend(streams.remove(&key));
+                }
+            }
+            ended
         };
         for s in ended {
             let (Some(to), Some(ts), false) = (s.to, s.ts, s.whole) else {
