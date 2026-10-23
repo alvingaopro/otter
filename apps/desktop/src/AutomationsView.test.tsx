@@ -449,7 +449,8 @@ describe("Watches in Chat", () => {
     expect(byText('[role="listitem"]', "Show host uptime")!.querySelector(".watching-mark")).toBeNull();
     await act(async () => watched.click());
     const strip = q('[aria-label="Watching"]')!;
-    expect(strip.textContent).toMatch(/^Watching See how the export is going · at \d{2}:\d{2}Stop$/);
+    // Its time, with the day when it falls on another one (run near midnight).
+    expect(strip.textContent).toMatch(/^Watching See how the export is going · at (\S+ \d{1,2} )?\d{2}:\d{2}Stop$/);
     await act(async () => q('[aria-label="Stop watching See how the export is going"]')!.click());
     expect(acts[0].action).toEqual({ action: "cancel_watch", watch_id: "wch_mock1" });
     expect(q('[aria-label="Watching"]')).toBeNull();

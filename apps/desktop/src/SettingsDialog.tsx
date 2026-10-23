@@ -60,11 +60,40 @@ export interface HostSettings {
   delete_merged_workspaces?: boolean;
   /** Otter's tools and how far each may go on the host (D-191); absent from older daemons. */
   tools?: ToolInfo[];
+  /** Otter in Slack from the host (D-200); absent from older daemons. */
+  slack?: SlackView;
+}
+
+/** Mirrors `otter_protocol::host::SlackView` (D-200). */
+export interface SlackView {
+  /** The Slack members whose direct messages are yours (`U…`). */
+  users: string[];
+  /** `off` (`detail` says what's missing), `connecting`, `connected` or `failed` (`detail` says why). */
+  state: string;
+  detail?: string;
+  team?: string;
+  bot?: string;
 }
 
 /** How the coding agent can run on a host (D-057): the SDK first, the default (D-124). */
 /** Claude Code's sign-in, a secret on the host (D-142). */
 const CLAUDE_TOKEN = "CLAUDE_CODE_OAUTH_TOKEN";
+/** The Slack app's two tokens, secrets on the host (D-200). */
+const SLACK_BOT = "SLACK_BOT_TOKEN";
+const SLACK_APP = "SLACK_APP_TOKEN";
+/** Secrets with a tab of their own, not among the providers' keys. */
+const NOT_KEYS = [CLAUDE_TOKEN, SLACK_BOT, SLACK_APP];
+const PLACEHOLDERS: Record<string, string> = {
+  [CLAUDE_TOKEN]: "sk-ant-oat01-… from claude setup-token",
+  [SLACK_BOT]: "xoxb-… the Bot User OAuth Token, under Install App",
+  [SLACK_APP]: "xapp-… an app-level token, under Basic Information",
+};
+
+/** Slack member IDs as typed (commas or spaces between), as the host keeps them: without `@`, each once. */
+function memberIds(text: string): string[] {
+  const ids = text.split(/[\s,]+/).map((u) => u.replace(/^@/, "")).filter(Boolean);
+  return [...new Set(ids)];
+}
 
 const BACKENDS: { id: string; name: string; hint: string }[] = [
   { id: "sdk", name: "Agent SDK", hint: "The Claude Agent SDK, the default. Needs Node.js on the host." },
@@ -90,9 +119,9 @@ type Test = { state: "running" } | { state: "done"; result: RuntimeTest } | { st
 type Install = { state: "running" } | { state: "done"; output: string } | { state: "error"; error: string };
 
 /** The tabs (D-127): this Mac's, then the chosen host's. */
-export type SettingsTab = "appearance" | "signin" | "developer" | "git" | "otter" | "tools" | "coding" | "keys";
-const TABS: SettingsTab[] = ["appearance", "signin", "developer", "git", "otter", "tools", "coding", "keys"];
-const HOST_TABS: SettingsTab[] = ["otter", "tools", "coding", "keys"];
+export type SettingsTab = "appearance" | "signin" | "developer" | "git" | "otter" | "tools" | "coding" | "slack" | "keys";
+const TABS: SettingsTab[] = ["appearance", "signin", "developer", "git", "otter", "tools", "coding", "slack", "keys"];
+const HOST_TABS: SettingsTab[] = ["otter", "tools", "coding", "slack", "keys"];
 const TAB_KEY = "otter.settings-tab";
 
 function storedTab(): SettingsTab {
@@ -159,6 +188,8 @@ export function SettingsDialog({
   const [deleteMerged, setDeleteMerged] = useState(false);
   // A tool's level as just chosen, until the host's answer has it (D-191).
   const [levels, setLevels] = useState<Record<string, ToolLevel>>({});
+  // Whose Slack messages are yours (D-200), as typed.
+  const [slackUsers, setSlackUsers] = useState("");
 
   function go(t: SettingsTab) {
     setTab(t);
@@ -177,6 +208,7 @@ export function SettingsDialog({
     setCodingModel(s.coding?.model ?? "");
     setOtterTools(s.otter_tools ?? false);
     setDeleteMerged(s.delete_merged_workspaces ?? false);
+    setSlackUsers((s.slack?.users ?? []).join(", "));
     setKeys({});
     setReplacing(null);
   }
@@ -255,6 +287,7 @@ export function SettingsDialog({
     otter_tools?: boolean;
     delete_merged_workspaces?: boolean;
     tool_levels?: Record<string, ToolLevel | null>;
+    slack?: { users?: string[] };
   }) {
     const at = host;
     const sent = Object.keys(update.secrets ?? {});
@@ -287,6 +320,7 @@ export function SettingsDialog({
   const codingSaved = settings?.coding?.backend;
   const toolsShown = settings?.otter_tools !== undefined && !settings.otter_tools_from_env;
   const mergedShown = settings?.delete_merged_workspaces !== undefined;
+  const slackChanged = !!settings?.slack && memberIds(slackUsers).join(",") !== settings.slack.users.join(",");
   const typed = Object.entries(keys).filter(([, v]) => v.trim());
   const dirty =
     !!settings &&
@@ -295,7 +329,8 @@ export function SettingsDialog({
       typed.length > 0 ||
       (!!codingSaved && (backend !== codingSaved || codingModel !== (settings.coding?.model ?? ""))) ||
       (toolsShown && otterTools !== settings.otter_tools) ||
-      (mergedShown && deleteMerged !== settings.delete_merged_workspaces));
+      (mergedShown && deleteMerged !== settings.delete_merged_workspaces) ||
+      slackChanged);
   useEffect(() => {
     if (!dirty && !gitUnsaved) setLeaving(false);
   }, [dirty, gitUnsaved]);
@@ -321,6 +356,7 @@ export function SettingsDialog({
       ...(mergedShown && deleteMerged !== settings.delete_merged_workspaces
         ? { delete_merged_workspaces: deleteMerged }
         : {}),
+      ...(slackChanged ? { slack: { users: memberIds(slackUsers) } } : {}),
     });
   }
 
@@ -375,7 +411,7 @@ export function SettingsDialog({
       autoComplete="off"
       spellCheck={false}
       aria-label={s.name}
-      placeholder={s.name === CLAUDE_TOKEN ? "sk-ant-oat01-… from claude setup-token" : s.set ? "Paste the new key" : "Paste the key"}
+      placeholder={PLACEHOLDERS[s.name] ?? (s.set ? "Paste the new key" : "Paste the key")}
       value={keys[s.name] ?? ""}
       onChange={(e) => setKeys((k) => ({ ...k, [s.name]: e.target.value }))}
     />
@@ -423,7 +459,9 @@ export function SettingsDialog({
   const hostTab = HOST_TABS.includes(tab);
   // An older host has no coding settings, or no tool levels: their tabs go.
   const toolsKept = !!settings?.tools?.length;
-  const shown = settings && ((tab === "coding" && !codingSaved) || (tab === "tools" && !toolsKept)) ? "otter" : tab;
+  const slack = settings?.slack;
+  const shown =
+    settings && ((tab === "coding" && !codingSaved) || (tab === "tools" && !toolsKept) || (tab === "slack" && !slack)) ? "otter" : tab;
 
   const heads: Record<SettingsTab, [string, string]> = {
     appearance: ["Appearance", "On this Mac. Changes apply right away."],
@@ -433,9 +471,26 @@ export function SettingsDialog({
     otter: ["Otter", host ? `On ${host}. Plans each task, decides, and checks the work, also while this app is closed.` : "Kept on each host."],
     tools: ["Otter's tools", host ? `On ${host}. What Otter may do, tool by tool.` : "Kept on each host."],
     coding: ["Coding agent", host ? `On ${host}. Claude Code, which writes the code.` : "Kept on each host."],
+    slack: ["Slack", host ? `On ${host}. Write to Otter in Slack; it answers there.` : "Kept on each host."],
     keys: ["API keys", host ? `On ${host}. Kept there, never read back.` : "Kept on each host."],
   };
   const [title, caption] = heads[shown];
+
+  // While Slack connects, or after it failed (the host tries again), ask
+  // the host again (D-200); the form stays as typed.
+  useEffect(() => {
+    if (!host || shown !== "slack" || (slack?.state !== "connecting" && slack?.state !== "failed")) return;
+    const at = host;
+    const t = setTimeout(
+      () => {
+        invoke<HostSettings>("settings_get", { host: at })
+          .then((s) => now.current.host === at && setSettings(s))
+          .catch(() => {});
+      },
+      slack.state === "connecting" ? 2000 : 10_000,
+    );
+    return () => clearTimeout(t);
+  }, [host, shown, slack]);
 
   const nav = (id: SettingsTab, name: string, icon: ReactNode, extra?: ReactNode) => (
     <button
@@ -477,11 +532,14 @@ export function SettingsDialog({
         {nav("otter", "Otter", <Icon d="otter" />)}
         {(!settings || toolsKept) && nav("tools", "Otter's tools", <Icon d="tools" />)}
         {(!settings || codingSaved) && nav("coding", "Coding agent", <Icon d="coding" />)}
+        {(!settings || slack) && nav("slack", "Slack", <Icon d="slack" />)}
         {nav(
           "keys",
           "API keys",
           <Icon d="keys" />,
-          settings?.secrets && <span className="settings-nav-count">{settings.secrets.filter((s) => s.set).length} set</span>,
+          settings?.secrets && (
+            <span className="settings-nav-count">{settings.secrets.filter((s) => s.set && !NOT_KEYS.includes(s.name)).length} set</span>
+          ),
         )}
         <span className="spacer" />
         {version && <span className="settings-version">Otter {version}</span>}
@@ -721,10 +779,42 @@ export function SettingsDialog({
                 </>
               )}
 
+              {shown === "slack" && slack && (
+                <>
+                  <Group title="Connection">
+                    <Row label="Status" hint={slackHint(slack)}>
+                      <span className={`key-state${slack.state === "connected" ? " set" : ""}`}>{SLACK_STATES[slack.state] ?? slack.state}</span>
+                    </Row>
+                  </Group>
+                  <Group title="The Slack app">
+                    {(settings.secrets ?? [])
+                      .filter((k) => k.name === SLACK_BOT || k.name === SLACK_APP)
+                      .map((k) => secretRow(k, k.name === SLACK_BOT ? "Bot token" : "App token"))}
+                  </Group>
+                  <Group title="You in Slack">
+                    <Row label="Member ID" hint="Only their direct messages to the app are yours. In Slack: your profile › ⋯ › Copy member ID.">
+                      <input
+                        className="settings-input"
+                        aria-label="Slack member ID"
+                        placeholder="U…"
+                        spellCheck={false}
+                        autoComplete="off"
+                        value={slackUsers}
+                        onChange={(e) => setSlackUsers(e.target.value)}
+                      />
+                    </Row>
+                  </Group>
+                  <p className="muted small">
+                    Your messages go to Otter's conversation on {host}, the one <span className="mono">otter chat</span> has. Set Slack up on one host only: Slack shares
+                    its messages among every host connected with the same app.
+                  </p>
+                </>
+              )}
+
               {shown === "keys" && (
                 <>
                   <Group title="Model providers">
-                    {(settings.secrets ?? []).filter((k) => k.name !== CLAUDE_TOKEN).map((k) =>
+                    {(settings.secrets ?? []).filter((k) => !NOT_KEYS.includes(k.name)).map((k) =>
                       secretRow(
                         k,
                         <>
@@ -1172,8 +1262,23 @@ const ICONS: Record<string, ReactNode> = {
       <path d="M11.5 7.6c0 2.4-2.2 3-5.6 3.9" />
     </>
   ),
+  slack: <path d="M6.2 2.5L4.8 13.5M11.2 2.5L9.8 13.5M2.6 6h11M2.2 10h11" />,
   close: <path d="M4 4l8 8M12 4l-8 8" />,
 };
+
+const SLACK_STATES: Record<string, string> = {
+  off: "Not set up",
+  connecting: "Connecting…",
+  connected: "Connected",
+  failed: "Not connected",
+};
+
+/** What the host says of its connection to Slack, in a line. */
+function slackHint(s: SlackView): string {
+  if (s.state === "connected") return s.team ? `In ${s.team}${s.bot ? `, as @${s.bot}` : ""}.` : "Connected.";
+  if (s.state === "connecting") return "Reaching Slack…";
+  return s.detail ?? "";
+}
 
 function Icon({ d }: { d: keyof typeof ICONS }) {
   return (
