@@ -183,6 +183,11 @@ pub struct SlackView {
     /// an otterd before it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub notify: Option<bool>,
+    /// The app's bot there (`B…`), once connected (D-203): two hosts with
+    /// the same one share a Slack app, and Slack splits its messages between
+    /// them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bot_id: Option<String>,
 }
 
 /// `settings.set {slack}`: fields left out stay as they are.
