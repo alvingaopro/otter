@@ -1263,11 +1263,20 @@ async fn an_answer_shown_as_it_is_written_is_finished_where_it_is() {
     .await;
 }
 
-/// The coding agent's words as it says them (D-203): in its task's thread,
-/// while the developer last spoke there, one message for its turn — what it
-/// says as it says it, then the message its turn ends with in its place.
-#[tokio::test]
-async fn the_coding_agents_words_are_shown_as_it_says_them() {
+/// A task whose coding agent (the SDK worker in `mode`, with `extra` in
+/// otterd's environment) asks a form, told in Slack; the developer speaks
+/// in the need's thread, then answers it there. The Slack, the host, the
+/// socket, the task, and the need's message (its thread).
+async fn a_form_answered_in_its_thread(
+    mode: &'static str,
+    extra: Vec<(&'static str, String)>,
+) -> (
+    FakeSlack,
+    FakeCodex,
+    WebSocketStream<TcpStream>,
+    String,
+    String,
+) {
     use otter_core::task::TaskStatus;
     let mut slack = FakeSlack::start().await;
     let api = slack.api.clone();
@@ -1282,9 +1291,12 @@ async fn the_coding_agents_words_are_shown_as_it_says_them() {
                 "FAKE_WORKER_LOG",
                 scratch.join("worker.log").to_string_lossy().into_owned(),
             ),
-            ("FAKE_WORKER_MODE", "ok".into()),
+            ("FAKE_WORKER_MODE", mode.into()),
             ("OTTER_SLACK_API", api),
         ]
+        .into_iter()
+        .chain(extra.clone())
+        .collect()
     })
     .await;
     let host = &fake.host;
@@ -1371,6 +1383,16 @@ async fn the_coding_agents_words_are_shown_as_it_says_them() {
         "state": {"values": values},
     }});
     acked(&mut ws, submit.to_string(), "f1").await;
+    (slack, fake, ws, id, on)
+}
+
+/// The coding agent's words as it says them (D-203): in its task's thread,
+/// while the developer last spoke there, one message for its turn — what it
+/// says as it says it, then the message its turn ends with in its place.
+#[tokio::test]
+async fn the_coding_agents_words_are_shown_as_it_says_them() {
+    let (slack, fake, _ws, id, on) = a_form_answered_in_its_thread("ok", vec![]).await;
+    let host = &fake.host;
 
     // What it says as it says it, in the thread; then its turn's message in
     // that message's place.
@@ -1407,6 +1429,68 @@ async fn the_coding_agents_words_are_shown_as_it_says_them() {
         .into_iter()
         .any(|c| c.2["thread_ts"] == on.as_str() && c.2["blocks"][0]["text"] == "Done.");
     assert!(!again, "the agent's message was posted again");
+}
+
+/// A coding agent at work that says nothing for a while (D-211): its
+/// task's thread says it is working, and what it did last, in a message
+/// its words then take the place of — so one message for its turn still,
+/// ending as its turn's message.
+#[tokio::test]
+async fn a_quiet_coding_agent_is_shown_at_work_in_its_thread() {
+    let (slack, fake, _ws, id, on) =
+        a_form_answered_in_its_thread("busy", vec![("OTTER_SLACK_AGENT_QUIET_MS", "300".into())])
+            .await;
+    let host = &fake.host;
+    let working = |b: &Value| {
+        b["blocks"][0]["text"]
+            .as_str()
+            .is_some_and(|t| t.starts_with("_The coding agent is working…"))
+    };
+    // Quiet while it runs a command: said so in the thread, with the command.
+    let shown = eventually("the agent shown at work", || async {
+        slack
+            .calls("chat.postMessage")
+            .into_iter()
+            .map(|c| c.2)
+            .find(|b| b["thread_ts"] == on.as_str() && working(b))
+    })
+    .await;
+    let text = shown["blocks"][0]["text"].as_str().unwrap();
+    assert!(text.contains("Latest: `$ make check`"), "{text}");
+    let at = ts_of(&slack, &shown);
+    // Its words, then its turn's message, take that message's place.
+    wait_task(host, &id, "the agent's message", |f| {
+        f.messages
+            .iter()
+            .any(|m| m.role == MessageRole::Agent && m.text == "Done.")
+    })
+    .await;
+    eventually("its message in that place", || async {
+        slack
+            .calls("chat.update")
+            .into_iter()
+            .find(|c| c.2["ts"] == at.as_str() && c.2["blocks"][0]["text"] == "Done.")
+    })
+    .await;
+    tokio::time::sleep(Duration::from_millis(800)).await;
+    let posts: Vec<Value> = slack
+        .calls("chat.postMessage")
+        .into_iter()
+        .map(|c| c.2)
+        .filter(|b| b["thread_ts"] == on.as_str())
+        .collect();
+    assert_eq!(posts.iter().filter(|b| working(b)).count(), 1, "{posts:?}");
+    assert!(
+        !posts.iter().any(|b| b["blocks"][0]["text"] == "Done."),
+        "the agent's message was posted again"
+    );
+    // Nothing shows it at work once its turn has its message.
+    let last = slack
+        .calls("chat.update")
+        .into_iter()
+        .rfind(|c| c.2["ts"] == at.as_str())
+        .unwrap();
+    assert_eq!(last.2["blocks"][0]["text"], "Done.");
 }
 
 /// What a hub gives a host (`slack.deliver`), as Socket Mode sent it.
