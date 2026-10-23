@@ -74,6 +74,8 @@ const STREAM_EVERY: Duration = Duration::from_millis(1500);
 const PIECE_EVERY: Duration = Duration::from_millis(400);
 /// How long the sync waits for an answer's first words to be posted.
 const STREAM_WAIT: Duration = Duration::from_secs(3);
+/// Said under a need whose buttons Slack refused: told in its words alone.
+const UNSHOWN: &str = "Slack didn't take this message's buttons: answer in the app, or reply in this thread to tell the task.";
 
 /// The connection's state, for Settings.
 #[derive(Default)]
@@ -1421,14 +1423,26 @@ impl Daemon {
                     if state.posts.iter().any(posted) {
                         continue;
                     }
-                    let body = json!({
-                        "channel": channel,
-                        "text": told.text.chars().take(280).collect::<String>(),
-                        "blocks": told.blocks,
-                        "unfurl_links": false,
-                        "unfurl_media": false,
-                    });
-                    match api::call(env, &c.bot, "chat.postMessage", &body).await {
+                    let body = |blocks: &Value| {
+                        json!({
+                            "channel": channel,
+                            "text": told.text.chars().take(280).collect::<String>(),
+                            "blocks": blocks,
+                            "unfurl_links": false,
+                            "unfurl_media": false,
+                        })
+                    };
+                    let mut sent =
+                        api::call(env, &c.bot, "chat.postMessage", &body(&told.blocks)).await;
+                    // A block Slack won't take mustn't leave the need untold:
+                    // its words alone, then.
+                    if let Err(CallError::Refused(e)) = &sent {
+                        tracing::warn!("slack: a need's buttons weren't taken: Slack said `{e}`");
+                        let words = format!("{}\n\n_{UNSHOWN}_", told.text);
+                        let blocks = json!([{ "type": "markdown", "text": words }]);
+                        sent = api::call(env, &c.bot, "chat.postMessage", &body(&blocks)).await;
+                    }
+                    match sent {
                         Ok(v) => {
                             state.posts.push(Post {
                                 task: task.clone(),
