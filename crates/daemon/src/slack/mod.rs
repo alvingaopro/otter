@@ -926,7 +926,10 @@ impl Daemon {
                     .and_then(|m| m.correlation_id.clone()),
             };
             let mut streams = self.slack.streams.lock().unwrap();
-            streams.retain(|_, s| s.seen.elapsed() < Duration::from_secs(600));
+            // (The coding agent's live as long as its run: `slack_turns_ended`.)
+            streams.retain(|k, s| {
+                k.starts_with("agent:") || s.seen.elapsed() < Duration::from_secs(600)
+            });
             streams.entry(answered.to_owned()).or_insert(Stream {
                 to: Origin::of(from.as_deref()),
                 ts: None,
@@ -1057,7 +1060,10 @@ impl Daemon {
         let shown = loop {
             {
                 let mut streams = self.slack.streams.lock().unwrap();
-                streams.retain(|_, s| s.seen.elapsed() < Duration::from_secs(600));
+                // (The coding agent's live as long as its run: `slack_turns_ended`.)
+                streams.retain(|k, s| {
+                    k.starts_with("agent:") || s.seen.elapsed() < Duration::from_secs(600)
+                });
                 match streams.get_mut(&answered) {
                     Some(s) if s.posting && waited.elapsed() < STREAM_WAIT => {}
                     Some(s) => {
@@ -1525,6 +1531,11 @@ impl Daemon {
         let read = look.at.unwrap_or_else(std::time::Instant::now);
         let ended: Vec<Stream> = {
             let mut streams = self.slack.streams.lock().unwrap();
+            // A deleted task's go with it.
+            streams.retain(|k, _| {
+                k.strip_prefix("agent:")
+                    .is_none_or(|task| look.titles.contains_key(task))
+            });
             let now = std::time::Instant::now();
             let mut ended = Vec::new();
             for task in look.titles.keys() {
