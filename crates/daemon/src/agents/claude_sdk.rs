@@ -415,9 +415,10 @@ impl AgentRuntime for ClaudeSdkRuntime {
             "instructions": spec.instructions,
             "max_turns": spec.limits.max_turns,
             "max_budget_usd": spec.limits.max_budget_usd,
-            // CLAUDE.md comes with the project's settings; Otter's policy hook
+            // The developer's own settings (their skills, hooks, plugins,
+            // D-210), then the project's (CLAUDE.md); Otter's policy hook
             // runs before any of their rules.
-            "setting_sources": ["project"],
+            "setting_sources": ["user", "project"],
         });
         handle.command("initialize", strip_nulls(payload)).await?;
         let timeout = init_timeout(&spec.env);
@@ -1050,7 +1051,7 @@ mod tests {
             log.contains(r#""answers":{"Which columns?":"name, time","Which format?":"CSV"}"#),
             "{log}"
         );
-        assert!(log.contains(r#""setting_sources":["project"]"#));
+        assert!(log.contains(r#""setting_sources":["user","project"]"#));
         assert!(log.contains(r#""resume":"s-1""#) && log.contains(r#""model":"sonnet""#));
     }
 
