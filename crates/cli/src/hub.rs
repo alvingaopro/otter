@@ -1062,14 +1062,18 @@ fn take_in(
         Some(b) => Err(format!(
             "left as it is: it is on a Slack app of its own (bot {b})"
         )),
-        // Not connected: which app is known only by what is set. Through a
-        // hub, but not checked with Slack yet, it may be another hub's:
-        // asked again once it is.
-        None if hubbed => Err(format!(
+        // Not connected: which app is known only by what is set. Nothing
+        // set (through a hub or not): nothing to overwrite.
+        None if !set("SLACK_BOT_TOKEN") && !set("SLACK_APP_TOKEN") => Ok(true),
+        // Through a hub, its bot not checked with Slack yet: it may be
+        // another hub's, so asked again once it is.
+        None if hubbed && slack.state != "failed" => Err(format!(
             "it takes its events from a hub, but hasn't checked its bot with Slack yet (`{}`); tried again in a minute",
             slack.state
         )),
-        None if !set("SLACK_BOT_TOKEN") && !set("SLACK_APP_TOKEN") => Ok(true),
+        None if hubbed => Err(
+            "left as it is: it takes its events from a hub, but its bot token doesn't work there; clear its Slack tokens, or `otter hub leave` it, to have it taken in".into(),
+        ),
         None => Err(format!(
             "left as it is: Slack is set up there (`{}`) for an app the hub can't tell is this one; clear its Slack tokens to have it taken in, or connect it",
             slack.state
@@ -1446,11 +1450,14 @@ mod tests {
             Ok(false)
         );
         // Through a hub, not checked with Slack yet: whose is unknown, so
-        // asked again later.
-        for state in ["connecting", "failed"] {
-            let why = take_in(&view(state, None, true), &secrets(true, false), "B1").unwrap_err();
-            assert!(why.contains("tried again"), "{why}");
-        }
+        // asked again later; its token refused there, it is said what to do.
+        let why =
+            take_in(&view("connecting", None, true), &secrets(true, false), "B1").unwrap_err();
+        assert!(why.contains("tried again"), "{why}");
+        let why = take_in(&view("failed", None, true), &secrets(true, false), "B1").unwrap_err();
+        assert!(why.contains("otter hub leave"), "{why}");
+        // Through a hub with its tokens cleared: nothing to overwrite.
+        assert_eq!(take_in(&view("off", None, true), &none, "B1"), Ok(true));
         // Another app, connected, or through another hub: left.
         for v in [
             view("connected", Some("B2"), false),

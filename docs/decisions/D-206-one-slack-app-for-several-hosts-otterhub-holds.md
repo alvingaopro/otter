@@ -52,7 +52,9 @@ cost is accepted, not avoided (see the end).
   from a hub on this app. A host on another app, or with tokens of an app
   the hub can't tell is this one, is left as it is, and the hub says why.
   That includes a host through a hub that hasn't checked its bot with
-  Slack yet; it is asked again in a minute.
+  Slack yet; it is asked again in a minute. One whose token Slack refuses
+  is left, and the hub says what to do. A host through a hub with its
+  tokens cleared is taken in: there is nothing to overwrite.
   An otterd before the hub is found by asking `slack.owns` first, so
   nothing is set on it. Every host is taken in before the hub connects to
   Slack. A host the hub couldn't reach is tried again every minute.
