@@ -578,6 +578,11 @@ impl Daemon {
     /// comes through `slack.deliver`, and the rest is the same.
     async fn slack_session(self: &Arc<Self>, c: &Config) -> anyhow::Result<()> {
         *LABEL.lock().unwrap() = c.label.clone();
+        // A post the last connection was cut off in the middle of never
+        // came back: nothing is on its way now (D-211).
+        for s in self.slack.streams.lock().unwrap().values_mut() {
+            s.posting = false;
+        }
         let env = self.environments.base().clone();
         let me = api::call(&env, &c.bot, "auth.test", &json!({}))
             .await
@@ -2077,82 +2082,15 @@ impl Daemon {
     /// did last. Its next words, its turn's message, waiting on someone or
     /// its run's end (`slack_turns_ended`) take that away.
     async fn slack_working(&self, env: &EnvMap, bot: &str, look: &Look) {
-        enum Next {
-            Post(Origin, String),
-            Update(Origin, String, String),
-            Delete(Origin, String),
-        }
-        let quiet = agent_quiet();
-        let mut todo = Vec::new();
-        {
-            let mut streams = self.slack.streams.lock().unwrap();
-            let now = std::time::Instant::now();
-            for (task, (to, last)) in &look.working {
-                let key = format!("agent:{task}");
-                let s = streams.entry(key.clone()).or_insert_with(|| Stream {
-                    to: Some(to.clone()),
-                    ts: None,
-                    posting: false,
-                    over: false,
-                    text: String::new(),
-                    shown: None,
-                    whole: false,
-                    seen: now,
-                    heard: now,
-                    busy: None,
-                });
-                let Some(to) = s.to.clone().filter(|_| !s.over && !s.posting) else {
-                    continue;
-                };
-                let still = now.duration_since(s.heard);
-                let busy = busy_line(still, last.as_deref());
-                if still < quiet
-                    || s.busy.as_ref() == Some(&busy)
-                    || s.busy.is_some() && s.shown.is_some_and(|t| t.elapsed() < BUSY_EVERY)
-                {
-                    continue;
-                }
-                let words = with_busy(&s.text, &busy);
-                s.busy = Some(busy);
-                s.posting = true;
-                s.shown = Some(now);
-                todo.push((
-                    key,
-                    match &s.ts {
-                        None => Next::Post(to, words),
-                        Some(ts) => Next::Update(to, ts.clone(), words),
-                    },
-                ));
-            }
-            // Shown at work, and now it waits on someone, or its words go
-            // elsewhere: taken away. (A run over is `slack_turns_ended`'s.)
-            for (key, s) in streams.iter_mut() {
-                let Some(task) = key.strip_prefix("agent:") else {
-                    continue;
-                };
-                if look.working.contains_key(task) || look.quiet.contains(task) || s.posting {
-                    continue;
-                }
-                let (Some(to), Some(ts), Some(_)) = (s.to.clone(), s.ts.clone(), s.busy.take())
-                else {
-                    continue;
-                };
-                s.posting = true;
-                todo.push((
-                    key.clone(),
-                    match socket::pieces(&s.text, MAX_PIECE).first() {
-                        None => {
-                            s.ts = None;
-                            Next::Delete(to, ts)
-                        }
-                        Some(words) => Next::Update(to, ts, words.clone()),
-                    },
-                ));
-            }
-        }
+        let todo = busy_plan(
+            &mut self.slack.streams.lock().unwrap(),
+            look,
+            std::time::Instant::now(),
+            agent_quiet(),
+        );
         for (key, next) in todo {
             let posted = match &next {
-                Next::Post(to, words) => {
+                Busy::Post(to, words) => {
                     let mut body = json!({
                         "channel": to.channel,
                         "text": words.chars().take(280).collect::<String>(),
@@ -2165,7 +2103,7 @@ impl Daemon {
                     }
                     api::call(env, bot, "chat.postMessage", &body).await
                 }
-                Next::Update(to, ts, words) => {
+                Busy::Update(to, ts, words) => {
                     let body = json!({
                         "channel": to.channel,
                         "ts": ts,
@@ -2174,7 +2112,7 @@ impl Daemon {
                     });
                     api::call(env, bot, "chat.update", &body).await
                 }
-                Next::Delete(to, ts) => {
+                Busy::Delete(to, ts) => {
                     let body = json!({ "channel": to.channel, "ts": ts });
                     api::call(env, bot, "chat.delete", &body).await
                 }
@@ -2185,8 +2123,12 @@ impl Daemon {
             let mut streams = self.slack.streams.lock().unwrap();
             if let Some(s) = streams.get_mut(&key) {
                 s.posting = false;
-                if let (Next::Post(..), Ok(v)) = (&next, &posted) {
-                    s.ts = v["ts"].as_str().map(String::from);
+                match (&next, &posted) {
+                    (Busy::Post(..), Ok(v)) => s.ts = v["ts"].as_str().map(String::from),
+                    // Gone only once Slack says so: else it is still there to
+                    // show again, not a second one.
+                    (Busy::Delete(..), Ok(_)) => s.ts = None,
+                    _ => {}
                 }
             }
         }
@@ -2350,6 +2292,94 @@ fn spoke(messages: &[Message], at: otter_core::Timestamp, heard: &Heard) -> Opti
         Some(p) if p.at <= at && last.is_none_or(|m| m.at < p.at) => Some(p.origin()),
         _ => heard.origin(last?),
     }
+}
+
+/// What to do to show a coding agent at work (D-211).
+#[derive(Debug, PartialEq)]
+enum Busy {
+    Post(Origin, String),
+    Update(Origin, String, String),
+    Delete(Origin, String),
+}
+
+/// What `slack_working` does now, decided under the streams' lock: each
+/// working task's stream made if need be, and shown at work once quiet
+/// for `quiet`; each other's no longer shown so, and its quiet counted
+/// again from when it is at work again — a wait on the developer isn't the
+/// agent's silence. What is decided is marked `posting` until done.
+fn busy_plan(
+    streams: &mut HashMap<String, Stream>,
+    look: &Look,
+    now: std::time::Instant,
+    quiet: Duration,
+) -> Vec<(String, Busy)> {
+    let mut todo = Vec::new();
+    for (task, (to, last)) in &look.working {
+        let key = format!("agent:{task}");
+        let s = streams.entry(key.clone()).or_insert_with(|| Stream {
+            to: Some(to.clone()),
+            ts: None,
+            posting: false,
+            over: false,
+            text: String::new(),
+            shown: None,
+            whole: false,
+            seen: now,
+            heard: now,
+            busy: None,
+        });
+        let Some(to) = s.to.clone().filter(|_| !s.over && !s.posting) else {
+            continue;
+        };
+        let still = now.saturating_duration_since(s.heard);
+        let busy = busy_line(still, last.as_deref());
+        if still < quiet
+            || s.busy.as_ref() == Some(&busy)
+            || s.busy.is_some()
+                && s.shown
+                    .is_some_and(|t| now.saturating_duration_since(t) < BUSY_EVERY)
+        {
+            continue;
+        }
+        let words = with_busy(&s.text, &busy);
+        s.busy = Some(busy);
+        s.posting = true;
+        s.shown = Some(now);
+        todo.push((
+            key,
+            match &s.ts {
+                None => Busy::Post(to, words),
+                Some(ts) => Busy::Update(to, ts.clone(), words),
+            },
+        ));
+    }
+    // Not at work now (it waits on someone, its words go elsewhere, or its
+    // run is over): what showed it at work is taken away — a run over is
+    // `slack_turns_ended`'s.
+    for (key, s) in streams.iter_mut() {
+        let Some(task) = key.strip_prefix("agent:") else {
+            continue;
+        };
+        if look.working.contains_key(task) {
+            continue;
+        }
+        s.heard = now;
+        if look.quiet.contains(task) || s.posting {
+            continue;
+        }
+        let (Some(to), Some(ts), Some(_)) = (s.to.clone(), s.ts.clone(), s.busy.take()) else {
+            continue;
+        };
+        s.posting = true;
+        todo.push((
+            key.clone(),
+            match socket::pieces(&s.text, MAX_PIECE).first() {
+                None => Busy::Delete(to, ts),
+                Some(words) => Busy::Update(to, ts, words.clone()),
+            },
+        ));
+    }
+    todo
 }
 
 /// How long the coding agent says nothing before its task's thread says it
@@ -2573,6 +2603,58 @@ mod tests {
         );
         assert_eq!(with_busy("", "B"), "B");
         assert_eq!(with_busy("Looking at it", "B"), "Looking at it …\n\nB");
+    }
+
+    /// When a quiet coding agent is shown at work (D-211): once quiet for
+    /// the time, in a message of its own; taken away when it waits on the
+    /// developer — deleted, being all that message had, and only once Slack
+    /// says so — and a wait isn't counted as its quiet once it works again.
+    #[test]
+    fn a_wait_is_not_the_agents_quiet() {
+        let quiet = Duration::from_secs(120);
+        let t0 = std::time::Instant::now();
+        let at = |secs: u64| t0 + Duration::from_secs(secs);
+        let to = Origin {
+            channel: "D1".into(),
+            thread: Some("1.5".into()),
+        };
+        let mut working = Look::default();
+        working
+            .working
+            .insert("ft_a".into(), (to.clone(), Some("$ make check".into())));
+        let waiting = Look::default();
+        let mut streams = HashMap::new();
+        // At work: nothing yet, then shown at work in a message of its own.
+        assert_eq!(busy_plan(&mut streams, &working, at(0), quiet), vec![]);
+        let shown = busy_plan(&mut streams, &working, at(121), quiet);
+        let line = busy_line(Duration::from_secs(121), Some("$ make check"));
+        assert_eq!(
+            shown,
+            vec![("agent:ft_a".into(), Busy::Post(to.clone(), line))]
+        );
+        let s = streams.get_mut("agent:ft_a").unwrap();
+        s.posting = false;
+        s.ts = Some("1.6".into());
+        // It waits on the developer: taken away; its message is still there
+        // until the delete is done.
+        let gone = busy_plan(&mut streams, &waiting, at(130), quiet);
+        assert_eq!(
+            gone,
+            vec![("agent:ft_a".into(), Busy::Delete(to.clone(), "1.6".into()))]
+        );
+        let s = streams.get_mut("agent:ft_a").unwrap();
+        assert_eq!(s.ts.as_deref(), Some("1.6"));
+        s.posting = false;
+        s.ts = None;
+        // Half an hour later the developer answers: it works again, and
+        // isn't shown "quiet for 31 minutes" at once.
+        assert_eq!(busy_plan(&mut streams, &waiting, at(1900), quiet), vec![]);
+        assert_eq!(busy_plan(&mut streams, &working, at(1901), quiet), vec![]);
+        let again = busy_plan(&mut streams, &working, at(2030), quiet);
+        assert!(
+            matches!(&again[..], [(_, Busy::Post(_, l))] if l.contains("for 2 minutes")),
+            "{again:?}"
+        );
     }
 
     /// In a task's thread the coding agent's words go back too (D-086,

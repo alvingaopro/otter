@@ -60,3 +60,19 @@ activity was read from the task rather than the live run. The unit test
 `slack::tests::a_quiet_agent_is_shown_at_work` covers the wording. The D-203
 test `the_coding_agents_words_are_shown_as_it_says_them` shares its setup
 and is unchanged.
+
+Reviewed against the code (Fable) before merging. The review found nothing
+blocking in the concurrency. It found three faults, all fixed:
+
+- **A wait was counted as the agent's quiet.** After the developer answered a
+  question they had taken half an hour over, the thread said at once
+  "nothing said for 31 minutes" in a new message, which notified them. While
+  a task isn't at work, its quiet is now counted from each look, so the count
+  starts again when work does. The decision is `busy_plan`, made pure for
+  this. The unit test `slack::tests::a_wait_is_not_the_agents_quiet` was
+  watched failing with exactly that message.
+- **A failed delete left the line behind.** A message that held only the
+  line was forgotten even when its delete failed, and the next quiet stretch
+  posted a second one. It is now forgotten only once Slack says it is gone.
+- **A post cut off with its connection stayed "posting" for good.** It now
+  starts clear with each connection.
