@@ -73,6 +73,12 @@ pub struct Press {
     pub at: String,
     /// The message it is on: its thread is its task's.
     pub on: Origin,
+    /// The block it is in: a form's question is `q:<id>` (D-202).
+    pub block: String,
+    /// What a select chose.
+    pub picked: Vec<String>,
+    /// What the message's selects and inputs hold now (`state.values`).
+    pub state: Value,
 }
 
 /// The press in an interactive payload; `None` for anything else.
@@ -93,7 +99,55 @@ pub fn press(payload: &Value) -> Option<Press> {
             channel: channel.to_owned(),
             thread: Some(payload["container"]["message_ts"].as_str()?.to_owned()),
         },
+        block: action["block_id"].as_str().unwrap_or_default().to_owned(),
+        picked: picked(action),
+        state: payload["state"]["values"].clone(),
     })
+}
+
+/// What a select (one or several) chose.
+fn picked(element: &Value) -> Vec<String> {
+    if let Some(one) = element["selected_option"]["value"].as_str() {
+        return vec![one.to_owned()];
+    }
+    element["selected_options"]
+        .as_array()
+        .map(|many| {
+            many.iter()
+                .filter_map(|o| o["value"].as_str().map(String::from))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// What an input holds, trimmed.
+fn typed(element: &Value) -> Vec<String> {
+    element["value"]
+        .as_str()
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .map(|v| vec![v.to_owned()])
+        .unwrap_or_default()
+}
+
+/// A form's answers as its message holds them (`state.values`), by
+/// question: several choices joined with ", ", as the app joins them.
+pub fn form_answers(values: &Value) -> std::collections::BTreeMap<String, String> {
+    let Some(blocks) = values.as_object() else {
+        return Default::default();
+    };
+    blocks
+        .iter()
+        .filter_map(|(block, actions)| {
+            let question = block.strip_prefix("q:")?;
+            let element = actions.as_object()?.values().next()?;
+            let chosen = match picked(element) {
+                none if none.is_empty() => typed(element),
+                some => some,
+            };
+            (!chosen.is_empty()).then(|| (question.to_owned(), chosen.join(", ")))
+        })
+        .collect()
 }
 
 /// `/otter` as the developer typed it (D-202).
@@ -362,6 +416,40 @@ mod tests {
         assert_eq!(envelope("not json"), Envelope::Unknown);
     }
 
+    /// A form's answers (D-202): a select's choice, several joined, an
+    /// input's words; what wasn't answered isn't there.
+    #[test]
+    fn a_forms_answers_are_read_from_its_message() {
+        let values = json!({
+            "q:db": {"pick": {"type": "static_select", "selected_option": {"value": "Postgres"}}},
+            "q:langs": {"pick": {"type": "multi_static_select",
+                "selected_options": [{"value": "Rust"}, {"value": "Go"}]}},
+            "q:name": {"text": {"type": "plain_text_input", "value": "  exporter "}},
+            "q:empty": {"text": {"type": "plain_text_input", "value": ""}},
+            "q:none": {"pick": {"type": "static_select", "selected_option": null}},
+            "other": {"x": {"value": "not a question"}},
+        });
+        assert_eq!(
+            form_answers(&values),
+            std::collections::BTreeMap::from([
+                ("db".to_owned(), "Postgres".to_owned()),
+                ("langs".to_owned(), "Rust, Go".to_owned()),
+                ("name".to_owned(), "exporter".to_owned()),
+            ])
+        );
+        let pick = json!({
+            "type": "block_actions", "user": {"id": "U1"},
+            "container": {"message_ts": "1.5", "channel_id": "D1"},
+            "actions": [{"action_id": "pick", "block_id": "q:db", "action_ts": "2.0",
+                "selected_option": {"value": "SQLite"}}],
+        });
+        let p = press(&pick).unwrap();
+        assert_eq!(
+            (p.block.as_str(), p.picked.as_slice()),
+            ("q:db", &["SQLite".to_owned()][..])
+        );
+    }
+
     #[test]
     fn otter_is_told_what_to_do_in_a_word() {
         let cmd = |text: &str| {
@@ -403,6 +491,9 @@ mod tests {
                     channel: "D1".into(),
                     thread: Some("1.5".into())
                 },
+                block: String::new(),
+                picked: vec![],
+                state: Value::Null,
             })
         );
         assert_eq!(press(&json!({"type": "view_submission"})), None);

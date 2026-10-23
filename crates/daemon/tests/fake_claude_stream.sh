@@ -6,6 +6,7 @@
 # (a write outside the workspace, asked again once allowed), ASK_INSTALL
 # (one the Control Agent may decide), ASK_REBASE (one it judges; ASK_REBASE_TWICE
 # asks again, the same, if denied), ASK_EDIT (a routine edit), ASK_QUESTION,
+# ASK_FORM (two questions, the second of several choices),
 # FAIL, HANG (works until interrupted), SLOW (works until interrupted, then
 # finishes once resumed), BGWAIT (waits for background work, then takes it
 # up by itself, as Claude Code does), DIE_MIDTOOL (the process dies mid-tool; a
@@ -101,6 +102,7 @@ while read -r line; do
         *ASK_LONG*) ask r7 Bash '{"command":"python3 - <<'"'"'E'"'"'\nimport re\np = \"taskbench/cli.py\"\ns = open(p).read()\ns = s.replace(\"SAVE_PATH\", \"STORE_PATH\")\ns = re.sub(r\"\\bold_name\\b\", \"new_name\", s)\nopen(p, \"w\").write(s)\nprint(\"rewrote\", p, \"for the new storage path, keeping the old one readable\")\nE\nGITHUB_TOKEN=ghp_LONGLONGLONGLONGLONGLONGLONG1234 rm -rf /opt/shared"}' ;;
         *ASK_INSTALL*) ask r2 Bash '{"command":"npm install left-pad"}' ;;
         *ASK_EDIT*) ask r4 Write '{"file_path":"src/a.rs","content":"x"}' ;;
+        *ASK_FORM*) ask r11 AskUserQuestion '{"questions":[{"question":"Which database?","header":"Database","options":[{"label":"Postgres"},{"label":"SQLite"}]},{"question":"Which languages?","header":"Languages","multiSelect":true,"options":[{"label":"Rust"},{"label":"Go"}]}]}' ;;
         *ASK_QUESTION*) ask r3 AskUserQuestion '{"questions":[{"question":"Pick one","options":[{"label":"red"},{"label":"blue"}]}]}' ;;
         *FAIL*) result error_during_execution true "it broke" ;;
         *SLOW*)

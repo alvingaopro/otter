@@ -836,3 +836,127 @@ async fn otter_in_slack_says_what_needs_you_and_starts_a_task() {
     })
     .await;
 }
+
+/// A form (D-202): a decision of several questions is asked with a select
+/// per question; what a select chose as it was chosen and what the message
+/// holds at Submit are its answers, done as the app's form does it. A
+/// Submit with a question unanswered says so and decides nothing.
+#[tokio::test]
+async fn a_form_is_answered_in_slack() {
+    use otter_core::task::{Decider, DecisionStatus, TaskStatus};
+    let mut slack = FakeSlack::start().await;
+    let api = slack.api.clone();
+    let fake = fake_agent_host_with("ok", "rules", move |_| {
+        vec![("OTTER_BRAIN_V2", "1".into()), ("OTTER_SLACK_API", api)]
+    })
+    .await;
+    let host = &fake.host;
+    host.conn()
+        .await
+        .settings_set(set_up("xoxb-1-SLACKTESTTOKEN"))
+        .await
+        .unwrap();
+    let mut ws = slack.connected().await;
+    let state = host.home().join("state/slack.json");
+    eventually("the needs looked at", || async {
+        std::fs::read_to_string(&state)
+            .ok()
+            .filter(|s| s.contains("\"needs\""))
+    })
+    .await;
+
+    let id = started_task_named(host, "Set up ASK_FORM").await;
+    let f = wait_task(host, &id, "asking its questions", |f| {
+        f.status == TaskStatus::Blocked && f.pending_decisions().next().is_some()
+    })
+    .await;
+    let decision = f.pending_decisions().next().unwrap().id.clone();
+    let need = eventually("the form told in Slack", || async {
+        told(&slack).into_iter().find(|b| {
+            b["blocks"].as_array().is_some_and(|bs| {
+                bs.iter()
+                    .any(|x| x["block_id"].as_str().is_some_and(|i| i.starts_with("q:")))
+            })
+        })
+    })
+    .await;
+    let blocks = need["blocks"].as_array().unwrap();
+    let questions: Vec<&Value> = blocks
+        .iter()
+        .filter(|b| b["block_id"].as_str().is_some_and(|i| i.starts_with("q:")))
+        .collect();
+    assert_eq!(questions.len(), 2, "{blocks:#?}");
+    assert_eq!(questions[0]["elements"][0]["type"], "static_select");
+    assert_eq!(questions[1]["elements"][0]["type"], "multi_static_select");
+    let (first, second) = (
+        questions[0]["block_id"].as_str().unwrap().to_owned(),
+        questions[1]["block_id"].as_str().unwrap().to_owned(),
+    );
+    let submit = blocks
+        .iter()
+        .flat_map(|b| b["elements"].as_array().cloned().unwrap_or_default())
+        .find(|e| e["action_id"] == "form")
+        .unwrap();
+    let value = submit["value"].as_str().unwrap().to_owned();
+    let on = format!(
+        "1800000000.{:06}",
+        slack
+            .calls("chat.postMessage")
+            .iter()
+            .position(|c| c.2 == need)
+            .unwrap()
+            + 1
+    );
+    let send = |envelope: &str, payload: Value| {
+        json!({"type": "interactive", "envelope_id": envelope, "payload": payload}).to_string()
+    };
+    let container = json!({"type": "message", "message_ts": on, "channel_id": "D1"});
+
+    // The first question chosen as it is chosen.
+    let pick = json!({
+        "type": "block_actions", "user": {"id": "U01DEV"}, "container": container,
+        "actions": [{"action_id": "pick", "block_id": first, "action_ts": "1700000020.1",
+            "type": "static_select", "selected_option": {"value": "SQLite"}}],
+    });
+    acked(&mut ws, send("f1", pick), "f1").await;
+
+    // Submit with the second unanswered: said, nothing decided.
+    let early = json!({
+        "type": "block_actions", "user": {"id": "U01DEV"}, "container": container,
+        "actions": [{"action_id": "form", "value": value, "action_ts": "1700000021.1"}],
+        "state": {"values": {}},
+    });
+    acked(&mut ws, send("f2", early), "f2").await;
+    eventually("what's still to answer", || async {
+        slack.calls("chat.postMessage").into_iter().find(|c| {
+            c.2["thread_ts"] == on.as_str()
+                && c.2["blocks"][0]["text"]
+                    .as_str()
+                    .is_some_and(|t| t.contains("Still to answer"))
+        })
+    })
+    .await;
+    let f = host.conn().await.task_get(&id).await.unwrap();
+    assert!(f.pending_decisions().any(|d| d.id == decision));
+
+    // Submit with the second in the message's state: answered.
+    let state_values = json!({ second.clone(): {"pick": {"type": "multi_static_select",
+        "selected_options": [{"value": "Rust"}, {"value": "Go"}]}} });
+    let submit = json!({
+        "type": "block_actions", "user": {"id": "U01DEV"}, "container": container,
+        "actions": [{"action_id": "form", "value": value, "action_ts": "1700000022.1"}],
+        "state": {"values": state_values},
+    });
+    acked(&mut ws, send("f3", submit), "f3").await;
+    let f = wait_task(host, &id, "answered", |f| {
+        f.decisions
+            .iter()
+            .any(|d| d.id == decision && d.status == DecisionStatus::Answered)
+    })
+    .await;
+    let d = f.decisions.iter().find(|d| d.id == decision).unwrap();
+    assert_eq!(d.decided_by, Some(Decider::User));
+    let answer = d.answer.clone().unwrap();
+    let (q1, q2) = (&first["q:".len()..], &second["q:".len()..]);
+    assert_eq!(answer, format!("{q1} SQLite; {q2} Rust, Go"), "{answer}");
+}

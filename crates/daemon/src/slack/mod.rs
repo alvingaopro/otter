@@ -33,6 +33,7 @@ use std::time::Duration;
 
 use futures_util::{SinkExt, StreamExt};
 use otter_core::DecisionId;
+use otter_core::conversation::{InteractionKind, Question};
 use otter_core::task::{Message, MessageRole, TaskAction};
 use otter_protocol::Event;
 use otter_protocol::host::SlackView;
@@ -75,6 +76,9 @@ pub struct Slack {
     /// Threads made outside the sync loop (`/otter new`, D-202), for it to
     /// keep: it alone writes `state/slack.json`.
     pending: std::sync::Mutex<Vec<Pending>>,
+    /// What each form's selects chose, by its message and question, as
+    /// they are chosen (D-202): Submit reads the message's state too.
+    picks: std::sync::Mutex<HashMap<(String, String), String>>,
 }
 
 /// A thread for a task, made outside the sync loop.
@@ -537,10 +541,38 @@ impl Daemon {
             tracing::info!("slack: a button pressed by a Slack member Settings doesn't list");
             return;
         }
+        // A form's select, as it is chosen: kept for its Submit (D-202).
+        if p.action == "pick" {
+            if let (Some(ts), Some(question)) = (p.on.thread.clone(), p.block.strip_prefix("q:")) {
+                self.slack
+                    .picks
+                    .lock()
+                    .unwrap()
+                    .insert((ts, question.to_owned()), p.picked.join(", "));
+            }
+            return;
+        }
         let v: Value = serde_json::from_str(&p.value).unwrap_or_default();
         let (Some(task), decision) = (v["task"].as_str(), v["decision"].as_str()) else {
             return;
         };
+        if p.action == "form" {
+            let Some(decision) = decision else {
+                return;
+            };
+            let (daemon, env, bot) = (self.clone(), env.clone(), c.bot.clone());
+            let (task, decision) = (task.to_owned(), DecisionId::from(decision));
+            tokio::spawn(async move {
+                let line = match daemon.slack_submit(&p, &task, &decision).await {
+                    Ok(()) => return,
+                    Err(line) => line,
+                };
+                if let Err(e) = post(&env, &bot, &p.on, &line, &HashMap::new()).await {
+                    tracing::warn!("slack: {e}");
+                }
+            });
+            return;
+        }
         let decide = |approve: bool, answer: Option<String>| {
             decision.map(|d| TaskAction::Decide {
                 decision_id: d.into(),
@@ -713,6 +745,83 @@ impl Daemon {
         state.save(&path);
     }
 
+    /// The questions of `decision`, when it was asked as a form (D-202):
+    /// several questions, or one whose choices may be several. One with a
+    /// single choice is asked with buttons, and one with none takes a reply.
+    fn form_of(&self, task: &str, decision: &DecisionId) -> Option<Vec<Question>> {
+        let questions = self
+            .conversations
+            .list(Some(task))
+            .into_iter()
+            .flat_map(|c| c.interactions)
+            .find(|i| &i.id == decision)
+            .and_then(|i| match i.kind {
+                InteractionKind::Questions { questions } => Some(questions),
+                _ => None,
+            })?;
+        (questions.len() > 1 || questions.iter().any(|q| q.multi_select)).then_some(questions)
+    }
+
+    /// A form's Submit (D-202): every question's answer, from what its
+    /// selects chose as they were chosen and what the message holds now,
+    /// done as the app's form does it. What isn't answered yet is said
+    /// instead.
+    async fn slack_submit(
+        self: &Arc<Self>,
+        p: &socket::Press,
+        task: &str,
+        decision: &DecisionId,
+    ) -> Result<(), String> {
+        let Some(questions) = self.form_of(task, decision) else {
+            return Err("That form isn't asked any more.".into());
+        };
+        let ts = p.on.thread.clone().unwrap_or_default();
+        let mut answers: std::collections::BTreeMap<String, String> = {
+            let picks = self.slack.picks.lock().unwrap();
+            questions
+                .iter()
+                .filter_map(|q| {
+                    let a = picks.get(&(ts.clone(), q.id.clone()))?;
+                    (!a.is_empty()).then(|| (q.id.clone(), a.clone()))
+                })
+                .collect()
+        };
+        answers.extend(socket::form_answers(&p.state));
+        answers.retain(|q, _| questions.iter().any(|x| &x.id == q));
+        let missing: Vec<&str> = questions
+            .iter()
+            .filter(|q| !answers.contains_key(&q.id))
+            .map(|q| q.header.as_deref().unwrap_or(q.prompt.as_str()))
+            .collect();
+        if !missing.is_empty() {
+            return Err(format!(
+                "Answer every question, then Submit. Still to answer: {}.",
+                missing.join("; ")
+            ));
+        }
+        let act = TaskAct {
+            command_id: format!("slack:act:{}", p.at),
+            task: task.to_owned(),
+            action: TaskAction::Decide {
+                decision_id: decision.clone(),
+                approve: true,
+                answer: None,
+                answers: Some(answers),
+            },
+        };
+        self.clone()
+            .task_act(act)
+            .await
+            .map(|_| {
+                self.slack
+                    .picks
+                    .lock()
+                    .unwrap()
+                    .retain(|(m, _), _| m != &ts);
+            })
+            .map_err(|e| format!("That didn't go through: {}", e.message))
+    }
+
     /// Bring Slack up to date: Otter's messages on the host, each task's
     /// need, and the messages in the tasks' threads.
     async fn slack_sync(&self, c: &Config, env: &EnvMap) -> Result<(), CallError> {
@@ -764,8 +873,15 @@ impl Daemon {
                 look.messages.insert(id.clone(), t.messages.clone());
             }
             look.last.insert(id.clone(), last);
-            look.needs
-                .insert(id, need.map(|n| (needs::key(&n), needs::told(t, &n))));
+            let form = need
+                .as_ref()
+                .filter(|n| n.kind == otter_core::task::NeedKind::Question)
+                .and_then(|n| n.decision_id.as_ref())
+                .and_then(|d| self.form_of(t.id.as_str(), d));
+            look.needs.insert(
+                id,
+                need.map(|n| (needs::key(&n), needs::told(t, &n, form.as_deref()))),
+            );
         }
         for (i, p) in state.posts.iter().enumerate() {
             if p.open && !look.titles.contains_key(&p.task) {

@@ -6,6 +6,7 @@ use std::collections::HashMap;
 
 use otter_core::DecisionId;
 use otter_core::Timestamp;
+use otter_core::conversation::Question;
 use otter_core::model::Activity;
 use otter_core::task::{Decider, DecisionKind, DecisionStatus, Need, NeedKind, Task, TaskStatus};
 use serde_json::{Value, json};
@@ -41,8 +42,15 @@ pub struct Told {
     pub blocks: Value,
 }
 
-/// The message that tells the developer `task` needs them.
-pub fn told(task: &Task, n: &Need) -> Told {
+/// Questions in a form, at most: Slack takes 50 blocks in a message.
+const MAX_QUESTIONS: usize = 10;
+/// What a select option's value may hold (Slack's limit).
+const MAX_VALUE: usize = 150;
+
+/// The message that tells the developer `task` needs them. `form`: the
+/// questions of a decision asked as a form (several questions, or choices
+/// to pick several of, D-202).
+pub fn told(task: &Task, n: &Need, form: Option<&[Question]>) -> Told {
     let d = n
         .decision_id
         .as_ref()
@@ -89,6 +97,9 @@ pub fn told(task: &Task, n: &Need) -> Told {
         }
         b
     };
+    if let (NeedKind::Question, Some(questions)) = (n.kind, form) {
+        return asked(&text, questions, &value(None));
+    }
     let mut buttons = Vec::new();
     let hint = match (n.kind, d) {
         (NeedKind::Question, Some(d)) if !d.options.is_empty() => {
@@ -116,6 +127,75 @@ pub fn told(task: &Task, n: &Need) -> Told {
     }
     Told {
         text,
+        blocks: Value::Array(blocks),
+    }
+}
+
+/// A form in Slack (D-202), as the app's: each question's choices in a
+/// select (several where it takes several), a box for one with none, and
+/// Submit.
+fn asked(text: &str, questions: &[Question], value: &str) -> Told {
+    let plain = |t: &str| json!({ "type": "plain_text", "text": cut(t, MAX_LABEL) });
+    let mut blocks = vec![json!({ "type": "markdown", "text": text })];
+    for (i, q) in questions.iter().take(MAX_QUESTIONS).enumerate() {
+        let head = match &q.header {
+            Some(h) => format!("**{}** {}", h, q.prompt),
+            None => format!("**{}.** {}", i + 1, q.prompt),
+        };
+        blocks.push(json!({ "type": "markdown", "text": otter_core::redact::redact(&head) }));
+        let block_id = format!("q:{}", q.id);
+        if q.options.is_empty() {
+            blocks.push(json!({
+                "type": "input",
+                "block_id": block_id,
+                "label": plain("Your answer"),
+                "element": { "type": "plain_text_input", "action_id": "text" },
+            }));
+            continue;
+        }
+        let options: Vec<Value> = q
+            .options
+            .iter()
+            .take(100)
+            .map(|o| {
+                let label = otter_core::redact::redact(&o.label);
+                json!({ "text": plain(&label), "value": cut(&label, MAX_VALUE) })
+            })
+            .collect();
+        let kind = if q.multi_select {
+            "multi_static_select"
+        } else {
+            "static_select"
+        };
+        let placeholder = if q.multi_select {
+            "Choose any"
+        } else {
+            "Choose one"
+        };
+        blocks.push(json!({
+            "type": "actions",
+            "block_id": block_id,
+            "elements": [{
+                "type": kind,
+                "action_id": "pick",
+                "placeholder": plain(placeholder),
+                "options": options,
+            }],
+        }));
+    }
+    blocks.push(json!({
+        "type": "actions",
+        "elements": [{
+            "type": "button",
+            "text": plain("Submit"),
+            "action_id": "form",
+            "value": value,
+            "style": "primary",
+        }],
+    }));
+    blocks.push(json!({ "type": "markdown", "text": "_Answer every question, then Submit. Or reply in this thread to tell the task._" }));
+    Told {
+        text: text.to_owned(),
         blocks: Value::Array(blocks),
     }
 }
@@ -324,7 +404,7 @@ mod tests {
         );
         let n = t.needs().unwrap();
         assert_eq!(key(&n), "decision:dec_1");
-        let told = told(&t, &n);
+        let told = told(&t, &n, None);
         assert!(told.text.starts_with("**Export CSV** asks you to decide:"));
         assert!(told.text.contains("```\nrm -rf build\n```"));
         assert!(told.text.contains("1 more decision after this one"));
@@ -345,7 +425,7 @@ mod tests {
             )],
             TaskStatus::Implementing,
         );
-        let a = actions(&told(&with, &with.needs().unwrap()));
+        let a = actions(&told(&with, &with.needs().unwrap(), None));
         assert_eq!(
             a.iter()
                 .map(|(id, v)| (id.as_str(), v["answer"].as_str().unwrap()))
@@ -357,7 +437,7 @@ mod tests {
             vec![decision("dec_q", DecisionKind::Question, &[])],
             TaskStatus::Implementing,
         );
-        let told = told(&without, &without.needs().unwrap());
+        let told = told(&without, &without.needs().unwrap(), None);
         assert!(actions(&told).is_empty());
         assert!(
             told.blocks[0]["text"]
@@ -368,13 +448,64 @@ mod tests {
         assert_eq!(open_question(&without), Some("dec_q".into()));
     }
 
+    /// A form (D-202): each question in its own block, choices in a select
+    /// (several where it takes several), a box where there are none, and
+    /// Submit carrying the task and the decision.
+    #[test]
+    fn a_form_is_asked_question_by_question() {
+        use otter_core::conversation::{Question, QuestionOption};
+        let t = task(
+            vec![decision("dec_f", DecisionKind::Question, &[])],
+            TaskStatus::Implementing,
+        );
+        let q = |id: &str, options: &[&str], multi: bool| Question {
+            id: id.into(),
+            header: None,
+            prompt: format!("{id}?"),
+            options: options
+                .iter()
+                .map(|o| QuestionOption {
+                    label: o.to_string(),
+                    description: None,
+                })
+                .collect(),
+            multi_select: multi,
+        };
+        let form = [
+            q("db", &["Postgres", "SQLite"], false),
+            q("langs", &["Rust", "Go"], true),
+            q("name", &[], false),
+        ];
+        let told = told(&t, &t.needs().unwrap(), Some(&form));
+        let blocks = told.blocks.as_array().unwrap();
+        let by_id = |id: &str| blocks.iter().find(|b| b["block_id"] == id).unwrap();
+        assert_eq!(by_id("q:db")["elements"][0]["type"], "static_select");
+        assert_eq!(
+            by_id("q:db")["elements"][0]["options"][1]["value"],
+            "SQLite"
+        );
+        assert_eq!(
+            by_id("q:langs")["elements"][0]["type"],
+            "multi_static_select"
+        );
+        assert_eq!(by_id("q:name")["type"], "input");
+        assert_eq!(by_id("q:name")["element"]["type"], "plain_text_input");
+        let submit = blocks
+            .iter()
+            .flat_map(|b| b["elements"].as_array().cloned().unwrap_or_default())
+            .find(|e| e["action_id"] == "form")
+            .unwrap();
+        let v: Value = serde_json::from_str(submit["value"].as_str().unwrap()).unwrap();
+        assert_eq!(v, json!({"task": "ft_abc", "decision": "dec_f"}));
+    }
+
     #[test]
     fn a_stopped_task_offers_retry() {
         let mut t = task(vec![], TaskStatus::Failed);
         t.status_reason = Some("Tests failed three times".into());
         let n = t.needs().unwrap();
         assert!(key(&n).starts_with("failed:"));
-        let told = told(&t, &n);
+        let told = told(&t, &n, None);
         assert_eq!(
             told.text,
             "**Export CSV** stopped: Tests failed three times"
