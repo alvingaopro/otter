@@ -4,6 +4,10 @@ Decisions made while implementing [`design.md`](design.md), including where the
 implementation deliberately deviates from it. Newest last. Each entry says what
 was decided, why, and what would make us revisit it.
 
+This file keeps D-001–D-197. From D-198 on, each decision is a file of its
+own in [`decisions/`](decisions/), its number claimed when the work starts:
+`python3 scripts/decisions.py new "What was decided"` (D-198).
+
 ---
 
 ## D-001 — Rust, one Cargo workspace (2026-10-07)
