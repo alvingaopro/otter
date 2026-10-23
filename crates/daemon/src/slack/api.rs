@@ -119,6 +119,48 @@ fn read(status: &str, body: &str) -> Result<Value, CallError> {
     Err(CallError::Refused(code.to_owned()))
 }
 
+/// Fetch a file Slack keeps (a picture, D-202) with `token`, at most
+/// `max` bytes.
+pub async fn download(
+    env: &EnvMap,
+    token: &str,
+    url: &str,
+    max: usize,
+) -> Result<Vec<u8>, CallError> {
+    let unreachable = |e: &dyn std::fmt::Display| CallError::Unreachable(e.to_string());
+    let curl = which("curl", env).ok_or_else(|| unreachable(&"curl is not installed"))?;
+    let mut cmd = tokio::process::Command::new(&curl);
+    cmd.args(["-sS", "-L", "--fail", "--max-time", "30", "--config", "-"])
+        .arg("--max-filesize")
+        .arg(max.to_string())
+        .arg(url)
+        .env_clear()
+        .envs(env)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .kill_on_drop(true);
+    let mut child = crate::env::spawn_tokio(&mut cmd)
+        .await
+        .map_err(|e| unreachable(&e))?;
+    let config = format!("header = \"Authorization: Bearer {token}\"\n");
+    let mut stdin = child.stdin.take().expect("piped");
+    stdin
+        .write_all(config.as_bytes())
+        .await
+        .map_err(|e| unreachable(&e))?;
+    drop(stdin);
+    let out = child
+        .wait_with_output()
+        .await
+        .map_err(|e| unreachable(&e))?;
+    if !out.status.success() {
+        let why = String::from_utf8_lossy(&out.stderr);
+        return Err(CallError::Refused(otter_core::redact::redact(why.trim())));
+    }
+    Ok(out.stdout)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

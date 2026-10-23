@@ -38,7 +38,7 @@ use otter_core::task::{Message, MessageRole, TaskAction};
 use otter_protocol::Event;
 use otter_protocol::host::SlackView;
 use otter_protocol::otter::OtterSend;
-use otter_protocol::task::{TaskAct, TaskSend};
+use otter_protocol::task::{TaskAct, TaskImage, TaskSend};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tokio_tungstenite::tungstenite::Message as Frame;
@@ -463,7 +463,8 @@ impl Daemon {
     /// the answer to that question, D-201); else in Otter's on the host —
     /// and marked seen (👀) once it is. An answer, like a press, is done
     /// apart from reading: it goes on to the coding agent, and a restart
-    /// mustn't cut it short.
+    /// mustn't cut it short. So is a message with pictures, which are
+    /// fetched first (D-202).
     async fn slack_heard(self: &Arc<Self>, c: &Config, env: &EnvMap, event: &Value) {
         let m = match socket::inbound(event, &c.users) {
             Ok(m) => m,
@@ -474,6 +475,39 @@ impl Daemon {
             Err(_) => return,
         };
         let (env, bot) = (env.clone(), c.bot.clone());
+        if m.files.is_empty() {
+            self.slack_say(&env, &bot, m, vec![]).await;
+            return;
+        }
+        let daemon = self.clone();
+        tokio::spawn(async move {
+            let (images, left) = pictures(&env, &bot, &m.files).await;
+            if left > 0 {
+                let line = match left {
+                    1 => "A file wasn't passed on: Otter takes pictures (png, jpeg or webp, up to 700 KB, four at most).".to_owned(),
+                    n => format!("{n} files weren't passed on: Otter takes pictures (png, jpeg or webp, up to 700 KB, four at most)."),
+                };
+                if let Err(e) = post(&env, &bot, &m.to, &line, &HashMap::new()).await {
+                    tracing::warn!("slack: {e}");
+                }
+            }
+            if m.text.is_empty() && images.is_empty() {
+                return;
+            }
+            daemon.slack_say(&env, &bot, m, images).await;
+        });
+    }
+
+    /// Say the developer's message (and its pictures) where it belongs, and
+    /// mark it.
+    async fn slack_say(
+        self: &Arc<Self>,
+        env: &EnvMap,
+        bot: &str,
+        m: socket::Inbound,
+        images: Vec<TaskImage>,
+    ) {
+        let (env, bot) = (env.clone(), bot.to_owned());
         let path = self.paths.state_dir.join("slack.json");
         let under = State::load(&path)
             .and_then(|s| s.post_of(&m.to))
@@ -483,6 +517,7 @@ impl Daemon {
                 .otter_send(OtterSend {
                     command_id: m.command_id(),
                     text: m.text.clone(),
+                    images,
                 })
                 .await
                 .map(|_| ());
@@ -495,7 +530,9 @@ impl Daemon {
             .await
             .get(&under.task)
             .and_then(needs::open_question);
-        match answers(&under, question) {
+        // Words alone answer a question; with pictures they are said.
+        let answer = answers(&under, question).filter(|_| images.is_empty() && !m.text.is_empty());
+        match answer {
             Some(decision_id) => {
                 let act = TaskAct {
                     command_id: m.command_id(),
@@ -519,7 +556,7 @@ impl Daemon {
                         command_id: m.command_id(),
                         task: under.task,
                         text: m.text.clone(),
-                        images: vec![],
+                        images,
                         command: None,
                     })
                     .await
@@ -1106,6 +1143,43 @@ impl Daemon {
             .insert(user.to_owned(), channel.clone());
         Ok(channel)
     }
+}
+
+/// The pictures of a message, fetched (D-202): each file's first address
+/// that gives a picture Otter takes, within a message's bounds (D-171); and
+/// how many files were left out.
+async fn pictures(env: &EnvMap, bot: &str, files: &[Vec<String>]) -> (Vec<TaskImage>, usize) {
+    use base64::Engine;
+    use otter_protocol::task::{MAX_IMAGE_BYTES, MAX_IMAGES, MAX_IMAGES_TOTAL};
+    let (mut out, mut total, mut left) = (Vec::new(), 0, 0);
+    for addresses in files {
+        let mut got = None;
+        if out.len() < MAX_IMAGES {
+            for url in addresses {
+                match api::download(env, bot, url, MAX_IMAGE_BYTES).await {
+                    Ok(bytes) if bytes.len() <= MAX_IMAGE_BYTES => {
+                        if let Some(kind) = socket::picture_type(&bytes) {
+                            got = Some((kind, bytes));
+                            break;
+                        }
+                    }
+                    Ok(_) => {}
+                    Err(e) => tracing::info!("slack: a picture wasn't fetched: {e}"),
+                }
+            }
+        }
+        match got {
+            Some((kind, bytes)) if total + bytes.len() <= MAX_IMAGES_TOTAL => {
+                total += bytes.len();
+                out.push(TaskImage {
+                    media_type: kind.into(),
+                    data: base64::engine::general_purpose::STANDARD.encode(&bytes),
+                });
+            }
+            _ => left += 1,
+        }
+    }
+    (out, left)
 }
 
 /// The question a reply under `under` answers: the one that message asked,

@@ -17,15 +17,16 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use chrono::Utc;
-use otter_core::Timestamp;
 use otter_core::task::{Message, MessageRole, OtterChat, TASK_EVENT_SCHEMA, TaskEventRecord};
+use otter_core::{MessageId, Timestamp};
 use otter_protocol::otter::{OtterEvents, OtterSend};
 use otter_protocol::{Event, RpcError};
 use serde::{Deserialize, Serialize};
 
 use crate::daemon::{Daemon, RpcResult};
 use crate::tasks::{
-    Change, MAX_TEXT, append_history, check_command_id, check_text, last_seq, message, write_doc,
+    Change, MAX_TEXT, append_history, check_command_id, check_images, check_text, last_seq,
+    message, message_with_id, write_doc,
 };
 
 /// Commands remembered, so a repeat is applied once.
@@ -198,19 +199,59 @@ impl Daemon {
     pub(crate) async fn otter_send(&self, p: OtterSend) -> RpcResult<OtterChat> {
         check_command_id(&p.command_id)?;
         let text = p.text.trim().to_owned();
-        if text.is_empty() {
+        if text.is_empty() && p.images.is_empty() {
             return Err(RpcError::invalid("the message is empty"));
         }
         check_text("message", &text, MAX_TEXT)?;
+        let pictures = check_images(&p.images)?;
+        // Pictures as a task keeps them (D-171), beside the conversation:
+        // written first, taken away again if no message was added (D-202).
+        let message_id = MessageId::generate();
+        let dir = self.chat_artifacts();
+        let names: Vec<String> = pictures
+            .iter()
+            .enumerate()
+            .map(|(n, (ext, _))| format!("attachment-{message_id}-{n}.{ext}"))
+            .collect();
+        if !pictures.is_empty() {
+            std::fs::DirBuilder::new()
+                .recursive(true)
+                .mode(0o700)
+                .create(&dir)
+                .map_err(|e| RpcError::internal(e.to_string()))?;
+            for (name, (_, bytes)) in names.iter().zip(&pictures) {
+                crate::settings::write_private(&dir.join(name), bytes)
+                    .map_err(|e| RpcError::internal(format!("{e:#}")))?;
+            }
+        }
+        let mut added = false;
         let applied = self
             .chat
             .lock()
             .await
             .apply(Some(&p.command_id), |chat, _| {
-                let (m, c) = message(MessageRole::User, text, Some(p.command_id.clone()));
+                let text = if text.is_empty() {
+                    otter_core::task::PICTURES_ONLY.to_owned()
+                } else {
+                    text
+                };
+                let (mut m, c) = message_with_id(
+                    message_id.clone(),
+                    MessageRole::User,
+                    text,
+                    Some(p.command_id.clone()),
+                );
+                m.attachments = names.clone();
                 chat.messages.push(m);
+                added = true;
                 Ok(vec![c])
-            })?;
+            });
+        if !(applied.is_ok() && added) {
+            for name in &names {
+                let _ = std::fs::remove_file(dir.join(name));
+            }
+        }
+        let applied = applied?;
         self.chat_changed(&applied);
         Ok(self.otter_get().await)
     }
@@ -222,6 +263,11 @@ impl Daemon {
             .await
             .history(p.after.unwrap_or(0), limit)
             .map_err(|e| RpcError::internal(format!("reading the history: {e:#}")))
+    }
+
+    /// Where the pictures of Otter's conversation on the host are kept.
+    pub(crate) fn chat_artifacts(&self) -> PathBuf {
+        self.paths.state_dir.join("otter").join("artifacts")
     }
 
     /// Post Otter's reply to the developer's last message `to`.

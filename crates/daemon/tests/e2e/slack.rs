@@ -115,6 +115,30 @@ async fn answer(
         }
         buf.extend_from_slice(&chunk[..n]);
     }
+    let path = head
+        .split_whitespace()
+        .nth(1)
+        .unwrap_or_default()
+        .to_owned();
+    // A file Slack keeps (D-202): a picture too large, its thumbnail, a PDF.
+    if let Some(name) = path.strip_prefix("/files/") {
+        let bytes: Vec<u8> = match name {
+            "big.png" => [&b"\x89PNG\r\n\x1a\n"[..], &vec![0u8; 800 * 1024]].concat(),
+            "small.png" => b"\x89PNG\r\n\x1a\nsmall".to_vec(),
+            _ => b"%PDF-1.7".to_vec(),
+        };
+        calls
+            .lock()
+            .unwrap()
+            .push(("file".into(), header("authorization"), json!(name)));
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            bytes.len()
+        );
+        let _ = s.write_all(response.as_bytes()).await;
+        let _ = s.write_all(&bytes).await;
+        return;
+    }
     let body: Value = serde_json::from_slice(&buf[head_end..]).unwrap_or(Value::Null);
     let method = head
         .split_whitespace()
@@ -959,4 +983,71 @@ async fn a_form_is_answered_in_slack() {
     let answer = d.answer.clone().unwrap();
     let (q1, q2) = (&first["q:".len()..], &second["q:".len()..]);
     assert_eq!(answer, format!("{q1} SQLite; {q2} Rust, Go"), "{answer}");
+}
+
+/// Pictures (D-202): a picture sent to the app reaches Otter's turn — a
+/// thumbnail where the picture itself is too large — and a file that isn't
+/// one is said to be left out.
+#[tokio::test]
+async fn a_picture_in_slack_reaches_otter() {
+    let mut slack = FakeSlack::start().await;
+    let api = slack.api.clone();
+    let fake = fake_agent_host_with("ok", "scripted", move |_| {
+        vec![("OTTER_BRAIN_V2", "1".into()), ("OTTER_SLACK_API", api)]
+    })
+    .await;
+    let host = &fake.host;
+    host.conn()
+        .await
+        .settings_set(set_up("xoxb-1-SLACKTESTTOKEN"))
+        .await
+        .unwrap();
+    let mut ws = slack.connected().await;
+    let base = slack.api.trim_end_matches("/api").to_owned();
+    let files = json!([
+        {"mimetype": "image/png", "size": 2_000_000,
+         "url_private_download": format!("{base}/files/big.png"),
+         "thumb_720": format!("{base}/files/small.png")},
+        {"mimetype": "application/pdf", "size": 10,
+         "url_private_download": format!("{base}/files/doc.pdf")},
+    ]);
+    let event = dm(
+        "e1",
+        "U01DEV",
+        "1700000030.000100",
+        "PICTURES",
+        json!({"subtype": "file_share", "files": files}),
+    );
+    acked(&mut ws, event, "e1").await;
+    let chat = eventually("the message with its picture", || async {
+        let c = host.conn().await.otter_get().await.unwrap();
+        c.messages
+            .iter()
+            .any(|m| m.text == "PICTURES" && m.attachments.len() == 1)
+            .then_some(c)
+    })
+    .await;
+    assert_eq!(said(&chat, "PICTURES"), 1);
+    // The thumbnail, with the bot's token; never the picture too large.
+    let fetched: Vec<Value> = slack.calls("file").into_iter().map(|c| c.2).collect();
+    assert_eq!(fetched, vec![json!("small.png")], "{fetched:?}");
+    assert_eq!(slack.calls("file")[0].1, "Bearer xoxb-1-SLACKTESTTOKEN");
+    let said_what = |what: &'static str| {
+        let slack = &slack;
+        async move {
+            slack.calls("chat.postMessage").into_iter().find(|c| {
+                c.2["blocks"][0]["text"]
+                    .as_str()
+                    .is_some_and(|t| t.contains(what))
+            })
+        }
+    };
+    eventually("the PDF said to be left out", || {
+        said_what("wasn't passed on")
+    })
+    .await;
+    eventually("Otter shown the picture", || {
+        said_what("Shown: [image/png]")
+    })
+    .await;
 }
