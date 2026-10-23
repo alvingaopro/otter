@@ -375,7 +375,30 @@ The Control Agent's model and API keys on this host (D-048).
   answer to a question with no options); `settings.set {slack: {notify}}`
   turns it on or off. The view's `bot_id?` (D-203) is the app's bot there
   once connected: two hosts with the same one share a Slack app, which
-  Slack splits its messages between; each host is meant to have its own.
+  Slack splits its messages between; each host is meant to have its own —
+  or all of them take its events from otterhub (D-206).
+- Through otterhub (D-206): `settings.set {slack: {hub: true}}` has the
+  host take Slack's events from `otter hub serve`, which holds the app's
+  one connection for several hosts, instead of opening one of its own; no
+  app token is needed then (one set isn't used), and the view's `hub?` is
+  `true` and its `state` `hub` (`team`, `bot`, `bot_id` as when connected).
+  The host still says Otter's messages in Slack itself, with its bot token.
+  `{hub: false}` (`otter hub leave`) gives it its own connection again.
+  Absent from older daemons, which ignore the field.
+  - `slack.deliver {envelope}` → `{ack?}`: what Slack sent down the hub's
+    connection, as it sent it (`type`, `envelope_id`, `payload`), taken as
+    the host's own connection would take it: a direct message said where it
+    belongs, a press done, `/otter` answered — its answer in `ack`, for the
+    hub's ack (the hub acks the others itself, before giving them). What a
+    host was given before is applied once, by the same `command_id`s as
+    above. A host not taking its events from otterhub answers `conflict`
+    (the hub stops serving it); one whose Slack isn't set up,
+    `invalid_argument`.
+  - `slack.owns {channel, ts}` → `bool`: whether that message is the
+    host's — one that told a need or began a task's thread here (kept), or
+    one it posted since otterd started — so that a reply in its thread, or a
+    press on it, goes there.
+  An older daemon answers `invalid_request` to both.
 - `settings.models {controller}` → `[{id, name?}]`: the models that
   controller offers, as its provider lists them, asked by the host with the
   key set there (OpenRouter's list needs none); `claude` answers Claude

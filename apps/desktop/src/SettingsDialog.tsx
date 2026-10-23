@@ -70,7 +70,7 @@ export interface HostSettings {
 export interface SlackView {
   /** The Slack members whose direct messages are yours (`U…`). */
   users: string[];
-  /** `off` (`detail` says what's missing), `connecting`, `connected` or `failed` (`detail` says why). */
+  /** `off` (`detail` says what's missing), `connecting`, `connected`, `failed` (`detail` says why), or `hub` (D-206). */
   state: string;
   detail?: string;
   team?: string;
@@ -79,6 +79,8 @@ export interface SlackView {
   notify?: boolean;
   /** The app's bot there, once connected (D-203): two hosts with the same one share an app. */
   bot_id?: string;
+  /** Slack's events come from otterhub (`otter hub serve`), which holds the app's one connection for several hosts (D-206). */
+  hub?: boolean;
 }
 
 /** How the coding agent can run on a host (D-057): the SDK first, the default (D-124). */
@@ -505,7 +507,7 @@ export function SettingsDialog({
     setTwins([]);
     if (!host || shown !== "slack" || !slack?.bot_id) return;
     let live = true;
-    const me = { team: slack.team, bot_id: slack.bot_id };
+    const me = { team: slack.team, bot_id: slack.bot_id, hub: slack.hub };
     Promise.all(
       hostsKey
         .split("\n")
@@ -519,7 +521,7 @@ export function SettingsDialog({
     return () => {
       live = false;
     };
-  }, [host, hostsKey, shown, slack?.bot_id, slack?.team]);
+  }, [host, hostsKey, shown, slack?.bot_id, slack?.team, slack?.hub]);
   useEffect(() => setCopied(false), [host]);
 
   // While Slack connects, or after it failed (the host tries again), ask
@@ -829,13 +831,23 @@ export function SettingsDialog({
                 <>
                   <Group title="Connection">
                     <Row label="Status" hint={slackHint(slack)}>
-                      <span className={`key-state${slack.state === "connected" ? " set" : ""}`}>{SLACK_STATES[slack.state] ?? slack.state}</span>
+                      <span className={`key-state${slack.state === "connected" || slack.state === "hub" ? " set" : ""}`}>
+                        {SLACK_STATES[slack.state] ?? slack.state}
+                      </span>
                     </Row>
                   </Group>
                   <Group title="The Slack app">
+                    {slack.hub ? (
+                      <Row
+                        label="Through otterhub"
+                        hint={`The hub (otter hub serve) holds this app's one connection for your hosts and gives ${host} what is its own; ${host} answers as the app's bot. otter hub leave ${host} gives it a connection of its own again.`}
+                      >
+                        <span className="key-state set">Shared</span>
+                      </Row>
+                    ) : (
                     <Row
                       label="One for each host"
-                      hint={`Slack shares an app's messages among every host connected with it, so each host has its own. Copy ${host}'s manifest, then at api.slack.com/apps choose Create New App › From a manifest and paste it.`}
+                      hint={`Slack shares an app's messages among every host connected with it, so each host has its own — or one app for all, through otterhub (otter hub serve). Copy ${host}'s manifest, then at api.slack.com/apps choose Create New App › From a manifest and paste it.`}
                     >
                       <button
                         type="button"
@@ -850,6 +862,7 @@ export function SettingsDialog({
                         {copied ? "Copied" : "Copy manifest"}
                       </button>
                     </Row>
+                    )}
                     {twins.length > 0 && (
                       <p className="error-text small" role="alert">
                         {twins.join(", ")} {twins.length === 1 ? "is" : "are"} connected as this Slack app too: Slack splits its messages between them. Make an app for
@@ -857,7 +870,8 @@ export function SettingsDialog({
                       </p>
                     )}
                     {(settings.secrets ?? [])
-                      .filter((k) => k.name === SLACK_BOT || k.name === SLACK_APP)
+                      // Through the hub, the app token is the hub's.
+                      .filter((k) => k.name === SLACK_BOT || (k.name === SLACK_APP && !slack.hub))
                       .map((k) => secretRow(k, k.name === SLACK_BOT ? "Bot token" : "App token"))}
                   </Group>
                   <Group title="You in Slack">
@@ -1354,12 +1368,14 @@ const SLACK_STATES: Record<string, string> = {
   connecting: "Connecting…",
   connected: "Connected",
   failed: "Not connected",
+  hub: "Through otterhub",
 };
 
 /** What the host says of its connection to Slack, in a line. */
 function slackHint(s: SlackView): string {
   if (s.state === "connected") return s.team ? `In ${s.team}${s.bot ? `, as @${s.bot}` : ""}.` : "Connected.";
   if (s.state === "connecting") return "Reaching Slack…";
+  if (s.state === "hub" && s.team) return `In ${s.team}${s.bot ? `, as @${s.bot}` : ""}: Slack's events come from otterhub.`;
   return s.detail ?? "";
 }
 

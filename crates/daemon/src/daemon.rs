@@ -326,6 +326,8 @@ impl Daemon {
             Request::SettingsGet => json(self.settings_get()),
             Request::SettingsModels(q) => json(self.settings_models(&q.controller).await?),
             Request::SettingsSet(u) => json(self.settings_set(u)?),
+            Request::SlackDeliver(p) => json(self.slack_deliver(p).await?),
+            Request::SlackOwns(p) => json(self.slack_owns(&p)),
             Request::GitKeyCreate(p) => {
                 let env = self.environments.base();
                 self.git_account

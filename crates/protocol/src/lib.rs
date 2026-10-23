@@ -219,6 +219,13 @@ pub enum Request {
     /// host's key (D-052). Result: `Vec<`[`host::ModelInfo`]`>`.
     #[serde(rename = "settings.models")]
     SettingsModels(host::ModelsQuery),
+    /// What Slack sent otterhub, for this host (D-206). Result:
+    /// [`host::SlackDelivered`].
+    #[serde(rename = "slack.deliver")]
+    SlackDeliver(host::SlackDeliver),
+    /// Whether a message in Slack is this host's (D-206). Result: `bool`.
+    #[serde(rename = "slack.owns")]
+    SlackOwns(host::SlackOwns),
     /// Make Otter's SSH key on this host (D-133). Result:
     /// [`host::GitView`].
     #[serde(rename = "git.key_create")]
@@ -386,6 +393,8 @@ impl Request {
             Request::SettingsGet => "settings.get",
             Request::SettingsSet(_) => "settings.set",
             Request::SettingsModels(_) => "settings.models",
+            Request::SlackDeliver(_) => "slack.deliver",
+            Request::SlackOwns(_) => "slack.owns",
             Request::GitKeyCreate(_) => "git.key_create",
             Request::GitKeyAdd => "git.key_add",
             Request::GitCheck => "git.check",

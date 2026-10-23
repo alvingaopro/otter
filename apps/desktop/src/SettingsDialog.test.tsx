@@ -23,7 +23,9 @@ const state = vi.hoisted(() => ({
   // Otter's tools and their levels (D-191): `undefined` from an otterd before them.
   tools: undefined as { name: string; description: string; group: string; level: string; default_level: string }[] | undefined,
   // Otter in Slack (D-200): `undefined` from an otterd before it.
-  slack: undefined as { users: string[]; state: string; detail?: string; team?: string; bot?: string; bot_id?: string; notify?: boolean } | undefined,
+  slack: undefined as
+    | { users: string[]; state: string; detail?: string; team?: string; bot?: string; bot_id?: string; notify?: boolean; hub?: boolean }
+    | undefined,
   slackBot: false,
   slackApp: false,
 }));
@@ -225,6 +227,20 @@ describe("Settings", () => {
       : undefined;
     state.slackBot = false;
     state.slackApp = false;
+    if (name.includes("otterhub")) {
+      // Set up by `otter hub serve` (D-206): its bot, the hub's connection.
+      state.slack = {
+        users: ["U06MPBPRX7C"],
+        state: "hub",
+        detail: "Slack's events come from otterhub (otter hub serve), which holds this app's one connection; Otter answers in Slack from here.",
+        team: "Suger Inc",
+        bot: "otter",
+        bot_id: "B1",
+        notify: true,
+        hub: true,
+      };
+      state.slackBot = true;
+    }
     localStorage.removeItem("otter.settings-tab");
     host = document.createElement("div");
     document.body.appendChild(host);
@@ -481,6 +497,21 @@ describe("Settings", () => {
     await flush();
     expect(calls.filter((c) => c.cmd === "settings_set").pop()!.args).toEqual({ host: "mac", update: { secrets: { CLAUDE_CODE_OAUTH_TOKEN: null } } });
     expect(dialog().textContent).toContain("Claude Code's own sign-in on mac");
+  });
+
+  it("shows a host whose Slack comes through otterhub, with no app of its own to make (D-206)", async () => {
+    await tab("Slack");
+    await flush();
+    expect(dialog().textContent).toContain("Through otterhub");
+    expect(dialog().textContent).toContain("In Suger Inc, as @otter: Slack's events come from otterhub.");
+    expect(dialog().textContent).toContain("Bot token");
+    // The app token is the hub's; no manifest to copy for this host.
+    expect(dialog().textContent).not.toContain("App token");
+    expect(dialog().textContent).not.toContain("Copy manifest");
+    // pc shares the app through the hub too (this mock answers alike for
+    // every host): not Slack splitting its messages.
+    expect(calls.some((c) => c.cmd === "settings_get" && c.args.host === "pc")).toBe(true);
+    expect(dialog().querySelector('[role="alert"]')).toBeNull();
   });
 
   it("sets Slack up with its two tokens, kept on the host and never shown, and whose messages are yours (D-200)", async () => {

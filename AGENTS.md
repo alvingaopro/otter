@@ -37,6 +37,7 @@ architecture (architecture-lessons §24–§25).
 | `crates/core`     | Domain types: `Workspace`, `Session`, `Execution`, `HostStatus`, ids |
 | `crates/protocol` | Wire protocol: requests, responses, events, attach frames            |
 | `crates/client`   | `Connection` over `otterd dial` (local or `ssh host otterd dial`)      |
+| `crates/slack`    | Slack's Socket Mode envelopes and Web API (curl), for otterd and `otter hub` (D-206) |
 | `crates/daemon`   | `otterd` — host daemon (managers, tmux backend, attach bridge)        |
 | `crates/cli`      | `otter` — control-plane CLI                                         |
 | `apps/desktop`    | Desktop app (Tauri 2 + React); own cargo workspace, see its README    |
@@ -91,14 +92,18 @@ Inside the daemon (`crates/daemon/src`):
   `needs.rs` tells Slack when a task needs the developer, with buttons and
   forms, and a reply in its thread goes to that task (D-201); `/otter`,
   pictures, and answers shown as they are written (D-202); one Slack app
-  per host, the coding agent's words as it says them (D-203)
+  per host, the coding agent's words as it says them (D-203) — or one app
+  for several, its events given by otterhub (`slack.deliver`, D-206); the
+  envelopes and the Web API are `crates/slack`'s
 - `git.rs` (shared repos + worktrees), `git_account.rs` (Otter's own git identity, key and
   GitHub sign-in, which its repositories include, D-133), `environment.rs` (direnv), `env.rs` (login env, exec shim)
 - `attach.rs` (PTY bridge, or a stream whose client keeps the history:
   `backend/tmux/control.rs`, tmux's control mode, D-118), `server.rs`
   (connections), `dial.rs`, `store.rs` / `events.rs`
 
-In the CLI, `dashboard.rs` is the grouped `otter ls` view.
+In the CLI, `dashboard.rs` is the grouped `otter ls` view, and `hub.rs` is
+`otter hub serve`: one Slack app's connection held for several hosts, each
+event given to its host (`slack.deliver`, D-206).
 
 ## Build & test
 

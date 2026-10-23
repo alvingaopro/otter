@@ -7,6 +7,7 @@ mod attach;
 mod chat;
 mod dashboard;
 mod doctor;
+mod hub;
 mod output;
 mod target;
 mod tasks;
@@ -126,6 +127,10 @@ enum Command {
         #[arg(long)]
         host: Option<String>,
     },
+    /// One Slack app for all your hosts: the hub holds its connection and
+    /// gives each host what is its own (D-206).
+    #[command(subcommand)]
+    Hub(hub::HubCommand),
     /// What's wrong with your hosts, and what to do about it (exit 1 if anything is).
     Doctor {
         /// Only this host.
@@ -397,10 +402,12 @@ struct SessionCreateArgs {
     command: Vec<String>,
 }
 
-#[tokio::main]
-async fn main() {
+fn main() {
+    // Before any thread: Slack's tokens leave the environment (D-206).
+    hub::take_tokens();
     let cli = Cli::parse();
-    if let Err(e) = run(cli).await {
+    let runtime = tokio::runtime::Runtime::new().expect("a runtime");
+    if let Err(e) = runtime.block_on(run(cli)) {
         eprintln!("otter: {e:#}");
         std::process::exit(1);
     }
@@ -506,6 +513,7 @@ async fn run(cli: Cli) -> Result<()> {
             Ok(())
         }
         Command::Chat { text, host } => chat::run(&config, host, text, json).await,
+        Command::Hub(cmd) => hub::command(&config, cmd, json).await,
         Command::Doctor { host } => doctor::run(&config, host, json).await,
         Command::Events {
             host,

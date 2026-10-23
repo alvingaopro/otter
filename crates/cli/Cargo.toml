@@ -14,6 +14,7 @@ path = "src/main.rs"
 otter-core.workspace = true
 otter-protocol.workspace = true
 otter-client.workspace = true
+otter-slack.workspace = true
 anyhow.workspace = true
 chrono.workspace = true
 clap.workspace = true
@@ -22,6 +23,10 @@ serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
 toml.workspace = true
+# `otter hub`'s connection to Slack's Socket Mode (D-206), as otterd's.
+tokio-tungstenite.workspace = true
+rustls.workspace = true
+futures-util.workspace = true
 
 [dev-dependencies]
 portable-pty.workspace = true

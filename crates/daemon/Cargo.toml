@@ -15,6 +15,7 @@ url.workspace = true
 base64.workspace = true
 otter-core.workspace = true
 otter-protocol.workspace = true
+otter-slack.workspace = true
 anyhow.workspace = true
 async-trait.workspace = true
 chrono.workspace = true

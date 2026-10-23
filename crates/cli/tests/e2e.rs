@@ -1068,3 +1068,392 @@ fn attach_with_scrollback_puts_the_history_in_this_terminal() {
     cli.ok(&["send", "sb", "echo still-$((3+3))"]);
     cli.wait_logs("sb", "still-6");
 }
+
+/// A stand-in Slack for `otter hub` (D-206): its Web API over HTTP, which
+/// the hub and the hosts call, and its Socket Mode over a WebSocket, which
+/// only the hub opens.
+struct FakeSlack {
+    /// Its Web API, for `OTTER_SLACK_API`.
+    api: String,
+    /// Each call: the method and its body.
+    calls: std::sync::Arc<std::sync::Mutex<Vec<(String, serde_json::Value)>>>,
+    sockets:
+        std::sync::mpsc::Receiver<tokio_tungstenite::tungstenite::WebSocket<std::net::TcpStream>>,
+}
+
+impl FakeSlack {
+    fn start() -> FakeSlack {
+        use std::io::{Read, Write};
+        let http = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let ws = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let api = format!("http://{}/api", http.local_addr().unwrap());
+        let link = format!("ws://{}/link", ws.local_addr().unwrap());
+        let calls: std::sync::Arc<std::sync::Mutex<Vec<(String, serde_json::Value)>>> =
+            Default::default();
+        let kept = calls.clone();
+        std::thread::spawn(move || {
+            let mut posted = 0u64;
+            for s in http.incoming() {
+                let Ok(mut s) = s else { continue };
+                let mut buf = Vec::new();
+                let mut chunk = [0u8; 4096];
+                let head_end = loop {
+                    let n = s.read(&mut chunk).unwrap_or(0);
+                    if n == 0 {
+                        break None;
+                    }
+                    buf.extend_from_slice(&chunk[..n]);
+                    if let Some(i) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
+                        break Some(i + 4);
+                    }
+                };
+                let Some(head_end) = head_end else { continue };
+                let head = String::from_utf8_lossy(&buf[..head_end]).to_string();
+                let length: usize = head
+                    .lines()
+                    .find_map(|l| {
+                        let (k, v) = l.split_once(':')?;
+                        k.eq_ignore_ascii_case("content-length")
+                            .then(|| v.trim().parse().ok())?
+                    })
+                    .unwrap_or(0);
+                if head.to_lowercase().contains("expect: 100-continue") {
+                    let _ = s.write_all(b"HTTP/1.1 100 Continue\r\n\r\n");
+                }
+                while buf.len() < head_end + length {
+                    let n = s.read(&mut chunk).unwrap_or(0);
+                    if n == 0 {
+                        break;
+                    }
+                    buf.extend_from_slice(&chunk[..n]);
+                }
+                let body: serde_json::Value =
+                    serde_json::from_slice(&buf[head_end..]).unwrap_or_default();
+                let method = head
+                    .split_whitespace()
+                    .nth(1)
+                    .and_then(|p| p.rsplit('/').next())
+                    .unwrap_or_default()
+                    .to_owned();
+                let reply = match method.as_str() {
+                    "auth.test" => serde_json::json!({"ok": true, "team": "Test Team",
+                        "user": "otter", "user_id": "UBOT", "bot_id": "B01OTTER"}),
+                    "apps.connections.open" => serde_json::json!({"ok": true, "url": link}),
+                    "chat.postMessage" => {
+                        posted += 1;
+                        serde_json::json!({"ok": true, "ts": format!("1800000000.{posted:06}")})
+                    }
+                    "conversations.open" => {
+                        serde_json::json!({"ok": true, "channel": {"id": "D1"}})
+                    }
+                    _ => serde_json::json!({"ok": true}),
+                };
+                kept.lock().unwrap().push((method, body));
+                let reply = reply.to_string();
+                let _ = write!(
+                    s,
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{reply}",
+                    reply.len()
+                );
+            }
+        });
+        let (tx, sockets) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            for s in ws.incoming().flatten() {
+                s.set_read_timeout(Some(Duration::from_secs(20))).unwrap();
+                if let Ok(ws) = tokio_tungstenite::tungstenite::accept(s) {
+                    let _ = tx.send(ws);
+                }
+            }
+        });
+        FakeSlack {
+            api,
+            calls,
+            sockets,
+        }
+    }
+
+    /// The bodies of the calls of `method` so far.
+    fn calls(&self, method: &str) -> Vec<serde_json::Value> {
+        self.calls
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|c| c.0 == method)
+            .map(|c| c.1.clone())
+            .collect()
+    }
+
+    /// Wait until a call of `method` is one `found` takes.
+    fn wait_call(
+        &self,
+        method: &str,
+        what: &str,
+        found: impl Fn(&serde_json::Value) -> bool,
+    ) -> serde_json::Value {
+        let deadline = Instant::now() + Duration::from_secs(20);
+        loop {
+            if let Some(c) = self.calls(method).into_iter().find(|c| found(c)) {
+                return c;
+            }
+            assert!(Instant::now() < deadline, "timed out waiting for {what}");
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    }
+}
+
+/// Socket Mode as the hub sees it: the next connection, said hello to.
+struct SlackSocket(tokio_tungstenite::tungstenite::WebSocket<std::net::TcpStream>);
+
+impl SlackSocket {
+    /// Send an envelope and read its ack: the ack's payload (a slash
+    /// command's answer).
+    fn send(&mut self, envelope: serde_json::Value) -> serde_json::Value {
+        use tokio_tungstenite::tungstenite::Message;
+        let id = envelope["envelope_id"].clone();
+        self.0.send(Message::text(envelope.to_string())).unwrap();
+        loop {
+            let frame = self.0.read().expect("an ack");
+            let Ok(text) = frame.to_text() else { continue };
+            let ack: serde_json::Value = serde_json::from_str(text).unwrap_or_default();
+            if ack["envelope_id"] == id {
+                return ack["payload"].clone();
+            }
+        }
+    }
+
+    fn dm(&mut self, envelope: &str, ts: &str, text: &str, thread: Option<&str>) {
+        let mut event = serde_json::json!({
+            "type": "message", "channel_type": "im", "channel": "D1",
+            "user": "U01DEV", "ts": ts, "text": text,
+        });
+        if let Some(t) = thread {
+            event["thread_ts"] = serde_json::json!(t);
+        }
+        self.send(
+            serde_json::json!({"type": "events_api", "envelope_id": envelope,
+            "payload": {"event": event}}),
+        );
+    }
+
+    fn slash(&mut self, envelope: &str, text: &str) -> serde_json::Value {
+        self.send(
+            serde_json::json!({"type": "slash_commands", "envelope_id": envelope,
+            "payload": {"command": "/otter", "text": text, "user_id": "U01DEV",
+                "channel_id": "D1", "trigger_id": format!("trigger-{envelope}")}}),
+        )
+    }
+}
+
+/// The developer's messages in a host's conversation with Otter.
+fn heard_on(cli: &Cli, host: &str) -> String {
+    cli.ok(&["chat", "--host", host])
+}
+
+/// Poll until `f` says yes.
+fn wait_until(what: &str, f: impl Fn() -> bool) {
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while !f() {
+        assert!(Instant::now() < deadline, "timed out waiting for {what}");
+        std::thread::sleep(Duration::from_millis(200));
+    }
+}
+
+/// One Slack app for two hosts (D-206): `otter hub serve` takes both in,
+/// opens the app's one connection, and gives each message to the host it is
+/// for — the one whose workspace it names, then the one the conversation is
+/// with, or the one it begins with — and a reply in a thread to the host
+/// whose message began it. `/otter status` is every host's; `/otter new`
+/// starts a task on one, and a reply in its thread goes to that task. The
+/// hosts answer in Slack themselves; the tokens reach no host's environment,
+/// not even one whose daemon the hub started. `otter hub leave` gives a
+/// host back its own connection.
+#[test]
+fn one_slack_app_serves_two_hosts_through_the_hub() {
+    let slack = FakeSlack::start();
+    let (a, b, c) = (Home::new(), Home::new(), Home::new());
+    let mut cli = Cli::new();
+    cli.env = vec![
+        ("OTTER_CONTROLLER".into(), "scripted".into()),
+        ("OTTER_BRAIN_V2".into(), "1".into()),
+        ("OTTER_CONTROLLER_TICK_MS".into(), "200".into()),
+        ("OTTER_SLACK_API".into(), slack.api.clone()),
+    ];
+    cli.add_local_host("a", &a);
+    cli.add_local_host("b", &b);
+    cli.ok(&["new", "billing", "--host", "a", "--no-agent"]);
+    cli.ok(&["new", "trainer", "--host", "b", "--no-agent"]);
+    // c's daemon isn't running: the hub starts it, dialing it.
+    cli.ok(&[
+        "host",
+        "add",
+        "c",
+        "--local",
+        "--otterd-path",
+        otterd().to_str().unwrap(),
+        "--home",
+        c.path(),
+        "--no-check",
+    ]);
+    assert!(!Path::new(c.path()).join("run/workd.pid").exists());
+
+    let log = cli.config.path().join("hub.log");
+    let mut hub = Command::new(env!("CARGO_BIN_EXE_otter"))
+        .args(["hub", "serve", "--user", "U01DEV"])
+        .env("OTTER_CONFIG_DIR", cli.config.path())
+        .envs(cli.env.iter().map(|(k, v)| (k, v)))
+        .env("SLACK_BOT_TOKEN", "xoxb-1-HUBTESTTOKEN")
+        .env("SLACK_APP_TOKEN", "xapp-1-HUBTESTTOKEN")
+        .stdin(Stdio::null())
+        .stderr(std::fs::File::create(&log).unwrap())
+        .spawn()
+        .unwrap();
+    struct Stop(std::process::Child);
+    impl Drop for Stop {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+    let ws = slack
+        .sockets
+        .recv_timeout(Duration::from_secs(30))
+        .unwrap_or_else(|_| {
+            let _ = hub.kill();
+            panic!(
+                "the hub connects: {}",
+                std::fs::read_to_string(&log).unwrap_or_default()
+            )
+        });
+    let _hub = Stop(hub);
+    let mut ws = SlackSocket(ws);
+    ws.0.send(tokio_tungstenite::tungstenite::Message::text(
+        r#"{"type":"hello","num_connections":1}"#,
+    ))
+    .unwrap();
+
+    // Both took in before Slack: through the hub, on the hub's bot.
+    let status: serde_json::Value =
+        serde_json::from_str(&cli.ok(&["hub", "status", "--json"])).unwrap();
+    for h in status.as_array().unwrap() {
+        assert_eq!(h["hub"], true, "{status}");
+        assert_eq!(h["state"], "hub", "{status}");
+        assert_eq!(h["bot_id"], "B01OTTER", "{status}");
+    }
+
+    // Naming b's workspace: b's, and the change of host said.
+    ws.dm("e1", "1700000001.000100", "Speed up trainer", None);
+    wait_until("b hears it", || {
+        heard_on(&cli, "b").contains("Speed up trainer")
+    });
+    slack.wait_call("chat.postMessage", "the change of host said", |b| {
+        b["text"]
+            .as_str()
+            .unwrap_or_default()
+            .starts_with("→ **b**")
+    });
+    // Naming nothing: where the conversation is.
+    ws.dm("e2", "1700000002.000100", "And log how long it takes", None);
+    wait_until("b hears that too", || {
+        heard_on(&cli, "b").contains("And log how long")
+    });
+    // Beginning with a host's name: that host's, without the name.
+    ws.dm("e3", "1700000003.000100", "a: what is here?", None);
+    wait_until("a hears it", || {
+        heard_on(&cli, "a").contains("you: what is here?")
+    });
+    // In the thread of b's message, b's — though the conversation is a's now.
+    ws.dm(
+        "e4",
+        "1700000004.000100",
+        "faster still",
+        Some("1700000001.000100"),
+    );
+    wait_until("b hears the reply", || {
+        heard_on(&cli, "b").contains("faster still")
+    });
+    assert!(!heard_on(&cli, "a").contains("Speed up trainer"));
+    assert!(!heard_on(&cli, "a").contains("faster still"));
+
+    // Each host answered in Slack itself, as the one bot.
+    slack.wait_call("reactions.add", "a message marked seen", |b| {
+        b["timestamp"] == "1700000003.000100"
+    });
+
+    // `/otter status`: every host's, each under its name.
+    let said = ws.slash("s1", "status");
+    let text = said["blocks"][0]["text"].as_str().unwrap();
+    assert!(text.contains("**a**") && text.contains("**b**"), "{said}");
+
+    // `/otter new` on b; a reply in the task's thread is that task's.
+    let said = ws.slash("s2", "new b: Add XML export");
+    assert!(
+        said["text"].as_str().unwrap().contains("Add XML export"),
+        "{said}"
+    );
+    let head = slack.wait_call("chat.postMessage", "the task's thread", |b| {
+        b["text"] == "Add XML export"
+    });
+    let n = slack
+        .calls("chat.postMessage")
+        .iter()
+        .position(|b| *b == head)
+        .unwrap()
+        + 1;
+    let thread = format!("1800000000.{n:06}");
+    // The conversation is a's again; b's message began the thread, as b
+    // says (the hub never saw it posted).
+    ws.dm("e5", "1700000005.000100", "a: and the logs?", None);
+    wait_until("a hears it", || {
+        heard_on(&cli, "a").contains("and the logs?")
+    });
+    ws.dm(
+        "e6",
+        "1700000006.000100",
+        "Use the xml crate",
+        Some(&thread),
+    );
+    wait_until("the reply in b's task", || {
+        let tasks = cli.ok(&["task", "list", "--json"]);
+        tasks.contains("Use the xml crate")
+    });
+    let tasks: serde_json::Value =
+        serde_json::from_str(&cli.ok(&["task", "list", "--json"])).unwrap();
+    let task = tasks
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t.to_string().contains("Add XML export"))
+        .unwrap();
+    assert!(task.to_string().contains("\"b\""), "{task}");
+
+    // The tokens are in no host's environment — c's daemon was started by
+    // the hub — only the bot's, in the secrets Settings keep. (The hub's
+    // own shows them still, as it was started with them: what is looked for
+    // is there to be found.)
+    let environ = |pid: &str| std::fs::read(format!("/proc/{}/environ", pid.trim())).ok();
+    let has_token = |e: &[u8]| e.windows(12).any(|w| w == b"HUBTESTTOKEN");
+    if let Some(own) = environ(&_hub.0.id().to_string()) {
+        assert!(has_token(&own), "the hub's environment as it started");
+        for home in [&a, &b, &c] {
+            let pid =
+                std::fs::read_to_string(Path::new(home.path()).join("run/workd.pid")).unwrap();
+            let e = environ(&pid).expect("a host's environment");
+            assert!(!has_token(&e), "a host's environment has a token");
+        }
+    }
+
+    // Left: on its own again, it needs an app token of its own.
+    let out = cli.ok(&["hub", "leave", "b"]);
+    assert!(out.contains("no longer come from the hub"), "{out}");
+    let status: serde_json::Value =
+        serde_json::from_str(&cli.ok(&["hub", "status", "--json"])).unwrap();
+    let b = status
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|h| h["host"] == "b")
+        .unwrap();
+    assert_eq!(b["hub"], false, "{status}");
+    assert_eq!(b["state"], "off", "{status}");
+}

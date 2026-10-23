@@ -7,7 +7,7 @@ use std::io::Write;
 use serde_json::Value;
 use tokio::io::AsyncWriteExt;
 
-use crate::env::{EnvMap, which};
+use crate::EnvMap;
 
 /// Where Slack's Web API is. `OTTER_SLACK_API` (tests only) points it at a
 /// stand-in server.
@@ -65,9 +65,7 @@ pub async fn call(
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .kill_on_drop(true);
-    let mut child = crate::env::spawn_tokio(&mut cmd)
-        .await
-        .map_err(|e| unreachable(&e))?;
+    let mut child = cmd.spawn().map_err(|e| unreachable(&e))?;
     let config = format!(
         "header = \"Authorization: Bearer {token}\"\nheader = \"Content-Type: application/json; charset=utf-8\"\n"
     );
@@ -87,7 +85,47 @@ pub async fn call(
     }
     let stdout = String::from_utf8_lossy(&out.stdout);
     let (answer, status) = stdout.rsplit_once('\n').unwrap_or(("", &stdout));
-    read(status.trim(), answer)
+    let answer = read(status.trim(), answer)?;
+    if method == "chat.postMessage"
+        && let (Some(channel), Some(ts)) = (body["channel"].as_str(), answer["ts"].as_str())
+    {
+        let mut posted = POSTED.lock().unwrap();
+        posted.push_back((channel.to_owned(), ts.to_owned()));
+        while posted.len() > MAX_POSTED {
+            posted.pop_front();
+        }
+    }
+    Ok(answer)
+}
+
+/// The messages this process posted lately, by channel and time, newest
+/// last: where a reply in one of their threads belongs, when otterhub asks
+/// (`slack.owns`, D-206). Kept in memory: after a restart a reply under an
+/// older message is placed by otterhub's own record instead.
+static POSTED: std::sync::Mutex<std::collections::VecDeque<(String, String)>> =
+    std::sync::Mutex::new(std::collections::VecDeque::new());
+const MAX_POSTED: usize = 2000;
+
+/// Whether this process posted the message at `ts` in `channel` lately.
+pub fn posted_lately(channel: &str, ts: &str) -> bool {
+    POSTED
+        .lock()
+        .unwrap()
+        .iter()
+        .any(|(c, t)| c == channel && t == ts)
+}
+
+/// `program` on `env`'s `PATH`.
+fn which(program: &str, env: &EnvMap) -> Option<std::path::PathBuf> {
+    use std::os::unix::fs::PermissionsExt;
+    let path = env.get("PATH")?;
+    std::env::split_paths(path)
+        .map(|dir| dir.join(program))
+        .find(|p| {
+            p.metadata()
+                .map(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
+                .unwrap_or(false)
+        })
 }
 
 /// Slack's answer, by its HTTP status and body: `ok`, refused for good, or
@@ -173,9 +211,7 @@ pub async fn download(
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .kill_on_drop(true);
-    let mut child = crate::env::spawn_tokio(&mut cmd)
-        .await
-        .map_err(|e| unreachable(&e))?;
+    let mut child = cmd.spawn().map_err(|e| unreachable(&e))?;
     let config = format!("header = \"Authorization: Bearer {token}\"\n");
     let mut stdin = child.stdin.take().expect("piped");
     stdin

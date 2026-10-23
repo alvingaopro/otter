@@ -32,11 +32,16 @@ export function slackManifest(host: string): string {
   );
 }
 
-/** The other hosts connected as the same Slack app as this one (D-203). */
+/** The other hosts connected as the same Slack app as this one (D-203):
+ * not those that, like this one, take its events from otterhub, which
+ * holds the app's one connection for them (D-206). */
 export function sharing(
-  me: { team?: string; bot_id?: string } | undefined,
-  others: { host: string; slack?: { team?: string; bot_id?: string; state: string } }[],
+  me: { team?: string; bot_id?: string; hub?: boolean } | undefined,
+  others: { host: string; slack?: { team?: string; bot_id?: string; state: string; hub?: boolean } }[],
 ): string[] {
   if (!me?.bot_id) return [];
-  return others.filter((o) => o.slack?.bot_id === me.bot_id && o.slack?.team === me.team).map((o) => o.host);
+  return others
+    .filter((o) => o.slack?.bot_id === me.bot_id && o.slack?.team === me.team)
+    .filter((o) => !(me.hub && o.slack?.hub))
+    .map((o) => o.host);
 }
