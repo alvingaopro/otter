@@ -254,7 +254,9 @@ impl Daemon {
         let otterd = crate::env::self_exe()?;
         hosts_file(&dir, &plan.hub, &otterd, &self.paths.home)?;
         let env = self.environments.base().clone();
-        if self.hub.run.lock().unwrap().boot.is_none() {
+        // Once, or again after it couldn't be.
+        let boot = self.hub.run.lock().unwrap().boot.clone();
+        if boot.is_none_or(|b| b.starts_with("Not set")) {
             let boot = crate::boot::ensure(&otterd, &self.paths.home, &env).await;
             self.hub.run.lock().unwrap().boot = Some(boot);
         }
@@ -337,11 +339,12 @@ async fn stop_left_over(pidfile: &Path) {
             .args(["-o", "command=", "-p", &pid.to_string()])
             .output()
             .await;
-        out.is_ok_and(|o| {
-            let c = String::from_utf8_lossy(&o.stdout);
-            c.contains("hub") && c.contains("serve")
-        })
+        out.is_ok_and(|o| String::from_utf8_lossy(&o.stdout).contains(" hub serve"))
     };
+    if pid as u32 == std::process::id() {
+        let _ = std::fs::remove_file(pidfile);
+        return;
+    }
     for signal in [libc::SIGTERM, libc::SIGKILL] {
         if !is_hub().await {
             break;

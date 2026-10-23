@@ -75,12 +75,13 @@ export function HubSettings({ hosts }: { hosts: string[] }) {
   const tokensThere = (name: string) => there?.secrets.some((k) => k.name === name && k.set) ?? false;
   const membersThere = there?.slack?.users ?? [];
 
-  // While it starts, or after it failed (otterd starts it again), look again.
+  // Looked at again while shown: often while it starts, or after it failed
+  // (otterd starts it again); now and then while it runs, for what it says.
   useEffect(() => {
-    if (!runsOn || busy || hub?.state === "running") return;
-    const t = setTimeout(() => void load(runsOn), 2000);
-    return () => clearTimeout(t);
-  }, [runsOn, busy, hub?.state, hub?.detail]);
+    if (!runsOn || busy) return;
+    const t = setInterval(() => void load(runsOn), hub?.state === "running" ? 30_000 : 2000);
+    return () => clearInterval(t);
+  }, [runsOn, busy, hub?.state]);
 
   async function setUp() {
     if (!target) return;
@@ -100,7 +101,9 @@ export function HubSettings({ hosts }: { hosts: string[] }) {
       const deadline = Date.now() + SETUP_WAIT_MS;
       for (;;) {
         const s = await load(target);
-        const h = s?.hub;
+        // Not reached: said on its line, not waited for.
+        if (!s) break;
+        const h = s.hub;
         if ((h?.state === "running" && h.slack?.startsWith("connected")) || h?.state === "failed" || Date.now() > deadline) break;
         await sleep(1000);
       }

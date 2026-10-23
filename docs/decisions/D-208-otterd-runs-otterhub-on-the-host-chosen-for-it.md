@@ -135,4 +135,10 @@ Reviewed by Fable before merging. The review found:
 - the boot unit set up on every start;
 - an empty `$USER` in the linger hint.
 
+Its second look found that the page looked again only once, so a hub
+starting slowly, or failing the same way twice, stayed as it was. The page
+now looks again every 2 s until the hub runs, then every 30 s
+(`looks again while it starts`, watched failing with the old one-time
+look). A pid used again is a hub only if its command says `hub serve`, and
+never otterd itself. A boot start that couldn't be set up is tried again.
 All are fixed above.

@@ -149,6 +149,34 @@ describe("Settings › All hosts › Slack (D-208)", () => {
     expect(line("gpu")).toContain("Connection refused");
   });
 
+  it("looks again while it starts, however long, until it runs", async () => {
+    vi.useFakeTimers();
+    try {
+      const starting = host(true, ["U1A"]);
+      starting.hub = { enabled: true, name: "code-server", users: ["U1A"], hosts: ["code-server"], state: "starting" };
+      hosts.settings = { "code-server": starting };
+      await render(["code-server"]);
+      expect(el.textContent).toContain("Starting…");
+      // Still starting after the first look again: looked at again.
+      await act(async () => void vi.advanceTimersByTime(2100));
+      await flush();
+      expect(el.textContent).toContain("Starting…");
+      starting.hub = { ...starting.hub, state: "running", slack: "connected" };
+      await act(async () => void vi.advanceTimersByTime(2100));
+      await flush();
+      expect(el.textContent).toContain("Running");
+      expect(el.textContent).toContain("connected");
+      const asked = calls.filter((c) => c.cmd === "settings_get").length;
+      expect(asked).toBeGreaterThanOrEqual(3);
+      // Running, now and then only.
+      await act(async () => void vi.advanceTimersByTime(2100));
+      await flush();
+      expect(calls.filter((c) => c.cmd === "settings_get").length).toBe(asked);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("says a hub that runs, when one does, and doesn't offer to set up another", async () => {
     const running = host(true, ["U1A"]);
     running.hub = {
