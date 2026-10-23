@@ -347,8 +347,19 @@ pub fn open_question(task: &Task) -> Option<DecisionId> {
 }
 
 /// `text` with each task named by its title rather than its id
-/// (`[ft_…]` → “title”).
+/// (`[ft_…]` → “title”). An id beside its title, before or after it, is
+/// left out instead: the task is named once (D-209).
 pub fn titled(text: &str, titles: &HashMap<String, String>) -> String {
+    let set_off = |title: &str| {
+        [
+            format!("“{title}”"),
+            format!("\"{title}\""),
+            format!("**{title}**"),
+            format!("*{title}*"),
+            format!("「{title}」"),
+            title.to_owned(),
+        ]
+    };
     let mut out = String::with_capacity(text.len());
     let mut rest = text;
     while let Some(open) = rest.find("[ft_") {
@@ -359,8 +370,18 @@ pub fn titled(text: &str, titles: &HashMap<String, String>) -> String {
             .unwrap_or(after.len());
         match (titles.get(&after[..end]), after[end..].starts_with(']')) {
             (Some(title), true) => {
-                out.push_str(&format!("“{title}”"));
                 rest = &after[end + 1..];
+                let named = set_off(title);
+                if named.iter().any(|n| out.trim_end().ends_with(n.as_str())) {
+                    out.truncate(out.trim_end().len());
+                } else if named
+                    .iter()
+                    .any(|n| rest.trim_start().starts_with(n.as_str()))
+                {
+                    rest = rest.trim_start();
+                } else {
+                    out.push_str(&format!("“{title}”"));
+                }
             }
             _ => {
                 out.push('[');
@@ -748,5 +769,41 @@ mod tests {
         );
         assert_eq!(titled("[ft_abc", &titles), "[ft_abc");
         assert_eq!(titled("no ids", &titles), "no ids");
+    }
+
+    /// A task already named by its title beside its id is named once
+    /// (D-209), whichever comes first and however the title is set off.
+    #[test]
+    fn a_title_beside_its_id_is_not_said_twice() {
+        let titles = HashMap::from([
+            ("ft_abc".to_owned(), "Export CSV".to_owned()),
+            (
+                "ft_arj3135qj8".to_owned(),
+                "在 scratch 工作区里创建文件 a".to_owned(),
+            ),
+        ]);
+        assert_eq!(
+            titled(
+                "“在 scratch 工作区里创建文件 a” [ft_arj3135qj8] 已经做完了。",
+                &titles
+            ),
+            "“在 scratch 工作区里创建文件 a” 已经做完了。"
+        );
+        assert_eq!(
+            titled("Follow-up: [ft_abc] Export CSV is now done.", &titles),
+            "Follow-up: Export CSV is now done."
+        );
+        assert_eq!(
+            titled(
+                "**Export CSV** [ft_abc]，and \"Export CSV\" [ft_abc].",
+                &titles
+            ),
+            "**Export CSV**，and \"Export CSV\"."
+        );
+        // Not beside it: named by its title, as before.
+        assert_eq!(
+            titled("Export CSV is one thing; [ft_abc] is another.", &titles),
+            "Export CSV is one thing; “Export CSV” is another."
+        );
     }
 }

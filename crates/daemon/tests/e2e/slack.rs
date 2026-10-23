@@ -1684,8 +1684,8 @@ fn buttons(body: &Value) -> Vec<String> {
 /// message of its own at the top of that conversation (D-207): its thread
 /// is the task's — what it says goes there, a reply there goes to it — and
 /// it says how the task stands, with Stop, then Delete once it is over.
-/// Otter's word that it is done is said in the thread, and shown at the top
-/// too. Delete pressed there deletes it, and the message says so.
+/// Otter's word that it is done is said in the thread only (D-209). Delete
+/// pressed there deletes it, and the message says so.
 #[tokio::test]
 async fn a_task_made_from_slack_has_a_thread_of_its_own() {
     use otter_core::task::TaskStatus;
@@ -1786,7 +1786,7 @@ async fn a_task_made_from_slack_has_a_thread_of_its_own() {
     assert_eq!(said(&chat, "Keep it small"), 0);
 
     // Done: its message says so, with Delete; Otter's word on it is in the
-    // thread, and at the top too.
+    // thread, and only there (D-209).
     wait_task(host, &id, "done", |f| f.status == TaskStatus::Done).await;
     let shown = eventually("its message shown done", || async {
         slack
@@ -1803,15 +1803,27 @@ async fn a_task_made_from_slack_has_a_thread_of_its_own() {
             .contains("✅ Done."),
         "{shown}"
     );
+    let followed = |b: &Value| {
+        b["blocks"][0]["text"]
+            .as_str()
+            .is_some_and(|t| t.starts_with("Follow-up: "))
+    };
     let follow = eventually("Otter's word that it is done", || async {
         slack
             .calls("chat.postMessage")
             .into_iter()
             .map(|c| c.2)
-            .find(|b| b["thread_ts"] == on.as_str() && b["reply_broadcast"] == true)
+            .find(|b| b["thread_ts"] == on.as_str() && followed(b))
     })
     .await;
-    assert!(follow["blocks"][0]["text"].as_str().is_some(), "{follow}");
+    assert!(follow.get("reply_broadcast").is_none(), "{follow}");
+    assert!(
+        !slack
+            .calls("chat.postMessage")
+            .into_iter()
+            .any(|c| c.2.get("thread_ts").is_none() && followed(&c.2)),
+        "a task's follow-up is said at the top"
+    );
     // One message of its own, however often Slack looks.
     let cards = |slack: &FakeSlack| {
         slack

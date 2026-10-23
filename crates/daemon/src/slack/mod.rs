@@ -1729,9 +1729,9 @@ impl Daemon {
                 .then(|| destination(messages, i, &Heard::default()))
                 .flatten();
             // Otter's word on a task with a thread of its own is said there
-            // (D-207): that it is done, also at the top, where its end is
-            // seen; that it waits or stopped, not at all — the need's own
-            // message says so, with its buttons.
+            // (D-207), and only there (D-209): that it is done; that it
+            // waits or stopped, not at all — the need's own message says so,
+            // with its buttons.
             let thread = followed(m).and_then(|(task, key)| {
                 let post = state
                     .posts
@@ -1749,7 +1749,7 @@ impl Daemon {
                         channel,
                         thread: Some(ts),
                     };
-                    match post_in(env, &c.bot, &there, &m.text, titles, true).await {
+                    match post(env, &c.bot, &there, &m.text, titles).await {
                         Ok(()) => {}
                         Err(e @ CallError::Unreachable(_)) => return Err(e),
                         Err(e) => {
@@ -2190,21 +2190,8 @@ async fn post(
     text: &str,
     titles: &HashMap<String, String>,
 ) -> Result<(), CallError> {
-    post_in(env, bot, to, text, titles, false).await
-}
-
-/// `post`, and — `broadcast`, in a thread — the first piece shown at the top
-/// of the conversation too (Slack's "also send to the conversation").
-async fn post_in(
-    env: &EnvMap,
-    bot: &str,
-    to: &Origin,
-    text: &str,
-    titles: &HashMap<String, String>,
-    broadcast: bool,
-) -> Result<(), CallError> {
     let text = needs::titled(&otter_core::redact::redact(text), titles);
-    for (i, piece) in socket::pieces(&text, MAX_PIECE).into_iter().enumerate() {
+    for piece in socket::pieces(&text, MAX_PIECE) {
         let mut body = json!({
             "channel": to.channel,
             // What a notification shows.
@@ -2215,15 +2202,6 @@ async fn post_in(
         });
         if let Some(t) = &to.thread {
             body["thread_ts"] = json!(t);
-            if broadcast && i == 0 {
-                body["reply_broadcast"] = json!(true);
-                // Shown at the top too: labelled as what is posted there.
-                let top = Origin {
-                    channel: to.channel.clone(),
-                    thread: None,
-                };
-                body["blocks"] = shown(&piece, &top);
-            }
         }
         api::call(env, bot, "chat.postMessage", &body).await?;
     }
