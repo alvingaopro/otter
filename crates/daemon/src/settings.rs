@@ -141,6 +141,10 @@ struct Stored {
     /// The Slack members whose direct messages are the developer's (D-200).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     slack_users: Vec<String>,
+    /// Slack is told when a task needs the developer (D-201); on unless
+    /// turned off.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    slack_notify: Option<bool>,
 }
 
 #[derive(Debug, Default)]
@@ -250,6 +254,11 @@ impl HostSettings {
         &self.stored.slack_users
     }
 
+    /// Whether Slack is told when a task needs the developer (D-201).
+    pub fn slack_notify(&self) -> bool {
+        self.stored.slack_notify.unwrap_or(true)
+    }
+
     /// The coding agent's model (`None`: the provider's default).
     pub fn coding_model(&self) -> Option<String> {
         self.stored.coding_model.clone()
@@ -351,10 +360,13 @@ impl HostSettings {
                 }
             }
         }
-        if let Some(slack) = u.slack
-            && let Some(users) = slack.users
-        {
-            stored.slack_users = crate::slack::members(&users)?;
+        if let Some(slack) = u.slack {
+            if let Some(users) = slack.users {
+                stored.slack_users = crate::slack::members(&users)?;
+            }
+            if let Some(on) = slack.notify {
+                stored.slack_notify = Some(on);
+            }
         }
         let mut secrets = self.secrets.clone();
         for (name, value) in u.secrets {
@@ -463,7 +475,8 @@ impl Daemon {
 
     pub(crate) fn settings_set(&self, mut u: SettingsUpdate) -> RpcResult<Settings> {
         // Slack connects again with what is set now (D-200).
-        let slack = u.slack.is_some()
+        // (Telling about needs is read as it is used: no new connection.)
+        let slack = u.slack.as_ref().is_some_and(|s| s.users.is_some())
             || u.secrets
                 .keys()
                 .any(|k| k == SLACK_BOT_TOKEN || k == SLACK_APP_TOKEN);

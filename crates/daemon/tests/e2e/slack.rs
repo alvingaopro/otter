@@ -32,9 +32,10 @@ impl FakeSlack {
         let link = format!("ws://{}/link", ws.local_addr().unwrap());
         let calls: Arc<Mutex<Vec<Call>>> = Default::default();
         let kept = calls.clone();
+        let posted: Arc<std::sync::atomic::AtomicU64> = Default::default();
         tokio::spawn(async move {
             while let Ok((s, _)) = http.accept().await {
-                tokio::spawn(answer(s, link.clone(), kept.clone()));
+                tokio::spawn(answer(s, link.clone(), kept.clone(), posted.clone()));
             }
         });
         let (tx, sockets) = tokio::sync::mpsc::unbounded_channel();
@@ -76,7 +77,12 @@ impl FakeSlack {
 }
 
 /// One Web API call: kept, and answered as Slack would.
-async fn answer(mut s: TcpStream, link: String, calls: Arc<Mutex<Vec<Call>>>) {
+async fn answer(
+    mut s: TcpStream,
+    link: String,
+    calls: Arc<Mutex<Vec<Call>>>,
+    posted: Arc<std::sync::atomic::AtomicU64>,
+) {
     let mut buf = Vec::new();
     let mut chunk = [0u8; 4096];
     let head_end = loop {
@@ -121,8 +127,13 @@ async fn answer(mut s: TcpStream, link: String, calls: Arc<Mutex<Vec<Call>>>) {
         "auth.test" if auth.contains("xoxb-bad") => json!({"ok": false, "error": "invalid_auth"}),
         "auth.test" => json!({"ok": true, "team": "Test Team", "user": "otter", "user_id": "UBOT"}),
         "apps.connections.open" => json!({"ok": true, "url": link}),
-        "chat.postMessage" => json!({"ok": true, "ts": "1800000000.000100"}),
-        "reactions.add" => json!({"ok": true}),
+        "chat.postMessage" => {
+            // Each message its own time, as Slack's are.
+            let n = posted.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+            json!({"ok": true, "ts": format!("1800000000.{n:06}")})
+        }
+        "reactions.add" | "chat.update" => json!({"ok": true}),
+        "conversations.open" => json!({"ok": true, "channel": {"id": "D1"}}),
         _ => json!({"ok": false, "error": "unknown_method"}),
     };
     calls.lock().unwrap().push((method, auth, body));
@@ -185,6 +196,7 @@ fn set_up(bot: &str) -> SettingsUpdate {
         .into(),
         slack: Some(SlackUpdate {
             users: Some(vec!["U01DEV".into()]),
+            ..Default::default()
         }),
         ..Default::default()
     }
@@ -422,4 +434,257 @@ async fn slack_says_what_it_needs_and_why_it_failed() {
         (s.state == "connected").then_some(())
     })
     .await;
+}
+
+/// A button pressed on one of Otter's messages, as Socket Mode sends it,
+/// and otterd's ack.
+async fn press(
+    ws: &mut WebSocketStream<TcpStream>,
+    envelope: &str,
+    user: &str,
+    action: &str,
+    value: &str,
+    at: &str,
+    on: &str,
+) {
+    let payload = json!({
+        "type": "block_actions",
+        "user": {"id": user},
+        "container": {"type": "message", "message_ts": on, "channel_id": "D1"},
+        "actions": [{"action_id": action, "value": value, "action_ts": at}],
+    });
+    let frame = json!({"type": "interactive", "envelope_id": envelope, "payload": payload});
+    acked(ws, frame.to_string(), envelope).await;
+}
+
+/// The messages that told a need: top-level, with what they said.
+fn told(slack: &FakeSlack) -> Vec<Value> {
+    slack
+        .calls("chat.postMessage")
+        .into_iter()
+        .map(|c| c.2)
+        .filter(|b| b.get("thread_ts").is_none())
+        .collect()
+}
+
+/// A task that needs the developer is told in Slack, once, with the app's
+/// buttons (D-201). What waited before Slack connected isn't news. A reply
+/// in the need's thread is said in that task's conversation, not Otter's on
+/// the host, and Otter's answer comes back into the thread. Approve pressed
+/// by someone not listed does nothing; by the developer it approves, once,
+/// however often it is pressed, and the message then says so without its
+/// buttons. With telling turned off a new need isn't told — nor after it is
+/// turned on again.
+#[tokio::test]
+async fn a_task_that_needs_you_is_told_in_slack_and_answered_there() {
+    use otter_core::task::{Decider, DecisionKind, DecisionStatus, Task};
+    let mut slack = FakeSlack::start().await;
+    let api = slack.api.clone();
+    let fake = fake_agent_host_with("ok", "scripted", move |_| {
+        vec![
+            ("OTTER_BRAIN_V2", "1".into()),
+            ("OTTER_SLACK_API", api),
+            // Planning asks the developer to approve the plan.
+            ("OTTER_PLAN_TURN", "1".into()),
+        ]
+    })
+    .await;
+    let host = &fake.host;
+    let asks = |f: &Task| {
+        f.pending_decisions()
+            .any(|d| d.kind == DecisionKind::PlanApproval)
+    };
+
+    // Waiting before Slack was set up: not news.
+    let before = started_task_named(host, "Add CSV export").await;
+    wait_task(host, &before, "asking about its plan", asks).await;
+    host.conn()
+        .await
+        .settings_set(set_up("xoxb-1-SLACKTESTTOKEN"))
+        .await
+        .unwrap();
+    let mut ws = slack.connected().await;
+    let state = host.home().join("state/slack.json");
+    eventually("the needs looked at", || async {
+        std::fs::read_to_string(&state)
+            .ok()
+            .filter(|s| s.contains("\"needs\""))
+    })
+    .await;
+    tokio::time::sleep(Duration::from_millis(700)).await;
+    assert!(told(&slack).is_empty(), "{:#?}", told(&slack));
+
+    // A new need: told once, in the developer's direct messages.
+    let id = started_task_named(host, "Add JSON export").await;
+    let f = wait_task(host, &id, "asking about its plan", asks).await;
+    let decision = f.pending_decisions().next().unwrap().id.clone();
+    let need = eventually("the need told in Slack", || async {
+        let t = told(&slack);
+        (t.len() == 1).then(|| t[0].clone())
+    })
+    .await;
+    assert_eq!(slack.calls("conversations.open")[0].2["users"], "U01DEV");
+    assert_eq!(need["channel"], "D1");
+    let text = need["blocks"][0]["text"].as_str().unwrap();
+    assert!(
+        text.starts_with(&format!("**{}** asks you to decide:", f.title)),
+        "{text}"
+    );
+    let buttons = need["blocks"][1]["elements"].as_array().unwrap();
+    let ids: Vec<&str> = buttons
+        .iter()
+        .map(|b| b["action_id"].as_str().unwrap())
+        .collect();
+    assert_eq!(ids, ["approve", "deny"]);
+    let value = buttons[0]["value"].as_str().unwrap().to_owned();
+    let on = "1800000000.000001";
+
+    // A reply in its thread: said in the task, answered in the thread.
+    let reply = dm(
+        "e1",
+        "U01DEV",
+        "1700000005.000100",
+        "Keep it small",
+        json!({"thread_ts": on}),
+    );
+    acked(&mut ws, reply, "e1").await;
+    let f = wait_task(host, &id, "the reply in the task", |f| {
+        f.messages.iter().any(|m| {
+            m.role == MessageRole::Controller
+                && m.correlation_id.is_some()
+                && f.messages.iter().any(|u| {
+                    u.text == "Keep it small" && Some(u.id.as_str()) == m.correlation_id.as_deref()
+                })
+        })
+    })
+    .await;
+    let mine = f
+        .messages
+        .iter()
+        .find(|m| m.text == "Keep it small")
+        .unwrap();
+    assert_eq!(
+        mine.correlation_id.as_deref(),
+        Some("slack:D1:1700000005.000100:1800000000.000001")
+    );
+    let chat = host.conn().await.otter_get().await.unwrap();
+    assert_eq!(said(&chat, "Keep it small"), 0);
+    let answer = f
+        .messages
+        .iter()
+        .find(|m| m.correlation_id.as_deref() == Some(mine.id.as_str()))
+        .unwrap()
+        .text
+        .clone();
+    eventually("Otter's answer in the thread", || async {
+        slack
+            .calls("chat.postMessage")
+            .into_iter()
+            .find(|c| c.2["thread_ts"] == on && c.2["blocks"][0]["text"] == answer.as_str())
+    })
+    .await;
+
+    // Someone else's press: nothing.
+    press(
+        &mut ws,
+        "p1",
+        "U02OTHER",
+        "approve",
+        &value,
+        "1700000006.1",
+        on,
+    )
+    .await;
+    tokio::time::sleep(Duration::from_millis(800)).await;
+    let f = host.conn().await.task_get(&id).await.unwrap();
+    assert!(f.pending_decisions().any(|d| d.id == decision));
+
+    // The developer's: approved, and the message says so, without buttons.
+    press(
+        &mut ws,
+        "p2",
+        "U01DEV",
+        "approve",
+        &value,
+        "1700000007.1",
+        on,
+    )
+    .await;
+    let f = wait_task(host, &id, "approved", |f| {
+        f.decisions
+            .iter()
+            .any(|d| d.id == decision && d.status == DecisionStatus::Approved)
+    })
+    .await;
+    let d = f.decisions.iter().find(|d| d.id == decision).unwrap();
+    assert_eq!(d.decided_by, Some(Decider::User));
+    let update = eventually("the need's message updated", || async {
+        slack
+            .calls("chat.update")
+            .into_iter()
+            .find(|c| c.2["ts"] == on)
+    })
+    .await;
+    let blocks = update.2["blocks"].as_array().unwrap();
+    assert!(blocks.iter().all(|b| b["type"] != "actions"), "{blocks:#?}");
+    assert_eq!(blocks[1]["elements"][0]["text"], "✅ Approved by you.");
+
+    // Pressed again (Slack sends a press once per tap): one command.
+    press(
+        &mut ws,
+        "p3",
+        "U01DEV",
+        "approve",
+        &value,
+        "1700000007.1",
+        on,
+    )
+    .await;
+    tokio::time::sleep(Duration::from_millis(800)).await;
+    let refused = slack.calls("chat.postMessage").into_iter().any(|c| {
+        c.2["blocks"][0]["text"]
+            .as_str()
+            .is_some_and(|t| t.contains("didn't go through"))
+    });
+    assert!(!refused);
+
+    // Telling turned off: a new need isn't told, nor once it's back on.
+    let off = |on: bool| SettingsUpdate {
+        slack: Some(SlackUpdate {
+            notify: Some(on),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let view = host.conn().await.settings_set(off(false)).await.unwrap();
+    assert_eq!(view.slack.unwrap().notify, Some(false));
+    let quiet = started_task_named(host, "Add XML export").await;
+    wait_task(host, &quiet, "asking about its plan", asks).await;
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    host.conn().await.settings_set(off(true)).await.unwrap();
+    // (No new connection for that: the same socket goes on.)
+    acked(
+        &mut ws,
+        dm(
+            "e9",
+            "U01DEV",
+            "1700000009.000100",
+            "still here?",
+            json!({}),
+        ),
+        "e9",
+    )
+    .await;
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    // (The approved task goes on, and may need the developer again: that
+    // is told. The quiet one never is, nor the one from before.)
+    let kept: Value = serde_json::from_str(&std::fs::read_to_string(&state).unwrap()).unwrap();
+    let posted: Vec<&str> = kept["posts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| p["task"].as_str().unwrap())
+        .collect();
+    assert!(posted.iter().all(|t| *t == id), "{posted:?}");
+    assert!(kept["needs"][&quiet].is_string(), "{kept}");
 }

@@ -68,7 +68,7 @@ scopes `chat:write`, `im:write`, `im:history`, `groups:history`,
   didn't list. `xapp-` joins the redactor's token shapes (D-075).
 
 **Not done:** a task's conversation as a thread, a notification when a task
-needs the developer, buttons for decisions, `/otter`, pictures (the words
+needs the developer, buttons for decisions (all three since D-201), `/otter`, pictures (the words
 sent with one are taken, the picture isn't), the answer streamed as it is
 written, several hosts from one app, other IMs.
 

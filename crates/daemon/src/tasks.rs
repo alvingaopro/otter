@@ -184,6 +184,11 @@ impl TaskStore {
         self.docs.get(&TaskId::from(id)).map(|d| &d.task)
     }
 
+    /// Every task, in no order, without copying them.
+    pub fn iter(&self) -> impl Iterator<Item = &Task> {
+        self.docs.values().map(|d| &d.task)
+    }
+
     /// Every open watch (D-183) and its task, without copying the tasks.
     pub fn open_watches(&self) -> Vec<(TaskId, otter_core::watch::Watch)> {
         self.docs

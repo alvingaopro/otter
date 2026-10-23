@@ -73,6 +73,8 @@ export interface SlackView {
   detail?: string;
   team?: string;
   bot?: string;
+  /** Slack is told when a task needs you (D-201); absent from an older otterd. */
+  notify?: boolean;
 }
 
 /** How the coding agent can run on a host (D-057): the SDK first, the default (D-124). */
@@ -190,6 +192,8 @@ export function SettingsDialog({
   const [levels, setLevels] = useState<Record<string, ToolLevel>>({});
   // Whose Slack messages are yours (D-200), as typed.
   const [slackUsers, setSlackUsers] = useState("");
+  // Slack is told when a task needs you (D-201).
+  const [slackNotify, setSlackNotify] = useState(true);
 
   function go(t: SettingsTab) {
     setTab(t);
@@ -209,6 +213,7 @@ export function SettingsDialog({
     setOtterTools(s.otter_tools ?? false);
     setDeleteMerged(s.delete_merged_workspaces ?? false);
     setSlackUsers((s.slack?.users ?? []).join(", "));
+    setSlackNotify(s.slack?.notify ?? true);
     setKeys({});
     setReplacing(null);
   }
@@ -287,7 +292,7 @@ export function SettingsDialog({
     otter_tools?: boolean;
     delete_merged_workspaces?: boolean;
     tool_levels?: Record<string, ToolLevel | null>;
-    slack?: { users?: string[] };
+    slack?: { users?: string[]; notify?: boolean };
   }) {
     const at = host;
     const sent = Object.keys(update.secrets ?? {});
@@ -321,6 +326,7 @@ export function SettingsDialog({
   const toolsShown = settings?.otter_tools !== undefined && !settings.otter_tools_from_env;
   const mergedShown = settings?.delete_merged_workspaces !== undefined;
   const slackChanged = !!settings?.slack && memberIds(slackUsers).join(",") !== settings.slack.users.join(",");
+  const notifyChanged = settings?.slack?.notify !== undefined && slackNotify !== settings.slack.notify;
   const typed = Object.entries(keys).filter(([, v]) => v.trim());
   const dirty =
     !!settings &&
@@ -330,7 +336,8 @@ export function SettingsDialog({
       (!!codingSaved && (backend !== codingSaved || codingModel !== (settings.coding?.model ?? ""))) ||
       (toolsShown && otterTools !== settings.otter_tools) ||
       (mergedShown && deleteMerged !== settings.delete_merged_workspaces) ||
-      slackChanged);
+      slackChanged ||
+      notifyChanged);
   useEffect(() => {
     if (!dirty && !gitUnsaved) setLeaving(false);
   }, [dirty, gitUnsaved]);
@@ -356,7 +363,14 @@ export function SettingsDialog({
       ...(mergedShown && deleteMerged !== settings.delete_merged_workspaces
         ? { delete_merged_workspaces: deleteMerged }
         : {}),
-      ...(slackChanged ? { slack: { users: memberIds(slackUsers) } } : {}),
+      ...(slackChanged || notifyChanged
+        ? {
+            slack: {
+              ...(slackChanged ? { users: memberIds(slackUsers) } : {}),
+              ...(notifyChanged ? { notify: slackNotify } : {}),
+            },
+          }
+        : {}),
     });
   }
 
@@ -803,6 +817,21 @@ export function SettingsDialog({
                         onChange={(e) => setSlackUsers(e.target.value)}
                       />
                     </Row>
+                    {slack.notify !== undefined && (
+                      <Row
+                        label="Tell me when a task needs me"
+                        hint="A direct message with the decision's buttons. Reply in its thread to talk to that task."
+                      >
+                        <input
+                          type="checkbox"
+                          role="switch"
+                          className="switch"
+                          aria-label="Tell me in Slack when a task needs me"
+                          checked={slackNotify}
+                          onChange={(e) => setSlackNotify(e.target.checked)}
+                        />
+                      </Row>
+                    )}
                   </Group>
                   <p className="muted small">
                     Your messages go to Otter's conversation on {host}, the one <span className="mono">otter chat</span> has. Set Slack up on one host only: Slack shares
