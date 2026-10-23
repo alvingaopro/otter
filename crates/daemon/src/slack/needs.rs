@@ -347,8 +347,19 @@ pub fn open_question(task: &Task) -> Option<DecisionId> {
 }
 
 /// `text` with each task named by its title rather than its id
-/// (`[ft_…]` → “title”).
+/// (`[ft_…]` → “title”). An id beside its title, before or after it, is
+/// left out instead: the task is named once (D-209).
 pub fn titled(text: &str, titles: &HashMap<String, String>) -> String {
+    let set_off = |title: &str| {
+        [
+            format!("“{title}”"),
+            format!("\"{title}\""),
+            format!("**{title}**"),
+            format!("*{title}*"),
+            format!("「{title}」"),
+            title.to_owned(),
+        ]
+    };
     let mut out = String::with_capacity(text.len());
     let mut rest = text;
     while let Some(open) = rest.find("[ft_") {
@@ -359,8 +370,30 @@ pub fn titled(text: &str, titles: &HashMap<String, String>) -> String {
             .unwrap_or(after.len());
         match (titles.get(&after[..end]), after[end..].starts_with(']')) {
             (Some(title), true) => {
-                out.push_str(&format!("“{title}”"));
                 rest = &after[end + 1..];
+                // Only spaces apart: a line break stays.
+                let before = out.trim_end_matches([' ', '\t']);
+                let next = rest.trim_start_matches([' ', '\t']);
+                // A bare title is a word of its own: "schema" doesn't end
+                // with the title "a".
+                let word = |c: Option<char>| c.is_none_or(|c| !c.is_alphanumeric());
+                let ends = |n: &String| {
+                    before.ends_with(n.as_str())
+                        && (n != title
+                            || word(before[..before.len() - n.len()].chars().next_back()))
+                };
+                let starts = |n: &String| {
+                    next.starts_with(n.as_str())
+                        && (n != title || word(next[n.len()..].chars().next()))
+                };
+                let named = set_off(title);
+                if named.iter().any(ends) {
+                    out.truncate(before.len());
+                } else if named.iter().any(starts) {
+                    rest = next;
+                } else {
+                    out.push_str(&format!("“{title}”"));
+                }
             }
             _ => {
                 out.push('[');
@@ -748,5 +781,50 @@ mod tests {
         );
         assert_eq!(titled("[ft_abc", &titles), "[ft_abc");
         assert_eq!(titled("no ids", &titles), "no ids");
+    }
+
+    /// A task already named by its title beside its id is named once
+    /// (D-209), whichever comes first and however the title is set off.
+    #[test]
+    fn a_title_beside_its_id_is_not_said_twice() {
+        let titles = HashMap::from([
+            ("ft_abc".to_owned(), "Export CSV".to_owned()),
+            (
+                "ft_arj3135qj8".to_owned(),
+                "在 scratch 工作区里创建文件 a".to_owned(),
+            ),
+        ]);
+        assert_eq!(
+            titled(
+                "“在 scratch 工作区里创建文件 a” [ft_arj3135qj8] 已经做完了。",
+                &titles
+            ),
+            "“在 scratch 工作区里创建文件 a” 已经做完了。"
+        );
+        assert_eq!(
+            titled("Follow-up: [ft_abc] Export CSV is now done.", &titles),
+            "Follow-up: Export CSV is now done."
+        );
+        assert_eq!(
+            titled(
+                "**Export CSV** [ft_abc]，and \"Export CSV\" [ft_abc].",
+                &titles
+            ),
+            "**Export CSV**，and \"Export CSV\"."
+        );
+        // Not beside it: named by its title, as before.
+        assert_eq!(
+            titled("Export CSV is one thing; [ft_abc] is another.", &titles),
+            "Export CSV is one thing; “Export CSV” is another."
+        );
+        // A bare title only as a word of its own; a line break stays.
+        let short = HashMap::from([("ft_a".to_owned(), "a".to_owned())]);
+        assert_eq!(titled("Rename schema [ft_a]", &short), "Rename schema “a”");
+        assert_eq!(titled("[ft_a] and more", &short), "“a” and more");
+        assert_eq!(titled("Task a [ft_a] is done", &short), "Task a is done");
+        assert_eq!(
+            titled("**Export CSV**\n[ft_abc]\nmore", &titles),
+            "**Export CSV**\n“Export CSV”\nmore"
+        );
     }
 }

@@ -862,7 +862,7 @@ pub fn prompt(turn: &Turn<'_>) -> String {
     }
     if let (Some((_, what)), true) = (&turn.event, turn.messages.is_empty()) {
         return format!(
-            "{}\n\nNo message from the developer started this turn: a task you follow changed — {what}. Say in a sentence or two what happened and what it needs from them, if anything. Look with your tools if that helps, and do what it needs next with the tools you have (a tool that needs the developer's word says so): say what you did.",
+            "{}\n\nNo message from the developer started this turn: a task you follow changed — {what}. Say in a sentence or two what happened and what it needs from them, if anything. Speak of that task only: each other task's change has a follow-up of its own. Look with your tools if that helps, and do what it needs next with the tools you have (a tool that needs the developer's word says so): say what you did.",
             turn.context
         );
     }
@@ -1185,6 +1185,36 @@ impl TurnBackend for Scripted {
 mod tests {
     use super::*;
     use otter_core::task::MessageRole;
+
+    /// A follow-up on the host is about the task that changed (D-209): in
+    /// Slack it may be said in that task's own thread, and every other
+    /// task's change has a follow-up of its own.
+    #[test]
+    fn a_follow_up_keeps_to_its_task() {
+        let limits = Limits::from_env();
+        let say = |_: &str| {};
+        let turn = Turn {
+            task: None,
+            instructions: HOST_INSTRUCTIONS,
+            event: Some((
+                otter_core::TaskId::from("ft_a"),
+                "[ft_a] Write a is now done".into(),
+            )),
+            messages: &[],
+            pictures: vec![],
+            context: "Context".into(),
+            tools: vec![],
+            builtins: vec![],
+            limits: &limits,
+            say: &say,
+        };
+        let p = prompt(&turn);
+        assert!(
+            p.contains("a task you follow changed — [ft_a] Write a is now done."),
+            "{p}"
+        );
+        assert!(p.contains("Speak of that task only"), "{p}");
+    }
 
     #[test]
     fn a_turn_is_given_the_latest_twenty_messages_and_where_the_rest_are() {
