@@ -2798,6 +2798,9 @@ impl Daemon {
         let mut up_to_date: Option<String> = None;
         // A failure that another attempt won't change: stopped, said why.
         let mut stuck: Option<String> = None;
+        // Whether the pull request's state was read in this step: a
+        // conflict read before may be resolved by now (D-199).
+        let mut pr_read = false;
         let mut notes: Vec<String> = Vec::new();
         // Lines for the record only.
         let mut rationale: Vec<String> = Vec::new();
@@ -3062,6 +3065,7 @@ impl Daemon {
                 if dl.mergeable.is_none() || self.pr_due(&f.id) {
                     match gh.pr_state(n).await {
                         Ok(p) => {
+                            pr_read = true;
                             if p.mergeable == "MERGEABLE" || p.mergeable == delivery::CONFLICTING {
                                 dl.mergeable = Some(p.mergeable);
                             }
@@ -3147,12 +3151,15 @@ impl Daemon {
                         let names: Vec<&str> = failed.iter().map(|c| c.name.as_str()).collect();
                         let title = format!("CI failed: {}", names.join(", "));
                         // The same failure as last time, after a fix: another
-                        // fix won't help — the developer's call (D-068).
+                        // fix won't help (D-068). Last time is CI's latest
+                        // word: a failure it has passed since is a new one
+                        // (D-199).
                         let last = f
                             .evidence
                             .iter()
                             .rev()
-                            .find(|e| e.kind == EvidenceKind::Ci && e.ok == Some(false));
+                            .find(|e| e.kind == EvidenceKind::Ci)
+                            .filter(|e| e.ok == Some(false));
                         let same = last.is_some_and(|e| {
                             e.title == title
                                 && e.detail
@@ -3163,7 +3170,7 @@ impl Daemon {
                             .steps
                             .iter()
                             .any(|t| t.title == CI_FIX && t.status == StepStatus::Done);
-                        if same {
+                        if same && fixed {
                             let marker = format!(
                                 "{SAME_CI} ({})",
                                 last.map(|e| e.id.as_str()).unwrap_or_default()
@@ -3173,7 +3180,7 @@ impl Daemon {
                             if fixed && !f.rationale.iter().any(|r| r == &marker) {
                                 rationale.push(marker);
                                 stuck = Some(format!(
-                                    "Stopped: {SAME_CI} ({}), so another attempt won't help. The pull request is open: look at the CI log, then tell me what to change, or retry.",
+                                    "Stopped: {SAME_CI} ({}), so another attempt won't help. The pull request is open: look at the CI log, then tell me what to change.",
                                     names.join(", ")
                                 ));
                             }
@@ -3219,13 +3226,18 @@ impl Daemon {
         // Settled: nothing pending, nothing going back to work. Then it
         // ends by itself (D-199): done when every gate passed, else stopped
         // with the result, saying which didn't pass.
+        let stale_conflict = !pr_read
+            && d.as_ref()
+                .is_some_and(|d| d.mergeable.as_deref() == Some(delivery::CONFLICTING));
         let settled = remediation.is_none()
             && up_to_date.is_none()
+            && !stale_conflict
             && f.pending_decisions().next().is_none()
             && !gates.is_empty()
             && gates.iter().all(|g| g.status != GateStatus::Pending);
         let ready = settled && stuck.is_none() && delivery::all_clear(&gates);
-        let stop = stuck.or_else(|| {
+        let back_to_work = remediation.is_some() || up_to_date.is_some();
+        let stop = stuck.filter(|_| !back_to_work).or_else(|| {
             (settled && !ready)
                 .then(|| not_passed(&gates, d.as_ref().and_then(|d| d.pr_url.as_deref())))
         });
@@ -3263,12 +3275,12 @@ impl Daemon {
                 return self.done_delivered(&f.id).await;
             }
             if let Some(why) = stop {
-                self.fail(&f.id, &why, None).await;
+                self.stop_in_review(&f.id, &why).await;
             }
             return Ok(());
         }
         let mut posted = None;
-        self.controller_apply(&f.id, TaskStatus::Review, |f, now| {
+        let applied = self.controller_apply(&f.id, TaskStatus::Review, |f, now| {
             let mut changes = Vec::new();
             f.delivery = d.clone();
             for e in evidence.clone() {
@@ -3389,8 +3401,12 @@ impl Daemon {
             tracing::warn!("posting the report: {e:#}");
         }
         // Stopped with the result: nothing it can do will change it.
+        // The developer changed something meanwhile: theirs.
+        if !applied {
+            return Ok(());
+        }
         if let Some(why) = stop {
-            self.fail(&f.id, &why, None).await;
+            self.stop_in_review(&f.id, &why).await;
             return Ok(());
         }
         // After the write, so the gates it checks are the ones just read.
@@ -3437,6 +3453,31 @@ impl Daemon {
             Some(default) => default != branch,
             // Unknown: not on Otter's own.
             None => false,
+        }
+    }
+
+    /// Stop a task whose delivery settled with the result (D-199): only
+    /// while it's still in review — a goal changed, a pause or a step back
+    /// to work meanwhile wins.
+    async fn stop_in_review(&self, id: &TaskId, why: &str) {
+        let why = redact(why);
+        let applied = self.tasks.lock().await.apply(id, None, |f, now| {
+            if f.status != TaskStatus::Review {
+                return Ok(vec![]);
+            }
+            let mut changes = vec![Change::new(
+                f.transition(TaskStatus::Failed, Some(why.clone()), now)
+                    .map_err(RpcError::conflict)?,
+            )];
+            let (m, c) = message(MessageRole::Controller, why.clone(), None);
+            f.messages.push(m);
+            changes.push(c);
+            Ok(changes)
+        });
+        match applied {
+            Ok(a) if a.from != Some(a.task.status) => self.task_changed(&a),
+            Ok(_) => {}
+            Err(e) => tracing::warn!(task = %id, "stopping: {e:?}"),
         }
     }
 
@@ -3966,7 +4007,7 @@ fn not_passed(gates: &[Gate], pr: Option<&str>) -> String {
         .map(|u| format!(" The pull request is open: {u}; merging it is yours."))
         .unwrap_or_default();
     format!(
-        "Stopped: not passed: {}.{pr} Tell me what to change, or retry.",
+        "Stopped: not passed: {}.{pr} Tell me what to change.",
         failed.join("; ")
     )
 }

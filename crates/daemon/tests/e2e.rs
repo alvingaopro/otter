@@ -6625,7 +6625,7 @@ async fn verification_stops_when_a_fix_changes_nothing() {
     assert!(
         f.status_reason.as_deref().is_some_and(|r| r
             .starts_with("Stopped: not passed: Requirements met (not met: ")
-            && r.ends_with("Tell me what to change, or retry.")),
+            && r.ends_with("Tell me what to change.")),
         "{:?}",
         f.status_reason
     );

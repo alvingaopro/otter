@@ -252,13 +252,18 @@ async fn a_watch_that_cant_read_yet_says_so_and_is_set() {
 /// D-199: a pull request that conflicts with its base sends the task back
 /// to work by itself — the coding agent brings the branch up to date — and
 /// once it no longer conflicts and CI passed, it is done. Nothing waits on
-/// the developer.
+/// the developer. The conflict read before the step isn't taken for the
+/// answer: the pull request is read again first (here the agent leaves the
+/// head as it was, so nothing is pushed to make it read at once, and it's
+/// read every 2 s).
 #[tokio::test]
 async fn a_conflicting_pull_request_goes_back_to_work_and_ends_done() {
-    let fake = host_with(vec![("OTTER_PR_POLL_MS", "0".into())]).await;
+    let fake = host_with(vec![("OTTER_PR_POLL_MS", "2000".into())]).await;
     let host = &fake.host;
-    std::fs::write(fake.gh.join("mergeable"), "CONFLICTING").unwrap();
+    std::fs::write(fake.gh.join("mergeable"), "MERGEABLE").unwrap();
     let id = published(&fake).await;
+    // Its base moved on: now it conflicts.
+    std::fs::write(fake.gh.join("mergeable"), "CONFLICTING").unwrap();
     let f = wait_task(host, &id, "back to work", |f| {
         f.steps
             .iter()

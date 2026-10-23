@@ -19,14 +19,17 @@ decide by merging: say the result, and where more work is needed, do it.
   link; merging stays the developer's. A gate that didn't pass: failed,
   the reason saying which, with the pull request — *Stopped: not passed:
   Requirements met (not met: …). The pull request is open: …; merging it
-  is yours. Tell me what to change, or retry.* The report is written
-  either way. A retry verifies again and delivers again.
+  is yours. Tell me what to change.* The report is written either way.
+  It stops only while still in review: a goal changed meanwhile wins.
 - **More work, it does.** CI failing on the code is a fix step, as before
   (D-068). A pull request that conflicts with its base (D-184) is a step,
   *Bring the branch up to date*: merge `origin/<base>`, resolve keeping
   what both sides meant, keep the checks passing; Otter publishes. Once
-  per head that conflicts, within the attempts budget. CI failing the
-  same way after a fix stops and says so (it waited for *Accept anyway*).
+  per head that conflicts, within the attempts budget; a conflict read
+  before the step isn't the answer until the pull request is read again.
+  CI failing the same way after a fix stops and says so (it waited for
+  *Accept anyway*); the same way means as CI's latest word, so a failure
+  CI has passed since is a new one, and gets a fix.
 - **Unverified work is delivered as it is** (D-165): its pull request
   opens and CI runs, then it stops with the result, *Requirements met*
   not passed. Before, it waited in review.
@@ -37,6 +40,10 @@ decide by merging: say the result, and where more work is needed, do it.
   clients; their *Accept* still works. An older otterd still waits for
   acceptance and this app has no *Accept*: ask Otter in the conversation
   (it has `accept_task` there).
+- **Known:** a gate that never settles keeps a task delivering, said but
+  not raised, as on main: CI with no check 10 minutes after the push (a
+  workflow that runs only on main), a plan with no criteria. A parent no
+  longer hears of a sub-task there.
 - **What is lost:** marking a task done past a gate that didn't pass. It
   stops saying why; the developer merges or closes the pull request
   themselves, or tells Otter what to change. D-047's gates and D-193's
@@ -44,7 +51,7 @@ decide by merging: say the result, and where more work is needed, do it.
 
 Tests: `otter_publishes_on_its_own_and_the_task_ends_when_ci_passes`,
 `a_conflicting_pull_request_goes_back_to_work_and_ends_done` (watched
-failing with the step off), `the_same_ci_failure_after_a_fix_stops_with_the_result`,
+failing with the step off, and with a stale conflict taken as the answer), `the_same_ci_failure_after_a_fix_stops_with_the_result`,
 `verification_stops_when_a_fix_changes_nothing` (delivered as it is, then
 stopped with the report), `a_delivered_task_is_done_and_more_plans_again`,
 `a_task_splits_into_sub_tasks_and_hears_from_them` (sub-tasks that stop
@@ -53,3 +60,11 @@ are heard as over), the CLI's
 `needs` and `what_next`, and the app's delivery tests. The e2e tests that
 waited for review wait for review or done (`delivered`). Not checked in the
 macOS app itself.
+
+Reviewed against the code (Fable) before merging. The review found a stop
+that could land after the goal had changed (or in the step that went back
+to work), a conflict read before the step stopping the task when the pull
+request no longer conflicted, a retry that only stopped again, and a CI
+failure like one fixed in an earlier round stopping without a fix; all are
+fixed above, and "or retry" is no longer offered. The race isn't covered by
+a test.
