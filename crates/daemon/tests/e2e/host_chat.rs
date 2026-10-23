@@ -801,3 +801,119 @@ async fn otter_answers_a_question_and_leaves_a_form_to_the_developer() {
         "still waits"
     );
 }
+
+/// A task stopped for good and deleted on the developer's word (D-207):
+/// never from a turn no message started, whatever the level; deleted only
+/// once nothing is at work in it; deleted again, gone already.
+#[tokio::test]
+async fn otter_stops_and_deletes_a_task_on_the_developers_word() {
+    use otter_core::task::{RunState, TaskStatus};
+    let fake = chat_host(true).await;
+    let host = &fake.host;
+    let id = started_task(host, "Add CSV export HANG").await;
+    wait_task(host, &id, "its coding agent at work", |f| {
+        f.runs.last().is_some_and(|r| r.state == RunState::Running)
+    })
+    .await;
+    let call = |tool: &str| format!("CALL: {tool} {{\"task_id\": \"{id}\"}}");
+    // A turn no message started: refused, also at `auto`.
+    let (_, _, answers) = say(
+        host,
+        "h-end-ev",
+        &format!("AS: event\n{}", call("cancel_task")),
+    )
+    .await;
+    assert_eq!(
+        code(&answers[0]),
+        "not_allowed_in_this_turn",
+        "{answers:#?}"
+    );
+    set_levels(host, &[("cancel_task", "auto"), ("delete_task", "auto")]).await;
+    let (_, _, answers) = say(
+        host,
+        "h-end-ev-auto",
+        &format!(
+            "AS: event\n{}\n{}",
+            call("cancel_task"),
+            call("delete_task")
+        ),
+    )
+    .await;
+    assert_eq!(code(&answers[0]), "needs_developer", "{answers:#?}");
+    assert_eq!(code(&answers[1]), "needs_developer", "{answers:#?}");
+    assert!(
+        host.conn()
+            .await
+            .task_get(&id)
+            .await
+            .unwrap()
+            .status
+            .is_active()
+    );
+    // At work: not deleted, and said why.
+    let (_, _, answers) = say(
+        host,
+        "h-del-early",
+        &format!("Delete it.\n{}", call("delete_task")),
+    )
+    .await;
+    assert_eq!(code(&answers[0]), "not_ready", "{answers:#?}");
+    // Their word: stopped, then deleted, then gone already.
+    let (_, _, answers) = say(
+        host,
+        "h-end",
+        &format!(
+            "Stop it and delete it.\n{}\n{}\n{}",
+            call("cancel_task"),
+            call("delete_task"),
+            call("delete_task")
+        ),
+    )
+    .await;
+    assert_eq!(answers[0]["data"]["done"], "cancel", "{answers:#?}");
+    assert_eq!(answers[0]["data"]["status"], TaskStatus::Cancelled.as_str());
+    assert_eq!(answers[1]["data"]["done"], "deleted", "{answers:#?}");
+    assert_eq!(answers[2]["data"]["done"], "already", "{answers:#?}");
+    assert!(host.conn().await.task_get(&id).await.is_err());
+}
+
+/// In a task's own conversation, Otter stops it for good on the
+/// developer's word (D-207), and never from a turn no message started.
+#[tokio::test]
+async fn otter_stops_its_task_on_the_developers_word() {
+    use otter_core::task::{RunState, TaskStatus};
+    let fake = chat_host(true).await;
+    let host = &fake.host;
+    let id = started_task(host, "Add CSV export HANG").await;
+    wait_task(host, &id, "its coding agent at work", |f| {
+        f.runs.last().is_some_and(|r| r.state == RunState::Running)
+    })
+    .await;
+    let (_, answers) =
+        super::otter_turn::run(host, &id, "t-end-ev", "AS: event\nCALL: cancel_task {}").await;
+    assert_eq!(
+        code(&answers[0]),
+        "not_allowed_in_this_turn",
+        "{answers:#?}"
+    );
+    set_levels(host, &[("cancel_task", "auto")]).await;
+    let (_, answers) =
+        super::otter_turn::run(host, &id, "t-end-ev2", "AS: event\nCALL: cancel_task {}").await;
+    assert_eq!(code(&answers[0]), "needs_developer", "{answers:#?}");
+    let (_, answers) = super::otter_turn::run(
+        host,
+        &id,
+        "t-end",
+        "Stop it for good.\nCALL: cancel_task {}\nCALL: cancel_task {}",
+    )
+    .await;
+    assert_eq!(answers[0]["data"]["done"], "cancel", "{answers:#?}");
+    // The same call again: stopped already.
+    assert_eq!(answers[1]["data"]["done"], "already", "{answers:#?}");
+    let f = wait_task(host, &id, "cancelled", |f| {
+        f.status == TaskStatus::Cancelled
+    })
+    .await;
+    assert_eq!(f.status_reason.as_deref(), Some("Cancelled by you"));
+    assert!(f.runs.iter().all(|r| r.state.is_over()));
+}

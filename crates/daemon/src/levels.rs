@@ -116,6 +116,14 @@ pub const CATALOG: &[Entry] = &[
     e("resume_task", "task", "Resume a paused task", Auto),
     e("retry_task", "task", "Retry a failed task", Auto),
     e("pause_task", "task", "Pause a task", Auto),
+    // Only ever on the developer's word, whatever the level (D-207).
+    e("cancel_task", "task", "Stop a task for good", Developer),
+    e(
+        "delete_task",
+        "task",
+        "Delete a task that has nothing at work",
+        Developer,
+    ),
     e(
         "revise_task",
         "task",
@@ -391,12 +399,19 @@ mod tests {
     }
 
     #[test]
-    fn everything_is_automatic_but_memory_decisions_and_reviews() {
+    fn everything_is_automatic_but_memory_decisions_reviews_and_endings() {
         for e in CATALOG {
             // A decision answered and a pull request reviewed are the
-            // developer's word (D-205).
+            // developer's word (D-205); a task stopped for good or deleted
+            // too (D-207).
             let want = if e.group == "remember"
-                || ["answer_decision", "review_pull_request"].contains(&e.name)
+                || [
+                    "answer_decision",
+                    "review_pull_request",
+                    "cancel_task",
+                    "delete_task",
+                ]
+                .contains(&e.name)
             {
                 Developer
             } else {

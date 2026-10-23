@@ -1889,7 +1889,7 @@ impl Daemon {
         let f = tasks
             .get(id.as_str())
             .ok_or_else(|| task_not_found(id.as_str()))?;
-        if f.status.is_active() || f.live_run().is_some() {
+        if !deletable(f) {
             return Err(RpcError::conflict(format!(
                 "the task is {}: pause or cancel it first",
                 f.status.as_str()
@@ -1945,6 +1945,12 @@ fn in_use(s: &otter_core::Session) -> bool {
                     | otter_core::AgentState::Blocked
             )
         })
+}
+
+/// Whether a task may be deleted now: nothing is at work in it (the app's
+/// Delete, Slack's, Otter's, D-207).
+pub(crate) fn deletable(f: &Task) -> bool {
+    !f.status.is_active() && f.live_run().is_none()
 }
 
 #[cfg(test)]

@@ -315,6 +315,9 @@ struct Hub {
     links: Vec<Arc<Link>>,
     /// The hosts that take Slack's events from here now.
     enrolled: std::sync::Mutex<BTreeSet<String>>,
+    /// Hosts whose otterd doesn't keep the name the hub gives (before
+    /// D-207): not given it again.
+    unnamed: std::sync::Mutex<BTreeSet<String>>,
     /// Hosts that left (`otter hub leave`) while it served: not taken in
     /// again until it starts again.
     left: std::sync::Mutex<BTreeSet<String>>,
@@ -386,6 +389,7 @@ async fn serve(config: &Config, users: Vec<String>, only: Vec<String>) -> Result
             .map(|h| Arc::new(Link::new(config, h)))
             .collect(),
         enrolled: Default::default(),
+        unnamed: Default::default(),
         left: Default::default(),
         default_host: config.default_host.clone(),
         bot,
@@ -527,7 +531,16 @@ impl Hub {
                 missing.join(", ")
             ));
         }
-        if !give_token && !slack.users.is_empty() {
+        // Its messages at the top say which host they are from (D-207).
+        let given: String = link
+            .name
+            .chars()
+            .filter(|c| !c.is_control())
+            .take(64)
+            .collect();
+        let named = slack.name.as_deref() == Some(given.trim())
+            || self.unnamed.lock().unwrap().contains(&link.name);
+        if !give_token && !slack.users.is_empty() && named {
             return Ok(line);
         }
         let mut update = SettingsUpdate {
@@ -535,6 +548,8 @@ impl Hub {
                 // Members the host lists already stay its own.
                 users: slack.users.is_empty().then(|| self.users.clone()),
                 hub: Some(true),
+                // As a host's name may be (one line, 64 characters).
+                name: Some(given),
                 ..Default::default()
             }),
             ..Default::default()
@@ -549,6 +564,9 @@ impl Hub {
             .call(Request::SettingsSet(update), SETTINGS_WAIT)
             .await
             .map_err(|e| format!("not set up: {e}"))?;
+        if after.slack.as_ref().is_some_and(|s| s.name.is_none()) {
+            self.unnamed.lock().unwrap().insert(link.name.clone());
+        }
         match after.slack.and_then(|s| s.hub) {
             Some(true) => Ok(line),
             _ => Err("its otterd is too old for the hub: update it (`otter host install`)".into()),
