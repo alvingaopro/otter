@@ -21,7 +21,12 @@ pub enum Envelope {
         envelope_id: String,
         payload: Value,
     },
-    /// Anything else Slack wants acked (a slash command): not taken yet.
+    /// `/otter` (D-202): its ack carries the answer.
+    Command {
+        envelope_id: String,
+        payload: Value,
+    },
+    /// Anything else Slack wants acked: not taken.
     Other {
         envelope_id: String,
     },
@@ -43,6 +48,10 @@ pub fn envelope(text: &str) -> Envelope {
             event: v["payload"]["event"].clone(),
         },
         (Some("interactive"), Some(envelope_id)) => Envelope::Interactive {
+            envelope_id,
+            payload: v["payload"].clone(),
+        },
+        (Some("slash_commands"), Some(envelope_id)) => Envelope::Command {
             envelope_id,
             payload: v["payload"].clone(),
         },
@@ -84,6 +93,45 @@ pub fn press(payload: &Value) -> Option<Press> {
             channel: channel.to_owned(),
             thread: Some(payload["container"]["message_ts"].as_str()?.to_owned()),
         },
+    })
+}
+
+/// `/otter` as the developer typed it (D-202).
+#[derive(Debug, PartialEq)]
+pub struct Command {
+    /// Who typed it: only a listed member is answered.
+    pub user: String,
+    pub verb: Verb,
+}
+
+/// What `/otter` is asked to do.
+#[derive(Debug, PartialEq)]
+pub enum Verb {
+    /// What needs the developer, and what is at work: `/otter`,
+    /// `/otter status`.
+    Status,
+    /// A task, made and started from these words: `/otter new <words>`.
+    New(String),
+    /// What `/otter` does: `/otter help`, or anything it doesn't know.
+    Help,
+}
+
+/// The command in a slash command's payload; `None` for another command.
+pub fn command(payload: &Value) -> Option<Command> {
+    if payload["command"] != "/otter" {
+        return None;
+    }
+    let text = plain(payload["text"].as_str().unwrap_or_default());
+    let text = text.trim();
+    let (word, rest) = text.split_once(char::is_whitespace).unwrap_or((text, ""));
+    let verb = match word.to_lowercase().as_str() {
+        "" | "status" => Verb::Status,
+        "new" if !rest.trim().is_empty() => Verb::New(rest.trim().to_owned()),
+        _ => Verb::Help,
+    };
+    Some(Command {
+        user: payload["user_id"].as_str()?.to_owned(),
+        verb,
     })
 }
 
@@ -288,7 +336,7 @@ mod tests {
             }
         );
         assert_eq!(
-            envelope(r#"{"type":"slash_commands","envelope_id":"e2","payload":{}}"#),
+            envelope(r#"{"type":"app_rate_limited","envelope_id":"e2","payload":{}}"#),
             Envelope::Other {
                 envelope_id: "e2".into()
             }
@@ -302,7 +350,38 @@ mod tests {
                 payload: json!({"type": "block_actions"})
             }
         );
+        assert_eq!(
+            envelope(
+                r#"{"type":"slash_commands","envelope_id":"e4","payload":{"command":"/otter"}}"#
+            ),
+            Envelope::Command {
+                envelope_id: "e4".into(),
+                payload: json!({"command": "/otter"})
+            }
+        );
         assert_eq!(envelope("not json"), Envelope::Unknown);
+    }
+
+    #[test]
+    fn otter_is_told_what_to_do_in_a_word() {
+        let cmd = |text: &str| {
+            command(&json!({"command": "/otter", "text": text, "user_id": "U1"}))
+                .unwrap()
+                .verb
+        };
+        assert_eq!(cmd(""), Verb::Status);
+        assert_eq!(cmd(" Status "), Verb::Status);
+        assert_eq!(
+            cmd("new  Add <https://x.dev|x.dev> export\nwith tests"),
+            Verb::New("Add https://x.dev export\nwith tests".into())
+        );
+        assert_eq!(cmd("new"), Verb::Help);
+        assert_eq!(cmd("help"), Verb::Help);
+        assert_eq!(cmd("deploy it"), Verb::Help);
+        assert_eq!(
+            command(&json!({"command": "/other", "user_id": "U1"})),
+            None
+        );
     }
 
     #[test]

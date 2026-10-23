@@ -5,6 +5,8 @@
 use std::collections::HashMap;
 
 use otter_core::DecisionId;
+use otter_core::Timestamp;
+use otter_core::model::Activity;
 use otter_core::task::{Decider, DecisionKind, DecisionStatus, Need, NeedKind, Task, TaskStatus};
 use serde_json::{Value, json};
 
@@ -106,8 +108,6 @@ pub fn told(task: &Task, n: &Need) -> Told {
             buttons.push(button("Retry", "retry", value(None), Some("primary")));
             "Or reply in this thread to tell the task what to change."
         }
-        // An otterd before D-199 still waits for acceptance: the app has it.
-        (NeedKind::Review, _) => "Accept it in the app, or reply in this thread.",
         _ => "Reply in this thread to tell the task.",
     };
     let mut blocks = vec![json!({ "type": "markdown", "text": format!("{text}\n\n_{hint}_") })];
@@ -189,6 +189,67 @@ pub fn titled(text: &str, titles: &HashMap<String, String>) -> String {
     }
     out.push_str(rest);
     out
+}
+
+/// What `/otter` does (D-202).
+pub const HELP: &str = "**/otter** — what needs you, and what is at work.
+**/otter new** *what you want* — a task, made and started, with a thread of its own in your direct messages with Otter.
+
+Write to Otter in its direct messages to talk to it. When a task needs you, Otter says so there; reply under that message to talk to the task.";
+
+/// What needs the developer, longest waiting first, and what is at work,
+/// newest first: `/otter status` (D-202).
+pub fn status<'a>(tasks: impl Iterator<Item = &'a Task>) -> String {
+    const SHOWN: usize = 15;
+    let mut needs = Vec::new();
+    let mut working = Vec::new();
+    for t in tasks {
+        match t.needs() {
+            Some(n) => needs.push((
+                n.since,
+                format!("- **{}** — {}", t.title, cut(&n.summary, 200)),
+            )),
+            None if t.activity() == Activity::Working => working.push((
+                t.updated_at,
+                format!("- **{}** — {}", t.title, t.status.as_str()),
+            )),
+            None => {}
+        }
+    }
+    if needs.is_empty() && working.is_empty() {
+        return "Nothing needs you, and nothing is at work.".into();
+    }
+    needs.sort_by_key(|(since, _)| *since);
+    working.sort_by_key(|(at, _)| std::cmp::Reverse(*at));
+    let section = |name: &str, lines: Vec<(Timestamp, String)>| {
+        if lines.is_empty() {
+            return None;
+        }
+        let n = lines.len();
+        let mut out = format!("**{name}** ({n})");
+        for (_, line) in lines.into_iter().take(SHOWN) {
+            out.push('\n');
+            out.push_str(&line);
+        }
+        if n > SHOWN {
+            out.push_str(&format!("\n_and {} more_", n - SHOWN));
+        }
+        Some(out)
+    };
+    [section("Needs you", needs), section("At work", working)]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>()
+        .join("\n\n")
+}
+
+/// A task's title from what the developer asked: its first line, short.
+pub fn title_of(request: &str) -> String {
+    let first = request
+        .lines()
+        .find(|l| !l.trim().is_empty())
+        .unwrap_or("Task");
+    cut(first.trim(), 80)
 }
 
 /// At most `max` characters of `s`, with `…` when cut.
@@ -338,6 +399,43 @@ mod tests {
             over(&t, "failed:123"),
             "No longer waiting: the task is implementing."
         );
+    }
+
+    /// `/otter status`: what needs the developer, longest waiting first,
+    /// then what is at work; drafts and what is done aren't listed.
+    #[test]
+    fn status_says_what_needs_you_and_what_is_at_work() {
+        assert_eq!(
+            status(std::iter::empty()),
+            "Nothing needs you, and nothing is at work."
+        );
+        let mut asks = task(
+            vec![decision("dec_1", DecisionKind::ToolPermission, &[])],
+            TaskStatus::Implementing,
+        );
+        asks.title = "Asks".into();
+        let mut stopped = task(vec![], TaskStatus::Failed);
+        stopped.title = "Stopped".into();
+        stopped.status_reason = Some("Tests failed".into());
+        stopped.status_since = Some(chrono::Utc::now() - chrono::TimeDelta::hours(1));
+        let mut works = task(vec![], TaskStatus::Implementing);
+        works.title = "Works".into();
+        let mut draft = task(vec![], TaskStatus::Draft);
+        draft.title = "Draft".into();
+        let all = [asks, stopped, works, draft];
+        assert_eq!(
+            status(all.iter()),
+            "**Needs you** (2)\n- **Stopped** — Tests failed\n- **Asks** — Run `rm -rf build`\n\n**At work** (1)\n- **Works** — implementing"
+        );
+    }
+
+    #[test]
+    fn a_tasks_title_is_the_first_line_it_was_asked_in() {
+        assert_eq!(
+            title_of("\n  Add CSV export  \nwith tests"),
+            "Add CSV export"
+        );
+        assert_eq!(title_of(&"x".repeat(100)).chars().count(), 81);
     }
 
     #[test]

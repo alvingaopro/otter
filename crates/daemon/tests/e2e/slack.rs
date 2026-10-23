@@ -688,3 +688,151 @@ async fn a_task_that_needs_you_is_told_in_slack_and_answered_there() {
     assert!(posted.iter().all(|t| *t == id), "{posted:?}");
     assert!(kept["needs"][&quiet].is_string(), "{kept}");
 }
+
+/// `/otter` as Socket Mode sends it; otterd's ack, which carries the answer.
+async fn slash(
+    ws: &mut WebSocketStream<TcpStream>,
+    envelope: &str,
+    user: &str,
+    text: &str,
+) -> Value {
+    let payload = json!({
+        "command": "/otter", "text": text, "user_id": user, "channel_id": "D1",
+    });
+    let frame = json!({"type": "slash_commands", "envelope_id": envelope, "payload": payload});
+    ws.send(Frame::text(frame.to_string())).await.unwrap();
+    let ack = tokio::time::timeout(Duration::from_secs(10), ws.next())
+        .await
+        .expect("an ack")
+        .unwrap()
+        .unwrap();
+    let ack: Value = serde_json::from_str(ack.to_text().unwrap()).unwrap();
+    assert_eq!(ack["envelope_id"], envelope);
+    ack["payload"].clone()
+}
+
+/// `/otter` (D-202): `status` lists what needs the developer; someone not
+/// listed is refused; anything unknown gets the help; `new` makes a task
+/// of its words and starts it, with a thread of its own whose first word is
+/// the request, so what Otter says about it comes back there, and a reply
+/// in it goes to the task.
+#[tokio::test]
+async fn otter_in_slack_says_what_needs_you_and_starts_a_task() {
+    use otter_core::task::{DecisionKind, Task, TaskStatus};
+    let mut slack = FakeSlack::start().await;
+    let api = slack.api.clone();
+    let fake = fake_agent_host_with("ok", "scripted", move |_| {
+        vec![
+            ("OTTER_BRAIN_V2", "1".into()),
+            ("OTTER_SLACK_API", api),
+            ("OTTER_PLAN_TURN", "1".into()),
+        ]
+    })
+    .await;
+    let host = &fake.host;
+    let asks = |f: &Task| {
+        f.pending_decisions()
+            .any(|d| d.kind == DecisionKind::PlanApproval)
+    };
+    let waiting = started_task_named(host, "Add CSV export").await;
+    let f = wait_task(host, &waiting, "asking about its plan", asks).await;
+    host.conn()
+        .await
+        .settings_set(set_up("xoxb-1-SLACKTESTTOKEN"))
+        .await
+        .unwrap();
+    let mut ws = slack.connected().await;
+
+    let status = slash(&mut ws, "s1", "U01DEV", "status").await;
+    assert_eq!(status["response_type"], "ephemeral");
+    let text = status["blocks"][0]["text"].as_str().unwrap();
+    assert!(text.starts_with("**Needs you** (1)"), "{text}");
+    assert!(text.contains(&format!("**{}**", f.title)), "{text}");
+    let refused = slash(&mut ws, "s2", "U02OTHER", "status").await;
+    assert!(
+        refused["text"]
+            .as_str()
+            .unwrap()
+            .contains("only the developer"),
+        "{refused}"
+    );
+    let help = slash(&mut ws, "s3", "U01DEV", "deploy it").await;
+    assert!(
+        help["blocks"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("/otter new")
+    );
+
+    // A new task, started, in a thread of its own.
+    let started = slash(&mut ws, "s4", "U01DEV", "new Add XML export\nwith tests").await;
+    assert!(
+        started["text"]
+            .as_str()
+            .unwrap()
+            .starts_with("Starting **Add XML export**"),
+        "{started}"
+    );
+    let head = eventually("the task's message", || async {
+        slack
+            .calls("chat.postMessage")
+            .into_iter()
+            .map(|c| c.2)
+            .find(|b| b["text"] == "Add XML export")
+    })
+    .await;
+    // Its time: each message's is its place among those posted.
+    let n = slack
+        .calls("chat.postMessage")
+        .iter()
+        .position(|c| c.2["text"] == "Add XML export")
+        .unwrap()
+        + 1;
+    let ts = format!("1800000000.{n:06}");
+    assert!(head.get("thread_ts").is_none());
+    let tasks = host.conn().await.task_list().await.unwrap();
+    let task = tasks
+        .iter()
+        .find(|t| t.title == "Add XML export")
+        .unwrap()
+        .clone();
+    let request = task
+        .messages
+        .iter()
+        .find(|m| m.role == otter_core::task::MessageRole::User)
+        .unwrap();
+    assert_eq!(request.text, "Add XML export\nwith tests");
+    assert_eq!(
+        request.correlation_id.as_deref(),
+        Some(format!("slack:D1:{ts}:{ts}").as_str())
+    );
+    wait_task(host, &task.id.to_string(), "started", |f| {
+        f.status != TaskStatus::Draft
+    })
+    .await;
+    // What Otter says about it comes back into its thread.
+    eventually("Otter in the task's thread", || async {
+        slack
+            .calls("chat.postMessage")
+            .into_iter()
+            .find(|c| c.2["thread_ts"] == ts.as_str())
+    })
+    .await;
+    // And a reply there is the task's.
+    acked(
+        &mut ws,
+        dm(
+            "e1",
+            "U01DEV",
+            "1700000010.000100",
+            "Use the xml crate",
+            json!({"thread_ts": ts}),
+        ),
+        "e1",
+    )
+    .await;
+    wait_task(host, &task.id.to_string(), "the reply in the task", |f| {
+        f.messages.iter().any(|m| m.text == "Use the xml crate")
+    })
+    .await;
+}

@@ -72,6 +72,31 @@ pub struct Slack {
     restart: tokio::sync::Notify,
     /// Each listed member's direct messages with the app, once opened.
     channels: std::sync::Mutex<HashMap<String, String>>,
+    /// Threads made outside the sync loop (`/otter new`, D-202), for it to
+    /// keep: it alone writes `state/slack.json`.
+    pending: std::sync::Mutex<Vec<Pending>>,
+}
+
+/// A thread for a task, made outside the sync loop.
+#[derive(Clone, Debug)]
+struct Pending {
+    post: Post,
+    /// Its conversation's last message when the thread began.
+    after: Option<String>,
+}
+
+impl Slack {
+    /// The need's (or task's) message whose thread `on` is, among those not
+    /// kept yet.
+    fn pending_post(&self, on: &Origin) -> Option<Post> {
+        let thread = on.thread.as_deref()?;
+        self.pending
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|p| p.post.ts == thread && p.post.channel == on.channel)
+            .map(|p| p.post.clone())
+    }
 }
 
 #[derive(Clone, Debug, Default)]
@@ -402,6 +427,11 @@ impl Daemon {
                                 sink.send(Frame::text(ack)).await?;
                                 self.slack_pressed(c, &env, &payload);
                             }
+                            Envelope::Command { envelope_id, payload } => {
+                                let answer = self.slack_command(c, &env, &payload).await;
+                                let ack = json!({ "envelope_id": envelope_id, "payload": answer });
+                                sink.send(Frame::text(ack.to_string())).await?;
+                            }
                             Envelope::Other { envelope_id } => {
                                 let ack = json!({ "envelope_id": envelope_id }).to_string();
                                 sink.send(Frame::text(ack)).await?;
@@ -441,7 +471,10 @@ impl Daemon {
         };
         let (env, bot) = (env.clone(), c.bot.clone());
         let path = self.paths.state_dir.join("slack.json");
-        let Some(under) = State::load(&path).and_then(|s| s.post_of(&m.to)) else {
+        let under = State::load(&path)
+            .and_then(|s| s.post_of(&m.to))
+            .or_else(|| self.slack.pending_post(&m.to));
+        let Some(under) = under else {
             let sent = self
                 .otter_send(OtterSend {
                     command_id: m.command_id(),
@@ -542,6 +575,120 @@ impl Daemon {
         });
     }
 
+    /// `/otter` (D-202): answered in its ack, seen only by who typed it.
+    /// `status` says what needs the developer and what is at work; `new`
+    /// makes a task of its words and starts it, in a thread of its own in
+    /// their direct messages; anything else, what `/otter` does.
+    async fn slack_command(self: &Arc<Self>, c: &Config, env: &EnvMap, payload: &Value) -> Value {
+        let answer = |text: String| {
+            json!({
+                "response_type": "ephemeral",
+                "text": text.chars().take(280).collect::<String>(),
+                "blocks": [{ "type": "markdown", "text": text }],
+            })
+        };
+        let Some(cmd) = socket::command(payload) else {
+            return answer("Otter only knows `/otter`.".into());
+        };
+        if !c.users.contains(&cmd.user) {
+            tracing::info!("slack: /otter from a Slack member Settings doesn't list");
+            return answer("This Otter answers only the developer it is set up for.".into());
+        }
+        match cmd.verb {
+            socket::Verb::Status => {
+                let store = self.tasks.lock().await;
+                answer(needs::status(store.iter()))
+            }
+            socket::Verb::Help => answer(needs::HELP.into()),
+            socket::Verb::New(request) => {
+                let title = needs::title_of(&request);
+                let (daemon, env, bot) = (self.clone(), env.clone(), c.bot.clone());
+                let reply = format!(
+                    "Starting **{title}**: its thread is in your direct messages with Otter."
+                );
+                tokio::spawn(async move {
+                    if let Err(e) = daemon
+                        .slack_new(&env, &bot, &cmd.user, &title, request)
+                        .await
+                    {
+                        tracing::warn!("slack: /otter new: {e}");
+                    }
+                });
+                answer(reply)
+            }
+        }
+    }
+
+    /// Make a task of `request` and start it, from Slack (D-202): first the
+    /// message whose thread is the task's, then the task, its request said
+    /// as if written in that thread (`command_id` `slack:<dm>:<ts>:<ts>`, so
+    /// D-200's rule sends what follows it there).
+    async fn slack_new(
+        self: &Arc<Self>,
+        env: &EnvMap,
+        bot: &str,
+        user: &str,
+        title: &str,
+        request: String,
+    ) -> Result<(), CallError> {
+        let channel = self.slack_dm(env, bot, user).await?;
+        let text = format!("**{title}**\n\n_Starting. Reply in this thread to talk to it._");
+        let started = api::call(
+            env,
+            bot,
+            "chat.postMessage",
+            &json!({
+                "channel": channel,
+                "text": title,
+                "blocks": [{ "type": "markdown", "text": text }],
+                "unfurl_links": false,
+            }),
+        )
+        .await?;
+        let ts = started["ts"].as_str().unwrap_or_default().to_owned();
+        let to = Origin {
+            channel: channel.clone(),
+            thread: Some(ts.clone()),
+        };
+        let created = self
+            .task_create(otter_protocol::task::TaskCreate {
+                command_id: format!("slack:{channel}:{ts}:{ts}"),
+                title: title.to_owned(),
+                request,
+                workspace: None,
+                answer_only: false,
+            })
+            .await;
+        let task = match created {
+            Ok(task) => task,
+            Err(e) => {
+                let line = format!("Otter didn't make that task: {}", e.message);
+                return post(env, bot, &to, &line, &HashMap::new()).await;
+            }
+        };
+        self.slack.pending.lock().unwrap().push(Pending {
+            post: Post {
+                task: task.id.to_string(),
+                key: "started".into(),
+                channel,
+                ts: ts.clone(),
+                text,
+                open: false,
+            },
+            after: task.messages.last().map(|m| m.id.to_string()),
+        });
+        let start = TaskAct {
+            command_id: format!("slack:start:{ts}"),
+            task: task.id.to_string(),
+            action: TaskAction::Start,
+        };
+        if let Err(e) = self.clone().task_act(start).await {
+            let line = format!("Otter made the task but didn't start it: {}", e.message);
+            post(env, bot, &to, &line, &HashMap::new()).await?;
+        }
+        Ok(())
+    }
+
     /// The first time Slack connects (or after its file was lost): what is
     /// there already — Otter's messages, the tasks' needs — isn't sent.
     async fn slack_begin(&self) {
@@ -581,6 +728,15 @@ impl Daemon {
             state.save(&path);
             state
         });
+        // Threads made meanwhile (`/otter new`) are kept now.
+        let made: Vec<Pending> = std::mem::take(&mut *self.slack.pending.lock().unwrap());
+        if !made.is_empty() {
+            for p in made {
+                state.tasks.insert(p.post.task.clone(), p.after);
+                state.posts.push(p.post);
+            }
+            state.save(&path);
+        }
         let look = self.slack_look(&state).await;
         self.slack_host(c, env, &chat.messages, &mut state, &look.titles, &path)
             .await?;
