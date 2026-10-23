@@ -20,10 +20,14 @@ must keep, with the tests that guard them.
 | Otter's conversation, the brain's tools                | [`docs/plans/brain-runtime-v2.md`](docs/plans/brain-runtime-v2.md) · decisions D-084, D-089–D-096 |
 | watches, triggers, the app's Automations view          | [`docs/plans/watches.md`](docs/plans/watches.md) · decisions D-083, D-183–D-185 |
 | transport, daemon lifecycle, persistence               | decisions D-003, D-005, D-008 · invariants 4, 8, 11, 12                    |
-| the architecture itself                                | [`docs/design.md`](docs/design.md), [`docs/decisions.md`](docs/decisions.md), [`docs/architecture-lessons.md`](docs/architecture-lessons.md) |
+| the architecture itself                                | [`docs/design.md`](docs/design.md), [`docs/decisions.md`](docs/decisions.md) and [`docs/decisions/`](docs/decisions/), [`docs/architecture-lessons.md`](docs/architecture-lessons.md) |
 
-Record new decisions and deliberate deviations in `docs/decisions.md`; don't
-silently drift from the design. Prefer dogfooding evidence over speculative
+Record new decisions and deliberate deviations as a file of their own in
+`docs/decisions/`, made with `python3 scripts/decisions.py new "Title"` when
+the work starts, before the number goes into code or docs: it claims the
+number on `origin`, so two agents never take the same one (D-198). Never
+append to `docs/decisions.md`, which keeps D-001–D-197. Don't silently drift
+from the design. Prefer dogfooding evidence over speculative
 architecture (architecture-lessons §24–§25).
 
 ## Layout
@@ -81,6 +85,11 @@ Inside the daemon (`crates/daemon/src`):
   `codex.rs` holds everything Codex-specific, `claude.rs` everything Claude Code-specific,
   and `mod.rs` the shared quiet-turn heuristic (`settle`)
 - `backend/` — execution backends; tmux is the only one and nothing else may know about tmux
+- `slack/` — Otter in Slack (D-200): the developer's direct messages to the
+  Slack app, over Socket Mode (a WebSocket otterd opens; nothing listens),
+  said in Otter's conversation on the host, and its answers sent back;
+  `needs.rs` tells Slack when a task needs the developer, with buttons, and
+  a reply in its thread goes to that task (D-201)
 - `git.rs` (shared repos + worktrees), `git_account.rs` (Otter's own git identity, key and
   GitHub sign-in, which its repositories include, D-133), `environment.rs` (direnv), `env.rs` (login env, exec shim)
 - `attach.rs` (PTY bridge, or a stream whose client keeps the history:

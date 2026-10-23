@@ -22,6 +22,10 @@ const state = vi.hoisted(() => ({
   token: undefined as boolean | undefined,
   // Otter's tools and their levels (D-191): `undefined` from an otterd before them.
   tools: undefined as { name: string; description: string; group: string; level: string; default_level: string }[] | undefined,
+  // Otter in Slack (D-200): `undefined` from an otterd before it.
+  slack: undefined as { users: string[]; state: string; detail?: string; team?: string; bot?: string; notify?: boolean } | undefined,
+  slackBot: false,
+  slackApp: false,
 }));
 // Holds back the host's answers to a save or a test until let go.
 const gate = vi.hoisted(() => ({ wait: null as Promise<void> | null }));
@@ -105,6 +109,17 @@ vi.mock("@tauri-apps/api/core", () => ({
       // A level, or `null`: the default again.
       const levels = (args.update as { tool_levels?: Record<string, string | null> }).tool_levels;
       if (levels && state.tools) state.tools = state.tools.map((t) => (t.name in levels ? { ...t, level: levels[t.name] ?? t.default_level } : t));
+      if (state.slack) {
+        if (u.secrets && "SLACK_BOT_TOKEN" in u.secrets) state.slackBot = u.secrets.SLACK_BOT_TOKEN !== null;
+        if (u.secrets && "SLACK_APP_TOKEN" in u.secrets) state.slackApp = u.secrets.SLACK_APP_TOKEN !== null;
+        const sent = (args.update as { slack?: { users?: string[]; notify?: boolean } }).slack;
+        if (sent?.users) state.slack.users = sent.users;
+        const notify = sent?.notify ?? state.slack.notify;
+        state.slack =
+          state.slackBot && state.slackApp && state.slack.users.length
+            ? { users: state.slack.users, state: "connected", team: "Suger Inc", bot: "otter", notify }
+            : { users: state.slack.users, state: "off", detail: "Add your Slack member ID.", notify };
+      }
     }
     return {
       controller: state.controller,
@@ -112,7 +127,14 @@ vi.mock("@tauri-apps/api/core", () => ({
         { name: "OPENROUTER_API_KEY", purpose: "OpenRouter", set: state.set },
         ...(state.modern ? [{ name: "OPENAI_API_KEY", purpose: "OpenAI", set: false }] : []),
         ...(state.token !== undefined ? [{ name: "CLAUDE_CODE_OAUTH_TOKEN", purpose: "Signs Claude Code in", set: state.token }] : []),
+        ...(state.slack
+          ? [
+              { name: "SLACK_BOT_TOKEN", purpose: "Lets Otter read and answer your Slack messages", set: state.slackBot },
+              { name: "SLACK_APP_TOKEN", purpose: "Lets Otter hear from Slack", set: state.slackApp },
+            ]
+          : []),
       ],
+      ...(state.slack ? { slack: state.slack } : {}),
       ...(state.backend ? { coding: { backend: state.backend, model: state.codingModel } } : {}),
       ...(state.otterTools !== undefined
         ? {
@@ -195,6 +217,11 @@ describe("Settings", () => {
     state.oldTest = name.includes("older otterd");
     state.token = name.includes("sign-in") ? false : undefined;
     state.tools = name.includes("D-191") ? TOOLS() : undefined;
+    state.slack = name.includes("Slack")
+      ? { users: [], state: "off", detail: "Add the bot token (xoxb-…), the app token (xapp-…), your Slack member ID.", notify: true }
+      : undefined;
+    state.slackBot = false;
+    state.slackApp = false;
     localStorage.removeItem("otter.settings-tab");
     host = document.createElement("div");
     document.body.appendChild(host);
@@ -451,6 +478,54 @@ describe("Settings", () => {
     await flush();
     expect(calls.filter((c) => c.cmd === "settings_set").pop()!.args).toEqual({ host: "mac", update: { secrets: { CLAUDE_CODE_OAUTH_TOKEN: null } } });
     expect(dialog().textContent).toContain("Claude Code's own sign-in on mac");
+  });
+
+  it("sets Slack up with its two tokens, kept on the host and never shown, and whose messages are yours (D-200)", async () => {
+    expect(tabs().map((b) => b.textContent)).toContain("Slack");
+    await tab("Slack");
+    expect(dialog().querySelector("h2")?.textContent).toBe("Slack");
+    expect(dialog().textContent).toContain("Not set up");
+    expect(dialog().textContent).toContain("Add the bot token (xoxb-…)");
+    await act(async () => button("Add…").click());
+    const bot = dialog().querySelector<HTMLInputElement>('input[aria-label="SLACK_BOT_TOKEN"]')!;
+    expect(bot.type).toBe("password");
+    expect(bot.placeholder).toContain("xoxb-");
+    type(bot, " xoxb-1-abc ");
+    // The bot token's field is open: the next Add… is the app token's.
+    await act(async () => button("Add…").click());
+    const app = dialog().querySelector<HTMLInputElement>('input[aria-label="SLACK_APP_TOKEN"]')!;
+    expect(app.placeholder).toContain("xapp-");
+    type(app, "xapp-1-def");
+    // As Slack copies it, with an `@`, or twice: kept once, as the host keeps it.
+    type(dialog().querySelector<HTMLInputElement>('input[aria-label="Slack member ID"]')!, "@U06MPBPRX7C, U06MPBPRX7C ");
+    await flush();
+    expect(dialog().textContent).toContain("Unsaved changes on mac");
+    await act(async () => button("Save").click());
+    await flush();
+    const update = calls.find((c) => c.cmd === "settings_set")!.args.update as { secrets: object; slack: object };
+    expect(update.secrets).toEqual({ SLACK_BOT_TOKEN: "xoxb-1-abc", SLACK_APP_TOKEN: "xapp-1-def" });
+    expect(update.slack).toEqual({ users: ["U06MPBPRX7C"] });
+    expect(dialog().textContent).toContain("Connected");
+    expect(dialog().textContent).toContain("In Suger Inc, as @otter.");
+    expect(dialog().innerHTML).not.toContain("xoxb-1-abc");
+    expect(dialog().innerHTML).not.toContain("xapp-1-def");
+    expect(dialog().textContent).not.toContain("Unsaved changes");
+    // Not a model provider's key.
+    await tab("API keys");
+    expect(dialog().querySelector('[aria-label="SLACK_BOT_TOKEN"]')).toBeNull();
+    expect(dialog().textContent).not.toContain("Slack messages");
+    // Nor counted with them.
+    expect(tabs().find((b) => b.textContent?.startsWith("API keys"))?.textContent).toBe("API keys0 set");
+    // Telling you when a task needs you (D-201): on, turned off with Save; only that is sent.
+    await tab("Slack");
+    const notify = dialog().querySelector<HTMLInputElement>('input[aria-label="Tell me in Slack when a task needs me"]')!;
+    expect(notify.checked).toBe(true);
+    await act(async () => notify.click());
+    await act(async () => button("Save").click());
+    await flush();
+    expect(calls.filter((c) => c.cmd === "settings_set").pop()!.args.update).toMatchObject({ slack: { notify: false } });
+    expect((calls.filter((c) => c.cmd === "settings_set").pop()!.args.update as { slack: object }).slack).toEqual({ notify: false });
+    expect(dialog().textContent).not.toContain("Unsaved changes");
   });
 
   it("says why the coding agent can't run where it's not installed", async () => {

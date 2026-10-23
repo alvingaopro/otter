@@ -29,9 +29,10 @@ use crate::daemon::{Daemon, RpcResult};
 
 use crate::agents::claude::OAUTH_TOKEN;
 use crate::providers::PROVIDERS;
+use crate::slack::{SLACK_APP_TOKEN, SLACK_BOT_TOKEN};
 
 /// The secrets a client may set (each provider's key, Claude Code's
-/// sign-in), and what they're for.
+/// sign-in, the Slack app's tokens), and what they're for.
 fn secret_names() -> impl Iterator<Item = (&'static str, String)> {
     PROVIDERS
         .iter()
@@ -45,6 +46,16 @@ fn secret_names() -> impl Iterator<Item = (&'static str, String)> {
             OAUTH_TOKEN,
             "Signs Claude Code in on this host (a token from `claude setup-token`)".to_owned(),
         )])
+        .chain([
+            (
+                SLACK_BOT_TOKEN,
+                "Lets Otter read and answer your Slack messages (the app's bot token)".to_owned(),
+            ),
+            (
+                SLACK_APP_TOKEN,
+                "Lets Otter hear from Slack (the app's token with connections:write)".to_owned(),
+            ),
+        ])
 }
 
 /// Controller choices (`None`: automatic), in the order they're offered.
@@ -127,6 +138,13 @@ struct Stored {
     /// default.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     tool_levels: BTreeMap<String, otter_core::tools::ToolLevel>,
+    /// The Slack members whose direct messages are the developer's (D-200).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    slack_users: Vec<String>,
+    /// Slack is told when a task needs the developer (D-201); on unless
+    /// turned off.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    slack_notify: Option<bool>,
 }
 
 #[derive(Debug, Default)]
@@ -231,6 +249,16 @@ impl HostSettings {
             .unwrap_or_default()
     }
 
+    /// The Slack members whose direct messages are the developer's (D-200).
+    pub fn slack_users(&self) -> &[String] {
+        &self.stored.slack_users
+    }
+
+    /// Whether Slack is told when a task needs the developer (D-201).
+    pub fn slack_notify(&self) -> bool {
+        self.stored.slack_notify.unwrap_or(true)
+    }
+
     /// The coding agent's model (`None`: the provider's default).
     pub fn coding_model(&self) -> Option<String> {
         self.stored.coding_model.clone()
@@ -268,6 +296,8 @@ impl HostSettings {
             delete_merged_workspaces: Some(self.delete_merged_workspaces()),
             git: None,
             tools: crate::levels::view(|n| self.tool_level(n)),
+            // How it is connected is the daemon's (`settings_get`).
+            slack: None,
         }
     }
 
@@ -330,6 +360,14 @@ impl HostSettings {
                 }
             }
         }
+        if let Some(slack) = u.slack {
+            if let Some(users) = slack.users {
+                stored.slack_users = crate::slack::members(&users)?;
+            }
+            if let Some(on) = slack.notify {
+                stored.slack_notify = Some(on);
+            }
+        }
         let mut secrets = self.secrets.clone();
         for (name, value) in u.secrets {
             if !secret_names().any(|(n, _)| n == name) {
@@ -343,6 +381,17 @@ impl HostSettings {
                 Some(v) if name == OAUTH_TOKEN && !v.starts_with("sk-ant-oat") => {
                     return Err(format!(
                         "{name} is the token `claude setup-token` prints (sk-ant-oat01-…)"
+                    ));
+                }
+                // The Slack app's two tokens are easy to swap (D-200).
+                Some(v) if name == SLACK_BOT_TOKEN && !v.starts_with("xoxb-") => {
+                    return Err(format!(
+                        "{name} is the app's Bot User OAuth Token (xoxb-…), under Install App"
+                    ));
+                }
+                Some(v) if name == SLACK_APP_TOKEN && !v.starts_with("xapp-") => {
+                    return Err(format!(
+                        "{name} is an app-level token (xapp-…) with connections:write, under Basic Information"
                     ));
                 }
                 Some(v) => {
@@ -388,6 +437,7 @@ impl Daemon {
 
     pub(crate) fn settings_get(&self) -> Settings {
         let mut view = self.settings.read().unwrap().view();
+        view.slack = Some(self.slack_view());
         view.git = Some(self.git_account.view());
         let brain = crate::brain::select(self.environments.base(), &self.brain_choice());
         view.active = Some(brain.name().to_owned());
@@ -424,6 +474,12 @@ impl Daemon {
     }
 
     pub(crate) fn settings_set(&self, mut u: SettingsUpdate) -> RpcResult<Settings> {
+        // Slack connects again with what is set now (D-200).
+        // (Telling about needs is read as it is used: no new connection.)
+        let slack = u.slack.as_ref().is_some_and(|s| s.users.is_some())
+            || u.secrets
+                .keys()
+                .any(|k| k == SLACK_BOT_TOKEN || k == SLACK_APP_TOKEN);
         if let Some(id) = u.git.take() {
             self.git_account
                 .set_identity(id)
@@ -435,6 +491,9 @@ impl Daemon {
         drop(s);
         // A new controller or key: let it look again.
         self.task_wake.notify_one();
+        if slack {
+            self.slack.restart();
+        }
         // As `settings.get` has it: what runs now, and how Otter answers.
         Ok(self.settings_get())
     }
@@ -457,6 +516,7 @@ mod tests {
             delete_merged_workspaces: None,
             git: None,
             tool_levels: Default::default(),
+            slack: None,
         }
     }
 

@@ -36,6 +36,8 @@ mod merged;
 mod otter_turn;
 #[path = "e2e/provider_turn.rs"]
 mod provider_turn;
+#[path = "e2e/slack.rs"]
+mod slack;
 #[path = "e2e/watches.rs"]
 mod watches;
 #[path = "e2e/workspace_prep.rs"]
@@ -8079,6 +8081,7 @@ async fn settings_take_keys_write_only_and_keep_them() {
             delete_merged_workspaces: None,
             git: None,
             tool_levels: Default::default(),
+            slack: None,
         })
         .await
         .unwrap();

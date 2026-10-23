@@ -154,6 +154,47 @@ pub struct Settings {
     /// from an otterd before it.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tools: Vec<ToolInfo>,
+    /// Otter in Slack from this host (D-200); absent from older daemons.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub slack: Option<SlackView>,
+}
+
+/// Otter in Slack (D-200): the developer's direct messages to the Slack app
+/// set here are said in Otter's conversation on this host, and its answers
+/// go back. Its two tokens are secrets (`SLACK_BOT_TOKEN`,
+/// `SLACK_APP_TOKEN`), never shown.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SlackView {
+    /// The Slack members whose direct messages are the developer's (`U…`).
+    #[serde(default)]
+    pub users: Vec<String>,
+    /// `off` (something is missing: `detail` says what), `connecting`,
+    /// `connected` or `failed` (`detail` says why). Clients show an unknown
+    /// one as it is.
+    pub state: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+    /// The Slack workspace, and the app's bot there, once connected.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub team: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bot: Option<String>,
+    /// Slack is told when a task needs the developer (D-201); absent from
+    /// an otterd before it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notify: Option<bool>,
+}
+
+/// `settings.set {slack}`: fields left out stay as they are.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SlackUpdate {
+    /// The Slack members whose direct messages are the developer's; `[]`
+    /// takes everyone off.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub users: Option<Vec<String>>,
+    /// Tell Slack when a task needs the developer (D-201).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notify: Option<bool>,
 }
 
 /// One of Otter's tools as Settings shows it (D-191).
@@ -344,6 +385,9 @@ pub struct SettingsUpdate {
     /// again. Left out: stays.
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub tool_levels: std::collections::BTreeMap<String, Option<otter_core::tools::ToolLevel>>,
+    /// Otter in Slack (D-200); left out: stays.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub slack: Option<SlackUpdate>,
 }
 
 /// How the coding agent runs on this host (D-057) — apart from Otter's own
