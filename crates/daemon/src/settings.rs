@@ -475,7 +475,8 @@ impl Daemon {
 
     pub(crate) fn settings_set(&self, mut u: SettingsUpdate) -> RpcResult<Settings> {
         // Slack connects again with what is set now (D-200).
-        let slack = u.slack.is_some()
+        // (Telling about needs is read as it is used: no new connection.)
+        let slack = u.slack.as_ref().is_some_and(|s| s.users.is_some())
             || u.secrets
                 .keys()
                 .any(|k| k == SLACK_BOT_TOKEN || k == SLACK_APP_TOKEN);

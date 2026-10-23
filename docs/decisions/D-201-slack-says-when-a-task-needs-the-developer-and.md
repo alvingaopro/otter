@@ -14,11 +14,13 @@ needs them, to answer from Slack, and to talk to that task there.
   with the need's key (`kind:decision` or `kind:since`, D-073's "new when
   it differs from the last one seen"). What waits when Slack first connects
   on the host is the baseline, taken as the connection opens, and isn't
-  told. So is a need older than six hours when Slack comes back. Unlike the
-  app, a task first seen with a need is told: otterd sees every task from
-  its start. A setting, on by default: Settings › Slack › *Tell me when a
-  task needs me* (`slack.notify`). Off, needs are still noted, so turning it
-  on doesn't tell what waited meanwhile.
+  told. A need that began while Slack was away is told when it comes back,
+  however long ago: it still waits. Unlike the app, a task first seen with
+  a need is told: otterd sees every task from its start. A setting, on by
+  default: Settings › Slack › *Tell me when a task needs me*
+  (`slack.notify`), read as it is used, so switching it needs no new
+  connection. Off, needs are still noted, so turning it on doesn't tell what
+  waited meanwhile.
 - **The app's decision card, in Slack** (`slack/needs.rs`): a question's
   options as buttons (ten at most); a question with none, "Reply in this
   thread to answer"; any other decision, *Approve* and *Deny*; a task that
@@ -35,18 +37,26 @@ needs them, to answer from Slack, and to talk to that task there.
   Otter. A refusal is said in the thread.
 - **A need's thread is its task's.** A reply under a need's message is said
   in that task's conversation (`task.send`), not Otter's on the host; under
-  a question with no options it is the answer (`decide`, approve, its
-  words), as the app's answer box is. Otter's and the coding agent's
-  messages (D-086) after it come back into the thread, by D-200's rule:
-  while the developer last spoke from Slack. Every need's message maps to
-  its task, so a reply under an older one still reaches it.
+  the message of a question with no options, while that question is open,
+  it is the answer (`decide`, approve, its words), as the app's answer box
+  is — under another need's message it is said in the task, even if a
+  question is open then. Otter's and the coding agent's messages (D-086)
+  after it come back into the thread, by D-200's rule: while the developer
+  last spoke from Slack. A press or an answer is a decision, not a message,
+  so what follows it comes back once the developer writes in the thread;
+  the next need is told anyway. Every need's message maps to its task, so a
+  reply under an older one still reaches it — up to the newest 200; a reply
+  under one older than that goes to Otter's conversation on the host.
 - **Tasks named by their titles** in what Slack is sent: `[ft_…]` becomes
   “title”.
 - **Kept in `state/slack.json`:** each task's need last seen, the need
   messages (the newest 200; what each said, so an update keeps it), and
   each threaded task's last message looked at. A task's thread starts where
-  its conversation was when its first need was told. Changes are looked at
-  300 ms after they happen, so a run's bursts are looked at once.
+  its conversation was when its first need was told; a need's message is
+  kept as soon as it is posted, and one already posted for that need and
+  member isn't posted again. Changes are looked at 300 ms after they
+  happen, so a run's bursts are looked at once, and a task's conversation
+  is read only when it has something new.
 - Compatible, no version bump: `SlackView.notify` and `SlackUpdate.notify`
   are optional. The Slack app needs nothing new: its manifest already had
   interactivity, `im:write` and `chat:write`.
@@ -75,3 +85,15 @@ the answer to a message sent in those 300 ms; it is taken as the
 connection opens. App: the switch, sent alone and saved. Checked with the
 app's tests and a production build, not in the macOS app, and not yet
 against Slack itself.
+
+Reviewed against the code (Fable) before merging. The review found a reply
+under an older need's message taken as the answer to a question opened
+since, a need's message lost from the record (and posted again, its
+buttons never taken off) when telling the next member failed, every
+threaded task's conversation copied under the store's lock on each change,
+an answer done in the read loop (a restart could cut it short before it
+reached the coding agent), a need's age measured from a status that may be
+old, deleted tasks kept in the record, and what is told not redacted
+again. All are fixed above (`a_reply_answers_only_the_question_it_is_under`
+for the first). It also found that what follows a press or an answer
+doesn't come back by itself; that is D-200's rule, said above.

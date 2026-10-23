@@ -62,7 +62,9 @@ pub fn told(task: &Task, n: &Need) -> Told {
         let what = if more == 1 { "decision" } else { "decisions" };
         text.push_str(&format!("\n_{more} more {what} after this one._"));
     }
-    let text = cut(&text, MAX_TOLD);
+    // Summaries and commands are redacted where they are made, a status's
+    // reason not always: again here (invariant 13).
+    let text = cut(&otter_core::redact::redact(&text), MAX_TOLD);
     let value = |answer: Option<&str>| {
         let mut v = json!({ "task": task.id.as_str() });
         if let Some(d) = d {
@@ -89,7 +91,8 @@ pub fn told(task: &Task, n: &Need) -> Told {
     let hint = match (n.kind, d) {
         (NeedKind::Question, Some(d)) if !d.options.is_empty() => {
             for (i, o) in d.options.iter().take(MAX_OPTIONS).enumerate() {
-                buttons.push(button(o, &format!("answer:{i}"), value(Some(o)), None));
+                let o = otter_core::redact::redact(o);
+                buttons.push(button(&o, &format!("answer:{i}"), value(Some(&o)), None));
             }
             "Or reply in this thread to tell the task."
         }
@@ -134,7 +137,10 @@ pub fn over(task: &Task, key: &str) -> String {
             DecisionStatus::Approved => format!("✅ Approved{by}."),
             DecisionStatus::Denied => format!("⛔ Denied{by}."),
             DecisionStatus::Answered => match &d.answer {
-                Some(a) => format!("✅ Answered{by}: {}", cut(a, 500)),
+                Some(a) => format!(
+                    "✅ Answered{by}: {}",
+                    cut(&otter_core::redact::redact(a), 500)
+                ),
                 None => format!("✅ Answered{by}."),
             },
             DecisionStatus::Cancelled => "No longer asked: its run ended.".into(),

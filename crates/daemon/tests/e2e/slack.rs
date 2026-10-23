@@ -658,12 +658,23 @@ async fn a_task_that_needs_you_is_told_in_slack_and_answered_there() {
     };
     let view = host.conn().await.settings_set(off(false)).await.unwrap();
     assert_eq!(view.slack.unwrap().notify, Some(false));
-    let _ws = slack.connected().await;
     let quiet = started_task_named(host, "Add XML export").await;
     wait_task(host, &quiet, "asking about its plan", asks).await;
     tokio::time::sleep(Duration::from_millis(1500)).await;
     host.conn().await.settings_set(off(true)).await.unwrap();
-    let _ws = slack.connected().await;
+    // (No new connection for that: the same socket goes on.)
+    acked(
+        &mut ws,
+        dm(
+            "e9",
+            "U01DEV",
+            "1700000009.000100",
+            "still here?",
+            json!({}),
+        ),
+        "e9",
+    )
+    .await;
     tokio::time::sleep(Duration::from_millis(1500)).await;
     // (The approved task goes on, and may need the developer again: that
     // is told. The quiet one never is, nor the one from before.)
