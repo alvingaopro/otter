@@ -157,6 +157,87 @@ pub struct Settings {
     /// Otter in Slack from this host (D-200); absent from older daemons.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub slack: Option<SlackView>,
+    /// otterhub, run here by otterd (D-208); absent from older daemons.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hub: Option<HubView>,
+}
+
+/// `settings.set {hub}` (D-208): otterhub run by this host's otterd, for the
+/// hosts it serves — the whole of it, as set; `enabled: false` stops it.
+/// Its Slack app's tokens are this host's `SLACK_BOT_TOKEN` and
+/// `SLACK_APP_TOKEN`.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct HubSettings {
+    pub enabled: bool,
+    /// This host's name among the hub's hosts: the one the developer's
+    /// clients call it by, so a message beginning with it comes here.
+    pub name: String,
+    /// The Slack members whose direct messages are the developer's (`U…`).
+    #[serde(default)]
+    pub users: Vec<String>,
+    /// Where a message that names no host goes, when nothing else says.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_host: Option<String>,
+    /// The other hosts it serves, and how this host reaches them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub hosts: Vec<HubHost>,
+}
+
+/// A host otterhub serves besides its own.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct HubHost {
+    pub name: String,
+    #[serde(flatten)]
+    pub via: HubVia,
+}
+
+/// How otterhub reaches a host.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "transport", rename_all = "snake_case")]
+pub enum HubVia {
+    /// On this machine: its otterd at `otterd_path`, with `home`.
+    Local {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        otterd_path: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        home: Option<String>,
+    },
+}
+
+/// otterhub on this host, as Settings shows it (D-208).
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct HubView {
+    pub enabled: bool,
+    pub name: String,
+    #[serde(default)]
+    pub users: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_host: Option<String>,
+    /// Every host it serves, this one first.
+    #[serde(default)]
+    pub hosts: Vec<String>,
+    /// `off`, `starting`, `running` (the hub said so lately) or `failed`
+    /// (`detail` says why; otterd tries again). Clients show an unknown one
+    /// as it is.
+    pub state: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+    /// What the hub says of its connection to Slack.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub slack: Option<String>,
+    /// What the hub says of each host it serves.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub served: Vec<HubServed>,
+    /// How otterd starts again when this machine does, or why it doesn't.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub boot: Option<String>,
+}
+
+/// What otterhub says of one host it serves.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct HubServed {
+    pub host: String,
+    pub line: String,
 }
 
 /// Otter in Slack (D-200): the developer's direct messages to the Slack app
@@ -438,6 +519,9 @@ pub struct SettingsUpdate {
     /// Otter in Slack (D-200); left out: stays.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub slack: Option<SlackUpdate>,
+    /// otterhub run here (D-208), as a whole; left out: stays.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hub: Option<HubSettings>,
 }
 
 /// How the coding agent runs on this host (D-057) — apart from Otter's own

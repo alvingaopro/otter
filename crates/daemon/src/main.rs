@@ -4,6 +4,7 @@ mod agents;
 mod attach;
 mod attention;
 mod backend;
+mod boot;
 mod brain;
 mod browser;
 mod changes;
@@ -26,6 +27,7 @@ mod login;
 mod memory;
 mod merged;
 mod metrics;
+mod otterhub;
 mod paths;
 mod process_table;
 mod providers;
@@ -249,6 +251,8 @@ async fn serve(paths: Paths) -> Result<()> {
     tokio::spawn(daemon.clone().run_merged());
     // Otter in Slack, where it is set up (D-200).
     tokio::spawn(daemon.clone().run_slack());
+    // otterhub, where it is turned on (D-208).
+    tokio::spawn(daemon.clone().run_hub());
 
     // We hold the lock, so any socket file left behind is stale.
     let _ = std::fs::remove_file(&paths.socket);

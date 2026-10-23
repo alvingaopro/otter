@@ -413,6 +413,24 @@ The Control Agent's model and API keys on this host (D-048).
     one it posted since otterd started — so that a reply in its thread, or a
     press on it, goes there.
   An older daemon answers `invalid_request` to both.
+- otterhub run here (D-208): `settings.set {hub: {enabled, name, users,
+  default_host?, hosts}}` sets it as a whole. `name` is this host's name
+  among the hub's hosts, as the developer's clients call it; `hosts` are
+  the others it serves, each `{name, transport: "local", otterd_path?,
+  home?}` (on this machine). With `enabled`, otterd runs `otter hub serve`
+  (the `otter` beside it) for this host and those, with this host's
+  `SLACK_BOT_TOKEN` and `SLACK_APP_TOKEN`, starts it again when it stops,
+  and sets itself to start with the machine; `enabled: false` stops it. A
+  name hosts don't take, one twice, a default it doesn't serve, or no
+  member while enabled is `invalid_argument`. The view's `hub?` is `{enabled,
+  name, users, default_host?, hosts, state, detail?, slack?, served,
+  boot?}`: `hosts` every host it serves (this one first); `state` `off`,
+  `starting` (its process runs), `running` (the hub said so in the last 90
+  s), or `failed` (`detail` says why; otterd tries again); `slack` and
+  `served` (`[{host, line}]`) what the hub says of Slack and of each host,
+  while it is running; `boot` how otterd starts with this machine, or why it
+  doesn't. An otterd that can run a hub always has the view (`off` where it
+  was never set); one before it has none, and ignores the field.
 - `settings.models {controller}` → `[{id, name?}]`: the models that
   controller offers, as its provider lists them, asked by the host with the
   key set there (OpenRouter's list needs none); `claude` answers Claude

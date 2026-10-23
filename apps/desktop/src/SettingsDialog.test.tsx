@@ -270,7 +270,7 @@ describe("Settings", () => {
   it("opens on this Mac's look, then remembers the tab", async () => {
     expect(dialog().querySelector("h2")?.textContent).toBe("Appearance");
     // This host's otterd has no coding settings: no tab for them.
-    expect(tabs().map((b) => b.textContent)).toEqual(["Appearance", "Sign-in pages", "Developer", "Git & GitHub", "Otter", "API keys0 set"]);
+    expect(tabs().map((b) => b.textContent)).toEqual(["Appearance", "Sign-in pages", "Developer", "Git & GitHub", "Slack", "Otter", "API keys0 set"]);
     await tab("Otter");
     expect(localStorage.getItem("otter.settings-tab")).toBe("otter");
     expect(dialog().querySelector('[aria-current="page"]')?.textContent).toBe("Otter");
@@ -500,7 +500,7 @@ describe("Settings", () => {
   });
 
   it("shows a host whose Slack comes through otterhub, with no app of its own to make (D-206)", async () => {
-    await tab("Slack");
+    await tab("Slack here");
     await flush();
     expect(dialog().textContent).toContain("Through otterhub");
     expect(dialog().textContent).toContain("In Suger Inc, as @otter: Slack's events come from otterhub.");
@@ -515,9 +515,9 @@ describe("Settings", () => {
   });
 
   it("sets Slack up with its two tokens, kept on the host and never shown, and whose messages are yours (D-200)", async () => {
-    expect(tabs().map((b) => b.textContent)).toContain("Slack");
-    await tab("Slack");
-    expect(dialog().querySelector("h2")?.textContent).toBe("Slack");
+    expect(tabs().map((b) => b.textContent)).toContain("Slack here");
+    await tab("Slack here");
+    expect(dialog().querySelector("h2")?.textContent).toBe("Slack here");
     expect(dialog().textContent).toContain("Not set up");
     expect(dialog().textContent).toContain("Add the bot token (xoxb-…)");
     await act(async () => button("Add…").click());
@@ -570,7 +570,7 @@ describe("Settings", () => {
     // Nor counted with them.
     expect(tabs().find((b) => b.textContent?.startsWith("API keys"))?.textContent).toBe("API keys0 set");
     // Telling you when a task needs you (D-201): on, turned off with Save; only that is sent.
-    await tab("Slack");
+    await tab("Slack here");
     const notify = dialog().querySelector<HTMLInputElement>('input[aria-label="Tell me in Slack when a task needs me"]')!;
     expect(notify.checked).toBe(true);
     await act(async () => notify.click());
@@ -679,7 +679,7 @@ describe("Settings", () => {
   });
 
   it("sets each tool's level for Otter, one at a time and at once (D-191)", async () => {
-    expect(tabs().map((b) => b.textContent)).toEqual(["Appearance", "Sign-in pages", "Developer", "Git & GitHub", "Otter", "Otter's tools", "API keys0 set"]);
+    expect(tabs().map((b) => b.textContent)).toEqual(["Appearance", "Sign-in pages", "Developer", "Git & GitHub", "Slack", "Otter", "Otter's tools", "API keys0 set"]);
     await tab("Otter's tools");
     expect(dialog().querySelector("h2")?.textContent).toBe("Otter's tools");
     // What the levels mean, and what no level allows, first.
