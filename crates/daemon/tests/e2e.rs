@@ -82,6 +82,13 @@ impl TestHost {
 
     async fn spawn_daemon(&mut self) {
         let _ = std::fs::remove_file(self.home().join("run/workd.sock"));
+        // What it logs goes where `dial` would put it, for `log_tail`.
+        std::fs::create_dir_all(self.home().join("logs")).unwrap();
+        let log = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(self.home().join("logs/workd.log"))
+            .unwrap();
         let daemon = Command::new(env!("CARGO_BIN_EXE_otterd"))
             .arg("--home")
             .arg(self.home())
@@ -89,7 +96,7 @@ impl TestHost {
             .envs(self.vars.iter().map(|(k, v)| (k.as_str(), v.as_str())))
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
+            .stderr(log)
             .spawn()
             .unwrap();
         self.daemon = Some(daemon);
@@ -99,6 +106,14 @@ impl TestHost {
             async move { ok.then_some(()) }
         })
         .await;
+    }
+
+    /// The last `n` lines otterd logged: what a timed-out wait says, so a
+    /// test that fails now and then on CI tells why.
+    fn log_tail(&self, n: usize) -> String {
+        let log = std::fs::read_to_string(self.home().join("logs/workd.log")).unwrap_or_default();
+        let lines: Vec<&str> = log.lines().collect();
+        lines[lines.len().saturating_sub(n)..].join("\n")
     }
 
     /// Stop a daemon started by `with_env` and start it again with the same
@@ -126,7 +141,13 @@ impl TestHost {
     }
 
     async fn conn(&self) -> Connection {
-        Connection::connect(&self.transport).await.unwrap()
+        match Connection::connect(&self.transport).await {
+            Ok(c) => c,
+            Err(e) => panic!(
+                "connecting: {e}\notterd's log, its end:\n{}",
+                self.log_tail(60)
+            ),
+        }
     }
 
     fn tmux(&self, args: &[&str]) -> std::process::Output {
@@ -175,6 +196,28 @@ impl Drop for TestHost {
             let _ = daemon.kill();
             let _ = daemon.wait();
         }
+    }
+}
+
+/// [`eventually`], and if it never comes, the end of `host`'s otterd log
+/// with the panic: what a test failing now and then on CI says about why.
+async fn eventually_on<T, F, Fut>(host: &TestHost, what: &str, mut f: F) -> T
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Option<T>>,
+{
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
+    loop {
+        if let Some(v) = f().await {
+            return v;
+        }
+        if tokio::time::Instant::now() > deadline {
+            panic!(
+                "timed out waiting for: {what}\notterd's log, its end:\n{}",
+                host.log_tail(60)
+            );
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
     }
 }
 
@@ -2421,6 +2464,15 @@ async fn a_claude_session_takes_its_conversations_name_until_you_name_it() {
     assert_eq!(kept.name, format!("{title}-2"));
     let ws = host.conn().await.workspace_get("cc").await.unwrap();
     assert_eq!(ws.sessions[1].name_from, Some(NameFrom::Developer));
+}
+
+/// A test's otterd keeps its log, so a wait that times out can say what
+/// otterd was doing (`log_tail`).
+#[tokio::test]
+async fn a_test_daemon_keeps_its_log() {
+    let host = TestHost::with_env(&[]).await;
+    host.conn().await.host_status().await.unwrap();
+    assert!(!host.log_tail(20).trim().is_empty(), "nothing logged");
 }
 
 async fn fake_codex_host(mode: &str) -> FakeCodex {
@@ -5597,12 +5649,13 @@ async fn wait_task(
             let history = host.conn().await.task_events(id, None).await.unwrap();
             let lines: Vec<&str> = history.iter().map(|r| r.text.as_str()).collect();
             panic!(
-                "timed out waiting for: {what}\nstatus: {:?} ({:?})\nhistory: {lines:#?}\nrationale: {:?}\nruns: {:?}\nevidence: {:?}",
+                "timed out waiting for: {what}\nstatus: {:?} ({:?})\nhistory: {lines:#?}\nrationale: {:?}\nruns: {:?}\nevidence: {:?}\notterd's log, its end:\n{}",
                 f.status,
                 f.status_reason,
                 f.rationale,
                 f.runs,
-                f.evidence.last()
+                f.evidence.last(),
+                host.log_tail(60)
             );
         }
         tokio::time::sleep(Duration::from_millis(100)).await;

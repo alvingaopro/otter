@@ -221,20 +221,24 @@ impl Daemon {
     }
 
     pub(crate) async fn session_write(self: &Arc<Self>, p: &SessionWrite) -> RpcResult<()> {
-        let (ws_id, session) = {
+        let (ws_id, session, asked) = {
             let store = self.store.lock().await;
             let (ws_id, session) = find_session(&store, &p.session)?;
             let exec = session
                 .current_execution()
                 .filter(|e| e.is_running())
                 .ok_or_else(|| not_running(&session))?;
+            // What it asked until now, while nothing else can raise more.
+            let asked = Utc::now();
             self.backend
                 .send_text(&exec.backend_ref, &p.data, p.enter)
                 .await
                 .map_err(internal)?;
-            (ws_id, session)
+            (ws_id, session, asked)
         };
-        self.engage(&ws_id, &session.id, attention::Engaged::Answered)
+        // Answered: what it asked by then. The agent may be done already
+        // with the turn the answer let go on; that is news to keep.
+        self.engage(&ws_id, &session.id, attention::Engaged::Answered(asked))
             .await;
         Ok(())
     }

@@ -686,6 +686,9 @@ pub(crate) async fn run(
         .envs(env)
         .env("GIT_TERMINAL_PROMPT", "0")
         .env("GH_PROMPT_DISABLED", "1")
+        // Reading (`status`, `diff`) takes no lock on the index, so it never
+        // stands in the way of a commit, Otter's or anyone's in the tree.
+        .env("GIT_OPTIONAL_LOCKS", "0")
         .stdin(if input.is_some() {
             std::process::Stdio::piped()
         } else {
@@ -735,6 +738,15 @@ fn tail(s: &str, n: usize) -> String {
     let s = otter_core::redact::redact(s);
     let chars: Vec<char> = s.chars().collect();
     chars[chars.len().saturating_sub(n)..].iter().collect()
+}
+
+/// How long to wait, each time, for another git to let go of the index:
+/// about 8 s in all.
+const INDEX_WAITS: [u64; 8] = [100, 200, 400, 800, 1600, 1600, 1600, 1600];
+
+/// Whether git gave up because another git holds the index.
+fn index_locked(stderr: &str) -> bool {
+    stderr.contains("index.lock") && stderr.contains("File exists")
 }
 
 /// Git in a workspace.
@@ -791,11 +803,22 @@ impl Git<'_> {
     /// space).
     async fn output(&self, args: &[&str]) -> Result<String> {
         let git = which("git", self.env).ok_or_else(|| anyhow!("git is not installed"))?;
-        let (ok, out, err) = run(&git, args, self.root, self.env, None).await?;
-        if !ok {
-            bail!(failed("git", args, &err, 500));
+        // Another git in the tree holds its index (the developer's editor,
+        // or one still running from before otterd restarted): git gives up
+        // at once, having done nothing, so this waits and tries again.
+        let mut waits = INDEX_WAITS.iter();
+        loop {
+            let (ok, out, err) = run(&git, args, self.root, self.env, None).await?;
+            if ok {
+                return Ok(out);
+            }
+            match waits.next() {
+                Some(ms) if index_locked(&err) => {
+                    tokio::time::sleep(std::time::Duration::from_millis(*ms)).await
+                }
+                _ => bail!(failed("git", args, &err, 500)),
+            }
         }
-        Ok(out)
     }
 
     /// The branch checked out, if this is a repository with an `origin`.
@@ -1378,6 +1401,46 @@ mod tests {
 
     /// A workspace is a worktree of a bare backing repository, which `git
     /// worktree list` shows first: it is not the task's to edit (D-174).
+    /// Another git holding the index (one still running from before otterd
+    /// restarted, an editor's): git gives up at once; Otter waits for it.
+    #[tokio::test]
+    async fn a_commit_waits_for_another_git_to_let_go_of_the_index() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let env: EnvMap = std::env::vars()
+            .chain(
+                [
+                    ("GIT_AUTHOR_NAME", "t"),
+                    ("GIT_AUTHOR_EMAIL", "t@t"),
+                    ("GIT_COMMITTER_NAME", "t"),
+                    ("GIT_COMMITTER_EMAIL", "t@t"),
+                ]
+                .map(|(k, v)| (k.to_owned(), v.to_owned())),
+            )
+            .collect();
+        let g = Git { root, env: &env };
+        g.output(&["init", "-q", "-b", "main"]).await.unwrap();
+        std::fs::write(root.join("a.txt"), "a\n").unwrap();
+        let lock = root.join(".git/index.lock");
+        std::fs::write(&lock, "").unwrap();
+        // Held: git alone gives up.
+        let git = which("git", &env).unwrap();
+        let (ok, _, err) = run(&git, &["add", "-A"], root, &env, None).await.unwrap();
+        assert!(!ok && index_locked(&err), "{err}");
+        // Let go of a moment later: Otter's add goes through.
+        let release = lock.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+            std::fs::remove_file(release).unwrap();
+        });
+        g.output(&["add", "-A"]).await.unwrap();
+        let staged = g
+            .output(&["diff", "--cached", "--name-only"])
+            .await
+            .unwrap();
+        assert_eq!(staged.trim(), "a.txt");
+    }
+
     #[tokio::test]
     async fn the_backing_repository_is_not_one_of_the_worktrees() {
         let dir = tempfile::tempdir().unwrap();
