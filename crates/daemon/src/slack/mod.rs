@@ -81,6 +81,9 @@ pub struct Slack {
     /// Threads made outside the sync loop (`/otter new`, D-202), for it to
     /// keep: it alone writes `state/slack.json`.
     pending: std::sync::Mutex<Vec<Pending>>,
+    /// The `/otter` commands done lately, by their trigger: one sent again
+    /// (its ack was late) is answered, not done again (D-202).
+    commands: std::sync::Mutex<std::collections::VecDeque<String>>,
     /// What each form's selects chose, by its message and question, as
     /// they are chosen (D-202): Submit reads the message's state too.
     picks: std::sync::Mutex<HashMap<(String, String), String>>,
@@ -96,7 +99,8 @@ struct Stream {
     to: Option<Origin>,
     /// The message it is written in, once posted.
     ts: Option<String>,
-    /// That message is being posted: the sync waits for it.
+    /// That message is being posted, or shown again: the sync waits for
+    /// it, so the answer is never overwritten by words before it.
     posting: bool,
     /// The answer itself was sent: nothing more is shown.
     over: bool,
@@ -107,7 +111,7 @@ struct Stream {
 }
 
 /// A thread for a task, made outside the sync loop.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 struct Pending {
     post: Post,
     /// Its conversation's last message when the thread began.
@@ -702,8 +706,11 @@ impl Daemon {
         }
         match cmd.verb {
             socket::Verb::Status => {
-                let store = self.tasks.lock().await;
-                answer(needs::status(store.iter()))
+                // Answered within Slack's three seconds, or not at all.
+                match tokio::time::timeout(Duration::from_secs(1), self.tasks.lock()).await {
+                    Ok(store) => answer(needs::status(store.iter())),
+                    Err(_) => answer("Otter is busy; ask again in a moment.".into()),
+                }
             }
             socket::Verb::Help => answer(needs::HELP.into()),
             socket::Verb::New(request) => {
@@ -712,12 +719,30 @@ impl Daemon {
                 let reply = format!(
                     "Starting **{title}**: its thread is in your direct messages with Otter."
                 );
+                {
+                    let mut done = self.slack.commands.lock().unwrap();
+                    if !cmd.trigger.is_empty() {
+                        if done.contains(&cmd.trigger) {
+                            return answer(reply);
+                        }
+                        done.push_back(cmd.trigger.clone());
+                        while done.len() > 64 {
+                            done.pop_front();
+                        }
+                    }
+                }
                 tokio::spawn(async move {
                     if let Err(e) = daemon
                         .slack_new(&env, &bot, &cmd.user, &title, request)
                         .await
                     {
                         tracing::warn!("slack: /otter new: {e}");
+                        if let Some(url) = &cmd.respond {
+                            let line = format!("Otter didn't start **{title}**: {e}");
+                            if let Err(e) = api::respond(&env, url, &line).await {
+                                tracing::warn!("slack: {e}");
+                            }
+                        }
                     }
                 });
                 answer(reply)
@@ -872,6 +897,7 @@ impl Daemon {
                 }
                 (Some(to), Some(ts)) if s.shown.is_none_or(|t| t.elapsed() >= STREAM_EVERY) => {
                     s.shown = Some(std::time::Instant::now());
+                    s.posting = true;
                     Some(Next::Update(to.clone(), ts.clone()))
                 }
                 _ => None,
@@ -922,19 +948,23 @@ impl Daemon {
                 if let Err(e) = api::call(env, &c.bot, "chat.update", &body).await {
                     tracing::info!("slack: an answer being written wasn't shown again: {e}");
                 }
+                if let Some(s) = self.slack.streams.lock().unwrap().get_mut(answered) {
+                    s.posting = false;
+                }
             }
         }
     }
 
-    /// Send one of Otter's (or the coding agent's) messages to `to`: in
-    /// place of the words shown while it was written, if they were (D-202);
-    /// else as a message of its own. Either way, nothing written for it is
-    /// shown after.
+    /// Send one of Otter's (or the coding agent's) messages to `to`, where
+    /// it goes (`None`: nowhere in Slack). Words shown while one of Otter's
+    /// answers was written are replaced by it where they are (D-202) —
+    /// also when the answer itself goes elsewhere now, or nowhere — so none
+    /// is left half written; and nothing written for it is shown after.
     async fn slack_answer(
         &self,
         env: &EnvMap,
         bot: &str,
-        to: &Origin,
+        to: Option<&Origin>,
         m: &Message,
         titles: &HashMap<String, String>,
     ) -> Result<(), CallError> {
@@ -943,18 +973,22 @@ impl Daemon {
             .clone()
             .filter(|_| m.role == MessageRole::Controller);
         let Some(answered) = answered else {
-            return post(env, bot, to, &m.text, titles).await;
+            return match to {
+                Some(to) => post(env, bot, to, &m.text, titles).await,
+                None => Ok(()),
+            };
         };
-        // Its first words may still be on their way: wait for them.
+        // Words shown for it may still be on their way: wait for them.
         let waited = std::time::Instant::now();
-        let ts = loop {
+        let shown = loop {
             {
                 let mut streams = self.slack.streams.lock().unwrap();
+                streams.retain(|_, s| s.born.elapsed() < Duration::from_secs(600));
                 match streams.get_mut(&answered) {
                     Some(s) if s.posting && waited.elapsed() < STREAM_WAIT => {}
                     Some(s) => {
                         s.over = true;
-                        break s.ts.clone().filter(|_| s.to.as_ref() == Some(to));
+                        break s.to.clone().zip(s.ts.clone());
                     }
                     None => {
                         // Words that come late are for an answer already sent.
@@ -976,23 +1010,29 @@ impl Daemon {
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
         };
-        let Some(ts) = ts else {
-            return post(env, bot, to, &m.text, titles).await;
+        let Some((there, ts)) = shown else {
+            return match to {
+                Some(to) => post(env, bot, to, &m.text, titles).await,
+                None => Ok(()),
+            };
         };
         let text = needs::titled(&otter_core::redact::redact(&m.text), titles);
         let pieces = socket::pieces(&text, MAX_PIECE);
         let first = pieces.first().cloned().unwrap_or_default();
         let body = json!({
-            "channel": to.channel,
+            "channel": there.channel,
             "ts": ts,
             "text": first.chars().take(280).collect::<String>(),
             "blocks": [{ "type": "markdown", "text": first }],
         });
         api::call(env, bot, "chat.update", &body).await?;
         for piece in pieces.iter().skip(1) {
-            post(env, bot, to, piece, titles).await?;
+            post(env, bot, &there, piece, titles).await?;
         }
-        Ok(())
+        match to {
+            Some(to) if *to != there => post(env, bot, to, &m.text, titles).await,
+            _ => Ok(()),
+        }
     }
 
     /// The first time Slack connects (or after its file was lost): what is
@@ -1112,13 +1152,19 @@ impl Daemon {
             state
         });
         // Threads made meanwhile (`/otter new`) are kept now.
-        let made: Vec<Pending> = std::mem::take(&mut *self.slack.pending.lock().unwrap());
+        // Taken from memory only once kept, so a reply meanwhile finds it.
+        let made: Vec<Pending> = self.slack.pending.lock().unwrap().clone();
         if !made.is_empty() {
-            for p in made {
-                state.tasks.insert(p.post.task.clone(), p.after);
-                state.posts.push(p.post);
+            for p in &made {
+                state.tasks.insert(p.post.task.clone(), p.after.clone());
+                state.posts.push(p.post.clone());
             }
             state.save(&path);
+            self.slack
+                .pending
+                .lock()
+                .unwrap()
+                .retain(|p| !made.contains(p));
         }
         let look = self.slack_look(&state).await;
         self.slack_host(c, env, &chat.messages, &mut state, &look.titles, &path)
@@ -1189,8 +1235,8 @@ impl Daemon {
             let to = (now - m.at < STALE)
                 .then(|| destination(messages, i))
                 .flatten();
-            if let Some(to) = to {
-                match self.slack_answer(env, &c.bot, &to, m, titles).await {
+            if to.is_some() || m.role == MessageRole::Controller {
+                match self.slack_answer(env, &c.bot, to.as_ref(), m, titles).await {
                     Ok(()) => {}
                     Err(e @ CallError::Unreachable(_)) => return Err(e),
                     // Never sent: said, and not tried again for ever.
@@ -1238,6 +1284,12 @@ impl Daemon {
             }
             state.posts[*i].open = false;
             state.save(path);
+            // A form there has nothing more to submit.
+            self.slack
+                .picks
+                .lock()
+                .unwrap()
+                .retain(|(m, _), _| m != &p.ts);
         }
         // Read now: turning it on or off needs no new connection.
         let notify = self.settings.read().unwrap().slack_notify();
@@ -1345,8 +1397,11 @@ impl Daemon {
                 let to = (now - m.at < STALE)
                     .then(|| destination(messages, i))
                     .flatten();
-                if let Some(to) = to {
-                    match self.slack_answer(env, &c.bot, &to, m, &look.titles).await {
+                if to.is_some() || m.role == MessageRole::Controller {
+                    match self
+                        .slack_answer(env, &c.bot, to.as_ref(), m, &look.titles)
+                        .await
+                    {
                         Ok(()) => {}
                         Err(e @ CallError::Unreachable(_)) => return Err(e),
                         Err(e) => tracing::warn!("slack: a message of {task} wasn't sent: {e}"),

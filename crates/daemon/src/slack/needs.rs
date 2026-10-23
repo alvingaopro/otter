@@ -323,13 +323,22 @@ pub fn status<'a>(tasks: impl Iterator<Item = &'a Task>) -> String {
         .join("\n\n")
 }
 
-/// A task's title from what the developer asked: its first line, short.
+/// A task's title from what the developer asked: its first line, short —
+/// 80 characters, and within the bytes a title may have (200).
 pub fn title_of(request: &str) -> String {
     let first = request
         .lines()
         .find(|l| !l.trim().is_empty())
-        .unwrap_or("Task");
-    cut(first.trim(), 80)
+        .unwrap_or("Task")
+        .trim();
+    let mut end = 0;
+    for (n, (i, c)) in first.char_indices().enumerate() {
+        if n == 80 || i + c.len_utf8() > 190 {
+            return format!("{}…", &first[..end]);
+        }
+        end = i + c.len_utf8();
+    }
+    first.to_owned()
 }
 
 /// At most `max` characters of `s`, with `…` when cut.
@@ -567,6 +576,13 @@ mod tests {
             "Add CSV export"
         );
         assert_eq!(title_of(&"x".repeat(100)).chars().count(), 81);
+        // Within a title's bytes, cut between characters.
+        let long = title_of(&"导出".repeat(50));
+        assert!(
+            long.len() <= 200 && long.ends_with('…'),
+            "{} {long}",
+            long.len()
+        );
     }
 
     #[test]

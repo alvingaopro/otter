@@ -119,14 +119,37 @@ fn read(status: &str, body: &str) -> Result<Value, CallError> {
     Err(CallError::Refused(code.to_owned()))
 }
 
-/// Fetch a file Slack keeps (a picture, D-202) with `token`, at most
-/// `max` bytes.
+/// Whether `url` is Slack's, where its files are: the bot's token goes
+/// nowhere else, whatever a message says. (`OTTER_SLACK_API`'s host too, for
+/// tests.)
+fn slacks(url: &str) -> bool {
+    let host = |u: &str| {
+        url::Url::parse(u)
+            .ok()
+            .and_then(|u| u.host_str().map(str::to_owned))
+    };
+    let Some(h) = host(url) else {
+        return false;
+    };
+    let ours = ["slack.com", "slack-edge.com"]
+        .iter()
+        .any(|d| h == *d || h.ends_with(&format!(".{d}")));
+    ours || host(&base()).is_some_and(|b| b == h && std::env::var("OTTER_SLACK_API").is_ok())
+}
+
+/// Fetch a file Slack keeps (a picture, D-202) with `token`, at most `max`
+/// bytes: more is refused, whether or not Slack said its length. A redirect
+/// to another host goes without the token (curl drops it).
 pub async fn download(
     env: &EnvMap,
     token: &str,
     url: &str,
     max: usize,
 ) -> Result<Vec<u8>, CallError> {
+    use tokio::io::AsyncReadExt;
+    if !slacks(url) {
+        return Err(CallError::Refused("not a Slack address".into()));
+    }
     let unreachable = |e: &dyn std::fmt::Display| CallError::Unreachable(e.to_string());
     let curl = which("curl", env).ok_or_else(|| unreachable(&"curl is not installed"))?;
     let mut cmd = tokio::process::Command::new(&curl);
@@ -150,6 +173,18 @@ pub async fn download(
         .await
         .map_err(|e| unreachable(&e))?;
     drop(stdin);
+    let mut bytes = Vec::new();
+    child
+        .stdout
+        .take()
+        .expect("piped")
+        .take(max as u64 + 1)
+        .read_to_end(&mut bytes)
+        .await
+        .map_err(|e| unreachable(&e))?;
+    if bytes.len() > max {
+        return Err(CallError::Refused("too large".into()));
+    }
     let out = child
         .wait_with_output()
         .await
@@ -158,12 +193,64 @@ pub async fn download(
         let why = String::from_utf8_lossy(&out.stderr);
         return Err(CallError::Refused(otter_core::redact::redact(why.trim())));
     }
-    Ok(out.stdout)
+    Ok(bytes)
+}
+
+/// Say something more about a slash command, where Slack said to
+/// (`response_url`, D-202): seen only by who typed it, no token needed.
+pub async fn respond(env: &EnvMap, url: &str, text: &str) -> Result<(), CallError> {
+    if !slacks(url) {
+        return Err(CallError::Refused("not a Slack address".into()));
+    }
+    let unreachable = |e: &dyn std::fmt::Display| CallError::Unreachable(e.to_string());
+    let curl = which("curl", env).ok_or_else(|| unreachable(&"curl is not installed"))?;
+    let mut file = tempfile::Builder::new()
+        .prefix("otter-slack")
+        .tempfile()
+        .map_err(|e| unreachable(&e))?;
+    let body = serde_json::json!({ "response_type": "ephemeral", "text": text });
+    file.write_all(body.to_string().as_bytes())
+        .map_err(|e| unreachable(&e))?;
+    let out = tokio::process::Command::new(&curl)
+        .args(["-sS", "--fail", "--max-time", "30"])
+        .args(["-H", "Content-Type: application/json", "--data-binary"])
+        .arg(format!("@{}", file.path().display()))
+        .arg(url)
+        .env_clear()
+        .envs(env)
+        .stdin(std::process::Stdio::null())
+        .output()
+        .await
+        .map_err(|e| unreachable(&e))?;
+    if !out.status.success() {
+        let why = String::from_utf8_lossy(&out.stderr);
+        return Err(CallError::Refused(otter_core::redact::redact(why.trim())));
+    }
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The bot's token is sent to Slack's hosts only, whatever address a
+    /// message carries.
+    #[test]
+    fn files_are_fetched_from_slack_only() {
+        if std::env::var("OTTER_SLACK_API").is_ok() {
+            return;
+        }
+        assert!(slacks("https://files.slack.com/files-pri/T1-F1/a.png"));
+        assert!(slacks("https://a.slack-edge.com/x.png"));
+        for not in [
+            "https://evil.example/x.png",
+            "https://slack.com.evil.example/x",
+            "http://127.0.0.1:9/x",
+            "not a url",
+        ] {
+            assert!(!slacks(not), "{not}");
+        }
+    }
 
     #[test]
     fn slacks_own_trouble_is_tried_again_and_a_refusal_is_not() {

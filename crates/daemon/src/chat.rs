@@ -220,8 +220,12 @@ impl Daemon {
                 .create(&dir)
                 .map_err(|e| RpcError::internal(e.to_string()))?;
             for (name, (_, bytes)) in names.iter().zip(&pictures) {
-                crate::settings::write_private(&dir.join(name), bytes)
-                    .map_err(|e| RpcError::internal(format!("{e:#}")))?;
+                if let Err(e) = crate::settings::write_private(&dir.join(name), bytes) {
+                    for name in &names {
+                        let _ = std::fs::remove_file(dir.join(name));
+                    }
+                    return Err(RpcError::internal(format!("{e:#}")));
+                }
             }
         }
         let mut added = false;

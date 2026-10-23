@@ -752,6 +752,8 @@ async fn slash(
 ) -> Value {
     let payload = json!({
         "command": "/otter", "text": text, "user_id": user, "channel_id": "D1",
+        // One typing of it: Slack sends it again, the same, if the ack is late.
+        "trigger_id": format!("trigger-{text}"),
     });
     let frame = json!({"type": "slash_commands", "envelope_id": envelope, "payload": payload});
     ws.send(Frame::text(frame.to_string())).await.unwrap();
@@ -844,12 +846,16 @@ async fn otter_in_slack_says_what_needs_you_and_starts_a_task() {
         + 1;
     let ts = format!("1800000000.{n:06}");
     assert!(head.get("thread_ts").is_none());
+    // Sent again (its ack was late): answered, not done again.
+    slash(&mut ws, "s5", "U01DEV", "new Add XML export\nwith tests").await;
+    tokio::time::sleep(Duration::from_millis(500)).await;
     let tasks = host.conn().await.task_list().await.unwrap();
-    let task = tasks
+    let made: Vec<_> = tasks
         .iter()
-        .find(|t| t.title == "Add XML export")
-        .unwrap()
-        .clone();
+        .filter(|t| t.title == "Add XML export")
+        .collect();
+    assert_eq!(made.len(), 1, "{made:#?}");
+    let task = made[0].clone();
     let request = task
         .messages
         .iter()
@@ -1078,6 +1084,71 @@ async fn a_picture_in_slack_reaches_otter() {
     .await;
     eventually("Otter shown the picture", || {
         said_what("Shown: [image/png]")
+    })
+    .await;
+}
+
+/// An answer shown as it is written is finished where it is (D-202), even
+/// when the developer wrote elsewhere meanwhile, so the answer itself goes
+/// nowhere in Slack: its words aren't left half written.
+#[tokio::test]
+async fn an_answer_shown_as_it_is_written_is_finished_where_it_is() {
+    let mut slack = FakeSlack::start().await;
+    let api = slack.api.clone();
+    let fake = fake_agent_host_with("ok", "scripted", move |_| {
+        vec![("OTTER_BRAIN_V2", "1".into()), ("OTTER_SLACK_API", api)]
+    })
+    .await;
+    let host = &fake.host;
+    host.conn()
+        .await
+        .settings_set(set_up("xoxb-1-SLACKTESTTOKEN"))
+        .await
+        .unwrap();
+    let mut ws = slack.connected().await;
+    // Otter takes a while over it; meanwhile the developer writes from the
+    // terminal.
+    acked(
+        &mut ws,
+        dm(
+            "e1",
+            "U01DEV",
+            "1700000040.000100",
+            "SLEEP: 1500",
+            json!({}),
+        ),
+        "e1",
+    )
+    .await;
+    eventually("Otter at it", || async {
+        let c = host.conn().await.otter_get().await.unwrap();
+        (said(&c, "SLEEP: 1500") == 1).then_some(())
+    })
+    .await;
+    host.conn()
+        .await
+        .otter_send("cli-1", "and meanwhile")
+        .await
+        .unwrap();
+    let shown = eventually("the answer shown as it is written", || async {
+        slack
+            .calls("chat.postMessage")
+            .into_iter()
+            .find(|c| c.2["blocks"][0]["text"] == "Scripted: None. …")
+    })
+    .await;
+    let n = slack
+        .calls("chat.postMessage")
+        .iter()
+        .position(|c| c.2 == shown.2)
+        .unwrap()
+        + 1;
+    let at = format!("1800000000.{n:06}");
+    eventually("finished where it is", || async {
+        slack
+            .calls("chat.update")
+            .into_iter()
+            .find(|c| c.2["ts"] == at.as_str() && c.2["blocks"][0]["text"] == "Scripted: None.")
     })
     .await;
 }

@@ -156,6 +156,11 @@ pub struct Command {
     /// Who typed it: only a listed member is answered.
     pub user: String,
     pub verb: Verb,
+    /// This one typing of it: Slack sends a command again when its ack is
+    /// late, and it is done once.
+    pub trigger: String,
+    /// Where a later word about it goes.
+    pub respond: Option<String>,
 }
 
 /// What `/otter` is asked to do.
@@ -186,6 +191,11 @@ pub fn command(payload: &Value) -> Option<Command> {
     Some(Command {
         user: payload["user_id"].as_str()?.to_owned(),
         verb,
+        trigger: payload["trigger_id"]
+            .as_str()
+            .unwrap_or_default()
+            .to_owned(),
+        respond: payload["response_url"].as_str().map(String::from),
     })
 }
 
