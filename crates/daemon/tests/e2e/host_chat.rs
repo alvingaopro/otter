@@ -538,8 +538,9 @@ async fn one_message_makes_a_task_for_each_part_it_asks_for() {
 }
 
 /// A pull request reviewed on the developer's word (D-205): approved once
-/// per message, a comment with what it says, never from a turn no message
-/// started; GitHub's refusal is said, and asked again it is tried again.
+/// per message, a comment with what it says, not from a turn no message
+/// started at its level (`developer`); GitHub's refusal is said, and asked
+/// again it is tried again.
 #[tokio::test]
 async fn otter_reviews_a_pull_request_on_the_developers_word() {
     let fake = chat_host(true).await;
@@ -665,15 +666,20 @@ async fn otter_answers_a_tasks_decision_as_the_developer_said() {
     .await;
     assert_eq!(code(&answers[0]), "needs_developer", "{answers:#?}");
     let text = format!(
-        "Go ahead with that plan.\n{}\n{}\n{}",
+        "Go ahead with that plan.\nCALL: get_pending_decisions {{\"task_id\": \"{id}\"}}\n{}\n{}\n{}",
         answer(", \"answer\": \"yes\""),
         answer(", \"approve\": true"),
         answer(", \"approve\": true"),
     );
     let (_, _, answers) = say(host, "h-dec", &text).await;
-    assert_eq!(code(&answers[0]), "invalid", "a plan takes no answer");
-    assert_eq!(answers[1]["data"]["done"], "approved", "{answers:#?}");
-    assert_eq!(answers[2]["data"]["done"], "already", "{answers:#?}");
+    // A plan put to the developer is theirs alone, and their message
+    // answers it: Otter is shown so.
+    let shown = &answers[0]["data"]["decisions"][0];
+    assert_eq!(shown["developer_only"], true, "{shown}");
+    assert_eq!(shown["answerable_by_message"], true, "{shown}");
+    assert_eq!(code(&answers[1]), "invalid", "a plan takes no answer");
+    assert_eq!(answers[2]["data"]["done"], "approved", "{answers:#?}");
+    assert_eq!(answers[3]["data"]["done"], "already", "{answers:#?}");
     let f = host.conn().await.task_get(&id).await.unwrap();
     let d = f.decisions.iter().find(|d| d.id.as_str() == dec).unwrap();
     assert_eq!(d.status, DecisionStatus::Approved);
@@ -708,12 +714,90 @@ async fn a_command_only_the_developer_may_allow_takes_their_press() {
         host,
         "h-dec-rm",
         &format!(
-            "Yes, allow it.\nCALL: answer_decision {{\"task_id\": \"{rm}\", \"decision_id\": \"{}\", \"approve\": true}}",
+            "Yes, allow it.\nCALL: get_pending_decisions {{\"task_id\": \"{rm}\"}}\nCALL: answer_decision {{\"task_id\": \"{rm}\", \"decision_id\": \"{}\", \"approve\": true}}",
             d.id
         ),
     )
     .await;
-    assert_eq!(code(&answers[0]), "needs_developer", "{answers:#?}");
+    let shown = answers[0]["data"]["decisions"].as_array().unwrap();
+    let shown = shown.iter().find(|x| x["id"] == d.id.as_str()).unwrap();
+    assert_eq!(shown["answerable_by_message"], false, "{shown}");
+    assert_eq!(code(&answers[1]), "needs_developer", "{answers:#?}");
     let f = host.conn().await.task_get(&rm).await.unwrap();
     assert!(f.pending_decisions().any(|x| x.id == d.id), "still waits");
+}
+
+/// A host whose coding agent is the fake SDK worker in `mode`
+/// (`tests/fake_claude_worker.sh`).
+async fn sdk_host(mode: &str) -> FakeCodex {
+    let mode = mode.to_owned();
+    fake_agent_host_with("ok", "scripted", move |scratch| {
+        let worker = scratch.join("worker.sh");
+        std::fs::write(&worker, include_str!("../fake_claude_worker.sh")).unwrap();
+        vec![
+            ("OTTER_BRAIN_V2", "1".into()),
+            ("OTTER_CODING_BACKEND", "sdk".into()),
+            ("OTTER_NODE", "/bin/sh".into()),
+            ("OTTER_CLAUDE_WORKER", worker.to_string_lossy().into_owned()),
+            ("FAKE_WORKER_MODE", mode),
+        ]
+    })
+    .await
+}
+
+/// The coding agent's question, answered from the host's conversation with
+/// the developer's words (D-205); a form of several questions is theirs to
+/// answer in its own form, and Otter is shown which is which.
+#[tokio::test]
+async fn otter_answers_a_question_and_leaves_a_form_to_the_developer() {
+    use otter_core::task::{Decider, DecisionKind, DecisionStatus, Task};
+    let asks = |f: &Task| {
+        f.pending_decisions()
+            .any(|d| d.kind == DecisionKind::Question)
+    };
+    let script = |id: &str, d: &str, answer: &str| {
+        format!(
+            "CALL: get_pending_decisions {{\"task_id\": \"{id}\"}}\nCALL: answer_decision {{\"task_id\": \"{id}\", \"decision_id\": \"{d}\", \"answer\": \"{answer}\"}}"
+        )
+    };
+
+    // One question, no choices: answered as the developer said.
+    let fake = sdk_host("onequestion").await;
+    let host = &fake.host;
+    let id = started_task(host, "Add CSV export").await;
+    let f = wait_task(host, &id, "asking which repository", asks).await;
+    let d = f.pending_decisions().next().unwrap().id.to_string();
+    let text = format!(
+        "It is sugerio/marketplace-service.\n{}",
+        script(&id, &d, "sugerio/marketplace-service")
+    );
+    let (_, _, answers) = say(host, "h-q", &text).await;
+    assert_eq!(
+        answers[0]["data"]["decisions"][0]["answerable_by_message"], true,
+        "{answers:#?}"
+    );
+    assert_eq!(answers[1]["data"]["done"], "answered", "{answers:#?}");
+    let f = host.conn().await.task_get(&id).await.unwrap();
+    let q = f.decisions.iter().find(|x| x.id.as_str() == d).unwrap();
+    assert_eq!(q.status, DecisionStatus::Answered);
+    assert_eq!(q.answer.as_deref(), Some("sugerio/marketplace-service"));
+    assert_eq!(q.decided_by, Some(Decider::User));
+
+    // A form of several questions: theirs, in its own form.
+    let fake = sdk_host("ok").await;
+    let host = &fake.host;
+    let id = started_task(host, "Add CSV export").await;
+    let f = wait_task(host, &id, "asking its form", asks).await;
+    let d = f.pending_decisions().next().unwrap().id.to_string();
+    let (_, _, answers) = say(host, "h-form", &format!("CSV.\n{}", script(&id, &d, "CSV"))).await;
+    assert_eq!(
+        answers[0]["data"]["decisions"][0]["answerable_by_message"], false,
+        "{answers:#?}"
+    );
+    assert_eq!(code(&answers[1]), "needs_developer", "{answers:#?}");
+    let f = host.conn().await.task_get(&id).await.unwrap();
+    assert!(
+        f.pending_decisions().any(|x| x.id.as_str() == d),
+        "still waits"
+    );
 }

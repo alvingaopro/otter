@@ -541,7 +541,7 @@ pub fn host_tools() -> Vec<ToolSpec> {
         t(
             "answer_decision",
             DeveloperWord,
-            "Answer a decision that waits on the developer in one task (get_pending_decisions has its id), as their message says — approve true or false; a question takes their answer (answer), or approve false to leave it unanswered. Only what they plainly said about that decision, never your own judgement. A command only they may allow (developer_only), a recovery, merging or deploying, and a form of several questions take their own press, in the app or on Slack's message about it: tell them so.",
+            "Answer a decision that waits on the developer in one task, as their message says: one get_pending_decisions shows answerable_by_message (a plan to approve, a question, an ordinary ask). approve true or false; a question takes their answer (answer), or approve false to leave it unanswered. Only what they plainly said about that decision, never your own judgement. Any other — a command only they may allow, a recovery, a form of several questions — they answer themselves, in the app or on Slack's message about it: tell them so.",
             task_id(json!({
                 "decision_id": {"type": "string"},
                 "approve": {"type": "boolean"},
@@ -1112,15 +1112,22 @@ impl Gateway {
                 }))
             }
             "get_pending_decisions" => Ok(json!({
-                "decisions": f.pending_decisions().map(|d| json!({
-                    "id": d.id.as_str(),
-                    "kind": format!("{:?}", d.kind).to_lowercase(),
-                    "risk": format!("{:?}", d.risk).to_lowercase(),
-                    "summary": r(&d.summary),
-                    "detail": d.detail.as_deref().map(|t| short(t, 1500)),
-                    "options": d.options.iter().map(|o| r(o)).collect::<Vec<_>>(),
-                    "developer_only": d.user_only,
-                })).collect::<Vec<_>>(),
+                "decisions": f.pending_decisions().map(|d| {
+                    let mut v = json!({
+                        "id": d.id.as_str(),
+                        "kind": format!("{:?}", d.kind).to_lowercase(),
+                        "risk": format!("{:?}", d.risk).to_lowercase(),
+                        "summary": r(&d.summary),
+                        "detail": d.detail.as_deref().map(|t| short(t, 1500)),
+                        "options": d.options.iter().map(|o| r(o)).collect::<Vec<_>>(),
+                        "developer_only": d.user_only,
+                    });
+                    // Where answer_decision may answer it (D-205).
+                    if matches!(self.inner.scope, Scope::Host) {
+                        v["answerable_by_message"] = json!(self.their_own(&f, d).is_none());
+                    }
+                    v
+                }).collect::<Vec<_>>(),
             })),
             "get_messages" => messages_page(&f.messages, args),
             "get_task_evidence" => {
@@ -1805,24 +1812,10 @@ impl Gateway {
         if decision.status != DecisionStatus::Pending {
             return Err(fail("conflict", "that decision has been made already"));
         }
-        let press = "tell them to press it, in the app or on Slack's message about it";
-        let theirs = matches!(
-            decision.kind,
-            DecisionKind::Recovery | DecisionKind::Merge | DecisionKind::Deploy
-        ) || (decision.user_only && decision.kind != DecisionKind::PlanApproval);
-        if theirs {
-            return Err(fail(
-                "needs_developer",
-                "only the developer's own press answers this one, not a message",
-            )
-            .next(press));
-        }
-        if d.form_of(task.as_str(), &decision.id).is_some() {
-            return Err(fail(
-                "needs_developer",
-                "it is a form of several questions, answered in its own form",
-            )
-            .next(press));
+        if let Some(why) = self.their_own(&f, decision) {
+            return Err(fail("needs_developer", why).next(
+                "tell them to answer it themselves: in the app, or on Slack's message about it (its buttons, or a reply in its thread)",
+            ));
         }
         let (approve, answer) = match (decision.kind, approve, answer) {
             (DecisionKind::Question, _, Some(a)) => (true, Some(a)),
@@ -1893,6 +1886,23 @@ impl Gateway {
             .unwrap()
             .push(format!("{name}: {said} ({})", f.title));
         Ok(json!({"done": did, "task_id": f.id.as_str(), "status": f.status.as_str()}))
+    }
+
+    /// Why only the developer's own answer settles `d`, in the app or on
+    /// Slack's message about it — not their message to Otter (D-205, D-089
+    /// §3.2): a command only they may allow, a recovery, merging,
+    /// deploying, a form of several questions. `None`: answer_decision may.
+    fn their_own(&self, f: &Task, d: &otter_core::task::DecisionRequest) -> Option<&'static str> {
+        use otter_core::task::DecisionKind as K;
+        if matches!(d.kind, K::Recovery | K::Merge | K::Deploy)
+            || (d.user_only && d.kind != K::PlanApproval)
+        {
+            Some("only the developer's own answer settles this one, not a message to Otter")
+        } else if self.inner.daemon.form_of(f.id.as_str(), &d.id).is_some() {
+            Some("it is a form of several questions, answered in its own form")
+        } else {
+            None
+        }
     }
 
     /// A pull request reviewed as the developer asked (D-205): approved,

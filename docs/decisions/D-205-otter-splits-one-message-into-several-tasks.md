@@ -79,6 +79,10 @@ all three fixes ("都按你的建议，两个都做").
     since the record says the developer decided.
   - Host conversation only. In a task's conversation, D-201's buttons and
     thread replies already answer what the task asks.
+  - The host's `get_pending_decisions` says which decisions it may answer
+    (`answerable_by_message`, the same rule the tool applies). A plan put to
+    the developer is `developer_only` and still answerable, so the field is
+    what the model goes by, not `developer_only`.
 - HOST_INSTRUCTIONS no longer send decisions to the task's conversation.
   They say when to use the two tools: only what the developer plainly said,
   ask if it isn't clear which decision they mean, and a review that found
@@ -111,10 +115,23 @@ turn no message started, and GitHub's refusal said and tried again.
 plan approved once as the developer's, refusal from an event turn at both
 `developer` and `auto`, and a decision already made.
 `host_chat::a_command_only_the_developer_may_allow_takes_their_press` was
-watched failing with the floor removed: Otter approved `rm`. Unit tests:
+watched failing with the floor removed: Otter approved `rm`.
+`host_chat::otter_answers_a_question_and_leaves_a_form_to_the_developer`
+uses the fake SDK worker, with a new `onequestion` mode. It covers a
+question with no choices answered with the developer's words, and a form
+refused; each is shown with `answerable_by_message` as the tool treats it. Unit tests:
 `controller::a_tasks_part_of_the_request_is_said_as_otters` (the planning
 prompt and `brief`), the gateway's classes, and the levels' defaults.
-Checked against the stand-ins (the scripted brain and the fake gh), not
-yet with real Claude or against GitHub.
+Checked against the stand-ins (the scripted brain, the fake gh and the
+fake SDK worker), not yet with real Claude or against GitHub.
+
+Reviewed against the code (Fable) before merging. The review found two
+problems, both fixed above. Plans showed as `developer_only` while the
+tool's description said `developer_only` ones take a press, so the model
+would have refused the one case meant for it. The refusal's hint pointed
+to a button for developer-only questions, which are answered by a reply.
+It also noted that `review_pull_request` has no floor of its own beyond
+its level, unlike `answer_decision`. That is deliberate: at `auto` it is
+the developer's choice in Settings.
 
 [bold permissions]: the developer's 2026-10-22 direction, "otter的限制太多了，我们可以bold一些，等发现权限过大我们在去限制"

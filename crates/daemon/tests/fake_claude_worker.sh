@@ -2,7 +2,7 @@
 # A fake Claude worker (packages/claude-runtime) speaking its JSONL protocol,
 # for otterd's tests: no Node, no SDK, no Claude. FAKE_WORKER_MODE picks the
 # behaviour: ok (a turn with a policy check, a tool result and a two-question
-# form), silent (never ready), fatal (fails to start), noisy (floods stderr
+# form; onequestion: one question with no choices instead), silent (never ready), fatal (fails to start), noisy (floods stderr
 # and sends an oversized frame), old (an older protocol), coding-only (no
 # Otter profile), refuses (refuses an Otter turn, as over its picture
 # limits). Every command is appended to FAKE_WORKER_LOG.
@@ -182,6 +182,10 @@ while IFS= read -r line; do
     *'"type":"policy_reply"'*)
       out '{"type":"tool_started","call":"tu_1","parent":null,"tool":"Bash","input":{"command":"make test"}}'
       out '{"type":"tool_finished","call":"tu_1","ok":true,"output":"all good"}'
+      if [ "$mode" = onequestion ]; then
+        out '{"type":"permission_request","request_id":"perm-1","tool":"AskUserQuestion","input":{"questions":[{"question":"Which repository is it in?","header":"Repository","options":[],"multiSelect":false}]},"tool_use_id":"tu_2"}'
+        continue
+      fi
       out '{"type":"permission_request","request_id":"perm-1","tool":"AskUserQuestion","input":{"questions":[{"question":"Which format?","header":"Format","options":[{"label":"CSV","description":"comma separated"},{"label":"JSON","description":"one object per line"}],"multiSelect":false},{"question":"Which columns?","header":"Columns","options":[{"label":"name","description":""},{"label":"time","description":""}],"multiSelect":true}]},"tool_use_id":"tu_2"}'
       ;;
     *'"type":"resolve_interaction"'*)
