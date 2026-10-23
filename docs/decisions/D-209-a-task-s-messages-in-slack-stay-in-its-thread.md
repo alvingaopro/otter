@@ -56,3 +56,8 @@ watched failing on the broadcast. The unit test
 `turn::tests::a_follow_up_keeps_to_its_task` pins the follow-up prompt, and
 `slack::needs::tests::a_title_beside_its_id_is_not_said_twice` uses the live
 run's sentence. Both were watched failing first.
+
+Reviewed against the code (Fable) before merging. The review found nothing
+blocking. Its edge cases in `titled` are fixed: a bare title counts only as a
+word of its own (the title "a" isn't the end of "schema"), and only spaces
+are taken out between an id and its title, never a line break.

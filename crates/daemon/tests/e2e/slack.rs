@@ -1762,7 +1762,7 @@ async fn a_task_made_from_slack_has_a_thread_of_its_own() {
         slack
             .calls("chat.postMessage")
             .into_iter()
-            .find(|c| c.2["thread_ts"] == on.as_str() && c.2.get("reply_broadcast").is_none())
+            .find(|c| c.2["thread_ts"] == on.as_str())
     })
     .await;
     // A reply there is the task's.

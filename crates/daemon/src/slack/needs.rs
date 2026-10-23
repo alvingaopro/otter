@@ -371,14 +371,26 @@ pub fn titled(text: &str, titles: &HashMap<String, String>) -> String {
         match (titles.get(&after[..end]), after[end..].starts_with(']')) {
             (Some(title), true) => {
                 rest = &after[end + 1..];
+                // Only spaces apart: a line break stays.
+                let before = out.trim_end_matches([' ', '\t']);
+                let next = rest.trim_start_matches([' ', '\t']);
+                // A bare title is a word of its own: "schema" doesn't end
+                // with the title "a".
+                let word = |c: Option<char>| c.is_none_or(|c| !c.is_alphanumeric());
+                let ends = |n: &String| {
+                    before.ends_with(n.as_str())
+                        && (n != title
+                            || word(before[..before.len() - n.len()].chars().next_back()))
+                };
+                let starts = |n: &String| {
+                    next.starts_with(n.as_str())
+                        && (n != title || word(next[n.len()..].chars().next()))
+                };
                 let named = set_off(title);
-                if named.iter().any(|n| out.trim_end().ends_with(n.as_str())) {
-                    out.truncate(out.trim_end().len());
-                } else if named
-                    .iter()
-                    .any(|n| rest.trim_start().starts_with(n.as_str()))
-                {
-                    rest = rest.trim_start();
+                if named.iter().any(ends) {
+                    out.truncate(before.len());
+                } else if named.iter().any(starts) {
+                    rest = next;
                 } else {
                     out.push_str(&format!("“{title}”"));
                 }
@@ -804,6 +816,15 @@ mod tests {
         assert_eq!(
             titled("Export CSV is one thing; [ft_abc] is another.", &titles),
             "Export CSV is one thing; “Export CSV” is another."
+        );
+        // A bare title only as a word of its own; a line break stays.
+        let short = HashMap::from([("ft_a".to_owned(), "a".to_owned())]);
+        assert_eq!(titled("Rename schema [ft_a]", &short), "Rename schema “a”");
+        assert_eq!(titled("[ft_a] and more", &short), "“a” and more");
+        assert_eq!(titled("Task a [ft_a] is done", &short), "Task a is done");
+        assert_eq!(
+            titled("**Export CSV**\n[ft_abc]\nmore", &titles),
+            "**Export CSV**\n“Export CSV”\nmore"
         );
     }
 }
