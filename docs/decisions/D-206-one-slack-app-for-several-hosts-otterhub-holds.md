@@ -51,6 +51,8 @@ cost is accepted, not avoided (see the end).
   stop, or it would hear part of what is said. Three: it takes its events
   from a hub on this app. A host on another app, or with tokens of an app
   the hub can't tell is this one, is left as it is, and the hub says why.
+  That includes a host through a hub that hasn't checked its bot with
+  Slack yet; it is asked again in a minute.
   An otterd before the hub is found by asking `slack.owns` first, so
   nothing is set on it. Every host is taken in before the hub connects to
   Slack. A host the hub couldn't reach is tried again every minute.
@@ -74,10 +76,11 @@ cost is accepted, not avoided (see the end).
     back together, each under its host's name, within Slack's three seconds.
     `/otter new` is routed like a message at the top, by what the hosts
     said last (no time to ask them again).
-  - One event at a time in each conversation, as a host's own connection
-    took them: a message is placed, and given its first try, before the
-    next one is placed, so a reply said at once goes where the message
-    before it went. A reply in a thread whose host the hub knows goes to
+  - One event at a time in each conversation, in the order Slack sent
+    them, as a host's own connection took them. A message's turn is taken
+    as it is read, and it is placed and given its first try before the next
+    one is placed, so a reply said at once goes where the message before it
+    went. A reply in a thread whose host the hub knows goes to
     that host even while it can't be reached; the developer is told so.
     `/otter new` is given in a task of its own, never cut short by Slack's
     three seconds. A task the host may be making is not asked for again;
@@ -153,5 +156,10 @@ Fable before merging. The review found a host with another app's tokens
 taken in, a ledger write race, a reply said at once routed before the
 message before it, a cut-short call leaving its connection half used,
 `/otter new` answered "busy" while its task was being made, and a known
-thread's host passed over while it was down. All are fixed above. Not
-tried against Slack itself or on the dev VM.
+thread's host passed over while it was down. Its second look found that
+turns taken after the event was handed on could still swap two events,
+that a hub could take over another hub's host before it was connected,
+and that a late `/otter new` still answered "busy". All are fixed above.
+`turns_go_in_the_order_they_were_taken` was watched failing with a wait
+that, cut short, stopped waiting. Not tried against Slack itself or on
+the dev VM.

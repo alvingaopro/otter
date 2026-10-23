@@ -325,10 +325,11 @@ struct Hub {
     env: EnvMap,
     ledger: std::sync::Mutex<Ledger>,
     path: PathBuf,
-    /// One at a time in each conversation, as a host's own connection takes
-    /// them: a message is placed, and given a first try, before the next
-    /// (which may go where it went).
-    turns: std::sync::Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
+    /// One at a time in each conversation, in the order Slack sent them, as
+    /// a host's own connection takes them: a message is placed, and given a
+    /// first try, before the next (which may go where it went). By channel,
+    /// the last turn taken, done when its sender is.
+    turns: std::sync::Mutex<HashMap<String, tokio::sync::oneshot::Receiver<()>>>,
 }
 
 async fn serve(config: &Config, users: Vec<String>, only: Vec<String>) -> Result<()> {
@@ -513,6 +514,7 @@ impl Hub {
         }
         let give_token = take_in(&slack, &settings.secrets, &self.bot_id)?;
         let mut line = "takes Slack's events from the hub".to_owned();
+        // A host that lists none is given the hub's (below).
         let missing: Vec<&str> = self
             .users
             .iter()
@@ -599,20 +601,34 @@ impl Hub {
                                 eprintln!("otter hub: Slack closed the connection ({why})");
                                 return Ok(());
                             }
-                            Envelope::Event { envelope_id, .. } => {
+                            // Its turn taken here, in Slack's order: what is
+                            // given waits for it, not the reading.
+                            Envelope::Event { envelope_id, event } => {
                                 ack(&envelope_id);
-                                tokio::spawn(self.clone().heard(raw));
+                                let turn = self.turn(event["channel"].as_str().unwrap_or_default());
+                                tokio::spawn(self.clone().heard(raw, turn));
                             }
-                            Envelope::Interactive { envelope_id, .. } => {
+                            Envelope::Interactive { envelope_id, payload } => {
                                 ack(&envelope_id);
-                                tokio::spawn(self.clone().pressed(raw));
+                                let channel = payload["container"]["channel_id"]
+                                    .as_str()
+                                    .or_else(|| payload["channel"]["id"].as_str())
+                                    .unwrap_or_default();
+                                let turn = self.turn(channel);
+                                tokio::spawn(self.clone().pressed(raw, turn));
                             }
-                            Envelope::Command { envelope_id, .. } => {
+                            Envelope::Command { envelope_id, payload } => {
                                 let (hub, acks) = (self.clone(), acks.clone());
+                                // Not "ask again" for a task that may be
+                                // starting: typed again, it is another.
+                                let late = match socket::command(&payload).map(|c| c.verb) {
+                                    Some(Verb::New(_)) => "Starting it: its thread will be in your direct messages with Otter.",
+                                    _ => "Otter is busy; ask again in a moment.",
+                                };
                                 tokio::spawn(async move {
                                     let payload = tokio::time::timeout(COMMAND_WAIT, hub.command(raw))
                                         .await
-                                        .unwrap_or_else(|_| answer("Otter is busy; ask again in a moment."));
+                                        .unwrap_or_else(|_| answer(late));
                                     let _ = acks.send(
                                         json!({ "envelope_id": envelope_id, "payload": payload }).to_string(),
                                     );
@@ -738,27 +754,16 @@ impl Hub {
         decide(routed, &serving, last, self.default_host.clone())
     }
 
-    /// The turn of `channel`'s conversation (`turns`).
-    fn turn(&self, channel: &str) -> Arc<tokio::sync::Mutex<()>> {
-        self.turns
-            .lock()
-            .unwrap()
-            .entry(channel.to_owned())
-            .or_default()
-            .clone()
+    /// The next turn in `channel`'s conversation (`turns`).
+    fn turn(&self, channel: &str) -> Turn {
+        Turn::next(&self.turns, channel)
     }
 
     /// Give `host` what Slack said, trying again a while if it can't be
     /// reached; the developer is told, at `to`, when it can't be given.
     /// `turn` is held until the first try is over: what comes next in the
     /// conversation waits for it, not for the tries after.
-    async fn deliver(
-        &self,
-        host: &str,
-        envelope: &Value,
-        to: &Origin,
-        mut turn: Option<tokio::sync::OwnedMutexGuard<()>>,
-    ) {
+    async fn deliver(&self, host: &str, envelope: &Value, to: &Origin, mut turn: Option<Turn>) {
         let Some(link) = self.link(host) else {
             return;
         };
@@ -802,7 +807,10 @@ impl Hub {
     }
 
     /// An event: the developer's direct message, given to its host.
-    async fn heard(self: Arc<Self>, mut envelope: Value) {
+    async fn heard(self: Arc<Self>, mut envelope: Value, mut turn: Turn) {
+        // First: one not taken (the bot's own messages among them) mustn't
+        // let the next pass the one before it.
+        turn.wait().await;
         let m = match socket::inbound(&envelope["payload"]["event"], &self.users) {
             Ok(m) => m,
             Err(socket::Skip::NotListed) => {
@@ -812,7 +820,6 @@ impl Hub {
             Err(_) => return,
         };
         let channel = m.to.channel.clone();
-        let turn = self.turn(&channel).lock_owned().await;
         let host = match &m.to.thread {
             // A reply goes where its thread began; one under a message no
             // host knows, where the conversation was.
@@ -890,7 +897,8 @@ impl Hub {
     }
 
     /// A button pressed on a host's message, given to that host.
-    async fn pressed(self: Arc<Self>, envelope: Value) {
+    async fn pressed(self: Arc<Self>, envelope: Value, mut turn: Turn) {
+        turn.wait().await;
         let Some(p) = socket::press(&envelope["payload"]) else {
             return;
         };
@@ -899,7 +907,6 @@ impl Hub {
             return;
         }
         let ts = p.on.thread.clone().unwrap_or_default();
-        let turn = self.turn(&p.on.channel).lock_owned().await;
         match self.owner(&p.on.channel, &ts).await {
             Some(host) => self.deliver(&host, &envelope, &p.on, Some(turn)).await,
             None => {
@@ -1006,6 +1013,34 @@ impl Hub {
     }
 }
 
+/// A place in a conversation's line (`Hub::turns`): the one before it is
+/// waited for, and the one after waits until this is dropped.
+struct Turn {
+    after: Option<tokio::sync::oneshot::Receiver<()>>,
+    _done: tokio::sync::oneshot::Sender<()>,
+}
+
+impl Turn {
+    /// The next place in `channel`'s line, taken now.
+    fn next(
+        turns: &std::sync::Mutex<HashMap<String, tokio::sync::oneshot::Receiver<()>>>,
+        channel: &str,
+    ) -> Turn {
+        let (done, next) = tokio::sync::oneshot::channel();
+        let after = turns.lock().unwrap().insert(channel.to_owned(), next);
+        Turn { after, _done: done }
+    }
+
+    /// Until the turn before is over (sent or dropped); cut short, still
+    /// waiting for it the next time.
+    async fn wait(&mut self) {
+        if let Some(before) = &mut self.after {
+            let _ = before.await;
+            self.after = None;
+        }
+    }
+}
+
 /// Whether a host may be taken in by the hub on bot `bot_id`, and whether
 /// it needs the bot's token: when nothing of Slack is set on it, or it is on
 /// this app already (its own connection must stop, or it would hear part of
@@ -1027,8 +1062,13 @@ fn take_in(
         Some(b) => Err(format!(
             "left as it is: it is on a Slack app of its own (bot {b})"
         )),
-        // Not connected: which app is known only by what is set.
-        None if hubbed => Ok(true),
+        // Not connected: which app is known only by what is set. Through a
+        // hub, but not checked with Slack yet, it may be another hub's:
+        // asked again once it is.
+        None if hubbed => Err(format!(
+            "it takes its events from a hub, but hasn't checked its bot with Slack yet (`{}`); tried again in a minute",
+            slack.state
+        )),
         None if !set("SLACK_BOT_TOKEN") && !set("SLACK_APP_TOKEN") => Ok(true),
         None => Err(format!(
             "left as it is: Slack is set up there (`{}`) for an app the hub can't tell is this one; clear its Slack tokens to have it taken in, or connect it",
@@ -1405,11 +1445,12 @@ mod tests {
             take_in(&view("hub", Some("B1"), true), &secrets(true, false), "B1"),
             Ok(false)
         );
-        // Through a hub, not yet connected: taken in, the token given again.
-        assert_eq!(
-            take_in(&view("connecting", None, true), &secrets(true, false), "B1"),
-            Ok(true)
-        );
+        // Through a hub, not checked with Slack yet: whose is unknown, so
+        // asked again later.
+        for state in ["connecting", "failed"] {
+            let why = take_in(&view(state, None, true), &secrets(true, false), "B1").unwrap_err();
+            assert!(why.contains("tried again"), "{why}");
+        }
         // Another app, connected, or through another hub: left.
         for v in [
             view("connected", Some("B2"), false),
@@ -1430,6 +1471,36 @@ mod tests {
                 assert!(why.contains("clear its Slack tokens"), "{why}");
             }
         }
+    }
+
+    /// A conversation's turns go in the order they were taken: each waits
+    /// for the one before it to be over, whatever runs first; another
+    /// conversation's don't wait.
+    #[tokio::test]
+    async fn turns_go_in_the_order_they_were_taken() {
+        let turns = Default::default();
+        let (mut first, mut second, mut third) = (
+            Turn::next(&turns, "D1"),
+            Turn::next(&turns, "D1"),
+            Turn::next(&turns, "D1"),
+        );
+        let mut other = Turn::next(&turns, "D2");
+        tokio::time::timeout(Duration::from_millis(50), other.wait())
+            .await
+            .expect("another conversation's doesn't wait");
+        first.wait().await;
+        let third = tokio::spawn(async move { third.wait().await });
+        let short = Duration::from_millis(50);
+        assert!(tokio::time::timeout(short, second.wait()).await.is_err());
+        // Cut short, it is still waiting.
+        assert!(tokio::time::timeout(short, second.wait()).await.is_err());
+        drop(first);
+        tokio::time::timeout(short, second.wait())
+            .await
+            .expect("second, once first is over");
+        assert!(!third.is_finished());
+        drop(second);
+        tokio::time::timeout(short, third).await.unwrap().unwrap();
     }
 
     /// What the hub keeps of whose each message is: the newest says, and
