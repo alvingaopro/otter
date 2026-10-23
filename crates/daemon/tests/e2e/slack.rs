@@ -149,7 +149,9 @@ async fn answer(
     let auth = header("authorization");
     let reply = match method.as_str() {
         "auth.test" if auth.contains("xoxb-bad") => json!({"ok": false, "error": "invalid_auth"}),
-        "auth.test" => json!({"ok": true, "team": "Test Team", "user": "otter", "user_id": "UBOT"}),
+        "auth.test" => {
+            json!({"ok": true, "team": "Test Team", "user": "otter", "user_id": "UBOT", "bot_id": "B01OTTER"})
+        }
         "apps.connections.open" => json!({"ok": true, "url": link}),
         "chat.postMessage" => {
             // Each message its own time, as Slack's are.
@@ -260,8 +262,8 @@ async fn a_direct_message_in_slack_is_answered_there() {
         .slack
         .unwrap();
     assert_eq!(
-        (s.team.as_deref(), s.bot.as_deref()),
-        (Some("Test Team"), Some("otter"))
+        (s.team.as_deref(), s.bot.as_deref(), s.bot_id.as_deref()),
+        (Some("Test Team"), Some("otter"), Some("B01OTTER"))
     );
 
     // The developer's message: in Otter's conversation once, seen, answered.

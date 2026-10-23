@@ -64,7 +64,7 @@ interactivity.
   half written. Only Otter's answers: the coding agent's words along the way
   aren't the message it ends with (D-069).
 
-**Not done:** the coding agent's words as they are written, a form's
+**Not done:** the coding agent's words as they are written (since D-203), a form's
 answers kept across a restart of otterd (what the message holds is read at
 Submit anyway), pictures in Otter's answers back to Slack, `/otter` in a
 channel the app isn't in beyond its own answer, several hosts from one

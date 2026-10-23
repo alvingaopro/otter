@@ -9,6 +9,8 @@ import { FONT_SUGGESTIONS, fontChoice, fontFamily, fontSize, onFontSize, setFont
 import { onPerfOverlay, perfOverlay, setPerfOverlay } from "./perf";
 import { MAX_IDLE_MINUTES, MAX_KEPT, setKeepSettings, useKeepSettings } from "./keepSessions";
 import type { ThemeChoice } from "./theme";
+import { writeText } from "@tauri-apps/plugin-clipboard-manager";
+import { sharing, slackManifest } from "./slackManifest";
 
 /** Mirrors `otter_protocol::host::ControllerInfo` (D-052). */
 export interface ControllerInfo {
@@ -75,6 +77,8 @@ export interface SlackView {
   bot?: string;
   /** Slack is told when a task needs you (D-201); absent from an older otterd. */
   notify?: boolean;
+  /** The app's bot there, once connected (D-203): two hosts with the same one share an app. */
+  bot_id?: string;
 }
 
 /** How the coding agent can run on a host (D-057): the SDK first, the default (D-124). */
@@ -194,6 +198,9 @@ export function SettingsDialog({
   const [slackUsers, setSlackUsers] = useState("");
   // Slack is told when a task needs you (D-201).
   const [slackNotify, setSlackNotify] = useState(true);
+  // This host's Slack app manifest copied, and the other hosts connected as the same app (D-203).
+  const [copied, setCopied] = useState(false);
+  const [twins, setTwins] = useState<string[]>([]);
 
   function go(t: SettingsTab) {
     setTab(t);
@@ -489,6 +496,28 @@ export function SettingsDialog({
     keys: ["API keys", host ? `On ${host}. Kept there, never read back.` : "Kept on each host."],
   };
   const [title, caption] = heads[shown];
+
+  // Other hosts connected as the same Slack app share its messages (D-203):
+  // asked of each when this host's Slack tab is shown.
+  useEffect(() => {
+    setTwins([]);
+    if (!host || shown !== "slack" || !slack?.bot_id) return;
+    let live = true;
+    const me = { team: slack.team, bot_id: slack.bot_id };
+    Promise.all(
+      hosts
+        .filter((h) => h !== host)
+        .map((h) =>
+          invoke<HostSettings>("settings_get", { host: h })
+            .then((s) => ({ host: h, slack: s.slack }))
+            .catch(() => ({ host: h })),
+        ),
+    ).then((others) => live && setTwins(sharing(me, others)));
+    return () => {
+      live = false;
+    };
+  }, [host, hosts, shown, slack?.bot_id, slack?.team]);
+  useEffect(() => setCopied(false), [host]);
 
   // While Slack connects, or after it failed (the host tries again), ask
   // the host again (D-200); the form stays as typed.
@@ -801,6 +830,29 @@ export function SettingsDialog({
                     </Row>
                   </Group>
                   <Group title="The Slack app">
+                    <Row
+                      label="One for each host"
+                      hint={`Slack shares an app's messages among every host connected with it, so each host has its own. Copy ${host}'s manifest, then at api.slack.com/apps choose Create New App › From a manifest and paste it.`}
+                    >
+                      <button
+                        type="button"
+                        className="btn outline"
+                        onClick={() => {
+                          if (!host) return;
+                          void writeText(slackManifest(host))
+                            .then(() => setCopied(true))
+                            .catch(() => {});
+                        }}
+                      >
+                        {copied ? "Copied" : "Copy manifest"}
+                      </button>
+                    </Row>
+                    {twins.length > 0 && (
+                      <p className="error-text small" role="alert">
+                        {twins.join(", ")} {twins.length === 1 ? "is" : "are"} connected as this Slack app too: Slack splits its messages between them. Make an app for
+                        each host.
+                      </p>
+                    )}
                     {(settings.secrets ?? [])
                       .filter((k) => k.name === SLACK_BOT || k.name === SLACK_APP)
                       .map((k) => secretRow(k, k.name === SLACK_BOT ? "Bot token" : "App token"))}
@@ -834,8 +886,7 @@ export function SettingsDialog({
                     )}
                   </Group>
                   <p className="muted small">
-                    Your messages go to Otter's conversation on {host}, the one <span className="mono">otter chat</span> has. Set Slack up on one host only: Slack shares
-                    its messages among every host connected with the same app.
+                    Your messages go to Otter's conversation on {host}, the one <span className="mono">otter chat</span> has.
                   </p>
                 </>
               )}

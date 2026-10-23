@@ -373,7 +373,9 @@ The Control Agent's model and API keys on this host (D-048).
   (`command_id` `slack:act:<action_ts>`); a reply in that message's thread
   is said in the task (`task.send`, or `decide` with the reply as the
   answer to a question with no options); `settings.set {slack: {notify}}`
-  turns it on or off.
+  turns it on or off. The view's `bot_id?` (D-203) is the app's bot there
+  once connected: two hosts with the same one share a Slack app, which
+  Slack splits its messages between; each host is meant to have its own.
 - `settings.models {controller}` → `[{id, name?}]`: the models that
   controller offers, as its provider lists them, asked by the host with the
   key set there (OpenRouter's list needs none); `claude` answers Claude

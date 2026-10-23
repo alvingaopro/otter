@@ -23,10 +23,13 @@ const state = vi.hoisted(() => ({
   // Otter's tools and their levels (D-191): `undefined` from an otterd before them.
   tools: undefined as { name: string; description: string; group: string; level: string; default_level: string }[] | undefined,
   // Otter in Slack (D-200): `undefined` from an otterd before it.
-  slack: undefined as { users: string[]; state: string; detail?: string; team?: string; bot?: string; notify?: boolean } | undefined,
+  slack: undefined as { users: string[]; state: string; detail?: string; team?: string; bot?: string; bot_id?: string; notify?: boolean } | undefined,
   slackBot: false,
   slackApp: false,
 }));
+// What was put on the clipboard (a Slack app's manifest, D-203).
+const copied = vi.hoisted(() => [] as string[]);
+vi.mock("@tauri-apps/plugin-clipboard-manager", () => ({ writeText: vi.fn(async (t: string) => void copied.push(t)) }));
 // Holds back the host's answers to a save or a test until let go.
 const gate = vi.hoisted(() => ({ wait: null as Promise<void> | null }));
 
@@ -117,7 +120,7 @@ vi.mock("@tauri-apps/api/core", () => ({
         const notify = sent?.notify ?? state.slack.notify;
         state.slack =
           state.slackBot && state.slackApp && state.slack.users.length
-            ? { users: state.slack.users, state: "connected", team: "Suger Inc", bot: "otter", notify }
+            ? { users: state.slack.users, state: "connected", team: "Suger Inc", bot: "otter", bot_id: "B1", notify }
             : { users: state.slack.users, state: "off", detail: "Add your Slack member ID.", notify };
       }
     }
@@ -507,6 +510,16 @@ describe("Settings", () => {
     expect(update.slack).toEqual({ users: ["U06MPBPRX7C"] });
     expect(dialog().textContent).toContain("Connected");
     expect(dialog().textContent).toContain("In Suger Inc, as @otter.");
+    // The other host is connected as the same app (this mock answers alike
+    // for every host): said, with how to make one for each (D-203).
+    await flush();
+    expect(dialog().querySelector('[role="alert"]')?.textContent).toContain("pc is connected as this Slack app too");
+    expect(calls.some((c) => c.cmd === "settings_get" && c.args.host === "pc")).toBe(true);
+    copied.length = 0;
+    await act(async () => button("Copy manifest").click());
+    await flush();
+    expect(JSON.parse(copied[0]).display_information.name).toBe("Otter (mac)");
+    expect(button("Copied")).toBeTruthy();
     expect(dialog().innerHTML).not.toContain("xoxb-1-abc");
     expect(dialog().innerHTML).not.toContain("xapp-1-def");
     expect(dialog().textContent).not.toContain("Unsaved changes");

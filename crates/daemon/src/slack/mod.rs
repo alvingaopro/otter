@@ -143,6 +143,7 @@ struct Status {
     detail: Option<String>,
     team: Option<String>,
     bot: Option<String>,
+    bot_id: Option<String>,
 }
 
 impl Slack {
@@ -309,6 +310,7 @@ impl Daemon {
             detail: st.detail,
             team: st.team,
             bot: st.bot,
+            bot_id: st.bot_id,
             notify,
         }
     }
@@ -458,6 +460,7 @@ impl Daemon {
                                     detail: None,
                                     team: me["team"].as_str().map(String::from),
                                     bot: me["user"].as_str().map(String::from),
+                                    bot_id: me["bot_id"].as_str().map(String::from),
                                 });
                                 wake.notify_one();
                             }
