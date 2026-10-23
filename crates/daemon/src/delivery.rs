@@ -744,9 +744,11 @@ fn tail(s: &str, n: usize) -> String {
 /// about 8 s in all.
 const INDEX_WAITS: [u64; 8] = [100, 200, 400, 800, 1600, 1600, 1600, 1600];
 
-/// Whether git gave up because another git holds the index.
+/// Whether git gave up because another git holds one of its locks: the
+/// index, `HEAD`, a branch. The quoted `….lock'` path is what git says in
+/// every language; the rest of the message is translated.
 fn index_locked(stderr: &str) -> bool {
-    stderr.contains("index.lock") && stderr.contains("File exists")
+    stderr.contains(".lock'")
 }
 
 /// Git in a workspace.
@@ -803,9 +805,10 @@ impl Git<'_> {
     /// space).
     async fn output(&self, args: &[&str]) -> Result<String> {
         let git = which("git", self.env).ok_or_else(|| anyhow!("git is not installed"))?;
-        // Another git in the tree holds its index (the developer's editor,
-        // or one still running from before otterd restarted): git gives up
-        // at once, having done nothing, so this waits and tries again.
+        // Another git in the tree holds its index, or HEAD, or a branch (the
+        // developer's editor, or one still running from before otterd
+        // restarted): git gives up at once, having done nothing, so this
+        // waits and tries again.
         let mut waits = INDEX_WAITS.iter();
         loop {
             let (ok, out, err) = run(&git, args, self.root, self.env, None).await?;
@@ -1399,8 +1402,6 @@ mod tests {
     use super::*;
     use otter_core::task::{Criterion, Delivery, Evidence};
 
-    /// A workspace is a worktree of a bare backing repository, which `git
-    /// worktree list` shows first: it is not the task's to edit (D-174).
     /// Another git holding the index (one still running from before otterd
     /// restarted, an editor's): git gives up at once; Otter waits for it.
     #[tokio::test]
@@ -1441,6 +1442,8 @@ mod tests {
         assert_eq!(staged.trim(), "a.txt");
     }
 
+    /// A workspace is a worktree of a bare backing repository, which `git
+    /// worktree list` shows first: it is not the task's to edit (D-174).
     #[tokio::test]
     async fn the_backing_repository_is_not_one_of_the_worktrees() {
         let dir = tempfile::tempdir().unwrap();

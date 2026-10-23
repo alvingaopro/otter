@@ -16,9 +16,11 @@ each was a real race in otterd, not in the test.
     every git it runs (`delivery::run`, which `work_state` and `changes` use
     too, and `GitManager::git`), so its reading never stands in the way of
     a commit, its own or anyone's;
-  - delivery's git (`delivery::Git::output`) waits when the index is held
-    and tries again, about 8 s in all (100 ms doubling to 1.6 s). A git that
-    found the lock did nothing, so trying again is safe.
+  - delivery's git (`delivery::Git::output`) waits when one of git's locks
+    is held (the index, `HEAD`, a branch: the quoted `….lock'` path, which
+    git says in every language) and tries again, about 8 s in all (100 ms
+    doubling to 1.6 s). A git that found the lock did nothing, so trying
+    again is safe.
 - **An answer settled what came after it.**
   `quiet_agent_mid_turn_is_flagged_and_answering_clears_it` failed now and
   then: the developer typed an answer, the agent finished its turn at once,
@@ -27,6 +29,14 @@ each was a real race in otterd, not in the test.
   turn went unsaid. `session.write` now notes the time before it sends, while
   nothing else can raise, and settles only items raised by then
   (`attention::answered`); what the agent said after is news, and stays.
+  Known: a still prompt Otter only guessed at, raised again with what the
+  agent really asks after the answer, outlives it for a pass or two, until
+  the agent is seen at work.
+- **The merged sweep asks for its setting again before it acts.** CI found
+  `a_tasks_workspace_goes_once_its_pull_request_is_merged` deleting a
+  workspace just after the setting was turned off: a pass checked the
+  setting when it began, then asked GitHub, slowly, and acted on its old
+  answer. `delete_merged` now reads the setting first (D-189).
 - **The harness says why.** A test's otterd now logs to its
   `logs/workd.log`, as one started by `dial` does, and a `wait_task` that
   times out, an `eventually_on`, or a connection that fails prints the end
