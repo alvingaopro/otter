@@ -1478,3 +1478,169 @@ fn one_slack_app_serves_two_hosts_through_the_hub() {
     assert_eq!(b["hub"], false, "{status}");
     assert_eq!(b["state"], "off", "{status}");
 }
+
+/// The hub's own process for the otterd with `home` (D-208): the one whose
+/// environment names that otterd's hub directory. Linux only (`/proc`).
+fn managed_hub_pid(home: &Home) -> Option<u32> {
+    let dir = format!("OTTER_CONFIG_DIR={}/state/otterhub", home.path());
+    std::fs::read_dir("/proc").ok()?.flatten().find_map(|e| {
+        let pid: u32 = e.file_name().to_str()?.parse().ok()?;
+        let cmdline = std::fs::read(format!("/proc/{pid}/cmdline")).ok()?;
+        let environ = std::fs::read(format!("/proc/{pid}/environ")).ok()?;
+        let serves =
+            cmdline.windows(5).any(|w| w == b"serve") && cmdline.windows(3).any(|w| w == b"hub");
+        let ours = environ.split(|b| *b == 0).any(|v| v == dir.as_bytes());
+        (serves && ours).then_some(pid)
+    })
+}
+
+/// otterd runs the hub where it is set up (D-208): `otter hub setup --on a`
+/// gives a's otterd the hub — a and the host beside it on its machine —
+/// and the Slack app's tokens; a's otterd starts `otter hub serve`, which
+/// takes both hosts in and holds the app's one connection; a message goes
+/// to the host it names. Killed, the hub is started again; stopped, it is
+/// gone until `setup` again, which needs no tokens then. Set up elsewhere
+/// while it runs on a, it is refused.
+#[test]
+fn otterd_runs_the_hub_where_it_is_set_up() {
+    let slack = FakeSlack::start();
+    let (a, b) = (Home::new(), Home::new());
+    let mut cli = Cli::new();
+    cli.env = vec![
+        ("OTTER_CONTROLLER".into(), "scripted".into()),
+        ("OTTER_BRAIN_V2".into(), "1".into()),
+        ("OTTER_CONTROLLER_TICK_MS".into(), "200".into()),
+        ("OTTER_SLACK_API".into(), slack.api.clone()),
+        // A test never sets up this machine's start.
+        ("OTTER_BOOT_SERVICE".into(), "off".into()),
+    ];
+    cli.add_local_host("a", &a);
+    cli.add_local_host("b", &b);
+    cli.ok(&["new", "billing", "--host", "a", "--no-agent"]);
+    cli.ok(&["new", "trainer", "--host", "b", "--no-agent"]);
+
+    // `setup` waits to see the hub connected: Slack is answered meanwhile.
+    let setup = |tokens: bool| {
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_otter"));
+        cmd.args(["hub", "setup", "--on", "a", "--user", "U01DEV"])
+            .env("OTTER_CONFIG_DIR", cli.config.path())
+            .envs(cli.env.iter().map(|(k, v)| (k, v)))
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        if tokens {
+            cmd.env("SLACK_BOT_TOKEN", "xoxb-1-HUBTESTTOKEN")
+                .env("SLACK_APP_TOKEN", "xapp-1-HUBTESTTOKEN");
+        }
+        cmd.spawn().unwrap()
+    };
+    let hello = |what: &str| {
+        let mut ws = SlackSocket(
+            slack
+                .sockets
+                .recv_timeout(Duration::from_secs(30))
+                .unwrap_or_else(|_| panic!("{what}: the hub connects")),
+        );
+        ws.0.send(tokio_tungstenite::tungstenite::Message::text(
+            r#"{"type":"hello","num_connections":1}"#,
+        ))
+        .unwrap();
+        ws
+    };
+    let finished = |child: std::process::Child| {
+        let out = child.wait_with_output().unwrap();
+        let said = String::from_utf8_lossy(&out.stdout).into_owned();
+        assert!(
+            out.status.success(),
+            "setup: {said}{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        said
+    };
+
+    let child = setup(true);
+    let mut ws = hello("set up");
+    let said = finished(child);
+    assert!(said.contains("The hub runs on a: running"), "{said}");
+    assert!(said.contains("Slack: connected"), "{said}");
+    for host in ["a", "b"] {
+        assert!(
+            said.contains(&format!("  {host}: takes Slack's events from the hub")),
+            "{said}"
+        );
+    }
+    assert!(said.contains("OTTER_BOOT_SERVICE=off"), "{said}");
+    let status: serde_json::Value =
+        serde_json::from_str(&cli.ok(&["hub", "status", "--json"])).unwrap();
+    let row = |h: &str| {
+        status
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|r| r["host"] == h)
+            .unwrap()
+            .clone()
+    };
+    assert_eq!(row("a")["runs_hub"]["state"], "running", "{status}");
+    assert_eq!(
+        row("a")["runs_hub"]["hosts"],
+        serde_json::json!(["a", "b"]),
+        "{status}"
+    );
+    assert!(row("b")["runs_hub"].is_null(), "{status}");
+    assert_eq!(row("b")["hub"], true, "{status}");
+
+    // What Slack says reaches the host it names, through the hub otterd runs.
+    ws.dm("e1", "1700000001.000100", "Speed up trainer", None);
+    wait_until("b hears it", || {
+        heard_on(&cli, "b").contains("Speed up trainer")
+    });
+    assert!(
+        Path::new(a.path())
+            .join("state/otterhub/hub/state.json")
+            .exists()
+    );
+
+    // Set up elsewhere while it runs on a: refused.
+    let err = cli.fails(&["hub", "setup", "--on", "b"]);
+    assert!(err.contains("the hub runs on a already"), "{err}");
+
+    // Killed, otterd starts it again. (Found by `/proc`: Linux only.)
+    let pid = managed_hub_pid(&a);
+    assert!(
+        pid.is_some() || !cfg!(target_os = "linux"),
+        "the hub's process"
+    );
+    if let Some(pid) = pid {
+        let _ = Command::new("kill").arg("-9").arg(pid.to_string()).status();
+        let mut ws = hello("started again");
+        ws.dm("e2", "1700000002.000100", "And log how long it takes", None);
+        wait_until("b hears it again", || {
+            heard_on(&cli, "b").contains("And log how long")
+        });
+    }
+
+    // Stopped: gone, and said so; set up again, with the tokens it has.
+    let out = cli.ok(&["hub", "stop"]);
+    assert!(out.contains("The hub on a is stopped"), "{out}");
+    wait_until("the hub gone", || managed_hub_pid(&a).is_none());
+    let status: serde_json::Value =
+        serde_json::from_str(&cli.ok(&["hub", "status", "--json"])).unwrap();
+    assert!(
+        status
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|r| r["runs_hub"].is_null()),
+        "{status}"
+    );
+    assert!(
+        cli.fails(&["hub", "stop"])
+            .contains("runs on none of your hosts")
+    );
+    let child = setup(false);
+    let _ws = hello("set up again");
+    let said = finished(child);
+    assert!(said.contains("The hub runs on a: running"), "{said}");
+    cli.ok(&["hub", "stop"]);
+}

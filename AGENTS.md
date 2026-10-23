@@ -95,6 +95,10 @@ Inside the daemon (`crates/daemon/src`):
   per host, the coding agent's words as it says them (D-203) — or one app
   for several, its events given by otterhub (`slack.deliver`, D-206); the
   envelopes and the Web API are `crates/slack`'s
+- `otterhub.rs` — otterhub run by otterd where it is set up (D-208): its
+  `hosts.toml`, the tokens in its environment, started again when it stops;
+  `boot.rs` sets otterd to start with its machine (systemd user unit,
+  LaunchAgent)
 - `git.rs` (shared repos + worktrees), `git_account.rs` (Otter's own git identity, key and
   GitHub sign-in, which its repositories include, D-133), `environment.rs` (direnv), `env.rs` (login env, exec shim)
 - `attach.rs` (PTY bridge, or a stream whose client keeps the history:
@@ -103,7 +107,8 @@ Inside the daemon (`crates/daemon/src`):
 
 In the CLI, `dashboard.rs` is the grouped `otter ls` view, and `hub.rs` is
 `otter hub serve`: one Slack app's connection held for several hosts, each
-event given to its host (`slack.deliver`, D-206).
+event given to its host (`slack.deliver`, D-206); `otter hub setup --on`
+has a host's otterd run it (D-208).
 
 ## Build & test
 

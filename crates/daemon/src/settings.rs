@@ -149,6 +149,9 @@ struct Stored {
     /// own (D-206).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     slack_hub: Option<bool>,
+    /// otterhub, run here for the hosts it serves (D-208).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    hub: Option<otter_protocol::host::HubSettings>,
 }
 
 #[derive(Debug, Default)]
@@ -268,6 +271,11 @@ impl HostSettings {
         self.stored.slack_hub.unwrap_or(false)
     }
 
+    /// otterhub as set to run here (D-208).
+    pub fn hub(&self) -> Option<&otter_protocol::host::HubSettings> {
+        self.stored.hub.as_ref()
+    }
+
     /// The coding agent's model (`None`: the provider's default).
     pub fn coding_model(&self) -> Option<String> {
         self.stored.coding_model.clone()
@@ -307,6 +315,7 @@ impl HostSettings {
             tools: crate::levels::view(|n| self.tool_level(n)),
             // How it is connected is the daemon's (`settings_get`).
             slack: None,
+            hub: None,
         }
     }
 
@@ -380,6 +389,9 @@ impl HostSettings {
                 stored.slack_hub = on.then_some(true);
             }
         }
+        if let Some(hub) = u.hub {
+            stored.hub = Some(crate::otterhub::checked(hub)?);
+        }
         let mut secrets = self.secrets.clone();
         for (name, value) in u.secrets {
             if !secret_names().any(|(n, _)| n == name) {
@@ -450,6 +462,7 @@ impl Daemon {
     pub(crate) fn settings_get(&self) -> Settings {
         let mut view = self.settings.read().unwrap().view();
         view.slack = Some(self.slack_view());
+        view.hub = self.hub_view();
         view.git = Some(self.git_account.view());
         let brain = crate::brain::select(self.environments.base(), &self.brain_choice());
         view.active = Some(brain.name().to_owned());
@@ -488,6 +501,12 @@ impl Daemon {
     pub(crate) fn settings_set(&self, mut u: SettingsUpdate) -> RpcResult<Settings> {
         // Slack connects again with what is set now (D-200).
         // (Telling about needs is read as it is used: no new connection.)
+        // otterhub runs again with what is set now (D-208): its own
+        // settings, or the app's tokens it connects with.
+        let hub = u.hub.is_some()
+            || u.secrets
+                .keys()
+                .any(|k| k == SLACK_BOT_TOKEN || k == SLACK_APP_TOKEN);
         let slack = u
             .slack
             .as_ref()
@@ -508,6 +527,9 @@ impl Daemon {
         self.task_wake.notify_one();
         if slack {
             self.slack.restart();
+        }
+        if hub {
+            self.hub.restart();
         }
         // As `settings.get` has it: what runs now, and how Otter answers.
         Ok(self.settings_get())
@@ -532,6 +554,7 @@ mod tests {
             git: None,
             tool_levels: Default::default(),
             slack: None,
+            hub: None,
         }
     }
 

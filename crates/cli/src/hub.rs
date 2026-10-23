@@ -19,7 +19,8 @@
 //!   `/otter new`: as a message at the top.
 //!
 //! ```text
-//! $OTTER_CONFIG_DIR/hub/state.json   whose each message is; each conversation's host
+//! $OTTER_CONFIG_DIR/hub/state.json    whose each message is; each conversation's host
+//! $OTTER_CONFIG_DIR/hub/status.json   what the hub says of itself, for otterd (D-208)
 //! ```
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
@@ -34,7 +35,8 @@ use otter_client::{ClientError, Connection, Transport};
 use otter_core::{Workspace, WorkspaceState};
 use otter_protocol::Request;
 use otter_protocol::host::{
-    Settings, SettingsUpdate, SlackDeliver, SlackDelivered, SlackOwns, SlackUpdate,
+    HubHost, HubSettings, HubVia, HubView, Settings, SettingsUpdate, SlackDeliver, SlackDelivered,
+    SlackOwns, SlackUpdate,
 };
 use otter_slack::socket::{self, Envelope, Origin, Verb};
 use otter_slack::{EnvMap, api};
@@ -44,13 +46,29 @@ use serde_json::{Value, json};
 use tokio::task::JoinSet;
 use tokio_tungstenite::tungstenite::Message as Frame;
 
-use crate::config::{Config, HostEntry};
+use crate::config::{Config, HostEntry, HostTransport};
 
 #[derive(Subcommand)]
 pub enum HubCommand {
+    /// Run the hub on one of your hosts (D-208): its otterd starts it now,
+    /// again if it stops, and again when that machine restarts. Give the
+    /// Slack app's tokens in `SLACK_BOT_TOKEN` and `SLACK_APP_TOKEN` unless
+    /// the host has them already.
+    Setup {
+        /// The host to run it on: one that is always on.
+        #[arg(long)]
+        on: String,
+        /// A Slack member whose direct messages are the developer's (`U…`;
+        /// again for another; default: those the host lists).
+        #[arg(long = "user")]
+        users: Vec<String>,
+    },
+    /// Stop the hub where it runs (`setup` starts it again).
+    Stop,
     /// Hold the Slack app's one connection for your hosts, and give each
-    /// what is its own: run it as a service, with `SLACK_BOT_TOKEN` and
-    /// `SLACK_APP_TOKEN` in its environment.
+    /// what is its own, until stopped: what `setup` has otterd run, or a
+    /// service of your own, with `SLACK_BOT_TOKEN` and `SLACK_APP_TOKEN` in
+    /// its environment.
     Serve {
         /// A Slack member whose direct messages are the developer's (`U…`;
         /// again for another).
@@ -59,6 +77,10 @@ pub enum HubCommand {
         /// Only this host (again for another; default: every host).
         #[arg(long = "host")]
         hosts: Vec<String>,
+        /// The host it runs on, as otterd says when it runs it (D-208): the
+        /// Slack tokens set there are the hub's own.
+        #[arg(long, hide = true)]
+        here: Option<String>,
     },
     /// How each host is in Slack: through the hub, on an app of its own, or
     /// not at all.
@@ -124,7 +146,9 @@ const MAX_TEXT: usize = 11_000;
 
 pub async fn command(config: &Config, cmd: HubCommand, json: bool) -> Result<()> {
     match cmd {
-        HubCommand::Serve { users, hosts } => serve(config, users, hosts).await,
+        HubCommand::Setup { on, users } => setup(config, &on, users, json).await,
+        HubCommand::Stop => stop(config, json).await,
+        HubCommand::Serve { users, hosts, here } => serve(config, users, hosts, here).await,
         HubCommand::Status => status(config, json).await,
         HubCommand::Leave { host } => leave(config, &host, json).await,
     }
@@ -319,6 +343,8 @@ struct Hub {
     /// again until it starts again.
     left: std::sync::Mutex<BTreeSet<String>>,
     default_host: Option<String>,
+    /// The host it runs on, when otterd runs it (D-208).
+    here: Option<String>,
     bot: String,
     bot_id: String,
     users: Vec<String>,
@@ -330,9 +356,30 @@ struct Hub {
     /// first try, before the next (which may go where it went). By channel,
     /// the last turn taken, done when its sender is.
     turns: std::sync::Mutex<HashMap<String, tokio::sync::oneshot::Receiver<()>>>,
+    /// What it says of itself (`status.json`), for the otterd that runs it.
+    told: std::sync::Mutex<Told>,
+    told_path: PathBuf,
 }
 
-async fn serve(config: &Config, users: Vec<String>, only: Vec<String>) -> Result<()> {
+/// What the hub says of itself (D-208): its connection to Slack and each
+/// host's line, written as they change and every half minute, so the otterd
+/// that runs it can tell it is there.
+#[derive(Debug, Default, Serialize)]
+struct Told {
+    at: Option<chrono::DateTime<chrono::Utc>>,
+    slack: Option<String>,
+    hosts: BTreeMap<String, String>,
+}
+
+/// How often the hub says it is there.
+const TELL_EVERY: Duration = Duration::from_secs(30);
+
+async fn serve(
+    config: &Config,
+    users: Vec<String>,
+    only: Vec<String>,
+    here: Option<String>,
+) -> Result<()> {
     let tokens = TOKENS.get().context("Slack's tokens weren't read")?;
     let bot = tokens
         .bot
@@ -388,6 +435,7 @@ async fn serve(config: &Config, users: Vec<String>, only: Vec<String>) -> Result
         enrolled: Default::default(),
         left: Default::default(),
         default_host: config.default_host.clone(),
+        here,
         bot,
         bot_id,
         users,
@@ -395,6 +443,16 @@ async fn serve(config: &Config, users: Vec<String>, only: Vec<String>) -> Result
         ledger: std::sync::Mutex::new(Ledger::load(&path)),
         path,
         turns: Default::default(),
+        told: Default::default(),
+        told_path: dir.join("status.json"),
+    });
+    hub.tell(|t| t.slack = Some("not connected yet: taking the hosts in first".into()));
+    let there = hub.clone();
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(TELL_EVERY).await;
+            there.tell(|_| {});
+        }
     });
     // Every host first, then Slack: a host still connected on its own would
     // hear some of what is said.
@@ -416,6 +474,7 @@ async fn serve(config: &Config, users: Vec<String>, only: Vec<String>) -> Result
             Err(e) => {
                 let why = otter_core::redact::redact(&format!("{e:#}"));
                 eprintln!("otter hub: Slack: {why}");
+                hub.tell(|t| t.slack = Some(format!("not connected: {why}; trying again")));
                 // A connection that lasted starts the waiting over.
                 if began.elapsed() > Duration::from_secs(60) {
                     wait = Duration::ZERO;
@@ -444,6 +503,17 @@ impl Hub {
 
     /// Keep the ledger: written under its lock, so one write at a time, the
     /// newest last.
+    /// Say something of itself (`status.json`), and that it is there now.
+    fn tell(&self, change: impl FnOnce(&mut Told)) {
+        let mut told = self.told.lock().unwrap();
+        change(&mut told);
+        told.at = Some(chrono::Utc::now());
+        let bytes = serde_json::to_vec(&*told).expect("serializes");
+        if let Err(e) = write_private(&self.told_path, &bytes) {
+            eprintln!("otter hub: saving {}: {e}", self.told_path.display());
+        }
+    }
+
     fn save(&self) {
         let ledger = self.ledger.lock().unwrap();
         let bytes = serde_json::to_vec(&*ledger).expect("serializes");
@@ -475,6 +545,9 @@ impl Hub {
             if r.is_ok() {
                 self.enrolled.lock().unwrap().insert(host.clone());
             }
+            self.tell(|t| {
+                t.hosts.insert(host.clone(), line.clone());
+            });
             if said.get(&host) != Some(&line) {
                 eprintln!("otter hub: {host}: {line}");
                 said.insert(host, line);
@@ -512,7 +585,8 @@ impl Hub {
                 Failure::Unreachable(e) => format!("not reached ({e}); tried again in a minute"),
             });
         }
-        let give_token = take_in(&slack, &settings.secrets, &self.bot_id)?;
+        let own = self.here.as_deref() == Some(link.name.as_str());
+        let give_token = take_in(&slack, &settings.secrets, &self.bot_id, own)?;
         let mut line = "takes Slack's events from the hub".to_owned();
         // A host that lists none is given the hub's (below).
         let missing: Vec<&str> = self
@@ -596,7 +670,10 @@ impl Hub {
                         };
                         let raw: Value = serde_json::from_str(text.as_str()).unwrap_or_default();
                         match socket::envelope(text.as_str()) {
-                            Envelope::Hello => eprintln!("otter hub: connected to Slack"),
+                            Envelope::Hello => {
+                                eprintln!("otter hub: connected to Slack");
+                                self.tell(|t| t.slack = Some(connected(&raw)));
+                            }
                             Envelope::Disconnect(why) => {
                                 eprintln!("otter hub: Slack closed the connection ({why})");
                                 return Ok(());
@@ -783,6 +860,9 @@ impl Hub {
                         // the hub starts again.
                         self.enrolled.lock().unwrap().remove(host);
                         self.left.lock().unwrap().insert(host.to_owned());
+                        self.tell(|t| {
+                            t.hosts.insert(host.to_owned(), LEFT.into());
+                        });
                     }
                     self.post(to, &format!("**{host}** didn't take that: {why}"))
                         .await;
@@ -952,6 +1032,9 @@ impl Hub {
                     if let Err(Failure::Refused(otter_protocol::ErrorCode::Conflict, _)) = r {
                         self.enrolled.lock().unwrap().remove(host);
                         self.left.lock().unwrap().insert(host.clone());
+                        self.tell(|t| {
+                            t.hosts.insert(host.clone(), LEFT.into());
+                        });
                     }
                 }
                 return together(said);
@@ -1044,13 +1127,15 @@ impl Turn {
 /// Whether a host may be taken in by the hub on bot `bot_id`, and whether
 /// it needs the bot's token: when nothing of Slack is set on it, or it is on
 /// this app already (its own connection must stop, or it would hear part of
-/// what is said), or it takes its events from a hub on this app. A host on
+/// what is said), or it takes its events from a hub on this app, or it is
+/// the hub's `own` (otterd gave the hub the tokens set there). A host on
 /// another app, or with tokens of an app the hub can't tell is this one, is
 /// left as it is; why, if so.
 fn take_in(
     slack: &otter_protocol::host::SlackView,
     secrets: &[otter_protocol::host::SecretState],
     bot_id: &str,
+    own: bool,
 ) -> Result<bool, String> {
     let set = |name: &str| secrets.iter().any(|k| k.name == name && k.set);
     let hubbed = slack.hub == Some(true);
@@ -1063,8 +1148,10 @@ fn take_in(
             "left as it is: it is on a Slack app of its own (bot {b})"
         )),
         // Not connected: which app is known only by what is set. Nothing
-        // set (through a hub or not): nothing to overwrite.
+        // set (through a hub or not): nothing to overwrite. On the hub's own
+        // host, what is set is the hub's: nothing to give.
         None if !set("SLACK_BOT_TOKEN") && !set("SLACK_APP_TOKEN") => Ok(true),
+        None if own => Ok(false),
         // Through a hub, its bot not checked with Slack yet: it may be
         // another hub's, so asked again once it is.
         None if hubbed && slack.state != "failed" => Err(format!(
@@ -1151,6 +1238,21 @@ fn named_in(text: &str, host: &str) -> Option<String> {
     (at && rest.chars().next().is_none_or(char::is_whitespace)).then(|| rest.trim().to_owned())
 }
 
+/// Said of a host that left the hub while it served.
+const LEFT: &str = "left the hub (`otter hub leave`): served again when the hub starts again";
+
+/// What Slack's hello says of the connection: connected, and alone on the
+/// app, or not — Slack splits an app's events among its connections, so
+/// another one (a hub elsewhere, a host on its own) hears some of them.
+fn connected(hello: &Value) -> String {
+    match hello["num_connections"].as_u64() {
+        Some(n) if n > 1 => format!(
+            "connected, but this app has {n} connections open: Slack splits its events among them. Stop the other one (another hub, or a host connected on its own)."
+        ),
+        _ => "connected".into(),
+    }
+}
+
 /// An answer to `/otter`, seen only by who typed it.
 fn answer(text: &str) -> Value {
     let text: String = text.chars().take(MAX_TEXT).collect();
@@ -1189,6 +1291,9 @@ fn together(said: Vec<(String, Result<SlackDelivered, Failure>)>) -> Value {
 #[derive(Serialize)]
 struct HostSlack {
     host: String,
+    /// The hub, where it runs here (D-208).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    runs_hub: Option<HubView>,
     /// `hub`, `connected` (an app of its own), `off`, `failed`, …; `null`:
     /// not reached.
     state: Option<String>,
@@ -1197,10 +1302,9 @@ struct HostSlack {
     hub: bool,
 }
 
-async fn status(config: &Config, json: bool) -> Result<()> {
-    if config.hosts.is_empty() {
-        bail!("no hosts registered; add one with `otter host add <name>`");
-    }
+/// Each host's settings, every host asked at once (a host that can't be
+/// reached is its error).
+async fn every_hosts_settings(config: &Config) -> Vec<(String, Result<Settings, Failure>)> {
     let mut jobs = JoinSet::new();
     for host in config.hosts.clone() {
         let link = Link::new(config, &host);
@@ -1211,37 +1315,70 @@ async fn status(config: &Config, json: bool) -> Result<()> {
             (host.name, r)
         });
     }
-    let mut rows: Vec<HostSlack> = jobs
-        .join_all()
-        .await
+    let mut all = jobs.join_all().await;
+    all.sort_by(|a, b| a.0.cmp(&b.0));
+    all
+}
+
+/// The hub as turned on on one of `all`'s hosts.
+fn running_on(all: &[(String, Result<Settings, Failure>)]) -> Option<(String, HubView)> {
+    all.iter().find_map(|(host, r)| {
+        let hub = r.as_ref().ok()?.hub.clone()?;
+        hub.enabled.then(|| (host.clone(), hub))
+    })
+}
+
+async fn status(config: &Config, json: bool) -> Result<()> {
+    if config.hosts.is_empty() {
+        bail!("no hosts registered; add one with `otter host add <name>`");
+    }
+    let all = every_hosts_settings(config).await;
+    let rows: Vec<HostSlack> = all
         .into_iter()
-        .map(|(host, r)| match r.map(|s| s.slack) {
-            Ok(Some(s)) => HostSlack {
-                host,
-                state: Some(s.state),
-                detail: s.detail,
-                bot_id: s.bot_id,
-                hub: s.hub == Some(true),
-            },
-            Ok(None) => HostSlack {
-                host,
-                state: None,
-                detail: Some("its otterd is older than Slack".into()),
-                bot_id: None,
-                hub: false,
-            },
-            Err(e) => HostSlack {
-                host,
-                state: None,
-                detail: Some(format!("not reached: {e}")),
-                bot_id: None,
-                hub: false,
-            },
+        .map(|(host, r)| {
+            let runs_hub = r
+                .as_ref()
+                .ok()
+                .and_then(|s| s.hub.clone())
+                .filter(|h| h.enabled);
+            match r.map(|s| s.slack) {
+                Ok(Some(s)) => HostSlack {
+                    host,
+                    runs_hub,
+                    state: Some(s.state),
+                    detail: s.detail,
+                    bot_id: s.bot_id,
+                    hub: s.hub == Some(true),
+                },
+                Ok(None) => HostSlack {
+                    host,
+                    runs_hub,
+                    state: None,
+                    detail: Some("its otterd is older than Slack".into()),
+                    bot_id: None,
+                    hub: false,
+                },
+                Err(e) => HostSlack {
+                    host,
+                    runs_hub,
+                    state: None,
+                    detail: Some(format!("not reached: {e}")),
+                    bot_id: None,
+                    hub: false,
+                },
+            }
         })
         .collect();
-    rows.sort_by(|a, b| a.host.cmp(&b.host));
     if json {
         return crate::output::print_json(&rows);
+    }
+    for r in &rows {
+        if let Some(h) = &r.runs_hub {
+            println!("The hub runs on {}: {}", r.host, said_of(h));
+            if let Some(boot) = &h.boot {
+                println!("  {boot}");
+            }
+        }
     }
     crate::output::table(
         &["HOST", "SLACK", "BOT", "DETAIL"],
@@ -1261,6 +1398,169 @@ async fn status(config: &Config, json: bool) -> Result<()> {
                 ]
             })
             .collect(),
+    );
+    Ok(())
+}
+
+/// The hub in a line: how it runs, and what it says of Slack.
+fn said_of(h: &HubView) -> String {
+    let mut line = h.state.clone();
+    if let Some(d) = &h.detail {
+        line.push_str(&format!(" ({d})"));
+    }
+    if let Some(slack) = &h.slack {
+        line.push_str(&format!("; Slack: {slack}"));
+    }
+    line
+}
+
+/// How long `setup` waits to see the hub running.
+const SETUP_WAIT: Duration = Duration::from_secs(45);
+
+/// Run the hub on `on` (D-208): its otterd is given the hub's settings —
+/// this host, and the others it can reach on its own machine — and the
+/// Slack app's tokens when they're in this process's environment, then
+/// runs it. A host the hub can't reach yet is said, not given.
+async fn setup(config: &Config, on: &str, users: Vec<String>, json: bool) -> Result<()> {
+    let entry = config.host(on)?.clone();
+    let all = every_hosts_settings(config).await;
+    if let Some((there, _)) = running_on(&all).filter(|(h, _)| h != on) {
+        bail!(
+            "the hub runs on {there} already: `otter hub stop` first (Slack's tokens are given again where it runs next)"
+        );
+    }
+    let mine = match all.iter().find(|(h, _)| h == on).map(|(_, r)| r) {
+        Some(Ok(s)) => s.clone(),
+        Some(Err(e)) => bail!("{on}: {e}"),
+        None => bail!("no host `{on}`"),
+    };
+    if mine.hub.is_none() {
+        bail!("{on}'s otterd is too old to run the hub: update it (`otter host install {on}`)");
+    }
+    // The tokens: given now, or those the host has.
+    let tokens = TOKENS.get();
+    let given = |name: &str| match name {
+        "SLACK_BOT_TOKEN" => tokens.and_then(|t| t.bot.clone()),
+        _ => tokens.and_then(|t| t.app.clone()),
+    };
+    let has = |name: &str| mine.secrets.iter().any(|k| k.name == name && k.set);
+    let mut secrets = std::collections::BTreeMap::new();
+    for name in ["SLACK_BOT_TOKEN", "SLACK_APP_TOKEN"] {
+        match given(name) {
+            Some(t) => {
+                secrets.insert(name.to_owned(), Some(t));
+            }
+            None if has(name) => {}
+            None => bail!(
+                "{on} has no {name}: give the Slack app's tokens in SLACK_BOT_TOKEN (xoxb-…) and SLACK_APP_TOKEN (xapp-…) to `otter hub setup`"
+            ),
+        }
+    }
+    let users = match users.is_empty() {
+        false => otter_slack::members(&users).map_err(anyhow::Error::msg)?,
+        true => mine
+            .slack
+            .as_ref()
+            .map(|s| s.users.clone())
+            .unwrap_or_default(),
+    };
+    if users.is_empty() {
+        bail!("give your Slack member ID with `--user U…`");
+    }
+    // The others it serves: on its own machine, for now.
+    let local = matches!(entry.transport, HostTransport::Local { .. });
+    let mut hosts = Vec::new();
+    let mut not_yet = Vec::new();
+    for h in config.hosts.iter().filter(|h| h.name != on) {
+        match (&h.transport, local) {
+            (HostTransport::Local { otterd_path, home }, true) => hosts.push(HubHost {
+                name: h.name.clone(),
+                via: HubVia::Local {
+                    otterd_path: otterd_path.clone(),
+                    home: home.clone(),
+                },
+            }),
+            _ => not_yet.push(h.name.clone()),
+        }
+    }
+    let served: Vec<&str> = std::iter::once(on)
+        .chain(hosts.iter().map(|h| h.name.as_str()))
+        .collect();
+    let default_host = config
+        .default_host
+        .clone()
+        .filter(|d| served.contains(&d.as_str()));
+    let hub = HubSettings {
+        enabled: true,
+        name: on.to_owned(),
+        users,
+        default_host,
+        hosts,
+    };
+    let mut conn = crate::target::connect(config, &entry).await?;
+    conn.settings_set(SettingsUpdate {
+        hub: Some(hub),
+        secrets,
+        ..Default::default()
+    })
+    .await?;
+    // Running once the hub says so.
+    let deadline = Instant::now() + SETUP_WAIT;
+    let view = loop {
+        let view = conn.settings_get().await?.hub.unwrap_or_default();
+        let ready = view.state == "running" && view.slack.is_some();
+        if ready || view.state == "failed" || Instant::now() > deadline {
+            break view;
+        }
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    };
+    if json {
+        return crate::output::print_json(&view);
+    }
+    println!("The hub runs on {on}: {}", said_of(&view));
+    for s in &view.served {
+        println!("  {}: {}", s.host, s.line);
+    }
+    if let Some(boot) = &view.boot {
+        println!("  {boot}");
+    }
+    if !not_yet.is_empty() {
+        println!(
+            "Not served yet, as the hub can't reach them from {on}: {} (reaching other machines is the next step, D-208).",
+            not_yet.join(", ")
+        );
+    }
+    match view.state.as_str() {
+        "running" => Ok(()),
+        _ => bail!("the hub isn't running on {on} yet: `otter hub status` says how it is"),
+    }
+}
+
+/// Stop the hub where it runs: turned off there, and forgotten what it
+/// served (`setup` says it again).
+async fn stop(config: &Config, json: bool) -> Result<()> {
+    let all = every_hosts_settings(config).await;
+    let Some((on, view)) = running_on(&all) else {
+        bail!("the hub runs on none of your hosts");
+    };
+    let mut conn = crate::target::connect(config, config.host(&on)?).await?;
+    let settings = conn
+        .settings_set(SettingsUpdate {
+            hub: Some(HubSettings {
+                enabled: false,
+                name: view.name,
+                users: view.users,
+                default_host: None,
+                hosts: vec![],
+            }),
+            ..Default::default()
+        })
+        .await?;
+    if json {
+        return crate::output::print_json(&settings.hub);
+    }
+    println!(
+        "The hub on {on} is stopped. Its hosts still take Slack's events from a hub: until one runs again, nothing comes in from Slack (`otter hub leave <host>` gives a host back its own connection)."
     );
     Ok(())
 }
@@ -1433,11 +1733,17 @@ mod tests {
             ]
         };
         let none = secrets(false, false);
+        let take_in_ = |v: &SlackView, s: &[SecretState], b: &str| take_in(v, s, b, false);
+        // The hub's own host: its tokens are the hub's, connected or not.
+        assert_eq!(
+            take_in(&view("off", None, false), &secrets(true, true), "B1", true),
+            Ok(false)
+        );
         // Nothing set: taken in, with the bot's token.
-        assert_eq!(take_in(&view("off", None, false), &none, "B1"), Ok(true));
+        assert_eq!(take_in_(&view("off", None, false), &none, "B1"), Ok(true));
         // On this app with a connection of its own: taken in, its own stops.
         assert_eq!(
-            take_in(
+            take_in_(
                 &view("connected", Some("B1"), false),
                 &secrets(true, true),
                 "B1"
@@ -1446,24 +1752,24 @@ mod tests {
         );
         // Through the hub on this app already: nothing to give.
         assert_eq!(
-            take_in(&view("hub", Some("B1"), true), &secrets(true, false), "B1"),
+            take_in_(&view("hub", Some("B1"), true), &secrets(true, false), "B1"),
             Ok(false)
         );
         // Through a hub, not checked with Slack yet: whose is unknown, so
         // asked again later; its token refused there, it is said what to do.
         let why =
-            take_in(&view("connecting", None, true), &secrets(true, false), "B1").unwrap_err();
+            take_in_(&view("connecting", None, true), &secrets(true, false), "B1").unwrap_err();
         assert!(why.contains("tried again"), "{why}");
-        let why = take_in(&view("failed", None, true), &secrets(true, false), "B1").unwrap_err();
+        let why = take_in_(&view("failed", None, true), &secrets(true, false), "B1").unwrap_err();
         assert!(why.contains("otter hub leave"), "{why}");
         // Through a hub with its tokens cleared: nothing to overwrite.
-        assert_eq!(take_in(&view("off", None, true), &none, "B1"), Ok(true));
+        assert_eq!(take_in_(&view("off", None, true), &none, "B1"), Ok(true));
         // Another app, connected, or through another hub: left.
         for v in [
             view("connected", Some("B2"), false),
             view("hub", Some("B2"), true),
         ] {
-            let why = take_in(&v, &secrets(true, true), "B1").unwrap_err();
+            let why = take_in_(&v, &secrets(true, true), "B1").unwrap_err();
             assert!(why.contains("B2"), "{why}");
         }
         // Tokens set, not connected (a member ID missing, a wrong app
@@ -1474,7 +1780,7 @@ mod tests {
             secrets(true, true),
         ] {
             for state in ["off", "failed", "connecting"] {
-                let why = take_in(&view(state, None, false), &set, "B1").unwrap_err();
+                let why = take_in_(&view(state, None, false), &set, "B1").unwrap_err();
                 assert!(why.contains("clear its Slack tokens"), "{why}");
             }
         }

@@ -8145,6 +8145,7 @@ async fn settings_take_keys_write_only_and_keep_them() {
             git: None,
             tool_levels: Default::default(),
             slack: None,
+            hub: None,
         })
         .await
         .unwrap();

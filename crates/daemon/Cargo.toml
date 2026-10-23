@@ -16,6 +16,8 @@ base64.workspace = true
 otter-core.workspace = true
 otter-protocol.workspace = true
 otter-slack.workspace = true
+# otterhub's hosts, as the CLI keeps them (D-208).
+otter-client.workspace = true
 anyhow.workspace = true
 async-trait.workspace = true
 chrono.workspace = true
@@ -35,5 +37,3 @@ sysinfo = { version = "0.39", default-features = false, features = ["system", "d
 # Throwaway browser profiles (browser.rs).
 tempfile.workspace = true
 
-[dev-dependencies]
-otter-client.workspace = true

@@ -73,6 +73,8 @@ pub struct Daemon {
     pub(crate) settings: std::sync::RwLock<crate::settings::HostSettings>,
     /// Otter in Slack (D-200): how it is connected.
     pub(crate) slack: crate::slack::Slack,
+    /// otterhub, run here when it is turned on (D-208).
+    pub(crate) hub: crate::otterhub::Hub,
     pub backend: Arc<dyn ExecutionBackend>,
     pub events: EventLog,
     pub git: GitManager,
@@ -195,6 +197,7 @@ impl Daemon {
             controller: Default::default(),
             settings: std::sync::RwLock::new(settings),
             slack: Default::default(),
+            hub: Default::default(),
             backend,
             events,
             shell,
