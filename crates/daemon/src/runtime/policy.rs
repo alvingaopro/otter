@@ -56,8 +56,12 @@
 //! given to a client (`psql -c 'DROP TABLE …'`) and a word spelled apart
 //! (`kubectl dele''te`) are read. So is every word of a program the policy
 //! has no data rule for, and the code given to an interpreter other than a
-//! shell. A variable expanded in data still counts for credentials
-//! (`echo $GITHUB_TOKEN`). The never-list is read where a command runs: a
+//! shell. What the shell expands is never data, wherever it stands: a
+//! `$(…)` or a backtick is a command of its own (in a pattern, a message, a
+//! body whose delimiter isn't quoted), and a `$VAR` still counts for
+//! credentials (`echo $GITHUB_TOKEN`, `git commit -m "$DB_PASSWORD"`); in
+//! single quotes or a quoted heredoc the shell expands nothing, and it is
+//! text. The never-list is read where a command runs: a
 //! shell that reads a pipe (`| sh`, `|& bash`, `| sudo bash -s`; not
 //! `|| sh`) is denied by that shell's piece, not by the words `| sh`
 //! anywhere in a line.
@@ -2511,19 +2515,20 @@ pub fn explain(line: &str, root: &Path) -> String {
     out
 }
 
-/// What the developer's approval of `call` may let through for the rest of
-/// the task (D-066), as a key: the same command line, edits in the same
-/// directory outside the workspace, the same tool. Only for what is asked
-/// about for where it reaches, never for what it does: deleting,
-/// credentials, pushing and deploying, root are asked every time. A line
-/// with a credential in it is too: its key would keep the credential
-/// (D-157).
+/// [`grant_in`] in the workspace's root alone.
 #[cfg(test)]
 pub fn grant(call: &ToolCall, root: &Path) -> Option<String> {
     grant_in(call, &Scope::alone(root))
 }
 
-/// [`grant`] in a task's [`Scope`].
+/// What the developer's approval of `call` may let through for the rest of
+/// the task (D-066), as a key, in a task's [`Scope`]: the same command
+/// line, edits in the same directory outside the workspace, the same tool;
+/// a worktree made outside, which is then the task's own (`tree:`, D-215).
+/// Only for what is asked about for where it reaches, never for what it
+/// does: deleting, credentials, pushing and deploying, root are asked every
+/// time. A line with a credential in it is too: its key would keep the
+/// credential (D-157).
 pub fn grant_in(call: &ToolCall, root: &Scope) -> Option<String> {
     match call {
         ToolCall::Command { line } => {
