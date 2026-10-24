@@ -423,6 +423,24 @@ fn url_arg() -> Value {
     })
 }
 
+fn watch_arg() -> Value {
+    json!({
+        "type": "object",
+        "properties": {"watch_id": {"type": "string"}, "task_id": {"type": "string"}},
+        "required": ["watch_id"],
+        "additionalProperties": false
+    })
+}
+
+fn trigger_arg() -> Value {
+    json!({
+        "type": "object",
+        "properties": {"trigger": {"type": "string"}},
+        "required": ["trigger"],
+        "additionalProperties": false
+    })
+}
+
 fn task_id(more: Value) -> Value {
     let mut props = json!({"task_id": {"type": "string"}});
     if let Value::Object(m) = more {
@@ -439,8 +457,8 @@ fn task_id(more: Value) -> Value {
 /// Otter's tools in its conversation on the host (D-093): looking across
 /// the host's tasks, and making, starting, resuming and pausing them; on
 /// the developer's word, answering what a task asks them and reviewing a
-/// pull request (D-205). Guidance for one task's work and questions about
-/// its code are said in that task's own conversation.
+/// pull request (D-205); saying the developer's words in a task's own
+/// conversation, and the host's schedules (D-213).
 pub fn host_tools() -> Vec<ToolSpec> {
     use Class::*;
     let t = |name, class, description, input| ToolSpec {
@@ -548,6 +566,103 @@ pub fn host_tools() -> Vec<ToolSpec> {
             DeveloperWord,
             "Delete a task the developer named, on their word (D-207): it goes for good, with its conversation and history; nothing of its work is removed. Only once nothing is at work in it: cancel_task (or pause_task) first.",
             task_id(json!({})),
+        ),
+        t(
+            "send_to_task",
+            DeveloperWord,
+            "Say the developer's messages (by id), word for word and as theirs, in one task's own conversation (D-213): guidance for its coding agent, an answer, a change of plan. That task's Otter takes them up as any message of theirs — passed to the coding agent after its current turn, or with its next one; a paused or done task goes on if they asked it to. In Slack they show in the task's thread, and the task answers there. Once per message.",
+            task_id(json!({
+                "message_ids": {"type": "array", "items": {"type": "string"}, "minItems": 1}
+            })),
+        ),
+        t(
+            "watch",
+            DeveloperWord,
+            "Look again later from here (D-213), and say what it came to in this conversation: kind ci — a pull request's CI by its url (any repository), until every check has finished, it can't run, or it is merged or closed; kind run — a GitHub Actions run by its url, until it finishes (for_minutes: how long at most, default 120); kind time — look again in in_minutes, or every every_minutes until for_minutes have gone (default 60), each time a turn of its own saying how things stand. what: what it is for, in a line (the developer's words when they asked). A ci or run watch reads once as it is set: say what it read now; if it already came to something, nothing is watched — say what. A look that comes back is set only on the developer's word. At most 5 at once.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "what": {"type": "string"},
+                    "kind": {"type": "string", "enum": ["ci", "run", "time"]},
+                    "url": {"type": "string"},
+                    "in_minutes": {"type": "integer", "minimum": 1, "maximum": otter_core::watch::MAX_MINUTES},
+                    "every_minutes": {"type": "integer", "minimum": 1, "maximum": otter_core::watch::MAX_MINUTES},
+                    "for_minutes": {"type": "integer", "minimum": 1, "maximum": otter_core::watch::MAX_MINUTES}
+                },
+                "required": ["what", "kind"],
+                "additionalProperties": false
+            }),
+        ),
+        t(
+            "list_watches",
+            Observe,
+            "What is watched: this conversation's watches (waiting, coming back, or lately ended), each with what it last read and until when; and every task's open watches, with the task.",
+            none(),
+        ),
+        t(
+            "cancel_watch",
+            DeveloperWord,
+            "Stop a watch the developer wants stopped (list_watches has them): watch_id; task_id for one of a task's. It won't come back.",
+            watch_arg(),
+        ),
+        t(
+            "delete_watch",
+            DeveloperWord,
+            "Remove a watch from the list as the developer asks (a waiting one is stopped first): watch_id; task_id for one of a task's.",
+            watch_arg(),
+        ),
+        t(
+            "list_triggers",
+            Observe,
+            "The host's schedules (triggers, D-083): each starts a task of its own at its times, in its workspace, with its request. Name, schedule, whether paused, when next, and what its last occurrences started.",
+            none(),
+        ),
+        t(
+            "create_trigger",
+            DeveloperWord,
+            "Schedule recurring work the developer asked for (D-213): a task of its own every every_minutes, or daily at daily_at (HH:MM, UTC), in workspace (name or id), its request their message(s) by id, word for word. name: short, letters, digits and dashes; title: the tasks' title (default: the name). An occurrence whose last task is still at work is skipped. Only on their word.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string"},
+                    "message_ids": {"type": "array", "items": {"type": "string"}, "minItems": 1},
+                    "title": {"type": "string"},
+                    "workspace": {"type": "string"},
+                    "every_minutes": {"type": "integer", "minimum": 1, "maximum": otter_core::watch::MAX_MINUTES},
+                    "daily_at": {"type": "string"}
+                },
+                "required": ["name", "message_ids", "workspace"],
+                "additionalProperties": false
+            }),
+        ),
+        t(
+            "pause_trigger",
+            Routine,
+            "Pause a schedule (name or id): it starts nothing until it is resumed.",
+            trigger_arg(),
+        ),
+        t(
+            "resume_trigger",
+            DeveloperWord,
+            "Resume a paused schedule (name or id), on the developer's word: it goes on from its next time; what it missed isn't started.",
+            trigger_arg(),
+        ),
+        t(
+            "delete_trigger",
+            DeveloperWord,
+            "Delete a schedule (name or id), on the developer's word: the tasks it started stay.",
+            trigger_arg(),
+        ),
+        t(
+            "delete_workspace",
+            DeveloperWord,
+            "Delete a workspace the developer named, on their word (D-214): one that couldn't be prepared, or that nothing uses any more. Refused while a task not over works there or a session runs there, and when it would lose work — uncommitted changes, or commits pushed nowhere: tell them, and let them decide. A workspace made from a directory of theirs leaves Otter's list; the directory stays. It can't be taken back.",
+            json!({
+                "type": "object",
+                "properties": {"workspace": {"type": "string"}},
+                "required": ["workspace"],
+                "additionalProperties": false
+            }),
         ),
         t(
             "answer_decision",
@@ -1550,6 +1665,8 @@ impl Gateway {
             "list_workspaces" => self.workspaces_listing(args).await,
             "list_repositories" => self.repositories_listing(args).await,
             "read_github" => self.read_github(args).await,
+            "list_triggers" => self.triggers_listing().await,
+            "list_watches" => self.watches_listing().await,
             _ => {
                 let task = Self::named_task(args)?;
                 let mut rest = args.clone();
@@ -1702,6 +1819,7 @@ impl Gateway {
                     chat.follows.push(otter_core::task::Follow {
                         task_id: now.id.clone(),
                         seen: now.follow_key().unwrap_or_default(),
+                        failures_only: false,
                     });
                 }
                 Ok(vec![])
@@ -1744,11 +1862,29 @@ impl Gateway {
         if name == "review_pull_request" {
             return self.review_pull_request(args).await;
         }
-        if matches!(name, "cancel_task" | "delete_task") {
+        if matches!(name, "cancel_task" | "delete_task" | "delete_workspace") {
             ending_floor(origin)?;
+        }
+        if name == "send_to_task" {
+            return self.send_to_task(args).await;
+        }
+        if name == "watch" {
+            return self.host_set_watch(args).await;
+        }
+        if matches!(name, "cancel_watch" | "delete_watch") {
+            return self.host_end_watch(name, args).await;
+        }
+        if matches!(
+            name,
+            "create_trigger" | "pause_trigger" | "resume_trigger" | "delete_trigger"
+        ) {
+            return self.trigger_tool(name, args).await;
         }
         if name == "delete_task" {
             return self.delete_task(args).await;
+        }
+        if name == "delete_workspace" {
+            return self.delete_workspace(args).await;
         }
         let task = Self::named_task(args)?;
         let action = match name {
@@ -1883,6 +2019,678 @@ impl Gateway {
             .unwrap()
             .push(format!("{name}: {}", f.title));
         Ok(json!({"done": "deleted", "task_id": task.as_str(), "title": f.title}))
+    }
+
+    /// A workspace deleted on the developer's word (D-214), once per their
+    /// message: as the app's Delete, never forced — what would lose work,
+    /// or what a task or a session is at in, is refused and said.
+    async fn delete_workspace(&self, args: &Value) -> Result<Value, ToolError> {
+        let name = "delete_workspace";
+        let d = &self.inner.daemon;
+        let origin = &self.inner.origin;
+        let r = args
+            .get("workspace")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|w| !w.is_empty())
+            .ok_or_else(|| {
+                fail(
+                    "invalid",
+                    "workspace is the name or id of the one to delete",
+                )
+            })?;
+        let command = format!("{}:{}", origin.command(name), digest(r));
+        if d.chat.lock().await.applied(&command) {
+            return Ok(json!({"done": "already", "workspace": r}));
+        }
+        let ws = d
+            .workspace_get(r)
+            .await
+            .map_err(|e| ToolError::from(e).next("list_workspaces has the host's workspaces"))?;
+        let running = |w: &otter_core::Workspace| {
+            w.sessions
+                .iter()
+                .find(|s| s.current_execution().is_some_and(|e| e.is_running()))
+                .map(|s| s.name.clone())
+        };
+        let works = d.tasks.lock().await.list().into_iter().find(|t| {
+            t.workspace_id.as_ref() == Some(&ws.id)
+                && !matches!(t.status, TaskStatus::Done | TaskStatus::Cancelled)
+        });
+        if let Some(t) = works {
+            return Err(fail(
+                "conflict",
+                format!(
+                    "“{}” [{}] works in {}: it isn't over",
+                    t.title, t.id, ws.name
+                ),
+            )
+            .next("tell the developer; that task can be moved or cancelled first"));
+        }
+        if let Some(t) = d.workspace_holder(&ws.id) {
+            return Err(fail(
+                "conflict",
+                format!("a run of [{t}] is at work in {}", ws.name),
+            ));
+        }
+        if let Some(s) = running(&ws) {
+            return Err(
+                fail("conflict", format!("the session {s} runs in {}", ws.name))
+                    .next("tell the developer; they can stop it first"),
+            );
+        }
+        if let Some(loses) = d.delete_loses(&ws).await {
+            let what = match loses {
+                crate::workspaces::Loses::Uncommitted { .. } => "uncommitted changes".to_owned(),
+                crate::workspaces::Loses::Unpushed { branch, commits } => {
+                    format!("{commits} commit(s) on {branch} pushed nowhere")
+                }
+            };
+            return Err(fail(
+                "would_lose_work",
+                format!("deleting {} would lose {what}", ws.name),
+            )
+            .next("tell the developer: only they can delete it anyway, in the app"));
+        }
+        self.record(
+            TaskEvent::ToolCalled {
+                tool: name.into(),
+                origin: origin.name().into(),
+                authority: origin.authority().map(|m| m.id.to_string()),
+                detail: Some(ws.name.clone()),
+            },
+            Some(&command),
+        )
+        .await;
+        // Checked again once the delete has begun: nothing started meanwhile.
+        d.delete_workspace(
+            &otter_protocol::WorkspaceDelete {
+                workspace: ws.id.to_string(),
+                force: false,
+            },
+            |w| running(w).is_none(),
+            None,
+        )
+        .await?;
+        let applied = d.chat.lock().await.apply(Some(&command), |_, _| {
+            Ok(vec![
+                Change::new(TaskEvent::ToolDone {
+                    tool: name.into(),
+                    error: None,
+                })
+                .because(&command),
+            ])
+        })?;
+        d.chat_changed(&applied);
+        self.inner
+            .done
+            .lock()
+            .unwrap()
+            .push(format!("{name}: {}", ws.name));
+        Ok(json!({"done": "deleted", "workspace": ws.name}))
+    }
+
+    /// `watch` in Otter's conversation on the host (D-213): as a task's
+    /// (D-183) — set once under the developer's message and what is
+    /// watched, read once first — kept on the host's conversation, where
+    /// what it comes to is said. A watch's own turn sets none, and a look
+    /// that comes back is only on the developer's word.
+    async fn host_set_watch(&self, args: &Value) -> Result<Value, ToolError> {
+        use crate::watches::{self as wt, Home};
+        let d = &self.inner.daemon;
+        let origin = &self.inner.origin;
+        if let Origin::Event { event_id } = origin
+            && event_id.starts_with("watch:")
+        {
+            return Err(fail(
+                "not_allowed_in_this_turn",
+                "a watch's own turn doesn't set another watch",
+            )
+            .next("say what you'd watch; the developer can ask for it"));
+        }
+        if args.get("every_minutes").is_some_and(|v| !v.is_null()) && origin.authority().is_none() {
+            return Err(fail(
+                "needs_developer",
+                "a look that comes back is set only on the developer's word",
+            )
+            .next("say what you'd look at, and how often; they can ask for it"));
+        }
+        let kind_name = args["kind"].as_str().unwrap_or_default();
+        let kind = wt::kind(kind_name).ok_or_else(|| {
+            fail(
+                "invalid",
+                format!("there is no kind of watch `{kind_name}`"),
+            )
+        })?;
+        let what = args["what"].as_str().unwrap_or_default().to_owned();
+        let target = kind
+            .target(None, args, &what)
+            .map_err(|e| fail("invalid", e))?;
+        let shown = |w: &otter_core::watch::Watch, done: &str| {
+            json!({
+                "done": done,
+                "watch_id": w.id.as_str(),
+                "watching": w.label,
+                "status": format!("{:?}", w.status).to_lowercase(),
+                "until": w.deadline,
+                "every_minutes": w.every_minutes,
+                "ends": w.until,
+                "now": w.last_reading().map(|r| json!({"text": redact(&r.text), "read_at": r.at})),
+            })
+        };
+        {
+            let chat = d.chat.lock().await;
+            let watches = &chat.get().watches;
+            if let Some(w) = wt::same_in(watches, kind.name(), &target.value) {
+                return Ok(shown(w, "already watching"));
+            }
+            // Refused before it reads anything: a read takes seconds.
+            wt::check_in(watches, &Home::Host, kind, args, &what)
+                .map_err(|e| fail("conflict", e))?;
+        }
+        let mut not_read = None;
+        let first = match d.first_look(kind, &Home::Host, &target).await {
+            Some(wt::Probe::Found { outcome, text }) => {
+                self.record_done("watch", None).await;
+                return Ok(json!({
+                    "done": "nothing to wait for",
+                    "watching": target.label,
+                    "came_to": {"outcome": outcome.as_str(), "text": redact(&text)},
+                    "read_at": chrono::Utc::now(),
+                }));
+            }
+            Some(wt::Probe::NotYet { key, text }) => Some(otter_core::watch::Reading {
+                at: chrono::Utc::now(),
+                key,
+                text,
+            }),
+            Some(wt::Probe::Unreadable(why)) => {
+                not_read = Some(redact(&why));
+                None
+            }
+            None => None,
+        };
+        let asked_in = origin.authority().map(|m| m.id.clone());
+        let command = format!(
+            "{}:watch:{}:{}",
+            asked_in.as_ref().map_or("turn", |m| m.as_str()),
+            kind.name(),
+            target.key
+        );
+        self.record(
+            TaskEvent::ToolCalled {
+                tool: "watch".into(),
+                origin: origin.name().into(),
+                authority: asked_in.as_ref().map(|m| m.to_string()),
+                detail: Some(target.label.clone()),
+            },
+            Some(&command),
+        )
+        .await;
+        let value = target.value.clone();
+        let read_first = first.is_some();
+        let mut set = None;
+        let mut existed = false;
+        let applied = d.chat.lock().await.apply(Some(&command), |chat, now| {
+            let (w, mut changes) = wt::set_in(
+                &mut chat.watches,
+                &Home::Host,
+                kind,
+                target,
+                args,
+                &what,
+                asked_in.clone(),
+                first,
+                now,
+            )
+            .map_err(RpcError::conflict)?;
+            existed = changes.is_empty();
+            set = Some(w);
+            changes.push(
+                Change::new(TaskEvent::ToolDone {
+                    tool: "watch".into(),
+                    error: None,
+                })
+                .because(&command),
+            );
+            Ok(changes)
+        })?;
+        d.chat_changed(&applied);
+        let watch = match set {
+            Some(w) => w,
+            // Set before (the turn ran again): that one.
+            None => applied
+                .chat
+                .watches
+                .iter()
+                .rev()
+                .find(|w| w.kind == kind.name() && w.target == value)
+                .cloned()
+                .ok_or_else(|| fail("retryable", "the watch isn't there"))?,
+        };
+        if existed {
+            return Ok(shown(&watch, "already watching"));
+        }
+        if read_first && !applied.duplicate {
+            d.looked(&watch.id, kind);
+        }
+        self.inner
+            .done
+            .lock()
+            .unwrap()
+            .push(format!("watch: {}", watch.label));
+        let mut answer = shown(
+            &watch,
+            if applied.duplicate {
+                "already"
+            } else {
+                "watching"
+            },
+        );
+        if let Some(why) = not_read {
+            answer["not_read"] = json!(why);
+        }
+        Ok(answer)
+    }
+
+    /// `cancel_watch` / `delete_watch` from the host (D-213): one of its
+    /// own, or — with `task_id` — one of a task's, as the app's Stop and
+    /// Delete do it. Never a watch being said: its report isn't Otter's to
+    /// drop.
+    async fn host_end_watch(&self, name: &str, args: &Value) -> Result<Value, ToolError> {
+        use otter_core::task::TaskAction;
+        use otter_core::watch::WatchStatus;
+        use otter_protocol::task::TaskAct;
+        let d = &self.inner.daemon;
+        let id = otter_core::WatchId::from(args["watch_id"].as_str().unwrap_or_default());
+        let task = args
+            .get("task_id")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|t| !t.is_empty());
+        let cancel = name == "cancel_watch";
+        let command = self.inner.origin.command(&format!("{name}:{id}"));
+        let status = match task {
+            Some(t) => d.task_get(t).await?.watch(&id).map(|w| w.status),
+            None => d.chat.lock().await.get().watch(&id).map(|w| w.status),
+        };
+        match status {
+            None => {
+                return Err(fail("not_found", format!("no watch `{id}` there"))
+                    .next("list_watches has them"));
+            }
+            Some(WatchStatus::Firing) if cancel => {
+                return Err(fail(
+                    "not_ready",
+                    "that watch came to something: it's being said now",
+                ));
+            }
+            _ => {}
+        }
+        self.record(
+            TaskEvent::ToolCalled {
+                tool: name.into(),
+                origin: self.inner.origin.name().into(),
+                authority: self.inner.origin.authority().map(|m| m.id.to_string()),
+                detail: Some(format!(
+                    "{}{id}",
+                    task.map(|t| format!("{t}: ")).unwrap_or_default()
+                )),
+            },
+            Some(&command),
+        )
+        .await;
+        match task {
+            Some(t) => {
+                let action = if cancel {
+                    TaskAction::CancelWatch {
+                        watch_id: id.clone(),
+                    }
+                } else {
+                    TaskAction::DeleteWatch {
+                        watch_id: id.clone(),
+                    }
+                };
+                d.clone()
+                    .task_act(TaskAct {
+                        command_id: command.clone(),
+                        task: t.to_owned(),
+                        action,
+                    })
+                    .await?;
+                self.record(
+                    TaskEvent::ToolDone {
+                        tool: name.into(),
+                        error: None,
+                    },
+                    Some(&command),
+                )
+                .await;
+            }
+            None => {
+                let applied = d.chat.lock().await.apply(Some(&command), |chat, now| {
+                    let mut changes = if cancel {
+                        crate::watches::cancel_in(&mut chat.watches, "here", &id, &command, now)?
+                    } else {
+                        crate::watches::delete_in(&mut chat.watches, "here", &id, &command, now)?
+                    };
+                    changes.push(
+                        Change::new(TaskEvent::ToolDone {
+                            tool: name.into(),
+                            error: None,
+                        })
+                        .because(&command),
+                    );
+                    Ok(changes)
+                })?;
+                d.chat_changed(&applied);
+            }
+        }
+        self.inner
+            .done
+            .lock()
+            .unwrap()
+            .push(format!("{name}: {id}"));
+        Ok(json!({
+            "done": if cancel { "stopped" } else { "deleted" },
+            "watch_id": id.as_str(),
+        }))
+    }
+
+    /// What is watched, for the host's conversation (D-213): its own
+    /// watches, and every task's open ones.
+    async fn watches_listing(&self) -> Result<Value, ToolError> {
+        let d = &self.inner.daemon;
+        let show = |w: &otter_core::watch::Watch| {
+            json!({
+                "watch_id": w.id.as_str(),
+                "watching": w.label,
+                "what": redact(&w.what),
+                "kind": w.kind,
+                "status": format!("{:?}", w.status).to_lowercase(),
+                "until": w.deadline,
+                "every_minutes": w.every_minutes,
+                "ends": w.until,
+                "last_read": w.last_reading().map(|r| json!({"text": redact(&r.text), "read_at": r.at})),
+            })
+        };
+        let here: Vec<Value> = d.chat.lock().await.get().watches.iter().map(show).collect();
+        let in_tasks: Vec<Value> = d
+            .tasks
+            .lock()
+            .await
+            .open_watches()
+            .into_iter()
+            .map(|(t, w)| {
+                let mut v = show(&w);
+                v["task_id"] = json!(t.as_str());
+                v
+            })
+            .collect();
+        Ok(json!({"here": here, "in_tasks": in_tasks}))
+    }
+
+    /// The developer's own messages said in one task's conversation (D-213),
+    /// word for word and as theirs: that task's Otter takes them up as any
+    /// message of theirs. Each message once, under
+    /// `<message>:send_to_task:<task>` — a turn run again sends nothing more.
+    async fn send_to_task(&self, args: &Value) -> Result<Value, ToolError> {
+        use otter_protocol::task::TaskSend;
+        let name = "send_to_task";
+        let d = &self.inner.daemon;
+        let origin = &self.inner.origin;
+        let task = Self::named_task(args)?;
+        // Only this turn's own messages: never Otter's words as theirs.
+        let messages = self.chosen(args)?;
+        let f = d.task_get(task.as_str()).await?;
+        if f.status.is_terminal() {
+            return Err(
+                fail("not_ready", format!("{} was stopped for good", f.title))
+                    .next("a new task, if they want the work done"),
+            );
+        }
+        let command = format!("{}:{task}", origin.command(name));
+        self.record(
+            TaskEvent::ToolCalled {
+                tool: name.into(),
+                origin: origin.name().into(),
+                authority: origin.authority().map(|m| m.id.to_string()),
+                detail: Some(format!("{task}: {}", f.title)),
+            },
+            Some(&command),
+        )
+        .await;
+        let mut pictures = 0;
+        let mut status = f.status;
+        for m in &messages {
+            pictures += m.attachments.len();
+            status = d
+                .task_send(TaskSend {
+                    command_id: format!("{}:{name}:{task}", m.id),
+                    task: task.to_string(),
+                    text: m.text.clone(),
+                    images: vec![],
+                    command: None,
+                })
+                .await?
+                .status;
+        }
+        self.record(
+            TaskEvent::ToolDone {
+                tool: name.into(),
+                error: None,
+            },
+            Some(&command),
+        )
+        .await;
+        self.inner
+            .done
+            .lock()
+            .unwrap()
+            .push(format!("{name}: {}", f.title));
+        let mut answer = json!({
+            "done": "sent",
+            "task_id": task.as_str(),
+            "title": f.title,
+            "messages": messages.len(),
+            "status": status.as_str(),
+        });
+        if pictures > 0 {
+            answer["pictures_not_sent"] = json!(pictures);
+        }
+        Ok(answer)
+    }
+
+    /// The host's schedules (D-083), as Otter reads them (D-213).
+    async fn triggers_listing(&self) -> Result<Value, ToolError> {
+        let d = &self.inner.daemon;
+        let triggers = d.trigger_list().await;
+        let store = d.store.lock().await;
+        let list: Vec<Value> = triggers
+            .iter()
+            .map(|t| {
+                let last: Vec<Value> = t
+                    .history
+                    .iter()
+                    .rev()
+                    .take(3)
+                    .map(|h| {
+                        json!({
+                            "at": h.at,
+                            "task_id": h.task_id.as_ref().map(|i| i.as_str()),
+                            "skipped": h.skipped.as_deref().map(redact),
+                        })
+                    })
+                    .collect();
+                json!({
+                    "id": t.id.as_str(),
+                    "name": t.name,
+                    "title": redact(&t.title),
+                    "workspace": store.workspace(t.workspace_id.as_str()).map(|w| w.name.clone()),
+                    "schedule": t.schedule.describe(),
+                    "paused": !t.enabled,
+                    "next_at": t.next_at,
+                    "request": excerpt(&redact(&t.request), 300),
+                    "last": last,
+                })
+            })
+            .collect();
+        Ok(json!({"triggers": list}))
+    }
+
+    /// A schedule made, paused, resumed or deleted from the host's
+    /// conversation (D-213). Recurring work starts, comes back or goes
+    /// only on the developer's word, whatever the level; pausing is the
+    /// safe direction. Its request is their words, as a task's is.
+    async fn trigger_tool(&self, name: &str, args: &Value) -> Result<Value, ToolError> {
+        use otter_core::trigger::Schedule;
+        use otter_protocol::{TriggerCreate, TriggerUpdate};
+        let d = &self.inner.daemon;
+        let origin = &self.inner.origin;
+        if name != "pause_trigger" && origin.authority().is_none() {
+            return Err(fail(
+                "needs_developer",
+                "a schedule is made, resumed or deleted only on the developer's word",
+            )
+            .next("tell the developer what you would schedule; they can ask for it"));
+        }
+        let text = |k: &str| {
+            args.get(k)
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+        };
+        let r = match name {
+            "create_trigger" => text("name"),
+            _ => text("trigger"),
+        }
+        .ok_or_else(|| fail("invalid", "say which schedule: its name"))?
+        .to_owned();
+        let command = format!("{}:{}", origin.command(name), digest(&r));
+        let called = TaskEvent::ToolCalled {
+            tool: name.into(),
+            origin: origin.name().into(),
+            authority: origin.authority().map(|m| m.id.to_string()),
+            detail: Some(r.clone()),
+        };
+        let done = |command: &str| {
+            Change::new(TaskEvent::ToolDone {
+                tool: name.into(),
+                error: None,
+            })
+            .because(command)
+        };
+        match name {
+            "create_trigger" => {
+                if d.chat.lock().await.applied(&command) {
+                    return Ok(json!({"done": "already", "trigger": r}));
+                }
+                let messages = self.chosen(args)?;
+                let request = messages
+                    .iter()
+                    .map(|m| m.text.as_str())
+                    .collect::<Vec<_>>()
+                    .join("\n\n");
+                let schedule = match (args.get("every_minutes"), text("daily_at")) {
+                    (Some(n), None) => Schedule::Every {
+                        minutes: n
+                            .as_u64()
+                            .filter(|n| (1..=u64::from(otter_core::watch::MAX_MINUTES)).contains(n))
+                            .ok_or_else(|| {
+                                fail(
+                                    "invalid",
+                                    "every_minutes is a number of minutes, at least 1",
+                                )
+                            })? as u32,
+                    },
+                    (None, Some(at)) => Schedule::Daily { at: at.to_owned() },
+                    _ => {
+                        return Err(fail(
+                            "invalid",
+                            "exactly one of every_minutes and daily_at (HH:MM, UTC)",
+                        ));
+                    }
+                };
+                let workspace = text("workspace")
+                    .ok_or_else(|| {
+                        fail("invalid", "workspace is where its tasks work (name or id)")
+                            .next("list_workspaces has them")
+                    })?
+                    .to_owned();
+                self.record(called, Some(&command)).await;
+                let t = d
+                    .trigger_create(TriggerCreate {
+                        name: r,
+                        workspace,
+                        title: text("title").map(str::to_owned),
+                        request,
+                        schedule,
+                        policy: Default::default(),
+                    })
+                    .await?;
+                let applied = d
+                    .chat
+                    .lock()
+                    .await
+                    .apply(Some(&command), |_, _| Ok(vec![done(&command)]))?;
+                d.chat_changed(&applied);
+                self.inner
+                    .done
+                    .lock()
+                    .unwrap()
+                    .push(format!("{name}: {}", t.name));
+                Ok(json!({
+                    "done": "scheduled",
+                    "trigger": t.name,
+                    "id": t.id.as_str(),
+                    "schedule": t.schedule.describe(),
+                    "next_at": t.next_at,
+                }))
+            }
+            "delete_trigger" => {
+                if d.chat.lock().await.applied(&command) {
+                    return Ok(json!({"done": "already", "trigger": r}));
+                }
+                self.record(called, Some(&command)).await;
+                d.trigger_delete(&r).await?;
+                let applied = d
+                    .chat
+                    .lock()
+                    .await
+                    .apply(Some(&command), |_, _| Ok(vec![done(&command)]))?;
+                d.chat_changed(&applied);
+                self.inner.done.lock().unwrap().push(format!("{name}: {r}"));
+                Ok(json!({"done": "deleted", "trigger": r}))
+            }
+            _ => {
+                let on = name == "resume_trigger";
+                self.record(called, Some(&command)).await;
+                let t = d
+                    .trigger_update(TriggerUpdate {
+                        trigger: r,
+                        enabled: Some(on),
+                    })
+                    .await?;
+                self.record(
+                    TaskEvent::ToolDone {
+                        tool: name.into(),
+                        error: None,
+                    },
+                    Some(&command),
+                )
+                .await;
+                self.inner
+                    .done
+                    .lock()
+                    .unwrap()
+                    .push(format!("{name}: {}", t.name));
+                Ok(json!({
+                    "done": if on { "resumed" } else { "paused" },
+                    "trigger": t.name,
+                    "next_at": t.next_at.filter(|_| on),
+                }))
+            }
+        }
     }
 
     /// A decision waiting on the developer, answered as their message says
@@ -2925,6 +3733,15 @@ impl Gateway {
             )
             .next("say what you'd watch; the developer can ask for it"));
         }
+        // A look that comes back is only on the developer's word (D-213).
+        if args.get("every_minutes").is_some_and(|v| !v.is_null())
+            && self.inner.origin.authority().is_none()
+        {
+            return Err(fail(
+                "needs_developer",
+                "a look that comes back is set only on the developer's word",
+            ));
+        }
         let kind_name = args["kind"].as_str().unwrap_or_default();
         let kind = crate::watches::kind(kind_name).ok_or_else(|| {
             fail(
@@ -2934,7 +3751,7 @@ impl Gateway {
         })?;
         let what = args["what"].as_str().unwrap_or_default().to_owned();
         let target = kind
-            .target(f, args, &what)
+            .target(Some(f), args, &what)
             .map_err(|e| fail("invalid", e))?;
         // What it last read, if anything: the turn says that, not an older
         // gate (W-1).
@@ -2955,7 +3772,8 @@ impl Gateway {
         crate::watches::check(f, kind, args, &what).map_err(|e| fail("conflict", e))?;
         let d = &self.inner.daemon;
         let mut not_read = None;
-        let first = match d.first_look(kind, f, &target).await {
+        let home = crate::watches::Home::Task(f.id.clone());
+        let first = match d.first_look(kind, &home, &target).await {
             Some(crate::watches::Probe::Found { outcome, text }) => {
                 self.record_done("watch", None).await;
                 return Ok(json!({
@@ -3440,13 +4258,18 @@ mod tests {
                 assert_eq!(t.input["type"], "object", "{}", t.name);
                 assert_eq!(t.input["additionalProperties"], false, "{}", t.name);
             }
-            // Only pausing changes anything without the developer's word.
+            // Only pausing changes anything without the developer's word: a
+            // task, or on the host a schedule (D-213).
             let routine: Vec<&str> = all
                 .iter()
                 .filter(|t| t.class == Class::Routine)
                 .map(|t| t.name)
                 .collect();
-            assert_eq!(routine, ["pause_task"]);
+            assert_eq!(routine[0], "pause_task");
+            assert!(
+                routine[1..].iter().all(|n| *n == "pause_trigger"),
+                "{routine:?}"
+            );
             // Never Otter's: decide on its own, merge. (Publishing goes by
             // its level, D-193; merging never does; a decision is answered
             // only as the developer said, D-205; a task is ended only on
@@ -3473,9 +4296,19 @@ mod tests {
         assert_eq!(t.class, Class::DeveloperWord);
         assert!(!tools().iter().any(|t| t.name == "delete_task"));
         // Answering a decision and reviewing a pull request: the developer's
-        // word, in the host's conversation only (D-205).
+        // word, in the host's conversation only (D-205); so are their words
+        // said in a task, and schedules made, resumed or deleted (D-213),
+        // and a workspace deleted (D-214).
         let host = host_tools();
-        for n in ["answer_decision", "review_pull_request"] {
+        for n in [
+            "answer_decision",
+            "review_pull_request",
+            "send_to_task",
+            "create_trigger",
+            "resume_trigger",
+            "delete_trigger",
+            "delete_workspace",
+        ] {
             let t = host.iter().find(|t| t.name == n).unwrap();
             assert_eq!(t.class, Class::DeveloperWord, "{n}");
             assert!(!tools().iter().any(|t| t.name == n), "{n}");

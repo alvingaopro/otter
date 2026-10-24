@@ -622,13 +622,19 @@ impl Daemon {
 
     /// Resume work interrupted by a daemon restart: re-run preparation of
     /// workspaces that were preparing, and re-resolve environments of ready
-    /// ones so new sessions don't wait for it.
+    /// ones so new sessions don't wait for it. Those made for a task that
+    /// failed go, as a failure does now (D-214): left from before, or by a
+    /// task that moved on.
     pub async fn resume_workspaces(self: &Arc<Self>) {
         let workspaces = self.store.lock().await.state.workspaces.clone();
         for ws in workspaces {
             match ws.state {
                 WorkspaceState::Preparing => {
                     self.spawn_preparation(ws.id.clone());
+                }
+                WorkspaceState::Failed if ws.task_id.is_some() => {
+                    let daemon = self.clone();
+                    tokio::spawn(async move { daemon.failed_workspace_goes(&ws.id).await });
                 }
                 WorkspaceState::Ready if ws.environment.kind != EnvironmentKind::None => {
                     let daemon = self.clone();
@@ -674,6 +680,8 @@ impl Daemon {
             return; // e.g. archived meanwhile: don't start its sessions
         }
         ws.updated_at = Utc::now();
+        // Made for a task, and failed: it goes, once the store is let go.
+        let made_for_task = result.is_err() && ws.task_id.is_some();
         match result {
             Ok(()) => {
                 ws.state = WorkspaceState::Ready;
@@ -707,11 +715,17 @@ impl Daemon {
                     tracing::error!("{e}");
                 }
                 self.events.emit(Event::WorkspaceFailed {
-                    workspace_id: id,
+                    workspace_id: id.clone(),
                     message,
                 });
                 self.emit_all(events);
             }
+        }
+        drop(store);
+        // Nothing is in it: its task is told and it goes (D-214). One the
+        // developer made stays, to be prepared again (D-135).
+        if made_for_task {
+            self.failed_workspace_goes(&id).await;
         }
         // A task waiting for it goes on, or says why it can't, now rather
         // than at the next tick: `workspace.create` no longer waits for Git

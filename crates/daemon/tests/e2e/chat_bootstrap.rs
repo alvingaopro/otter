@@ -94,8 +94,9 @@ async fn a_task_makes_its_workspace_from_a_repository_once() {
     .await;
 }
 
-/// A repository that can't be had is said on the task, which waits; it is not
-/// started in a half-made workspace.
+/// A repository that can't be had is said on the task, and the workspace
+/// made for it goes (D-214); started, it waits on the developer for where
+/// it works — not in a half-made workspace.
 #[tokio::test]
 async fn a_task_from_a_repository_that_is_not_there_waits_and_says_why() {
     let fake = fake_agent_host("ok", "rules").await;
@@ -106,19 +107,30 @@ async fn a_task_from_a_repository_that_is_not_there_waits_and_says_why() {
         .task_create(create("c-1", "Nothing", from_repo(&gone)))
         .await
         .unwrap();
-    let name = conn.workspace_list().await.unwrap()[0].name.clone();
-    let ws = wait_prepared(host, &name).await;
-    assert_eq!(ws.state, WorkspaceState::Failed);
+    let f = wait_task(host, f.id.as_str(), "told its workspace failed", |f| {
+        f.workspace_id.is_none()
+            && f.messages
+                .iter()
+                .any(|m| m.text.contains("couldn't be prepared"))
+    })
+    .await;
+    eventually("its workspace gone", || async {
+        conn_list_empty(host).await.then_some(())
+    })
+    .await;
     conn.task_act("start-1", f.id.as_str(), TaskAction::Start)
         .await
         .unwrap();
-    let f = wait_task(host, f.id.as_str(), "it waits, saying why", |f| {
-        f.status_reason
-            .as_deref()
-            .is_some_and(|r| r.starts_with("Waiting for ") && r.contains("preparing it failed"))
+    let f = wait_task(host, f.id.as_str(), "it waits on the developer", |f| {
+        f.status == otter_core::task::TaskStatus::Blocked
     })
     .await;
+    assert!(f.needs().is_some());
     assert!(f.runs.is_empty());
+}
+
+async fn conn_list_empty(host: &TestHost) -> bool {
+    host.conn().await.workspace_list().await.unwrap().is_empty()
 }
 
 /// An empty directory for a task; and an empty repository name is refused

@@ -273,11 +273,249 @@ async fn a_task_on_a_failed_workspace_says_why_and_waits() {
     })
     .await;
     assert!(f.runs.is_empty(), "{:?}", f.runs);
+    // Only the developer can end it: it needs them, and says so in its
+    // conversation once (D-214), however often it is stepped.
+    let need = f.needs().expect("it waits on the developer");
+    assert_eq!(need.kind, otter_core::task::NeedKind::Blocked);
+    assert_eq!(Some(need.summary.as_str()), f.status_reason.as_deref());
+    let said = |f: &otter_core::task::Task| -> Vec<String> {
+        f.messages
+            .iter()
+            .filter(|m| {
+                m.correlation_id
+                    .as_deref()
+                    .is_some_and(|c| c.starts_with("waits:"))
+            })
+            .map(|m| m.text.clone())
+            .collect()
+    };
+    tokio::time::sleep(Duration::from_millis(1200)).await;
+    let f = conn.task_get(&id).await.unwrap();
+    let told = said(&f);
+    assert_eq!(told.len(), 1, "{told:#?}");
+    assert!(
+        told[0].starts_with("The work can't go on: preparing its workspace proj failed")
+            && told[0].contains("no longer exists"),
+        "{}",
+        told[0]
+    );
 
     std::fs::rename(&away, &dir).unwrap();
     let ws = conn.workspace_prepare("proj").await.unwrap();
     assert_eq!(ws.state, WorkspaceState::Ready, "{:?}", ws.state_message);
-    wait_task(host, &id, "it goes on", |f| !f.runs.is_empty()).await;
+    let f = wait_task(host, &id, "it goes on", |f| !f.runs.is_empty()).await;
+    assert_eq!(said(&f).len(), 1);
+}
+
+/// The messages a task got when a workspace made for it failed (D-214).
+fn prep_failed(f: &otter_core::task::Task) -> Vec<String> {
+    f.messages
+        .iter()
+        .filter(|m| {
+            m.correlation_id
+                .as_deref()
+                .is_some_and(|c| c.starts_with("prep-failed:"))
+        })
+        .map(|m| m.text.clone())
+        .collect()
+}
+
+/// A workspace made for a task whose clone fails goes (D-214): nothing is in
+/// it. The task is told why once, waits on the developer for where it works
+/// — Otter at work on it doesn't make the same again — and starts nowhere.
+#[tokio::test]
+async fn a_tasks_own_workspace_that_cant_be_prepared_goes() {
+    use otter_core::task::{TaskAction, TaskStatus};
+    use otter_protocol::task::{NewWorkspace, TaskCreate, WorkspaceChoice};
+    let fake =
+        fake_agent_host_with("ok", "scripted", |_| vec![("OTTER_BRAIN_V2", "1".into())]).await;
+    let host = &fake.host;
+    let mut conn = host.conn().await;
+    let f = conn
+        .task_create(TaskCreate {
+            command_id: "c-1".into(),
+            title: "Nothing".into(),
+            request: "Add a README".into(),
+            workspace: Some(WorkspaceChoice::New {
+                new: NewWorkspace {
+                    repository: host.home().join("nowhere").to_string_lossy().into_owned(),
+                    base: None,
+                    branch: None,
+                },
+            }),
+            answer_only: false,
+        })
+        .await
+        .unwrap();
+    let id = f.id.to_string();
+    assert!(f.workspace_id.is_some(), "made for it");
+    // Started at once: before its workspace fails or after, it ends the same.
+    conn.task_act("start", &id, TaskAction::Start)
+        .await
+        .unwrap();
+    let f = wait_task(host, &id, "it waits on the developer", |f| {
+        f.status == TaskStatus::Blocked && f.workspace_id.is_none()
+    })
+    .await;
+    assert!(
+        f.status_reason
+            .as_deref()
+            .is_some_and(|r| r.starts_with("Choose a workspace for this task")),
+        "{:?}",
+        f.status_reason
+    );
+    assert!(f.needs().is_some());
+    let told = prep_failed(&f);
+    assert_eq!(told.len(), 1, "{told:#?}");
+    assert!(told[0].contains("couldn't be prepared ("), "{}", told[0]);
+    eventually("its workspace gone", || async {
+        host.conn()
+            .await
+            .workspace_list()
+            .await
+            .unwrap()
+            .is_empty()
+            .then_some(())
+    })
+    .await;
+    // Nothing made again, nothing started.
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    assert!(conn.workspace_list().await.unwrap().is_empty());
+    let f = conn.task_get(&id).await.unwrap();
+    assert_eq!(f.status, TaskStatus::Blocked);
+    assert!(f.runs.is_empty());
+    assert_eq!(prep_failed(&f).len(), 1);
+}
+
+/// A task moved to another workspace takes what isn't done with it: no
+/// step of its own is left on the one it left (D-214), which the app would
+/// show it at work in.
+#[tokio::test]
+async fn a_moved_task_leaves_nothing_on_its_old_workspace() {
+    use otter_core::task::{DecisionKind, StepStatus, TaskAction};
+    let fake =
+        fake_agent_host_with("ok", "scripted", |_| vec![("OTTER_PLAN_TURN", "1".into())]).await;
+    let host = &fake.host;
+    let id = started_task(host, "Add CSV export").await;
+    let f = wait_task(host, &id, "asking about its plan", |f| {
+        f.pending_decisions()
+            .any(|d| d.kind == DecisionKind::PlanApproval)
+    })
+    .await;
+    let old = f.workspace_id.clone().unwrap();
+    assert!(
+        f.steps
+            .iter()
+            .any(|t| t.workspace_id.as_ref() == Some(&old)),
+        "{:?}",
+        f.steps
+    );
+    let other = host.home().join("other");
+    std::fs::create_dir_all(&other).unwrap();
+    let mut conn = host.conn().await;
+    let to = conn
+        .workspace_create(WorkspaceCreate {
+            name: "other".into(),
+            source: SourceSpec::Directory {
+                path: other.to_string_lossy().into_owned(),
+            },
+            sessions: Some(vec![]),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    let f = conn
+        .task_act(
+            "move",
+            &id,
+            TaskAction::SetWorkspace {
+                workspace: "other".into(),
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(f.workspace_id.as_ref(), Some(&to.id));
+    let left: Vec<_> = f
+        .steps
+        .iter()
+        .filter(|t| !matches!(t.status, StepStatus::Done | StepStatus::Skipped))
+        .filter(|t| t.workspace_id.as_ref() != Some(&to.id))
+        .collect();
+    assert!(left.is_empty(), "{left:?}");
+}
+
+/// What a failure left from before D-214 goes when otterd starts: a failed
+/// workspace made for a task that works elsewhere now, and one made for a
+/// task that still points at it — that task is told and waits on the
+/// developer. A failed workspace the developer made stays theirs.
+#[tokio::test]
+async fn failed_workspaces_left_by_their_task_are_swept_at_start() {
+    use otter_core::task::TaskStatus;
+    use otter_protocol::task::TaskCreate;
+    let host = &TestHost::new();
+    let mut conn = host.conn().await;
+    let nowhere = host.home().join("nowhere");
+    for name in ["left", "pointed", "theirs"] {
+        conn.workspace_create(git_ws(name, &nowhere, None, vec![]))
+            .await
+            .unwrap();
+        assert_eq!(
+            wait_prepared(host, name).await.state,
+            WorkspaceState::Failed
+        );
+    }
+    let dir = host.home().join("proj");
+    std::fs::create_dir_all(&dir).unwrap();
+    conn.workspace_create(WorkspaceCreate {
+        name: "proj".into(),
+        source: SourceSpec::Directory {
+            path: dir.to_string_lossy().into_owned(),
+        },
+        sessions: Some(vec![]),
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+    let task = |command: &str, ws: &str| TaskCreate {
+        command_id: command.into(),
+        title: format!("Work in {ws}"),
+        request: "Add a README".into(),
+        workspace: Some(ws.to_owned().into()),
+        answer_only: false,
+    };
+    let moved = conn.task_create(task("c-1", "proj")).await.unwrap();
+    let stuck = conn.task_create(task("c-2", "pointed")).await.unwrap();
+    drop(conn);
+    host.stop_daemon().await;
+    edit_record(host, "left", |r| r["task_id"] = moved.id.as_str().into());
+    edit_record(host, "pointed", |r| r["task_id"] = stuck.id.as_str().into());
+
+    let names = || async {
+        let mut n: Vec<String> = host
+            .conn()
+            .await
+            .workspace_list()
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|w| w.name)
+            .collect();
+        n.sort();
+        n
+    };
+    eventually("the failed workspaces of tasks gone", || async {
+        (names().await == ["proj", "theirs"]).then_some(())
+    })
+    .await;
+    let theirs = host.conn().await.workspace_get("theirs").await.unwrap();
+    assert_eq!(theirs.state, WorkspaceState::Failed);
+    let mut conn = host.conn().await;
+    let f = conn.task_get(moved.id.as_str()).await.unwrap();
+    assert!(f.workspace_id.is_some() && prep_failed(&f).is_empty());
+    let f = conn.task_get(stuck.id.as_str()).await.unwrap();
+    assert_eq!(f.workspace_id, None);
+    assert_eq!(prep_failed(&f).len(), 1, "{:?}", f.messages);
+    assert_eq!(f.status, TaskStatus::Draft);
 }
 
 /// A `git` that sleeps before the subcommands named in `$SLOW_GIT` (noting

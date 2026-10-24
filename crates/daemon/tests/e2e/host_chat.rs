@@ -331,6 +331,99 @@ async fn otter_follows_up_the_tasks_it_made_once_per_change() {
     );
 }
 
+/// A task Otter didn't make that gets stuck on a failure — here, its
+/// workspace can't be prepared — is followed up on the host once (D-214):
+/// Otter hears it, and can say it. That it is done, once it goes on, isn't.
+#[tokio::test]
+async fn otter_hears_when_a_task_it_didnt_make_fails() {
+    use otter_core::task::{DecisionKind, TaskAction};
+    let fake = fake_agent_host_with("ok", "scripted", |_| {
+        vec![
+            ("OTTER_BRAIN_V2", "1".into()),
+            // Planning asks the developer to approve the plan.
+            ("OTTER_PLAN_TURN", "1".into()),
+        ]
+    })
+    .await;
+    let host = &fake.host;
+    project(host, "app").await;
+    let mut conn = host.conn().await;
+    let f = conn
+        .task_create(otter_protocol::task::TaskCreate {
+            command_id: "made-in-the-app".into(),
+            title: "CSV export".into(),
+            request: "Add CSV export".into(),
+            workspace: Some("app".into()),
+            answer_only: false,
+        })
+        .await
+        .unwrap();
+    let id = f.id.to_string();
+    conn.task_act("start", &id, TaskAction::Start)
+        .await
+        .unwrap();
+    let mine = |c: &OtterChat| -> Vec<String> {
+        follow_ups(c)
+            .into_iter()
+            .filter(|m| m.contains(&id))
+            .collect()
+    };
+    // A decision is said where it is asked, not followed up.
+    let f = wait_task(host, &id, "asking about its plan", |f| {
+        f.pending_decisions()
+            .any(|d| d.kind == DecisionKind::PlanApproval)
+    })
+    .await;
+    let plan = f.pending_decisions().next().unwrap().id.clone();
+    tokio::time::sleep(Duration::from_millis(800)).await;
+    assert!(mine(&host.conn().await.otter_get().await.unwrap()).is_empty());
+
+    // Its workspace can't be prepared, and the plan is approved: it waits.
+    let (dir, away) = (host.home().join("app"), host.home().join("app-away"));
+    std::fs::rename(&dir, &away).unwrap();
+    conn.workspace_prepare("app").await.unwrap();
+    conn.task_act(
+        "approve",
+        &id,
+        TaskAction::Decide {
+            decision_id: plan,
+            approve: true,
+            answer: None,
+            answers: None,
+        },
+    )
+    .await
+    .unwrap();
+    let chat = eventually("a follow-up on the failure", || async {
+        let c = host.conn().await.otter_get().await.unwrap();
+        (!mine(&c).is_empty()).then_some(c)
+    })
+    .await;
+    let first = mine(&chat);
+    assert!(
+        first[0].starts_with(&format!("Follow-up: [{id}] CSV export is now "))
+            && first[0].contains(": Waiting for app: preparing it failed"),
+        "{}",
+        first[0]
+    );
+    let follow = chat.follows.iter().find(|x| x.task_id.as_str() == id);
+    assert!(
+        follow.is_some_and(|x| x.failures_only),
+        "{:?}",
+        chat.follows
+    );
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    assert_eq!(mine(&host.conn().await.otter_get().await.unwrap()).len(), 1);
+
+    // Prepared again, it goes on and is done: not followed up.
+    std::fs::rename(&away, &dir).unwrap();
+    conn.workspace_prepare("app").await.unwrap();
+    wait_task(host, &id, "done", |f| f.status == TaskStatus::Done).await;
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    let all = mine(&host.conn().await.otter_get().await.unwrap());
+    assert_eq!(all.len(), 1, "{all:#?}");
+}
+
 /// otterd dies after a follow-up's turn, before its message is kept (D-094):
 /// after the restart it is posted once — not lost, not twice.
 #[tokio::test]
@@ -916,4 +1009,235 @@ async fn otter_stops_its_task_on_the_developers_word() {
     .await;
     assert_eq!(f.status_reason.as_deref(), Some("Cancelled by you"));
     assert!(f.runs.iter().all(|r| r.state.is_over()));
+}
+
+/// Otter deletes a workspace on the developer's word (D-214), once per
+/// message: never in a turn no message started, whatever its level; never
+/// one a task works in, nor one that would lose work — it is never forced.
+#[tokio::test]
+async fn otter_deletes_a_workspace_on_the_developers_word() {
+    let fake = chat_host(true).await;
+    let host = &fake.host;
+    project(host, "spare").await;
+    let call = |ws: &str| format!("CALL: delete_workspace {{\"workspace\": \"{ws}\"}}");
+    let there =
+        |name: &'static str| async move { host.conn().await.workspace_get(name).await.is_ok() };
+    // A turn no message started: refused, also at `auto`.
+    let (_, _, answers) = say(host, "w-ev", &format!("AS: event\n{}", call("spare"))).await;
+    assert_eq!(
+        code(&answers[0]),
+        "not_allowed_in_this_turn",
+        "{answers:#?}"
+    );
+    set_levels(host, &[("delete_workspace", "auto")]).await;
+    let (_, _, answers) = say(host, "w-ev-auto", &format!("AS: event\n{}", call("spare"))).await;
+    assert_eq!(code(&answers[0]), "needs_developer", "{answers:#?}");
+    assert!(there("spare").await);
+
+    // Work only there: refused, and it stays.
+    let src = make_repo(host, "src", &[("README.md", "hello\n")]);
+    host.conn()
+        .await
+        .workspace_create(git_ws("wip", &src, None, vec![]))
+        .await
+        .unwrap();
+    let ws = wait_prepared(host, "wip").await;
+    assert_eq!(ws.state, WorkspaceState::Ready, "{:?}", ws.state_message);
+    std::fs::write(Path::new(&ws.root).join("notes.txt"), "mine\n").unwrap();
+    let (_, _, answers) = say(host, "w-wip", &call("wip")).await;
+    assert_eq!(code(&answers[0]), "would_lose_work", "{answers:#?}");
+    assert!(there("wip").await);
+
+    // A task at work there: refused.
+    let id = started_task(host, "Add CSV export HANG").await;
+    wait_task(host, &id, "at work", |f| !f.runs.is_empty()).await;
+    let (_, _, answers) = say(host, "w-proj", &call("proj")).await;
+    assert_eq!(code(&answers[0]), "conflict", "{answers:#?}");
+    assert!(there("proj").await);
+
+    // On their word: deleted, and asked twice in one message, once.
+    let (chat, _, answers) = say(
+        host,
+        "w-spare",
+        &format!("Delete spare\n{}\n{}", call("spare"), call("spare")),
+    )
+    .await;
+    assert_eq!(answers[0]["data"]["done"], "deleted", "{answers:#?}");
+    assert_eq!(answers[1]["data"]["done"], "already", "{answers:#?}");
+    assert!(!there("spare").await);
+    let msg = chat
+        .messages
+        .iter()
+        .rev()
+        .find(|m| m.text.starts_with("Delete spare"))
+        .unwrap()
+        .id
+        .to_string();
+    let history = host.conn().await.otter_events(None).await.unwrap();
+    let called = history
+        .iter()
+        .filter(|r| {
+            matches!(&r.event, TaskEvent::ToolCalled { tool, authority, .. }
+                if tool == "delete_workspace" && authority.as_deref() == Some(msg.as_str()))
+        })
+        .count();
+    assert_eq!(called, 1);
+}
+
+/// Otter on the host schedules recurring work on the developer's word
+/// (D-213): their message is its request; made once per message, listed,
+/// paused at any time, resumed and deleted only on their word.
+#[tokio::test]
+async fn otter_schedules_recurring_work_on_the_developers_word() {
+    let fake = chat_host(true).await;
+    let host = &fake.host;
+    project(host, "app").await;
+    let make = "CALL: create_trigger {\"name\": \"nightly\", \"message_ids\": $MSG, \"workspace\": \"app\", \"every_minutes\": 60}";
+    let one = |tool: &str| format!("CALL: {tool} {{\"trigger\": \"nightly\"}}");
+    // Not in a turn no message started, whatever the level.
+    set_levels(
+        host,
+        &[
+            ("create_trigger", "auto"),
+            ("resume_trigger", "auto"),
+            ("delete_trigger", "auto"),
+        ],
+    )
+    .await;
+    let (_, _, answers) = say(host, "t-ev", &format!("AS: event\n{make}")).await;
+    assert_eq!(code(&answers[0]), "needs_developer", "{answers:#?}");
+    assert!(host.conn().await.trigger_list().await.unwrap().is_empty());
+
+    // On their word: once, however often it is called.
+    let text = format!("Every hour, look at the nightly build.\n{make}\n{make}");
+    let (_, _, answers) = say(host, "t-1", &text).await;
+    assert_eq!(answers[0]["data"]["done"], "scheduled", "{answers:#?}");
+    assert_eq!(answers[1]["data"]["done"], "already", "{answers:#?}");
+    let all = host.conn().await.trigger_list().await.unwrap();
+    assert_eq!(all.len(), 1);
+    assert_eq!(all[0].request, text, "their words");
+    assert_eq!(
+        all[0].schedule,
+        otter_core::trigger::Schedule::Every { minutes: 60 }
+    );
+    let (_, _, answers) = say(host, "t-ls", "CALL: list_triggers {}").await;
+    let listed = &answers[0]["data"]["triggers"][0];
+    assert_eq!(listed["name"], "nightly", "{answers:#?}");
+    assert_eq!(listed["workspace"], "app");
+    assert_eq!(listed["paused"], false);
+
+    // Paused by itself; resumed and deleted only on their word.
+    let (_, _, answers) = say(
+        host,
+        "t-ev2",
+        &format!(
+            "AS: event\n{}\n{}\n{}",
+            one("pause_trigger"),
+            one("resume_trigger"),
+            one("delete_trigger")
+        ),
+    )
+    .await;
+    assert_eq!(answers[0]["data"]["done"], "paused", "{answers:#?}");
+    assert_eq!(code(&answers[1]), "needs_developer", "{answers:#?}");
+    assert_eq!(code(&answers[2]), "needs_developer", "{answers:#?}");
+    let all = host.conn().await.trigger_list().await.unwrap();
+    assert!(!all[0].enabled);
+    let (_, _, answers) = say(host, "t-2", &one("resume_trigger")).await;
+    assert_eq!(answers[0]["data"]["done"], "resumed", "{answers:#?}");
+    assert!(host.conn().await.trigger_list().await.unwrap()[0].enabled);
+    let (_, _, answers) = say(
+        host,
+        "t-3",
+        &format!("{}\n{}", one("delete_trigger"), one("delete_trigger")),
+    )
+    .await;
+    assert_eq!(answers[0]["data"]["done"], "deleted", "{answers:#?}");
+    assert_eq!(answers[1]["data"]["done"], "already", "{answers:#?}");
+    assert!(host.conn().await.trigger_list().await.unwrap().is_empty());
+}
+
+/// Otter on the host says the developer's words in a task's own
+/// conversation (D-213), once, as theirs: that task's Otter passes them to
+/// its coding agent after its turn; a paused task goes on when they say so.
+/// Only this turn's own messages go, never in a turn no message started.
+#[tokio::test]
+async fn otter_says_the_developers_words_in_a_task() {
+    use otter_core::task::TaskAction;
+    let fake = chat_host(true).await;
+    let host = &fake.host;
+    let id = started_task(host, "Add CSV export HANG").await;
+    let f = wait_task(host, &id, "its coding agent at work", |f| {
+        f.live_run().is_some()
+    })
+    .await;
+    let send = format!("CALL: send_to_task {{\"task_id\": \"{id}\", \"message_ids\": $MSG}}");
+    let (_, _, answers) = say(host, "s-ev", &format!("AS: event\n{send}")).await;
+    assert_ne!(code(&answers[0]), "ok", "{answers:#?}");
+
+    // Theirs, once, however often it is sent; its Otter passes it on.
+    let text = format!(
+        "Use tabs, not spaces.\n{send}\n{send}\nCALL: forward_to_agent {{\"message_ids\": $MSG}}"
+    );
+    let (chat, _, answers) = say(host, "s-1", &text).await;
+    assert_eq!(answers[0]["data"]["done"], "sent", "{answers:#?}");
+    assert_eq!(answers[1]["data"]["done"], "sent", "{answers:#?}");
+    let msg = chat
+        .messages
+        .iter()
+        .rev()
+        .find(|m| m.text == text)
+        .unwrap()
+        .id
+        .to_string();
+    let conversation = f
+        .runs
+        .last()
+        .unwrap()
+        .conversation_id
+        .clone()
+        .unwrap()
+        .to_string();
+    let given = eventually("passed to the coding agent", || async {
+        let c = host
+            .conn()
+            .await
+            .conversation_get(&conversation)
+            .await
+            .unwrap()
+            .conversation;
+        c.turns
+            .iter()
+            .map(|t| t.text())
+            .find(|t| t.contains("Use tabs, not spaces."))
+    })
+    .await;
+    assert!(given.starts_with("From the developer:\n"), "{given}");
+    let f = host.conn().await.task_get(&id).await.unwrap();
+    let theirs: Vec<_> = f.messages.iter().filter(|m| m.text == text).collect();
+    assert_eq!(theirs.len(), 1, "{theirs:#?}");
+    assert_eq!(
+        theirs[0].correlation_id.as_deref(),
+        Some(format!("{msg}:send_to_task:{id}").as_str())
+    );
+    assert_eq!(theirs[0].role, MessageRole::User);
+
+    // Paused: it goes on when they say so.
+    host.conn()
+        .await
+        .task_act("pause", &id, TaskAction::Pause)
+        .await
+        .unwrap();
+    wait_task(host, &id, "paused", |f| f.status == TaskStatus::Paused).await;
+    let (_, _, answers) = say(
+        host,
+        "s-2",
+        &format!("Go on with it.\n{send}\nCALL: resume_task {{}}"),
+    )
+    .await;
+    assert_eq!(answers[0]["data"]["done"], "sent", "{answers:#?}");
+    wait_task(host, &id, "resumed on their word", |f| {
+        f.status != TaskStatus::Paused
+    })
+    .await;
 }
