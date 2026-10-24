@@ -1963,17 +1963,32 @@ fn classify_command(line: &str, root: &Scope) -> Verdict {
         };
     }
     // The rest piece by piece, each read where it runs ([`never`] too).
+    let said: Vec<Verdict> = steps
+        .iter()
+        .map(|step| listed(step, &steps, line, root))
+        .collect();
+    // Approved, a worktree made outside is the task's own (D-215): the
+    // developer is told so, since that is what they allow.
+    let tree = said
+        .iter()
+        .all(|v| *v == Verdict::Allow)
+        .then(|| own_tree(line, &steps, root))
+        .flatten();
     let mut verdict = Verdict::Allow;
-    for step in &steps {
-        verdict = worst(verdict, listed(step, &steps, line, root));
+    for (step, said) in steps.iter().zip(said) {
+        verdict = worst(verdict, said);
         if step.moves {
             continue;
         }
         if let Some(t) = writes_outside(&step.piece, &step.cwd, root) {
-            verdict = worst(
-                verdict,
-                ask_user(format!("writes outside the workspace ({t})")),
-            );
+            let why = match &tree {
+                Some(tree) => format!(
+                    "makes a worktree outside the workspace ({}); allowed, it is this task's, and the task works there without asking",
+                    tree.display()
+                ),
+                None => format!("writes outside the workspace ({t})"),
+            };
+            verdict = worst(verdict, ask_user(why));
         }
     }
     verdict
@@ -2294,6 +2309,25 @@ impl Scope {
     }
 }
 
+/// The worktree a line makes outside the workspace, when that is all it
+/// writes there (D-215): one step writes outside, and it only makes a
+/// worktree where a task may have one, on a line with no credential in it.
+/// Approved, it is the task's own ([`grant_in`] keeps it as a `tree:`
+/// grant), as long as nothing else on the line is asked about.
+fn own_tree(line: &str, steps: &[Step], root: &Scope) -> Option<std::path::PathBuf> {
+    if otter_core::redact::has_secret(line) {
+        return None;
+    }
+    let outside: Vec<&Step> = steps
+        .iter()
+        .filter(|s| !s.moves && writes_outside(&s.piece, &s.cwd, root).is_some())
+        .collect();
+    let [step] = outside.as_slice() else {
+        return None;
+    };
+    made_tree(step).filter(|tree| may_own(tree, root, None))
+}
+
 /// Where a step makes (or moves) a worktree, when that is all it writes:
 /// `git worktree add [options] <path> [<commit>]` or `git worktree move
 /// <worktree> <path>`, with no redirection and nothing the shell expands,
@@ -2493,14 +2527,7 @@ pub fn grant_in(call: &ToolCall, root: &Scope) -> Option<String> {
             }
             // A worktree made outside, and nothing else written there:
             // approved, it is the task's own (D-215).
-            let outside: Vec<&Step> = steps
-                .iter()
-                .filter(|s| !s.moves && writes_outside(&s.piece, &s.cwd, root).is_some())
-                .collect();
-            if let [step] = outside.as_slice()
-                && let Some(tree) = made_tree(step)
-                && may_own(&tree, root, None)
-            {
+            if let Some(tree) = own_tree(line, &steps, root) {
                 return Some(format!("{TREE}{}", tree.display()));
             }
             Some(format!(
@@ -3676,6 +3703,15 @@ mod tests {
         let elsewhere = dir.path().join("elsewhere");
         let make = run(format!("git worktree add {} -b y", elsewhere.display()));
         assert!(is_user_only(&classify_in(&make, &scope)));
+        // The developer is told what allowing it allows.
+        let why = |call: &ToolCall| match classify_in(call, &scope) {
+            Verdict::Ask { why, .. } => why,
+            v => panic!("{v:?}"),
+        };
+        assert!(why(&make).starts_with("makes a worktree outside the workspace"));
+        assert!(why(&make).contains("without asking"), "{}", why(&make));
+        let copy = run(format!("cp a.txt {}", elsewhere.display()));
+        assert!(why(&copy).starts_with("writes outside the workspace"));
         let grant = grant_in(&make, &scope).unwrap();
         assert_eq!(grant, format!("tree:{}", elsewhere.display()));
         let granted = Scope::owned(&root, &workspaces, &otter, &[grant]);

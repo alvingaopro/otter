@@ -62,7 +62,10 @@ the same):
   add ../x` puts a worktree; and the worktrees the developer allowed it to
   make elsewhere. Approving a line whose only ask is a `git worktree
   add|move` outside keeps the grant `tree:<path>` (`grant_in`), and
-  `verdict_of` reads the task's `tree:` grants into the scope. Never a
+  `verdict_of` reads the task's `tree:` grants into the scope. Its ask says
+  so ("makes a worktree outside the workspace (…); allowed, it is this
+  task's, and the task works there without asking"), since that is what
+  the developer allows; any other write outside asks as before. Never a
   tree that is `/`, the root or holds it, a home directory or holds one, a
   login's place, or Otter's home, in it or holding it (`may_own`, checked
   when granted and again when read). Deleting is still judged against the
@@ -102,6 +105,9 @@ Still lexical, on purpose or for later:
   for a file the agent edits and then builds. A `cat` inside a body that a
   shell runs, whose file the outer line runs, is read only in its body's
   text, as before.
+- What a judged call is told about where its pieces run (`explain`, for
+  `brain::judged_prompt`) still knows only the root: a piece in the task's
+  own worktree is said to be outside the workspace.
 - Otter's agent judging a call from the task's context, rather than a
   rule, is the next step the developer named; the policy stays the floor.
 
