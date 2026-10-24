@@ -30,8 +30,8 @@ use std::time::Duration;
 use chrono::Utc;
 use otter_core::task::{
     ARCHIVED, Criterion, Decider, DecisionKind, DecisionRequest, DecisionStatus, Evidence,
-    EvidenceKind, Gate, GateStatus, HELD, MessageRole, Risk, RunState, Step, StepStatus, Task,
-    TaskEvent, TaskStatus, VerificationMark, WAITING, YOUR_AGENT,
+    EvidenceKind, Gate, GateStatus, HELD, MessageRole, PREP_FAILED, Risk, RunState, Step,
+    StepStatus, Task, TaskEvent, TaskStatus, VerificationMark, WAITING, YOUR_AGENT,
 };
 use otter_core::{DecisionId, EvidenceId, RunId, StepId, TaskId};
 use otter_protocol::RpcError;
@@ -321,7 +321,35 @@ impl Daemon {
             // the developer's messages first, then follow-ups (D-094).
             let waiting = !crate::chat::unanswered(self.chat.lock().await.get()).is_empty();
             let busy = self.controller.lock().unwrap().host_turn;
+            // A watch on the host that came to something (D-213): said
+            // there, as a follow-up is, after the developer's messages.
+            let fired = if off {
+                None
+            } else {
+                self.chat.lock().await.get().firing_watch().cloned()
+            };
             if !waiting
+                && !busy
+                && let Some(w) = fired
+            {
+                self.controller.lock().unwrap().host_turn = true;
+                let daemon = self.clone();
+                tokio::spawn(async move {
+                    let done = {
+                        let daemon = daemon.clone();
+                        contained(async move {
+                            daemon.host_watch_turn(&w).await;
+                            Ok(())
+                        })
+                        .await
+                    };
+                    if !matches!(done, Some(Ok(()))) {
+                        tracing::warn!("a watch's turn on the host stopped");
+                    }
+                    daemon.controller.lock().unwrap().host_turn = false;
+                    daemon.task_wake.notify_one();
+                });
+            } else if !waiting
                 && !busy
                 && let Some((task, key)) = self.due_follow_up().await
             {
@@ -624,6 +652,15 @@ impl Daemon {
         // A triggered task has its workspace from its trigger; whatever text
         // a trigger carries is not the developer's word to place it.
         if f.started_by.is_some() {
+            return Ok(None);
+        }
+        // Its workspace was taken away — deleted by the developer, or it
+        // couldn't be prepared (D-214): where it goes on is theirs (D-189),
+        // and what failed isn't made again by itself.
+        if f.workspace_gone
+            .as_ref()
+            .is_some_and(|g| g.merged.is_none())
+        {
             return Ok(None);
         }
         let Some(message) = self.unread_request(f) else {
@@ -1784,12 +1821,14 @@ impl Daemon {
             Some(Taken {
                 why,
                 by_others: false,
+                told: None,
             })
         };
         let others = |why: String| {
             Some(Taken {
                 why,
                 by_others: true,
+                told: None,
             })
         };
         let (name, busy_session, git) = {
@@ -1812,14 +1851,22 @@ impl Daemon {
             if ws.state == otter_core::WorkspaceState::Preparing {
                 return state(format!("{WAITING}{}: it's being prepared", ws.name));
             }
-            // Its preparation failed: the developer's to fix (D-135).
+            // Its preparation failed: the developer's to fix (D-135), and
+            // said to them in the task's conversation (D-214).
             if ws.state == otter_core::WorkspaceState::Failed {
                 let why = ws.state_message.as_deref().unwrap_or("no reason given");
-                return state(format!(
-                    "{WAITING}{}: preparing it failed ({}); prepare it again to go on",
-                    ws.name,
-                    why.lines().next().unwrap_or(why)
-                ));
+                let why = why.lines().next().unwrap_or(why);
+                return Some(Taken {
+                    why: format!(
+                        "{WAITING}{}: preparing it failed ({why}){PREP_FAILED}",
+                        ws.name
+                    ),
+                    by_others: false,
+                    told: Some(format!(
+                        "The work can't go on: preparing its workspace {} failed ({why}). Prepare it again, or give this task another workspace, and it goes on by itself.",
+                        ws.name
+                    )),
+                });
             }
             // It only reads (D-192): whatever else works there, it reads
             // alongside.
@@ -2097,15 +2144,34 @@ impl Daemon {
     }
 
     /// The task waits for its workspace (D-079): said once, on the
-    /// task; it starts by itself when the workspace is free.
-    async fn wait_for_workspace(self: &Arc<Self>, f: &Task, why: String) -> RpcResult<()> {
+    /// task; it starts by itself when the workspace is free. A wait only
+    /// the developer can end that nothing else tells them of is said in its
+    /// conversation too, once (D-214): its Otter and its thread in Slack
+    /// hear it.
+    async fn wait_for_workspace(self: &Arc<Self>, f: &Task, taken: Taken) -> RpcResult<()> {
+        let Taken { why, told, .. } = taken;
         if f.status_reason.as_deref() == Some(why.as_str()) {
             return Ok(());
         }
-        self.controller_apply(&f.id, f.status, move |f, _| {
+        let told = told.map(|t| redact(&t));
+        self.controller_apply(&f.id, f.status, move |f, now| {
             let event = f.reason(why.clone());
             f.status_reason = Some(why);
-            Ok(vec![Change::new(event)])
+            f.waiting_since = Some(now);
+            let mut changes = vec![Change::new(event)];
+            if let (Some(text), Some(key)) = (told, f.follow_key()) {
+                let key = format!("waits:{key}");
+                if !f
+                    .messages
+                    .iter()
+                    .any(|m| m.correlation_id.as_deref() == Some(key.as_str()))
+                {
+                    let (m, c) = message(MessageRole::Controller, text, Some(key));
+                    f.messages.push(m);
+                    changes.push(c);
+                }
+            }
+            Ok(changes)
         })
         .await?;
         Ok(())
@@ -2120,7 +2186,7 @@ impl Daemon {
             if taken.by_others && self.instead_of_waiting(f, &taken).await? {
                 return Ok(());
             }
-            return self.wait_for_workspace(f, taken.why).await;
+            return self.wait_for_workspace(f, taken).await;
         }
         // One conversation per task (D-064): the next step, a fix and a
         // retry are turns in the session the work began in. A turn of this
@@ -2194,7 +2260,7 @@ impl Daemon {
             // Taken in the meantime: wait, as above.
             Err(e) if e.message.starts_with(crate::runs::BUSY) => {
                 if let Some(taken) = self.workspace_taken(f).await {
-                    self.wait_for_workspace(f, taken.why).await?;
+                    self.wait_for_workspace(f, taken).await?;
                 }
             }
             Err(e) => {
@@ -2214,6 +2280,7 @@ impl Daemon {
                 let _ = self
                     .controller_apply(&f.id, f.status, |f, _| {
                         f.status_reason = None;
+                        f.waiting_since = None;
                         Ok(vec![])
                     })
                     .await;
@@ -4028,6 +4095,9 @@ fn not_passed(gates: &[Gate], pr: Option<&str>) -> String {
 pub(crate) struct Taken {
     pub why: String,
     pub by_others: bool,
+    /// What the task's conversation is told once, when only the developer
+    /// can end the wait and nothing else would say so (D-214).
+    pub told: Option<String>,
 }
 
 /// What a developer's message turns into for the coding agent.

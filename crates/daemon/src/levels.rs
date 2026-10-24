@@ -111,6 +111,13 @@ pub const CATALOG: &[Entry] = &[
         "Make a task answer-only, or allow changes again",
         Auto,
     ),
+    // Only ever on the developer's word, whatever the level (D-214).
+    e(
+        "delete_workspace",
+        "place",
+        "Delete a workspace nothing works in, that would lose no work",
+        Developer,
+    ),
     // The work itself.
     e("start_task", "task", "Start a draft task", Auto),
     e("resume_task", "task", "Resume a paused task", Auto),
@@ -174,6 +181,12 @@ pub const CATALOG: &[Entry] = &[
         Auto,
     ),
     e(
+        "send_to_task",
+        "delegate",
+        "Say the developer's messages in a task's own conversation",
+        Auto,
+    ),
+    e(
         "tell_agent",
         "delegate",
         "Give the coding agent Otter's own instructions",
@@ -187,6 +200,30 @@ pub const CATALOG: &[Entry] = &[
         Auto,
     ),
     e("cancel_watch", "wait", "Stop a watch", Auto),
+    e(
+        "list_watches",
+        "wait",
+        "List what is watched, on the host and in tasks",
+        Auto,
+    ),
+    e("delete_watch", "wait", "Remove a watch from the list", Auto),
+    // Recurring work (D-083): made, resumed or deleted only ever on the
+    // developer's word, whatever the level (D-213); paused at any time.
+    e("list_triggers", "wait", "List the host's schedules", Auto),
+    e(
+        "create_trigger",
+        "wait",
+        "Schedule recurring work: a task at fixed times",
+        Developer,
+    ),
+    e("pause_trigger", "wait", "Pause a schedule", Auto),
+    e(
+        "resume_trigger",
+        "wait",
+        "Resume a paused schedule",
+        Developer,
+    ),
+    e("delete_trigger", "wait", "Delete a schedule", Developer),
     // Delivery.
     e(
         "publish",
@@ -403,13 +440,18 @@ mod tests {
         for e in CATALOG {
             // A decision answered and a pull request reviewed are the
             // developer's word (D-205); a task stopped for good or deleted
-            // too (D-207).
+            // too (D-207), and a workspace deleted (D-214); recurring work
+            // made, resumed or deleted (D-213).
             let want = if e.group == "remember"
                 || [
                     "answer_decision",
                     "review_pull_request",
                     "cancel_task",
                     "delete_task",
+                    "delete_workspace",
+                    "create_trigger",
+                    "resume_trigger",
+                    "delete_trigger",
                 ]
                 .contains(&e.name)
             {

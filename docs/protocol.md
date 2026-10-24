@@ -495,7 +495,13 @@ Product work owned by the daemon (D-043); see `otter_core::task`.
   branch of its own) or `{"scratch": {}}` (an empty directory made for it)
   (D-179). The task is returned with the workspace set; a Git one is still
   being prepared, and the task waits for it. An older otterd answers the
-  object forms `invalid_request`.
+  object forms `invalid_request`. A workspace made for a task that can't be
+  prepared is deleted (D-214): the task says why (a `Controller` message
+  correlated `prep-failed:<workspace id>`), no longer has a `workspace_id`,
+  and waits on the developer for where it works. A task waiting on a
+  workspace that failed (`status_reason` ending `; prepare it again to go
+  on`) needs the developer (`needs`). It carries `waiting_since?`, when
+  that wait began, which is optional and absent from older daemons.
 - `task.send {command_id, task, text, images?}` → the task, with the
   developer's message added. `images`: up to 4 pictures, each a `TaskImage`
   `{media_type, data}` (`image/png`, `image/jpeg` or `image/webp`; `data`
@@ -696,6 +702,18 @@ turn them on.
   done}` — the reply as it is written, transient like `TaskStream`.
 - A task made from it is an ordinary task; its request is the
   developer's message(s) as written.
+- What Otter there says in a task (D-213): the developer's messages, as
+  their own `User` messages in that task, through `task.send` with the
+  command id `<their message's id>:send_to_task:<task id>`.
+- `OtterChat.follows[]` (D-094) gains `failures_only?` (D-214): a task Otter
+  didn't make, followed only for its failures. `OtterChat.failures_from?`
+  is when Otter began following those. Both are optional, and absent from
+  older daemons.
+- `OtterChat.watches?` (D-213): the host conversation's watches, the same
+  `Watch` as a task's. A `Watch` gains `every_minutes?` and `until?`: a
+  look that comes back that often until then. Each report is a
+  `Controller` message correlated `watch:<id>:<n>`. All optional, absent
+  from older daemons, so no protocol bump.
 
 An addition (no protocol bump): daemons before it answer `invalid_request`;
 `otter chat` says the host's otterd is too old.
@@ -740,7 +758,9 @@ What starts unattended work on a host (D-083), kept in
 Every change — made, paused or resumed, removed, fired — emits
 `TriggersChanged {}`; a client reads `trigger.list` again (D-185). A
 triggered task carries `started_by {trigger_id, trigger, occurrence,
-policy}`. Additions (no protocol bump).
+policy}`. Additions (no protocol bump). Otter on the host makes, pauses,
+resumes and deletes triggers with its tools (D-213), through the same
+calls. Nothing new is on the wire.
 
 ## Files and image paste
 

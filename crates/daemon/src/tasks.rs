@@ -851,7 +851,17 @@ pub fn apply_action(
                     "an agent is working in the current workspace; pause first",
                 ));
             }
-            f.workspace_id = Some(WorkspaceId::from(workspace.as_str()));
+            let there = WorkspaceId::from(workspace.as_str());
+            f.workspace_id = Some(there.clone());
+            // What isn't done goes where the task does now: no workspace it
+            // left shows it at work there (D-214).
+            for t in f
+                .steps
+                .iter_mut()
+                .filter(|t| !matches!(t.status, StepStatus::Done | StepStatus::Skipped))
+            {
+                t.workspace_id = Some(there.clone());
+            }
             if f.status == TaskStatus::Blocked && f.pending_decisions().next().is_none() {
                 let next = resume_status(f);
                 changes.push(to(f, next, None)?);
@@ -1505,6 +1515,98 @@ impl Daemon {
         }
     }
 
+    /// A workspace made for a task whose preparation failed goes (D-214):
+    /// nothing is in it, and it would wait in the list for ever. Its task,
+    /// if it still works there, is told why and untied first, and waits on
+    /// the developer for where it works: what couldn't be made isn't made
+    /// again by itself (`workspace_gone`, D-189). Nothing else is touched:
+    /// not a workspace the developer made, not one with a session in use, not
+    /// one that would lose work (never forced).
+    pub(crate) async fn failed_workspace_goes(&self, ws_id: &otter_core::WorkspaceId) {
+        let ws = {
+            let store = self.store.lock().await;
+            match store.workspace(ws_id.as_str()) {
+                Some(w)
+                    if w.state == otter_core::WorkspaceState::Failed
+                        && w.task_id.is_some()
+                        && !w.sessions.iter().any(in_use) =>
+                {
+                    w.clone()
+                }
+                _ => return,
+            }
+        };
+        let task = ws.task_id.clone().expect("made for a task");
+        let why =
+            otter_core::redact::redact(ws.state_message.as_deref().unwrap_or("no reason given"));
+        let why = why.lines().next().unwrap_or_default().to_owned();
+        let repository = match &ws.source {
+            otter_core::WorkspaceSource::Git(g) => {
+                Some(otter_core::redact::url_credentials(&g.repository))
+            }
+            _ => None,
+        };
+        let (id, name) = (ws.id.clone(), ws.name.clone());
+        let applied = self.tasks.lock().await.apply(&task, None, |f, now| {
+            if f.workspace_id.as_ref() != Some(&id) || f.status.is_terminal() {
+                return Ok(vec![]);
+            }
+            f.workspace_id = None;
+            f.workspace_gone = Some(otter_core::task::WorkspaceGone {
+                name: name.clone(),
+                repository,
+                base: None,
+                at: now,
+                count: f.workspace_gone.as_ref().map_or(0, |g| g.count) + 1,
+                merged: None,
+            });
+            let (m, c) = message(
+                MessageRole::Controller,
+                format!(
+                    "Its workspace {name} couldn't be prepared ({why}), so it is removed: nothing was in it. Say where this task should work — a workspace, or a repository to make one from — and it goes on."
+                ),
+                Some(format!("prep-failed:{id}")),
+            );
+            f.messages.push(m);
+            let mut changes = vec![c];
+            if f.status.can_become(TaskStatus::Blocked) {
+                changes.push(Change::new(
+                    f.transition(
+                        TaskStatus::Blocked,
+                        Some(format!(
+                            "Choose a workspace for this task: {name} couldn't be prepared ({why})"
+                        )),
+                        now,
+                    )
+                    .map_err(RpcError::conflict)?,
+                ));
+            }
+            Ok(changes)
+        });
+        match applied {
+            Ok(a) => self.task_changed(&a),
+            Err(e) => {
+                tracing::warn!(task = %task, "untying a workspace that failed: {}", e.message)
+            }
+        }
+        let deleted = self
+            .delete_workspace(
+                &otter_protocol::WorkspaceDelete {
+                    workspace: id.to_string(),
+                    force: false,
+                },
+                |w| w.state == otter_core::WorkspaceState::Failed && !w.sessions.iter().any(in_use),
+                None,
+            )
+            .await;
+        match deleted {
+            Ok(()) => tracing::info!(workspace = %ws.name, "deleted: its preparation failed"),
+            Err(e) => {
+                tracing::warn!(workspace = %ws.name, "deleting a workspace that failed: {}", e.message)
+            }
+        }
+    }
+
     /// More asked of a task whose own workspace Otter deleted once its work
     /// was merged (D-189): a new one of its own, from the same repository,
     /// on a new branch from the base its pull request went into, which has
@@ -1701,6 +1803,16 @@ impl Daemon {
             }
             self.start_preview(&id).await?;
         }
+        // Where it worked until now, if it moves.
+        let left = match &p.action {
+            TaskAction::SetWorkspace { .. } => self
+                .tasks
+                .lock()
+                .await
+                .get(id.as_str())
+                .and_then(|f| f.workspace_id.clone()),
+            _ => None,
+        };
         let applied = self
             .tasks
             .lock()
@@ -1711,6 +1823,10 @@ impl Daemon {
         self.task_changed(&applied);
         if applied.duplicate {
             return Ok(applied.task);
+        }
+        // One made for it that failed, left behind: it goes (D-214).
+        if let Some(left) = left.filter(|w| applied.task.workspace_id.as_ref() != Some(w)) {
+            self.failed_workspace_goes(&left).await;
         }
         // Answered what an ended task still asked: its own workspace may be
         // put away now (D-105).

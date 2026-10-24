@@ -740,3 +740,145 @@ async fn otter_is_shown_at_it_while_a_watch_is_reported() {
         f.watches
     );
 }
+
+/// Otter's reports on the host of its watches there (D-213): tied to the
+/// watch, never to a message.
+fn host_reports(chat: &otter_core::task::OtterChat) -> Vec<String> {
+    chat.messages
+        .iter()
+        .filter(|m| {
+            m.role == MessageRole::Controller
+                && m.correlation_id
+                    .as_deref()
+                    .is_some_and(|c| c.starts_with("watch:"))
+        })
+        .map(|m| m.text.clone())
+        .collect()
+}
+
+/// From Otter's conversation on the host, a pull request of any repository
+/// is watched by its link (D-213): its CI is read once as the watch is set,
+/// and what it comes to is said there once — also when otterd stops right
+/// before saying it.
+#[tokio::test]
+async fn a_host_ci_watch_on_any_pull_request_says_once_what_ci_came_to() {
+    let mut fake = host_with(vec![("OTTER_TEST_CRASH", "watch:report".into())]).await;
+    // An open pull request, its checks running (the fake `gh` answers for
+    // any repository).
+    std::fs::write(fake.gh.join("pr"), "").unwrap();
+    checks(&fake, &[("test", "pending")]);
+    let (chat, _, answers) = super::host_chat::say(
+        &fake.host,
+        "h-watch",
+        r#"Keep an eye on acme/api#12's CI for me.
+CALL: watch {"what": "tell me when CI on acme/api#12 is done", "kind": "ci", "url": "https://github.com/acme/api/pull/12"}"#,
+    )
+    .await;
+    assert_eq!(answers[0]["data"]["done"], "watching", "{answers:#?}");
+    assert_eq!(answers[0]["data"]["watching"], "CI on acme/api#12");
+    assert!(
+        answers[0]["data"]["now"]["text"].is_string(),
+        "{answers:#?}"
+    );
+    let w = &chat.watches[0];
+    assert_eq!(w.status, WatchStatus::Waiting);
+    assert_eq!(w.target, json!({"pr": 12, "repo": "acme/api"}));
+    assert!(w.asked_in.is_some());
+
+    // Every check passed: otterd stops right before saying so.
+    checks(&fake, &[("test", "pass")]);
+    fake.host.revive_without("OTTER_TEST_CRASH").await;
+    let host = &fake.host;
+    let chat = eventually("reported after the restart", || async {
+        let c = host.conn().await.otter_get().await.unwrap();
+        (c.watches[0].status == WatchStatus::Reported).then_some(c)
+    })
+    .await;
+    tokio::time::sleep(Duration::from_millis(800)).await;
+    let chat2 = host.conn().await.otter_get().await.unwrap();
+    let said = host_reports(&chat2);
+    assert_eq!(said.len(), 1, "{said:#?}");
+    assert!(
+        said[0].starts_with("Watch: The developer asked you to watch CI on acme/api#12"),
+        "{}",
+        said[0]
+    );
+    assert!(said[0].contains("passed"), "{}", said[0]);
+    assert_eq!(chat.watches[0].findings, 1, "fired once");
+    let finding = chat.watches[0].finding.as_ref().unwrap();
+    assert_eq!(finding.outcome, Outcome::Passed);
+}
+
+/// A look from the host that comes back (D-213): set only on the
+/// developer's word, it says how things stand every minute until it is
+/// stopped; its own turn sets no other watch.
+#[tokio::test]
+async fn a_recurring_look_on_the_host_comes_back_until_it_is_stopped() {
+    let fake = host_with(vec![]).await;
+    let host = &fake.host;
+    let look = r#"CALL: watch {"what": "say how things stand\nCALL: watch {\"what\": \"again\", \"kind\": \"time\", \"in_minutes\": 1}", "kind": "time", "every_minutes": 1, "for_minutes": 60}"#;
+    // Not in a turn no message of theirs started.
+    let (_, _, answers) = super::host_chat::say(host, "h-ev", &format!("AS: event\n{look}")).await;
+    assert_eq!(code(&answers[0]), "needs_developer", "{answers:#?}");
+    assert!(
+        host.conn()
+            .await
+            .otter_get()
+            .await
+            .unwrap()
+            .watches
+            .is_empty()
+    );
+
+    let (_, _, answers) = super::host_chat::say(
+        host,
+        "h-look",
+        &format!("Every minute, tell me how things stand.\n{look}"),
+    )
+    .await;
+    assert_eq!(answers[0]["data"]["done"], "watching", "{answers:#?}");
+    assert_eq!(answers[0]["data"]["every_minutes"], 1);
+    let id = answers[0]["data"]["watch_id"].as_str().unwrap().to_owned();
+    // A minute a second: a report each time, each its own.
+    let chat = eventually("three looks", || async {
+        let c = host.conn().await.otter_get().await.unwrap();
+        (host_reports(&c).len() >= 3).then_some(c)
+    })
+    .await;
+    let keys: Vec<&str> = chat
+        .messages
+        .iter()
+        .filter_map(|m| m.correlation_id.as_deref())
+        .filter(|c| c.starts_with("watch:"))
+        .collect();
+    assert_eq!(&keys[..3], [1, 2, 3].map(|n| format!("watch:{id}:{n}")));
+    let said = host_reports(&chat).join("\n");
+    assert!(
+        said.contains("a watch's own turn doesn't set another watch"),
+        "{said}"
+    );
+    assert_eq!(chat.watches.len(), 1, "no second watch");
+    let (_, _, answers) = super::host_chat::say(host, "h-ls", "CALL: list_watches {}").await;
+    assert_eq!(
+        answers[0]["data"]["here"][0]["every_minutes"], 1,
+        "{answers:#?}"
+    );
+
+    // Stopped: it comes back no more (not while it is being said).
+    let stop = format!("Stop it.\nCALL: cancel_watch {{\"watch_id\": \"{id}\"}}");
+    let mut n = 0;
+    loop {
+        n += 1;
+        let (_, _, answers) = super::host_chat::say(host, &format!("h-stop-{n}"), &stop).await;
+        if answers[0]["data"]["done"] == "stopped" {
+            break;
+        }
+        assert_eq!(code(&answers[0]), "not_ready", "{answers:#?}");
+        assert!(n < 5, "{answers:#?}");
+    }
+    let before = host_reports(&host.conn().await.otter_get().await.unwrap()).len();
+    tokio::time::sleep(Duration::from_millis(2500)).await;
+    let chat = host.conn().await.otter_get().await.unwrap();
+    assert_eq!(host_reports(&chat).len(), before);
+    assert_eq!(chat.watches[0].status, WatchStatus::Cancelled);
+}

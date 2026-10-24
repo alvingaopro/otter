@@ -9,9 +9,17 @@ command ids, the app's and CLI's plumbing and the history come with it);
 `OTTER_WATCH_TICK_MS`, `OTTER_WATCH_POLL_MS` and `OTTER_WATCH_MINUTE_MS`
 (tests) tune it. Slices 2 and 3 are not built. Live check W-1 passed
 (2026-10-22, D-188), and `watch` now reads once before it sets anything.
-Slice 2 is held: its surface, Otter's conversation on the host, left the
+Slice 2 was held: its surface, Otter's conversation on the host, left the
 app in D-115 because the developer didn't use it (only `otter chat` shows
-it), so the developer decides whether it's wanted.
+it), so the developer decides whether it's wanted. On 2026-10-24 they
+asked for it from Slack (D-213): to watch any pull request's CI and to
+look or work at fixed times from the host. D-213 builds slice 2 in this
+form: watches in the host's conversation (any pull request's CI by its
+link, a run, a time), looks that come back every so many minutes until
+their end (a deviation from "a watch fires once", on the developer's word
+only), and `list_watches`, `cancel_watch`, `delete_watch` there. The
+`pr` and `task` kinds, and D-094's follow-ups as `task` watches, are not
+built.
 Reviewed against the code (Fable) before it was built.
 **Baseline:** `main` at `e456132` (v0.7.70).
 The design as a page: https://claude.ai/artifact/2cMjnbdYyXCo4bWhbQbuTW.

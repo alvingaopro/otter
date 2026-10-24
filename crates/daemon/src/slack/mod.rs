@@ -1769,10 +1769,19 @@ impl Daemon {
             return Ok(());
         };
         let now = chrono::Utc::now();
+        let notify = self.settings.read().unwrap().slack_notify();
         for (i, m) in messages.iter().enumerate().skip(from) {
             let to = (now - m.at < STALE)
                 .then(|| destination(messages, i, &Heard::default()))
                 .flatten();
+            // That a task waits or stopped, the need's own message says,
+            // with its buttons, while Slack tells needs: a follow-up saying
+            // it too would say it twice (D-209, D-214).
+            if notify && followed(m).is_some_and(|(_, key)| !key.starts_with("done:")) {
+                state.after = Some(m.id.to_string());
+                state.save(path);
+                continue;
+            }
             // Otter's word on a task with a thread of its own is said there
             // (D-207), and only there (D-209): that it is done; that it
             // waits or stopped, not at all — the need's own message says so,
@@ -1987,8 +1996,32 @@ impl Daemon {
             // (A press is kept before what it does: one since this sync
             // began is in memory still.)
             let pressed = self.slack.pressed.lock().unwrap().get(task).cloned();
-            let heard = state.heard(task, pressed.as_ref());
+            let mut heard = state.heard(task, pressed.as_ref());
             for (i, m) in messages.iter().enumerate().skip(from) {
+                // The developer's words Otter on the host said here, from
+                // their message in Slack (D-213): shown in the task's
+                // thread, and counted as said there, so what the task says
+                // next goes there too (as `made_from`, D-207).
+                if let Some(said_from) = relayed(m)
+                    && now - m.at < STALE
+                    && let Some(p) = thread_of(&state.posts, task)
+                    && self.said_in_slack(said_from).await
+                {
+                    let there = Origin {
+                        channel: state.posts[p].channel.clone(),
+                        thread: Some(state.posts[p].ts.clone()),
+                    };
+                    match post(env, &c.bot, &there, &relay(&m.text), &look.titles).await {
+                        Ok(()) => {}
+                        Err(e @ CallError::Unreachable(_)) => return Err(e),
+                        Err(e) => tracing::warn!("slack: a message of {task} wasn't shown: {e}"),
+                    }
+                    state.posts[p].said.push(m.id.to_string());
+                    heard.said.insert(m.id.to_string(), there);
+                    state.tasks.insert(task.clone(), Some(m.id.to_string()));
+                    state.save(path);
+                    continue;
+                }
                 let to = (now - m.at < STALE)
                     .then(|| destination(messages, i, &heard))
                     .flatten();
@@ -2142,6 +2175,18 @@ impl Daemon {
         State::load(&path)
             .unwrap_or_default()
             .heard(task, pressed.as_ref())
+    }
+
+    /// Whether the host's message `id` was said in Slack.
+    async fn said_in_slack(&self, id: &str) -> bool {
+        self.chat
+            .lock()
+            .await
+            .get()
+            .messages
+            .iter()
+            .rfind(|m| m.id.as_str() == id)
+            .is_some_and(|m| Origin::of(m.correlation_id.as_deref()).is_some())
     }
 
     /// Whether the developer talks to `f` from Slack now (D-207): what it
@@ -2522,6 +2567,31 @@ fn just_made(m: &Message) -> bool {
         && chrono::Utc::now() - m.at < FRESH
 }
 
+/// The host's message a task's message was said from by Otter on the host
+/// (D-213): the developer's own, made `<message>:send_to_task:<task>`.
+fn relayed(m: &Message) -> Option<&str> {
+    if m.role != MessageRole::User {
+        return None;
+    }
+    let (from, _) = m.correlation_id.as_deref()?.split_once(":send_to_task:")?;
+    Some(from)
+}
+
+/// The message whose thread is a task's conversation in Slack (D-207): its
+/// own, else its latest need's.
+fn thread_of(posts: &[Post], task: &str) -> Option<usize> {
+    posts
+        .iter()
+        .position(|p| p.task == task && p.key == "started")
+        .or_else(|| posts.iter().rposition(|p| p.task == task))
+}
+
+/// How the developer's words said for them in a task look in its thread
+/// (D-213): theirs, said to Otter elsewhere.
+fn relay(text: &str) -> String {
+    format!("_You, to Otter:_\n{text}")
+}
+
 /// A follow-up of Otter's on the host (D-094): its task and what changed.
 fn followed(m: &Message) -> Option<(&str, &str)> {
     m.correlation_id
@@ -2864,6 +2934,59 @@ mod tests {
         assert_eq!(from("msg_h3:create_task:0a1b2c3d"), None);
         assert_eq!(from("slack:D1:1700.1:1700.1"), None);
         assert_eq!(from("msg_h1:pause_task"), None);
+    }
+
+    /// The developer's words Otter on the host said in a task (D-213) are
+    /// known by their command id, and shown in the task's own thread — its
+    /// own message's, else its latest need's; once said there, what the task
+    /// says next goes there.
+    #[test]
+    fn words_said_for_the_developer_go_to_the_tasks_thread() {
+        use MessageRole::{Controller, User};
+        let relayed_one = msg("m1", User, Some("msg_h1:send_to_task:ft_a"));
+        assert_eq!(relayed(&relayed_one), Some("msg_h1"));
+        assert_eq!(
+            relayed(&msg("m2", User, Some("msg_h1:create_task:00"))),
+            None
+        );
+        assert_eq!(
+            relayed(&msg("m3", Controller, Some("msg_h1:send_to_task:ft_a"))),
+            None
+        );
+        let post = |task: &str, key: &str, ts: &str| Post {
+            task: task.into(),
+            key: key.into(),
+            channel: "D1".into(),
+            ts: ts.into(),
+            text: String::new(),
+            open: false,
+            said: vec![],
+            shows: None,
+        };
+        let posts = vec![
+            post("ft_a", "decision:1", "1.1"),
+            post("ft_b", "started", "1.2"),
+            post("ft_a", "started", "1.3"),
+            post("ft_a", "blocked:2", "1.4"),
+        ];
+        assert_eq!(
+            thread_of(&posts, "ft_a").map(|i| &posts[i].ts[..]),
+            Some("1.3")
+        );
+        assert_eq!(
+            thread_of(&posts[..2], "ft_a").map(|i| &posts[i].ts[..]),
+            Some("1.1")
+        );
+        assert_eq!(thread_of(&posts, "ft_c"), None);
+        // Counted as said there: Otter's reply after it goes to that thread.
+        let mut heard = Heard::default();
+        let there = Origin {
+            channel: "D1".into(),
+            thread: Some("1.3".into()),
+        };
+        heard.said.insert("m1".into(), there.clone());
+        let conversation = vec![relayed_one, msg("m4", Controller, Some("m1"))];
+        assert_eq!(destination(&conversation, 1, &heard), Some(there));
     }
 
     /// Where sending picks up: after the last message looked at, from the

@@ -18,7 +18,7 @@ impl WatchKind for Time {
         "time"
     }
 
-    fn target(&self, _f: &Task, args: &Value, what: &str) -> Result<Target, String> {
+    fn target(&self, _f: Option<&Task>, args: &Value, what: &str) -> Result<Target, String> {
         let minutes = self.minutes(args)?;
         let what = what.trim();
         // What it's for tells two looks in as many minutes apart.
@@ -33,8 +33,13 @@ impl WatchKind for Time {
     }
 
     fn minutes(&self, args: &Value) -> Result<u32, String> {
-        minutes_arg(args, "in_minutes")?
-            .ok_or_else(|| "say when to look again: in_minutes".to_owned())
+        // A look that comes back first comes after its own interval
+        // (D-213), unless said otherwise.
+        match minutes_arg(args, "in_minutes")? {
+            Some(n) => Ok(n),
+            None => minutes_arg(args, "every_minutes")?
+                .ok_or_else(|| "say when to look again: in_minutes".to_owned()),
+        }
     }
 
     fn every(&self) -> Option<Duration> {

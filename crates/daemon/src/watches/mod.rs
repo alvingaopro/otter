@@ -24,6 +24,10 @@
 //! - **It never fails the task, nor stays firing.** Its turn runs apart: no
 //!   answer, an error or a panic is said as a plain line, with the watch
 //!   marked reported in the same write; cancelled meanwhile, nothing is said.
+//! - **A task's, or the host's** (D-213). A watch lives in the conversation
+//!   that asked ([`Home`]): a task's, or Otter's on the host
+//!   (`OtterChat::watches`), whose turn runs where the host's follow-ups do.
+//!   A look on the host may come back every so many minutes, until its end.
 
 mod ci;
 mod run;
@@ -36,7 +40,7 @@ use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use chrono::Utc;
-use otter_core::task::{MessageRole, Task, TaskEvent};
+use otter_core::task::{Message, MessageRole, Task, TaskEvent};
 use otter_core::watch::{self as w, Finding, Outcome, Reading, Watch, WatchStatus};
 use otter_core::{MessageId, TaskId, Timestamp, WatchId};
 use otter_protocol::RpcError;
@@ -58,6 +62,13 @@ pub(crate) struct Probing {
     /// When a firing watch's turn last ran: one that couldn't be recorded
     /// is tried again a minute later, not on every tick.
     turned: HashMap<WatchId, Instant>,
+}
+
+/// Where a watch lives: the conversation that asked for it (D-213).
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub(crate) enum Home {
+    Task(TaskId),
+    Host,
 }
 
 /// What a watch is on, as its kind resolved it.
@@ -94,8 +105,9 @@ pub(crate) struct ProbeContext<'a> {
 #[async_trait]
 pub(crate) trait WatchKind: Send + Sync {
     fn name(&self) -> &'static str;
-    /// Resolve what the model asked against the task, or say why not.
-    fn target(&self, f: &Task, args: &Value, what: &str) -> Result<Target, String>;
+    /// Resolve what the model asked against the task (none on the host),
+    /// or say why not.
+    fn target(&self, f: Option<&Task>, args: &Value, what: &str) -> Result<Target, String>;
     /// How many minutes from now its deadline is (for `time`: when it's due).
     fn minutes(&self, args: &Value) -> Result<u32, String>;
     /// How often it's probed; `None`: never — its deadline is the event.
@@ -169,6 +181,14 @@ pub(crate) fn jitter(d: Duration) -> Duration {
     Duration::from_millis(d.as_millis() as u64 - tenth + off)
 }
 
+/// How many watches may wait at once where they live, and how that is said.
+fn cap(home: &Home) -> (usize, &'static str) {
+    match home {
+        Home::Task(_) => (w::MAX_WAITING, "this task already has"),
+        Home::Host => (w::MAX_HOST_WAITING, "Otter on this host already has"),
+    }
+}
+
 /// Set a watch on `f` (inside a store step): `kind` on what `args` name,
 /// for `what` the developer asked, with what a first look read, if one did.
 /// The same thing watched already is that watch, with no changes. `Err`:
@@ -184,10 +204,40 @@ pub(crate) fn set(
     first: Option<Reading>,
     now: Timestamp,
 ) -> Result<(Watch, Vec<Change>), String> {
-    if let Some(w) = same(f, kind.name(), &target.value) {
+    let home = Home::Task(f.id.clone());
+    set_in(
+        &mut f.watches,
+        &home,
+        kind,
+        target,
+        args,
+        what,
+        asked_in,
+        first,
+        now,
+    )
+}
+
+/// [`set`], in the watches of `home`. A `time` look with `every_minutes`
+/// comes back that often until `for_minutes` (60 unless said) have gone
+/// (D-213).
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn set_in(
+    watches: &mut Vec<Watch>,
+    home: &Home,
+    kind: &dyn WatchKind,
+    target: Target,
+    args: &Value,
+    what: &str,
+    asked_in: Option<MessageId>,
+    first: Option<Reading>,
+    now: Timestamp,
+) -> Result<(Watch, Vec<Change>), String> {
+    if let Some(w) = same_in(watches, kind.name(), &target.value) {
         return Ok((w.clone(), vec![]));
     }
-    let minutes = check(f, kind, args, what)?;
+    let minutes = check_in(watches, home, kind, args, what)?;
+    let (every_minutes, until) = recurring(kind, args, now)?;
     let what = what.trim();
     let watch = Watch {
         id: WatchId::generate(),
@@ -204,13 +254,32 @@ pub(crate) fn set(
         findings: 0,
         ended_at: None,
         report: None,
+        every_minutes,
+        until,
     };
     let change = Change::new(TaskEvent::WatchSet {
         watch_id: watch.id.clone(),
         label: watch.label.clone(),
     });
-    f.watches.push(watch.clone());
+    watches.push(watch.clone());
     Ok((watch, vec![change]))
+}
+
+/// A look that comes back (D-213): every how many minutes, and until when.
+/// Only `time` comes back; the rest fire once.
+fn recurring(
+    kind: &dyn WatchKind,
+    args: &Value,
+    now: Timestamp,
+) -> Result<(Option<u32>, Option<Timestamp>), String> {
+    let Some(every) = minutes_arg(args, "every_minutes")? else {
+        return Ok((None, None));
+    };
+    if kind.name() != "time" {
+        return Err("only a time look comes back every so many minutes".into());
+    }
+    let lasts = minutes_arg(args, "for_minutes")?.unwrap_or(60).max(every);
+    Ok((Some(every), Some(now + minute() * lasts as i32)))
 }
 
 /// Whether a new watch of `kind` may be set on `f` for `what`: how many
@@ -221,13 +290,29 @@ pub(crate) fn check(
     args: &Value,
     what: &str,
 ) -> Result<u32, String> {
+    check_in(&f.watches, &Home::Task(f.id.clone()), kind, args, what)
+}
+
+/// [`check`], in the watches of `home`.
+pub(crate) fn check_in(
+    watches: &[Watch],
+    home: &Home,
+    kind: &dyn WatchKind,
+    args: &Value,
+    what: &str,
+) -> Result<u32, String> {
     if what.trim().is_empty() {
         return Err("say what to watch for (what)".into());
     }
-    let open: Vec<String> = f.open_watches().map(|w| w.label.clone()).collect();
-    if open.len() >= w::MAX_WAITING {
+    let open: Vec<String> = watches
+        .iter()
+        .filter(|w| w.status.is_open())
+        .map(|w| w.label.clone())
+        .collect();
+    let (most, who) = cap(home);
+    if open.len() >= most {
         return Err(format!(
-            "this task already has {} watches open ({}): stop one first",
+            "{who} {} watches open ({}): stop one first",
             open.len(),
             open.join("; ")
         ));
@@ -237,8 +322,14 @@ pub(crate) fn check(
 
 /// The open watch of `kind` on the same thing, if there is one.
 pub(crate) fn same<'a>(f: &'a Task, kind: &str, target: &Value) -> Option<&'a Watch> {
-    f.open_watches()
-        .find(|w| w.kind == kind && &w.target == target)
+    same_in(&f.watches, kind, target)
+}
+
+/// [`same`], among `watches`.
+pub(crate) fn same_in<'a>(watches: &'a [Watch], kind: &str, target: &Value) -> Option<&'a Watch> {
+    watches
+        .iter()
+        .find(|w| w.status.is_open() && w.kind == kind && &w.target == target)
 }
 
 /// Stop watch `id` (the developer, Otter, or the task cancelled).
@@ -248,9 +339,21 @@ pub(crate) fn cancel(
     by: &str,
     now: Timestamp,
 ) -> RpcResult<Vec<Change>> {
-    let w = f
-        .watch_mut(id)
-        .ok_or_else(|| RpcError::not_found(format!("no watch `{id}` on this task")))?;
+    cancel_in(&mut f.watches, "on this task", id, by, now)
+}
+
+/// [`cancel`], among `watches` (`where_` says where, for the developer).
+pub(crate) fn cancel_in(
+    watches: &mut Vec<Watch>,
+    where_: &str,
+    id: &WatchId,
+    by: &str,
+    now: Timestamp,
+) -> RpcResult<Vec<Change>> {
+    let w = watches
+        .iter_mut()
+        .find(|w| &w.id == id)
+        .ok_or_else(|| RpcError::not_found(format!("no watch `{id}` {where_}")))?;
     if !w.cancel(now) {
         return Err(RpcError::conflict("that watch has already ended"));
     }
@@ -259,7 +362,7 @@ pub(crate) fn cancel(
         label: w.label.clone(),
     })
     .because(by);
-    w::prune(&mut f.watches);
+    w::prune(watches);
     Ok(vec![change])
 }
 
@@ -270,15 +373,27 @@ pub(crate) fn delete(
     by: &str,
     now: Timestamp,
 ) -> RpcResult<Vec<Change>> {
-    let w = f
-        .watch(id)
-        .ok_or_else(|| RpcError::not_found(format!("no watch `{id}` on this task")))?;
+    delete_in(&mut f.watches, "on this task", id, by, now)
+}
+
+/// [`delete`], among `watches`.
+pub(crate) fn delete_in(
+    watches: &mut Vec<Watch>,
+    where_: &str,
+    id: &WatchId,
+    by: &str,
+    now: Timestamp,
+) -> RpcResult<Vec<Change>> {
+    let w = watches
+        .iter()
+        .find(|w| &w.id == id)
+        .ok_or_else(|| RpcError::not_found(format!("no watch `{id}` {where_}")))?;
     let label = w.label.clone();
     let mut changes = Vec::new();
     if w.status.is_open() {
-        changes.extend(cancel(f, id, by, now)?);
+        changes.extend(cancel_in(watches, where_, id, by, now)?);
     }
-    f.watches.retain(|w| &w.id != id);
+    watches.retain(|w| &w.id != id);
     changes.push(
         Change::new(TaskEvent::WatchDeleted {
             watch_id: id.clone(),
@@ -310,7 +425,7 @@ pub(crate) fn on_accept(f: &mut Task, now: Timestamp) -> Vec<Change> {
         return vec![];
     }
     let what = "say what CI comes to: it hadn't finished when the task was accepted";
-    let Ok(target) = CI.target(f, &Value::Null, what) else {
+    let Ok(target) = CI.target(Some(f), &Value::Null, what) else {
         return vec![];
     };
     let label = target.label.clone();
@@ -376,9 +491,30 @@ impl Daemon {
         }
     }
 
+    /// Every open watch, the tasks' and the host's (D-213), with its home.
+    async fn all_open_watches(&self) -> Vec<(Home, Watch)> {
+        let mut open: Vec<(Home, Watch)> = self
+            .tasks
+            .lock()
+            .await
+            .open_watches()
+            .into_iter()
+            .map(|(t, w)| (Home::Task(t), w))
+            .collect();
+        open.extend(
+            self.chat
+                .lock()
+                .await
+                .get()
+                .open_watches()
+                .map(|w| (Home::Host, w.clone())),
+        );
+        open
+    }
+
     async fn watch_tick(self: &Arc<Self>) {
         let now = Utc::now();
-        let open = self.tasks.lock().await.open_watches();
+        let open = self.all_open_watches().await;
         // What memory keeps is only for watches still open.
         {
             let ids: HashSet<&WatchId> = open.iter().map(|(_, w)| &w.id).collect();
@@ -391,19 +527,19 @@ impl Daemon {
         // With the controller off no turn says what a watch found: a plain
         // line does, so a firing watch still ends (D-183).
         if self.brain_choice().controller.as_deref() == Some("off") {
-            for (task, w) in open.iter().filter(|(_, w)| w.status == WatchStatus::Firing) {
+            for (home, w) in open.iter().filter(|(_, w)| w.status == WatchStatus::Firing) {
                 let line = match (kind(&w.kind), &w.finding) {
                     (Some(k), Some(f)) => k.line(w, f),
                     _ => format!("{}: it came to something.", capital(&w.label)),
                 };
-                self.record_watch_report(task, &w.id, line).await;
+                self.record_watch_report(home, &w.id, line).await;
             }
         }
-        let waiting: Vec<(TaskId, Watch)> = open
+        let waiting: Vec<(Home, Watch)> = open
             .into_iter()
             .filter(|(_, w)| w.status == WatchStatus::Waiting)
             .collect();
-        for (task, w) in waiting {
+        for (home, w) in waiting {
             // A probe in flight answers first; its deadline waits a tick.
             if self.controller.lock().unwrap().watches.busy.contains(&w.id) {
                 continue;
@@ -416,7 +552,7 @@ impl Daemon {
                         outcome: Outcome::Expired,
                         text: "its deadline passed".into(),
                     };
-                    self.fire_watch(&task, &w.id, finding).await;
+                    self.fire_watch(&home, &w.id, finding).await;
                 }
                 continue;
             };
@@ -427,7 +563,7 @@ impl Daemon {
                     outcome,
                     text,
                 };
-                self.fire_watch(&task, &w.id, finding).await;
+                self.fire_watch(&home, &w.id, finding).await;
                 continue;
             }
             let Some(every) = kind.every() else {
@@ -444,8 +580,8 @@ impl Daemon {
             }
             let daemon = self.clone();
             tokio::spawn(async move {
-                let probe = daemon.probe(kind, &task, &w, PROBE_LIMIT).await;
-                daemon.after_probe(&task, &w, probe).await;
+                let probe = daemon.probe(kind, &home, &w, PROBE_LIMIT).await;
+                daemon.after_probe(&home, &w, probe).await;
                 let mut c = daemon.controller.lock().unwrap();
                 c.watches.busy.remove(&w.id);
                 c.watches
@@ -455,15 +591,17 @@ impl Daemon {
         }
     }
 
-    /// One probe of `w`, on its task as it is now, for at most `limit`.
+    /// One probe of `w`, where it lives as it is now, for at most `limit`.
     async fn probe(
         &self,
         kind: &'static dyn WatchKind,
-        task: &TaskId,
+        home: &Home,
         w: &Watch,
         limit: Duration,
     ) -> Probe {
-        if self.task_get(task.as_str()).await.is_err() {
+        if let Home::Task(task) = home
+            && self.task_get(task.as_str()).await.is_err()
+        {
             return Probe::Unreadable("the task is gone".into());
         }
         let env = self.git_account.gh_env(self.environments.base());
@@ -479,7 +617,31 @@ impl Daemon {
         }
     }
 
-    async fn after_probe(&self, task: &TaskId, seen: &Watch, probe: Probe) {
+    /// Change the watches where `home` keeps them, and its messages, in one
+    /// write: a task's document, or Otter's conversation on the host.
+    async fn on_watches(
+        &self,
+        home: &Home,
+        step: impl FnOnce(&mut Vec<Watch>, &mut Vec<Message>, Timestamp) -> RpcResult<Vec<Change>>,
+    ) -> RpcResult<()> {
+        match home {
+            Home::Task(task) => {
+                let applied = self.tasks.lock().await.apply(task, None, |f, now| {
+                    step(&mut f.watches, &mut f.messages, now)
+                })?;
+                self.task_changed(&applied);
+            }
+            Home::Host => {
+                let applied = self.chat.lock().await.apply(None, |chat, now| {
+                    step(&mut chat.watches, &mut chat.messages, now)
+                })?;
+                self.chat_changed(&applied);
+            }
+        }
+        Ok(())
+    }
+
+    async fn after_probe(&self, home: &Home, seen: &Watch, probe: Probe) {
         let now = Utc::now();
         match probe {
             Probe::NotYet { key, text } => {
@@ -493,19 +655,18 @@ impl Daemon {
                     return;
                 }
                 let id = seen.id.clone();
-                let applied = self.tasks.lock().await.apply(task, None, |f, _| {
-                    if let Some(w) = f.watch_mut(&id)
-                        && w.status == WatchStatus::Waiting
-                    {
-                        w.read(Reading { at: now, key, text });
-                    }
-                    Ok(vec![])
-                });
-                match applied {
-                    Ok(a) => self.task_changed(&a),
-                    Err(e) => {
-                        tracing::warn!(task = %task, "keeping a watch's reading: {}", e.message)
-                    }
+                let kept = self
+                    .on_watches(home, |watches, _, _| {
+                        if let Some(w) = watches.iter_mut().find(|w| w.id == id)
+                            && w.status == WatchStatus::Waiting
+                        {
+                            w.read(Reading { at: now, key, text });
+                        }
+                        Ok(vec![])
+                    })
+                    .await;
+                if let Err(e) = kept {
+                    tracing::warn!(home = ?home, "keeping a watch's reading: {}", e.message)
                 }
             }
             Probe::Found { outcome, text } => {
@@ -520,7 +681,7 @@ impl Daemon {
                     outcome,
                     text,
                 };
-                self.fire_watch(task, &seen.id, finding).await;
+                self.fire_watch(home, &seen.id, finding).await;
             }
             Probe::Unreadable(why) => {
                 let n = {
@@ -529,26 +690,26 @@ impl Daemon {
                     *n += 1;
                     *n
                 };
-                tracing::info!(task = %task, watch = %seen.id, "a watch's probe: {why} ({n} in a row)");
+                tracing::info!(home = ?home, watch = %seen.id, "a watch's probe: {why} ({n} in a row)");
                 if n >= 3 {
                     let finding = Finding {
                         at: now,
                         outcome: Outcome::Unreadable,
                         text: format!("couldn't read it three times running: {why}"),
                     };
-                    self.fire_watch(task, &seen.id, finding).await;
+                    self.fire_watch(home, &seen.id, finding).await;
                 }
             }
         }
     }
 
-    /// One look at what `kind` would watch on `f`, before the watch is set
-    /// (W-1): what the turn says is what was read now. `None`: the kind
+    /// One look at what `kind` would watch for `home`, before the watch is
+    /// set (W-1): what the turn says is what was read now. `None`: the kind
     /// isn't probed (`time`).
     pub(crate) async fn first_look(
         &self,
         kind: &'static dyn WatchKind,
-        f: &Task,
+        home: &Home,
         target: &Target,
     ) -> Option<Probe> {
         kind.every()?;
@@ -568,8 +729,10 @@ impl Daemon {
             findings: 0,
             ended_at: None,
             report: None,
+            every_minutes: None,
+            until: None,
         };
-        Some(self.probe(kind, &f.id, &draft, FIRST_LOOK_LIMIT).await)
+        Some(self.probe(kind, home, &draft, FIRST_LOOK_LIMIT).await)
     }
 
     /// `id` was just looked at (its first look): probed next a while from now.
@@ -585,33 +748,37 @@ impl Daemon {
     }
 
     /// `id` found `finding`: written as firing, before any turn says so.
-    async fn fire_watch(&self, task: &TaskId, id: &WatchId, finding: Finding) {
-        let applied = self.tasks.lock().await.apply(task, None, |f, _| {
-            let Some(w) = f.watch_mut(id).filter(|w| w.status == WatchStatus::Waiting) else {
-                return Ok(vec![]);
-            };
-            // Its last reading is what it found.
-            w.read(Reading {
-                at: finding.at,
-                key: format!("{}:{}", finding.outcome.as_str(), finding.text),
-                text: finding.text.clone(),
-            });
-            let outcome = finding.outcome;
-            if !w.fire(finding) {
-                return Ok(vec![]);
-            }
-            Ok(vec![
-                Change::new(TaskEvent::WatchFiring {
-                    watch_id: id.clone(),
-                    label: w.label.clone(),
-                    outcome,
-                })
-                .because(w.key()),
-            ])
-        });
-        match applied {
-            Ok(a) => self.task_changed(&a),
-            Err(e) => tracing::warn!(task = %task, "a watch's firing: {}", e.message),
+    async fn fire_watch(&self, home: &Home, id: &WatchId, finding: Finding) {
+        let fired = self
+            .on_watches(home, |watches, _, _| {
+                let Some(w) = watches
+                    .iter_mut()
+                    .find(|w| &w.id == id && w.status == WatchStatus::Waiting)
+                else {
+                    return Ok(vec![]);
+                };
+                // Its last reading is what it found.
+                w.read(Reading {
+                    at: finding.at,
+                    key: format!("{}:{}", finding.outcome.as_str(), finding.text),
+                    text: finding.text.clone(),
+                });
+                let outcome = finding.outcome;
+                if !w.fire(finding) {
+                    return Ok(vec![]);
+                }
+                Ok(vec![
+                    Change::new(TaskEvent::WatchFiring {
+                        watch_id: id.clone(),
+                        label: w.label.clone(),
+                        outcome,
+                    })
+                    .because(w.key()),
+                ])
+            })
+            .await;
+        if let Err(e) = fired {
+            tracing::warn!(home = ?home, "a watch's firing: {}", e.message);
         }
         let mut c = self.controller.lock().unwrap();
         c.watches.next.remove(id);
@@ -620,29 +787,29 @@ impl Daemon {
         crate::gateway::crash_point("watch", "firing");
     }
 
+    /// Whether `w`'s turn ran less than a minute ago: one that couldn't be
+    /// recorded is tried again a minute later, not on every tick. Marks it
+    /// as running now otherwise.
+    fn turned_lately(&self, w: &Watch) -> bool {
+        let mut c = self.controller.lock().unwrap();
+        if c.watches
+            .turned
+            .get(&w.id)
+            .is_some_and(|t| t.elapsed() < Duration::from_secs(60))
+        {
+            return true;
+        }
+        c.watches.turned.insert(w.id.clone(), Instant::now());
+        false
+    }
+
     /// A firing watch's turn, from the task's step: Otter says what it
     /// found, once. Never an error: whatever happens, the watch ends.
     pub(crate) async fn watch_turn(self: &Arc<Self>, f: &Task, w: &Watch) {
-        {
-            let mut c = self.controller.lock().unwrap();
-            if c.watches
-                .turned
-                .get(&w.id)
-                .is_some_and(|t| t.elapsed() < Duration::from_secs(60))
-            {
-                return;
-            }
-            c.watches.turned.insert(w.id.clone(), Instant::now());
+        if self.turned_lately(w) {
+            return;
         }
-        let finding = w.finding.clone().unwrap_or(Finding {
-            at: Utc::now(),
-            outcome: Outcome::Unknown,
-            text: "it fired".into(),
-        });
-        let line = match kind(&w.kind) {
-            Some(k) => k.line(w, &finding),
-            None => format!("{}: {}.", capital(&w.label), finding.text),
-        };
+        let (finding, line) = said_plainly(w);
         // Otter at it while it looks (D-196); the report is said whole, so the
         // sign goes once it is written.
         let _writing = self.writing(&f.id, &format!("watch-{}", w.key()));
@@ -661,6 +828,35 @@ impl Daemon {
                 }
             }
         };
+        self.reported_after_turn(&Home::Task(f.id.clone()), w, reply)
+            .await;
+    }
+
+    /// A firing watch's turn in Otter's conversation on the host (D-213),
+    /// where its follow-ups run: one at a time, after the developer's
+    /// messages. As a task's, it never fails and never stays firing.
+    pub(crate) async fn host_watch_turn(self: &Arc<Self>, w: &Watch) {
+        if self.turned_lately(w) {
+            return;
+        }
+        let (finding, line) = said_plainly(w);
+        let reply = match self.turn_backend() {
+            None => line,
+            Some(backend) => {
+                let (daemon, key, what) = (self.clone(), w.key(), event_text(w, &finding));
+                let turn =
+                    tokio::spawn(async move { daemon.host_event_turn(&*backend, key, what).await });
+                match turn.await {
+                    Ok(Some(text)) => text,
+                    Ok(None) => line,
+                    Err(_) => format!("{line} (I couldn't look further: my turn stopped.)"),
+                }
+            }
+        };
+        self.reported_after_turn(&Home::Host, w, reply).await;
+    }
+
+    async fn reported_after_turn(&self, home: &Home, w: &Watch, reply: String) {
         // A turn that took long and whose report can't be written is tried
         // again a minute after it ended, not at once.
         self.controller
@@ -670,37 +866,60 @@ impl Daemon {
             .turned
             .insert(w.id.clone(), Instant::now());
         crate::gateway::crash_point("watch", "report");
-        self.record_watch_report(&f.id, &w.id, reply).await;
+        self.record_watch_report(home, &w.id, reply).await;
     }
 
-    /// What `id` came to, said in its task's conversation — with the watch
-    /// reported in the same write, and only while it still fires.
-    async fn record_watch_report(&self, task: &TaskId, id: &WatchId, reply: String) {
-        let applied = self.tasks.lock().await.apply(task, None, |f, now| {
-            let Some(w) = f.watch_mut(id).filter(|w| w.status == WatchStatus::Firing) else {
-                return Ok(vec![]);
-            };
-            let key = w.key();
-            let (m, c) = message(MessageRole::Controller, reply, Some(key.clone()));
-            w.reported(m.id.clone(), now);
-            let label = w.label.clone();
-            f.messages.push(m);
-            w::prune(&mut f.watches);
-            Ok(vec![
-                c,
-                Change::new(TaskEvent::WatchReported {
-                    watch_id: id.clone(),
-                    label,
-                })
-                .because(key),
-            ])
-        });
-        match applied {
-            Ok(a) => {
-                self.task_changed(&a);
+    /// What `id` came to, said where it lives — with the watch reported in
+    /// the same write, and only while it still fires. A recurring look
+    /// then waits again for its next time, until its end (D-213).
+    async fn record_watch_report(&self, home: &Home, id: &WatchId, reply: String) {
+        let every = minute();
+        let recorded = self
+            .on_watches(home, |watches, messages, now| {
+                let Some(w) = watches
+                    .iter_mut()
+                    .find(|w| &w.id == id && w.status == WatchStatus::Firing)
+                else {
+                    return Ok(vec![]);
+                };
+                let key = w.key();
+                let (m, c) = message(MessageRole::Controller, reply, Some(key.clone()));
+                w.reported(m.id.clone(), now);
+                if let Some(n) = w.every_minutes {
+                    w.again(now + every * n as i32);
+                }
+                let label = w.label.clone();
+                messages.push(m);
+                w::prune(watches);
+                Ok(vec![
+                    c,
+                    Change::new(TaskEvent::WatchReported {
+                        watch_id: id.clone(),
+                        label,
+                    })
+                    .because(key),
+                ])
+            })
+            .await;
+        match recorded {
+            Ok(()) => {
                 self.controller.lock().unwrap().watches.turned.remove(id);
             }
-            Err(e) => tracing::warn!(task = %task, "saying what a watch found: {}", e.message),
+            Err(e) => tracing::warn!(home = ?home, "saying what a watch found: {}", e.message),
         }
     }
+}
+
+/// What a firing watch found, and how it is said without a model.
+fn said_plainly(w: &Watch) -> (Finding, String) {
+    let finding = w.finding.clone().unwrap_or(Finding {
+        at: Utc::now(),
+        outcome: Outcome::Unknown,
+        text: "it fired".into(),
+    });
+    let line = match kind(&w.kind) {
+        Some(k) => k.line(w, &finding),
+        None => format!("{}: {}.", capital(&w.label), finding.text),
+    };
+    (finding, line)
 }

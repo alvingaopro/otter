@@ -14,6 +14,9 @@ use crate::model::Timestamp;
 
 /// Waiting watches a task may have at once.
 pub const MAX_WAITING: usize = 3;
+/// Waiting watches Otter's conversation on the host may have at once
+/// (D-213).
+pub const MAX_HOST_WAITING: usize = 5;
 /// Ended watches kept on a task; older ones go.
 pub const KEPT_ENDED: usize = 20;
 /// Readings kept on a watch; older ones go.
@@ -135,6 +138,13 @@ pub struct Watch {
     /// Otter's message that reported it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub report: Option<MessageId>,
+    /// A look again every so many minutes (D-213): once reported, it waits
+    /// again, until `until`. Absent: it fires once (D-183).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub every_minutes: Option<u32>,
+    /// When a recurring look ends.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub until: Option<Timestamp>,
 }
 
 impl Watch {
@@ -190,6 +200,39 @@ impl Watch {
         self.report = Some(message);
         self.ended_at = Some(now);
         true
+    }
+
+    /// A recurring look, just reported, waits again for `next` (D-213) —
+    /// while that is before its end. Whether it does.
+    pub fn again(&mut self, next: Timestamp) -> bool {
+        let (Some(_), Some(until)) = (self.every_minutes, self.until) else {
+            return false;
+        };
+        if self.status != WatchStatus::Reported || next > until {
+            return false;
+        }
+        self.status = WatchStatus::Waiting;
+        self.deadline = next;
+        self.ended_at = None;
+        true
+    }
+}
+
+impl crate::task::OtterChat {
+    pub fn watch(&self, id: &WatchId) -> Option<&Watch> {
+        self.watches.iter().find(|w| &w.id == id)
+    }
+
+    /// Its watches still waiting or firing (D-213).
+    pub fn open_watches(&self) -> impl Iterator<Item = &Watch> {
+        self.watches.iter().filter(|w| w.status.is_open())
+    }
+
+    /// The watch Otter should report on next, if one fired.
+    pub fn firing_watch(&self) -> Option<&Watch> {
+        self.watches
+            .iter()
+            .find(|w| w.status == WatchStatus::Firing)
     }
 }
 
@@ -272,7 +315,37 @@ mod tests {
             findings: 0,
             ended_at: None,
             report: None,
+            every_minutes: None,
+            until: None,
         }
+    }
+
+    /// A recurring look waits again after each report, until its end; one
+    /// that fires once, or one cancelled, doesn't (D-213).
+    #[test]
+    fn a_recurring_look_waits_again_until_its_end() {
+        let now = Utc::now();
+        let found = || Finding {
+            at: Utc::now(),
+            outcome: Outcome::Due,
+            text: "the time came".into(),
+        };
+        let mut w = watch(WatchStatus::Waiting);
+        w.every_minutes = Some(1);
+        w.until = Some(now + Duration::minutes(2));
+        assert!(w.fire(found()));
+        assert!(w.reported(MessageId::generate(), now));
+        assert!(w.again(now + Duration::minutes(1)));
+        assert_eq!(w.status, WatchStatus::Waiting);
+        assert_eq!(w.ended_at, None);
+        assert!(w.fire(found()));
+        assert_eq!(w.key(), format!("watch:{}:2", w.id));
+        assert!(w.reported(MessageId::generate(), now));
+        assert!(!w.again(now + Duration::minutes(3)), "past its end");
+        assert_eq!(w.status, WatchStatus::Reported);
+        let mut once = watch(WatchStatus::Firing);
+        assert!(once.reported(MessageId::generate(), now));
+        assert!(!once.again(now + Duration::minutes(1)));
     }
 
     #[test]

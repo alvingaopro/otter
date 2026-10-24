@@ -25,7 +25,7 @@ impl WatchKind for Ci {
         "ci"
     }
 
-    fn target(&self, f: &Task, args: &Value, _what: &str) -> Result<Target, String> {
+    fn target(&self, f: Option<&Task>, args: &Value, _what: &str) -> Result<Target, String> {
         // Any pull request's, by its link (D-193).
         if let Some(url) = args["url"].as_str().filter(|u| !u.trim().is_empty()) {
             let Some(crate::delivery::GithubLink::PullRequest { repo, number }) =
@@ -39,6 +39,10 @@ impl WatchKind for Ci {
                 key: format!("pr{number}-{repo}"),
             });
         }
+        // On the host there is no task's own: a pull request by its link.
+        let Some(f) = f else {
+            return Err("say which pull request: its url".into());
+        };
         let d = f.delivery.as_ref();
         let (Some(pr), Some(url)) = (
             d.and_then(|d| d.pr_number),

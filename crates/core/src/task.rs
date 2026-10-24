@@ -31,6 +31,9 @@ pub const ARCHIVED: &str = ": it's archived; unarchive it to go on";
 /// cancelled (D-156). The app matches it too (`HELD` in `tasks.ts`).
 pub const HELD: &str =
     " has unfinished work there: finish or cancel it, or give this task a workspace of its own";
+/// …or preparing it failed, and only preparing it again (or another
+/// workspace) lets the task go on (D-214).
+pub const PREP_FAILED: &str = "; prepare it again to go on";
 
 /// Version of the persisted [`Task`] document. Bump with a migration in
 /// the daemon's task store.
@@ -583,9 +586,19 @@ pub struct OtterChat {
     /// The last entry of its history (Otter's tool calls).
     #[serde(default)]
     pub history_seq: u64,
-    /// The tasks Otter follows here (D-094): those it made.
+    /// The tasks Otter follows here (D-094): those it made, and those that
+    /// failed or got stuck on the developer (D-214).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub follows: Vec<Follow>,
+    /// From when Otter follows up the failures of tasks it didn't make
+    /// (D-214): set the first time it looks, so what had already failed
+    /// then isn't news.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failures_from: Option<Timestamp>,
+    /// What Otter looks at again later for the developer here (D-213): the
+    /// open watches, and the last ended ones.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub watches: Vec<crate::watch::Watch>,
 }
 
 /// A task Otter follows in its conversation on the host (D-094), and the
@@ -596,6 +609,25 @@ pub struct Follow {
     /// The last change followed up ([`Task::follow_key`]); empty: none.
     #[serde(default)]
     pub seen: String,
+    /// Followed for its failures only (D-214): Otter didn't make it. That
+    /// it is done isn't followed up.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub failures_only: bool,
+}
+
+impl Task {
+    /// What makes a task Otter didn't make worth a follow-up on the host
+    /// (D-214), if anything: it failed, or it is stuck on something only
+    /// the developer can end — a workspace to free or prepare again, a
+    /// block. A decision is said where it is asked (the app's card, its
+    /// message in Slack), and a sub-task's change goes to its parent's
+    /// Otter (D-194).
+    pub fn failure(&self) -> Option<Need> {
+        if self.parent.is_some() {
+            return None;
+        }
+        self.needs().filter(|n| n.decision_id.is_none())
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -698,6 +730,11 @@ pub struct Task {
     /// When it took its status (absent in documents from before D-071).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub status_since: Option<Timestamp>,
+    /// When it began to wait for its workspace as `status_reason` says
+    /// (D-214): a wait isn't a status of its own, so each is its own
+    /// change. Older than `status_since`: from an earlier status, unused.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub waiting_since: Option<Timestamp>,
     /// While paused: the status the pause found and its reason, where a
     /// resume goes back to (D-168).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -818,6 +855,7 @@ impl Task {
             answer_only: false,
             status: TaskStatus::Draft,
             status_since: Some(now),
+            waiting_since: None,
             paused_from: None,
             started_by: None,
             status_reason: None,
@@ -894,27 +932,29 @@ impl Task {
             .filter(|d| d.status == DecisionStatus::Pending)
     }
 
-    /// What the task waits on the developer for, if anything (D-071).
-    /// A decision comes first (the oldest); then review once it's ready to
-    /// accept (or a gate failed), blocked, failed. Review still publishing
-    /// or waiting for CI isn't waiting on them.
     /// The change worth a follow-up (D-094), if it stands at one: done,
-    /// failed, in review, or waiting on the developer — with when it got
-    /// there, so each change is its own.
+    /// failed, or waiting on the developer — blocked, or still at work on a
+    /// wait only they can end (D-214) — with when it got there, so each
+    /// change is its own.
     pub fn follow_key(&self) -> Option<String> {
-        let notable = matches!(self.status, TaskStatus::Done | TaskStatus::Failed)
-            || (self.status == TaskStatus::Blocked && self.needs().is_some());
-        notable.then(|| {
-            format!(
-                "{}:{}",
-                self.status.as_str(),
-                self.status_since
-                    .unwrap_or(self.updated_at)
-                    .timestamp_millis()
-            )
-        })
+        let since = self.status_since.unwrap_or(self.updated_at);
+        let at = match self.status {
+            TaskStatus::Done | TaskStatus::Failed => since,
+            TaskStatus::Blocked => self.needs().map(|_| since)?,
+            // A wait isn't a status of its own: it counts from its start.
+            _ => self.needs()?.since,
+        };
+        Some(format!(
+            "{}:{}",
+            self.status.as_str(),
+            at.timestamp_millis()
+        ))
     }
 
+    /// What the task waits on the developer for, if anything (D-071).
+    /// A decision comes first (the oldest); then blocked, failed, or a
+    /// workspace only they can free or prepare again. Review is never
+    /// waiting on them (D-199).
     pub fn needs(&self) -> Option<Need> {
         let since = self.status_since.unwrap_or(self.updated_at);
         let reason = |fallback: &str| {
@@ -962,14 +1002,23 @@ impl Task {
             }
             TaskStatus::Failed => need(NeedKind::Failed, reason("Stopped")),
             // Waiting for a workspace only the developer can free (D-134,
-            // D-156).
+            // D-156) or prepare again (D-214), since the wait began.
             s if s.is_active()
                 && self.status_reason.as_deref().is_some_and(|r| {
                     r.starts_with(WAITING)
-                        && (r.ends_with(YOUR_AGENT) || r.ends_with(ARCHIVED) || r.ends_with(HELD))
+                        && (r.ends_with(YOUR_AGENT)
+                            || r.ends_with(ARCHIVED)
+                            || r.ends_with(HELD)
+                            || r.ends_with(PREP_FAILED))
                 }) =>
             {
-                need(NeedKind::Blocked, reason("Waiting on you"))
+                Some(Need {
+                    kind: NeedKind::Blocked,
+                    summary: reason("Waiting on you"),
+                    since: self.waiting_since.filter(|w| *w >= since).unwrap_or(since),
+                    decision_id: None,
+                    decisions: 0,
+                })
             }
             _ => None,
         }
@@ -2029,6 +2078,12 @@ mod tests {
             (waiting(": it's being prepared"), false),
             (waiting(": “Other task” is working there"), false),
             (waiting(&format!(": “Other task”{HELD}")), true),
+            (
+                waiting(&format!(
+                    ": preparing it failed (no such repository){PREP_FAILED}"
+                )),
+                true,
+            ),
         ] {
             f.status_reason = Some(why.clone());
             let n = f.needs();
@@ -2042,6 +2097,39 @@ mod tests {
         f.status_reason = Some(waiting(&format!(": claude{YOUR_AGENT}")));
         f.status = Paused;
         assert_eq!(f.needs(), None);
+    }
+
+    /// A wait only the developer can end is a change to follow up (D-214),
+    /// each its own from when it began; one the task ends by itself isn't.
+    #[test]
+    fn each_wait_on_the_developer_is_its_own_change() {
+        let t0 = chrono::Utc::now();
+        let mut f = Task::new("t".into(), "r".into(), t0);
+        f.transition(Planning, None, t0).unwrap();
+        f.status_reason = Some(format!("{WAITING}proj: it's being prepared"));
+        assert_eq!(f.follow_key(), None);
+        let failed = format!("{WAITING}proj: preparing it failed (gone){PREP_FAILED}");
+        let t1 = t0 + chrono::Duration::seconds(5);
+        f.status_reason = Some(failed.clone());
+        f.waiting_since = Some(t1);
+        assert_eq!(f.needs().unwrap().since, t1);
+        let first = f.follow_key().unwrap();
+        assert_eq!(first, format!("planning:{}", t1.timestamp_millis()));
+        // Failing again after it was prepared again: another change.
+        let t2 = t1 + chrono::Duration::seconds(5);
+        f.waiting_since = Some(t2);
+        assert_ne!(f.follow_key().unwrap(), first);
+        // A wait from an earlier status counts from the status instead.
+        f.transition(Implementing, None, t2 + chrono::Duration::seconds(1))
+            .unwrap();
+        f.status_reason = Some(failed);
+        assert_eq!(f.needs().unwrap().since, f.status_since.unwrap());
+        // Done, failed and blocked keep their keys (D-094).
+        f.transition(Failed, Some("Stopped".into()), t2).unwrap();
+        assert_eq!(
+            f.follow_key().unwrap(),
+            format!("failed:{}", t2.timestamp_millis())
+        );
     }
 
     #[test]

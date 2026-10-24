@@ -46,7 +46,8 @@ architecture (architecture-lessons §24–§25).
 Inside the daemon (`crates/daemon/src`):
 
 - `daemon.rs` — shared state, request dispatch, host status
-- `workspaces.rs` — workspace lifecycle + background preparation pipeline
+- `workspaces.rs` — workspace lifecycle + background preparation pipeline;
+  one made for a task that can't be prepared goes, its task told (D-214)
 - `sessions.rs` — sessions/executions, launching
 - `reconcile.rs` — process exits + agent observation, every 500 ms
 - `attention.rs` — what needs the developer (raise/resolve rules)
@@ -65,15 +66,20 @@ Inside the daemon (`crates/daemon/src`):
   to the task's history; `agents/claude_otter.rs` runs Claude's turn
   through the worker's `otter` profile (no Claude Code tools, only Otter's);
   `chat.rs` is Otter's conversation on the host (D-093), with the host's
-  tools, `otter chat` in the CLI; `memory.rs` is Otter's memory (D-113),
+  tools — the developer's words said in a task, schedules (D-213), a
+  workspace deleted (D-214), and follow-ups on tasks it made and on any
+  task's failure — `otter chat` in the CLI; `memory.rs` is Otter's memory (D-113),
   each conversation's and the host's, given to every turn; `commands.rs`
   does the developer's slash commands in a task's conversation with the
   same tools, no model (D-190)
 - `watches/` — watches (D-183): what Otter looks at again later on the
-  developer's word. One engine (`mod.rs`: probing with no model, only
-  changes written, firing before the turn, the turn in the task's step);
+  developer's word, in a task's conversation or the host's (D-213, `Home`;
+  on the host a look may come back every so many minutes). One engine
+  (`mod.rs`: probing with no model, only changes written, firing before
+  the turn, the turn in the task's step or behind the host's turn);
   each kind of thing watched behind `WatchKind` (`time.rs`, `ci.rs`).
-  `triggers.rs` — recurring work that starts tasks (D-083)
+  `triggers.rs` — recurring work that starts tasks (D-083), which Otter
+  on the host makes, pauses, resumes and deletes too (D-213)
 - `levels.rs` — how far each of Otter's tools may go (D-191): the catalog,
   the host's and a task's levels, and `otter.actions` (what Otter did,
   D-193)

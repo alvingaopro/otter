@@ -23,7 +23,7 @@ impl WatchKind for Run {
         "run"
     }
 
-    fn target(&self, _f: &Task, args: &Value, _what: &str) -> Result<Target, String> {
+    fn target(&self, _f: Option<&Task>, args: &Value, _what: &str) -> Result<Target, String> {
         let url = args["url"].as_str().unwrap_or_default();
         let Some(GithubLink::Run { repo, id, .. }) = GithubLink::parse(url) else {
             return Err("a run watch needs the url of a GitHub Actions run".into());
@@ -202,7 +202,7 @@ mod tests {
         let f = otter_core::task::Task::new("t".into(), "r".into(), chrono::Utc::now());
         let t = Run
             .target(
-                &f,
+                Some(&f),
                 &json!({"url": "https://github.com/o/r/actions/runs/42"}),
                 "x",
             )
@@ -210,9 +210,13 @@ mod tests {
         assert_eq!(t.key, "run42");
         assert_eq!(t.value, json!({"repo": "o/r", "run": "42"}));
         assert!(
-            Run.target(&f, &json!({"url": "https://github.com/o/r/pull/7"}), "x")
-                .is_err()
+            Run.target(
+                Some(&f),
+                &json!({"url": "https://github.com/o/r/pull/7"}),
+                "x"
+            )
+            .is_err()
         );
-        assert!(Run.target(&f, &json!({}), "x").is_err());
+        assert!(Run.target(Some(&f), &json!({}), "x").is_err());
     }
 }

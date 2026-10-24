@@ -853,6 +853,219 @@ async fn a_task_that_needs_you_is_told_in_slack_and_answered_there() {
     assert!(kept["needs"][&quiet].is_string(), "{kept}");
 }
 
+/// A task stuck on a failure Otter on the host hears of (D-214) is told in
+/// Slack once: by the need's own message, with its buttons — not again by
+/// Otter's follow-up, though the developer last spoke to Otter there.
+#[tokio::test]
+async fn a_failure_is_told_in_slack_once() {
+    use otter_core::task::TaskAction;
+    let mut slack = FakeSlack::start().await;
+    let fake = slack_host(&slack).await;
+    let host = &fake.host;
+    host.conn()
+        .await
+        .settings_set(set_up("xoxb-1-SLACKTESTTOKEN"))
+        .await
+        .unwrap();
+    let mut ws = slack.connected().await;
+    let state = host.home().join("state/slack.json");
+    eventually("the needs looked at", || async {
+        std::fs::read_to_string(&state)
+            .ok()
+            .filter(|s| s.contains("\"needs\""))
+    })
+    .await;
+    // The developer talks to Otter in Slack: its next words go there.
+    acked(
+        &mut ws,
+        dm("e1", "U01DEV", "1700000000.000100", "Hi", json!({})),
+        "e1",
+    )
+    .await;
+    eventually("Otter's answer in Slack", || async {
+        (slack.calls("chat.postMessage").len() == 1).then_some(())
+    })
+    .await;
+
+    let dir = host.home().join("app");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("Makefile"), "test:\n\t@echo all good\n").unwrap();
+    let mut conn = host.conn().await;
+    conn.workspace_create(WorkspaceCreate {
+        name: "app".into(),
+        source: SourceSpec::Directory {
+            path: dir.to_string_lossy().into_owned(),
+        },
+        sessions: Some(vec![]),
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+    let f = conn
+        .task_create(otter_protocol::task::TaskCreate {
+            command_id: "made-in-the-app".into(),
+            title: "CSV export".into(),
+            request: "Add CSV export".into(),
+            workspace: Some("app".into()),
+            answer_only: false,
+        })
+        .await
+        .unwrap();
+    let id = f.id.to_string();
+    std::fs::rename(&dir, host.home().join("app-away")).unwrap();
+    conn.workspace_prepare("app").await.unwrap();
+    conn.task_act("start", &id, TaskAction::Start)
+        .await
+        .unwrap();
+    let need = eventually("the failure told in Slack", || async {
+        told(&slack).into_iter().find(|b| {
+            b["blocks"][0]["text"].as_str().is_some_and(|t| {
+                t.starts_with(
+                    "**CSV export** is waiting on you: Waiting for app: preparing it failed",
+                )
+            })
+        })
+    })
+    .await;
+    assert_eq!(need["channel"], "D1");
+    // Otter on the host heard it (its follow-up is in its conversation)…
+    eventually("Otter's follow-up on the host", || async {
+        let c = host.conn().await.otter_get().await.unwrap();
+        c.messages
+            .iter()
+            .any(|m| {
+                m.correlation_id
+                    .as_deref()
+                    .is_some_and(|k| k.starts_with(&format!("follow:{id}:")))
+            })
+            .then_some(())
+    })
+    .await;
+    // …and it isn't said in Slack a second time.
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    let about: Vec<Value> = slack
+        .calls("chat.postMessage")
+        .into_iter()
+        .map(|c| c.2)
+        .filter(|b| b.to_string().contains("CSV export") || b.to_string().contains("Follow-up:"))
+        .collect();
+    assert_eq!(about.len(), 1, "{about:#?}");
+}
+
+/// What the developer says to Otter in Slack for a task with a thread of
+/// its own, Otter says in that task (D-213): their words show in the
+/// task's thread, and the task answers there.
+#[tokio::test]
+async fn words_said_for_a_task_show_in_its_thread() {
+    let mut slack = FakeSlack::start().await;
+    let fake = slack_host(&slack).await;
+    let host = &fake.host;
+    host.conn()
+        .await
+        .settings_set(set_up("xoxb-1-SLACKTESTTOKEN"))
+        .await
+        .unwrap();
+    let mut ws = slack.connected().await;
+    let state = host.home().join("state/slack.json");
+    eventually("the needs looked at", || async {
+        std::fs::read_to_string(&state)
+            .ok()
+            .filter(|s| s.contains("\"needs\""))
+    })
+    .await;
+    let dir = host.home().join("csv");
+    std::fs::create_dir_all(&dir).unwrap();
+    host.conn()
+        .await
+        .workspace_create(WorkspaceCreate {
+            name: "csv".into(),
+            source: SourceSpec::Directory {
+                path: dir.to_string_lossy().into_owned(),
+            },
+            sessions: Some(vec![]),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    // A task made from Slack, not started: its thread is its conversation.
+    let ask = "Add CSV export, a task of its own.\nCALL: create_task {\"title\": \"Add CSV export\", \"message_ids\": $MSG, \"workspace\": \"csv\"}";
+    acked(
+        &mut ws,
+        dm("e1", "U01DEV", "1700000000.000100", ask, json!({})),
+        "e1",
+    )
+    .await;
+    let card = eventually("the task's own message", || async {
+        slack
+            .calls("chat.postMessage")
+            .into_iter()
+            .map(|c| c.2)
+            .find(|b| {
+                b.get("thread_ts").is_none()
+                    && b["blocks"][0]["text"]
+                        .as_str()
+                        .is_some_and(|t| t.starts_with("**Add CSV export**\n"))
+            })
+    })
+    .await;
+    let on = ts_of(&slack, &card);
+    kept(host, &on).await;
+    let id = host.conn().await.task_list().await.unwrap()[0]
+        .id
+        .to_string();
+    let in_thread = || {
+        slack
+            .calls("chat.postMessage")
+            .into_iter()
+            .map(|c| c.2)
+            .filter(|b| b["thread_ts"] == on.as_str())
+            .collect::<Vec<Value>>()
+    };
+    tokio::time::sleep(Duration::from_millis(800)).await;
+    let before = in_thread().len();
+
+    // Said to Otter at the top of the conversation, for the task.
+    let words = format!(
+        "Use tabs, not spaces.\nCALL: send_to_task {{\"task_id\": \"{id}\", \"message_ids\": $MSG}}"
+    );
+    acked(
+        &mut ws,
+        dm("e2", "U01DEV", "1700000002.000100", &words, json!({})),
+        "e2",
+    )
+    .await;
+    let relayed = eventually("their words in the task's thread", || async {
+        in_thread().into_iter().find(|b| {
+            b["blocks"][0]["text"]
+                .as_str()
+                .is_some_and(|t| t.starts_with("_You, to Otter:_\nUse tabs, not spaces."))
+        })
+    })
+    .await;
+    assert_eq!(relayed["channel"], "D1");
+    // The task's Otter answers them, in that thread.
+    let f = wait_task(host, &id, "the task's answer", |f| {
+        let theirs = f.messages.iter().find(|m| m.text == words);
+        theirs.is_some_and(|t| {
+            f.messages
+                .iter()
+                .any(|m| m.correlation_id.as_deref() == Some(t.id.as_str()))
+        })
+    })
+    .await;
+    assert!(f.messages.iter().any(|m| m.text == words));
+    eventually("the answer in the thread", || async {
+        (in_thread().len() >= before + 2).then_some(())
+    })
+    .await;
+    // Their words aren't said again at the top.
+    let top: Vec<Value> = told(&slack)
+        .into_iter()
+        .filter(|b| b.to_string().contains("_You, to Otter:_"))
+        .collect();
+    assert!(top.is_empty(), "{top:#?}");
+}
+
 /// `/otter` as Socket Mode sends it; otterd's ack, which carries the answer.
 async fn slash(
     ws: &mut WebSocketStream<TcpStream>,
