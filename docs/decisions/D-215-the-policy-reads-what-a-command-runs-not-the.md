@@ -37,7 +37,11 @@ the same):
   pipe, no substitution, no other descriptor, no file the line then runs).
   The message of `git commit`, `tag`, `merge`, `notes` and `stash`. A
   variable expanded in any of these still counts for credentials
-  (`echo $GITHUB_TOKEN`, `git commit -m "$DB_PASSWORD"` ask).
+  (`echo $GITHUB_TOKEN`, `git commit -m "$DB_PASSWORD"` ask). A quoted
+  string is data in these places because of where it stands, not because
+  it is quoted: a quoted command a shell runs (`sh -c '…'`), SQL given to a
+  client (`psql -c 'DROP TABLE …'`) and a word spelled apart (`kubectl
+  dele''te`) are still read.
 - **A heredoc's body that `cat` or `tee` writes is data** unless its output
   goes on (a pipe, `>(…)`, `>&3`, a capture), its body is expanded, a file
   it writes can't be told (`> "$F"`), or something else on its text may

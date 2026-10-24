@@ -21,30 +21,46 @@
 //! backticks read as commands too; a `cd` moves where later relative paths
 //! point; a write to a file outside the workspace — by `>`/`>>` or by `cp`,
 //! `mv`, `tee`, `touch`, `mkdir`, `ln`, `chmod`, `chown`, `install`,
-//! `dd of=` — asks the developer. The most severe piece decides. Quotes are
-//! read for one thing, where a line is cut: a `|` inside `'…'` or `"…"` is
-//! part of a word, and a line whose quotes are not plainly balanced is cut at
-//! every separator as if it had none. This is a lexical reading for
-//! usability, not a sandbox: variables and what a script does inside are
-//! not understood, and a determined command can hide what it does.
+//! `dd of=` — asks the developer. The most severe piece decides. Quotes
+//! decide where a line is cut: a `|` inside `'…'` or `"…"` is part of a
+//! word, and a line whose quotes are not plainly balanced is cut at every
+//! separator as if it had none. Within a piece they decide its words
+//! (below). This is a lexical reading for usability, not a sandbox:
+//! variables and what a script does inside are not understood, and a
+//! determined command can hide what it does.
 //!
-//! Within a piece, the word lists read what the command does, not its data
+//! Within a piece, the word lists read what the command runs, not its data
 //! (D-215). A piece is read as words, the way the shell passes them
-//! ([`words`]). Data: what a read searches for (a pattern, quoted or not,
-//! whatever characters it has; `git log --grep`, `find -name`, the tests a
-//! test runner picks); of a read that reaches outside the workspace, all but
-//! the command (a credential word it looks for there is still judged,
-//! D-174); what `echo` and `printf` print, when their output goes nowhere
-//! that runs it (no pipe, no substitution, no other descriptor, no file the
-//! line then runs); the message of `git commit`, `tag`, `merge`, `notes`
-//! and `stash`; and a heredoc's body that `cat` or `tee` writes, unless its
-//! output goes on or something else on the line may run the file written
-//! ([`may_run`]). A variable expanded in data still counts for credentials.
-//! Every other word of a command, of any program the policy doesn't know,
-//! and the code given to an interpreter other than a shell, are read as
-//! before. The never-list is read where a command runs: a shell that reads
-//! a pipe (`| sh`, `|& bash`, `| sudo bash -s`; not `|| sh`) is denied by
-//! that shell's piece, not by the words `| sh` anywhere in a line.
+//! ([`words`]): quotes and escaping backslashes gone, and each word knows
+//! whether the shell expands something in it. These words are data:
+//!
+//! - **a heredoc's body** that `cat` or `tee` writes (`cat >> f <<'EOF'`),
+//!   though other commands follow on the line — unless its output goes on
+//!   (a pipe, `>(…)`, `>&3`), its body is expanded (`<<EOF` with `$(…)`), or
+//!   something else on the line may run the file written ([`may_run`]:
+//!   `bash run.sh`, `./run.sh`, a glob, `$x`, `eval`, an interpreter);
+//! - **a search's pattern**: `grep`, `rg`, `ag`, `ack` and `git grep`'s
+//!   (each `-e`'s, else the first operand), `git log --grep`/`-S`/`-G`,
+//!   `find -name` and the like, the tests a test runner picks — quoted or
+//!   not, whatever characters it has (`grep -rn "delete(" src`); and of a
+//!   read that reaches outside the workspace, all but the command (a
+//!   credential word it looks for there is still judged, D-174);
+//! - **what `echo` and `printf` print**, when their output goes nowhere that
+//!   runs it (no pipe, no substitution, no other descriptor, no file the
+//!   line then runs);
+//! - **a message**: what `-m`/`--message` give `git commit`, `tag`, `merge`,
+//!   `notes` and `stash`.
+//!
+//! A quoted string is data in those places, because of where it stands, not
+//! because it is quoted: a quoted command a shell runs (`sh -c '…'`), SQL
+//! given to a client (`psql -c 'DROP TABLE …'`) and a word spelled apart
+//! (`kubectl dele''te`) are read. So is every word of a program the policy
+//! has no data rule for, and the code given to an interpreter other than a
+//! shell. A variable expanded in data still counts for credentials
+//! (`echo $GITHUB_TOKEN`). The never-list is read where a command runs: a
+//! shell that reads a pipe (`| sh`, `|& bash`, `| sudo bash -s`; not
+//! `|| sh`) is denied by that shell's piece, not by the words `| sh`
+//! anywhere in a line.
 //!
 //! The workspace, for edits, reads and writes, is the task's own space
 //! ([`Scope::owned`], D-215): its root, the directory Otter made for its
