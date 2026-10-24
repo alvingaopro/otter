@@ -586,6 +586,10 @@ pub fn tool_call(name: &str, input: &Value) -> ToolCall {
     let s = |k: &str| input[k].as_str().unwrap_or_default().to_owned();
     match name {
         "Read" | "Glob" | "Grep" | "LS" | "NotebookRead" | "ToolSearch" => ToolCall::Read,
+        // A skill's instructions, loaded into the turn: nothing changes, and
+        // each tool it then has the agent use is asked about on its own
+        // (D-215).
+        "Skill" => ToolCall::Read,
         // The agent's own session — its task list, its background work, its
         // mode, the MCP servers it was given: nothing changes in the
         // workspace (D-066).
@@ -1284,6 +1288,17 @@ mod tests {
             ToolCall::Other {
                 name: "mcp__x__y".into()
             }
+        );
+    }
+
+    /// D-215: a skill is reading, not a tool for someone to decide on.
+    #[test]
+    fn a_skill_is_reading() {
+        let call = tool_call("Skill", &json!({"skill": "x"}));
+        assert_eq!(call, ToolCall::Read);
+        assert_eq!(
+            crate::runtime::policy::classify(&call, std::path::Path::new("/w")),
+            crate::runtime::policy::Verdict::Allow
         );
     }
 }

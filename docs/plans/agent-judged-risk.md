@@ -2,7 +2,10 @@
 
 Status: built in D-174 (milestone 1, the policy's own fixes, is D-173). The
 open questions below are answered there. Where the build differs from this
-text, `docs/decisions.md` D-174 is right.
+text, `docs/decisions.md` D-174 is right. The task's own worktrees are no
+longer found from the repository's worktree list: D-215 counts the
+workspace's directory and the worktrees the developer allowed the task to
+make.
 
 What the new decision would supersede, so it is written down once:
 
