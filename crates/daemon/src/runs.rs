@@ -593,7 +593,8 @@ impl Daemon {
                     let only_reads = shared
                         || self.reads_only(conversation.as_ref(), None)
                         || self.answer_only(&task).await;
-                    let (verdict, scope) = self.verdict_of(&ask.call, &root, only_reads).await;
+                    let (verdict, scope) =
+                        self.verdict_of(&task, &ask.call, &root, only_reads).await;
                     let grant = policy::grant_in(&ask.call, &scope);
                     // Routine work goes on, recorded as the tool it is (in
                     // the conversation), not as a decision (D-069).
@@ -627,7 +628,7 @@ impl Daemon {
                     let only_reads = shared
                         || self.reads_only(conversation.as_ref(), None)
                         || self.answer_only(&task).await;
-                    let (verdict, scope) = self.verdict_of(&call, &root, only_reads).await;
+                    let (verdict, scope) = self.verdict_of(&task, &call, &root, only_reads).await;
                     let decision = match &verdict {
                         Verdict::Allow => CheckDecision::Allow,
                         Verdict::Deny { why } => {
@@ -815,43 +816,30 @@ impl Daemon {
     /// Record a permission request under the interaction's id. True when
     /// someone has to decide; false when policy decided (the request is
     /// recorded as decided, for the audit trail).
-    /// What policy says about a call, and the [`policy::Scope`] it said it in.
-    /// The task's own worktrees (D-174) can only make a developer-only ask
-    /// routine, so Git is asked about them only for such an ask.
+    /// What policy says about a call, and the [`policy::Scope`] it said it in:
+    /// the task's own space (D-215) — its workspace's directory, where the
+    /// worktrees it makes beside its root go, and the worktrees the
+    /// developer allowed it to make elsewhere. Not, as before, any worktree
+    /// of the same repository: one the task didn't make is another's.
     async fn verdict_of(
         &self,
+        task: &TaskId,
         call: &crate::runtime::ToolCall,
         root: &std::path::Path,
         only_reads: bool,
     ) -> (Verdict, policy::Scope) {
-        let scope = policy::Scope::alone(root);
+        let grants = self
+            .tasks
+            .lock()
+            .await
+            .get(task.as_str())
+            .map(|f| f.grants.clone())
+            .unwrap_or_default();
+        let scope =
+            policy::Scope::owned(root, &self.paths.workspaces_dir, &self.paths.home, &grants);
         if only_reads && let Some(v) = policy::read_only(call) {
             return (v, scope);
         }
-        let verdict = policy::classify_in(call, &scope);
-        if !matches!(
-            verdict,
-            Verdict::Ask {
-                kind: DecisionKind::ToolPermission,
-                risk: Risk::High,
-                ..
-            }
-        ) {
-            return (verdict, scope);
-        }
-        let env = std::env::vars().collect();
-        let trees = crate::delivery::Git { root, env: &env }.worktrees().await;
-        // Not what Otter keeps in its home: the other workspaces made from
-        // the same repository are other tasks' work, and its backing
-        // repository is shared by all.
-        let trees: Vec<_> = trees
-            .into_iter()
-            .filter(|t| !policy::under(t, &self.paths.home))
-            .collect();
-        if trees.is_empty() {
-            return (verdict, scope);
-        }
-        let scope = policy::Scope::with_trees(root, trees);
         (policy::classify_in(call, &scope), scope)
     }
 
