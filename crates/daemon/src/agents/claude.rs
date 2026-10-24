@@ -62,6 +62,25 @@ pub const OAUTH_TOKEN: &str = "CLAUDE_CODE_OAUTH_TOKEN";
 /// writes the conversation to the scrollback, which the app scrolls itself.
 pub const CLASSIC_RENDERER: (&str, &str) = ("CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN", "1");
 
+/// What Claude Code sets for the processes it runs: which conversation they
+/// belong to, and that they are its children. An otterd started from inside
+/// Claude Code (a deploy run by an agent) had them; every Claude Code it
+/// launched took that conversation's id and, as a child, saved no transcript,
+/// so the session never left `starting`. Removed from the login environment.
+/// The developer's own settings (`CLAUDE_CODE_OAUTH_TOKEN`, …) are not here.
+pub const SESSION_MARKERS: &[&str] = &[
+    "CLAUDECODE",
+    "CLAUDE_CODE_CHILD_SESSION",
+    "CLAUDE_CODE_ENTRYPOINT",
+    "CLAUDE_CODE_EXECPATH",
+    "CLAUDE_CODE_MESSAGING_SOCKET",
+    "CLAUDE_CODE_MESSAGING_TOKEN",
+    "CLAUDE_CODE_SESSION_ATTENDED",
+    "CLAUDE_CODE_SESSION_ID",
+    "CLAUDE_JOB_DIR",
+    "CLAUDE_PID",
+];
+
 /// `env` signed in with `token`, when there is one; else as it is (Claude
 /// Code's own sign-in on the host).
 pub fn signed_in(env: &EnvMap, token: Option<&str>) -> EnvMap {
@@ -407,7 +426,10 @@ impl AgentProvider for ClaudeCode {
         } else if next == AgentState::Blocked && state.hooks_live {
             next = AgentState::Working;
         }
-        if !state.hooks_live {
+        // Started and still at its prompt: no hook says so (`SessionStart`
+        // came as it started), so a quiet one is waiting too. A resumed
+        // conversation stayed `starting` for good.
+        if !state.hooks_live || next == AgentState::Starting {
             next = settle(
                 next,
                 grew,
@@ -1714,5 +1736,69 @@ mod tests {
         let obs = ClaudeCode.observe(&ctx, &agent);
         assert_eq!(obs.state, Some(AgentState::Blocked));
         assert!(obs.blocker.is_none());
+    }
+
+    #[test]
+    fn a_resumed_session_quiet_at_its_prompt_is_not_starting() {
+        let dir = tempfile::tempdir().unwrap();
+        let env = EnvMap::new();
+        let none = HashSet::new();
+        let started = Utc::now() - Duration::seconds(60);
+        // The conversation it resumed, written before this execution.
+        let transcript = dir.path().join("resumed.jsonl");
+        std::fs::write(
+            &transcript,
+            "{\"type\":\"assistant\",\"message\":{\"role\":\"assistant\",\"stop_reason\":\"end_turn\",\"content\":[{\"type\":\"text\",\"text\":\"done\"}]}}\n",
+        )
+        .unwrap();
+        std::fs::File::options()
+            .write(true)
+            .open(&transcript)
+            .unwrap()
+            .set_modified((started - Duration::hours(1)).into())
+            .unwrap();
+        let state = ClaudeState {
+            transcript: Some(transcript.clone()),
+            offset: std::fs::metadata(&transcript).unwrap().len(),
+            ..ClaudeState::default()
+        };
+        std::fs::write(
+            dir.path().join(HOOKS_FILE),
+            serde_json::json!({
+                "event": "SessionStart",
+                "transcript": transcript,
+                "t": (started + Duration::seconds(1)).timestamp_millis(),
+            })
+            .to_string()
+                + "\n",
+        )
+        .unwrap();
+        let ctx = ObserveContext {
+            cwd: "/nowhere",
+            dir: dir.path(),
+            started_at: started,
+            pid: None,
+            screen: Some(Screen {
+                since: started + Duration::seconds(2),
+                changed: false,
+                moving_since: None,
+            }),
+            now: Utc::now(),
+            env: &env,
+            claimed: &none,
+            managed: &none,
+        };
+        let agent = AgentInfo {
+            provider: "claude".into(),
+            provider_session_id: Some("resumed".into()),
+            provider_state: serde_json::to_value(&state).unwrap(),
+            state: AgentState::Starting,
+            state_since: started,
+            last_message: None,
+            prompt: None,
+            blocker: None,
+        };
+        let obs = ClaudeCode.observe(&ctx, &agent);
+        assert_eq!(obs.state, Some(AgentState::Idle));
     }
 }

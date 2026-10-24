@@ -76,6 +76,10 @@ pub struct SessionView {
     pub name: String,
     pub kind: SessionKind,
     pub status: SessionStatus,
+    /// Its current execution: a restart is a new one, though the session
+    /// may never be seen not running.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub execution: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub agent: Option<AgentView>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -171,6 +175,7 @@ fn session_view(ws: &Workspace, s: &Session) -> SessionView {
         name: s.name.clone(),
         kind: s.kind,
         status: s.status(),
+        execution: s.current_execution().map(|e| e.id.to_string()),
         agent: s.agent.as_ref().map(|a| AgentView {
             provider: a.provider.clone(),
             state: a.state,

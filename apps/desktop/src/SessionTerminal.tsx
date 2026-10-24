@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Terminal, type Ending } from "./Terminal";
 import type { HostView, SessionView } from "./types";
 
@@ -42,14 +42,18 @@ export function SessionTerminal({
   const [ending, setEnding] = useState<Ending | null>(null);
   const [generation, setGeneration] = useState(0);
 
-  // A new execution of it starts a fresh attach.
+  // A new execution of it starts a fresh attach. A restart stops and starts
+  // it at once, so the session may never be seen not running: what changes
+  // is the execution, and its attach may end before or after that is seen.
   const running = session.status === "running";
+  const attached = useRef(session.execution);
   useEffect(() => {
-    if (running && ending && ending.kind !== "error") {
+    if (running && ending && ending.kind !== "error" && session.execution !== attached.current) {
+      attached.current = session.execution;
       setEnding(null);
       setGeneration((g) => g + 1);
     }
-  }, [running]);
+  }, [running, session.execution, ending]);
 
   // Lost connection: try again while the host is up.
   useEffect(() => {
